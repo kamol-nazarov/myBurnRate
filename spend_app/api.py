@@ -116,7 +116,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         try:
-            aggregate_summary(
+            aggregate_summary_cached(
                 database_path=settings.database_path,
                 pricing=pricing,
                 window_key="1d",
@@ -124,7 +124,7 @@ def create_app(
                 timezone=settings.timezone,
                 cache_threshold=settings.cache_hit_threshold,
                 cadence_seconds=settings.local_ingest_interval_seconds,
-                now=current_now(),
+                now=slot_now(),
             )
         except Exception:
             pass

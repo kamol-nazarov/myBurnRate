@@ -26,6 +26,8 @@ CENTS = Decimal("0.01")
 IDLE_PEAK_PCT = Decimal("1")
 _MEMO: dict[str, OrderedDict[tuple, object]] = {}
 _MEMO_LOCK = threading.Lock()
+_MEMO_INFLIGHT: dict[tuple[str, tuple], threading.Event] = {}
+_SUMMARY_COMPUTE_LOCK = threading.RLock()
 _MEMO_ENTRIES_PER_NAME = 16
 
 
@@ -38,19 +40,46 @@ def _memo(name: str, key: tuple, compute):
     viewers on different windows (whose heatmap ranges differ) do not evict
     each other every refresh; memory stays bounded.
     """
-    with _MEMO_LOCK:
-        bucket = _MEMO.get(name)
-        if bucket is not None and key in bucket:
+    inflight_key = (name, key)
+    while True:
+        with _MEMO_LOCK:
+            bucket = _MEMO.get(name)
+            if bucket is not None and key in bucket:
+                bucket.move_to_end(key)
+                return bucket[key]
+            waiter = _MEMO_INFLIGHT.get(inflight_key)
+            if waiter is None:
+                waiter = threading.Event()
+                _MEMO_INFLIGHT[inflight_key] = waiter
+                is_leader = True
+            else:
+                is_leader = False
+        if is_leader:
+            break
+        waiter.wait(timeout=30.0)
+        with _MEMO_LOCK:
+            bucket = _MEMO.get(name)
+            if bucket is not None and key in bucket:
+                bucket.move_to_end(key)
+                return bucket[key]
+            if _MEMO_INFLIGHT.get(inflight_key) is None:
+                continue
+            break
+
+    try:
+        value = compute()
+        with _MEMO_LOCK:
+            bucket = _MEMO.setdefault(name, OrderedDict())
+            bucket[key] = value
             bucket.move_to_end(key)
-            return bucket[key]
-    value = compute()
-    with _MEMO_LOCK:
-        bucket = _MEMO.setdefault(name, OrderedDict())
-        bucket[key] = value
-        bucket.move_to_end(key)
-        while len(bucket) > _MEMO_ENTRIES_PER_NAME:
-            bucket.popitem(last=False)
-    return value
+            while len(bucket) > _MEMO_ENTRIES_PER_NAME:
+                bucket.popitem(last=False)
+        return value
+    finally:
+        with _MEMO_LOCK:
+            done = _MEMO_INFLIGHT.pop(inflight_key, None)
+        if done is not None:
+            done.set()
 
 
 def reset_memo() -> None:
@@ -176,21 +205,22 @@ def aggregate_summary_cached(
         _iso(now),
         fingerprint,
     )
-    payload = _memo(
-        "summary",
-        key,
-        lambda: aggregate_summary(
-            database_path=database_path,
-            pricing=pricing,
-            window_key=window_key,
-            tool=tool,
-            timezone=timezone,
-            cache_threshold=cache_threshold,
-            cadence_seconds=cadence_seconds,
-            now=now,
-            machine=machine,
-        ),
-    )
+    with _SUMMARY_COMPUTE_LOCK:
+        payload = _memo(
+            "summary",
+            key,
+            lambda: aggregate_summary(
+                database_path=database_path,
+                pricing=pricing,
+                window_key=window_key,
+                tool=tool,
+                timezone=timezone,
+                cache_threshold=cache_threshold,
+                cadence_seconds=cadence_seconds,
+                now=now,
+                machine=machine,
+            ),
+        )
     return {**payload, "machines": machines} if isinstance(payload, dict) else payload
 
 
