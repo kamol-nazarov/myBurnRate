@@ -542,18 +542,16 @@ function Initialize-BurnrateRepoEnvironment {
         }
     }
 
-    if (-not (Test-Path -LiteralPath $venvBurnrate)) {
-        Write-Host 'Installing BURNRATE package into .venv...'
-        Push-Location $repoRoot
-        try {
-            if ($uvCmd) {
-                & $uvCmd.Source pip install . --python $venvPython
-            } else {
-                & $venvPython -m pip install .
-            }
-        } finally {
-            Pop-Location
+    Write-Host 'Installing BURNRATE package into .venv...'
+    Push-Location $repoRoot
+    try {
+        if ($uvCmd) {
+            & $uvCmd.Source pip install . --python $venvPython
+        } else {
+            & $venvPython -m pip install .
         }
+    } finally {
+        Pop-Location
     }
 
     if (Test-Path -LiteralPath $venvPython) {
@@ -743,10 +741,9 @@ function Install-BurnrateDashboard {
         return
     }
     if (Test-BurnrateHealth) {
-        Write-Host "BURNRATE dashboard already healthy at $(Get-BurnrateHealthUri)"
-    } else {
-        Start-BurnrateDashboard
+        Stop-BurnrateDashboard
     }
+    Start-BurnrateDashboard
     Install-BurnrateShortcuts
     if (-not $NoLaunch) {
         Start-BurnrateDesktopWindow -OpenSetup
