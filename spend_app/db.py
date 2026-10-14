@@ -458,6 +458,8 @@ REQUIRED_SCHEMA_OBJECTS = frozenset(
         "unpriced_usage_events",
         "model_prices",
         "subscriptions",
+        "subscription_plans",
+        "subscription_mutations",
         "subscription_daily_costs",
         "sessions",
         "ingest_runs",
@@ -865,6 +867,11 @@ def upsert_agent_run(
             state=excluded.state,
             started_at=excluded.started_at,
             last_seen_at=excluded.last_seen_at
+        WHERE name IS NOT excluded.name
+           OR model_key IS NOT excluded.model_key
+           OR state IS NOT excluded.state
+           OR started_at IS NOT excluded.started_at
+           OR last_seen_at IS NOT excluded.last_seen_at
         """,
         (id, name, model_key, state, started_at, last_seen_at),
     )
@@ -1037,6 +1044,16 @@ def sync_model_prices(connection: sqlite3.Connection, prices: object) -> int:
                 long_output_multiplier=excluded.long_output_multiplier,
                 effective_to=excluded.effective_to,
                 source_url=excluded.source_url
+            WHERE input_per_mtok IS NOT excluded.input_per_mtok
+               OR cached_input_per_mtok IS NOT excluded.cached_input_per_mtok
+               OR cache_write_per_mtok IS NOT excluded.cache_write_per_mtok
+               OR cache_write_1h_per_mtok IS NOT excluded.cache_write_1h_per_mtok
+               OR output_per_mtok IS NOT excluded.output_per_mtok
+               OR long_context_threshold IS NOT excluded.long_context_threshold
+               OR long_input_multiplier IS NOT excluded.long_input_multiplier
+               OR long_output_multiplier IS NOT excluded.long_output_multiplier
+               OR effective_to IS NOT excluded.effective_to
+               OR source_url IS NOT excluded.source_url
             """,
             (
                 price.model_key,

@@ -120,7 +120,10 @@ def read_rows(connection, *, now=None, rows=None):
                 reason = "Main Codex quota identity is unverified; awaiting a new quota poll."
             else:
                 row['observed_at'] = meta.get('observedAt')
-                reason = freshness_reason(meta.get('observedAt'), row['resets_at'], now)
+                polled = timestamp(meta.get('polledAt'))
+                observed = timestamp(meta.get('observedAt'))
+                check_now = max(now, polled) if polled and observed and observed <= polled else now
+                reason = freshness_reason(meta.get('observedAt'), row['resets_at'], check_now)
         if reason:
             row.update(pct=None, used=None, allowance=None, resets_at=None, unit='unavailable', label='Codex weekly window \u2014 ' + reason)
     return rows

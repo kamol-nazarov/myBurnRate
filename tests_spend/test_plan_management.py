@@ -404,3 +404,18 @@ def test_upgrade_reconciliation_failure_rolls_back(tmp_path, monkeypatch):
         assert "plan_id" not in {
             r[1] for r in c.execute("PRAGMA table_info(subscriptions)")
         }
+
+
+def test_subscription_plans_missing_end_date_column_is_repaired(tmp_path):
+    db = tmp_path / "missing_end_date.db"
+    initialize(db)
+    with connect(db) as c:
+        c.execute("ALTER TABLE subscription_plans DROP COLUMN end_date")
+    initialize(db)
+    with connect(db) as c:
+        plan_columns = {
+            r[1] for r in c.execute("PRAGMA table_info(subscription_plans)")
+        }
+        assert "end_date" in plan_columns
+        assert effective_terms(c) == []
+

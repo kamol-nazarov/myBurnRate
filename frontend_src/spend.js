@@ -29,6 +29,7 @@ const params = new URLSearchParams(location.search);
 const initialWindow = String(params.get("window") || "1d").toLowerCase();
 const state = {
   window: WINDOW_KEYS.has(initialWindow) ? initialWindow : "1d",
+  machine: String(params.get("machine") || "all").trim() || "all",
   mode:"stacked",
   hover:null,
   pinned:null,
@@ -237,7 +238,7 @@ function paintEase() {
     const fmt = el.dataset.fmt || "text";
     if (fmt === "width") {
       el.style.width = Math.max(0, Math.min(100, value)).toFixed(2) + "%";
-      if (el.dataset.quotaColor === "1") {
+      if (el.dataset.quotaColor === "1" && !el.closest(".capacity-lane")) {
         const color = quotaColor(value);
         el.style.background = color;
         const label = el.closest(".capacity-row, .capacity-provider")?.querySelector("[data-ease='" + key + "'][data-fmt='pct'], [data-ease='" + key + "'][data-fmt='peak']");
@@ -427,6 +428,8 @@ function reconcileSegmentColumns(root, series, segmentRows, activeIndex) {
 function setQuery() {
   const url = new URL(location.href);
   url.searchParams.set("window", state.window);
+  if (state.machine && state.machine !== "all") url.searchParams.set("machine", state.machine);
+  else url.searchParams.delete("machine");
   url.searchParams.delete("tool");
   if (PROBE) url.searchParams.set("probe", "1");
   history.replaceState(null, "", url);
@@ -1082,8 +1085,10 @@ function renderActivity(data) {
     item.querySelector("strong").textContent = row.name || "Untitled agent";
     const mins = clock[index];
     const age = mins == null ? "" : mins < 1 ? "just now" : mins < 60 ? `${mins}m` : `${Math.round(mins / 60)}h`;
+    const multiMachine = (data.machines && data.machines.length > 1) || (row.machineId && row.machineId !== "local");
+    const machinePrefix = multiMachine && row.machineName ? `${row.machineName} · ` : "";
     item.querySelector("small").textContent = liveNow
-      ? `${row.modelKey || "model"}${age ? ` · ${age}` : ""}`
+      ? `${machinePrefix}${row.modelKey || "model"}${age ? ` · ${age}` : ""}`
       : "stopped before telemetry was emitted";
     let share = item.querySelector(".activity-share");
     if (!share) {
@@ -1545,7 +1550,7 @@ function renderSubs(data) {
     setText(node.querySelector("b"), row.cadence && row.amountUsd != null
       ? usd(row.amountUsd) + suffix
       : (row.amountUsd == null ? "Free" : usd(row.amountUsd)));
-    const equiv = finite(row.monthlyEquivalent ?? row.amountUsd) || 0;
+    const equiv = finite(row.monthlyEquivalent ?? row.amountUsd) ?? 0;
     const share = monthly ? (equiv > 0 ? Math.max(4, Math.round(equiv / monthly * 100)) : 0) : 0;
     node.style.setProperty("--share", share + "%");
     node.style.setProperty("--tool", colorFor(row.toolKey));
@@ -1909,6 +1914,137 @@ function bindResetAlerts() {
   });
 }
 
+function renderMachines(data) {
+  const machines = (data && data.machines) || (state.summary && state.summary.machines) || [];
+  const row = $("range-switch")?.parentElement;
+  if (!row) return;
+  let root = $("machine-switch");
+  if (machines.length <= 1) {
+    if (root) root.remove();
+    return;
+  }
+  if (!root) {
+    root = document.createElement("div");
+    root.id = "machine-switch";
+    root.className = "mode-switch";
+    root.setAttribute("role", "radiogroup");
+    root.setAttribute("aria-label", "Computer filter");
+    root.addEventListener("click", event => {
+      const button = event.target.closest("[data-machine]");
+      if (button) changeMachine(button.dataset.machine);
+    });
+    row.insertBefore(root, $("range-switch"));
+  }
+  const items = [{id: "all", name: "All computers"}, ...machines];
+  reconcileChildren(root, items, item => item.id, () => nodeFrom(`<button type="button" role="radio" data-machine=""></button>`), (node, item) => {
+    const on = item.id === (state.machine || "all");
+    node.dataset.machine = item.id;
+    node.classList.toggle("active", on);
+    node.setAttribute("aria-checked", String(on));
+    setText(node, item.name || item.id);
+  });
+}
+function changeMachine(machineId) {
+  const next = String(machineId || "all").trim() || "all";
+  if (next === state.machine) return;
+  state.machine = next;
+  state.hover = null;
+  state.pinned = null;
+  state.dHover = null;
+  state.dPinned = null;
+  state.chartScales = Object.create(null);
+  state.detailScales = Object.create(null);
+  setQuery();
+  renderMachines(state.summary);
+  if (state.view === "detail" && state.entity) loadEntity(state.entity.kind, state.entity.key);
+  else loadSummary(false);
+}
+function connectLiveStream() {
+  if (PROBE || typeof EventSource !== "function") return;
+  let timer = null;
+  try {
+    const stream = new EventSource("/api/spend/stream");
+    stream.addEventListener("update", () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => { timer = null; refreshCurrent(); }, 150);
+    });
+  } catch {}
+}
+
+window.openSidecarHud = () => {
+  const internals = window.__TAURI_INTERNALS__;
+  if (internals && typeof internals.invoke === "function") {
+    internals.invoke("toggle_hud");
+    return;
+  }
+  window.open("/hud", "burnrate-hud", "popup=yes,width=360,height=580,left=36,top=72");
+};
+
+window.openSetupWizard = () => {
+  const internals = window.__TAURI_INTERNALS__;
+  if (internals && typeof internals.invoke === "function") {
+    internals.invoke("open_setup_wizard");
+    return;
+  }
+  window.location.href = "/setup";
+};
+
+function renderMachineSettings(data) {
+  const host = $("harness-content");
+  if (!host) return;
+  const machines = (data && data.machines) || (state.summary && state.summary.machines) || [];
+  let section = $("machine-settings-section");
+  if (!section) {
+    section = nodeFrom(`<section class="harness-section" id="machine-settings-section"><header><p class="eyebrow">Connected computers</p><div class="harness-actions"><button id="open-setup-wizard-button" class="harness-action" type="button">Setup Wizard</button><button id="open-hud-button" class="harness-action" type="button">Sidecar HUD</button><button id="add-machine-button" class="harness-action" type="button">Add computer</button></div></header><p id="machine-pair-note" class="settings-helper mono" hidden></p><div id="machine-rows"></div></section>`);
+    host.appendChild(section);
+    section.querySelector("#open-setup-wizard-button").addEventListener("click", () => window.openSetupWizard());
+    section.querySelector("#open-hud-button").addEventListener("click", () => window.openSidecarHud());
+    section.querySelector("#add-machine-button").addEventListener("click", async () => {
+      const name = (typeof prompt === "function" ? prompt("Computer name (e.g. MacBook Pro, Studio Rig):", "Remote computer") : "Remote computer") || "";
+      if (!name.trim()) return;
+      try {
+        const res = await postJson("/api/machines", {action: "register", name: name.trim()});
+        const note = $("machine-pair-note");
+        if (note && res.syncCommand) {
+          note.hidden = false;
+          note.textContent = `Run on ${res.machine?.name || name.trim()}: ${res.syncCommand}`;
+          try { await navigator.clipboard.writeText(res.syncCommand); note.textContent += " (copied)"; } catch {}
+        }
+        if (state.summary && res.machines) {
+          state.summary.machines = res.machines;
+          renderMachines(state.summary);
+          renderMachineSettings(state.summary);
+        }
+      } catch {}
+    });
+  }
+  const rows = $("machine-rows");
+  if (!rows) return;
+  reconcileChildren(rows, machines, item => item.id, () => nodeFrom(`<article class="source-setting-row"><span class="harness-mark"><i class="settings-dot"></i></span><div class="source-setting-name"><strong></strong><small class="mono"></small></div><div class="source-setting-status"><b></b><small></small></div><button type="button" class="ghost-button row-secondary"></button></article>`), (node, item) => {
+    const isLocal = Boolean(item.isLocal || item.id === "local");
+    const seenMs = finiteDate(item.lastSeenAt);
+    const fresh = isLocal || (seenMs != null && (Date.now() - seenMs) < 120000);
+    node.dataset.tone = fresh ? "good" : "quiet";
+    setText(node.querySelector("strong"), item.name || item.id);
+    setText(node.querySelector(".mono"), isLocal ? "Hub (this computer)" : `${item.id}${item.hostname ? " · " + item.hostname : ""}`);
+    setText(node.querySelector(".source-setting-status b"), isLocal ? "Local" : fresh ? "Live" : item.lastSeenAt ? "Idle" : "Paired");
+    setText(node.querySelector(".source-setting-status small"), isLocal ? "Primary SQLite hub" : item.lastSeenAt ? `Last push ${new Date(item.lastSeenAt).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"})}` : "Waiting for first push");
+    const btn = node.querySelector("button");
+    btn.hidden = isLocal;
+    setText(btn, "Remove");
+    btn.onclick = isLocal ? null : async () => {
+      try {
+        const res = await postJson("/api/machines", {action: "revoke", id: item.id});
+        if (state.summary && res.machines) {
+          state.summary.machines = res.machines;
+          if (state.machine === item.id) changeMachine("all");
+          else { renderMachines(state.summary); renderMachineSettings(state.summary); }
+        }
+      } catch {}
+    };
+  });
+}
+
 function renderOverview() {
   const data = state.summary;
   if (state.view !== "overview" || !summaryMatches()) return;
@@ -1917,6 +2053,8 @@ function renderOverview() {
   renderNavbar(data);
   renderCoverage(data);
   renderRanges(false);
+  renderMachines(data);
+  renderMachineSettings(data);
   renderCapacity(data);
   renderResetAlerts(data);
   renderActivity(data);
@@ -2173,7 +2311,8 @@ async function loadSummary(background = false) {
   if (!background) navigateView("overview");
   if (state.view !== "overview" || pendingViews.overview) return;
   const windowKey = state.window;
-  const painted = (!state.summary || state.summary.window?.key !== state.window) && paintSnapshot(windowKey);
+  const machineSuffix = state.machine && state.machine !== "all" ? '&machine=' + encodeURIComponent(state.machine) : '';
+  const painted = !machineSuffix && (!state.summary || state.summary.window?.key !== state.window) && paintSnapshot(windowKey);
   const request = startViewRequest("overview");
   if (!request) return;
   // Consume startup prefetch once, even when a matching snapshot was painted.
@@ -2185,15 +2324,15 @@ async function loadSummary(background = false) {
   startup?.health.catch(() => {});
   refreshOverviewHealth(prefetch?.health);
   try {
-    const data = await jsonFetch('/api/spend/summary?window=' + encodeURIComponent(windowKey) + '&tool=all',
-      prefetch?.summary, request.controller.signal);
+    const data = await jsonFetch('/api/spend/summary?window=' + encodeURIComponent(windowKey) + '&tool=all' + machineSuffix,
+      machineSuffix ? null : prefetch?.summary, request.controller.signal);
     if (!ownsRender(request)) return;
     if (data.window?.key !== windowKey) throw new Error("Response range did not match the selection");
     state.summary = data;
     if (data.navigation) state.navigation = data.navigation;
     clearError();
     renderPreservingScroll(background || painted, renderOverview);
-    writeSnapshot(windowKey, data, state.health);
+    if (!machineSuffix) writeSnapshot(windowKey, data, state.health);
   } catch (error) {
     failViewRequest(request, error);
   } finally {
@@ -2205,9 +2344,10 @@ async function loadEntity(kind, key, background = false) {
   if (state.view !== "detail" || state.entity?.kind !== kind || state.entity?.key !== key) return;
   const request = startViewRequest("detail");
   if (!request) return;
+  const machineSuffix = state.machine && state.machine !== "all" ? '&machine=' + encodeURIComponent(state.machine) : '';
   try {
     const data = await jsonFetch('/api/spend/entity?kind=' + encodeURIComponent(request.kind)
-      + '&key=' + encodeURIComponent(request.key) + '&window=' + encodeURIComponent(request.window),
+      + '&key=' + encodeURIComponent(request.key) + '&window=' + encodeURIComponent(request.window) + machineSuffix,
       null, request.controller.signal);
     if (!ownsRender(request)) return;
     if (data.kind !== request.kind || data.window?.key !== request.window
@@ -2458,3 +2598,4 @@ pruneSnapshots();
 loadSummary();
 scheduleEase();
 setInterval(refreshCurrent, POLL_MS);
+connectLiveStream();

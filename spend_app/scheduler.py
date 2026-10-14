@@ -104,6 +104,11 @@ def create_scheduler(settings: Settings, pricing: PricingEngine) -> BackgroundSc
         except Exception as exc:
             errors.append(exc)
         warm_summaries()
+        from spend_app.sync import STREAM_BROKER
+        from spend_app.setup_wizard import maybe_run_configured_spoke_sync
+
+        STREAM_BROKER.publish({"type": "ingest"})
+        maybe_run_configured_spoke_sync(settings, pricing)
         if errors:
             raise RuntimeError(f"{len(errors)} local ingest job(s) failed") from errors[0]
 

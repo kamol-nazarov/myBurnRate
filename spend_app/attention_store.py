@@ -215,7 +215,7 @@ class Repository:
 
     @contextmanager
     def transaction(self, write=False):
-        connection = sqlite3.connect(self.path.as_uri() + ("?mode=rw" if write else "?mode=ro"), uri=True, timeout=3)
+        connection = sqlite3.connect(self.path.as_uri() + ("?mode=rw" if write else "?mode=ro"), uri=True, timeout=30)
         connection.row_factory = sqlite3.Row
         try:
             connection.execute("BEGIN IMMEDIATE" if write else "BEGIN")

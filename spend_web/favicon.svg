@@ -1,19 +1,32 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
   <defs>
-    <linearGradient id="surface" x1="8" y1="5" x2="56" y2="59" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#19202A"/>
-      <stop offset="1" stop-color="#0D1117"/>
+    <linearGradient id="bg" x1="6" y1="4" x2="58" y2="60" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1D222D"/>
+      <stop offset="0.5" stop-color="#0E1117"/>
+      <stop offset="1" stop-color="#050608"/>
     </linearGradient>
-    <linearGradient id="signal" x1="19" y1="45" x2="45" y2="16" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#5C8FE8"/>
-      <stop offset="1" stop-color="#8AB7FF"/>
+    <linearGradient id="rim" x1="6" y1="4" x2="58" y2="60" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#D9A441" stop-opacity="0.72"/>
+      <stop offset="0.5" stop-color="#8AB7FF" stop-opacity="0.38"/>
+      <stop offset="1" stop-color="#10B981" stop-opacity="0.55"/>
+    </linearGradient>
+    <linearGradient id="barCyan" x1="0" y1="18" x2="0" y2="49" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8AB7FF"/>
+      <stop offset="1" stop-color="#10B981"/>
+    </linearGradient>
+    <linearGradient id="barGold" x1="0" y1="12" x2="0" y2="49" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FDE68A"/>
+      <stop offset="0.45" stop-color="#F5A623"/>
+      <stop offset="1" stop-color="#D9A441"/>
     </linearGradient>
   </defs>
-  <rect x="2" y="2" width="60" height="60" rx="16" fill="url(#surface)" stroke="#303846" stroke-width="2"/>
-  <path d="M14 48.5H50" stroke="#343D4A" stroke-width="2" stroke-linecap="round"/>
-  <rect x="14" y="36" width="7" height="12" rx="2" fill="#465160"/>
-  <rect x="25" y="27" width="7" height="21" rx="2" fill="url(#signal)"/>
-  <rect x="36" y="17" width="7" height="31" rx="2" fill="url(#signal)"/>
-  <rect x="47" y="31" width="5" height="17" rx="2" fill="#D9A441"/>
-  <circle cx="49.5" cy="24" r="3.5" fill="#F0BD55"/>
+  <rect x="2" y="2" width="60" height="60" rx="16" fill="url(#bg)" stroke="url(#rim)" stroke-width="1.6"/>
+  <rect x="5.5" y="5.5" width="53" height="53" rx="13" stroke="#FFFFFF" stroke-opacity="0.07"/>
+  <path d="M12 49H52" stroke="#252A34" stroke-width="1.5" stroke-linecap="round"/>
+  <rect x="14.5" y="35" width="6.8" height="14" rx="2.4" fill="url(#barCyan)" fill-opacity="0.58"/>
+  <rect x="24.2" y="27.5" width="6.8" height="21.5" rx="2.4" fill="url(#barCyan)" fill-opacity="0.82"/>
+  <rect x="33.9" y="20.5" width="6.8" height="28.5" rx="2.4" fill="url(#barCyan)"/>
+  <rect x="43.6" y="13" width="6.8" height="36" rx="2.4" fill="url(#barGold)"/>
+  <path d="M16 28L26.5 21.5L36.8 15.8L47 10.2" stroke="#F8FAFC" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="47" cy="10.2" r="3.4" fill="#D9A441" stroke="#050608" stroke-width="1.5"/>
 </svg>

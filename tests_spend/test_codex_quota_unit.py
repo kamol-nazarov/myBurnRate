@@ -280,6 +280,18 @@ def test_capacity_uses_same_current_observation(monkeypatch):
     assert card['primaryPct'] is None
 
 
+def test_read_rows_accepts_observation_newer_than_lagging_data_clock():
+    from dataclasses import replace
+    db=DB()
+    observed=NOW+timedelta(seconds=12)
+    polled=(NOW+timedelta(seconds=15)).isoformat()
+    s=replace(sample(),observed_at=observed.isoformat())
+    cq.save_metadata(db,s,polled)
+    db.rows=[dict(id=1,provider_key='codex',pct=54,resets_at=s.resets_at,polled_at=polled)]
+    result=cq.read_rows(db,now=NOW)[0]
+    assert result['pct']==54 and result['observed_at']==observed.isoformat()
+
+
 def test_short_cache_is_scoped_and_does_not_renew_observation(monkeypatch):
     limits._CACHE.clear()
     result={'status':'exact','poolId':'codex','scope':'A','observedAt':NOW.isoformat(),

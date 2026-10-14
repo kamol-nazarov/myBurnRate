@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from spend_app.db import EXACT_USAGE_SOURCES, connect
 from spend_app.source_reconcile import reconcile_events
+from spend_app.sync import list_machines, machines_fingerprint, row_machine_id
 from spend_app.timeutil import epoch_micros, from_epoch_micros, next_month_start as _next_month_start_utc, parse_utc, previous_calendar_period
 from spend_app.pricing import PricingEngine, UnpricedModelError
 from spend_app.capacity_forecast import alert_fingerprint, apply_forecasts, load_pace_samples, pace_fingerprint, read_forecast_view, active_provider_keys
@@ -130,6 +131,7 @@ def _summary_state_fingerprint(connection, window: ResolvedWindow, tool: str) ->
         tuple(connection.execute("SELECT MAX(id) FROM ingest_runs").fetchone()),
         pace_fingerprint(connection),
         alert_fingerprint(connection),
+        machines_fingerprint(connection),
     )
 
 
@@ -143,6 +145,7 @@ def aggregate_summary_cached(
     cache_threshold: float,
     cadence_seconds: int = 900,
     now: datetime | None = None,
+    machine: str = "all",
 ) -> dict:
     """``aggregate_summary`` shared across requests with the same clock and data.
 
@@ -160,6 +163,7 @@ def aggregate_summary_cached(
         id(pricing),
         window.key,
         tool,
+        machine,
         timezone,
         float(cache_threshold),
         int(cadence_seconds),
@@ -178,21 +182,20 @@ def aggregate_summary_cached(
             cache_threshold=cache_threshold,
             cadence_seconds=cadence_seconds,
             now=now,
+            machine=machine,
         ),
     )
 
 
 def _range_fingerprint(connection, start: datetime, end: datetime, tool: str) -> tuple:
     tool_sql = "" if tool == "all" else " AND tool_key = ?"
-    params: list[object] = [_iso(start), _iso(end)]
-    if tool != "all":
-        params.append(tool)
+    params = _epoch_params(start, end, tool)
     usage = tuple(
         connection.execute(
             "SELECT COUNT(*), MAX(id), MAX(ingested_at), SUM(input_tokens), SUM(cached_input_tokens), "
             "SUM(cache_write_tokens), SUM(cache_write_1h_tokens), SUM(output_tokens), SUM(cost_usd), "
             "SUM(computed_cost_usd), SUM(is_exact) FROM usage_events "
-            "WHERE occurred_at >= ? AND occurred_at < ?" + tool_sql,
+            "WHERE occurred_epoch_us IS NOT NULL AND occurred_epoch_us >= ? AND occurred_epoch_us < ?" + tool_sql,
             params,
         ).fetchone()
     )
@@ -201,7 +204,7 @@ def _range_fingerprint(connection, start: datetime, end: datetime, tool: str) ->
             "SELECT COUNT(*), MAX(id), MAX(ingested_at), SUM(input_tokens), SUM(cached_input_tokens), "
             "SUM(cache_write_tokens), SUM(output_tokens), SUM(cost_usd), SUM(unclassified_tokens), "
             "SUM(telemetry_complete) FROM unpriced_usage_events "
-            "WHERE occurred_at >= ? AND occurred_at < ?" + tool_sql,
+            "WHERE occurred_epoch_us IS NOT NULL AND occurred_epoch_us >= ? AND occurred_epoch_us < ?" + tool_sql,
             params,
         ).fetchone()
     )
@@ -719,7 +722,7 @@ def _cost_buckets(connection, start: datetime, end: datetime) -> dict[str, Decim
     return dict(totals)
 
 
-def _load_events(connection, start: datetime, end: datetime, tool: str) -> list[dict]:
+def _load_events(connection, start: datetime, end: datetime, tool: str, machine: str = "all") -> list[dict]:
     """Canonical usage events for the half-open window, in event order.
 
     Filtering and ordering use the canonical integer epoch column so mixed
@@ -737,11 +740,13 @@ def _load_events(connection, start: datetime, end: datetime, tool: str) -> list[
             _epoch_params(start, end, tool),
         )
     ]
+    if machine != "all":
+        rows = [row for row in rows if row_machine_id(row.get("raw_id")) == machine]
     reconciled, _report = reconcile_events(rows)
     return [event.row for event in reconciled]
 
 
-def _load_unpriced_events(connection, start: datetime, end: datetime, tool: str) -> list[dict]:
+def _load_unpriced_events(connection, start: datetime, end: datetime, tool: str, machine: str = "all") -> list[dict]:
     rows = [
         dict(row)
         for row in connection.execute(
@@ -752,6 +757,8 @@ def _load_unpriced_events(connection, start: datetime, end: datetime, tool: str)
             _epoch_params(start, end, tool),
         )
     ]
+    if machine != "all":
+        rows = [row for row in rows if row_machine_id(row.get("raw_id")) == machine]
     output = []
     for row in rows:
         row["when"] = from_epoch_micros(row["occurred_epoch_us"])
@@ -1548,19 +1555,27 @@ def _capacity_from_rows(
     return cards
 
 
-def _activity_from_rows(rows: list[dict]) -> list[dict]:
+def _activity_from_rows(
+    rows: list[dict], machines_by_id: dict[str, str] | None = None
+) -> list[dict]:
     ordered = sorted(rows, key=lambda row: row["last_seen_at"], reverse=True)
-    return [
-        {
-            "id": row["id"],
-            "name": row["name"],
-            "modelKey": row["model_key"],
-            "state": row["state"],
-            "startedAt": row["started_at"],
-            "lastSeenAt": row["last_seen_at"],
-        }
-        for row in ordered
-    ]
+    result: list[dict] = []
+    for row in ordered:
+        mid = row_machine_id(row["id"])
+        mname = (machines_by_id or {}).get(mid, mid)
+        result.append(
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "modelKey": row["model_key"],
+                "state": row["state"],
+                "startedAt": row["started_at"],
+                "lastSeenAt": row["last_seen_at"],
+                "machineId": mid,
+                "machineName": mname,
+            }
+        )
+    return result
 
 
 def _load_quota_rows(connection, *, now=None) -> list[dict]:
@@ -1568,8 +1583,11 @@ def _load_quota_rows(connection, *, now=None) -> list[dict]:
     return read_rows(connection, now=now)
 
 
-def _load_activity_rows(connection) -> list[dict]:
-    return [dict(row) for row in connection.execute("SELECT * FROM agent_runs")]
+def _load_activity_rows(connection, machine: str = "all") -> list[dict]:
+    rows = [dict(row) for row in connection.execute("SELECT * FROM agent_runs")]
+    if machine != "all":
+        rows = [row for row in rows if row_machine_id(row["id"]) == machine]
+    return rows
 
 
 def _ingest_status(connection, now: datetime, cadence_seconds: int) -> tuple[str, str | None, str | None, int | None]:
@@ -1912,10 +1930,11 @@ def _heatmap_cells(
     end: datetime,
     tool: str,
     zone: ZoneInfo,
+    machine: str = "all",
 ) -> dict[tuple[int, int], Decimal]:
     def compute() -> dict[tuple[int, int], Decimal]:
-        events = _load_events(connection, start, end, tool)
-        unpriced = _load_unpriced_events(connection, start, end, tool)
+        events = _load_events(connection, start, end, tool, machine)
+        unpriced = _load_unpriced_events(connection, start, end, tool, machine)
         enriched = _enrich(events, pricing, _cost_buckets(connection, start, end))
         heat: dict[tuple[int, int], Decimal] = defaultdict(Decimal)
         for event in enriched:
@@ -1937,6 +1956,7 @@ def _heatmap_cells(
         _connection_identity(connection),
         id(pricing),
         tool,
+        machine,
         str(zone),
         _iso(start),
         _range_fingerprint(connection, start, end, tool),
@@ -2076,14 +2096,15 @@ def aggregate_summary(
     now: datetime | None = None,
     quotas: list[dict] | None = None,
     activity: list[dict] | None = None,
+    machine: str = "all",
 ) -> dict:
     now = (now or datetime.now(UTC)).astimezone(UTC)
     window = resolve_window(window_key, now=now, timezone=timezone)
     zone = ZoneInfo(timezone)
     with connect(database_path) as connection:
         window = _actualize_all_window(connection, window, timezone)
-        events = _load_events(connection, window.start, window.end, tool)
-        unpriced_events = _load_unpriced_events(connection, window.start, window.end, tool)
+        events = _load_events(connection, window.start, window.end, tool, machine)
+        unpriced_events = _load_unpriced_events(connection, window.start, window.end, tool, machine)
         authority = _cost_buckets(connection, window.start, window.end)
         enriched = _enrich(events, pricing, authority)
         local_now = now.astimezone(zone)
@@ -2301,8 +2322,10 @@ def aggregate_summary(
             plan_name = TOOL_NAMES.get(row["tool_key"], row["tool_key"]) + " configured plans" if old_monthly else old_name
             monthly_plans[row["tool_key"]] = (plan_name, old_monthly + monthly)
 
+        machines_list = list_machines(connection, now=now)
+        machines_by_id = {m["id"]: m["name"] for m in machines_list}
         quota_rows = quotas if quotas is not None else _load_quota_rows(connection, now=now)
-        activity_rows = activity if activity is not None else _load_activity_rows(connection)
+        activity_rows = activity if activity is not None else _load_activity_rows(connection, machine)
         capacity = _capacity_from_rows(quota_rows, now=now, month_to_date=month_usage)
         _attach_observed_grok_routes(capacity, connection)
         apply_forecasts(
@@ -2312,7 +2335,7 @@ def aggregate_summary(
             active=active_provider_keys(connection, now),
         )
         capacity_forecast = read_forecast_view(connection)
-        activity_payload = _activity_from_rows(activity_rows)
+        activity_payload = _activity_from_rows(activity_rows, machines_by_id)
         status, failing_source, _last_refresh, _stale = _ingest_status(
             connection, now, cadence_seconds
         )
@@ -2329,7 +2352,7 @@ def aggregate_summary(
         burn = _seven_day_burn(connection, pricing, now, timezone)
         day_coverage = _day_coverage(connection, timezone, now)
         heat_start, heat_end, heat_fallback = _heatmap_window(window, now, timezone)
-        heat = _heatmap_cells(connection, pricing, heat_start, heat_end, tool, zone)
+        heat = _heatmap_cells(connection, pricing, heat_start, heat_end, tool, zone, machine)
         heatmap = [
             {"weekday": weekday, "hour": hour, "value": float(value), "unit": "reference_usd"}
             for (weekday, hour), value in sorted(heat.items())
@@ -2471,6 +2494,8 @@ def aggregate_summary(
             "cadenceMinutes": cadence_seconds / 60,
             "status": status,
             "failingSource": failing_source,
+            "machines": machines_list,
+            "selectedMachine": machine,
             "navigation": {
                 "burnRatePerDay": float(burn) if burn is not None else None,
                 "todayUsd": float(today.usage_value) if today.records else None,
@@ -2559,6 +2584,7 @@ def aggregate_entity(
     cache_threshold: float,
     now: datetime | None = None,
     quotas: list[dict] | None = None,
+    machine: str = "all",
 ) -> dict:
     if kind not in {"model", "tool"}:
         raise ValueError("kind must be model or tool")
@@ -2568,8 +2594,8 @@ def aggregate_entity(
     with connect(database_path) as connection:
         window = _actualize_all_window(connection, window, timezone)
         tool_filter = key if kind == "tool" else "all"
-        events = _load_events(connection, window.start, window.end, tool_filter)
-        unpriced_events = _load_unpriced_events(connection, window.start, window.end, tool_filter)
+        events = _load_events(connection, window.start, window.end, tool_filter, machine)
+        unpriced_events = _load_unpriced_events(connection, window.start, window.end, tool_filter, machine)
         if kind == "model":
             model_keys = reporting_model_keys(key)
             events = [event for event in events if event["model_key"] in model_keys]

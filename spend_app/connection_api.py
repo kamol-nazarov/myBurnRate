@@ -13,6 +13,8 @@ from spend_app.connection_paths import LocationError
 
 def access_allowed(request, token):
     """The existing API-wide bearer boundary, shared with the application."""
+    if request.url.path == "/api/sync/push" and request.headers.get("authorization", "").startswith("Bearer br_m_"):
+        return True
     return not token or not request.url.path.startswith("/api/") or request.headers.get("authorization", "") == f"Bearer {token}"
 
 

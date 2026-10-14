@@ -9,6 +9,17 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+## [0.3.0-beta.8] - 2026-10-14
+
+- Add interactive 5-step Application Setup Wizard (`/setup` and `/api/setup/*`)
+  for configuring computer identity, multi-computer Hub/Spoke topology with
+  1-click `brpair_...` pairing codes, live local AI harness scanning, subscription
+  presets, and Sidecar HUD preferences.
+- Add single-account multi-computer sync hub (`/api/machines`, `/api/sync/push`,
+  `/api/spend/stream`, and automatic background spoke-to-hub sync) with per-machine
+  dashboard filtering.
+- Add Tauri v2 native desktop shell (`src-tauri/`) with system tray controls,
+  background process supervision, and frameless Always-on-Top Sidecar HUD (`/hud`).
 - Redesign the dashboard so overview, dialogs, and the tool page share one
   layout, and replace the visible hour grid with the price of a million tokens
   by model.

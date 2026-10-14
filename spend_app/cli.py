@@ -312,6 +312,30 @@ def _main() -> int:
         "pricing-audit",
         help="List rate cards approaching expiry; successors are only ever evidenced, never invented",
     )
+    sync_parser = subparsers.add_parser(
+        "sync",
+        help="Stream local usage and agent activity from this computer to a BURNRATE hub",
+    )
+    sync_parser.add_argument("--hub", required=True, help="Hub base URL (e.g. http://100.x.y.z:17331)")
+    sync_parser.add_argument("--token", required=True, help="Machine bearer token (br_m_...)")
+    sync_parser.add_argument("--name", help="Optional display name override for this computer")
+    sync_parser.add_argument("--interval", type=float, default=5.0, help="Sync interval in seconds")
+    sync_parser.add_argument("--once", action="store_true", help="Push a single sync batch and exit")
+    machines_parser = subparsers.add_parser("machines", help="Manage connected computers on the hub")
+    machines_sub = machines_parser.add_subparsers(dest="machines_command", required=True)
+    machines_sub.add_parser("list")
+    m_reg = machines_sub.add_parser("register")
+    m_reg.add_argument("--name", required=True)
+    m_reg.add_argument("--os", default="")
+    m_rev = machines_sub.add_parser("revoke")
+    m_rev.add_argument("--id", required=True)
+    desktop_parser = subparsers.add_parser(
+        "desktop",
+        help="Launch the BURNRATE Tauri native app and Always-on-Top Sidecar HUD",
+    )
+    desktop_parser.add_argument("--hub", help="Optional remote hub URL to sync local telemetry to")
+    desktop_parser.add_argument("--token", help="Optional machine bearer token for remote hub sync")
+    desktop_parser.add_argument("--check-only", action="store_true", help="Verify Tauri manifest and exit")
     args = parser.parse_args()
 
     if args.command == "serve":
@@ -510,6 +534,70 @@ def _main() -> int:
             rows = effective_terms(connection)
             print(json.dumps(rows, indent=2))
             return 0
+    if args.command == "machines":
+        from spend_app.sync import list_machines, register_machine, revoke_machine
+
+        initialize(settings.database_path)
+        if args.machines_command == "register":
+            out = register_machine(settings.database_path, name=args.name, os_name=args.os)
+            print(json.dumps(out, indent=2))
+            return 0
+        if args.machines_command == "revoke":
+            out = revoke_machine(settings.database_path, machine_id=args.id)
+            print(json.dumps(out, indent=2))
+            return 0
+        with connect(settings.database_path) as connection:
+            print(json.dumps({"machines": list_machines(connection)}, indent=2))
+        return 0
+    if args.command == "sync":
+        import time as _time
+        from spend_app.sync import sync_once
+
+        pricing = PricingEngine.load(settings.pricing_path)
+        while True:
+            try:
+                out = sync_once(
+                    settings,
+                    pricing,
+                    hub_url=args.hub,
+                    token=args.token,
+                    machine_name=args.name,
+                )
+                print(json.dumps(out), flush=True)
+                if args.once:
+                    return 0
+            except Exception as exc:
+                print(json.dumps({"ok": False, "error": str(exc)}), file=sys.stderr, flush=True)
+                if args.once:
+                    return 2
+            _time.sleep(max(1.0, float(args.interval)))
+    if args.command == "desktop":
+        import os
+        import subprocess
+
+        repo_root = Path(__file__).resolve().parents[1]
+        manifest = repo_root / "src-tauri" / "Cargo.toml"
+        if not manifest.is_file():
+            print(json.dumps({"ok": False, "error": f"Tauri manifest not found at {manifest}"}), file=sys.stderr)
+            return 2
+        if args.check_only:
+            print(json.dumps({"ok": True, "manifest": str(manifest)}))
+            return 0
+        env = dict(os.environ)
+        if args.hub:
+            env["BURNRATE_SYNC_HUB"] = args.hub
+        if args.token:
+            env["BURNRATE_SYNC_TOKEN"] = args.token
+        exe_name = "burnrate-desktop.exe" if sys.platform == "win32" else "burnrate-desktop"
+        for profile in ("release", "debug"):
+            candidate = repo_root / "src-tauri" / "target" / profile / exe_name
+            if candidate.is_file():
+                return subprocess.call([str(candidate)], cwd=str(repo_root), env=env)
+        return subprocess.call(
+            ["cargo", "run", "--manifest-path", str(manifest)],
+            cwd=str(repo_root),
+            env=env,
+        )
     return 1
 
 

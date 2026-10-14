@@ -167,7 +167,26 @@ def _unpriced_from_row(row: UsageRow) -> UnpricedUsageEvent:
 
 def promote_priced_unpriced_events(connection, pricing: PricingEngine) -> int:
     promoted = 0
-    rows = connection.execute("SELECT * FROM unpriced_usage_events").fetchall()
+    indexed_models = getattr(pricing, "_index", None)
+    if isinstance(indexed_models, dict) and indexed_models:
+        distinct_models = [
+            row[0]
+            for row in connection.execute(
+                "SELECT DISTINCT model_key FROM unpriced_usage_events WHERE telemetry_complete != 0"
+            ).fetchall()
+        ]
+        promotable_models = [m for m in distinct_models if m in indexed_models]
+        if not promotable_models:
+            return 0
+        placeholders = ",".join("?" for _ in promotable_models)
+        rows = connection.execute(
+            f"SELECT * FROM unpriced_usage_events WHERE telemetry_complete != 0 AND model_key IN ({placeholders})",
+            promotable_models,
+        ).fetchall()
+    else:
+        rows = connection.execute(
+            "SELECT * FROM unpriced_usage_events WHERE telemetry_complete != 0"
+        ).fetchall()
     for row in rows:
         if not row["telemetry_complete"]:
             continue

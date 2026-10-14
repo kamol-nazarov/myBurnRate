@@ -38,6 +38,10 @@ def canonical_event_id(source: str, raw_id: str) -> str | None:
     Returns None when the row's identity is source-local (no cross-source
     claim is possible) — those rows always stay independent.
     """
+    if raw_id.startswith("m:"):
+        parts = raw_id.split(":", 2)
+        if len(parts) == 3:
+            raw_id = parts[2]
     if source in _CURSOR_EVENT_SOURCES:
         match = re.match(r"^cursor-(?:admin|csv):(.+)$", raw_id)
         if match:

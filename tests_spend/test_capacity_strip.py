@@ -106,3 +106,10 @@ def test_window_selector_sits_below_the_capacity_strip() -> None:
     selector = HTML.index('id="range-switch"')
     kpis = HTML.index('id="kpi-grid"')
     assert capacity < selector < kpis
+
+
+def test_paint_ease_preserves_capacity_lane_bar_color_and_footer_is_two_column() -> None:
+    paint = JS.split("function paintEase()", 1)[1].split("function paintComposite", 1)[0]
+    assert 'el.dataset.quotaColor === "1" && !el.closest(".capacity-lane")' in paint
+    assert "grid-template-columns:repeat(auto-fit,minmax(240px,1fr))" in CSS.replace(" ", "")
+

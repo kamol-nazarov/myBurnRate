@@ -148,6 +148,10 @@ def create_app(
     app.include_router(attention_router(settings, pricing))
     from spend_app.capacity_forecast import forecast_router
     app.include_router(forecast_router(settings))
+    from spend_app.sync import sync_router
+    app.include_router(sync_router(settings, pricing))
+    from spend_app.setup_wizard import setup_router
+    app.include_router(setup_router(settings, pricing))
     app.state._resource_stack = resource_stack
     # Compress HTML, CSS, JS and JSON for clients that accept it (143 KB of
     # static assets otherwise travel uncompressed over the tailnet).
@@ -190,6 +194,7 @@ def create_app(
     def spend_summary(
         window: str = Query(default="1d"),
         tool: str = Query(default="all"),
+        machine: str = Query(default="all"),
     ) -> dict:
         resolved = _window_or_400(window)
         record_summary_request(resolved, tool)
@@ -202,6 +207,7 @@ def create_app(
             cache_threshold=settings.cache_hit_threshold,
             cadence_seconds=settings.local_ingest_interval_seconds,
             now=slot_now(),
+            machine=machine,
         )
 
     @app.get("/api/spend/nav")
@@ -219,6 +225,7 @@ def create_app(
         kind: str = Query(..., pattern="^(model|tool)$"),
         key: str = Query(..., min_length=1),
         window: str = Query(default="1d"),
+        machine: str = Query(default="all"),
     ) -> dict:
         resolved = _window_or_400(window)
         return aggregate_entity(
@@ -230,6 +237,7 @@ def create_app(
             timezone=settings.timezone,
             cache_threshold=settings.cache_hit_threshold,
             now=slot_now(),
+            machine=machine,
         )
 
     @app.get("/api/spend/health")
@@ -245,11 +253,17 @@ def create_app(
     def onboarding():
         from spend_app.diagnostics import integration_reports, HELP_URL
         from spend_app.connections import Store
+        from spend_app.sync import list_machines
+        from spend_app.setup_wizard import read_setup_state
         with connect(settings.database_path) as connection:
             history = connection.execute("SELECT EXISTS(SELECT 1 FROM usage_events) OR EXISTS(SELECT 1 FROM unpriced_usage_events)").fetchone()[0]
+            machines = list_machines(connection)
+            setup_completed = bool(read_setup_state(connection).get("completed"))
         return {"timezone": settings.timezone, "timezoneSetting": "SPEND_TIMEZONE in your BURNRATE environment configuration",
                 "hasHistory": bool(history), "sources": source_guidance(),
                 "integrations": integration_reports(settings, bindings=Store(settings.database_path).read()["bindings"]),
+                "machines": machines,
+                "setupCompleted": setup_completed,
                 "documentation": HELP_URL,
                 "detail": "BURNRATE stores usage locally. Provider network integrations are optional and remain under your existing configuration."}
 
@@ -278,11 +292,22 @@ def create_app(
         return {"status": "ok"}
 
     @app.get("/")
-    def spend_frontend():
+    def spend_frontend(hud: int = Query(default=0), setup: int = Query(default=0)):
+        if hud == 1:
+            from spend_app.hud import render_hud
+            return HTMLResponse(render_hud(), headers={"Cache-Control": ASSET_REVALIDATE_CACHE})
+        if setup == 1:
+            from spend_app.setup_wizard import render_setup_wizard
+            return HTMLResponse(render_setup_wizard(), headers={"Cache-Control": ASSET_REVALIDATE_CACHE})
         return HTMLResponse(
             render_index(web_root),
             headers={"Cache-Control": ASSET_REVALIDATE_CACHE},
         )
+
+    @app.get("/hud")
+    def spend_hud():
+        from spend_app.hud import render_hud
+        return HTMLResponse(render_hud(), headers={"Cache-Control": ASSET_REVALIDATE_CACHE})
 
     @app.get("/spend.css")
     def spend_css(request: Request):

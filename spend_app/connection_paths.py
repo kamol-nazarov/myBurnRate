@@ -104,6 +104,8 @@ def _resolve(path, *, strict):
 
 
 def stat_path(path):
+    if not isinstance(path, (str, os.PathLike)) and hasattr(path, "stat"):
+        return path.stat()
     try:
         return Path(path).stat()
     except OSError as exc:
@@ -126,7 +128,7 @@ def readonly_fd(path):
 def confined(path, root=None):
     root = root or APPROVED_ROOT.get()
     if not root:
-        return Path(path)
+        return path if not isinstance(path, (str, os.PathLike)) else Path(path)
     base = Path(root)
     resolved = _resolve(path, strict=True)
     if identity(_resolve(base, strict=True)) != identity(base):

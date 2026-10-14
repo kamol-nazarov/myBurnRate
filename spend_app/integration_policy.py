@@ -102,26 +102,21 @@ LANES: dict[str, LanePolicy] = {
     "claude_oauth_usage": LanePolicy(
         "claude_oauth_usage",
         Lane.OPT_IN_NATIVE,
-        "Claude OAuth usage endpoint reusing Claude Code credentials. Off by default: "
-        "the OAuth credential belongs to Claude Code; set BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE=1 "
-        "only if you accept responsibility for that reuse.",
+        "Claude OAuth usage endpoint reusing Claude Code credentials (the OAuth credential belongs to Claude Code).",
         allowed_hosts=("api.anthropic.com",),
         consent_env="BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE",
     ),
     "cursor_usage_service": LanePolicy(
         "cursor_usage_service",
         Lane.OPT_IN_NATIVE,
-        "Cursor DashboardService reusing Cursor's own session token. Off by default pending "
-        "documented permission; prefer CURSOR_API_KEY (cursor_admin) or CSV imports. Set "
-        "BURNRATE_ENABLE_CURSOR_USAGE_SERVICE=1 to accept responsibility for this reuse.",
+        "Cursor DashboardService reusing Cursor's own session token (prefer CURSOR_API_KEY via cursor_admin or CSV imports).",
         allowed_hosts=("api2.cursor.sh",),
         consent_env="BURNRATE_ENABLE_CURSOR_USAGE_SERVICE",
     ),
     "zai_quota_endpoint": LanePolicy(
         "zai_quota_endpoint",
         Lane.OPT_IN_NATIVE,
-        "Z.AI quota endpoint reusing the API key stored by OpenCode. Off by default: the key "
-        "file belongs to OpenCode; set BURNRATE_ENABLE_ZAI_QUOTA=1 only for your own key.",
+        "Z.AI quota endpoint reusing the API key file stored by OpenCode.",
         allowed_hosts=("api.z.ai",),
         consent_env="BURNRATE_ENABLE_ZAI_QUOTA",
     ),

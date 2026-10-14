@@ -41,6 +41,14 @@ def upgrade_database(path: Path, initialize_base):
                 columns = {
                     row[1] for row in source.execute("PRAGMA table_info(subscriptions)")
                 }
+                plan_columns = {
+                    row[1]
+                    for row in source.execute("PRAGMA table_info(subscription_plans)")
+                }
+                mutation_columns = {
+                    row[1]
+                    for row in source.execute("PRAGMA table_info(subscription_mutations)")
+                }
                 daily_columns = {
                     row[1]
                     for row in source.execute(
@@ -56,6 +64,8 @@ def upgrade_database(path: Path, initialize_base):
                 current = (
                     version == SCHEMA_VERSION
                     and "plan_id" in columns
+                    and "end_date" in plan_columns
+                    and "request_id" in mutation_columns
                     and "cost_decimal" in daily_columns
                 )
             except (sqlite3.Error, TypeError, ValueError):
@@ -111,6 +121,14 @@ def upgrade_database(path: Path, initialize_base):
         connection.execute(
             "CREATE TABLE IF NOT EXISTS subscription_plans(id INTEGER PRIMARY KEY, version INTEGER NOT NULL DEFAULT 1, end_date TEXT)"
         )
+        plan_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(subscription_plans)")
+        }
+        if "end_date" not in plan_columns:
+            connection.execute(
+                "ALTER TABLE subscription_plans ADD COLUMN end_date TEXT"
+            )
         connection.execute(
             "CREATE TABLE IF NOT EXISTS subscription_mutations(request_id TEXT PRIMARY KEY, digest TEXT NOT NULL, response TEXT NOT NULL)"
         )

@@ -20,6 +20,7 @@ from spend_app.providers import REGISTRY
 
 KEY = "connections.v1"
 _LOCKS = {}
+_SOURCE_LOCKS = {}
 _LOCK_GUARD = threading.Lock()
 
 
@@ -27,6 +28,12 @@ def lock_for(path):
     key = identity(Path(path).absolute())
     with _LOCK_GUARD:
         return _LOCKS.setdefault(key, threading.RLock())
+
+
+def source_lock_for(path, source):
+    key = (identity(Path(path).absolute()), str(source))
+    with _LOCK_GUARD:
+        return _SOURCE_LOCKS.setdefault(key, threading.RLock())
 
 
 def now():
@@ -230,7 +237,7 @@ class Service:
         public_body = {k: body.get(k) for k in ("source", "operation", "revision", "location", "mode")}
         fingerprint = hashlib.sha256(json.dumps(public_body, sort_keys=True).encode()).hexdigest()
         new_ref = None
-        with self.lock:
+        with source_lock_for(self.settings.database_path, spec.key), self.lock:
             state = self.store.read()
             receipt = state["requests"].get(request_id)
             if receipt:
@@ -415,19 +422,22 @@ def managed_job(settings, pricing, spec, window=None):
 
 
 def execute(settings, pricing, spec, ingest, window=None):
-    # Saves serialize with the existing job, so a successful save cannot be
-    # followed by an obsolete collector starting or reporting healthy.
-    with lock_for(settings.database_path):
-        service = Service(settings)
-        service.cleanup()
-        binding = service.store.read()["bindings"].get(spec.key)
+    # Saves serialize with the existing job per source, so a successful save
+    # cannot be followed by an obsolete collector starting or reporting healthy,
+    # while independent sources and quota/activity readers are not starved by
+    # one slow local transcript scan.
+    with source_lock_for(settings.database_path, spec.key):
         try:
-            service, binding, kwargs = managed_job(settings, pricing, spec, window)
-            if kwargs is None:
-                return {"status": "skipped", "eventsSeen": 0}
-            root = binding["location"] if binding and spec.connection.shape != "api" else None
-            if not binding and spec.connection and spec.connection.shape != "api" and not spec.connection.manual_only:
-                root = service.inspector.normalize(default_location(spec, settings), spec.connection)
+            with lock_for(settings.database_path):
+                service = Service(settings)
+                service.cleanup()
+                binding = service.store.read()["bindings"].get(spec.key)
+                service, binding, kwargs = managed_job(settings, pricing, spec, window)
+                if kwargs is None:
+                    return {"status": "skipped", "eventsSeen": 0}
+                root = binding["location"] if binding and spec.connection.shape != "api" else None
+                if not binding and spec.connection and spec.connection.shape != "api" and not spec.connection.manual_only:
+                    root = service.inspector.normalize(default_location(spec, settings), spec.connection)
             with approved(root, binding["revision"] if binding else 0, binding.get("patterns") if binding else None):
                 result = ingest(**kwargs)
         except MissingLocation:
@@ -436,15 +446,18 @@ def execute(settings, pricing, spec, ingest, window=None):
                 return skipped_result(database_path=settings.database_path, source=spec.key,
                     reason="Default local source was not detected. Install or connect this optional harness when needed.")
             if binding:
-                service.completion(spec.key, binding["revision"], {"status": "failed"})
+                with lock_for(settings.database_path):
+                    service.completion(spec.key, binding["revision"], {"status": "failed"})
             raise LocationError("Configured source is missing or moved. Recheck its saved location or explicit environment path.") from None
         except Exception:
             if binding:
-                service.completion(spec.key, binding["revision"], {"status": "failed"})
+                with lock_for(settings.database_path):
+                    service.completion(spec.key, binding["revision"], {"status": "failed"})
                 raise LocationError("Connected source import failed. Recheck its location, permissions or provider access.") from None
             raise
         if binding:
-            service.completion(spec.key, binding["revision"], result)
+            with lock_for(settings.database_path):
+                service.completion(spec.key, binding["revision"], result)
         return result
 
 

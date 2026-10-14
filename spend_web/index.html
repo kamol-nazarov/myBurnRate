@@ -30,34 +30,34 @@
     <script src="/product.js?v=2" defer></script>
   </head>
   <body class="loading">
-    <a class="skip-link g" href="#main">Skip to dashboard</a>
-    <header class="burnrate-nav j" role="banner">
-      <div class="burnrate-nav__inner k">
-        <button class="burnrate-brand l" id="home-button" type="button" aria-label="Return to spend overview">
-          <span class="burnrate-mark n" aria-hidden="true">
+    <a class="skip-link c" href="#main">Skip to dashboard</a>
+    <header class="burnrate-nav e" role="banner">
+      <div class="burnrate-nav__inner x">
+        <button class="burnrate-brand A" id="home-button" type="button" aria-label="Return to spend overview">
+          <span class="burnrate-mark C" aria-hidden="true">
             <img src="/favicon.svg?v=1" alt="" width="42" height="42" />
           </span>
-          <span class="burnrate-lockup o">
-            <span class="burnrate-wordmark q"><span>BURN</span><strong>RATE</strong></span>
-            <span class="burnrate-tagline r">AI cost intelligence</span>
+          <span class="burnrate-lockup D">
+            <span class="burnrate-wordmark H"><span>BURN</span><strong>RATE</strong></span>
+            <span class="burnrate-tagline I">AI cost intelligence</span>
           </span>
         </button>
-        <div class="burnrate-nav__stats t">
-          <div class="burnrate-stat u burnrate-stat--rate bS">
-            <span class="burnrate-stat__label v">Burn rate</span>
-            <span class="burnrate-stat__value f burnrate-stat__value--rate w burnrate-skeleton" id="nav-run-rate" aria-label="Burn rate loading"></span>
+        <div class="burnrate-nav__stats J">
+          <div class="burnrate-stat E burnrate-stat--rate">
+            <span class="burnrate-stat__label N">Burn rate</span>
+            <span class="burnrate-stat__value ag burnrate-stat__value--rate ah burnrate-skeleton" id="nav-run-rate" aria-label="Burn rate loading"></span>
           </div>
-          <div class="burnrate-stat u burnrate-stat--today bT">
-            <span class="burnrate-stat__label v">Today</span>
-            <span class="burnrate-stat__value f burnrate-stat__value--today x burnrate-skeleton" id="nav-today" aria-label="Today's spend loading"></span>
+          <div class="burnrate-stat E burnrate-stat--today">
+            <span class="burnrate-stat__label N">Today</span>
+            <span class="burnrate-stat__value ag burnrate-stat__value--today ai burnrate-skeleton" id="nav-today" aria-label="Today's spend loading"></span>
           </div>
-          <button class="burnrate-stat u burnrate-stat--status G" id="diagnostics-button" type="button" data-state="loading" aria-label="Metering status loading">
-            <span class="burnrate-status-row H"><i class="burnrate-status-dot I"></i><span id="nav-status-label">Metering</span></span>
-            <span class="burnrate-status-detail J" id="nav-status-detail">Waiting for telemetry</span>
+          <button class="burnrate-stat E burnrate-stat--status ar" id="diagnostics-button" type="button" data-state="loading" aria-label="Metering status loading">
+            <span class="burnrate-status-row as"><i class="burnrate-status-dot at"></i><span id="nav-status-label">Metering</span></span>
+            <span class="burnrate-status-detail ax" id="nav-status-detail">Waiting for telemetry</span>
           </button>
-          <div class="nav-settings bR" aria-label="Dashboard settings">
-            <button id="nav-connect" class="nav-chip cf" type="button"><i class="settings-dot cg" aria-hidden="true"></i><span>Harnesses</span></button>
-            <button id="nav-plans" class="nav-chip cf" type="button"><span class="mono" id="nav-plans-total">—</span><span class="nav-chip-suffix ch">/mo plans</span></button>
+          <div class="nav-settings bB" aria-label="Dashboard settings">
+            <button id="nav-connect" class="nav-chip cf" type="button"><i class="settings-dot cG" aria-hidden="true"></i><span>Harnesses</span></button>
+            <button id="nav-plans" class="nav-chip cf" type="button"><span class="mono" id="nav-plans-total">—</span><span class="nav-chip-suffix cI">/mo plans</span></button>
             <button id="nav-attention" class="nav-chip cf" type="button" data-tone="quiet">Attention —</button>
           </div>
           <!-- Announces state transitions (live/stale/error and the failing
@@ -81,44 +81,44 @@
 
     <main id="main">
       <div class="coverage-banner" id="coverage-banner" role="status" data-state="quiet">
-        <span class="coverage-banner__mark N"><i></i><strong id="coverage-title">Pricing coverage</strong></span>
-        <span class="coverage-banner__note O" id="coverage-note">Exact figures use billed or published rates. Derived values are marked ≈. Unpriced usage is never estimated.</span>
-        <span class="coverage-banner__exact P mono" id="coverage-exact">exact: —</span>
+        <span class="coverage-banner__mark au"><i></i><strong id="coverage-title">Pricing coverage</strong></span>
+        <span class="coverage-banner__note aB" id="coverage-note">Exact figures use billed or published rates. Derived values are marked ≈. Unpriced usage is never estimated.</span>
+        <span class="coverage-banner__exact aC mono" id="coverage-exact">exact: —</span>
       </div>
       <section id="setup-guidance" class="panel" aria-labelledby="setup-title" hidden>
-        <p class="eyebrow V">Setup</p>
+        <p class="eyebrow O">Setup</p>
         <h2 id="setup-title">Start with local usage</h2>
-        <p class="setup-lead bI">Local usage can appear without credentials. Finish a turn, then check Diagnostics. Plans and network connections are optional.</p>
-        <p id="setup-timezone" class="setup-meta bJ"></p>
-        <div class="setup-actions bK">
-          <button id="setup-plans" class="setup-choice bL" type="button"><span class="setup-mark bM" aria-hidden="true"><svg viewBox="0 0 16 16"><path fill="currentColor" fill-rule="evenodd" d="M1.6 4.4 8 1.5l6.4 2.9L8 7.3 1.6 4.4zm0 3.1L8 10.4l6.4-2.9v1.4L8 11.8 1.6 8.9V7.5zm0 3.1L8 13.5l6.4-2.9v1.4L8 14.9 1.6 12V10.6z"/></svg></span><span class="setup-copy bN"><strong>Manage subscriptions</strong><small>Price, term, and the dates each plan covers.</small></span></button>
-          <button id="setup-help" class="setup-choice bL" type="button"><span class="setup-mark bM" aria-hidden="true"><svg viewBox="0 0 16 16"><path fill="currentColor" fill-rule="evenodd" d="M7.1 1.8a5.2 5.2 0 1 0 3.2 9.3l3.1 3.1 1.2-1.2-3.1-3.1A5.2 5.2 0 0 0 7.1 1.8zm0 1.7a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7z"/></svg></span><span class="setup-copy bN"><strong>Connect harness</strong><small>Sources on this computer. Nothing is routed or purchased.</small></span></button>
+        <p class="setup-lead cq">Local usage can appear without credentials. Finish a turn, then check Diagnostics. Plans and network connections are optional.</p>
+        <p id="setup-timezone" class="setup-meta cr"></p>
+        <div class="setup-actions cK">
+          <button id="setup-plans" class="setup-choice bG" type="button"><span class="setup-mark bS" aria-hidden="true"><svg viewBox="0 0 16 16"><path fill="currentColor" fill-rule="evenodd" d="M1.6 4.4 8 1.5l6.4 2.9L8 7.3 1.6 4.4zm0 3.1L8 10.4l6.4-2.9v1.4L8 11.8 1.6 8.9V7.5zm0 3.1L8 13.5l6.4-2.9v1.4L8 14.9 1.6 12V10.6z"/></svg></span><span class="setup-copy cs"><strong>Manage subscriptions</strong><small>Price, term, and the dates each plan covers.</small></span></button>
+          <button id="setup-help" class="setup-choice bG" type="button"><span class="setup-mark bS" aria-hidden="true"><svg viewBox="0 0 16 16"><path fill="currentColor" fill-rule="evenodd" d="M7.1 1.8a5.2 5.2 0 1 0 3.2 9.3l3.1 3.1 1.2-1.2-3.1-3.1A5.2 5.2 0 0 0 7.1 1.8zm0 1.7a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7z"/></svg></span><span class="setup-copy cs"><strong>Connect harness</strong><small>Sources on this computer. Nothing is routed or purchased.</small></span></button>
         </div>
-        <div class="setup-foot bO">
+        <div class="setup-foot bJ">
           <button id="setup-done" class="setup-done" type="button">Done</button>
-          <button id="setup-dismiss" class="setup-later bP" type="button">Remind me later</button>
+          <button id="setup-dismiss" class="setup-later ch" type="button">Remind me later</button>
         </div>
       </section>
       <section id="overview-view">
-        <h1 class="overview-h1 U" id="overview-heading">Spend overview</h1>
-        <div class="split-row Y split-row--start ab">
-          <article class="panel capacity-panel ad" aria-label="Provider usage limits">
-            <header class="panel-header ae">
+        <h1 class="overview-h1 aF" id="overview-heading">Spend overview</h1>
+        <div class="split-row aG split-row--start aH">
+          <article class="panel capacity-panel aK" aria-label="Provider usage limits">
+            <header class="panel-header y">
               <div>
-                <p class="eyebrow V">Capacity</p>
+                <p class="eyebrow O">Capacity</p>
                 <h2>What runs out first</h2>
               </div>
-              <div class="panel-meta af">
-                <div class="capacity-check ag"><span id="capacity-checked">checked —</span>
+              <div class="panel-meta aL">
+                <div class="capacity-check cJ"><span id="capacity-checked">checked —</span>
                 <strong id="capacity-headline" class="capacity-headline">Loading capacity</strong></div>
                 <button id="capacity-connect" class="nav-chip cf" type="button">Connect harness</button>
               </div>
             </header>
-            <details class="capacity-alert-settings R" id="capacity-alert-settings">
+            <details class="capacity-alert-settings cc" id="capacity-alert-settings">
               <summary>Reset alerts</summary>
               <form id="capacity-alert-form">
                 <label>Threshold (%)<input id="capacity-alert-threshold" type="number" min="1" max="99" step="1" value="90" required></label>
-                <label class="capacity-alert-check"><input id="capacity-alert-escalate" type="checkbox">Also alert at 97%</label>
+                <label class="capacity-alert-check cM"><input id="capacity-alert-escalate" type="checkbox">Also alert at 97%</label>
                 <label>Quiet hours<input id="capacity-alert-quiet-start" type="time" value="22:00" required><span>to</span><input id="capacity-alert-quiet-end" type="time" value="07:00" required></label>
                 <div id="capacity-alert-overrides"></div>
                 <p id="capacity-alert-status" role="status"></p>
@@ -126,90 +126,90 @@
               </form>
             </details>
             <div id="capacity-body">
-              <div class="skel-stack y" aria-hidden="true">
-                <span class="skel skel-w50 C"></span>
-                <span class="skel skel-bar z"></span>
-                <span class="skel skel-w70 E"></span>
-                <span class="skel skel-bar z"></span>
+              <div class="skel-stack ak" aria-hidden="true">
+                <span class="skel skel-w50 an"></span>
+                <span class="skel skel-bar al"></span>
+                <span class="skel skel-w70 ap"></span>
+                <span class="skel skel-bar al"></span>
               </div>
             </div>
           </article>
 
-          <article class="panel activity-panel aD" aria-label="Live activity">
-            <header class="panel-header ae">
+          <article class="panel activity-panel G" aria-label="Live activity">
+            <header class="panel-header y">
               <div>
-                <p class="eyebrow V">Activity</p>
+                <p class="eyebrow O">Activity</p>
                 <h2>Running now</h2>
               </div>
               <span class="live-pill idle" id="live-pill"><i></i><span id="live-count" class="burnrate-skeleton" aria-label="Live activity loading"></span></span>
             </header>
             <div id="activity-body">
-              <div class="skel-stack y" aria-hidden="true">
-                <span class="skel skel-w60 D"></span>
-                <span class="skel skel-w40 A"></span>
-                <span class="skel skel-w80 F"></span>
+              <div class="skel-stack ak" aria-hidden="true">
+                <span class="skel skel-w60 ao"></span>
+                <span class="skel skel-w40 am"></span>
+                <span class="skel skel-w80 aq"></span>
               </div>
             </div>
-            <p class="activity-foot aE">Usage posts when a turn completes, so a live run contributes nothing to the figures below until it finishes.</p>
+            <p class="activity-foot bb">Usage posts when a turn completes, so a live run contributes nothing to the figures below until it finishes.</p>
           </article>
         </div>
 
-        <div class="window-row W">
+        <div class="window-row t">
           <div>
-            <span class="eyebrow V">Analysis window</span>
+            <span class="eyebrow O">Analysis window</span>
             <span class="window-note" id="window-note">Usage and value across tools</span>
           </div>
           <div class="range-switch" id="range-switch" role="radiogroup" aria-label="Spend window"></div>
         </div>
 
-        <p class="range-status bH" id="overview-range-status" role="status" hidden></p>
-        <section class="kpi-grid aa" id="kpi-grid" aria-label="Spend KPIs">
-          <article class="kpi-card aF">
+        <p class="range-status bc" id="overview-range-status" role="status" hidden></p>
+        <section class="kpi-grid bd" id="kpi-grid" aria-label="Spend KPIs">
+          <article class="kpi-card w">
             <div><span>Tracked value</span><b id="tracked-chip">—</b></div>
-            <strong class="kpi-value c"><span class="marker" id="tracked-marker"></span><span id="tracked-value" class="burnrate-skeleton"></span></strong>
+            <strong class="kpi-value aj"><span class="marker" id="tracked-marker"></span><span id="tracked-value" class="burnrate-skeleton"></span></strong>
             <p id="tracked-note">—</p>
           </article>
-          <article class="kpi-card aF">
+          <article class="kpi-card w">
             <div><span>Measured tokens</span><b id="tokens-chip" class="good">exact</b></div>
-            <strong class="kpi-value c"><span id="measured-tokens" class="burnrate-skeleton"></span></strong>
+            <strong class="kpi-value aj"><span id="measured-tokens" class="burnrate-skeleton"></span></strong>
             <p id="tokens-note">—</p>
           </article>
-          <article class="kpi-card aF">
+          <article class="kpi-card w">
             <div><span>API cost per 1M tokens</span><b id="effective-rate-chip">API rates</b></div>
-            <strong class="kpi-value c"><span class="marker" id="effective-rate-marker"></span><span id="effective-rate" class="burnrate-skeleton"></span></strong>
+            <strong class="kpi-value aj"><span class="marker" id="effective-rate-marker"></span><span id="effective-rate" class="burnrate-skeleton"></span></strong>
             <p id="effective-rate-note">—</p>
           </article>
-          <article class="kpi-card aF">
+          <article class="kpi-card w">
             <div><span>Cache reuse</span><b id="cache-chip" class="good">exact</b></div>
-            <strong class="kpi-value c"><span id="cache-reuse" class="burnrate-skeleton"></span></strong>
+            <strong class="kpi-value aj"><span id="cache-reuse" class="burnrate-skeleton"></span></strong>
             <p id="cache-note">—</p>
           </article>
-          <article class="kpi-card aF">
+          <article class="kpi-card w">
             <div><span>Sessions</span><b id="sessions-chip" class="neutral">activity</b></div>
-            <strong class="kpi-value c"><span id="sessions-value" class="burnrate-skeleton"></span></strong>
+            <strong class="kpi-value aj"><span id="sessions-value" class="burnrate-skeleton"></span></strong>
             <p id="sessions-note">—</p>
           </article>
         </section>
 
-        <div class="split-row Y">
-          <article class="panel trend-panel aG">
-            <header class="panel-header ae">
+        <div class="split-row aG">
+          <article class="panel trend-panel">
+            <header class="panel-header y">
               <div>
-                <p class="eyebrow V">Trend</p>
+                <p class="eyebrow O">Trend</p>
                 <h2>Token activity</h2>
               </div>
-              <div class="trend-actions aH">
-                <div class="hover-readout aI">
+              <div class="trend-actions aA">
+                <div class="hover-readout R">
                   <span id="hover-label">Window total</span>
                   <strong class="mono" id="hover-value">—</strong>
                 </div>
-                <div class="mode-switch X" role="group" aria-label="Chart mode">
+                <div class="mode-switch" role="group" aria-label="Chart mode">
                   <button type="button" data-mode="stacked" class="active" aria-pressed="true">Stacked</button>
                   <button type="button" data-mode="cumulative" aria-pressed="false">Cumulative</button>
                 </div>
               </div>
             </header>
-            <div class="chart-shell aJ" id="chart-shell">
+            <div class="chart-shell be" id="chart-shell">
               <div class="value-gutter" id="value-gutter"></div>
               <div class="plot" id="stacked-plot"></div>
               <svg class="cumulative-plot" id="cumulative-plot" viewBox="0 0 600 222" preserveAspectRatio="none" hidden>
@@ -238,32 +238,32 @@
             </div>
           </article>
 
-          <div class="side-stack ac">
-            <article class="panel waste-panel aR">
-              <p class="eyebrow V">Recoverable</p>
+          <div class="side-stack aI">
+            <article class="panel waste-panel">
+              <p class="eyebrow O">Recoverable</p>
               <h2>Where money leaks</h2>
               <div class="waste-headline">
                 <span class="marker" id="waste-marker">≈</span>
                 <strong class="mono" id="waste-headline">—</strong>
                 <span id="waste-headline-note">per day</span>
               </div>
-              <p class="waste-copy aS">Priced against each provider's own published cached-input discount, not a target I invented.</p>
+              <p class="waste-copy bj">Priced against each provider's own published cached-input discount, not a target I invented.</p>
               <div id="waste-items"></div>
-              <div class="savings-row aV">
+              <div class="savings-row j">
                 <span><i></i>Saved versus no cache</span>
                 <strong class="mono" id="cache-savings">—</strong>
               </div>
             </article>
-            <article class="panel forecast-panel aW">
-              <p class="eyebrow V">Forecast</p>
+            <article class="panel forecast-panel bm">
+              <p class="eyebrow O">Forecast</p>
               <h2>Plans against value</h2>
               <div class="forecast-value">
                 <span class="marker" id="projected-marker">≈</span>
-                <strong class="big-number e mono" id="forecast-value">—</strong>
+                <strong class="big-number bi mono" id="forecast-value">—</strong>
                 <span id="forecast-delta"></span>
               </div>
-              <div class="pace-track aX"><i id="pace-bar"></i><b></b></div>
-              <div class="pace-labels aY mono">
+              <div class="pace-track bk"><i id="pace-bar"></i><b></b></div>
+              <div class="pace-labels k mono">
                 <span id="pace-label">usage —</span>
                 <span id="run-rate">plans —</span>
               </div>
@@ -272,29 +272,29 @@
           </div>
         </div>
 
-        <div class="split-row Y split-row--start ab">
-          <article class="panel table-panel aZ">
-            <header class="panel-header ae">
+        <div class="split-row aG split-row--start aH">
+          <article class="panel table-panel">
+            <header class="panel-header y">
               <div>
-                <p class="eyebrow V">Unit economics</p>
+                <p class="eyebrow O">Unit economics</p>
                 <h2>Cost by model</h2>
               </div>
               <span>click a row to drill in</span>
             </header>
-            <div class="model-table">
+            <div class="model-table bn">
               <div class="model-table-head" id="model-table-head"></div>
               <div id="model-table-body"></div>
             </div>
           </article>
 
-          <div class="side-stack ac">
-            <article class="panel mix-panel bi">
-              <button class="collapse-toggle bf" id="mix-toggle" type="button" aria-expanded="true">
+          <div class="side-stack aI">
+            <article class="panel mix-panel">
+              <button class="collapse-toggle v" id="mix-toggle" type="button" aria-expanded="true">
                 <span>
-                  <span class="eyebrow V">Token structure</span>
-                  <span class="collapse-title bg">What you pay for</span>
+                  <span class="eyebrow O">Token structure</span>
+                  <span class="collapse-title bs">What you pay for</span>
                 </span>
-                <span class="collapse-meta bh mono"><span id="mix-summary">—</span><span id="mix-caret">▲</span></span>
+                <span class="collapse-meta bt mono"><span id="mix-summary">—</span><span id="mix-caret">▲</span></span>
               </button>
               <div class="mix-bar" id="mix-bar"></div>
               <div id="mix-details">
@@ -302,34 +302,34 @@
                 <p id="mix-note">—</p>
               </div>
             </article>
-            <article class="panel subscription-panel bj">
-              <header class="collapse-toggle bf fixed-cost-header cj">
-                <span><span class="eyebrow V">Fixed costs</span><span class="collapse-title bg">Configured subscriptions</span></span>
-                <span class="collapse-meta bh"><span class="mono" id="subs-summary">—</span><button id="manage-plans" type="button" class="ghost-button row-secondary">Manage</button></span>
+            <article class="panel subscription-panel">
+              <header class="collapse-toggle v fixed-cost-header bQ">
+                <span><span class="eyebrow O">Fixed costs</span><span class="collapse-title bs">Configured subscriptions</span></span>
+                <span class="collapse-meta bt"><span class="mono" id="subs-summary">—</span><button id="manage-plans" type="button" class="ghost-button row-secondary">Manage</button></span>
               </header>
               <div id="subs-details">
                 <div id="subscription-rows"></div>
-                <div class="subs-total bm"><span>Monthly equivalent</span><strong class="mono" id="subscription-total">—</strong></div>
+                <div class="subs-total l"><span>Monthly equivalent</span><strong class="mono" id="subscription-total">—</strong></div>
               </div>
             </article>
           </div>
         </div>
 
-        <article class="panel heat-panel bn">
-          <header class="panel-header ae">
+        <article class="panel heat-panel bu">
+          <header class="panel-header y">
             <div>
-              <p class="eyebrow V">Unit price</p>
+              <p class="eyebrow O">Unit price</p>
               <h2>What a million costs</h2>
             </div>
           </header>
           <div id="price-board" class="price-board" aria-label="Cost per million tokens"></div>
-          <div class="heat-archive bo" hidden aria-hidden="true">
-            <div class="hover-readout aI">
+          <div class="heat-archive ab">
+            <div class="hover-readout R">
               <span id="heat-label">Peak window</span>
               <strong class="mono" id="heat-value">—</strong>
             </div>
             <p class="sr-only" id="heat-unit">reference usage (USD at documented rates)</p>
-            <div class="heat-hero bp">
+            <div class="heat-hero bv">
               <strong id="heat-share" class="mono">—</strong>
               <p id="heat-span">Share of this pattern in the peak hour.</p>
             </div>
@@ -339,9 +339,9 @@
               <span id="heat-note">Showing the trailing 7-day pattern. Switch to 1w or longer for figures that match the selected window.</span>
             </div>
             <div class="heatmap" id="heatmap"></div>
-            <div class="heat-legend bs">
+            <div class="heat-legend n">
               <div class="mono"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div>
-              <div class="heat-scale bt">Low<div><i></i><i></i><i></i><i></i></div>High</div>
+              <div class="heat-scale by">Low<div><i></i><i></i><i></i><i></i></div>High</div>
             </div>
             <div class="sr-only">
               <table>
@@ -354,35 +354,35 @@
       </section>
 
       <section id="detail-view" hidden>
-        <button class="back-button bu" id="detail-back" type="button">← Overview</button>
-        <div class="page-heading bv">
+        <button class="back-button ay" id="detail-back" type="button">← Overview</button>
+        <div class="page-heading z">
           <div>
-            <p class="eyebrow V" id="detail-kind">Detail</p>
+            <p class="eyebrow O" id="detail-kind">Detail</p>
             <h1 id="detail-heading"><i id="detail-swatch"></i><span id="detail-name">—</span><span class="chip" id="detail-plan">—</span><span class="chip" id="detail-cov">—</span></h1>
             <p id="detail-sub">—</p>
           </div>
           <div class="range-switch detail-ranges" id="detail-ranges" role="radiogroup" aria-label="Detail window"></div>
         </div>
-        <p class="range-status bH" id="detail-range-status" role="status" hidden></p>
-        <div class="share-strip bw">
+        <p class="range-status bc" id="detail-range-status" role="status" hidden></p>
+        <div class="share-strip S">
           <span>Share of tracked value</span>
-          <div class="share-bar bx"><i id="detail-share-bar"></i><b></b></div>
+          <div class="share-bar bl"><i id="detail-share-bar"></i><b></b></div>
           <strong class="mono" id="detail-share-label">—</strong>
         </div>
-        <section class="kpi-grid aa detail-kpis" id="detail-kpis"></section>
-        <div class="split-row Y">
+        <section class="kpi-grid bd detail-kpis" id="detail-kpis"></section>
+        <div class="split-row aG">
           <article class="panel">
-            <header class="panel-header ae">
+            <header class="panel-header y">
               <div>
-                <p class="eyebrow V">Trend</p>
+                <p class="eyebrow O">Trend</p>
                 <h2>Token activity</h2>
               </div>
-              <div class="hover-readout aI">
+              <div class="hover-readout R">
                 <span id="detail-hover-label">Window total</span>
                 <strong class="mono" id="detail-hover-value">—</strong>
               </div>
             </header>
-            <div class="chart-shell aJ chart-shell--detail aK" id="detail-chart-shell">
+            <div class="chart-shell be chart-shell--detail" id="detail-chart-shell">
               <div class="value-gutter" id="detail-gutter"></div>
               <div class="plot" id="detail-bars"></div>
               <div class="chart-hit-targets" id="detail-hits"></div>
@@ -390,26 +390,26 @@
             <div class="chart-axis mono" id="detail-axis"></div>
             <div class="detail-mix-cards" id="detail-mix-cards"></div>
           </article>
-          <div class="side-stack ac">
+          <div class="side-stack aI">
             <article class="panel opportunity-panel" id="opportunity-panel">
-              <p class="eyebrow V">Opportunity</p>
+              <p class="eyebrow O">Opportunity</p>
               <h2 id="opp-title">—</h2>
               <div class="forecast-value">
                 <span class="marker" id="opp-marker">≈</span>
-                <strong class="big-number e mono" id="opp-value">—</strong>
+                <strong class="big-number bi mono" id="opp-value">—</strong>
                 <span id="opp-unit">in this window</span>
               </div>
               <p id="opp-detail">—</p>
-              <span class="fix-chip aU" id="opp-fix"><i></i>—</span>
-              <div class="savings-row aV opportunity-saved bA">
+              <span class="fix-chip av" id="opp-fix"><i></i>—</span>
+              <div class="savings-row j opportunity-saved">
                 <span>Saved versus no cache</span>
                 <strong class="mono" id="opp-saved">—</strong>
               </div>
             </article>
             <article class="panel">
-              <header class="panel-header ae">
+              <header class="panel-header y">
                 <div>
-                  <p class="eyebrow V">Capacity</p>
+                  <p class="eyebrow O">Capacity</p>
                   <h2 id="entity-limit-title">Limits</h2>
                 </div>
                 <span class="mono" id="entity-limit-plan">—</span>
@@ -418,26 +418,26 @@
             </article>
           </div>
         </div>
-        <article class="panel sessions-panel ba">
-          <header class="panel-header ae">
+        <article class="panel sessions-panel bz">
+          <header class="panel-header y">
             <div>
-              <p class="eyebrow V">Attribution</p>
+              <p class="eyebrow O">Attribution</p>
               <h2>Most expensive sessions</h2>
             </div>
             <span id="sessions-foot">—</span>
           </header>
-          <div class="sessions-table">
-            <div class="sessions-head bB"><span>Session</span><span>Project</span><span>Duration</span><span>Tokens</span><span>Cache</span><span>Value</span></div>
+          <div class="sessions-table bo">
+            <div class="sessions-head bp"><span>Session</span><span>Project</span><span>Duration</span><span>Tokens</span><span>Cache</span><span>Value</span></div>
             <div id="sessions-body"></div>
           </div>
         </article>
       </section>
 
       <section id="diagnostics-view" hidden>
-        <button class="back-button bu" id="diagnostics-back" type="button">← Overview</button>
-        <div class="page-heading bv">
+        <button class="back-button ay" id="diagnostics-back" type="button">← Overview</button>
+        <div class="page-heading z">
           <div>
-            <p class="eyebrow V">Diagnostics</p>
+            <p class="eyebrow O">Diagnostics</p>
             <h1>Data health</h1>
             <p>Ingest, quota polls, pricing gaps, and provider versus computed variance.</p>
           </div>
@@ -445,17 +445,17 @@
         <div class="diagnostic-grid" id="diagnostic-grid"></div>
         <div id="source-guidance" aria-label="Source status and next actions"></div>
         <article class="panel">
-          <p class="eyebrow V">Quotas</p>
+          <p class="eyebrow O">Quotas</p>
           <h2>Quota pollers</h2>
           <div id="quota-polls"></div>
         </article>
         <article class="panel">
-          <p class="eyebrow V">Pricing</p>
+          <p class="eyebrow O">Pricing</p>
           <h2>Unpriced models</h2>
           <div id="pricing-gaps"></div>
         </article>
         <article class="panel">
-          <p class="eyebrow V">Variance</p>
+          <p class="eyebrow O">Variance</p>
           <h2>Provider vs computed</h2>
           <p id="variance-note">—</p>
         </article>
@@ -471,73 +471,73 @@
         <span class="mono" id="range-label">—</span>
       </footer>
     </main>
-    <dialog id="plan-manager" class="settings-dialog ck" aria-labelledby="plan-manager-title">
-      <header class="settings-dialog-header cl plan-dialog-header cm">
-        <div class="plan-dialog-top cn">
-          <span class="plan-dialog-grip co" aria-hidden="true"></span>
-          <div class="plan-dialog-identity cp">
-            <p class="eyebrow V">Fixed costs</p>
+    <dialog id="plan-manager" class="settings-dialog" aria-labelledby="plan-manager-title">
+      <header class="settings-dialog-header cw plan-dialog-header cA">
+        <div class="plan-dialog-top bC">
+          <span class="plan-dialog-grip cC" aria-hidden="true"></span>
+          <div class="plan-dialog-identity cB">
+            <p class="eyebrow O">Fixed costs</p>
             <h2 id="plan-manager-title" tabindex="-1">Plans & Value</h2>
-            <p id="plan-manager-lead" class="plan-dialog-lead cq">Reference usage set against configured cost.</p>
+            <p id="plan-manager-lead" class="plan-dialog-lead cl">Reference usage set against configured cost.</p>
           </div>
-          <button id="close-plans" class="plan-dialog-close cr" type="button"><span aria-hidden="true">×</span>Close</button>
+          <button id="close-plans" class="plan-dialog-close bW" type="button"><span aria-hidden="true">×</span>Close</button>
         </div>
-        <div class="cadence-control plan-dialog-tabs cs" role="group" aria-label="Plans view">
+        <div class="cadence-control plan-dialog-tabs" role="group" aria-label="Plans view">
           <button id="tab-plans-value" type="button" class="active" aria-pressed="true">Plans & Value</button>
           <button id="tab-plans-list" type="button" aria-pressed="false">Manage plans</button>
         </div>
       </header>
       <section id="plans-value-view" aria-label="Plans & Value comparison"></section>
       <section id="plan-list-view" hidden>
-        <div class="plan-total-card cM"><span>Monthly equivalent</span><strong id="plan-monthly-total" class="mono">—</strong></div>
-        <div id="plan-history" class="settings-list cN"></div>
-        <footer class="settings-dialog-footer cK"><p>Attribution only — not verified payments. Ending a plan here does not cancel it with the provider.</p><button id="new-plan" class="primary-button cX plan-add cC" type="button"><span aria-hidden="true"><svg viewBox="0 0 16 16"><path fill="currentColor" d="M7.15 2.9h1.7v4.25h4.25v1.7H8.85v4.25h-1.7V8.85H2.9v-1.7h4.25z"/></svg></span>Add a plan</button></footer>
+        <div class="plan-total-card bR"><span>Monthly equivalent</span><strong id="plan-monthly-total" class="mono">—</strong></div>
+        <div id="plan-history" class="settings-list"></div>
+        <footer class="settings-dialog-footer bO"><p>Attribution only — not verified payments. Ending a plan here does not cancel it with the provider.</p><button id="new-plan" class="primary-button aD plan-add bN" type="button"><span aria-hidden="true"><svg viewBox="0 0 16 16"><path fill="currentColor" d="M7.15 2.9h1.7v4.25h4.25v1.7H8.85v4.25h-1.7V8.85H2.9v-1.7h4.25z"/></svg></span>Add a plan</button></footer>
       </section>
       <form id="plan-form" hidden novalidate>
         <div hidden><select id="plan-action"><option value="add">Add</option><option value="schedule">Schedule</option><option value="end">End</option><option value="correct">Correct</option></select><select id="plan-choice"></select></div>
         <ol id="plan-steps" class="plan-steps" aria-label="Plan steps"><li><span>1</span>Tool</li><li><span>2</span>Price</li><li><span>3</span>Dates</li></ol>
-        <div class="plan-wizard-body cY">
-          <section id="plan-step-1"><h3>Which tool is this plan for?</h3><div id="plan-tool-slot"><div id="plan-tool-fields"><label id="plan-tool-label">Tool<select id="plan-tool" class="sr-only" tabindex="-1" aria-hidden="true"></select></label><div id="plan-tool-cards" class="plan-tool-cards" role="group" aria-label="Tool"></div><label id="plan-name-label">Plan name<input id="plan-name" maxlength="80" autocomplete="off"></label></div></div><p class="settings-helper dc">OpenCode and ZCode share one Z.AI plan. Two plans can use the same tool.</p></section>
-          <section id="plan-step-2" hidden><h3>What does it cost?</h3><label id="term-choice-label" hidden>Historical term<select id="term-choice"></select></label><details id="plan-correction-fields" hidden><summary>Name and tool</summary></details><label id="plan-amount-label">Price per period<span class="money-input db"><span aria-hidden="true">$</span><input id="plan-amount" type="number" min="0" max="1000000" step="0.01" inputmode="decimal"></span></label><label id="plan-cadence-label">Billed every<select id="plan-cadence" hidden><option value="monthly">Month</option><option value="quarterly">Quarter</option><option value="annual">Year</option></select></label><p class="plan-field-label cZ">Billed every</p><div class="cadence-control" role="group" aria-label="Billed every"><button type="button" data-cadence="monthly">Month</button><button type="button" data-cadence="quarterly">Quarter</button><button type="button" data-cadence="annual">Year</button></div><div class="plan-live-cards dd"><div><span id="plan-day-label">Per day</span><strong id="plan-per-day" class="mono">—</strong></div><div><span>Monthly equiv</span><strong id="plan-equiv" class="mono">—</strong></div><div><span>Fixed costs after</span><strong id="plan-after" class="mono">—</strong></div></div><p class="settings-helper dc">Daily cost is the amount divided by days in the calendar period. Not provider billing.</p></section>
-          <section id="plan-step-3" hidden><h3>When does it apply?</h3><div class="plan-dates da"><label id="plan-start-label">Effective start<input id="plan-start" type="date"></label><label id="plan-end-label"><span id="plan-end-caption">Last active date (optional)</span><input id="plan-end" type="date"></label></div><p id="plan-end-note" class="settings-warning df" hidden>Inclusive. Attribution stops the following day. This does not cancel the plan with the provider.</p><div id="plan-review" class="plan-review"><strong><span class="plan-logo cR" aria-hidden="true"></span><i class="tool-swatch cQ"></i><span class="plan-review-name de"></span></strong><p></p></div><div id="plan-preview" hidden><div class="correction-totals dg"><div>Before<strong class="mono" id="plan-before-value"></strong></div><span aria-hidden="true">→</span><div>After<strong class="mono" id="plan-after-value"></strong></div></div><p id="plan-affected"></p><p id="plan-preview-note" class="settings-helper dc"></p></div><label id="plan-confirm-label" hidden><input id="plan-confirm" type="checkbox">I confirm this correction changes the historical attribution shown above.</label></section>
-          <p id="plan-timezone" class="settings-helper dc"></p>
+        <div class="plan-wizard-body cT">
+          <section id="plan-step-1"><h3>Which tool is this plan for?</h3><div id="plan-tool-slot"><div id="plan-tool-fields"><label id="plan-tool-label">Tool<select id="plan-tool" class="sr-only" tabindex="-1" aria-hidden="true"></select></label><div id="plan-tool-cards" class="plan-tool-cards" role="group" aria-label="Tool"></div><label id="plan-name-label">Plan name<input id="plan-name" maxlength="80" autocomplete="off"></label></div></div><p class="settings-helper cn">OpenCode and ZCode share one Z.AI plan. Two plans can use the same tool.</p></section>
+          <section id="plan-step-2" hidden><h3>What does it cost?</h3><label id="term-choice-label" hidden>Historical term<select id="term-choice"></select></label><details id="plan-correction-fields" hidden><summary>Name and tool</summary></details><label id="plan-amount-label">Price per period<span class="money-input bD"><span aria-hidden="true">$</span><input id="plan-amount" type="number" min="0" max="1000000" step="0.01" inputmode="decimal"></span></label><label id="plan-cadence-label">Billed every<select id="plan-cadence" hidden><option value="monthly">Month</option><option value="quarterly">Quarter</option><option value="annual">Year</option></select></label><p class="plan-field-label cV">Billed every</p><div class="cadence-control" role="group" aria-label="Billed every"><button type="button" data-cadence="monthly">Month</button><button type="button" data-cadence="quarterly">Quarter</button><button type="button" data-cadence="annual">Year</button></div><div class="plan-live-cards ca"><div><span id="plan-day-label">Per day</span><strong id="plan-per-day" class="mono">—</strong></div><div><span>Monthly equiv</span><strong id="plan-equiv" class="mono">—</strong></div><div><span>Fixed costs after</span><strong id="plan-after" class="mono">—</strong></div></div><p class="settings-helper cn">Daily cost is the amount divided by days in the calendar period. Not provider billing.</p></section>
+          <section id="plan-step-3" hidden><h3>When does it apply?</h3><div class="plan-dates cU"><label id="plan-start-label">Effective start<input id="plan-start" type="date"></label><label id="plan-end-label"><span id="plan-end-caption">Last active date (optional)</span><input id="plan-end" type="date"></label></div><p id="plan-end-note" class="settings-warning cX" hidden>Inclusive. Attribution stops the following day. This does not cancel the plan with the provider.</p><div id="plan-review" class="plan-review"><strong><span class="plan-logo bU" aria-hidden="true"></span><i class="tool-swatch cQ"></i><span class="plan-review-name cW"></span></strong><p></p></div><div id="plan-preview" hidden><div class="correction-totals cb"><div>Before<strong class="mono" id="plan-before-value"></strong></div><span aria-hidden="true">→</span><div>After<strong class="mono" id="plan-after-value"></strong></div></div><p id="plan-affected"></p><p id="plan-preview-note" class="settings-helper cn"></p></div><label id="plan-confirm-label" hidden><input id="plan-confirm" type="checkbox">I confirm this correction changes the historical attribution shown above.</label></section>
+          <p id="plan-timezone" class="settings-helper cn"></p>
         </div>
-        <footer class="settings-dialog-footer cK"><button id="plan-back" class="ghost-button" type="button">Cancel</button><button id="save-plan" class="primary-button cX" type="submit">Continue</button></footer>
+        <footer class="settings-dialog-footer bO"><button id="plan-back" class="ghost-button" type="button">Cancel</button><button id="save-plan" class="primary-button aD" type="submit">Continue</button></footer>
       </form>
       <p id="plan-message" role="status" aria-live="polite"></p>
     </dialog>
-    <dialog id="harness-manager" class="settings-dialog ck" aria-labelledby="harness-manager-title">
-      <header class="settings-dialog-header cl"><div><p class="eyebrow V">Sources</p><h2 id="harness-manager-title" tabindex="-1">Connect a harness</h2><p class="harness-intro ct">Usage is read on this computer. Optional connections stay off until you enable them.</p></div><div class="dialog-actions dh harness-header-actions cu"><button id="rescan-harnesses" class="harness-action cv" type="button"><span class="harness-rescan-icon cz" aria-hidden="true"><svg class="harness-rescan-glyph cB" viewBox="0 0 16 16"><path fill="currentColor" fill-rule="evenodd" d="M13.836 2.477a.75.75 0 0 1 .75.75v3.182a.75.75 0 0 1-.75.75h-3.182a.75.75 0 0 1 0-1.5h1.37l-.84-.841a4.5 4.5 0 0 0-7.08 2.042.75.75 0 0 1-1.3-.75 6 6 0 0 1 9.44-2.722l.822.822V3.227a.75.75 0 0 1 .75-.75Zm-.911 7.5A.75.75 0 0 1 13.199 11a6 6 0 0 1-9.44 2.722l-.822-.822v1.873a.75.75 0 0 1-1.5 0V10.59a.75.75 0 0 1 .75-.75h3.182a.75.75 0 0 1 0 1.5H4.399l.84.841a4.5 4.5 0 0 0 7.08-2.042.75.75 0 0 1 .606-.462Z"/></svg><svg class="harness-rescan-spin cA" viewBox="0 0 16 16"><path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" d="M8 2.6a5.4 5.4 0 1 1-4.7 2.75"/></svg></span><span class="harness-rescan-label">Rescan</span></button><button id="close-harnesses" class="harness-close cw" type="button"><span aria-hidden="true">×</span>Close</button></div></header>
+    <dialog id="harness-manager" class="settings-dialog" aria-labelledby="harness-manager-title">
+      <header class="settings-dialog-header cw"><div><p class="eyebrow O">Sources</p><h2 id="harness-manager-title" tabindex="-1">Connect a harness</h2><p class="harness-intro ck">Usage is read on this computer. Optional connections stay off until you enable them.</p></div><div class="dialog-actions bK harness-header-actions"><button id="rescan-harnesses" class="harness-action cg" type="button"><span class="harness-rescan-icon cL" aria-hidden="true"><svg class="harness-rescan-glyph cZ" viewBox="0 0 16 16"><path fill="currentColor" fill-rule="evenodd" d="M13.836 2.477a.75.75 0 0 1 .75.75v3.182a.75.75 0 0 1-.75.75h-3.182a.75.75 0 0 1 0-1.5h1.37l-.84-.841a4.5 4.5 0 0 0-7.08 2.042.75.75 0 0 1-1.3-.75 6 6 0 0 1 9.44-2.722l.822.822V3.227a.75.75 0 0 1 .75-.75Zm-.911 7.5A.75.75 0 0 1 13.199 11a6 6 0 0 1-9.44 2.722l-.822-.822v1.873a.75.75 0 0 1-1.5 0V10.59a.75.75 0 0 1 .75-.75h3.182a.75.75 0 0 1 0 1.5H4.399l.84.841a4.5 4.5 0 0 0 7.08-2.042.75.75 0 0 1 .606-.462Z"/></svg><svg class="harness-rescan-spin cY" viewBox="0 0 16 16"><path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" d="M8 2.6a5.4 5.4 0 1 1-4.7 2.75"/></svg></span><span class="harness-rescan-label">Rescan</span></button><button id="close-harnesses" class="harness-close bV" type="button"><span aria-hidden="true">×</span>Close</button></div></header>
       <p id="harness-message" role="status" aria-live="polite" hidden></p>
-      <div id="harness-content"><section class="harness-section cF"><header><p class="eyebrow V">On this computer</p><span id="harness-scanned" class="settings-helper dc" role="status"></span></header><div id="harness-rows"></div></section><section class="harness-section cF"><header><p class="eyebrow V">Optional connections</p><span class="settings-helper dc">Keys stay in your environment. They are not stored here.</span></header><p id="harness-vault-note" class="settings-helper dc" hidden>Some keys are managed in Windows Credential Manager. Manage saved connections to replace or disconnect them.</p><div id="integration-rows"></div></section></div>
-      <footer class="settings-dialog-footer cK harness-footer cD"><p><i class="settings-dot cg good-dot ci" aria-hidden="true"></i>Nothing leaves this computer unless you enable a connection above.</p><div class="harness-actions cE"><button id="managed-connections" class="harness-action cv" type="button">Saved connections</button><button id="show-setup-help" class="harness-action cv" type="button">Setup help</button><a id="harness-docs" class="harness-action cv" target="_blank" rel="noopener noreferrer">Documentation</a></div></footer>
+      <div id="harness-content"><section class="harness-section bP"><header><p class="eyebrow O">On this computer</p><span id="harness-scanned" class="settings-helper cn" role="status"></span></header><div id="harness-rows"></div></section><section class="harness-section bP"><header><p class="eyebrow O">Optional connections</p><span class="settings-helper cn">Keys stay in your environment. They are not stored here.</span></header><p id="harness-vault-note" class="settings-helper cn" hidden>Some keys are managed in Windows Credential Manager. Manage saved connections to replace or disconnect them.</p><div id="integration-rows"></div></section></div>
+      <footer class="settings-dialog-footer bO harness-footer"><p><i class="settings-dot cG good-dot cH" aria-hidden="true"></i>Nothing leaves this computer unless you enable a connection above.</p><div class="harness-actions bI"><button id="managed-connections" class="harness-action cg" type="button">Saved connections</button><button id="show-setup-help" class="harness-action cg" type="button">Setup help</button><a id="harness-docs" class="harness-action cg" target="_blank" rel="noopener noreferrer">Documentation</a></div></footer>
     </dialog>
 
-    <dialog id="attention-panel" class="settings-dialog ck" aria-labelledby="attention-title">
-      <header class="settings-dialog-header cl attention-header dl">
+    <dialog id="attention-panel" class="settings-dialog" aria-labelledby="attention-title">
+      <header class="settings-dialog-header cw attention-header">
         <div>
-          <p class="eyebrow V">Signals</p>
+          <p class="eyebrow O">Signals</p>
           <h2 id="attention-title" tabindex="-1">Attention</h2>
-          <p class="attention-lead dm">Quotas, sources, and prices that need a decision.</p>
+          <p class="attention-lead cm">Quotas, sources, and prices that need a decision.</p>
         </div>
-        <button id="attention-close" class="harness-close cw" type="button"><span aria-hidden="true">×</span>Close</button>
+        <button id="attention-close" class="harness-close bV" type="button"><span aria-hidden="true">×</span>Close</button>
       </header>
-      <div class="attention-body dn">
-        <div class="attention-tabs do" role="group" aria-label="Attention views"><button id="attention-current" type="button" aria-pressed="true">Current</button><button id="attention-history" type="button" aria-pressed="false">History</button></div>
+      <div class="attention-body cD">
+        <div class="attention-tabs cE" role="group" aria-label="Attention views"><button id="attention-current" type="button" aria-pressed="true">Current</button><button id="attention-history" type="button" aria-pressed="false">History</button></div>
         <p id="attention-status" class="attention-status"></p>
         <p id="attention-message" class="attention-message" role="status"></p>
         <div id="attention-list" class="attention-list"></div>
-        <details class="attention-prefs dp"><summary>Preferences</summary><form id="attention-preferences">
-          <div class="attention-pref-checks dq">
+        <details class="attention-prefs cd"><summary>Preferences</summary><form id="attention-preferences">
+          <div class="attention-pref-checks bH">
             <label><input id="attention-quota" type="checkbox" checked>Quota thresholds</label>
             <label><input id="attention-source" type="checkbox" checked>Source failures</label>
             <label><input id="attention-pricing" type="checkbox" checked>Missing pricing</label>
           </div>
-          <div class="attention-pref-nums dr">
+          <div class="attention-pref-nums da">
             <label>Lower threshold (%)<input id="attention-lower" type="number" min="1" max="100" step="1" value="80" required></label>
             <label>Higher threshold (%)<input id="attention-higher" type="number" min="1" max="100" step="1" value="95" required></label>
           </div>
-          <button class="attention-save ds" type="submit">Save preferences</button>
+          <button class="attention-save aE" type="submit">Save preferences</button>
         </form></details>
       </div>
     </dialog>

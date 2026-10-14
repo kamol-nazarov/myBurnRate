@@ -607,3 +607,60 @@ def test_unreadable_metadata_does_not_fall_back_to_default_collection():
         with pytest.raises(PermissionError):
             c.Store("C:/fake/existing.db").read()
         open_db.assert_not_called()
+
+
+def test_execute_releases_database_lock_during_ingest_while_holding_source_lock(service, monkeypatch):
+    import threading
+    monkeypatch.setattr(c, "Service", lambda settings: service)
+    monkeypatch.setattr(Path, "is_dir", lambda path: True)
+    service.mutate(body(location="C:/fake/B"))
+    db_lock_free_on_other_thread = []
+    same_source_busy_on_other_thread = []
+    diff_source_free_on_other_thread = []
+
+    def ingest(**kwargs):
+        def probe():
+            db_lock = c.lock_for(service.settings.database_path)
+            same_lock = c.source_lock_for(service.settings.database_path, "codex_local")
+            other_lock = c.source_lock_for(service.settings.database_path, "claude_local")
+            acquired_db = db_lock.acquire(blocking=False)
+            if acquired_db:
+                db_lock.release()
+            acquired_same = same_lock.acquire(blocking=False)
+            if acquired_same:
+                same_lock.release()
+            acquired_other = other_lock.acquire(blocking=False)
+            if acquired_other:
+                other_lock.release()
+            db_lock_free_on_other_thread.append(acquired_db)
+            same_source_busy_on_other_thread.append(not acquired_same)
+            diff_source_free_on_other_thread.append(acquired_other)
+
+        worker = threading.Thread(target=probe)
+        worker.start()
+        worker.join(timeout=2)
+        return {"status": "success", "eventsSeen": 1}
+
+    result = c.execute(service.settings, "prices", REGISTRY.get("codex_local"), ingest)
+    assert result["status"] == "success"
+    assert db_lock_free_on_other_thread == [True]
+    assert same_source_busy_on_other_thread == [True]
+    assert diff_source_free_on_other_thread == [True]
+
+
+def test_promote_priced_unpriced_events_skips_full_scan_when_distinct_models_unpriced():
+    from spend_app.adapters.common import promote_priced_unpriced_events
+
+    queries = []
+
+    class FakeConnection:
+        def execute(self, sql, params=()):
+            queries.append((sql, tuple(params)))
+            if "SELECT DISTINCT model_key" in sql:
+                return SimpleNamespace(fetchall=lambda: [("openrouter/deepseek/deepseek-v4.1-flash",)])
+            raise AssertionError(f"Unexpected full table scan: {sql}")
+
+    fake_pricing = SimpleNamespace(_index={"openai/gpt-5.4": [object()]})
+    assert promote_priced_unpriced_events(FakeConnection(), fake_pricing) == 0
+    assert len(queries) == 1 and "SELECT DISTINCT model_key" in queries[0][0]
+

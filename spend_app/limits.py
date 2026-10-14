@@ -391,7 +391,12 @@ def _tail_rate_limit(path: Path, *, now: datetime | None = None) -> tuple[float,
     now = now or datetime.now(UTC)
     try:
         size = stat_path(path).st_size
-        with open_binary_read_only(path) as handle:
+        opener = (
+            path.open("rb")
+            if not isinstance(path, (str, os.PathLike)) and hasattr(path, "open")
+            else open_binary_read_only(path)
+        )
+        with opener as handle:
             handle.seek(max(0, size - 2_000_000))
             data = handle.read(2_000_000).decode("utf-8", errors="replace")
     except OSError:
@@ -419,11 +424,11 @@ def _codex_limits() -> dict:
         root = root.resolve(strict=True)
         candidates = sorted(source_files(root, "**/*.jsonl", budget=5000),
                             key=lambda path: stat_path(path).st_mtime, reverse=True)[:40]
-        now = datetime.now(UTC)
         latest = None
         for path in candidates:
-            row = _tail_rate_limit(confined(path, root), now=now)
+            row = _tail_rate_limit(confined(path, root), now=datetime.now(UTC))
             latest = newest(latest, row)
+        now = datetime.now(UTC)
     except (OSError, LocationError, ValueError):
         return {**missing, "detail": "Codex quota source is unavailable, outside its approved scope, exceeds the bounded inspection budget, or contains conflicting observations. Check the configured location."}
     if latest is None:
@@ -1087,9 +1092,16 @@ def _traycer_sender() -> tuple[str, str] | None:
         try:
             connection = sqlite_read_only(database)
             try:
-                row = connection.execute(
-                    "SELECT chat_id,updated_at FROM chat_projection ORDER BY updated_at DESC LIMIT 1"
-                ).fetchone()
+                try:
+                    row = connection.execute(
+                        "SELECT chat_id,updated_at FROM chat_projection ORDER BY updated_at DESC LIMIT 1"
+                    ).fetchone()
+                except sqlite3.OperationalError:
+                    row = connection.execute(
+                        "SELECT chat_id,updated_at FROM chat_projection_head "
+                        "WHERE COALESCE(lifecycle_state, 'active') != 'deleted' "
+                        "ORDER BY updated_at DESC LIMIT 1"
+                    ).fetchone()
             finally:
                 connection.close()
         except Exception:
@@ -1478,15 +1490,23 @@ def _codex_active_sessions(
         state = sqlite_read_only(state_path)
         turns = history.execute(
             """
-            SELECT thread_id, MIN(started_at) AS started_at
+            SELECT thread_id, MAX(started_at) AS started_at
             FROM thread_turns
             WHERE lower(status) IN ('inprogress','in_progress','running')
               AND completed_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM thread_turns AS newer
+                  WHERE newer.thread_id = thread_turns.thread_id
+                    AND newer.completed_at IS NOT NULL
+                    AND newer.started_at >= thread_turns.started_at
+              )
             GROUP BY thread_id
             """
         ).fetchall()
         sessions = []
         for turn in turns:
+            if int(turn[1] or 0) < cutoff:
+                continue
             thread = state.execute(
                 """
                 SELECT id,name,title,model,updated_at,archived

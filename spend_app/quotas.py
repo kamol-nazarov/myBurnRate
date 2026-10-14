@@ -645,6 +645,7 @@ def default_quota_collectors(
     sources = {"codex": "codex_local", "claude-code": "claude_local", "cursor": "cursor_local", "grok": "grok_local", "opencode": "opencode_local", "antigravity": "antigravity_local", "openrouter": "openrouter"}
     def guarded(provider, reader):
         def collect():
+            key = None
             with lock_for(database_path):
                 state = Store(database_path).read()
                 binding = state["bindings"].get(sources[provider])
@@ -655,10 +656,9 @@ def default_quota_collectors(
                         return unavailable_samples(provider, "Balance connection is disconnected.")
                     service = Service(settings)
                     key = external_key(REGISTRY.get("openrouter"), settings) or service.vault.get(binding["credentialRef"])
-                    samples = openrouter_quota_samples(collector=lambda: _openrouter_credits_uncached(key))
-                    ok = any(sample.used is not None for sample in samples)
-                    return samples
-                return reader()
+            if binding and provider == "openrouter":
+                return openrouter_quota_samples(collector=lambda: _openrouter_credits_uncached(key))
+            return reader()
         return collect
     return {provider: guarded(provider, reader) for provider, reader in result.items()}
 
@@ -680,10 +680,9 @@ def _persist_fields(sample: QuotaSample) -> tuple:
     )
 
 
-from spend_app.connections import serialize_collection
+from spend_app.connections import lock_for, serialize_collection
 
 
-@serialize_collection
 def poll_quotas(
     database_path: Path | str,
     *,
@@ -708,89 +707,105 @@ def poll_quotas(
     managed_completion = None
     if collectors is None:
         from spend_app.connections import Store
-        managed_completion = Store(path).read()["bindings"].get("openrouter")
+        with lock_for(path):
+            managed_completion = Store(path).read()["bindings"].get("openrouter")
     balance_ok = False
     written = 0
     skipped = 0
     polled: list[str] = []
     deferred: list[str] = []
     paced = []
-    with connect(path) as connection:
-        for provider_key in sorted(resolved):
-            if scheduler is not None and not scheduler.due(provider_key):
-                deferred.append(provider_key)
-                continue
-            polled.append(provider_key)
-            try:
-                samples = list(resolved[provider_key]())
-            except PolicyDenied as exc:
-                # Actionable, secret-free denial copy — never a class name.
-                samples = unavailable_samples(provider_key, str(exc))
-            except Exception:
-                samples = unavailable_samples(
-                    provider_key,
-                    "Quota collection failed for this lane; it will retry on the next tick.",
+    polled_samples: list[tuple[str, list[QuotaSample]]] = []
+    for provider_key in sorted(resolved):
+        if scheduler is not None and not scheduler.due(provider_key):
+            deferred.append(provider_key)
+            continue
+        polled.append(provider_key)
+        try:
+            samples = list(resolved[provider_key]())
+        except PolicyDenied as exc:
+            # Actionable, secret-free denial copy — never a class name.
+            samples = unavailable_samples(provider_key, str(exc))
+        except Exception:
+            samples = unavailable_samples(
+                provider_key,
+                "Quota collection failed for this lane; it will retry on the next tick.",
+            )
+        if provider_key == "openrouter":
+            balance_ok = any(sample.used is not None for sample in samples)
+        if scheduler is not None:
+            scheduler.record(provider_key, samples, active=is_active(provider_key))
+        present = {sample.limit_key for sample in samples}
+        for limit_key, label in REQUIRED_LIMITS.get(provider_key, ()):
+            if limit_key not in present:
+                samples.append(
+                    _unavailable(
+                        provider_key,
+                        limit_key,
+                        label,
+                        PROVIDER_SOURCES.get(provider_key, "unavailable"),
+                        "No sample was produced for this limit during the poll.",
+                    )
                 )
-            if provider_key == "openrouter":
-                balance_ok = any(sample.used is not None for sample in samples)
-            if scheduler is not None:
-                scheduler.record(provider_key, samples, active=is_active(provider_key))
-            present = {sample.limit_key for sample in samples}
-            for limit_key, label in REQUIRED_LIMITS.get(provider_key, ()):
-                if limit_key not in present:
-                    samples.append(
-                        _unavailable(
-                            provider_key,
-                            limit_key,
-                            label,
-                            PROVIDER_SOURCES.get(provider_key, "unavailable"),
-                            "No sample was produced for this limit during the poll.",
+        polled_samples.append((provider_key, samples))
+
+    sources_by_provider = {"codex": "codex_local", "claude-code": "claude_local", "cursor": "cursor_local", "grok": "grok_local", "opencode": "opencode_local", "antigravity": "antigravity_local", "openrouter": "openrouter"}
+    with lock_for(path):
+        current_bindings = {}
+        if collectors is None:
+            from spend_app.connections import Store
+            current_bindings = Store(path).read()["bindings"]
+        with connect(path) as connection:
+            for provider_key, samples in polled_samples:
+                if collectors is None and provider_key != "openrouter" and sources_by_provider.get(provider_key) in current_bindings:
+                    samples = unavailable_samples(
+                        provider_key,
+                        "Managed location grants usage only. Activity/quota at custom locations are not supported; no default profile was read.",
+                    )
+                for sample in samples:
+                    from spend_app.codex_quota import save_metadata
+                    save_metadata(connection, sample, polled_at)
+                    fields = _persist_fields(sample)
+                    latest = connection.execute(
+                        "SELECT id, label, used, allowance, unit, pct, resets_at, source, is_payg "
+                        "FROM quotas WHERE provider_key=? AND limit_key=? "
+                        "ORDER BY polled_at DESC, id DESC LIMIT 1",
+                        (sample.provider_key, sample.limit_key),
+                    ).fetchone()
+                    if sample.pct is not None and not sample.is_payg:
+                        paced.append(sample)
+                    if latest is not None and tuple(latest)[1:] == fields:
+                        # Same observation: no new history row, but the row now
+                        # states the most recent poll that confirmed the value so
+                        # "last poll" stays truthful.
+                        connection.execute(
+                            "UPDATE quotas SET polled_at=? WHERE id=? AND polled_at<?",
+                            (polled_at, latest["id"], polled_at),
                         )
+                        skipped += 1
+                        continue
+                    upsert_quota(
+                        connection,
+                        provider_key=sample.provider_key,
+                        limit_key=sample.limit_key,
+                        label=fields[0],
+                        used=sample.used,
+                        allowance=sample.allowance,
+                        unit=sample.unit,
+                        pct=sample.pct,
+                        resets_at=sample.resets_at,
+                        source=sample.source,
+                        polled_at=polled_at,
+                        is_payg=sample.is_payg,
                     )
-            for sample in samples:
-                from spend_app.codex_quota import save_metadata
-                save_metadata(connection, sample, polled_at)
-                fields = _persist_fields(sample)
-                latest = connection.execute(
-                    "SELECT id, label, used, allowance, unit, pct, resets_at, source, is_payg "
-                    "FROM quotas WHERE provider_key=? AND limit_key=? "
-                    "ORDER BY polled_at DESC, id DESC LIMIT 1",
-                    (sample.provider_key, sample.limit_key),
-                ).fetchone()
-                if sample.pct is not None and not sample.is_payg:
-                    paced.append(sample)
-                if latest is not None and tuple(latest)[1:] == fields:
-                    # Same observation: no new history row, but the row now
-                    # states the most recent poll that confirmed the value so
-                    # "last poll" stays truthful.
-                    connection.execute(
-                        "UPDATE quotas SET polled_at=? WHERE id=? AND polled_at<?",
-                        (polled_at, latest["id"], polled_at),
-                    )
-                    skipped += 1
-                    continue
-                upsert_quota(
-                    connection,
-                    provider_key=sample.provider_key,
-                    limit_key=sample.limit_key,
-                    label=fields[0],
-                    used=sample.used,
-                    allowance=sample.allowance,
-                    unit=sample.unit,
-                    pct=sample.pct,
-                    resets_at=sample.resets_at,
-                    source=sample.source,
-                    polled_at=polled_at,
-                    is_payg=sample.is_payg,
-                )
-                written += 1
-        from spend_app.capacity_forecast import record_pace_samples
-        record_pace_samples(connection, paced, polled_at)
-    if managed_completion and "openrouter" in polled:
-        from spend_app.connections import Service
-        from spend_app.config import load_settings
-        from dataclasses import replace
-        Service(replace(load_settings(), database_path=path)).completion("openrouter", managed_completion["revision"], {"status": "success" if balance_ok else "failed", "eventsSeen": 0})
+                    written += 1
+            from spend_app.capacity_forecast import record_pace_samples
+            record_pace_samples(connection, paced, polled_at)
+        if managed_completion and "openrouter" in polled:
+            from spend_app.connections import Service
+            from spend_app.config import load_settings
+            from dataclasses import replace
+            Service(replace(load_settings(), database_path=path)).completion("openrouter", managed_completion["revision"], {"status": "success" if balance_ok else "failed", "eventsSeen": 0})
     return {
         "polledAt": polled_at,
         "written": written,
@@ -926,7 +941,8 @@ def default_activity_collector(database_path=None) -> dict:
     bindings = {}
     if database_path is not None:
         from spend_app.connections import Store
-        bindings = Store(database_path).read()["bindings"]
+        with lock_for(database_path):
+            bindings = Store(database_path).read()["bindings"]
     # Existing readers have no custom-root contract. Do not read another
     # default profile for a managed usage binding (including disabled ones).
     activity = {} if "traycer_local" in bindings else _traycer_activity()
@@ -941,7 +957,6 @@ def default_activity_collector(database_path=None) -> dict:
     return {**activity, **{field: [] if source in bindings else reader() for field, (source, reader) in readers.items()}}
 
 
-@serialize_collection
 def poll_activity(
     database_path: Path | str,
     *,
@@ -954,19 +969,20 @@ def poll_activity(
     activity = collector() if collector else default_activity_collector(path)
     records = agent_run_records(activity)
     new = 0
-    with connect(path) as connection:
-        for record in records:
-            if upsert_agent_run(
-                connection,
-                id=record.id,
-                name=record.name,
-                model_key=record.model_key,
-                state=record.state,
-                started_at=record.started_at,
-                last_seen_at=record.last_seen_at,
-            ):
-                new += 1
-        cleared = _clear_unseen_live_runs(connection, {record.id for record in records})
+    with lock_for(path):
+        with connect(path) as connection:
+            for record in records:
+                if upsert_agent_run(
+                    connection,
+                    id=record.id,
+                    name=record.name,
+                    model_key=record.model_key,
+                    state=record.state,
+                    started_at=record.started_at,
+                    last_seen_at=record.last_seen_at,
+                ):
+                    new += 1
+            cleared = _clear_unseen_live_runs(connection, {record.id for record in records})
     return {
         "polledAt": polled_at,
         "seen": len(records),

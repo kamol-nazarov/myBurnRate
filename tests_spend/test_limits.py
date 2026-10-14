@@ -721,3 +721,26 @@ def test_zai_quota_falls_back_to_zcode_coding_plan_key(tmp_path: Path, monkeypat
     assert result["status"] == "exact"
     assert result["name"] == "Z.AI Coding Plan"
     assert [window["usedPct"] for window in result["windows"]] == [1, 3]
+
+
+def test_traycer_sender_falls_back_to_active_chat_projection_head(tmp_path: Path, monkeypatch) -> None:
+    import sqlite3
+    from spend_app.limits import _traycer_sender
+
+    monkeypatch.setattr("spend_app.limits.Path.home", lambda: tmp_path)
+    root = tmp_path / ".traycer" / "host" / "epic-state"
+    for epic_id, chat_id, updated_at, state in (
+        ("epic-deleted", "chat-deleted", 200, "deleted"),
+        ("epic-active", "chat-active", 100, "active"),
+    ):
+        db_path = root / epic_id / "chat" / "chat.db"
+        db_path.parent.mkdir(parents=True)
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "CREATE TABLE chat_projection_head (chat_id TEXT, updated_at INTEGER, lifecycle_state TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO chat_projection_head VALUES (?, ?, ?)",
+                (chat_id, updated_at, state),
+            )
+    assert _traycer_sender() == ("epic-active", "chat-active")
