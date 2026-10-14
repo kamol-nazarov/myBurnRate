@@ -171,7 +171,8 @@ def list_machines(
         if not isinstance(rec, dict) or rec.get("revoked"):
             continue
         raw_seen = rec.get("last_seen_at")
-        mem_seen = _MACHINE_LAST_SEEN_MEM.get(machine_id) if now is None else None
+        is_realtime = abs((datetime.now(UTC) - moment).total_seconds()) < 300
+        mem_seen = _MACHINE_LAST_SEEN_MEM.get(machine_id) if is_realtime else None
         db_dt = _parse_iso(raw_seen)
         mem_dt = _parse_iso(mem_seen)
         if mem_dt and (db_dt is None or mem_dt > db_dt):
