@@ -198,6 +198,14 @@ def create_app(
     ) -> dict:
         resolved = _window_or_400(window)
         record_summary_request(resolved, tool)
+        from spend_app.sync import fetch_from_configured_hub
+        hub_data = fetch_from_configured_hub(
+            settings,
+            "/api/spend/summary",
+            {"window": resolved, "tool": tool, "machine": machine},
+        )
+        if hub_data is not None:
+            return hub_data
         return aggregate_summary_cached(
             database_path=settings.database_path,
             pricing=pricing,
@@ -212,6 +220,10 @@ def create_app(
 
     @app.get("/api/spend/nav")
     def spend_nav() -> dict:
+        from spend_app.sync import fetch_from_configured_hub
+        hub_data = fetch_from_configured_hub(settings, "/api/spend/nav")
+        if hub_data is not None:
+            return hub_data
         return aggregate_nav(
             database_path=settings.database_path,
             pricing=pricing,
@@ -228,6 +240,14 @@ def create_app(
         machine: str = Query(default="all"),
     ) -> dict:
         resolved = _window_or_400(window)
+        from spend_app.sync import fetch_from_configured_hub
+        hub_data = fetch_from_configured_hub(
+            settings,
+            "/api/spend/entity",
+            {"kind": kind, "key": key, "window": resolved, "machine": machine},
+        )
+        if hub_data is not None:
+            return hub_data
         return aggregate_entity(
             database_path=settings.database_path,
             pricing=pricing,
@@ -253,12 +273,17 @@ def create_app(
     def onboarding():
         from spend_app.diagnostics import integration_reports, HELP_URL
         from spend_app.connections import Store
-        from spend_app.sync import list_machines
+        from spend_app.sync import fetch_from_configured_hub, list_machines
         from spend_app.setup_wizard import read_setup_state
         with connect(settings.database_path) as connection:
             history = connection.execute("SELECT EXISTS(SELECT 1 FROM usage_events) OR EXISTS(SELECT 1 FROM unpriced_usage_events)").fetchone()[0]
             machines = list_machines(connection)
             setup_completed = bool(read_setup_state(connection).get("completed"))
+        hub_onboarding = fetch_from_configured_hub(settings, "/api/onboarding")
+        if hub_onboarding is not None:
+            if isinstance(hub_onboarding.get("machines"), list):
+                machines = hub_onboarding["machines"]
+            history = bool(history or hub_onboarding.get("hasHistory"))
         return {"timezone": settings.timezone, "timezoneSetting": "SPEND_TIMEZONE in your BURNRATE environment configuration",
                 "hasHistory": bool(history), "sources": source_guidance(),
                 "integrations": integration_reports(settings, bindings=Store(settings.database_path).read()["bindings"]),

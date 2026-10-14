@@ -705,26 +705,98 @@ def sync_once(
             pass
 
     cursor = read_sync_cursor(settings.database_path, hub_url)
-    batch, next_cursor = export_sync_batch(settings.database_path, cursor=cursor)
-    if machine_name:
-        batch["machine"]["name"] = machine_name
+    total_written = 0
+    last_result: dict = {"ok": True, "eventsWritten": 0}
     endpoint = hub_url.strip().rstrip("/") + "/api/sync/push"
     headers = {
         "Authorization": f"Bearer {token.strip()}",
         "Content-Type": "application/json",
     }
-    if client is not None:
-        response = client.post(endpoint, json=batch, headers=headers)
-    else:
-        import httpx
+    for _ in range(20):
+        batch, next_cursor = export_sync_batch(settings.database_path, cursor=cursor)
+        if machine_name:
+            batch["machine"]["name"] = machine_name
+        if client is not None:
+            response = client.post(endpoint, json=batch, headers=headers)
+        else:
+            import httpx
 
-        with httpx.Client(timeout=15.0) as http:
-            response = http.post(endpoint, json=batch, headers=headers)
-    if response.status_code >= 400:
-        raise RuntimeError(f"Sync push failed ({response.status_code}): {response.text}")
-    result = response.json()
-    write_sync_cursor(settings.database_path, hub_url, next_cursor)
-    return {**result, "cursor": next_cursor}
+            with httpx.Client(timeout=15.0) as http:
+                response = http.post(endpoint, json=batch, headers=headers)
+        if response.status_code >= 400:
+            raise RuntimeError(f"Sync push failed ({response.status_code}): {response.text}")
+        last_result = response.json()
+        total_written += int(last_result.get("eventsWritten") or 0)
+        write_sync_cursor(settings.database_path, hub_url, next_cursor)
+        cursor = next_cursor
+        if len(batch.get("usageEvents") or []) < 500 and len(batch.get("unpricedEvents") or []) < 500:
+            break
+    return {**last_result, "eventsWritten": total_written, "cursor": cursor}
+
+
+_HUB_PROXY_LOCK = threading.Lock()
+_HUB_PROXY_CACHE: dict[tuple, tuple[float, dict]] = {}
+_HUB_TEST_CLIENTS: dict[str, object] = {}
+
+
+def register_hub_test_client(hub_url: str, client: object) -> None:
+    """Allow in-process unit tests to route spoke read-through calls to a TestClient."""
+    _HUB_TEST_CLIENTS[hub_url.strip().rstrip("/")] = client
+
+
+def fetch_from_configured_hub(
+    settings,
+    path: str,
+    params: dict | None = None,
+    *,
+    ttl_seconds: float = 2.0,
+) -> dict | None:
+    """When this instance is a paired Spoke, read unified dashboard data from the Hub."""
+    try:
+        from spend_app.setup_wizard import read_setup_state
+
+        with connect(settings.database_path) as connection:
+            state = read_setup_state(connection)
+    except Exception:
+        return None
+    if state.get("role") != "spoke":
+        return None
+    spoke = state.get("spokeConfig") or {}
+    if not spoke.get("enabled"):
+        return None
+    hub_url = str(spoke.get("hubUrl") or "").strip().rstrip("/")
+    token = str(spoke.get("token") or "").strip()
+    if not hub_url or not token:
+        return None
+
+    clean_params = {k: str(v) for k, v in (params or {}).items() if v is not None}
+    cache_key = (hub_url, path, tuple(sorted(clean_params.items())))
+    now_mono = time.monotonic()
+    with _HUB_PROXY_LOCK:
+        cached = _HUB_PROXY_CACHE.get(cache_key)
+        if cached and (now_mono - cached[0]) < ttl_seconds:
+            return cached[1]
+
+    headers = {"Authorization": f"Bearer {token}"}
+    test_client = _HUB_TEST_CLIENTS.get(hub_url)
+    try:
+        if test_client is not None:
+            response = test_client.get(path, params=clean_params, headers=headers)
+        else:
+            import httpx
+
+            with httpx.Client(timeout=3.5) as http:
+                response = http.get(f"{hub_url}{path}", params=clean_params, headers=headers)
+        if response.status_code != 200:
+            return None
+        data = response.json()
+        if not isinstance(data, dict):
+            return None
+        with _HUB_PROXY_LOCK:
+            _HUB_PROXY_CACHE[cache_key] = (now_mono, data)
+        return data
+    except Exception:
+        return None
 
 
 def sync_router(settings, pricing: PricingEngine) -> APIRouter:
@@ -732,6 +804,9 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
 
     @router.get("/api/machines")
     def get_machines():
+        hub_data = fetch_from_configured_hub(settings, "/api/machines")
+        if hub_data is not None and isinstance(hub_data.get("machines"), list):
+            return JSONResponse(hub_data, headers={"Cache-Control": "no-store"})
         with connect(settings.database_path) as connection:
             machines = list_machines(connection)
         return JSONResponse({"machines": machines}, headers={"Cache-Control": "no-store"})

@@ -493,4 +493,15 @@ def test_setup_wizard_pairing_and_complete(tmp_path: Path) -> None:
     local_machine = next(m for m in onboarding["machines"] if m["id"] == "local")
     assert local_machine["name"] == "Main Workstation"
 
+    # 6. Spoke read-through returns unified Hub machines and usage (both Hub + Spoke)
+    from spend_app.sync import register_hub_test_client
+
+    register_hub_test_client("http://testserver", hub_client)
+    spoke_machines = spoke_client.get("/api/machines").json()["machines"]
+    spoke_machine_names = {m["name"] for m in spoke_machines}
+    assert "Main Workstation" in spoke_machine_names
+    assert "Studio Laptop" in spoke_machine_names
+    spoke_summary = spoke_client.get("/api/spend/summary?window=1d").json()
+    assert {m["name"] for m in spoke_summary["machines"]} >= {"Main Workstation", "Studio Laptop"}
+
 

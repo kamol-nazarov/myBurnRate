@@ -11,11 +11,24 @@ from spend_app.connections import Conflict, Service
 from spend_app.connection_paths import LocationError
 
 
+_SPOKE_READ_PATHS = {
+    "/api/spend/summary",
+    "/api/spend/nav",
+    "/api/spend/entity",
+    "/api/machines",
+    "/api/onboarding",
+}
+
+
 def access_allowed(request, token):
     """The existing API-wide bearer boundary, shared with the application."""
-    if request.url.path == "/api/sync/push" and request.headers.get("authorization", "").startswith("Bearer br_m_"):
-        return True
-    return not token or not request.url.path.startswith("/api/") or request.headers.get("authorization", "") == f"Bearer {token}"
+    auth = request.headers.get("authorization", "")
+    if auth.startswith("Bearer br_m_"):
+        if request.url.path == "/api/sync/push":
+            return True
+        if request.method == "GET" and request.url.path in _SPOKE_READ_PATHS:
+            return True
+    return not token or not request.url.path.startswith("/api/") or auth == f"Bearer {token}"
 
 
 def trusted(request, mutation=True):
