@@ -577,7 +577,17 @@ function Resolve-BurnrateDesktopBinary {
         return $installedExe
     }
 
-    $releaseUrl = 'https://github.com/myburnrate/myBurnRateOfficial/releases/latest/download/burnrate-desktop.exe'
+    $originUrl = ''
+    try {
+        $originUrl = (& git -C $repoRoot config --get remote.origin.url 2>$null).Trim()
+    } catch {
+    }
+    $repoBase = if ($originUrl -match '^https://github\.com/[^/]+/[^/.]+') {
+        $Matches[0]
+    } else {
+        'https://github.com/myburnrate/myBurnRateOfficial'
+    }
+    $releaseUrl = "$repoBase/releases/latest/download/burnrate-desktop.exe"
     try {
         Write-Host 'Downloading native BURNRATE desktop shell...'
         Invoke-WebRequest -UseBasicParsing -TimeoutSec 20 -Uri $releaseUrl -OutFile $installedExe

@@ -68,7 +68,7 @@ The default runtime is a single lightweight process: **FastAPI + SQLite + Dashbo
 ### One-Command Clone & Install
 
 ```powershell
-git clone https://github.com/myburnrate/myBurnRateOfficial.git
+git clone https://github.com/kamol-nazarov/myBurnRateOfficial.git
 cd myBurnRateOfficial
 .\install.ps1
 ```
