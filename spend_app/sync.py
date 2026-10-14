@@ -824,25 +824,40 @@ def sync_once(
         "Authorization": f"Bearer {token.strip()}",
         "Content-Type": "application/json",
     }
-    for _ in range(20):
-        batch, next_cursor = export_sync_batch(settings.database_path, cursor=cursor)
-        if machine_name:
-            batch["machine"]["name"] = machine_name
-        if client is not None:
-            response = client.post(endpoint, json=batch, headers=headers)
-        else:
-            import httpx
+    batch_limit = 1500
 
-            with httpx.Client(timeout=15.0) as http:
-                response = http.post(endpoint, json=batch, headers=headers)
-        if response.status_code >= 400:
-            raise RuntimeError(f"Sync push failed ({response.status_code}): {response.text}")
-        last_result = response.json()
-        total_written += int(last_result.get("eventsWritten") or 0)
-        write_sync_cursor(settings.database_path, hub_url, next_cursor)
-        cursor = next_cursor
-        if len(batch.get("usageEvents") or []) < 500 and len(batch.get("unpricedEvents") or []) < 500:
-            break
+    def _run_batches(post_fn) -> None:
+        nonlocal cursor, total_written, last_result
+        for batch_idx in range(40):
+            batch, next_cursor = export_sync_batch(
+                settings.database_path, cursor=cursor, limit=batch_limit
+            )
+            if machine_name:
+                batch["machine"]["name"] = machine_name
+            if batch_idx > 0:
+                batch["agentRuns"] = []
+                batch["quotas"] = []
+                batch["replaceAgentRuns"] = False
+            response = post_fn(endpoint, json=batch, headers=headers)
+            if response.status_code >= 400:
+                raise RuntimeError(f"Sync push failed ({response.status_code}): {response.text}")
+            last_result = response.json()
+            total_written += int(last_result.get("eventsWritten") or 0)
+            write_sync_cursor(settings.database_path, hub_url, next_cursor)
+            cursor = next_cursor
+            if (
+                len(batch.get("usageEvents") or []) < batch_limit
+                and len(batch.get("unpricedEvents") or []) < batch_limit
+            ):
+                break
+
+    if client is not None:
+        _run_batches(client.post)
+    else:
+        import httpx
+
+        with httpx.Client(timeout=30.0) as http:
+            _run_batches(http.post)
     return {**last_result, "eventsWritten": total_written, "cursor": cursor}
 
 
@@ -946,18 +961,18 @@ def fetch_from_configured_hub(
         else:
             import httpx
 
-            with httpx.Client(timeout=3.5) as http:
+            with httpx.Client(timeout=8.0) as http:
                 response = http.get(f"{hub_url}{path}", params=clean_params, headers=headers)
         if response.status_code != 200:
-            return None
+            return cached[1] if cached else None
         data = response.json()
         if not isinstance(data, dict):
-            return None
+            return cached[1] if cached else None
         with _HUB_PROXY_LOCK:
             _HUB_PROXY_CACHE[cache_key] = (now_mono, data)
         return data
     except Exception:
-        return None
+        return cached[1] if cached else None
 
 
 def sync_router(settings, pricing: PricingEngine) -> APIRouter:

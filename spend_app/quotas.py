@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 import threading
 import time as time_module
 from dataclasses import dataclass, replace
@@ -944,12 +945,12 @@ def _clear_unseen_live_runs(connection, seen_ids: set[str]) -> int:
         placeholders = ",".join("?" for _ in seen_ids)
         cursor = connection.execute(
             "DELETE FROM agent_runs "
-            f"WHERE lower(state) IN ('live','running') AND id NOT IN ({placeholders})",
+            f"WHERE lower(state) IN ('live','running') AND id NOT LIKE 'm:%' AND id NOT IN ({placeholders})",
             tuple(seen_ids),
         )
     else:
         cursor = connection.execute(
-            "DELETE FROM agent_runs WHERE lower(state) IN ('live','running')"
+            "DELETE FROM agent_runs WHERE lower(state) IN ('live','running') AND id NOT LIKE 'm:%'"
         )
     return int(cursor.rowcount or 0)
 
@@ -983,6 +984,15 @@ def poll_activity(
     path = Path(database_path)
     polled_at = (now or utc_now)()
     initialize(path)
+    if collector is None and os.getenv("BURNRATE_CENTRAL_SERVER", "").strip().lower() in {"1", "true", "yes"}:
+        return {
+            "polledAt": polled_at,
+            "seen": 0,
+            "new": 0,
+            "cleared": 0,
+            "live": 0,
+            "noData": 0,
+        }
     activity = collector() if collector else default_activity_collector(path)
     records = agent_run_records(activity)
     new = 0

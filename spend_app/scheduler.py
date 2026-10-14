@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime, timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -93,22 +94,25 @@ def create_scheduler(settings: Settings, pricing: PricingEngine) -> BackgroundSc
     }
 
     def local_ingest_jobs() -> None:
+        is_central = os.getenv("BURNRATE_CENTRAL_SERVER", "").strip().lower() in {"1", "true", "yes"}
+        from spend_app.sync import STREAM_BROKER
+        from spend_app.setup_wizard import maybe_run_configured_spoke_sync
+
         errors: list[BaseException] = []
-        try:
-            _run_ingest_specs([(spec, {}) for spec in REGISTRY if spec.kind in {"local", "manual"}], settings, pricing)
-        except Exception as exc:
-            errors.append(exc)
+        if not is_central:
+            try:
+                _run_ingest_specs([(spec, {}) for spec in REGISTRY if spec.kind in {"local", "manual"}], settings, pricing)
+            except Exception as exc:
+                errors.append(exc)
         try:
             with connect(settings.database_path) as connection:
                 prune_ingest_runs(connection)
         except Exception as exc:
             errors.append(exc)
         warm_summaries()
-        from spend_app.sync import STREAM_BROKER
-        from spend_app.setup_wizard import maybe_run_configured_spoke_sync
-
         STREAM_BROKER.publish({"type": "ingest"})
-        maybe_run_configured_spoke_sync(settings, pricing)
+        if not is_central:
+            maybe_run_configured_spoke_sync(settings, pricing)
         if errors:
             raise RuntimeError(f"{len(errors)} local ingest job(s) failed") from errors[0]
 
@@ -143,6 +147,8 @@ def create_scheduler(settings: Settings, pricing: PricingEngine) -> BackgroundSc
     )
 
     def admin_jobs() -> None:
+        if os.getenv("BURNRATE_CENTRAL_SERVER", "").strip().lower() in {"1", "true", "yes"}:
+            return
         from spend_app.adapters.report_pages import reporting_window
         start, end = reporting_window(datetime.now(UTC))
         _run_ingest_specs([(spec, {}) for spec in REGISTRY.admin_ingest()], settings, pricing, {"start": start, "end": end})
