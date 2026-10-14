@@ -649,6 +649,8 @@ def setup_router(settings, pricing: PricingEngine) -> APIRouter:
             password = str(body.get("password") or "")
             computer_name = str(body.get("computerName") or "").strip() or "Connected Computer"
             os_name = str(body.get("os") or "").strip()
+            preset_keys = [str(k) for k in (body.get("presetKeys") or []) if k]
+            custom_plans = body.get("customPlans") if isinstance(body.get("customPlans"), list) else []
 
             if not username or not password:
                 raise ValueError("Enter your account username and password.")
@@ -659,20 +661,34 @@ def setup_router(settings, pricing: PricingEngine) -> APIRouter:
                 accounts = _read_accounts(connection)
                 user_rec = accounts["users"].get(user_key)
                 if not isinstance(user_rec, dict):
-                    return JSONResponse(
-                        {"error": "Account not found. Switch to 'Create Account' to set up your account and subscriptions."},
-                        status_code=401,
+                    salt_hex, hash_hex = _hash_password(password)
+                    accounts["users"][user_key] = {
+                        "username": username,
+                        "salt": salt_hex,
+                        "passwordHash": hash_hex,
+                        "createdAt": utc_now(),
+                    }
+                    _write_accounts(connection, accounts)
+                    display_username = username
+                else:
+                    if not _verify_password(
+                        password,
+                        str(user_rec.get("salt") or ""),
+                        str(user_rec.get("passwordHash") or ""),
+                    ):
+                        return JSONResponse(
+                            {"error": "Invalid username or password."},
+                            status_code=401,
+                        )
+                    display_username = str(user_rec.get("username") or username)
+
+                if preset_keys or custom_plans:
+                    _apply_subscription_presets_and_custom(
+                        connection,
+                        settings.timezone,
+                        preset_keys,
+                        custom_plans,
                     )
-                if not _verify_password(
-                    password,
-                    str(user_rec.get("salt") or ""),
-                    str(user_rec.get("passwordHash") or ""),
-                ):
-                    return JSONResponse(
-                        {"error": "Invalid username or password."},
-                        status_code=401,
-                    )
-                display_username = str(user_rec.get("username") or username)
                 plans_out = effective_terms(connection)
 
             reg = register_or_reconnect_machine(
@@ -744,8 +760,20 @@ def setup_router(settings, pricing: PricingEngine) -> APIRouter:
             computer_name = str(body.get("computerName") or "").strip() or _default_computer_name()
             server_url = str(body.get("serverUrl") or "").strip() or default_central_server_url()
             preset_keys = [str(k) for k in (body.get("presetKeys") or []) if k]
-            custom_plans = body.get("customPlans") if isinstance(body.get("customPlans"), list) else []
+            custom_plans = list(body.get("customPlans")) if isinstance(body.get("customPlans"), list) else []
             test_sync = bool(body.get("testSync", True))
+
+            initialize(settings.database_path)
+            with connect(settings.database_path) as connection:
+                for local_plan in effective_terms(connection):
+                    custom_plans.append(
+                        {
+                            "tool_key": local_plan["tool_key"],
+                            "name": local_plan["name"],
+                            "amount_usd": float(local_plan["amount_usd"]),
+                            "cadence": local_plan["cadence"],
+                        }
+                    )
 
             endpoint = "/api/account/register" if mode == "register" else "/api/account/login"
             remote_payload = {
