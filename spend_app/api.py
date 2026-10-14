@@ -179,6 +179,11 @@ def create_app(
         from spend_app.connection_api import access_allowed
         if not access_allowed(request, _access_token):
             return JSONResponse({"error": "Authentication required for the API"}, status_code=401)
+        auth = request.headers.get("authorization", "")
+        if auth.startswith("Bearer br_m_"):
+            from spend_app.sync import authenticate_machine_token
+
+            authenticate_machine_token(settings.database_path, auth[7:].strip())
         return await call_next(request)
 
     @app.exception_handler(ValueError)
