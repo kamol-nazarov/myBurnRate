@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import shutil
 import socket
 import subprocess
@@ -174,6 +175,26 @@ def decode_pairing_code(code: str) -> dict:
     if not isinstance(data, dict) or not data.get("hubUrl") or not data.get("token"):
         raise ValueError("Pairing code is missing hubUrl or token.")
     return data
+
+
+def ensure_tailscale_hub_proxy(port: int = 17331) -> bool:
+    """Expose 127.0.0.1:<port> on the local Tailscale interface only (never public)."""
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
+    ts_bin = shutil.which("tailscale")
+    if not ts_bin:
+        return False
+    try:
+        proc = subprocess.run(
+            [ts_bin, "serve", "--bg", "--tcp", str(port), f"tcp://127.0.0.1:{port}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        return proc.returncode == 0
+    except Exception:
+        return False
 
 
 def detect_network_addresses(port: int = 17331) -> list[dict]:
@@ -389,6 +410,7 @@ def setup_router(settings, pricing: PricingEngine) -> APIRouter:
                 or body.get("hubHost")
                 or f"{request.url.scheme}://{request.headers.get('host', '127.0.0.1:17331')}"
             ).strip().rstrip("/")
+            ensure_tailscale_hub_proxy(int(getattr(settings, "port", 17331)))
             reg = register_machine(
                 settings.database_path,
                 name=remote_name,
@@ -609,6 +631,7 @@ SETUP_WIZARD_HTML = """<!doctype html>
         --font-mono: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
       }
       * { box-sizing: border-box; margin: 0; padding: 0; }
+      [hidden] { display: none !important; }
       html, body {
         min-height: 100vh;
         background: radial-gradient(circle at 18% 0%, rgba(217, 164, 65, 0.08), transparent 45%),
