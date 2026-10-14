@@ -110,6 +110,8 @@ def read_rows(connection, *, now=None, rows=None):
     for row in rows:
         if row['provider_key'] != 'codex':
             continue
+        if str(row.get('source') or '').startswith('sync:'):
+            continue
         reason = None
         if binding:
             reason = "Codex connection is disabled." if not binding.get("enabled") else "Managed Codex location grants usage only; local quota permission is not supported. No default profile was read."

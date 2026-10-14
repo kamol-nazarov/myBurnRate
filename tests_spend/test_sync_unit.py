@@ -505,3 +505,143 @@ def test_setup_wizard_pairing_and_complete(tmp_path: Path) -> None:
     assert {m["name"] for m in spoke_summary["machines"]} >= {"Main Workstation", "Studio Laptop"}
 
 
+def test_central_server_account_login_subscriptions_and_multi_computer_sync(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from spend_app.db import upsert_quota
+    from spend_app.setup_wizard import maybe_run_configured_spoke_sync
+    from spend_app.sync import register_hub_test_client
+
+    aggregate.reset_memo()
+    monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
+
+    central_settings = _make_settings(tmp_path / "tk-server")
+    desktop_settings = _make_settings(tmp_path / "mydesktop")
+    laptop_settings = _make_settings(tmp_path / "macbook")
+    pricing = PricingEngine.load(central_settings.pricing_path)
+
+    central_client = TestClient(create_app(central_settings, enable_scheduler=False))
+    desktop_client = TestClient(create_app(desktop_settings, enable_scheduler=False))
+    laptop_client = TestClient(create_app(laptop_settings, enable_scheduler=False))
+
+    central_url = "https://tk-server.test"
+    register_hub_test_client(central_url, central_client)
+
+    # Seed local usage and quota on MyDesktop
+    with connect(desktop_settings.database_path) as conn:
+        upsert_usage_event(
+            conn,
+            UsageEvent(
+                raw_id="desktop-ev-1",
+                source="claude_local",
+                tool_key="claude-code",
+                model_key="claude-opus-4-6",
+                session_id="sess-desktop-1",
+                project="burnrate",
+                occurred_at=(NOW - timedelta(minutes=20)).isoformat(),
+                input_tokens=15_000,
+                cached_input_tokens=0,
+                cache_write_tokens=0,
+                cache_write_1h_tokens=0,
+                output_tokens=5_000,
+                reasoning_tokens=0,
+                cost_usd=None,
+                computed_cost_usd=0.25,
+                ingested_at=NOW.isoformat(),
+                is_exact=True,
+            ),
+        )
+        upsert_quota(
+            conn,
+            provider_key="cursor",
+            limit_key="monthly",
+            label="Cursor Plan usage ($385.17 / $400.00)",
+            unit="usd",
+            source="cursor_usage_service",
+            polled_at=NOW.isoformat(),
+            used=385.17,
+            allowance=400.0,
+            pct=96.29,
+            resets_at=(NOW + timedelta(days=10)).isoformat(),
+            is_payg=0,
+        )
+
+    # 1. Create account from MyDesktop with subscriptions
+    reg_res = desktop_client.post(
+        "/api/setup/account",
+        json={
+            "mode": "register",
+            "username": "kamol",
+            "password": "secret-password",
+            "computerName": "MyDesktop",
+            "serverUrl": central_url,
+            "presetKeys": ["claude_max", "cursor_ultra"],
+            "customPlans": [
+                {"tool_key": "opencode", "name": "Z.AI Coding Plan", "amount_usd": 10.0, "cadence": "monthly"}
+            ],
+            "testSync": True,
+        },
+    )
+    assert reg_res.status_code == 200
+    reg_data = reg_res.json()
+    assert reg_data["ok"] is True
+    assert reg_data["account"]["username"] == "kamol"
+    assert len(reg_data["subscriptions"]) == 3
+
+    # 2. Seed local usage on MacBook and just sign in (no need to re-enter subscriptions)
+    with connect(laptop_settings.database_path) as conn:
+        upsert_usage_event(
+            conn,
+            UsageEvent(
+                raw_id="laptop-ev-1",
+                source="codex_local",
+                tool_key="codex",
+                model_key="gpt-5.6-sol",
+                session_id="sess-laptop-1",
+                project="burnrate-mobile",
+                occurred_at=(NOW - timedelta(minutes=10)).isoformat(),
+                input_tokens=8_000,
+                cached_input_tokens=0,
+                cache_write_tokens=0,
+                cache_write_1h_tokens=0,
+                output_tokens=2_000,
+                reasoning_tokens=0,
+                cost_usd=None,
+                computed_cost_usd=0.12,
+                ingested_at=NOW.isoformat(),
+                is_exact=True,
+            ),
+        )
+
+    login_res = laptop_client.post(
+        "/api/setup/account",
+        json={
+            "mode": "login",
+            "username": "kamol",
+            "password": "secret-password",
+            "computerName": "MacBook Pro",
+            "serverUrl": central_url,
+            "testSync": True,
+        },
+    )
+    assert login_res.status_code == 200
+    login_data = login_res.json()
+    assert login_data["ok"] is True
+    assert len(login_data["subscriptions"]) == 3
+
+    # 3. Both computers see unified usage, quotas, subscriptions, and connected computer list from tk-server
+    laptop_summary = laptop_client.get("/api/spend/summary?window=1d").json()
+    assert laptop_summary["totals"]["records"] == 2
+    assert laptop_summary["totals"]["tokens"] == 30_000
+    machine_names = [m["name"] for m in laptop_summary["machines"]]
+    assert set(machine_names) == {"MyDesktop", "MacBook Pro"}
+
+    laptop_subs = laptop_client.get("/api/subscriptions").json()
+    assert len(laptop_subs["plans"]) == 3
+
+    laptop_limits = laptop_client.get("/api/spend/limits").json()
+    cursor_limit = next(p for p in laptop_limits["providers"] if p["key"] == "cursor")
+    assert cursor_limit["windows"][0]["usedPct"] == 96.29
+
+
+

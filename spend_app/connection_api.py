@@ -15,16 +15,26 @@ _SPOKE_READ_PATHS = {
     "/api/spend/summary",
     "/api/spend/nav",
     "/api/spend/entity",
+    "/api/spend/limits",
+    "/api/subscriptions",
+    "/api/subscriptions/value",
     "/api/machines",
     "/api/onboarding",
+}
+
+_PUBLIC_ACCOUNT_PATHS = {
+    "/api/account/register",
+    "/api/account/login",
 }
 
 
 def access_allowed(request, token):
     """The existing API-wide bearer boundary, shared with the application."""
+    if request.url.path in _PUBLIC_ACCOUNT_PATHS:
+        return True
     auth = request.headers.get("authorization", "")
     if auth.startswith("Bearer br_m_"):
-        if request.url.path == "/api/sync/push":
+        if request.url.path in {"/api/sync/push", "/api/account/subscriptions", "/api/machines"}:
             return True
         if request.method == "GET" and request.url.path in _SPOKE_READ_PATHS:
             return True

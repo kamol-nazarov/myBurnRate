@@ -774,6 +774,14 @@ def poll_quotas(
                     ).fetchone()
                     if sample.pct is not None and not sample.is_payg:
                         paced.append(sample)
+                    if (
+                        sample.unit == "unavailable"
+                        and latest is not None
+                        and latest["unit"] != "unavailable"
+                        and str(latest["source"] or "").startswith("sync:")
+                    ):
+                        skipped += 1
+                        continue
                     if latest is not None and tuple(latest)[1:] == fields:
                         # Same observation: no new history row, but the row now
                         # states the most recent poll that confirmed the value so

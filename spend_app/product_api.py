@@ -34,6 +34,11 @@ def product_router(settings, pricing=None):
 
     @router.get("/api/subscriptions")
     def plans():
+        from spend_app.sync import fetch_from_configured_hub
+
+        hub_data = fetch_from_configured_hub(settings, "/api/subscriptions")
+        if hub_data is not None and isinstance(hub_data.get("plans"), list):
+            return hub_data
         with connect(settings.database_path) as connection:
             return {**list_plans(connection, today()), "timezone": settings.timezone}
 
@@ -49,6 +54,13 @@ def product_router(settings, pricing=None):
                 },
                 status_code=422,
             )
+        from spend_app.sync import fetch_from_configured_hub
+
+        hub_data = fetch_from_configured_hub(
+            settings, "/api/subscriptions/value", {"period": period}
+        )
+        if hub_data is not None and isinstance(hub_data.get("plans"), list):
+            return JSONResponse(hub_data, headers={"Cache-Control": "no-store"})
         resolved_pricing = pricing
         if resolved_pricing is None:
             from spend_app.pricing import PricingEngine
@@ -114,6 +126,11 @@ def product_router(settings, pricing=None):
             with connect(settings.database_path) as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 result = apply_mutation(connection, body, today())
+            from spend_app.sync import post_to_configured_hub
+
+            hub_res = post_to_configured_hub(settings, "/api/account/subscriptions", body)
+            if isinstance(hub_res, dict) and isinstance(hub_res.get("plans"), list):
+                return hub_res
             return result
         except PlanConflict as exc:
             return JSONResponse({"error": str(exc)}, status_code=409)

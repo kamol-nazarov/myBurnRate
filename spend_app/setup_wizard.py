@@ -1,10 +1,13 @@
-"""Interactive Application Setup Wizard & Multi-Computer Desktop Orchestration."""
+"""Interactive Application Setup Wizard & Central Account Multi-Computer Orchestration."""
 
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import os
+import secrets
 import shutil
 import socket
 import subprocess
@@ -19,20 +22,37 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from spend_app import aggregate
 from spend_app.db import connect, initialize, utc_now
 from spend_app.diagnostics import detect_local_sources, source_reports
-from spend_app.plan_service import effective_terms
+from spend_app.plan_service import PlanConflict, PlanError, apply_mutation, effective_terms, list_plans
 from spend_app.pricing import PricingEngine
 from spend_app.subscriptions import add_subscription, materialize_subscription_days
 from spend_app.sync import (
     STREAM_BROKER,
+    _HUB_TEST_CLIENTS,
+    authenticate_machine_token,
+    clear_hub_proxy_cache,
     list_machines,
+    post_to_configured_hub,
     register_machine,
+    register_or_reconnect_machine,
     rename_machine,
     sync_once,
 )
 
 
 SETUP_META_KEY = "app_setup.v1"
+ACCOUNTS_META_KEY = "accounts.v1"
 PAIRING_PREFIX = "brpair_"
+
+DEFAULT_CENTRAL_SERVER_URLS = (
+    "https://ai-harness-vps.tail982d0e.ts.net:8449",
+    "http://100.71.45.59:17331",
+)
+
+
+def default_central_server_url() -> str:
+    override = os.getenv("BURNRATE_CENTRAL_SERVER_URL", "").strip().rstrip("/")
+    return override or DEFAULT_CENTRAL_SERVER_URLS[0]
+
 
 HARNESS_CATALOG = {
     "codex_local": {"name": "OpenAI Codex CLI", "tool": "codex", "desc": "Local ~/.codex/sessions transcripts"},
@@ -75,6 +95,12 @@ def default_setup_state() -> dict:
         "completedAt": None,
         "role": "hub",
         "computerName": _default_computer_name(),
+        "account": {
+            "username": "",
+            "serverUrl": default_central_server_url(),
+            "machineId": "",
+            "connectedAt": None,
+        },
         "spokeConfig": {
             "hubUrl": "",
             "token": "",
@@ -103,6 +129,10 @@ def read_setup_state(connection) -> dict:
         if not isinstance(parsed, dict):
             return base
         merged = {**base, **parsed}
+        merged["account"] = {
+            **base["account"],
+            **(parsed.get("account") if isinstance(parsed.get("account"), dict) else {}),
+        }
         merged["spokeConfig"] = {
             **base["spokeConfig"],
             **(parsed.get("spokeConfig") if isinstance(parsed.get("spokeConfig"), dict) else {}),
@@ -138,6 +168,148 @@ def public_setup_state(state: dict) -> dict:
     )
     spoke.pop("token", None)
     return {**state, "spokeConfig": spoke}
+
+
+def _read_accounts(connection) -> dict:
+    row = connection.execute(
+        "SELECT value FROM app_meta WHERE key=?", (ACCOUNTS_META_KEY,)
+    ).fetchone()
+    if not row or not row[0]:
+        return {"version": 1, "users": {}}
+    try:
+        data = json.loads(row[0])
+        if isinstance(data, dict) and isinstance(data.get("users"), dict):
+            return data
+    except ValueError:
+        pass
+    return {"version": 1, "users": {}}
+
+
+def _write_accounts(connection, data: dict) -> None:
+    connection.execute(
+        "INSERT INTO app_meta(key, value) VALUES(?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (ACCOUNTS_META_KEY, json.dumps(data, separators=(",", ":"), sort_keys=True)),
+    )
+
+
+def _hash_password(password: str, salt_hex: str | None = None) -> tuple[str, str]:
+    salt = bytes.fromhex(salt_hex) if salt_hex else secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 120_000)
+    return salt.hex(), digest.hex()
+
+
+def _verify_password(password: str, salt_hex: str, expected_hash_hex: str) -> bool:
+    if not salt_hex or not expected_hash_hex:
+        return False
+    _, actual_hex = _hash_password(password, salt_hex)
+    return hmac.compare_digest(actual_hex, expected_hash_hex)
+
+
+def _apply_subscription_presets_and_custom(
+    connection,
+    timezone_name: str,
+    preset_keys: list[str],
+    custom_plans: list[dict],
+) -> int:
+    now_local = datetime.now(UTC).astimezone(ZoneInfo(timezone_name)).date()
+    month_first = date(now_local.year, now_local.month, 1).isoformat()
+    existing = effective_terms(connection)
+    existing_pairs = {(row["tool_key"], row["name"].lower()) for row in existing}
+    preset_map = {p["key"]: p for p in SUBSCRIPTION_PRESETS}
+    added_plans = 0
+
+    for key in preset_keys:
+        preset = preset_map.get(key) or preset_map.get(key.replace("-", "_"))
+        if not preset:
+            continue
+        pair = (preset["tool_key"], preset["name"].lower())
+        if pair in existing_pairs:
+            continue
+        add_subscription(
+            connection,
+            tool_key=preset["tool_key"],
+            name=preset["name"],
+            amount_usd=float(preset["amount_usd"]),
+            cadence=preset["cadence"],
+            start_date=month_first,
+            end_date=None,
+        )
+        existing_pairs.add(pair)
+        added_plans += 1
+
+    for item in custom_plans:
+        if not isinstance(item, dict):
+            continue
+        t_key = str(item.get("tool_key") or "custom").strip()
+        p_name = str(item.get("name") or "").strip()
+        amt = float(item.get("amount_usd") or 0)
+        cad = str(item.get("cadence") or "monthly").strip()
+        if not p_name or amt <= 0:
+            continue
+        pair = (t_key, p_name.lower())
+        if pair in existing_pairs:
+            continue
+        add_subscription(
+            connection,
+            tool_key=t_key,
+            name=p_name,
+            amount_usd=amt,
+            cadence=cad,
+            start_date=month_first,
+            end_date=None,
+        )
+        existing_pairs.add(pair)
+        added_plans += 1
+
+    if added_plans > 0:
+        materialize_subscription_days(
+            connection,
+            start=date.fromisoformat(month_first),
+            end=now_local + timedelta(days=40),
+        )
+    return added_plans
+
+
+def _sync_plans_into_local_db(connection, timezone_name: str, remote_plans: list[dict]) -> int:
+    if not isinstance(remote_plans, list) or not remote_plans:
+        return 0
+    now_local = datetime.now(UTC).astimezone(ZoneInfo(timezone_name)).date()
+    month_first = date(now_local.year, now_local.month, 1).isoformat()
+    existing = effective_terms(connection)
+    existing_pairs = {(row["tool_key"], row["name"].lower()) for row in existing}
+    added = 0
+    for item in remote_plans:
+        if not isinstance(item, dict):
+            continue
+        t_key = str(item.get("tool_key") or "custom").strip()
+        p_name = str(item.get("name") or "").strip()
+        amt = float(item.get("amount_usd") or 0)
+        cad = str(item.get("cadence") or "monthly").strip()
+        start_d = str(item.get("start_date") or month_first).strip()
+        if not p_name or amt <= 0:
+            continue
+        pair = (t_key, p_name.lower())
+        if pair in existing_pairs:
+            continue
+        add_subscription(
+            connection,
+            tool_key=t_key,
+            name=p_name,
+            amount_usd=amt,
+            cadence=cad,
+            start_date=start_d,
+            end_date=item.get("end_date"),
+        )
+        existing_pairs.add(pair)
+        added += 1
+    if added > 0:
+        materialize_subscription_days(
+            connection,
+            start=date.fromisoformat(month_first),
+            end=now_local + timedelta(days=40),
+        )
+    return added
 
 
 def encode_pairing_code(
@@ -258,10 +430,11 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
     spoke = state.get("spokeConfig") or {}
     if state.get("role") != "spoke" or not spoke.get("enabled"):
         return None
-    hub_url = str(spoke.get("hubUrl") or "").strip()
+    hub_url = str(spoke.get("hubUrl") or "").strip().rstrip("/")
     token = str(spoke.get("token") or "").strip()
     if not hub_url or not token:
         return None
+    resolved_client = client or _HUB_TEST_CLIENTS.get(hub_url)
     try:
         result = sync_once(
             settings,
@@ -270,8 +443,9 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
             token=token,
             machine_name=state.get("computerName") or _default_computer_name(),
             collect_local=False,
-            client=client,
+            client=resolved_client,
         )
+        clear_hub_proxy_cache()
         with connect(settings.database_path) as connection:
             latest = read_setup_state(connection)
             latest["spokeConfig"]["lastSyncAt"] = utc_now()
@@ -318,6 +492,43 @@ def _build_harness_list(settings) -> list[dict]:
     return result
 
 
+def _call_central_server_account(
+    server_url: str,
+    endpoint_path: str,
+    payload: dict,
+) -> tuple[str, dict]:
+    """Call `/api/account/register` or `/api/account/login` on the central server with fallback."""
+    clean_primary = (server_url or "").strip().rstrip("/") or default_central_server_url()
+    candidates = [clean_primary]
+    for fallback in DEFAULT_CENTRAL_SERVER_URLS:
+        if clean_primary in DEFAULT_CENTRAL_SERVER_URLS and fallback not in candidates:
+            candidates.append(fallback)
+
+    last_error = "Could not reach central account server."
+    for base_url in candidates:
+        test_client = _HUB_TEST_CLIENTS.get(base_url)
+        try:
+            if test_client is not None:
+                res = test_client.post(endpoint_path, json=payload)
+            else:
+                import httpx
+
+                with httpx.Client(timeout=8.0) as http:
+                    res = http.post(f"{base_url}{endpoint_path}", json=payload)
+            data = res.json() if res.content else {}
+            if res.status_code >= 400:
+                err_msg = data.get("error") if isinstance(data, dict) else None
+                raise ValueError(err_msg or f"Server returned HTTP {res.status_code}")
+            if not isinstance(data, dict) or not data.get("token"):
+                raise ValueError("Invalid response from central account server.")
+            return base_url, data
+        except ValueError:
+            raise
+        except Exception as exc:
+            last_error = f"Could not connect to central server ({base_url}): {exc}"
+    raise ValueError(last_error)
+
+
 def setup_router(settings, pricing: PricingEngine) -> APIRouter:
     router = APIRouter()
 
@@ -340,6 +551,7 @@ def setup_router(settings, pricing: PricingEngine) -> APIRouter:
         return JSONResponse(
             {
                 "setup": public_setup_state(state),
+                "centralServerUrl": default_central_server_url(),
                 "os": sys.platform,
                 "timezone": settings.timezone,
                 "networkAddresses": detect_network_addresses(port),
@@ -355,6 +567,254 @@ def setup_router(settings, pricing: PricingEngine) -> APIRouter:
             headers={"Cache-Control": "no-store"},
         )
 
+    @router.post("/api/account/register")
+    async def central_account_register(request: Request):
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError("Expected a JSON object.")
+            username = str(body.get("username") or "").strip()
+            password = str(body.get("password") or "")
+            computer_name = str(body.get("computerName") or "").strip() or "Connected Computer"
+            os_name = str(body.get("os") or "").strip()
+            preset_keys = [str(k) for k in (body.get("presetKeys") or []) if k]
+            custom_plans = body.get("customPlans") if isinstance(body.get("customPlans"), list) else []
+
+            if len(username) < 2 or len(username) > 64:
+                raise ValueError("Username must be between 2 and 64 characters.")
+            if len(password) < 4:
+                raise ValueError("Password must be at least 4 characters.")
+
+            user_key = username.lower()
+            initialize(settings.database_path)
+            with connect(settings.database_path) as connection:
+                accounts = _read_accounts(connection)
+                existing_user = accounts["users"].get(user_key)
+                if isinstance(existing_user, dict):
+                    if not _verify_password(
+                        password,
+                        str(existing_user.get("salt") or ""),
+                        str(existing_user.get("passwordHash") or ""),
+                    ):
+                        return JSONResponse(
+                            {"error": "Account already exists with a different password. Sign in instead."},
+                            status_code=401,
+                        )
+                else:
+                    salt_hex, hash_hex = _hash_password(password)
+                    accounts["users"][user_key] = {
+                        "username": username,
+                        "salt": salt_hex,
+                        "passwordHash": hash_hex,
+                        "createdAt": utc_now(),
+                    }
+                    _write_accounts(connection, accounts)
+
+                added_plans = _apply_subscription_presets_and_custom(
+                    connection,
+                    settings.timezone,
+                    preset_keys,
+                    custom_plans,
+                )
+                plans_out = effective_terms(connection)
+
+            reg = register_or_reconnect_machine(
+                settings.database_path,
+                name=computer_name,
+                os_name=os_name,
+            )
+            aggregate.reset_memo()
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "account": {"username": username},
+                    "addedPlans": added_plans,
+                    "machine": reg["machine"],
+                    "token": reg["token"],
+                    "machines": reg["machines"],
+                    "subscriptions": plans_out,
+                },
+                headers={"Cache-Control": "no-store"},
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=422)
+
+    @router.post("/api/account/login")
+    async def central_account_login(request: Request):
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError("Expected a JSON object.")
+            username = str(body.get("username") or "").strip()
+            password = str(body.get("password") or "")
+            computer_name = str(body.get("computerName") or "").strip() or "Connected Computer"
+            os_name = str(body.get("os") or "").strip()
+
+            if not username or not password:
+                raise ValueError("Enter your account username and password.")
+
+            user_key = username.lower()
+            initialize(settings.database_path)
+            with connect(settings.database_path) as connection:
+                accounts = _read_accounts(connection)
+                user_rec = accounts["users"].get(user_key)
+                if not isinstance(user_rec, dict):
+                    return JSONResponse(
+                        {"error": "Account not found. Switch to 'Create Account' to set up your account and subscriptions."},
+                        status_code=401,
+                    )
+                if not _verify_password(
+                    password,
+                    str(user_rec.get("salt") or ""),
+                    str(user_rec.get("passwordHash") or ""),
+                ):
+                    return JSONResponse(
+                        {"error": "Invalid username or password."},
+                        status_code=401,
+                    )
+                display_username = str(user_rec.get("username") or username)
+                plans_out = effective_terms(connection)
+
+            reg = register_or_reconnect_machine(
+                settings.database_path,
+                name=computer_name,
+                os_name=os_name,
+            )
+            aggregate.reset_memo()
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "account": {"username": display_username},
+                    "machine": reg["machine"],
+                    "token": reg["token"],
+                    "machines": reg["machines"],
+                    "subscriptions": plans_out,
+                },
+                headers={"Cache-Control": "no-store"},
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=422)
+
+    @router.post("/api/account/subscriptions")
+    async def central_account_subscriptions(request: Request):
+        auth = request.headers.get("authorization", "")
+        token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+        machine_id = authenticate_machine_token(settings.database_path, token)
+        if not machine_id:
+            return JSONResponse({"error": "Invalid or revoked machine token."}, status_code=401)
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError("Expected a JSON object.")
+            now_local = datetime.now(UTC).astimezone(ZoneInfo(settings.timezone)).date()
+            initialize(settings.database_path)
+            with connect(settings.database_path) as connection:
+                if "action" in body:
+                    connection.execute("BEGIN IMMEDIATE")
+                    result = apply_mutation(connection, body, now_local)
+                    aggregate.reset_memo()
+                    return JSONResponse(result, headers={"Cache-Control": "no-store"})
+                preset_keys = [str(k) for k in (body.get("presetKeys") or []) if k]
+                custom_plans = body.get("customPlans") if isinstance(body.get("customPlans"), list) else []
+                _apply_subscription_presets_and_custom(
+                    connection,
+                    settings.timezone,
+                    preset_keys,
+                    custom_plans,
+                )
+                result = {**list_plans(connection, now_local), "timezone": settings.timezone}
+            aggregate.reset_memo()
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+        except PlanConflict as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        except (PlanError, ValueError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=422)
+
+    @router.post("/api/setup/account")
+    async def setup_connect_account(request: Request):
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError("Expected a JSON object.")
+            mode = str(body.get("mode") or "login").strip().lower()
+            if mode not in {"login", "register"}:
+                raise ValueError("Mode must be 'login' or 'register'.")
+            username = str(body.get("username") or "").strip()
+            password = str(body.get("password") or "")
+            computer_name = str(body.get("computerName") or "").strip() or _default_computer_name()
+            server_url = str(body.get("serverUrl") or "").strip() or default_central_server_url()
+            preset_keys = [str(k) for k in (body.get("presetKeys") or []) if k]
+            custom_plans = body.get("customPlans") if isinstance(body.get("customPlans"), list) else []
+            test_sync = bool(body.get("testSync", True))
+
+            endpoint = "/api/account/register" if mode == "register" else "/api/account/login"
+            remote_payload = {
+                "username": username,
+                "password": password,
+                "computerName": computer_name,
+                "os": sys.platform,
+                "presetKeys": preset_keys,
+                "customPlans": custom_plans,
+            }
+            working_url, remote_data = _call_central_server_account(server_url, endpoint, remote_payload)
+            token = str(remote_data["token"]).strip()
+            machine = remote_data.get("machine") or {}
+            remote_subs = remote_data.get("subscriptions") if isinstance(remote_data.get("subscriptions"), list) else []
+            account_info = remote_data.get("account") if isinstance(remote_data.get("account"), dict) else {"username": username}
+
+            sync_result = None
+            if test_sync:
+                sync_client = _HUB_TEST_CLIENTS.get(working_url)
+                sync_result = sync_once(
+                    settings,
+                    pricing,
+                    hub_url=working_url,
+                    token=token,
+                    machine_name=computer_name,
+                    collect_local=False,
+                    client=sync_client,
+                )
+
+            initialize(settings.database_path)
+            with connect(settings.database_path) as connection:
+                _sync_plans_into_local_db(connection, settings.timezone, remote_subs)
+                state = read_setup_state(connection)
+                state["role"] = "spoke"
+                state["computerName"] = computer_name
+                state["account"] = {
+                    "username": str(account_info.get("username") or username),
+                    "serverUrl": working_url,
+                    "machineId": str(machine.get("id") or ""),
+                    "connectedAt": utc_now(),
+                }
+                state["spokeConfig"] = {
+                    "hubUrl": working_url,
+                    "token": token,
+                    "enabled": True,
+                    "lastSyncAt": utc_now() if sync_result else state["spokeConfig"].get("lastSyncAt"),
+                    "lastSyncError": None,
+                    "eventsPushed": int((sync_result or {}).get("eventsWritten") or 0),
+                }
+                saved = write_setup_state(connection, state)
+                local_subs = effective_terms(connection)
+
+            rename_machine(settings.database_path, machine_id="local", name=computer_name)
+            clear_hub_proxy_cache()
+            aggregate.reset_memo()
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "account": state["account"],
+                    "setup": public_setup_state(saved),
+                    "subscriptions": remote_subs or local_subs,
+                    "machines": remote_data.get("machines") or [],
+                    "syncResult": sync_result,
+                },
+                headers={"Cache-Control": "no-store"},
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=422)
+
     @router.post("/api/setup/scan")
     async def scan_and_import():
         from starlette.concurrency import run_in_threadpool
@@ -362,7 +822,7 @@ def setup_router(settings, pricing: PricingEngine) -> APIRouter:
         def _do_scan() -> dict:
             initialize(settings.database_path)
             from spend_app.providers import REGISTRY
-            from spend_app.quotas import poll_activity
+            from spend_app.quotas import poll_activity, poll_quotas
             from spend_app.scheduler import _run_ingest_specs
 
             try:
@@ -377,6 +837,11 @@ def setup_router(settings, pricing: PricingEngine) -> APIRouter:
                 poll_activity(database_path=settings.database_path)
             except Exception:
                 pass
+            try:
+                poll_quotas(database_path=settings.database_path, settings=settings)
+            except Exception:
+                pass
+            sync_res = maybe_run_configured_spoke_sync(settings, pricing)
             aggregate.reset_memo()
             STREAM_BROKER.publish({"type": "ingest", "source": "setup_scan"})
             with connect(settings.database_path) as connection:
@@ -393,6 +858,7 @@ def setup_router(settings, pricing: PricingEngine) -> APIRouter:
                 "eventsCount": int(events_count),
                 "tokensTotal": int(tokens_total),
                 "liveAgentsCount": int(agents_count),
+                "syncResult": sync_res,
             }
 
         res = await run_in_threadpool(_do_scan)
@@ -466,6 +932,7 @@ def setup_router(settings, pricing: PricingEngine) -> APIRouter:
                     token=token,
                     machine_name=computer_name,
                     collect_local=False,
+                    client=_HUB_TEST_CLIENTS.get(hub_url),
                 )
             initialize(settings.database_path)
             with connect(settings.database_path) as connection:
@@ -482,6 +949,7 @@ def setup_router(settings, pricing: PricingEngine) -> APIRouter:
                 }
                 saved = write_setup_state(connection, state)
             rename_machine(settings.database_path, machine_id="local", name=computer_name)
+            clear_hub_proxy_cache()
             return JSONResponse(
                 {
                     "ok": True,
@@ -501,73 +969,29 @@ def setup_router(settings, pricing: PricingEngine) -> APIRouter:
                 raise ValueError("Expected a JSON object.")
             initialize(settings.database_path)
             computer_name = str(body.get("computerName") or "").strip() or _default_computer_name()
-            role = str(body.get("role") or "hub").strip().lower()
-            if role not in {"hub", "spoke", "standalone"}:
-                raise ValueError("Role must be 'hub', 'spoke', or 'standalone'.")
-
+            requested_role = body.get("role")
             preset_keys = [str(k) for k in (body.get("presetKeys") or []) if k]
             custom_plans = body.get("customPlans") if isinstance(body.get("customPlans"), list) else []
             hud_cfg = body.get("hudConfig") if isinstance(body.get("hudConfig"), dict) else {}
 
-            now_local = datetime.now(UTC).astimezone(ZoneInfo(settings.timezone)).date()
-            month_first = date(now_local.year, now_local.month, 1).isoformat()
-
-            added_plans = 0
             with connect(settings.database_path) as connection:
-                existing = effective_terms(connection)
-                existing_pairs = {(row["tool_key"], row["name"].lower()) for row in existing}
-                preset_map = {p["key"]: p for p in SUBSCRIPTION_PRESETS}
-                for key in preset_keys:
-                    preset = preset_map.get(key) or preset_map.get(key.replace("-", "_"))
-                    if not preset:
-                        continue
-                    pair = (preset["tool_key"], preset["name"].lower())
-                    if pair in existing_pairs:
-                        continue
-                    add_subscription(
-                        connection,
-                        tool_key=preset["tool_key"],
-                        name=preset["name"],
-                        amount_usd=float(preset["amount_usd"]),
-                        cadence=preset["cadence"],
-                        start_date=month_first,
-                        end_date=None,
-                    )
-                    existing_pairs.add(pair)
-                    added_plans += 1
-
-                for item in custom_plans:
-                    if not isinstance(item, dict):
-                        continue
-                    t_key = str(item.get("tool_key") or "custom").strip()
-                    p_name = str(item.get("name") or "").strip()
-                    amt = float(item.get("amount_usd") or 0)
-                    cad = str(item.get("cadence") or "monthly").strip()
-                    if not p_name or amt <= 0:
-                        continue
-                    pair = (t_key, p_name.lower())
-                    if pair in existing_pairs:
-                        continue
-                    add_subscription(
-                        connection,
-                        tool_key=t_key,
-                        name=p_name,
-                        amount_usd=amt,
-                        cadence=cad,
-                        start_date=month_first,
-                        end_date=None,
-                    )
-                    existing_pairs.add(pair)
-                    added_plans += 1
-
-                if added_plans > 0:
-                    materialize_subscription_days(
-                        connection,
-                        start=date.fromisoformat(month_first),
-                        end=now_local + timedelta(days=40),
-                    )
-
                 state = read_setup_state(connection)
+                if requested_role is not None:
+                    role = str(requested_role).strip().lower()
+                elif state.get("spokeConfig", {}).get("enabled"):
+                    role = "spoke"
+                else:
+                    role = str(state.get("role") or "hub").strip().lower()
+                if role not in {"hub", "spoke", "standalone"}:
+                    raise ValueError("Role must be 'hub', 'spoke', or 'standalone'.")
+
+                added_plans = _apply_subscription_presets_and_custom(
+                    connection,
+                    settings.timezone,
+                    preset_keys,
+                    custom_plans,
+                )
+
                 state["completed"] = True
                 state["completedAt"] = utc_now()
                 state["computerName"] = computer_name
@@ -583,7 +1007,17 @@ def setup_router(settings, pricing: PricingEngine) -> APIRouter:
                 saved = write_setup_state(connection, state)
                 plans_out = effective_terms(connection)
 
+            if role == "spoke" and (preset_keys or custom_plans):
+                post_to_configured_hub(
+                    settings,
+                    "/api/account/subscriptions",
+                    {"presetKeys": preset_keys, "customPlans": custom_plans},
+                )
+            if role == "spoke":
+                maybe_run_configured_spoke_sync(settings, pricing)
+
             rename_machine(settings.database_path, machine_id="local", name=computer_name)
+            clear_hub_proxy_cache()
             aggregate.reset_memo()
             STREAM_BROKER.publish({"type": "setup_complete", "role": role})
             return JSONResponse(
@@ -643,7 +1077,7 @@ SETUP_WIZARD_HTML = """<!doctype html>
         line-height: 1.5;
       }
       .wizard-shell {
-        max-width: 880px;
+        max-width: 780px;
         margin: 0 auto;
         padding: 20px 24px 36px;
         display: flex;
@@ -701,26 +1135,26 @@ SETUP_WIZARD_HTML = """<!doctype html>
       }
       .wizard-stepper {
         display: grid;
-        grid-template-columns: repeat(5, minmax(0, 1fr));
-        gap: 8px;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
         list-style: none;
       }
       .wizard-stepper li {
-        padding: 9px 11px;
+        padding: 10px 14px;
         border-radius: 10px;
         background: var(--surface);
         border: 1px solid var(--border);
         display: flex;
         align-items: center;
-        gap: 8px;
-        font-size: 12px;
+        gap: 10px;
+        font-size: 13px;
         color: var(--muted);
         cursor: pointer;
         transition: all 0.15s;
       }
       .wizard-stepper li span.num {
-        width: 20px;
-        height: 20px;
+        width: 22px;
+        height: 22px;
         border-radius: 50%;
         display: inline-flex;
         align-items: center;
@@ -777,6 +1211,37 @@ SETUP_WIZARD_HTML = """<!doctype html>
         font-size: 13.5px;
         margin-top: 5px;
       }
+      .auth-tabs {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        background: var(--raised);
+        padding: 5px;
+        border-radius: 11px;
+        border: 1px solid var(--border);
+      }
+      .auth-tab {
+        appearance: none;
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        padding: 9px 14px;
+        color: var(--secondary);
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.15s;
+      }
+      .auth-tab.active {
+        background: var(--accent-soft);
+        border-color: var(--accent);
+        color: var(--text);
+      }
+      .form-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+      }
       .field-group {
         display: flex;
         flex-direction: column;
@@ -804,56 +1269,6 @@ SETUP_WIZARD_HTML = """<!doctype html>
         font-family: var(--font-mono);
         font-size: 12.5px;
       }
-      .role-grid {
-        display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 12px;
-      }
-      .role-option {
-        background: var(--raised);
-        border: 1px solid var(--border);
-        border-radius: 12px;
-        padding: 15px;
-        text-align: left;
-        cursor: pointer;
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-        color: var(--text);
-        transition: all 0.15s;
-      }
-      .role-option:hover {
-        background: var(--card-hover);
-        border-color: var(--border-strong);
-      }
-      .role-option.selected {
-        border-color: var(--accent);
-        background: var(--accent-soft);
-      }
-      .role-option strong {
-        font-size: 14px;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-      }
-      .role-option small {
-        font-size: 12px;
-        color: var(--secondary);
-        line-height: 1.45;
-      }
-      .role-tag {
-        font-family: var(--font-mono);
-        font-size: 10px;
-        padding: 2px 6px;
-        border-radius: 999px;
-        background: rgba(255, 255, 255, 0.07);
-        color: var(--secondary);
-      }
-      .role-option.selected .role-tag {
-        background: var(--accent);
-        color: #090b0e;
-        font-weight: 700;
-      }
       .sub-box {
         background: var(--raised);
         border: 1px solid var(--border);
@@ -875,7 +1290,7 @@ SETUP_WIZARD_HTML = """<!doctype html>
         flex-wrap: wrap;
       }
       .inline-row .text-input {
-        flex: 1 1 200px;
+        flex: 1 1 180px;
       }
       .btn {
         appearance: none;
@@ -908,19 +1323,6 @@ SETUP_WIZARD_HTML = """<!doctype html>
       .btn-primary:hover:not(:disabled) {
         background: #e5b252;
         border-color: #e5b252;
-      }
-      .pairing-output {
-        background: #0b0d11;
-        border: 1px solid rgba(99, 198, 137, 0.35);
-        border-radius: 10px;
-        padding: 12px;
-        font-family: var(--font-mono);
-        font-size: 11.5px;
-        word-break: break-all;
-        color: var(--green);
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
       }
       .harness-grid {
         display: grid;
@@ -969,10 +1371,10 @@ SETUP_WIZARD_HTML = """<!doctype html>
         gap: 10px;
       }
       .preset-card {
-        background: var(--raised);
+        background: var(--surface);
         border: 1px solid var(--border);
         border-radius: 10px;
-        padding: 12px 14px;
+        padding: 11px 13px;
         display: flex;
         align-items: center;
         justify-content: space-between;
@@ -986,7 +1388,7 @@ SETUP_WIZARD_HTML = """<!doctype html>
       }
       .preset-card strong {
         display: block;
-        font-size: 13.5px;
+        font-size: 13px;
       }
       .preset-card small {
         font-size: 11px;
@@ -994,7 +1396,7 @@ SETUP_WIZARD_HTML = """<!doctype html>
       }
       .preset-price {
         font-family: var(--font-mono);
-        font-size: 13px;
+        font-size: 12.5px;
         font-weight: 600;
         color: var(--accent);
       }
@@ -1022,8 +1424,16 @@ SETUP_WIZARD_HTML = """<!doctype html>
         border-color: rgba(239, 100, 97, 0.4);
         color: var(--danger);
       }
+      details.advanced-server {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      details.advanced-server summary {
+        cursor: pointer;
+        user-select: none;
+      }
       @media (max-width: 720px) {
-        .wizard-stepper, .role-grid, .harness-grid, .presets-grid {
+        .wizard-stepper, .form-grid, .harness-grid, .presets-grid {
           grid-template-columns: 1fr;
         }
       }
@@ -1041,121 +1451,49 @@ SETUP_WIZARD_HTML = """<!doctype html>
       </header>
 
       <ol class="wizard-stepper" id="wizard-stepper" aria-label="Setup steps">
-        <li data-step="1" class="active"><span class="num">1</span><span>Computer Identity</span></li>
-        <li data-step="2"><span class="num">2</span><span>Multi-Computer Sync</span></li>
-        <li data-step="3"><span class="num">3</span><span>AI Harnesses</span></li>
-        <li data-step="4"><span class="num">4</span><span>Subscriptions</span></li>
-        <li data-step="5"><span class="num">5</span><span>Sidecar HUD & Launch</span></li>
+        <li data-step="1" class="active"><span class="num">1</span><span>Account Login</span></li>
+        <li data-step="2"><span class="num">2</span><span>Installed Providers</span></li>
       </ol>
 
       <section class="wizard-card">
-        <!-- STEP 1: IDENTITY -->
+        <!-- STEP 1: ACCOUNT LOGIN / CREATE ACCOUNT -->
         <div id="wiz-step-1" class="wiz-pane">
           <div class="step-head">
-            <p class="step-eyebrow">Step 1 of 5 · Welcome</p>
-            <h1>Name this computer</h1>
-            <p>BURNRATE tracks real-time AI coding token spend, cache efficiency, and live agents across all your computers with zero cloud lock-in.</p>
-          </div>
-          <div class="field-group" style="margin-top: 14px;">
-            <label for="wiz-computer-name">Computer display name (shown in live agent activity & computer filters)</label>
-            <input id="wiz-computer-name" class="text-input" maxlength="64" placeholder="e.g. Kamol Workstation, MacBook Pro, Studio Desktop">
-          </div>
-          <div class="sub-box" style="margin-top: 14px;">
-            <h3>Detected Environment</h3>
-            <p style="font-size: 12.5px; color: var(--secondary);">
-              Platform: <strong class="mono-input" id="wiz-os-label">—</strong> ·
-              Timezone: <strong class="mono-input" id="wiz-tz-label">—</strong> ·
-              Storage: <strong class="mono-input">Local SQLite WAL</strong>
-            </p>
-          </div>
-        </div>
-
-        <!-- STEP 2: MULTI-COMPUTER ROLE -->
-        <div id="wiz-step-2" class="wiz-pane" hidden>
-          <div class="step-head">
-            <p class="step-eyebrow">Step 2 of 5 · Multi-Computer Architecture</p>
-            <h1>How should this computer connect?</h1>
-            <p>Run one computer as your self-hosted Hub and pair your other laptops or workstations in seconds using a Pairing Code.</p>
+            <p class="step-eyebrow">Step 1 of 2 · Central Account (tk-server)</p>
+            <h1 id="wiz-auth-heading">Sign in to your BURNRATE account</h1>
+            <p id="wiz-auth-sub">Log in once on any computer. Your central server on <code>tk-server</code> automatically aggregates usage, live agents, and subscriptions across every computer on your account.</p>
           </div>
 
-          <div class="role-grid" style="margin-top: 14px;" role="radiogroup" aria-label="Computer role">
-            <button type="button" class="role-option selected" data-role="hub">
-              <strong><span>Primary Hub</span><span class="role-tag">Recommended</span></strong>
-              <small>This computer hosts your primary dashboard and receives live usage from your other computers over Tailscale or LAN.</small>
-            </button>
-            <button type="button" class="role-option" data-role="spoke">
-              <strong><span>Connected Computer</span><span class="role-tag">Spoke</span></strong>
-              <small>Streams this computer's local AI usage and running agents in real time to your Primary Hub.</small>
-            </button>
-            <button type="button" class="role-option" data-role="standalone">
-              <strong><span>Standalone</span><span class="role-tag">Local only</span></strong>
-              <small>Tracks AI coding usage on this computer only with no multi-computer pairing.</small>
-            </button>
+          <div class="auth-tabs" role="tablist" aria-label="Account mode" style="margin-top: 14px;">
+            <button type="button" class="auth-tab active" data-auth-mode="login" id="wiz-tab-login">Sign In</button>
+            <button type="button" class="auth-tab" data-auth-mode="register" id="wiz-tab-register">Create Account &amp; Subscriptions</button>
           </div>
 
-          <!-- HUB PAIRING GENERATOR -->
-          <div id="wiz-hub-box" class="sub-box" style="margin-top: 14px;">
-            <h3>Pair another computer with this Hub</h3>
-            <p style="font-size: 12.5px; color: var(--secondary);">Generate a 1-click Pairing Code to paste into the BURNRATE Setup Wizard on your other laptop or desktop.</p>
-            <div class="inline-row">
-              <select id="wiz-hub-address" class="text-input mono-input" aria-label="Hub network address"></select>
-              <input id="wiz-remote-name" class="text-input" placeholder="Other computer name (e.g. MacBook Pro)">
-              <button type="button" class="btn btn-primary" id="wiz-generate-pair-btn">Generate Pairing Code</button>
-            </div>
-            <div id="wiz-pair-result" class="pairing-output" hidden>
-              <div><strong>1-Click Pairing Code (paste in Step 2 on the other computer):</strong></div>
-              <div id="wiz-pair-code" style="user-select: all; color: var(--text);"></div>
-              <div style="color: var(--secondary);">Or run via CLI: <span id="wiz-pair-cli" style="user-select: all; color: var(--cyan);"></span></div>
-              <div><button type="button" class="btn" id="wiz-copy-pair-btn">Copy Pairing Code</button></div>
-            </div>
-            <div id="wiz-paired-machines-list" style="font-size: 12px; color: var(--secondary);"></div>
-          </div>
-
-          <!-- SPOKE CONNECTION TESTER -->
-          <div id="wiz-spoke-box" class="sub-box" style="margin-top: 14px;" hidden>
-            <h3>Connect this computer to your Primary Hub</h3>
+          <div class="form-grid" style="margin-top: 14px;">
             <div class="field-group">
-              <label for="wiz-spoke-code">Paste 1-Click Pairing Code (starts with <code>brpair_</code>)</label>
-              <input id="wiz-spoke-code" class="text-input mono-input" placeholder="brpair_eyJodWJVcmwiOi...">
+              <label for="wiz-username">Account username or email</label>
+              <input id="wiz-username" class="text-input" autocomplete="username" placeholder="e.g. kamol">
             </div>
-            <p style="font-size: 11.5px; color: var(--muted);">— OR enter Hub URL and Machine Token manually —</p>
-            <div class="inline-row">
-              <input id="wiz-spoke-url" class="text-input mono-input" placeholder="http://100.x.y.z:17331">
-              <input id="wiz-spoke-token" class="text-input mono-input" placeholder="br_m_...">
-            </div>
-            <div class="inline-row">
-              <button type="button" class="btn btn-primary" id="wiz-connect-spoke-btn">Test & Pair Connection</button>
-              <span id="wiz-spoke-status" style="font-size: 12.5px; color: var(--secondary);"></span>
+            <div class="field-group">
+              <label for="wiz-password">Password</label>
+              <input id="wiz-password" type="password" class="text-input" autocomplete="current-password" placeholder="••••••••">
             </div>
           </div>
-        </div>
 
-        <!-- STEP 3: AI HARNESSES -->
-        <div id="wiz-step-3" class="wiz-pane" hidden>
-          <div class="step-head">
-            <p class="step-eyebrow">Step 3 of 5 · Local AI Harnesses</p>
-            <h1>Scan & import your AI coding tools</h1>
-            <p>BURNRATE automatically detects local session logs from Cursor, Claude Code, Codex, OpenCode, ZCode, Grok, Antigravity, and Traycer.</p>
+          <div class="field-group" style="margin-top: 12px;">
+            <label for="wiz-computer-name">This computer's name (shown in dashboard filters &amp; live agents)</label>
+            <input id="wiz-computer-name" class="text-input" maxlength="64" placeholder="e.g. MyDesktop, MacBook Pro">
           </div>
-          <div class="inline-row" style="margin-top: 12px; justify-content: space-between;">
-            <span id="wiz-scan-summary" class="status-banner">Checking local AI coding harnesses…</span>
-            <button type="button" class="btn btn-primary" id="wiz-scan-btn">Scan & Import Usage Now</button>
-          </div>
-          <div class="harness-grid" id="wiz-harness-grid" style="margin-top: 12px;"></div>
-        </div>
 
-        <!-- STEP 4: SUBSCRIPTIONS -->
-        <div id="wiz-step-4" class="wiz-pane" hidden>
-          <div class="step-head">
-            <p class="step-eyebrow">Step 4 of 5 · Subscriptions & Plans</p>
-            <h1>Select your active AI subscriptions</h1>
-            <p>BURNRATE compares your real API-equivalent usage against your monthly subscription costs to show true plan ROI.</p>
-          </div>
-          <div class="presets-grid" id="wiz-presets-grid" style="margin-top: 12px;"></div>
-          <div class="sub-box" style="margin-top: 12px;">
-            <h3>Add a custom subscription (optional)</h3>
-            <div class="inline-row">
-              <select id="wiz-custom-tool" class="text-input">
+          <!-- SUBSCRIPTIONS PICKER (SHOWN WHEN CREATING AN ACCOUNT) -->
+          <div id="wiz-register-subs" class="sub-box" style="margin-top: 14px;" hidden>
+            <div>
+              <h3>Set up your active AI subscriptions</h3>
+              <p style="font-size: 12px; color: var(--secondary); margin-top: 2px;">Saved to your account on <code>tk-server</code> so plan ROI is tracked across all your computers.</p>
+            </div>
+            <div class="presets-grid" id="wiz-presets-grid"></div>
+            <div class="inline-row" style="margin-top: 4px;">
+              <select id="wiz-custom-tool" class="text-input" style="max-width: 170px;">
                 <option value="claude-code">Claude Code</option>
                 <option value="codex">Codex / OpenAI</option>
                 <option value="cursor">Cursor</option>
@@ -1164,43 +1502,56 @@ SETUP_WIZARD_HTML = """<!doctype html>
                 <option value="openrouter">OpenRouter</option>
                 <option value="custom">Custom</option>
               </select>
-              <input id="wiz-custom-name" class="text-input" placeholder="Plan name (e.g. Team Seat)">
-              <input id="wiz-custom-amount" type="number" min="0" step="0.01" class="text-input mono-input" placeholder="USD / month" style="max-width: 140px;">
+              <input id="wiz-custom-name" class="text-input" placeholder="Custom plan name (optional)">
+              <input id="wiz-custom-amount" type="number" min="0" step="0.01" class="text-input mono-input" placeholder="USD/mo" style="max-width: 120px;">
               <button type="button" class="btn" id="wiz-add-custom-plan-btn">Add Plan</button>
             </div>
             <div id="wiz-existing-plans" style="font-size: 12px; color: var(--secondary);"></div>
           </div>
+
+          <div id="wiz-auth-status" class="status-banner" style="margin-top: 14px;" hidden></div>
+
+          <details class="advanced-server" style="margin-top: 10px;">
+            <summary>Account server: <code id="wiz-server-label">tk-server (100.71.45.59)</code></summary>
+            <div class="field-group" style="margin-top: 8px;">
+              <label for="wiz-server-url">Central Account Server URL</label>
+              <input id="wiz-server-url" class="text-input mono-input" placeholder="https://ai-harness-vps.tail982d0e.ts.net:8449">
+            </div>
+          </details>
         </div>
 
-        <!-- STEP 5: SIDECAR HUD & FINISH -->
-        <div id="wiz-step-5" class="wiz-pane" hidden>
+        <!-- STEP 2: CONNECT INSTALLED PROVIDERS -->
+        <div id="wiz-step-2" class="wiz-pane" hidden>
           <div class="step-head">
-            <p class="step-eyebrow">Step 5 of 5 · Native Desktop & Sidecar HUD</p>
-            <h1>Configure your Always-on-Top Sidecar HUD</h1>
-            <p>Keep a compact live meter docked on the side of your screen showing real-time burn rate, active agents across all computers, and quota limits.</p>
+            <p class="step-eyebrow">Step 2 of 2 · Installed Providers</p>
+            <h1>Connect installed AI providers on this computer</h1>
+            <p>BURNRATE automatically detects the AI coding tools installed on this computer and streams their usage and live quotas to your account.</p>
           </div>
+
+          <div class="inline-row" style="margin-top: 12px; justify-content: space-between;">
+            <span id="wiz-scan-summary" class="status-banner">Checking installed AI providers…</span>
+            <button type="button" class="btn btn-primary" id="wiz-scan-btn">Reconnect &amp; Sync Installed Providers</button>
+          </div>
+
+          <div class="harness-grid" id="wiz-harness-grid" style="margin-top: 12px;"></div>
+
           <div class="sub-box" style="margin-top: 14px;">
             <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
               <input type="checkbox" id="wiz-hud-auto" checked style="width: 17px; height: 17px;">
-              <span><strong>Launch Sidecar HUD automatically</strong> — Keep live multi-computer activity visible on the side</span>
+              <span><strong>Launch Sidecar HUD automatically</strong> — Keep a compact live burn-rate &amp; quota meter pinned on your screen</span>
             </label>
-            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
-              <input type="checkbox" id="wiz-hud-top" checked style="width: 17px; height: 17px;">
-              <span><strong>Pin Always-on-Top</strong> — Float above your IDE and terminal windows</span>
-            </label>
-            <div class="inline-row" style="margin-top: 6px;">
-              <button type="button" class="btn" id="wiz-preview-hud-btn">Preview Sidecar HUD Window ↗</button>
-            </div>
+            <input type="checkbox" id="wiz-hud-top" checked hidden>
           </div>
-          <div id="wiz-finish-banner" class="status-banner good" style="margin-top: 14px;">
-            Ready to launch BURNRATE with real-time multi-computer telemetry and Sidecar HUD.
+
+          <div id="wiz-finish-banner" class="status-banner good" style="margin-top: 12px;">
+            Account connected. Installed providers on this computer will sync automatically in the background.
           </div>
         </div>
 
         <footer class="wizard-footer">
           <button type="button" class="btn" id="wiz-back-btn" disabled>← Back</button>
           <div class="inline-row">
-            <button type="button" class="btn btn-primary" id="wiz-next-btn">Continue →</button>
+            <button type="button" class="btn btn-primary" id="wiz-next-btn">Sign In &amp; Continue →</button>
           </div>
         </footer>
       </section>
@@ -1210,8 +1561,9 @@ SETUP_WIZARD_HTML = """<!doctype html>
       (() => {
         const $ = id => document.getElementById(id);
         let step = 1;
+        let authMode = "login";
         let stateData = null;
-        let role = "hub";
+        let accountConnected = false;
         const selectedPresets = new Set();
         const customPlans = [];
 
@@ -1227,37 +1579,49 @@ SETUP_WIZARD_HTML = """<!doctype html>
           return data;
         }
 
-        function setStep(next) {
-          step = Math.max(1, Math.min(5, next));
-          for (let i = 1; i <= 5; i++) {
-            $("wiz-step-" + i).hidden = i !== step;
+        function setAuthMode(nextMode) {
+          authMode = nextMode === "register" ? "register" : "login";
+          $("wiz-tab-login").classList.toggle("active", authMode === "login");
+          $("wiz-tab-register").classList.toggle("active", authMode === "register");
+          $("wiz-register-subs").hidden = authMode !== "register";
+          $("wiz-auth-heading").textContent = authMode === "register"
+            ? "Create your account & subscriptions"
+            : "Sign in to your BURNRATE account";
+          if (step === 1) {
+            $("wiz-next-btn").textContent = authMode === "register"
+              ? "Create Account & Continue →"
+              : "Sign In & Continue →";
           }
+        }
+
+        function setStep(next) {
+          step = Math.max(1, Math.min(2, next));
+          $("wiz-step-1").hidden = step !== 1;
+          $("wiz-step-2").hidden = step !== 2;
           document.querySelectorAll("#wizard-stepper li").forEach(li => {
             const s = Number(li.dataset.step);
             li.classList.toggle("active", s === step);
             li.classList.toggle("done", s < step);
           });
           $("wiz-back-btn").disabled = step === 1;
-          $("wiz-next-btn").textContent = step === 5 ? "Finish Setup & Launch BURNRATE" : "Continue →";
-        }
-
-        function setRole(nextRole) {
-          role = nextRole;
-          document.querySelectorAll("[data-role]").forEach(btn => {
-            btn.classList.toggle("selected", btn.dataset.role === role);
-          });
-          $("wiz-hub-box").hidden = role !== "hub";
-          $("wiz-spoke-box").hidden = role !== "spoke";
+          if (step === 1) {
+            $("wiz-next-btn").textContent = authMode === "register"
+              ? "Create Account & Continue →"
+              : "Sign In & Continue →";
+          } else {
+            $("wiz-next-btn").textContent = "Finish Setup & Launch BURNRATE";
+          }
         }
 
         function renderHarnesses(harnesses, stats) {
           const grid = $("wiz-harness-grid");
-          const detectedCount = (harnesses || []).filter(h => h.detected).length;
+          const list = harnesses || [];
+          const detectedCount = list.filter(h => h.detected).length;
           $("wiz-scan-summary").textContent =
-            `${detectedCount} of ${(harnesses || []).length} AI harnesses detected · ${stats?.eventsCount ?? 0} usage records · ${stats?.liveAgentsCount ?? 0} live agents`;
+            `${detectedCount} installed AI provider${detectedCount === 1 ? "" : "s"} connected · ${stats?.eventsCount ?? 0} usage records · ${stats?.liveAgentsCount ?? 0} live agents`;
           $("wiz-scan-summary").className = "status-banner" + (detectedCount > 0 ? " good" : "");
 
-          grid.replaceChildren(...(harnesses || []).map(h => {
+          grid.replaceChildren(...list.map(h => {
             const card = document.createElement("div");
             card.className = "harness-item" + (h.detected ? " detected" : "");
             const left = document.createElement("div");
@@ -1268,7 +1632,7 @@ SETUP_WIZARD_HTML = """<!doctype html>
             left.append(title, sub);
             const chip = document.createElement("span");
             chip.className = "status-chip" + (h.detected ? " good" : "");
-            chip.textContent = h.state === "healthy" ? "Healthy" : h.detected ? "Detected" : "Not found";
+            chip.textContent = h.detected ? "Connected" : "Not installed";
             card.append(left, chip);
             return card;
           }));
@@ -1287,7 +1651,7 @@ SETUP_WIZARD_HTML = """<!doctype html>
             const title = document.createElement("strong");
             title.textContent = p.name;
             const sub = document.createElement("small");
-            sub.textContent = already ? `${p.badge} · Already active` : `${p.badge} · Click to include`;
+            sub.textContent = already ? `${p.badge} · Active on account` : `${p.badge} · Click to include`;
             left.append(title, sub);
             const price = document.createElement("span");
             price.className = "preset-price";
@@ -1303,98 +1667,14 @@ SETUP_WIZARD_HTML = """<!doctype html>
           }));
           const allPlans = [...(existing || []), ...customPlans];
           $("wiz-existing-plans").textContent = allPlans.length
-            ? "Configured plans: " + allPlans.map(p => `${p.name} ($${p.amount_usd}/mo)`).join(" · ")
-            : "No existing plans configured yet.";
+            ? "Account plans: " + allPlans.map(p => `${p.name} ($${p.amount_usd}/mo)`).join(" · ")
+            : "Select your monthly plans above.";
         }
 
-        function renderMachinesList(machines) {
-          const remote = (machines || []).filter(m => !m.isLocal && m.id !== "local");
-          $("wiz-paired-machines-list").textContent = remote.length
-            ? `Paired computers (${remote.length}): ` + remote.map(m => m.name).join(", ")
-            : "No remote computers paired yet.";
-        }
-
-        async function loadInitialState() {
-          try {
-            stateData = await api("/api/setup/state");
-            const s = stateData.setup || {};
-            $("wiz-computer-name").value = s.computerName || "";
-            $("wiz-os-label").textContent = stateData.os || "local";
-            $("wiz-tz-label").textContent = stateData.timezone || "UTC";
-            setRole(s.role || "hub");
-            if (s.spokeConfig?.hubUrl) $("wiz-spoke-url").value = s.spokeConfig.hubUrl;
-            $("wiz-hud-auto").checked = s.hudConfig?.autoOpen !== false;
-            $("wiz-hud-top").checked = s.hudConfig?.alwaysOnTop !== false;
-
-            const addrSelect = $("wiz-hub-address");
-            addrSelect.replaceChildren(...(stateData.networkAddresses || []).map(a => {
-              const opt = document.createElement("option");
-              opt.value = a.url;
-              opt.textContent = `${a.label} — ${a.url}`;
-              return opt;
-            }));
-
-            renderMachinesList(stateData.machines);
-            renderHarnesses(stateData.harnesses, stateData.stats);
-            renderPresets(stateData.presets, stateData.subscriptions);
-          } catch (err) {
-            $("wiz-scan-summary").textContent = "Could not load setup metadata: " + err.message;
-          }
-        }
-
-        document.querySelectorAll("#wizard-stepper li").forEach(li => {
-          li.addEventListener("click", () => setStep(Number(li.dataset.step)));
-        });
-        document.querySelectorAll("[data-role]").forEach(btn => {
-          btn.addEventListener("click", () => setRole(btn.dataset.role));
-        });
-
-        $("wiz-generate-pair-btn").addEventListener("click", async () => {
-          const name = $("wiz-remote-name").value.trim() || "Remote Computer";
-          const hubUrl = $("wiz-hub-address").value;
-          try {
-            const res = await api("/api/setup/pair-hub", "POST", {name, hubUrl});
-            $("wiz-pair-result").hidden = false;
-            $("wiz-pair-code").textContent = res.pairingCode;
-            $("wiz-pair-cli").textContent = res.syncCommand;
-            renderMachinesList(res.machines);
-          } catch (err) {
-            alert(err.message);
-          }
-        });
-
-        $("wiz-copy-pair-btn").addEventListener("click", async () => {
-          const code = $("wiz-pair-code").textContent;
-          try {
-            await navigator.clipboard.writeText(code);
-            $("wiz-copy-pair-btn").textContent = "Copied Pairing Code!";
-          } catch {}
-        });
-
-        $("wiz-connect-spoke-btn").addEventListener("click", async () => {
-          const status = $("wiz-spoke-status");
-          status.textContent = "Testing connection & syncing…";
-          status.style.color = "var(--secondary)";
-          try {
-            const res = await api("/api/setup/connect-spoke", "POST", {
-              pairingCode: $("wiz-spoke-code").value.trim(),
-              hubUrl: $("wiz-spoke-url").value.trim(),
-              token: $("wiz-spoke-token").value.trim(),
-              computerName: $("wiz-computer-name").value.trim(),
-              testSync: true
-            });
-            status.textContent = `Connected! Pushed ${res.syncResult?.eventsWritten ?? 0} usage events to Hub.`;
-            status.style.color = "var(--green)";
-          } catch (err) {
-            status.textContent = "Connection failed: " + err.message;
-            status.style.color = "var(--danger)";
-          }
-        });
-
-        $("wiz-scan-btn").addEventListener("click", async () => {
+        async function runProviderScan() {
           const btn = $("wiz-scan-btn");
           btn.disabled = true;
-          btn.textContent = "Scanning & Importing…";
+          btn.textContent = "Scanning & Syncing…";
           try {
             const res = await api("/api/setup/scan", "POST", {});
             renderHarnesses(res.harnesses, {eventsCount: res.eventsCount, liveAgentsCount: res.liveAgentsCount});
@@ -1402,9 +1682,48 @@ SETUP_WIZARD_HTML = """<!doctype html>
             $("wiz-scan-summary").textContent = "Scan error: " + err.message;
           } finally {
             btn.disabled = false;
-            btn.textContent = "Scan & Import Usage Now";
+            btn.textContent = "Reconnect & Sync Installed Providers";
           }
+        }
+
+        async function loadInitialState() {
+          try {
+            stateData = await api("/api/setup/state");
+            const s = stateData.setup || {};
+            $("wiz-computer-name").value = s.computerName || "";
+            if (s.account?.username) {
+              $("wiz-username").value = s.account.username;
+            }
+            const serverUrl = s.account?.serverUrl || stateData.centralServerUrl || "";
+            $("wiz-server-url").value = serverUrl;
+            if (s.spokeConfig?.hasToken && s.account?.username) {
+              accountConnected = true;
+              const status = $("wiz-auth-status");
+              status.hidden = false;
+              status.className = "status-banner good";
+              status.textContent = `Signed in as ${s.account.username} on ${s.computerName || "this computer"}.`;
+            }
+            $("wiz-hud-auto").checked = s.hudConfig?.autoOpen !== false;
+            $("wiz-hud-top").checked = s.hudConfig?.alwaysOnTop !== false;
+
+            renderHarnesses(stateData.harnesses, stateData.stats);
+            renderPresets(stateData.presets, stateData.subscriptions);
+          } catch (err) {
+            $("wiz-scan-summary").textContent = "Could not load setup metadata: " + err.message;
+          }
+        }
+
+        $("wiz-tab-login").addEventListener("click", () => setAuthMode("login"));
+        $("wiz-tab-register").addEventListener("click", () => setAuthMode("register"));
+
+        document.querySelectorAll("#wizard-stepper li").forEach(li => {
+          li.addEventListener("click", () => {
+            const target = Number(li.dataset.step);
+            if (target === 1 || accountConnected) setStep(target);
+          });
         });
+
+        $("wiz-scan-btn").addEventListener("click", () => runProviderScan());
 
         $("wiz-add-custom-plan-btn").addEventListener("click", () => {
           const tool_key = $("wiz-custom-tool").value;
@@ -1417,30 +1736,64 @@ SETUP_WIZARD_HTML = """<!doctype html>
           renderPresets(stateData?.presets || [], stateData?.subscriptions || []);
         });
 
-        $("wiz-preview-hud-btn").addEventListener("click", () => {
-          const internals = window.__TAURI_INTERNALS__;
-          if (internals && typeof internals.invoke === "function") {
-            internals.invoke("toggle_hud");
-            return;
-          }
-          window.open("/hud", "burnrate-hud", "popup=yes,width=360,height=580,left=24,top=72");
-        });
-
         $("wiz-back-btn").addEventListener("click", () => setStep(step - 1));
+
         $("wiz-next-btn").addEventListener("click", async () => {
-          if (step < 5) {
-            setStep(step + 1);
+          const btn = $("wiz-next-btn");
+          if (step === 1) {
+            const username = $("wiz-username").value.trim();
+            const password = $("wiz-password").value;
+            const computerName = $("wiz-computer-name").value.trim();
+            const serverUrl = $("wiz-server-url").value.trim();
+            const status = $("wiz-auth-status");
+
+            if (!username || !password) {
+              status.hidden = false;
+              status.className = "status-banner err";
+              status.textContent = "Please enter your account username and password.";
+              return;
+            }
+
+            btn.disabled = true;
+            btn.textContent = authMode === "register" ? "Creating Account…" : "Signing In…";
+            status.hidden = false;
+            status.className = "status-banner";
+            status.textContent = "Connecting to central account server (tk-server)…";
+            try {
+              const res = await api("/api/setup/account", "POST", {
+                mode: authMode,
+                username,
+                password,
+                computerName,
+                serverUrl,
+                presetKeys: [...selectedPresets],
+                customPlans,
+                testSync: false
+              });
+              accountConnected = true;
+              status.className = "status-banner good";
+              status.textContent = `Connected as ${res.account?.username || username}!`;
+              setStep(2);
+              runProviderScan();
+            } catch (err) {
+              status.className = "status-banner err";
+              status.textContent = err.message;
+              btn.disabled = false;
+              setStep(1);
+            } finally {
+              btn.disabled = false;
+            }
             return;
           }
-          const btn = $("wiz-next-btn");
+
           btn.disabled = true;
-          btn.textContent = "Saving & Launching…";
+          btn.textContent = "Finishing & Launching…";
           try {
             const autoHud = $("wiz-hud-auto").checked;
             const topHud = $("wiz-hud-top").checked;
             await api("/api/setup/complete", "POST", {
               computerName: $("wiz-computer-name").value.trim(),
-              role,
+              role: accountConnected ? "spoke" : "hub",
               presetKeys: [...selectedPresets],
               customPlans,
               hudConfig: {autoOpen: autoHud, alwaysOnTop: topHud, dock: "top-left"}

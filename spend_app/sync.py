@@ -133,17 +133,24 @@ def list_machines(
 ) -> list[dict]:
     moment = (now or datetime.now(UTC)).astimezone(UTC)
     state = _read_state(connection)
-    items: list[dict] = [
-        {
-            "id": "local",
-            "name": state.get("hub_name") or _default_hub_name(),
-            "os": sys.platform,
-            "isLocal": True,
-            "online": True,
-            "lastSeenAt": moment.isoformat().replace("+00:00", "Z"),
-            "eventsPushed": 0,
-        }
-    ]
+    is_central = os.getenv("BURNRATE_CENTRAL_SERVER", "").strip().lower() in {"1", "true", "yes"}
+    has_remote_machines = any(
+        isinstance(rec, dict) and not rec.get("revoked")
+        for rec in state["machines"].values()
+    )
+    items: list[dict] = []
+    if not (is_central and has_remote_machines):
+        items.append(
+            {
+                "id": "local",
+                "name": state.get("hub_name") or _default_hub_name(),
+                "os": sys.platform,
+                "isLocal": True,
+                "online": True,
+                "lastSeenAt": moment.isoformat().replace("+00:00", "Z"),
+                "eventsPushed": 0,
+            }
+        )
     cutoff = moment - timedelta(seconds=MACHINE_ONLINE_SECONDS)
     for machine_id, rec in sorted(
         state["machines"].items(),
@@ -165,6 +172,50 @@ def list_machines(
             }
         )
     return items
+
+
+def register_or_reconnect_machine(
+    database_path: Path,
+    *,
+    name: str,
+    os_name: str = "",
+    now: datetime | None = None,
+) -> dict:
+    clean_name = (name or "").strip()
+    if not clean_name or len(clean_name) > 64:
+        raise ValueError("Machine name must be between 1 and 64 characters.")
+    stamp = ((now or datetime.now(UTC)).astimezone(UTC)).isoformat().replace("+00:00", "Z")
+    initialize(database_path)
+    with connect(database_path) as connection:
+        state = _read_state(connection)
+        matched_id = None
+        for existing_id, rec in state["machines"].items():
+            if not isinstance(rec, dict) or rec.get("revoked"):
+                continue
+            if str(rec.get("name") or "").strip().lower() == clean_name.lower():
+                matched_id = existing_id
+                break
+        if matched_id is None:
+            base = _slugify(clean_name)
+            matched_id = f"{base}-{secrets.token_hex(2)}"
+            while matched_id in state["machines"] or matched_id in {"local", "all"}:
+                matched_id = f"{base}-{secrets.token_hex(2)}"
+        token = f"br_m_{matched_id}_{secrets.token_urlsafe(24)}"
+        prev = state["machines"].get(matched_id) if isinstance(state["machines"].get(matched_id), dict) else {}
+        state["machines"][matched_id] = {
+            "id": matched_id,
+            "name": clean_name,
+            "os": (os_name or prev.get("os") or "").strip()[:32],
+            "token_hash": _token_hash(token),
+            "created_at": prev.get("created_at") or stamp,
+            "last_seen_at": stamp,
+            "events_pushed": int(prev.get("events_pushed") or 0),
+        }
+        _write_state(connection, state)
+        machines = list_machines(connection, now=now)
+    created = next(item for item in machines if item["id"] == matched_id)
+    STREAM_BROKER.publish({"type": "machines", "machineId": matched_id, "at": stamp})
+    return {"machine": created, "token": token, "machines": machines}
 
 
 def register_machine(
@@ -512,13 +563,29 @@ def apply_sync_push(
                             connection.execute("DELETE FROM agent_runs WHERE id=?", (old_id,))
 
             for item in quota_items:
+                unit_val = str(item.get("unit") or "pct")
+                if unit_val == "unavailable":
+                    existing = connection.execute(
+                        "SELECT unit FROM quotas WHERE provider_key=? AND limit_key=? ORDER BY polled_at DESC, id DESC LIMIT 1",
+                        (str(item["provider_key"]), str(item["limit_key"])),
+                    ).fetchone()
+                    if existing and existing[0] and existing[0] != "unavailable":
+                        continue
+                orig_source = str(item.get("source") or "").strip()
+                sync_source = (
+                    orig_source
+                    if orig_source.startswith("sync:")
+                    else f"sync:{machine_id}:{orig_source}"
+                    if orig_source
+                    else f"sync:{machine_id}"
+                )
                 upsert_quota(
                     connection,
                     provider_key=str(item["provider_key"]),
                     limit_key=str(item["limit_key"]),
                     label=str(item["label"]),
-                    unit=str(item.get("unit") or "pct"),
-                    source=str(item.get("source") or f"sync:{machine_id}"),
+                    unit=unit_val,
+                    source=sync_source,
                     polled_at=str(item.get("polled_at") or stamp),
                     used=float(item["used"]) if item.get("used") is not None else None,
                     allowance=(
@@ -622,6 +689,44 @@ def export_sync_batch(
                 "SELECT * FROM agent_runs WHERE id NOT LIKE 'm:%'"
             )
         ]
+        raw_quotas = [
+            dict(row)
+            for row in connection.execute(
+                """
+                SELECT q.*
+                FROM quotas q
+                JOIN (
+                    SELECT provider_key, limit_key, MAX(id) AS max_id
+                    FROM quotas
+                    WHERE source NOT LIKE 'sync:%'
+                    GROUP BY provider_key, limit_key
+                ) latest ON q.id = latest.max_id
+                """
+            )
+        ]
+        try:
+            from spend_app.codex_quota import read_rows as verify_codex_rows
+
+            verified_quotas = verify_codex_rows(connection, rows=raw_quotas)
+        except Exception:
+            verified_quotas = raw_quotas
+        quota_rows = [
+            {
+                "provider_key": r["provider_key"],
+                "limit_key": r["limit_key"],
+                "label": r["label"],
+                "used": r.get("used"),
+                "allowance": r.get("allowance"),
+                "unit": r.get("unit") or "pct",
+                "pct": r.get("pct"),
+                "resets_at": r.get("resets_at"),
+                "source": r.get("source") or "",
+                "polled_at": r.get("polled_at"),
+                "is_payg": r.get("is_payg"),
+            }
+            for r in verified_quotas
+            if str(r.get("unit") or "") != "unavailable"
+        ]
         state = _read_state(connection)
         hub_name = state.get("hub_name") or _default_hub_name()
 
@@ -642,6 +747,7 @@ def export_sync_batch(
         "unpricedEvents": unpriced_rows,
         "sessions": sessions,
         "agentRuns": agent_runs,
+        "quotas": quota_rows,
         "replaceAgentRuns": True,
     }
     return payload, next_cursor
@@ -703,6 +809,12 @@ def sync_once(
             poll_activity(database_path=settings.database_path)
         except Exception:
             pass
+        try:
+            from spend_app.quotas import poll_quotas
+
+            poll_quotas(database_path=settings.database_path, settings=settings)
+        except Exception:
+            pass
 
     cursor = read_sync_cursor(settings.database_path, hub_url)
     total_written = 0
@@ -742,6 +854,55 @@ _HUB_TEST_CLIENTS: dict[str, object] = {}
 def register_hub_test_client(hub_url: str, client: object) -> None:
     """Allow in-process unit tests to route spoke read-through calls to a TestClient."""
     _HUB_TEST_CLIENTS[hub_url.strip().rstrip("/")] = client
+
+
+def clear_hub_proxy_cache() -> None:
+    with _HUB_PROXY_LOCK:
+        _HUB_PROXY_CACHE.clear()
+
+
+def post_to_configured_hub(
+    settings,
+    path: str,
+    body: dict,
+) -> dict | None:
+    """Forward a write mutation from a paired Spoke to the central Hub."""
+    try:
+        from spend_app.setup_wizard import read_setup_state
+
+        with connect(settings.database_path) as connection:
+            state = read_setup_state(connection)
+    except Exception:
+        return None
+    if state.get("role") != "spoke":
+        return None
+    spoke = state.get("spokeConfig") or {}
+    if not spoke.get("enabled"):
+        return None
+    hub_url = str(spoke.get("hubUrl") or "").strip().rstrip("/")
+    token = str(spoke.get("token") or "").strip()
+    if not hub_url or not token:
+        return None
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    test_client = _HUB_TEST_CLIENTS.get(hub_url)
+    try:
+        if test_client is not None:
+            response = test_client.post(path, json=body, headers=headers)
+        else:
+            import httpx
+
+            with httpx.Client(timeout=5.0) as http:
+                response = http.post(f"{hub_url}{path}", json=body, headers=headers)
+        clear_hub_proxy_cache()
+        if response.status_code >= 400:
+            return None
+        data = response.json()
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
 
 
 def fetch_from_configured_hub(
@@ -818,6 +979,10 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
             if not isinstance(body, dict):
                 raise ValueError("Expected a JSON object.")
             action = str(body.get("action") or "register").strip().lower()
+            if action in {"revoke", "rename"}:
+                hub_res = post_to_configured_hub(settings, "/api/machines", body)
+                if isinstance(hub_res, dict) and isinstance(hub_res.get("machines"), list):
+                    return JSONResponse(hub_res, headers={"Cache-Control": "no-store"})
             if action == "register":
                 result = register_machine(
                     settings.database_path,
