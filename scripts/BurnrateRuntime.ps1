@@ -85,7 +85,7 @@ function Test-BurnratePython312 {
         }
     }
     try {
-        $version = (& $probe -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")').Trim()
+        $version = (& $probe -c 'import sys; print(str(sys.version_info.major) + chr(46) + str(sys.version_info.minor))').Trim()
     } catch {
         return $false
     }

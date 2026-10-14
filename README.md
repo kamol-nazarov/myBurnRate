@@ -1,66 +1,214 @@
 # BURNRATE
 
-## What BURNRATE is
+**Private, local-first AI coding-agent spend, quota & multi-computer telemetry application.**
 
-BURNRATE is a private, local-first dashboard for AI coding-agent token usage, cache efficiency, subscription capacity, and API-equivalent cost.
+Version: `0.3.0-beta.8` · Current release notes: [RELEASE-0.3.0-beta.8.md](RELEASE-0.3.0-beta.8.md) · [Changelog](CHANGELOG.md)
 
-It reads harness-local files and, if you opt in, a small set of read-only provider admin or quota APIs. It does not sit on the inference path: Codex, Claude Code, Cursor, OpenCode, ZCode, Grok Build, Antigravity, and Traycer keep talking to their providers exactly as they do today. There is no BURNRATE account, no hosted service, and no inference proxy.
+---
 
-The default product is one process: FastAPI + SQLite + a browser dashboard bound to `127.0.0.1:17331`. Grafana, Prometheus, and OpenTelemetry are not part of the install.
+## Table of Contents
+
+1. [What BURNRATE Is](#what-burnrate-is)
+2. [Key Application Features](#key-application-features)
+3. [Quick Start: Clone & Install from Release](#quick-start-clone--install-from-release)
+4. [Running BURNRATE (Web, Background Service, or Native Desktop)](#running-burnrate-web-background-service-or-native-desktop)
+5. [First-Run Application Setup Wizard](#first-run-application-setup-wizard)
+6. [Multi-Computer Sync (Hub & Spoke)](#multi-computer-sync-hub--spoke)
+7. [CLI Command Reference](#cli-command-reference)
+8. [What the Dashboard Looks Like](#what-the-dashboard-looks-like)
+9. [What It Measures and Does Not](#what-it-measures-and-does-not)
+10. [Provider Compatibility and Stability](#provider-compatibility-and-stability)
+11. [Privacy and Data-Flow Summary](#privacy-and-data-flow-summary)
+12. [Exact vs Derived vs Unavailable](#exact-vs-derived-vs-unavailable)
+13. [Configuration and Subscriptions](#configuration-and-subscriptions)
+14. [Optional Tailscale Serve](#optional-tailscale-serve)
+15. [Troubleshooting and `burnrate doctor`](#troubleshooting-and-burnrate-doctor)
+16. [Development and Test Commands](#development-and-test-commands)
+17. [License and Non-Affiliation](#license-and-non-affiliation)
+
+---
+
+## What BURNRATE Is
+
+BURNRATE is a private, local-first application for tracking AI coding-agent token usage, cache efficiency, subscription capacity, run-dry pace forecasts, and API-equivalent cost across all your coding tools and computers.
+
+It reads harness-local files and, if you opt in, a small set of read-only provider admin or quota APIs. It **never** sits on the inference path: **Codex**, **Claude Code**, **Cursor**, **OpenCode**, **ZCode**, **Grok Build**, **Google Antigravity**, and **Traycer** keep talking to their providers directly. There is no hosted BURNRATE cloud account, no telemetry phone-home, and no inference proxy.
+
+The default runtime is a single lightweight process: **FastAPI + SQLite + Dashboard & HUD** bound to `127.0.0.1:17331`, with an optional **Tauri v2 native desktop shell** providing a Windows system tray icon and frameless Always-on-Top Sidecar HUD.
 
 - **Windows-first**, CPython 3.12.
-- **Localhost-only** by default.
-- **Empty credentials are valid.** Local ingest needs no API keys.
-- **Missing data stays missing.** Unavailable is rendered `—`, never `$0`.
+- **Localhost-only** by default (`127.0.0.1:17331`).
+- **Empty credentials are valid.** Local ingest needs zero API keys.
+- **Missing data stays missing.** Unavailable metrics render as `—`, never `$0`.
 
-Version: `0.3.0-beta.8`. Current beta: [release notes](RELEASE-0.3.0-beta.8.md).
+---
 
-For frontend development, edit the readable files in `frontend_src/`. Run
-`npm ci --prefix scripts/asset-tools --ignore-scripts --no-audit --no-fund`, then
-`node scripts/optimize-assets.cjs` to regenerate the committed `spend_web/`
-assets and their checksums. Node is a development tool only; Python installs
-use the committed assets. Existing public IDs and CSS classes are preserved.
-Size gates measure every shipped JavaScript module and the shipped stylesheet;
-source-level contract assertions use the readable sources, while browser tests
-continue to serve the optimized files.
+## Key Application Features
 
-Use **Connect harness** for guided local discovery, manual locations, persistent
-connection status and optional documented provider API setup. See the
-[connection guide](docs/connections.md) for capabilities, credential requirements
-and development verification limits.
+- **Interactive 5-Step Setup Wizard (`/setup`)**: Configure your computer's name, pick a multi-computer role (**Primary Hub**, **Connected Spoke**, or **Standalone**), auto-scan & import local AI coding harnesses on the spot, select active monthly subscriptions with 1-click presets, and configure the Sidecar HUD.
+- **Unified Spend & Capacity Dashboard (`/`)**:
+  - **Live Capacity & Run-Dry Forecasting**: Per-provider quota gauges sorted by *what runs out first*, projecting when a 5-hour or weekly window will exhaust based on your recent burn pace, with configurable in-app and browser alerts.
+  - **Plans & Value**: Compare `This month` or `Last month` subscription expense against recorded API-equivalent usage, shared tool associations, and value multiples.
+  - **Action Center**: Tracks quota thresholds, monitored-source issues, and unpriced models with snooze/acknowledge workflows.
+  - **Token & Unit Economics**: Breakdown of fresh input, cached input, cache writes, output, and reasoning tokens by tool, model, project, and session, plus counterfactual cache-savings calculations.
+- **Always-on-Top Sidecar HUD (`/hud`)**: Compact, frameless floating window (`360×580`) with live Server-Sent Events streaming, 24h burn rate, computer filter pills, active coding agents, and top quota bars.
+- **Single-Account Multi-Computer Sync**: Pair laptops and secondary desktops to your primary Hub using a 1-click `brpair_...` pairing code. Spokes automatically push incremental token usage, sessions, and live agent state into your Hub database.
+- **Native Desktop App (`src-tauri/`)**: Tauri v2 desktop wrapper with system tray menu (`Toggle Sidecar HUD`, `Toggle HUD Always on Top`, `Open Full Dashboard`, `Run Setup Wizard…`, `Quit BURNRATE`) and automatic background process supervision.
 
-This beta adds Plans & Value: compare This month or Last month configured expense
-with recorded API-equivalent usage, shared tool associations and qualified multiples.
-Source freshness and explanations stay distinct from pricing coverage. Reference
-value is not ROI or cash saved, and recorded history is not complete account capture.
+---
 
-See [the earlier release notes](RELEASE-0.2.0-beta.2.md) for accounting,
-schema migration, source resilience, and credential consent changes.
+## Quick Start: Clone & Install from Release
 
-See [subscription management](docs/subscriptions.md) for effective-dated plans.
-Connect harness remains optional and does not grant quota access to a transcript.
+### Prerequisites
 
-Earlier frontend reliability changes preserve request ownership, polling recovery,
-wrong-range failure handling and Back/Home navigation races. Reload existing tabs
-after upgrading to load the packaged assets.
+- **OS:** Windows 10 or Windows 11
+- **Python:** [CPython 3.12](https://www.python.org/downloads/) (`py -3.12` or [`uv`](https://docs.astral.sh/uv/))
+- **Shell:** PowerShell (`pwsh` or Windows PowerShell)
+- *(Optional, for building the native `.exe` wrapper)*: [Rust toolchain](https://rustup.rs/)
 
-### What's fixed in this patch
+### 1. Clone the Latest Release
 
-Time-range changes reject snapshots older than 15 seconds or with a mismatched
-range. Summaries render as soon as they arrive, independently of diagnostics;
-startup reuses its prefetched request, and automatic refreshes do not interrupt
-a pending summary. The chart waits for the selected range before displaying it.
-Historical event calculations are cached with bounded memory and invalidate
-when event fields or the pricing engine change.
+```powershell
+git clone --branch v0.3.0-beta.8 https://github.com/kamol-nazarov/myBurnRateOfficial.git
+cd myBurnRateOfficial
+```
 
-GPT-6 Astra has an effective-dated Standard API price card: $10/M input,
-$1/M cached input, $12.50/M cache writes, and $50/M output. Above 272K input
-tokens, input/cache rates double and output is multiplied by 1.5.
-Source: [OpenAI Astra pricing](https://developers.openai.com/api/docs/models/gpt-6-astra).
-These are API-equivalent values; processing-tier premiums or discounts are
-not inferred when the telemetry omits the tier.
+*(Or clone `main` and checkout the latest tag: `git checkout v0.3.0-beta.8`.)*
 
-## What the dashboard looks like
+### 2. Create Virtual Environment & Install
+
+**Using standard Python (`venv` + `pip`):**
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -U pip
+python -m pip install .
+```
+
+**Or using `uv`:**
+
+```powershell
+uv venv --python 3.12 .venv
+.\.venv\Scripts\Activate.ps1
+uv pip install .
+```
+
+### 3. Initialize the Local Database & Verify Health
+
+```powershell
+burnrate init
+burnrate doctor
+```
+
+Installed runs store SQLite and logs under `%LOCALAPPDATA%\BURNRATE` (`spend.db`). Set `BURNRATE_DEV=1` if you want to keep data repo-relative during development.
+
+---
+
+## Running BURNRATE (Web, Background Service, or Native Desktop)
+
+You can run BURNRATE in three ways depending on your workflow:
+
+### Option A: Foreground Server + Browser
+
+```powershell
+burnrate serve
+```
+
+Then open:
+- **First-Run Setup Wizard:** [http://127.0.0.1:17331/setup](http://127.0.0.1:17331/setup)
+- **Main Dashboard:** [http://127.0.0.1:17331](http://127.0.0.1:17331)
+- **Sidecar HUD:** [http://127.0.0.1:17331/hud](http://127.0.0.1:17331/hud)
+
+### Option B: Windowless Windows Background Service (Auto-Start at Sign-In)
+
+Use the included PowerShell lifecycle scripts to run BURNRATE silently in the background (`pythonw.exe`) and register a self-healing Windows Scheduled Task (`BURNRATE Dashboard`) that starts automatically when you sign in:
+
+```powershell
+# Register auto-start scheduled task and launch in background
+.\scripts\install-burnrate.ps1
+.\scripts\start-burnrate.ps1
+
+# Check live service health, PID, and database path
+.\scripts\status-burnrate.ps1
+
+# Stop the background service
+.\scripts\stop-burnrate.ps1
+
+# Uninstall scheduled task (keeps spend.db unless -PurgeData is passed)
+.\scripts\uninstall-burnrate.ps1
+```
+
+### Option C: Native Desktop App & System Tray (`burnrate desktop`)
+
+Launch the native Tauri v2 desktop application (which automatically supervises the local backend process, opens the main window and Always-on-Top Sidecar HUD, and docks in the Windows system tray):
+
+```powershell
+burnrate desktop
+```
+
+---
+
+## First-Run Application Setup Wizard
+
+When you open [http://127.0.0.1:17331/setup](http://127.0.0.1:17331/setup) (or click **Setup Wizard** in **Settings → Connected computers** / the system tray menu), the 5-step wizard walks you through:
+
+1. **Step 1 — Computer Identity:** Name this machine (e.g., `Main Workstation`, `Studio Laptop`) and verify your detected OS and timezone.
+2. **Step 2 — Multi-Computer Topology:**
+   - **Primary Hub (`hub`):** Stores the master SQLite database and generates 1-click `brpair_...` pairing codes for your other computers.
+   - **Connected Spoke (`spoke`):** Connects to your Primary Hub using a `brpair_...` pairing code and automatically streams local usage in the background.
+   - **Standalone (`standalone`):** Tracks only this computer locally.
+3. **Step 3 — AI Harnesses Auto-Scan & Import:** Automatically detects local installations of **Claude Code**, **OpenAI Codex CLI**, **Cursor IDE**, **Cursor Usage Service**, **OpenCode**, **ZCode**, **Grok CLI**, **Antigravity**, and **Traycer**, and imports historical usage and active agents with one click.
+4. **Step 4 — Active Subscriptions:** Select from 1-click monthly plan presets (`Claude Max`, `Claude Pro`, `ChatGPT Pro`, `ChatGPT Plus`, `Cursor Pro`, `Cursor Ultra`, `SuperGrok`, `Z.AI Coding Plan`) or add custom plans so Plans & Value and daily burn proration work immediately.
+5. **Step 5 — Sidecar HUD Configuration:** Choose whether the frameless Sidecar HUD opens automatically on launch and stays pinned Always-on-Top.
+
+---
+
+## Multi-Computer Sync (Hub & Spoke)
+
+BURNRATE supports single-account, self-hosted multi-computer synchronization without any external cloud service:
+
+1. **On your Primary Hub computer:**
+   - Open `/setup` (Step 2) or **Settings → Connected computers → Add computer**.
+   - Select your reachable Hub address (Tailscale `100.x.y.z` or LAN IP) and generate a **Pairing Code** (`brpair_...`).
+2. **On your secondary Spoke computer:**
+   - Install BURNRATE, open `/setup` (Step 2), choose **Connected Spoke**, and paste the `brpair_...` code.
+   - Once connected, the Spoke's background scheduler automatically pushes incremental usage events, sessions, and live agent runs to the Hub every ingest cycle.
+   - Alternatively, you can run the lightweight CLI sync agent directly:
+     ```powershell
+     burnrate sync --hub http://<hub-ip>:17331 --token br_m_<id>_<secret>
+     ```
+3. **Filtering by Computer:**
+   - Once two or more computers are registered, a computer switcher (`All computers` + each machine name) appears in the top bar of both the main dashboard and the Sidecar HUD.
+
+---
+
+## CLI Command Reference
+
+```powershell
+burnrate --version
+burnrate init                                  # Initialize %LOCALAPPDATA%\BURNRATE\spend.db
+burnrate doctor                                # Read-only environment, asset & SQLite health check
+burnrate serve [--host 127.0.0.1] [--port 17331]
+burnrate desktop [--check-only]                # Launch Tauri v2 native desktop app & Sidecar HUD
+
+# Multi-computer management & sync
+burnrate machines list
+burnrate machines register --name "MacBook Pro"
+burnrate machines revoke --id <machine_id>
+burnrate sync --hub http://<hub>:17331 --token <br_m_token> [--once]
+
+# Subscription management
+burnrate subscription list
+burnrate subscription add --tool-key codex --name "Codex" --amount-usd 20 --cadence monthly --start-date 2026-09-01
+
+# On-demand historical backfill (CLI-only)
+burnrate backfill <source>
+```
+
+---
+
+## What the Dashboard Looks Like
 
 The dashboard is a dark, single-page app titled **BURNRATE · AI Cost Intelligence**. After `burnrate serve`, open [http://127.0.0.1:17331](http://127.0.0.1:17331).
 
@@ -72,7 +220,7 @@ A typical overview (synthetic demo data — not a real account):
 - **Activity.** In-progress turns only. Opening an editor or an idle shell does not appear here. Usage totals update when a turn completes.
 - **Analysis window.** `15m`, `30m`, `1h`, `3h`, `6h`, `12h`, `1d`, `1w`, `1mo`, `MTD`, `YTD`, `All`.
 - **KPI row.** Tracked value, measured tokens, API-equivalent cost per million tokens, cache reuse, session count.
-- **Token activity chart.** Stacked by tool or cumulative, with a weekday/hour heatmap below.
+- **Token activity chart.** Stacked by tool or cumulative, with a model price reference board below.
 - **Recoverable / forecast.** Cache savings versus a no-cache counterfactual, and a labeled forecast of plan cost versus published-rate value.
 - **Unit economics.** Cost by model (click through for a tool or model detail page), token mix (cached input / fresh input / output), and any subscriptions you configured.
 
@@ -80,7 +228,13 @@ Public screenshots, when added, always use synthetic Northwind-style names and p
 
 A fresh install with no harness history shows an empty state, not an error.
 
-## What it measures and does not
+Use **Connect harness** for guided local discovery, manual locations, persistent connection status and optional documented provider API setup. See the [connection guide](docs/connections.md) for capabilities, credential requirements and development verification limits.
+
+See [subscription management](docs/subscriptions.md) for effective-dated plans, and [earlier release notes](RELEASE-0.2.0-beta.2.md) for accounting, schema migration, source resilience, and credential consent details.
+
+---
+
+## What It Measures and Does Not
 
 **Measures**
 
@@ -101,32 +255,9 @@ A fresh install with no harness history shows an empty state, not an error.
 
 BURNRATE never reroutes completions. Cache behavior of the underlying providers is unchanged.
 
-## Five-minute Windows install
+---
 
-Prerequisites: Windows 10 or 11, [CPython 3.12](https://www.python.org/downloads/), and PowerShell.
-
-From a checkout of this repository:
-
-```powershell
-py -3.12 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -U pip
-python -m pip install .
-burnrate init
-burnrate serve
-```
-
-Open [http://127.0.0.1:17331](http://127.0.0.1:17331).
-
-`burnrate serve` binds **only** `127.0.0.1:17331`. Empty admin keys are valid: those jobs skip with a named reason and write zero events. Local Codex / Claude Code / OpenCode / ZCode ingest does not need keys.
-
-Optional: copy `.env.example` to `.env` and leave the keys blank. Never commit a populated `.env`.
-
-Installed runs store SQLite and logs under `%LOCALAPPDATA%\BURNRATE`. Set `BURNRATE_DEV=1` to keep data repo-relative for development. A git checkout alone does not change the data directory.
-
-Then run `burnrate doctor` if you want a redacted health report before leaving the dashboard running. See [Troubleshooting](docs/troubleshooting.md).
-
-## Provider compatibility and stability
+## Provider Compatibility and Stability
 
 Official vs experimental is about the *interface BURNRATE uses*, not about whether the product itself is well known. Undocumented endpoints are labeled **experimental** and can fail independently.
 
@@ -152,7 +283,9 @@ Official vs experimental is about the *interface BURNRATE uses*, not about wheth
 
 Full file patterns, hosts, credentials, mutation risk, and double-count rules: [docs/providers.md](docs/providers.md).
 
-## Privacy and data-flow summary
+---
+
+## Privacy and Data-Flow Summary
 
 Default: **no provider network calls** until you enable an admin key or an experimental quota path. The HTTP listener is `127.0.0.1` only.
 
@@ -166,7 +299,9 @@ The browser loads local CSS/JS only. There is no third-party analytics.
 
 Details: [docs/privacy.md](docs/privacy.md).
 
-## Exact vs derived vs unavailable
+---
+
+## Exact vs Derived vs Unavailable
 
 | Label | Meaning | UI |
 | --- | --- | --- |
@@ -182,9 +317,11 @@ Reasoning tokens that the harness already includes in output are displayed as de
 
 More: [docs/pricing.md](docs/pricing.md).
 
-## Configuration and subscriptions
+---
 
-Optional keys in `.env` (all empty by default):
+## Configuration and Subscriptions
+
+Optional keys in `.env` (all empty by default — copy `.env.example` to `.env` if desired and never commit a populated `.env`):
 
 | Variable | Role |
 | --- | --- |
@@ -201,7 +338,7 @@ Optional keys in `.env` (all empty by default):
 | `CURSOR_IMPORT_PATH` | Cursor CSV drop folder |
 | `SPEND_TIMEZONE` | IANA zone for midnight and windows (default `UTC`) |
 
-Fresh `burnrate init` does **not** seed plan prices. Add your own:
+Fresh `burnrate init` does **not** seed plan prices automatically. You can pick plans interactively in the **Setup Wizard (`/setup`)**, in the dashboard's **Plans & Value** dialog, or via the CLI:
 
 ```powershell
 burnrate subscription add --tool-key codex --name "Codex" --amount-usd 20 --cadence monthly --start-date 2026-09-01
@@ -211,6 +348,8 @@ burnrate subscription list
 `--cadence` is `monthly`, `quarterly`, or `annual`. Daily cost is `amount / days in the period`. That proration is not provider billing and is excluded from API-equivalent fields.
 
 Cursor CSV files dropped into `CURSOR_IMPORT_PATH` are imported on demand (`burnrate backfill cursor-csv` is an advanced command). They are not a live session source.
+
+---
 
 ## Optional Tailscale Serve
 
@@ -222,6 +361,8 @@ tailscale serve --bg --https=443 http://127.0.0.1:17331
 
 Access URL: `https://<magicdns-name>/` — replace the placeholder with your own MagicDNS name. Funnel (public Internet exposure) is out of scope; see [docs/tailscale.md](docs/tailscale.md).
 
+---
+
 ## Troubleshooting and `burnrate doctor`
 
 ```powershell
@@ -232,15 +373,23 @@ Doctor checks CPython 3.12, required imports, timezone data, a read-only SQLite 
 
 Common cases:
 
-- Empty dashboard after install — expected until a harness writes usage.
+- Empty dashboard after install — expected until a harness writes usage (or run **Scan & Import Usage Now** in `/setup`).
 - Admin job `skipped` — empty key; not a failure.
 - `unavailable` / `—` — missing telemetry or pricing; not zero.
-- Port `17331` already in use — another BURNRATE process is running.
+- Port `17331` already in use — another BURNRATE process is running (`.\scripts\status-burnrate.ps1`).
 - Experimental provider down — that lane fails independently.
 
 Full legend: [docs/troubleshooting.md](docs/troubleshooting.md).
 
-## Development and test commands
+---
+
+## Development and Test Commands
+
+For frontend development, edit the readable files in `frontend_src/`. Run
+`npm ci --prefix scripts/asset-tools --ignore-scripts --no-audit --no-fund`, then
+`node scripts/optimize-assets.cjs` to regenerate the committed `spend_web/`
+assets and their checksums. Node is a development tool only; Python installs
+use the committed assets. Existing public IDs and CSS classes are preserved.
 
 ```powershell
 py -3.12 -m venv .venv
@@ -251,17 +400,16 @@ python -m pytest
 ```
 
 `python -m pytest` collects `tests_spend`, which includes temporary SQLite,
-application-startup and browser tests as well as pure units. A temporary database
-or blocked external HTTP does not by itself isolate filesystem, scheduler or
-credential access. For the source-evidence maintenance slice, the focused command
-is `python -m pytest -q tests_spend/test_source_evidence_unit.py`; it uses synthetic
-rows and guards external boundaries before importing the application modules.
+application-startup and browser tests as well as pure units. For focused source-evidence
+tests, run `python -m pytest -q tests_spend/test_source_evidence_unit.py`.
 
 Optional localhost bench (dev only): `scripts/Bench-Burnrate.ps1` against `http://127.0.0.1:17331`. It prints p50/p95 without a committed baseline file. Do not point it at a tailnet hostname.
 
 See also [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## License and non-affiliation
+---
+
+## License and Non-Affiliation
 
 The project license is **Apache-2.0**. See [LICENSE](LICENSE).
 
@@ -269,6 +417,6 @@ BURNRATE is not affiliated with OpenAI, Anthropic, Cursor, xAI, Google, Z.AI, Op
 
 ---
 
-Docs: [architecture](docs/architecture.md) · [providers](docs/providers.md) · [privacy](docs/privacy.md) · [pricing](docs/pricing.md) · [Tailscale](docs/tailscale.md) · [troubleshooting](docs/troubleshooting.md)
+Docs: [architecture](docs/architecture.md) · [providers](docs/providers.md) · [connections](docs/connections.md) · [subscriptions](docs/subscriptions.md) · [privacy](docs/privacy.md) · [pricing](docs/pricing.md) · [Tailscale](docs/tailscale.md) · [troubleshooting](docs/troubleshooting.md)
 
 Community: [SECURITY.md](SECURITY.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [CHANGELOG.md](CHANGELOG.md) · [LICENSE](LICENSE)
