@@ -137,6 +137,9 @@ def _parse_iso(value: str | None) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
+_MACHINE_LAST_SEEN_MEM: dict[str, str] = {}
+
+
 def list_machines(
     connection: sqlite3.Connection, *, now: datetime | None = None
 ) -> list[dict]:
@@ -167,7 +170,16 @@ def list_machines(
     ):
         if not isinstance(rec, dict) or rec.get("revoked"):
             continue
-        last_seen = _parse_iso(rec.get("last_seen_at"))
+        raw_seen = rec.get("last_seen_at")
+        mem_seen = _MACHINE_LAST_SEEN_MEM.get(machine_id) if now is None else None
+        db_dt = _parse_iso(raw_seen)
+        mem_dt = _parse_iso(mem_seen)
+        if mem_dt and (db_dt is None or mem_dt > db_dt):
+            last_seen = mem_dt
+            last_seen_iso = mem_seen
+        else:
+            last_seen = db_dt
+            last_seen_iso = raw_seen
         online = bool(last_seen and last_seen >= cutoff)
         items.append(
             {
@@ -176,7 +188,7 @@ def list_machines(
                 "os": rec.get("os") or "",
                 "isLocal": False,
                 "online": online,
-                "lastSeenAt": rec.get("last_seen_at"),
+                "lastSeenAt": last_seen_iso,
                 "eventsPushed": int(rec.get("events_pushed") or 0),
             }
         )
@@ -308,19 +320,15 @@ def authenticate_machine_token(database_path: Path, token: str) -> str | None:
     try:
         with connect(database_path) as connection:
             state = _read_state(connection)
-            for machine_id, rec in state["machines"].items():
-                if not isinstance(rec, dict) or rec.get("revoked"):
-                    continue
-                expected = str(rec.get("token_hash") or "")
-                if expected and hmac.compare_digest(digest, expected):
-                    last_seen = _parse_iso(rec.get("last_seen_at"))
-                    now_dt = datetime.now(UTC)
-                    if last_seen is None or (now_dt - last_seen) >= timedelta(seconds=30):
-                        rec["last_seen_at"] = now_dt.isoformat().replace("+00:00", "Z")
-                        _write_state(connection, state)
-                    return machine_id
     except Exception:
         return None
+    for machine_id, rec in state["machines"].items():
+        if not isinstance(rec, dict) or rec.get("revoked"):
+            continue
+        expected = str(rec.get("token_hash") or "")
+        if expected and hmac.compare_digest(digest, expected):
+            _MACHINE_LAST_SEEN_MEM[machine_id] = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+            return machine_id
     return None
 
 

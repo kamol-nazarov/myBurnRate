@@ -764,6 +764,10 @@ def dismiss_alert(database_path, alert_id: str) -> dict:
 
 
 def forecast_job(database_path, timezone: str) -> None:
+    import os
+
+    if os.getenv("BURNRATE_CENTRAL_SERVER", "").strip().lower() in {"1", "true", "yes"}:
+        return
     evaluate_alerts(database_path, timezone=timezone)
 
 
