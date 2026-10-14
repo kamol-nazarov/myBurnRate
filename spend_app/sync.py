@@ -110,10 +110,19 @@ def _write_state(connection: sqlite3.Connection, state: dict) -> None:
 
 
 def machines_fingerprint(connection: sqlite3.Connection) -> str:
-    row = connection.execute(
-        "SELECT value FROM app_meta WHERE key=?", (MACHINES_META_KEY,)
-    ).fetchone()
-    return str(row[0]) if row and row[0] else ""
+    state = _read_state(connection)
+    items = [
+        (
+            mid,
+            str(rec.get("name") or ""),
+            str(rec.get("os") or ""),
+            bool(rec.get("revoked")),
+            int(rec.get("events_pushed") or 0),
+        )
+        for mid, rec in sorted((state.get("machines") or {}).items())
+        if isinstance(rec, dict)
+    ]
+    return json.dumps([state.get("hub_name"), items])
 
 
 def _parse_iso(value: str | None) -> datetime | None:
@@ -416,7 +425,6 @@ def apply_sync_push(
 
     written = 0
     with connect(database_path) as connection:
-        run = IngestRun.start(connection, f"sync:{machine_id}")
         try:
             for item in usage_items:
                 raw_id = prefix_machine_id(machine_id, str(item["raw_id"]))
@@ -617,23 +625,22 @@ def apply_sync_push(
             rec["last_seen_at"] = stamp
             rec["events_pushed"] = int(rec.get("events_pushed") or 0) + written
             _write_state(connection, state)
-            run.events_written = written
-            run.finish(status="success")
-        except Exception as exc:
-            run.finish(status="failed", error=str(exc))
+            if written > 0:
+                run = IngestRun.start(connection, f"sync:{machine_id}")
+                run.events_written = written
+                run.finish(status="success")
+        except Exception:
             raise
 
-    from spend_app.aggregate import reset_memo
-
-    reset_memo()
-    STREAM_BROKER.publish(
-        {
-            "type": "sync",
-            "machineId": machine_id,
-            "eventsWritten": written,
-            "at": stamp,
-        }
-    )
+    if written > 0:
+        STREAM_BROKER.publish(
+            {
+                "type": "sync",
+                "machineId": machine_id,
+                "eventsWritten": written,
+                "at": stamp,
+            }
+        )
     return {
         "ok": True,
         "machineId": machine_id,

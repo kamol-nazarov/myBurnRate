@@ -119,7 +119,10 @@ def create_scheduler(settings: Settings, pricing: PricingEngine) -> BackgroundSc
     def warm_summaries() -> None:
         # Compute the summaries viewers are currently watching right after the
         # cycle that could have changed them, so their next poll is a memo hit.
+        is_central = os.getenv("BURNRATE_CENTRAL_SERVER", "").strip().lower() in {"1", "true", "yes"}
         pending = recently_requested_summaries()
+        if is_central and ("1d", "all") not in pending:
+            pending = [("1d", "all"), *pending]
         if not pending:
             return
         clock = data_clock(settings.database_path, settings.local_ingest_interval_seconds)

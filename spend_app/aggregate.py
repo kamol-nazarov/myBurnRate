@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 import time as time_module
 from collections import OrderedDict, defaultdict
@@ -90,6 +91,10 @@ def data_clock(database_path: Path, cadence_seconds: int, now: datetime | None =
     finished = _parse(latest)
     fresh_within = timedelta(seconds=max(60, cadence_seconds * 4))
     if finished > moment or moment - finished > fresh_within:
+        if now is None and os.getenv("BURNRATE_CENTRAL_SERVER", "").strip().lower() in {"1", "true", "yes"}:
+            step = max(1, int(cadence_seconds or 15))
+            quantized_ts = (int(moment.timestamp()) // step) * step
+            return datetime.fromtimestamp(quantized_ts, tz=UTC)
         return moment
     return finished
 
@@ -158,6 +163,7 @@ def aggregate_summary_cached(
     with connect(database_path) as connection:
         window = _actualize_all_window(connection, window, timezone)
         fingerprint = _summary_state_fingerprint(connection, window, tool)
+        machines = list_machines(connection, now=now)
     key = (
         str(database_path),
         id(pricing),
@@ -170,7 +176,7 @@ def aggregate_summary_cached(
         _iso(now),
         fingerprint,
     )
-    return _memo(
+    payload = _memo(
         "summary",
         key,
         lambda: aggregate_summary(
@@ -185,6 +191,7 @@ def aggregate_summary_cached(
             machine=machine,
         ),
     )
+    return {**payload, "machines": machines} if isinstance(payload, dict) else payload
 
 
 def _range_fingerprint(connection, start: datetime, end: datetime, tool: str) -> tuple:
