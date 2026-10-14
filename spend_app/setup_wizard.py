@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import base64
 import json
+import shutil
 import socket
+import subprocess
 import sys
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -177,6 +179,37 @@ def decode_pairing_code(code: str) -> dict:
 def detect_network_addresses(port: int = 17331) -> list[dict]:
     urls: list[dict] = []
     seen: set[str] = set()
+    ts_bin = shutil.which("tailscale")
+    if ts_bin:
+        try:
+            proc = subprocess.run(
+                [ts_bin, "serve", "status", "--json"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                serve_data = json.loads(proc.stdout)
+                web = serve_data.get("Web") or {}
+                target_suffix = f":{port}"
+                for host_port, cfg in web.items():
+                    handlers = (cfg or {}).get("Handlers") or {}
+                    for handler in handlers.values():
+                        proxy = str((handler or {}).get("Proxy") or "")
+                        if proxy.endswith(target_suffix) or f":{port}/" in proxy:
+                            https_url = f"https://{host_port[:-4]}" if host_port.endswith(":443") else f"https://{host_port}"
+                            if https_url not in seen:
+                                seen.add(https_url)
+                                urls.append(
+                                    {
+                                        "label": f"Tailscale Serve HTTPS ({https_url})",
+                                        "url": https_url,
+                                        "kind": "tailscale_https",
+                                    }
+                                )
+        except Exception:
+            pass
     try:
         host_ips = socket.getaddrinfo(socket.gethostname(), None, family=socket.AF_INET)
         for item in host_ips:
@@ -188,7 +221,8 @@ def detect_network_addresses(port: int = 17331) -> list[dict]:
             urls.append({"label": f"{kind} ({ip})", "url": f"http://{ip}:{port}", "kind": kind.lower()})
     except Exception:
         pass
-    urls.sort(key=lambda entry: (0 if entry["kind"] == "tailscale" else 1, entry["url"]))
+    rank = {"tailscale_https": 0, "tailscale": 1, "lan": 2}
+    urls.sort(key=lambda entry: (rank.get(entry["kind"], 3), entry["url"]))
     urls.append({"label": "Localhost (this computer)", "url": f"http://127.0.0.1:{port}", "kind": "local"})
     return urls
 
