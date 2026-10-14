@@ -72,7 +72,27 @@ class Settings:
 
 def load_user_env() -> None:
     """Load per-user settings from the data root; called by the service and CLI entrypoints."""
-    load_dotenv(default_app_dir() / ".env", override=False)
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        return
+    env_file = default_app_dir() / ".env"
+    if not env_file.exists():
+        try:
+            env_file.parent.mkdir(parents=True, exist_ok=True)
+            env_file.write_text(
+                "BURNRATE_ENABLE_CURSOR_USAGE_SERVICE=1\n"
+                "BURNRATE_ENABLE_ZAI_QUOTA=1\n"
+                "BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE=1\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+    load_dotenv(env_file, override=False)
+    for key in (
+        "BURNRATE_ENABLE_CURSOR_USAGE_SERVICE",
+        "BURNRATE_ENABLE_ZAI_QUOTA",
+        "BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE",
+    ):
+        os.environ.setdefault(key, "1")
 
 
 def load_settings(env_path: Path | None = None) -> Settings:

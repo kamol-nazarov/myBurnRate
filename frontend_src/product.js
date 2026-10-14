@@ -76,7 +76,7 @@ function buildPlanMutation(op,values,p,t,preview,confirmed){const b={operation:o
     const zone = el("setup-timezone");
     const setting = String(data.timezoneSetting || "");
     const key = setting.split(/\s+/)[0];
-    zone.textContent = "Timezone " + data.timezone + (key ? " · " + key : "");
+    zone.textContent = "Timezone: " + data.timezone + (key ? " · " + key : "");
     if (setting && setting !== key) zone.title = setting;
     let saved;
     try { saved = localStorage.getItem(preference); } catch {}

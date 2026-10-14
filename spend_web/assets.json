@@ -1,17 +1,17 @@
 {
   "sources": {
     "index.html": "8bc19b351454b35190893deaf802f9387265ab9a98908afa66f18bc8a1a7fb40",
-    "spend.css": "c902a266519f987cf2cbf7f11888581902b54fd5bf26b8ed97de771da44ea7bf",
+    "spend.css": "dc48b93e81a32b2da896f9575e7a035b0654e01835a3f63bb5548560c66ce839",
     "spend.js": "b7ddc8ce1bb47e804c566f59786ee30a956e362ccc1b6d538bf76f0a6f2bc333",
     "request-state.js": "16e25a46cd82da526e22415af33dd9bd8ee34dc32661ccf67338b7472ebc4fba",
-    "product.js": "7b50057b25596f628cecca53aba81de92ebea6c3f1958e1b105bfa0b5d3fb997",
+    "product.js": "d8f94d545050ce8a0563f9710c1754c1667b52e6dcc4c3b5dab7c44e7fa6de77",
     "connections.js": "9c2970c1042d2c6b5ac3b9fd4211af3c2ff969c8c9296682d8867f3d8e0d1116",
     "plans-value.js": "d30fcade2138fb8f8b4eaa5d1b3794d63b8513e6f03b7055f416731129663f7e",
-    "attention.js": "591a9359aefcbe5c08237ff11116cb8d483d3ad7aba6718fdb3b4662aae44beb"
+    "attention.js": "ab043e0f96a22073ba114919b067c3d18edbe54de91555a074761df68739ec77"
   },
   "outputs": {
-    "spend.css": "4c62d7d1dd5de592aa05d4970b5fd9c289551e463577759ea0cde98024c4a1cf",
-    "dialogs.js": "1e90ead33dc83ba732e3c5b16e80ef8bc139e71145bc14b0509d7cc1c2bdceb4",
+    "spend.css": "b04c5c4cf9a6a0a4b92b55dd02f0b5cc8d2f00dbf17f8833a013c4e6c67456fb",
+    "dialogs.js": "925b1070011553c49f087437f91b73e760660fedcf27ea3fe1f73449e7e08e35",
     "product.js": "3b20c24c1c51767d1b5236bc183e50b14f0ec6ee6a9eb6d5a74808ac2921f60c",
     "spend.js": "79c8f398094b6d7a5dcb58f6db0c3bc66a2e79b060f2850d9983d5ee7ed6ec4a",
     "request-state.js": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",

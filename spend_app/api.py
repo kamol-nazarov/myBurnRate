@@ -294,6 +294,10 @@ def create_app(
 
     @app.get("/api/spend/limits")
     def spend_limits() -> dict:
+        from spend_app.sync import fetch_from_configured_hub
+        hub_data = fetch_from_configured_hub(settings, "/api/spend/limits")
+        if hub_data is not None:
+            return hub_data
         # Persisted-snapshot read only (Release A A01): a GET never launches
         # credential-bearing probes; the scheduled poller stores snapshots.
         return snapshot_limits(settings.database_path)

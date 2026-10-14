@@ -151,7 +151,7 @@ main{width:min(1620px,calc(100% - 48px));margin:0 auto;padding:20px 0 64px}
 .window-note{margin-left:12px;color:#98a0ac;font-size:12px}
 .range-switch,.mode-switch{display:inline-flex;align-items:center;gap:4px;padding:4px;border:1px solid #ffffff14;border-radius:12px;background:#05070b;box-shadow:var(--well)}
 .range-switch{max-width:100%;overflow-x:auto}
-.range-switch button,.mode-switch button{min-height:44px;height:44px;padding:0 13px;border:0;border-radius:9px;background:none;color:#98a0ac;font:700 11px/1 var(--fm);white-space:nowrap;cursor:pointer}
+.range-switch button,.mode-switch button{min-width:44px;min-height:44px;height:44px;padding:0 13px;border:0;border-radius:9px;background:none;color:#98a0ac;font:700 11px/1 var(--fm);white-space:nowrap;cursor:pointer}
 .range-switch button:hover,.mode-switch button:hover{background:#ffffff0d;color:#f4f6fb}
 .range-switch button.active,.mode-switch button.active{background:linear-gradient(#fbbf24,#d97706);color:#050608}
 .range-status{margin:10px 0 0;color:#98a0ac;font:11px var(--fm)}
@@ -341,6 +341,7 @@ main>footer{gap:14px;margin-top:28px;padding-top:18px;border-top:1px solid #ffff
   .burnrate-stat{padding:6px 12px}
   .chart-shell{min-height:200px}
   .heat-archive{overflow-x:auto}
+  .heat-row{min-width:640px}
   .heat-row>span{position:sticky;left:0;background:#05070a}
   #diagnostics-view:not([hidden]){grid-template-columns:1fr}
 }
