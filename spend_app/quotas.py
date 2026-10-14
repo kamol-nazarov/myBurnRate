@@ -701,6 +701,15 @@ def poll_quotas(
     path = Path(database_path)
     polled_at = (now or utc_now)()
     initialize(path)
+    if collectors is None and os.getenv("BURNRATE_CENTRAL_SERVER", "").strip().lower() in {"1", "true", "yes"}:
+        return {
+            "polledAt": polled_at,
+            "written": 0,
+            "skipped": 0,
+            "providers": [],
+            "polledProviders": [],
+            "deferredProviders": [],
+        }
     resolved = collectors if collectors is not None else default_quota_collectors(path)
     scheduler = lanes if lanes is not None else (_DATABASE_LANES.setdefault(str(path.resolve()), QuotaLaneScheduler()) if collectors is None else None)
     is_active = activity or (lambda provider: lane_is_active(path, provider))
