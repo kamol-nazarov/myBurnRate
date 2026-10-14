@@ -308,14 +308,19 @@ def authenticate_machine_token(database_path: Path, token: str) -> str | None:
     try:
         with connect(database_path) as connection:
             state = _read_state(connection)
+            for machine_id, rec in state["machines"].items():
+                if not isinstance(rec, dict) or rec.get("revoked"):
+                    continue
+                expected = str(rec.get("token_hash") or "")
+                if expected and hmac.compare_digest(digest, expected):
+                    last_seen = _parse_iso(rec.get("last_seen_at"))
+                    now_dt = datetime.now(UTC)
+                    if last_seen is None or (now_dt - last_seen) >= timedelta(seconds=30):
+                        rec["last_seen_at"] = now_dt.isoformat().replace("+00:00", "Z")
+                        _write_state(connection, state)
+                    return machine_id
     except Exception:
         return None
-    for machine_id, rec in state["machines"].items():
-        if not isinstance(rec, dict) or rec.get("revoked"):
-            continue
-        expected = str(rec.get("token_hash") or "")
-        if expected and hmac.compare_digest(digest, expected):
-            return machine_id
     return None
 
 
@@ -831,11 +836,11 @@ def sync_once(
         "Authorization": f"Bearer {token.strip()}",
         "Content-Type": "application/json",
     }
-    batch_limit = 1500
+    batch_limit = 1000
 
     def _run_batches(post_fn) -> None:
         nonlocal cursor, total_written, last_result
-        for batch_idx in range(40):
+        for batch_idx in range(15):
             batch, next_cursor = export_sync_batch(
                 settings.database_path, cursor=cursor, limit=batch_limit
             )
