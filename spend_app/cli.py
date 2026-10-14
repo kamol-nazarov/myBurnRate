@@ -242,7 +242,9 @@ def _cmd_serve(host: str, port: int) -> int:
 
 
 def main() -> int:
+    from spend_app.config import load_user_env
     from spend_app.plan_service import PlanError
+    load_user_env()
     try:
         return _main()
     except PlanError as exc:

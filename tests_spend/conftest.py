@@ -108,6 +108,12 @@ def _request_host(client, url) -> str:
 
 
 @pytest.fixture(autouse=True)
+def _ignore_user_env(monkeypatch):
+    """The developer's per-user BURNRATE .env must never leak into tests."""
+    monkeypatch.setattr("spend_app.config.load_user_env", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _block_live_httpx(monkeypatch):
     """Fail httpx calls whose host is not loopback, unless the client is mocked.
 

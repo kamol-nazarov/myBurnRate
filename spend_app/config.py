@@ -70,6 +70,11 @@ class Settings:
     logs_path: Path = field(default_factory=default_logs_path)
 
 
+def load_user_env() -> None:
+    """Load per-user settings from the data root; called by the service and CLI entrypoints."""
+    load_dotenv(default_app_dir() / ".env", override=False)
+
+
 def load_settings(env_path: Path | None = None) -> Settings:
     load_dotenv(env_path or ROOT / ".env", override=False)
     return Settings(

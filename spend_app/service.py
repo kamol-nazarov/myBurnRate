@@ -139,6 +139,9 @@ def serve(
         raise SystemExit(f"invalid port {port}")
 
     ensure_directories()
+    from spend_app.config import load_user_env
+
+    load_user_env()
     log_path = configure_logging()
     mutex = acquire_mutex()
     if mutex is False:
