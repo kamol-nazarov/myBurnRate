@@ -9,6 +9,15 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+## [0.3.0-beta.9] - 2026-10-14
+
+- Add central account server hosting on `tk-server` (`/api/account/register`,
+  `/api/account/login`, `/api/account/subscriptions`) so any computer logged into
+  the account automatically syncs usage, live provider quotas, and subscriptions.
+- Simplify the Application Setup Wizard (`/setup`) to a 2-step flow: Step 1
+  logs in (or creates an account with subscription presets), and Step 2 connects
+  the AI coding providers installed on that computer.
+
 ## [0.3.0-beta.8] - 2026-10-14
 
 - Add interactive 5-step Application Setup Wizard (`/setup` and `/api/setup/*`)

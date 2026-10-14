@@ -1995,28 +1995,10 @@ function renderMachineSettings(data) {
   const machines = (data && data.machines) || (state.summary && state.summary.machines) || [];
   let section = $("machine-settings-section");
   if (!section) {
-    section = nodeFrom(`<section class="harness-section" id="machine-settings-section"><header><p class="eyebrow">Connected computers</p><div class="harness-actions"><button id="open-setup-wizard-button" class="harness-action" type="button">Setup Wizard</button><button id="open-hud-button" class="harness-action" type="button">Sidecar HUD</button><button id="add-machine-button" class="harness-action" type="button">Add computer</button></div></header><p id="machine-pair-note" class="settings-helper mono" hidden></p><div id="machine-rows"></div></section>`);
+    section = nodeFrom(`<section class="harness-section" id="machine-settings-section"><header><p class="eyebrow">Connected computers (Account)</p><div class="harness-actions"><button id="open-setup-wizard-button" class="harness-action" type="button">Account &amp; Setup</button><button id="open-hud-button" class="harness-action" type="button">Sidecar HUD</button></div></header><p id="machine-pair-note" class="settings-helper mono">Log in to your account via the Setup Wizard on any computer to sync usage automatically through tk-server.</p><div id="machine-rows"></div></section>`);
     host.appendChild(section);
     section.querySelector("#open-setup-wizard-button").addEventListener("click", () => window.openSetupWizard());
     section.querySelector("#open-hud-button").addEventListener("click", () => window.openSidecarHud());
-    section.querySelector("#add-machine-button").addEventListener("click", async () => {
-      const name = (typeof prompt === "function" ? prompt("Computer name (e.g. MacBook Pro, Studio Rig):", "Remote computer") : "Remote computer") || "";
-      if (!name.trim()) return;
-      try {
-        const res = await postJson("/api/machines", {action: "register", name: name.trim()});
-        const note = $("machine-pair-note");
-        if (note && res.syncCommand) {
-          note.hidden = false;
-          note.textContent = `Run on ${res.machine?.name || name.trim()}: ${res.syncCommand}`;
-          try { await navigator.clipboard.writeText(res.syncCommand); note.textContent += " (copied)"; } catch {}
-        }
-        if (state.summary && res.machines) {
-          state.summary.machines = res.machines;
-          renderMachines(state.summary);
-          renderMachineSettings(state.summary);
-        }
-      } catch {}
-    });
   }
   const rows = $("machine-rows");
   if (!rows) return;

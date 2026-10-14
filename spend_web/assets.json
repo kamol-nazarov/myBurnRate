@@ -2,7 +2,7 @@
   "sources": {
     "index.html": "8bc19b351454b35190893deaf802f9387265ab9a98908afa66f18bc8a1a7fb40",
     "spend.css": "dc48b93e81a32b2da896f9575e7a035b0654e01835a3f63bb5548560c66ce839",
-    "spend.js": "b7ddc8ce1bb47e804c566f59786ee30a956e362ccc1b6d538bf76f0a6f2bc333",
+    "spend.js": "d9fa281fe589b792de9bcc1c4ce8cb40393cf3fcb3eed2ed53af12b8c4e34419",
     "request-state.js": "16e25a46cd82da526e22415af33dd9bd8ee34dc32661ccf67338b7472ebc4fba",
     "product.js": "d8f94d545050ce8a0563f9710c1754c1667b52e6dcc4c3b5dab7c44e7fa6de77",
     "connections.js": "9c2970c1042d2c6b5ac3b9fd4211af3c2ff969c8c9296682d8867f3d8e0d1116",
@@ -13,7 +13,7 @@
     "spend.css": "b04c5c4cf9a6a0a4b92b55dd02f0b5cc8d2f00dbf17f8833a013c4e6c67456fb",
     "dialogs.js": "925b1070011553c49f087437f91b73e760660fedcf27ea3fe1f73449e7e08e35",
     "product.js": "3b20c24c1c51767d1b5236bc183e50b14f0ec6ee6a9eb6d5a74808ac2921f60c",
-    "spend.js": "79c8f398094b6d7a5dcb58f6db0c3bc66a2e79b060f2850d9983d5ee7ed6ec4a",
+    "spend.js": "19316333aa790287501f6e532346736f9e3f42883813d3e7acfe0fbfda427219",
     "request-state.js": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "index.html": "838df5e7d084dd56306f12a336632235f851bf346e5ba3d2390559d51e2bda15"
   },
