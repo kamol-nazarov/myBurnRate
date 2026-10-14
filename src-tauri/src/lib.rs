@@ -43,24 +43,58 @@ fn hub_port_reachable(port: u16) -> bool {
 }
 
 fn resolve_python_and_root() -> (PathBuf, PathBuf) {
-    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let repo_root = if cwd.ends_with("src-tauri") {
-        cwd.parent().unwrap_or(&cwd).to_path_buf()
-    } else {
-        cwd
-    };
-
-    #[cfg(target_os = "windows")]
-    let venv_py = repo_root.join(".venv").join("Scripts").join("python.exe");
-    #[cfg(not(target_os = "windows"))]
-    let venv_py = repo_root.join(".venv").join("bin").join("python");
-
-    if venv_py.is_file() {
-        (venv_py, repo_root)
-    } else {
-        (PathBuf::from("python"), repo_root)
+    let mut candidate_roots = Vec::new();
+    if let Ok(exe) = env::current_exe() {
+        // Handle .../src-tauri/target/{release,debug}/burnrate-desktop.exe
+        if let Some(repo_from_exe) = exe
+            .parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent())
+        {
+            candidate_roots.push(repo_from_exe.to_path_buf());
+        }
+        if let Some(exe_dir) = exe.parent() {
+            candidate_roots.push(exe_dir.to_path_buf());
+        }
     }
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    if cwd.ends_with("src-tauri") {
+        if let Some(parent) = cwd.parent() {
+            candidate_roots.push(parent.to_path_buf());
+        }
+    }
+    candidate_roots.push(cwd.clone());
+
+    for root in &candidate_roots {
+        #[cfg(target_os = "windows")]
+        let venv_pyw = root.join(".venv").join("Scripts").join("pythonw.exe");
+        #[cfg(target_os = "windows")]
+        if venv_pyw.is_file() {
+            return (venv_pyw, root.clone());
+        }
+        #[cfg(target_os = "windows")]
+        let venv_py = root.join(".venv").join("Scripts").join("python.exe");
+        #[cfg(not(target_os = "windows"))]
+        let venv_py = root.join(".venv").join("bin").join("python");
+        if venv_py.is_file() {
+            return (venv_py, root.clone());
+        }
+    }
+
+    let fallback_root = candidate_roots.into_iter().next().unwrap_or(cwd);
+    (PathBuf::from("python"), fallback_root)
 }
+
+#[cfg(target_os = "windows")]
+fn apply_no_window(cmd: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn apply_no_window(_cmd: &mut Command) {}
 
 fn ensure_hub_and_sync_processes() -> (Option<Child>, Option<Child>) {
     let port: u16 = env::var("BURNRATE_PORT")
@@ -85,6 +119,7 @@ fn ensure_hub_and_sync_processes() -> (Option<Child>, Option<Child>) {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        apply_no_window(&mut cmd);
 
         if let Ok(child) = cmd.spawn() {
             hub_child = Some(child);
@@ -117,6 +152,7 @@ fn ensure_hub_and_sync_processes() -> (Option<Child>, Option<Child>) {
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
+            apply_no_window(&mut cmd);
             if let Ok(child) = cmd.spawn() {
                 sync_child = Some(child);
             }
@@ -127,7 +163,7 @@ fn ensure_hub_and_sync_processes() -> (Option<Child>, Option<Child>) {
 }
 
 #[tauri::command]
-pub fn toggle_hud(app: AppHandle) -> Result<bool, String> {
+fn toggle_hud(app: AppHandle) -> Result<bool, String> {
     let window = app
         .get_webview_window("hud")
         .ok_or_else(|| "Sidecar HUD window not found".to_string())?;
@@ -143,7 +179,7 @@ pub fn toggle_hud(app: AppHandle) -> Result<bool, String> {
 }
 
 #[tauri::command]
-pub fn show_hud(app: AppHandle) -> Result<(), String> {
+fn show_hud(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("hud") {
         window.show().map_err(|e| e.to_string())?;
         let _ = window.set_focus();
@@ -152,7 +188,7 @@ pub fn show_hud(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn hide_hud(app: AppHandle) -> Result<(), String> {
+fn hide_hud(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("hud") {
         window.hide().map_err(|e| e.to_string())?;
     }
@@ -160,7 +196,7 @@ pub fn hide_hud(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn toggle_hud_pin(app: AppHandle, state: State<'_, HudPinState>) -> Result<bool, String> {
+fn toggle_hud_pin(app: AppHandle, state: State<'_, HudPinState>) -> Result<bool, String> {
     let next = !state.pinned.load(Ordering::SeqCst);
     if let Some(window) = app.get_webview_window("hud") {
         window.set_always_on_top(next).map_err(|e| e.to_string())?;
@@ -170,7 +206,7 @@ pub fn toggle_hud_pin(app: AppHandle, state: State<'_, HudPinState>) -> Result<b
 }
 
 #[tauri::command]
-pub fn show_dashboard(app: AppHandle) -> Result<(), String> {
+fn show_dashboard(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("main") {
         window.show().map_err(|e| e.to_string())?;
         let _ = window.unminimize();
@@ -180,7 +216,7 @@ pub fn show_dashboard(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn open_setup_wizard(app: AppHandle) -> Result<(), String> {
+fn open_setup_wizard(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.eval("window.location.href = '/setup';");
         window.show().map_err(|e| e.to_string())?;
@@ -288,7 +324,23 @@ pub fn run() {
                 });
 
             if let Some(icon) = app.default_window_icon().cloned() {
+                if let Some(main_win) = app.get_webview_window("main") {
+                    let _ = main_win.set_icon(icon.clone());
+                }
+                if let Some(hud_win) = app.get_webview_window("hud") {
+                    let _ = hud_win.set_icon(icon.clone());
+                }
                 tray_builder = tray_builder.icon(icon);
+            }
+            if let Some(main_win) = app.get_webview_window("main") {
+                if env::var("BURNRATE_OPEN_SETUP").ok().as_deref() == Some("1") {
+                    if let Ok(url) = "http://127.0.0.1:17331/setup".parse() {
+                        let _ = main_win.navigate(url);
+                    }
+                }
+                let _ = main_win.show();
+                let _ = main_win.unminimize();
+                let _ = main_win.set_focus();
             }
             let _tray = tray_builder.build(app)?;
             Ok(())

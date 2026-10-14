@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$TaskName = 'BURNRATE Dashboard',
+    [switch]$NoLaunch,
     [switch]$DryRun
 )
 
@@ -12,4 +13,4 @@ param(
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'BurnrateRuntime.ps1')
-Install-BurnrateDashboard -TaskName $TaskName -DryRun:$DryRun
+Install-BurnrateDashboard -TaskName $TaskName -NoLaunch:$NoLaunch -DryRun:$DryRun

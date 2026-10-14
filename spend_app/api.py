@@ -292,13 +292,27 @@ def create_app(
         return {"status": "ok"}
 
     @app.get("/")
-    def spend_frontend(hud: int = Query(default=0), setup: int = Query(default=0)):
+    def spend_frontend(
+        hud: int = Query(default=0),
+        setup: int = Query(default=0),
+        app_launch: int = Query(default=0, alias="app"),
+    ):
         if hud == 1:
             from spend_app.hud import render_hud
             return HTMLResponse(render_hud(), headers={"Cache-Control": ASSET_REVALIDATE_CACHE})
         if setup == 1:
             from spend_app.setup_wizard import render_setup_wizard
             return HTMLResponse(render_setup_wizard(), headers={"Cache-Control": ASSET_REVALIDATE_CACHE})
+        if app_launch == 1:
+            from spend_app.setup_wizard import read_setup_state, render_setup_wizard
+            try:
+                initialize(settings.database_path)
+                with connect(settings.database_path) as connection:
+                    completed = bool(read_setup_state(connection).get("completed"))
+            except Exception:
+                completed = False
+            if not completed:
+                return HTMLResponse(render_setup_wizard(), headers={"Cache-Control": ASSET_REVALIDATE_CACHE})
         return HTMLResponse(
             render_index(web_root),
             headers={"Cache-Control": ASSET_REVALIDATE_CACHE},
@@ -350,6 +364,22 @@ def create_app(
 
     @app.get("/favicon.svg")
     def favicon(request: Request):
+        path = web_root / "favicon.svg"
+        return FileResponse(
+            path,
+            media_type="image/svg+xml",
+            headers={"Cache-Control": _asset_cache_header(request, path)},
+        )
+
+    @app.get("/favicon.ico")
+    def favicon_ico(request: Request):
+        ico_path = Path(__file__).resolve().parents[1] / "src-tauri" / "icons" / "icon.ico"
+        if ico_path.is_file():
+            return FileResponse(
+                ico_path,
+                media_type="image/x-icon",
+                headers={"Cache-Control": _asset_cache_header(request, ico_path)},
+            )
         path = web_root / "favicon.svg"
         return FileResponse(
             path,

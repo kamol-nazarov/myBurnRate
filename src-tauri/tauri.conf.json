@@ -13,7 +13,7 @@
       {
         "label": "main",
         "title": "BURNRATE · AI Cost Intelligence",
-        "url": "http://127.0.0.1:17331/",
+        "url": "http://127.0.0.1:17331/?app=1",
         "width": 1340,
         "height": 860,
         "minWidth": 420,

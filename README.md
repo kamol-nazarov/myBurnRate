@@ -64,42 +64,36 @@ The default runtime is a single lightweight process: **FastAPI + SQLite + Dashbo
 - **OS:** Windows 10 or Windows 11
 - **Python:** [CPython 3.12](https://www.python.org/downloads/) (`py -3.12` or [`uv`](https://docs.astral.sh/uv/))
 - **Shell:** PowerShell (`pwsh` or Windows PowerShell)
-- *(Optional, for building the native `.exe` wrapper)*: [Rust toolchain](https://rustup.rs/)
 
-### 1. Clone the Latest Release
+### One-Command Clone & Install
 
 ```powershell
-git clone --branch v0.3.0-beta.8 https://github.com/kamol-nazarov/myBurnRateOfficial.git
+git clone https://github.com/myburnrate/myBurnRateOfficial.git
 cd myBurnRateOfficial
+.\install.ps1
 ```
 
-*(Or clone `main` and checkout the latest tag: `git checkout v0.3.0-beta.8`.)*
+Running `.\install.ps1` (or `.\scripts\install-burnrate.ps1`) automatically performs the entire installation in one step:
+1. Creates the Python 3.12 `.venv` and installs the `burnrate` package.
+2. Initializes the local SQLite database at `%LOCALAPPDATA%\BURNRATE\spend.db`.
+3. Registers the windowless auto-start scheduled task (`BURNRATE Dashboard`) and starts the background service on `127.0.0.1:17331`.
+4. Installs Desktop and Start Menu shortcuts (`BURNRATE.lnk`) with the custom high-DPI BURNRATE logo.
+5. Automatically pops open the native **BURNRATE Desktop** application window (with custom taskbar & system tray icon) directly on the **Application Setup Wizard**.
 
-### 2. Create Virtual Environment & Install
+<details>
+<summary><strong>Manual Setup (Optional)</strong></summary>
 
-**Using standard Python (`venv` + `pip`):**
-
-```powershell
-py -3.12 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -U pip
-python -m pip install .
-```
-
-**Or using `uv`:**
+If you prefer to create the virtual environment manually without registering the auto-start service:
 
 ```powershell
 uv venv --python 3.12 .venv
 .\.venv\Scripts\Activate.ps1
 uv pip install .
-```
-
-### 3. Initialize the Local Database & Verify Health
-
-```powershell
 burnrate init
 burnrate doctor
 ```
+
+</details>
 
 Installed runs store SQLite and logs under `%LOCALAPPDATA%\BURNRATE` (`spend.db`). Set `BURNRATE_DEV=1` if you want to keep data repo-relative during development.
 

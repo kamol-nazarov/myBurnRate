@@ -35,6 +35,7 @@ SKIP_DIRS = {
     "playwright-report",
     ".qa-shots",
     ".qa-visual",
+    "target",
 }
 
 SKIP_FILES = {".env"}

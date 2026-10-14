@@ -395,13 +395,17 @@ def test_setup_wizard_pairing_and_complete(tmp_path: Path) -> None:
     spoke_app = create_app(spoke_settings, enable_scheduler=False)
     spoke_client = TestClient(spoke_app)
 
-    # 1. Setup Wizard HTML served at /setup and /?setup=1
-    for path in ("/setup", "/?setup=1"):
+    # 1. Setup Wizard HTML served at /setup, /?setup=1, and automatically on /?app=1 before completion
+    for path in ("/setup", "/?setup=1", "/?app=1"):
         res = hub_client.get(path)
         assert res.status_code == 200
         assert "BURNRATE · Application Setup Wizard" in res.text
         assert 'id="wizard-stepper"' in res.text
         assert "/api/setup/complete" in res.text
+
+    fav_res = hub_client.get("/favicon.ico")
+    assert fav_res.status_code == 200
+    assert len(fav_res.content) > 100
 
     # 2. Initial setup state
     state_res = hub_client.get("/api/setup/state").json()

@@ -510,14 +510,212 @@ function Get-BurnrateStatus {
     }
 }
 
+function Initialize-BurnrateRepoEnvironment {
+    param([switch]$DryRun)
+    $repoRoot = Get-BurnrateRepoRoot
+    $pyproject = Join-Path $repoRoot 'pyproject.toml'
+    if (-not (Test-Path -LiteralPath $pyproject)) {
+        return
+    }
+    $venvDir = Join-Path $repoRoot '.venv'
+    $venvPython = Join-Path $venvDir 'Scripts\python.exe'
+    $venvPythonw = Join-Path $venvDir 'Scripts\pythonw.exe'
+    $venvBurnrate = Join-Path $venvDir 'Scripts\burnrate.exe'
+
+    if ($DryRun) {
+        Write-Host "DryRun: would ensure Python 3.12 virtualenv at $venvDir and initialize database"
+        return
+    }
+
+    $uvCmd = Get-Command uv -ErrorAction SilentlyContinue
+    if (-not (Test-Path -LiteralPath $venvPythonw)) {
+        Write-Host 'Creating Python 3.12 virtual environment (.venv)...'
+        if ($uvCmd) {
+            & $uvCmd.Source venv --python 3.12 $venvDir
+        } else {
+            $pyCmd = Get-Command py -ErrorAction SilentlyContinue
+            if ($pyCmd) {
+                & $pyCmd.Source -3.12 -m venv $venvDir
+            } else {
+                & python -m venv $venvDir
+            }
+        }
+    }
+
+    if (-not (Test-Path -LiteralPath $venvBurnrate)) {
+        Write-Host 'Installing BURNRATE package into .venv...'
+        Push-Location $repoRoot
+        try {
+            if ($uvCmd) {
+                & $uvCmd.Source pip install . --python $venvPython
+            } else {
+                & $venvPython -m pip install .
+            }
+        } finally {
+            Pop-Location
+        }
+    }
+
+    if (Test-Path -LiteralPath $venvPython) {
+        Write-Host 'Initializing BURNRATE database...'
+        & $venvPython -m spend_app init | Out-Null
+    }
+}
+
+function Resolve-BurnrateDesktopBinary {
+    $repoRoot = Get-BurnrateRepoRoot
+    $dataRoot = Get-BurnrateDataRoot
+    $installedExe = Join-Path $dataRoot 'burnrate-desktop.exe'
+    $localReleaseExe = Join-Path $repoRoot 'src-tauri\target\release\burnrate-desktop.exe'
+
+    if (Test-Path -LiteralPath $localReleaseExe) {
+        Copy-Item -LiteralPath $localReleaseExe -Destination $installedExe -Force
+        return $installedExe
+    }
+
+    if (Test-Path -LiteralPath $installedExe) {
+        return $installedExe
+    }
+
+    $releaseUrl = 'https://github.com/myburnrate/myBurnRateOfficial/releases/latest/download/burnrate-desktop.exe'
+    try {
+        Write-Host 'Downloading native BURNRATE desktop shell...'
+        Invoke-WebRequest -UseBasicParsing -TimeoutSec 20 -Uri $releaseUrl -OutFile $installedExe
+        if ((Test-Path -LiteralPath $installedExe) -and ((Get-Item -LiteralPath $installedExe).Length -gt 1000000)) {
+            return $installedExe
+        }
+    } catch {
+        Remove-Item -LiteralPath $installedExe -Force -ErrorAction SilentlyContinue
+    }
+
+    $cargoCmd = Get-Command cargo -ErrorAction SilentlyContinue
+    $manifestPath = Join-Path $repoRoot 'src-tauri\Cargo.toml'
+    if ($cargoCmd -and (Test-Path -LiteralPath $manifestPath)) {
+        try {
+            Write-Host 'Building native BURNRATE desktop shell with Cargo...'
+            & $cargoCmd.Source build --release --manifest-path $manifestPath
+            if (Test-Path -LiteralPath $localReleaseExe) {
+                Copy-Item -LiteralPath $localReleaseExe -Destination $installedExe -Force
+                return $installedExe
+            }
+        } catch {
+        }
+    }
+
+    return $null
+}
+
+function Install-BurnrateShortcuts {
+    param([switch]$DryRun)
+    $repoRoot = Get-BurnrateRepoRoot
+    $dataRoot = Get-BurnrateDataRoot
+    $iconSource = Join-Path $repoRoot 'src-tauri\icons\icon.ico'
+    $iconDest = Join-Path $dataRoot 'burnrate.ico'
+
+    if ($DryRun) {
+        Write-Host "DryRun: would install custom icon ($iconDest) and Desktop/Start Menu shortcuts"
+        return
+    }
+
+    if (Test-Path -LiteralPath $iconSource) {
+        Copy-Item -LiteralPath $iconSource -Destination $iconDest -Force
+    }
+
+    $desktopExe = Resolve-BurnrateDesktopBinary
+    $targetPath = $desktopExe
+    $arguments = ''
+    if (-not $targetPath) {
+        $edgePaths = @(
+            (Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe'),
+            (Join-Path $env:ProgramFiles 'Microsoft\Edge\Application\msedge.exe')
+        )
+        foreach ($candidate in $edgePaths) {
+            if ($candidate -and (Test-Path -LiteralPath $candidate)) {
+                $targetPath = $candidate
+                $arguments = "--app=http://$($script:BurnrateHost):$($script:BurnratePort)/?app=1"
+                break
+            }
+        }
+    }
+    if (-not $targetPath) {
+        return
+    }
+
+    try {
+        $wsh = New-Object -ComObject WScript.Shell
+        $shortcutDirs = @(
+            [Environment]::GetFolderPath('Programs'),
+            [Environment]::GetFolderPath('Desktop')
+        )
+        foreach ($dir in $shortcutDirs) {
+            if ([string]::IsNullOrWhiteSpace($dir) -or -not (Test-Path -LiteralPath $dir)) {
+                continue
+            }
+            $lnkPath = Join-Path $dir 'BURNRATE.lnk'
+            $sc = $wsh.CreateShortcut($lnkPath)
+            $sc.TargetPath = $targetPath
+            if ($arguments) {
+                $sc.Arguments = $arguments
+            }
+            $sc.WorkingDirectory = Get-BurnrateWorkingDirectory
+            if (Test-Path -LiteralPath $iconDest) {
+                $sc.IconLocation = "$iconDest,0"
+            }
+            $sc.Description = 'BURNRATE AI Spend Telemetry Dashboard'
+            $sc.Save()
+        }
+        Write-Host 'Installed BURNRATE shortcuts (Desktop & Start Menu) with custom logo.'
+    } catch {
+        Write-Host "Note: shortcut creation skipped ($($_.Exception.Message))"
+    }
+}
+
+function Start-BurnrateDesktopWindow {
+    param(
+        [switch]$OpenSetup,
+        [switch]$DryRun
+    )
+    $setupUri = "http://$($script:BurnrateHost):$($script:BurnratePort)/setup"
+    $appUri = if ($OpenSetup) { $setupUri } else { "http://$($script:BurnrateHost):$($script:BurnratePort)/?app=1" }
+
+    if ($DryRun) {
+        Write-Host "DryRun: would launch BURNRATE desktop window at $appUri"
+        return
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($env:PYTEST_CURRENT_TEST)) {
+        return
+    }
+
+    $desktopExe = Resolve-BurnrateDesktopBinary
+    if ($desktopExe -and (Test-Path -LiteralPath $desktopExe)) {
+        Get-Process -Name 'burnrate-desktop' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $desktopExe
+        $psi.WorkingDirectory = Get-BurnrateWorkingDirectory
+        $psi.UseShellExecute = $false
+        if ($OpenSetup) {
+            $psi.EnvironmentVariables['BURNRATE_OPEN_SETUP'] = '1'
+        }
+        [void][System.Diagnostics.Process]::Start($psi)
+        Write-Host "Launched BURNRATE native desktop app ($appUri)"
+        return
+    }
+
+    Start-Process $appUri | Out-Null
+    Write-Host "Opened BURNRATE Setup Wizard ($appUri)"
+}
+
 function Install-BurnrateDashboard {
     param(
         [string]$TaskName = $script:BurnrateTaskName,
+        [switch]$NoLaunch,
         [switch]$DryRun
     )
     if (-not $DryRun) {
         Initialize-BurnrateDirectories
     }
+    Initialize-BurnrateRepoEnvironment -DryRun:$DryRun
     $launch = Get-BurnrateLaunchSpec -AllowMissingPython:$DryRun
     Write-Host "pythonw: $($launch.FilePath)"
     Write-Host "bind: $($script:BurnrateHost):$($script:BurnratePort)"
@@ -528,13 +726,21 @@ function Install-BurnrateDashboard {
     Register-BurnrateDashboardTask -TaskName $TaskName -Launch $launch -DryRun:$DryRun
     if ($DryRun) {
         Start-BurnrateDashboard -DryRun
+        Install-BurnrateShortcuts -DryRun
+        if (-not $NoLaunch) {
+            Start-BurnrateDesktopWindow -OpenSetup -DryRun
+        }
         return
     }
     if (Test-BurnrateHealth) {
         Write-Host "BURNRATE dashboard already healthy at $(Get-BurnrateHealthUri)"
-        return
+    } else {
+        Start-BurnrateDashboard
     }
-    Start-BurnrateDashboard
+    Install-BurnrateShortcuts
+    if (-not $NoLaunch) {
+        Start-BurnrateDesktopWindow -OpenSetup
+    }
 }
 
 function Uninstall-BurnrateDashboard {
