@@ -82,6 +82,30 @@ from spend_app.scheduler import create_scheduler
 SPEND_WINDOWS = set(WINDOW_SPECS) | {"7d", "30d", "MTD", "YTD", "All"}
 
 
+def _content_security_policy() -> str:
+    policy = CONTENT_SECURITY_POLICY
+    try:
+        import json
+        meta = json.loads((Path(__file__).resolve().parents[1] / ".variate" / "server.json").read_text(encoding="utf-8"))
+        origin = f"http://127.0.0.1:{int(meta['port'])}"
+    except (OSError, ValueError, TypeError, KeyError):
+        return policy
+    return (
+        policy.replace("script-src 'self' 'unsafe-inline'", f"script-src 'self' 'unsafe-inline' {origin}")
+        .replace("connect-src 'self'", f"connect-src 'self' {origin}")
+    )
+
+
+def _live_hud_html() -> str:
+    """Reload the HUD module so a design switch shows up on the next request."""
+    import importlib
+
+    import spend_app.hud as hud
+
+    importlib.reload(hud)
+    return hud.render_hud()
+
+
 def create_app(
     settings: Settings | None = None,
     *,
@@ -163,7 +187,7 @@ def create_app(
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["X-Frame-Options"] = "DENY"
-        response.headers["Content-Security-Policy"] = CONTENT_SECURITY_POLICY
+        response.headers["Content-Security-Policy"] = _content_security_policy()
         if request.url.path.startswith("/api/") and "cache-control" not in response.headers:
             response.headers["Cache-Control"] = "no-store"
         return response
@@ -332,8 +356,7 @@ def create_app(
         app_launch: int = Query(default=0, alias="app"),
     ):
         if hud == 1:
-            from spend_app.hud import render_hud
-            return HTMLResponse(render_hud(), headers={"Cache-Control": ASSET_REVALIDATE_CACHE})
+            return HTMLResponse(_live_hud_html(), headers={"Cache-Control": ASSET_REVALIDATE_CACHE})
         if setup == 1:
             from spend_app.setup_wizard import render_setup_wizard
             return HTMLResponse(render_setup_wizard(), headers={"Cache-Control": ASSET_REVALIDATE_CACHE})
@@ -354,8 +377,7 @@ def create_app(
 
     @app.get("/hud")
     def spend_hud():
-        from spend_app.hud import render_hud
-        return HTMLResponse(render_hud(), headers={"Cache-Control": ASSET_REVALIDATE_CACHE})
+        return HTMLResponse(_live_hud_html(), headers={"Cache-Control": ASSET_REVALIDATE_CACHE})
 
     @app.get("/spend.css")
     def spend_css(request: Request):

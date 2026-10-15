@@ -217,3 +217,18 @@ def test_completed_or_stale_zcode_turn_is_not_live(tmp_path: Path) -> None:
         )
     sessions = _zcode_active_sessions(path, now=now)
     assert [row["sessionId"] for row in sessions] == ["live:turn-1"]
+
+
+def test_zcode_account_plan_counts_and_foreign_cli_does_not() -> None:
+    from spend_app.adapters.zcode_schema import parse_row
+
+    base = dict(
+        id="r", session_id="s", model_id="GLM-5.3", completed_at=1760000000000,
+        input_tokens=100, output_tokens=10, cache_read_input_tokens=20,
+        cache_creation_input_tokens=0, computed_total_tokens=110, reasoning_tokens=0,
+    )
+    row, issue = parse_row(dict(base, provider_id="account:zai-individual-coding-plan"), modern=True)
+    assert row is not None and row.tool_key == "zcode"
+    assert issue != "non_plan"
+    skipped, reason = parse_row(dict(base, provider_id="anthropic"), modern=True)
+    assert skipped is None and reason == "non_plan"

@@ -139,7 +139,13 @@ def ingest(*, database_path: Path, pricing: PricingEngine, log_path: Path) -> di
         from spend_app.adapters.common import failed_result
         return failed_result(database_path=database_path, source=SOURCE, reason="Grok usage log is missing or moved. Recheck the configured path.")
     usage_rows, next_state = parse_log(log_path, _STATE.get(key))
-    issues = next_state.get("issues", [])
+    issues = list(next_state.get("issues", []))
+    if log_path.name == "unified.jsonl" and log_path.parent.name == "logs":
+        native_rows, native_issues, native_files = _session_updates(log_path.parent.parent)
+        usage_rows.extend(native_rows)
+        issues.extend(native_issues)
+    else:
+        native_files = 0
     result = persist_rows(
         database_path=database_path, pricing=pricing, source=SOURCE,
         usage_rows=usage_rows, issues=issues,
@@ -149,4 +155,39 @@ def ingest(*, database_path: Path, pricing: PricingEngine, log_path: Path) -> di
         _STATE[key] = next_state
     result["eventsAccepted"] = result.get("eventsAccepted", 0) + next_state.get("confirmed", 0)
     result["issues"] = sorted(set(issues))
-    return {**result, "files": 1, "rows": len(usage_rows)}
+    return {**result, "files": 1 + native_files, "rows": len(usage_rows)}
+
+
+def _session_updates(root: Path) -> tuple[list[UsageRow], list[str], int]:
+    """Per-turn totals in sessions/*/updates.jsonl. unified.jsonl is a smaller sample."""
+    from spend_app.adapters.grok_native import reduce_updates
+    from spend_app.connection_paths import source_files
+
+    rows: list[UsageRow] = []
+    issues: list[str] = []
+    found = 0
+    if not root.is_dir():
+        return rows, issues, found
+    from spend_app.connection_paths import LocationError
+    try:
+        update_files = list(source_files(root, "sessions/*/*/updates.jsonl"))
+    except LocationError:
+        return rows, issues, found
+    for file in update_files:
+        found += 1
+        records = []
+        try:
+            from spend_app.connection_paths import LocationError, confined
+            with confined(file).open("r", encoding="utf-8") as stream:
+                for line in stream:
+                    try:
+                        records.append(json.loads(line))
+                    except ValueError:
+                        issues.append("malformed_grok_native_metadata")
+        except OSError:
+            issues.append("grok_native_source_unavailable")
+            continue
+        parsed, errors = reduce_updates(records)
+        rows.extend(parsed)
+        issues.extend(errors)
+    return rows, issues, found

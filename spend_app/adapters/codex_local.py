@@ -7,9 +7,9 @@ Files read (read-only):
     ``PRAGMA query_only=ON``
 
 Official vs observed:
-  Official local Codex Desktop session logs. JSONL fields are observed from
-  Codex Desktop. Only ``originator = "Codex Desktop"`` is ingested so
-  Traycer-launched sessions are not double-counted.
+  Official local Codex session logs. JSONL fields are observed from Codex.
+  Known originators are ingested. ``traycer-agents`` stays out so Traycer's
+  own ledger is the authority for those sessions.
 
 Not stored:
   Prompts, responses, tool calls, or full filesystem paths. Project is the

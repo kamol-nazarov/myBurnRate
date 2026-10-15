@@ -1734,7 +1734,7 @@ function renderHeat(data) {
     setText($("heat-label"), button.dataset.label);
     // Heat cells are reference usage USD (N03) with the unit spoken and shown.
     setText($("heat-value"), button.dataset.value === "" ? unknown : usd(button.dataset.value));
-    $("heat-value").style.color = short ? "#858c98" : "#eef1f5";
+    $("heat-value").style.color = short ? "#6f6a62" : "#1c1b19";
   };
   const hours = Array.from({length:24}, (_, hour) => hour);
   reconcileChildren($("heatmap"), DAYS, (label, day) => day, label => nodeFrom(`<div class="heat-row"><span>${esc(label)}</span><div class="heat-cells"></div></div>`), (rowNode, label, day) => {
@@ -1791,7 +1791,7 @@ function renderHeat(data) {
     if (peak) gridCells[state.heatFocus].tabIndex = 0;
     setText($("heat-label"), peak?.dataset.label || "Peak window");
     setText($("heat-value"), peak ? usd(peak.dataset.value) : unknown);
-    $("heat-value").style.color = short ? "#858c98" : "#eef1f5";
+    $("heat-value").style.color = short ? "#6f6a62" : "#1c1b19";
   }
   setText($("heat-unit"), data.heatmapUnit || "reference usage (USD at documented rates)");
 }

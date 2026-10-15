@@ -213,6 +213,8 @@ def test_traycer_projection_versions_reparse_only_changed_chat(monkeypatch):
         return json.dumps({'settings':{'harnessId':'grok','model':'grok-a'},'events':[
             {'body':{'timestamp':1760000000000+i,'metadata':{'usage':{'totalTokens':10}}}} for i in range(versions[chat])]})
     def execute(sql,args=()):
+        if "sqlite_master" in sql:
+            return []
         if sql.startswith('SELECT chat_id,through_seq'):
             return SimpleNamespace(fetchall=lambda:list(versions.items()))
         assert sql.startswith('SELECT projection_json')

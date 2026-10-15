@@ -328,6 +328,9 @@ class Inspector:
         return normalize(raw, meta)
 
     def inspect(self, source, path, meta):
+        if source == "traycer_local":
+            from spend_app.adapters.traycer_local import inspect_source
+            return inspect_source(path)
         if source == "opencode_local":
             from spend_app.adapters.opencode_schema import inspect_source
             return inspect_source(path)
@@ -394,9 +397,10 @@ class Inspector:
                         from spend_app.adapters.grok_native import signal_row
                         from datetime import datetime, UTC
                         try:
-                            usable |= signal_row(json.loads(sample), file.parent.name, datetime.now(UTC)).unclassified_tokens > 0
+                            signal = signal_row(json.loads(sample), file.parent.name, datetime.now(UTC))
                         except ValueError:
                             raise LocationError("Incompatible Grok signal metadata.") from None
+                        usable |= bool(signal and signal.unclassified_tokens > 0)
                         continue
                     if meta.shape == "csv" and file.suffix.lower() == ".json":
                         from spend_app.adapters.cursor_export import parse_export

@@ -1,9 +1,9 @@
-"""Traycer local usage from read-only ``chat.db`` projections.
+"""Traycer local usage from the host usage ledger.
 
-Only Grok and OpenRouter harnesses are ingested here. Quota and live-agent
-signals that spawn the Traycer CLI (``agent profile-rate-limits`` /
-``agent list``) live in ``spend_app.limits`` and are experimental undocumented
-interfaces.
+Per-CLI turns come from ``usage_analytics_facts`` when that table exists.
+Older hosts still use ``chat_projection``. Quota and live-agent signals that
+spawn the Traycer CLI (``agent profile-rate-limits`` / ``agent list``) live
+in ``spend_app.limits`` and are experimental undocumented interfaces.
 """
 
 from __future__ import annotations
@@ -60,6 +60,218 @@ def projection_index(connection: sqlite3.Connection) -> list[tuple[str, object]]
     except sqlite3.OperationalError:
         return None
     return [(str(chat_id), None) for (chat_id,) in rows]
+
+
+HARNESS_TOOLS = {
+    "claude": "claude-code",
+    "codex": "codex",
+    "cursor": "cursor",
+    "grok": "grok",
+    "opencode": "opencode",
+    "openrouter": "openrouter",
+    "antigravity": "antigravity",
+}
+# OpenCode's own database is the authority for that CLI. OpenRouter has no
+# local session ledger, so those Traycer facts stay.
+NATIVE_SOURCES = {
+    "claude-code": ("claude_local",),
+    "codex": ("codex_local",),
+    "cursor": ("cursor_local", "cursor_usage_service", "cursor_admin", "cursor_csv"),
+    "grok": ("grok_local",),
+}
+
+
+def fact_model(harness: str, model: str) -> str:
+    lowered = (model or "unknown").strip().lower() or "unknown"
+    if harness == "grok":
+        return f"supergrok:{lowered}"
+    if harness == "openrouter":
+        return canonical_model("openrouter", model or "unknown")
+    if harness == "opencode":
+        return "opencode:" + lowered.split(":")[-1]
+    if harness == "cursor":
+        return "cursor:" + lowered.removeprefix("cursor:")
+    if harness in {"claude", "codex", "antigravity"}:
+        return lowered
+    return f"{harness}:{lowered}"
+
+
+def _table_names(connection: sqlite3.Connection) -> set[str]:
+    return {str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+
+
+def parse_facts(path: Path, *, observations: bool = False) -> list | None:
+    """Return parsed fact rows, or None when this database is not the facts ledger."""
+    connection = sqlite_read_only(path)
+    try:
+        if "usage_analytics_facts" not in _table_names(connection):
+            return None
+        fetched = connection.execute(
+            """
+            SELECT fact_id, occurred_at, chat_id, harness_id, model, usage_completeness,
+                   uncached_input_tokens, cache_read_input_tokens, cache_creation_tokens,
+                   output_tokens, reasoning_tokens, cost_usd, cost_provenance, tui_session_id
+            FROM usage_analytics_facts
+            """
+        ).fetchall()
+    finally:
+        connection.close()
+    rows = []
+    for (
+        fact_id, occurred_ms, chat_id, harness, model, completeness,
+        uncached, cache_read, cache_create, output, reasoning, cost, provenance, tui_session,
+    ) in fetched:
+        harness = str(harness or "").strip().lower()
+        if not harness or str(completeness or "") == "absent":
+            continue
+        timestamp_ms = number(occurred_ms)
+        if timestamp_ms <= 0 or not fact_id:
+            continue
+        fresh = int(number(uncached))
+        cached = int(number(cache_read))
+        writes = int(number(cache_create))
+        produced = int(number(output))
+        if fresh == 0 and cached == 0 and writes == 0 and produced == 0:
+            continue
+        tool = HARNESS_TOOLS.get(harness, harness)
+        session = str(tui_session).strip() if tui_session else ""
+        if not session and chat_id:
+            session = f"traycer:{chat_id}"
+        reported = cost if str(provenance or "") == "providerReported" else 0
+        from spend_app.adapters.event_identity import Observation
+        from dataclasses import replace
+        row = UsageRow(
+            source=SOURCE,
+            tool_key=tool,
+            model_key=fact_model(harness, str(model or "unknown")),
+            occurred_at=datetime.fromtimestamp(timestamp_ms / 1000, tz=UTC),
+            session_id=session or None,
+            project=str(chat_id) if chat_id else None,
+            input_tokens=fresh + cached,
+            cached_input_tokens=cached,
+            cache_write_tokens=writes,
+            cache_write_1h_tokens=0,
+            output_tokens=produced,
+            reasoning_tokens=int(number(reasoning)) or None,
+            cost_usd=positive_cost(reported),
+            raw_id=stable_id("traycer-fact", str(fact_id)),
+            unclassified_tokens=0,
+            telemetry_complete=str(completeness or "") == "measured",
+        )
+        logical = stable_id("traycer-fact", str(fact_id))
+        observation = Observation(replace(row, raw_id=logical), (row.raw_id,), timestamp_ms, "traycer-facts")
+        rows.append(observation if observations else observation.row)
+    return rows
+
+
+def covered_sessions(database_path: Path | None) -> set[tuple[str, str]]:
+    path = Path(database_path) if database_path else None
+    if path is None or not path.is_file():
+        return set()
+    found: set[tuple[str, str]] = set()
+    try:
+        connection = sqlite_read_only(path)
+    except (OSError, sqlite3.Error):
+        return found
+    try:
+        tables = _table_names(connection)
+        for table in ("usage_events", "unpriced_usage_events"):
+            if table not in tables:
+                continue
+            for tool, sources in NATIVE_SOURCES.items():
+                marks = ",".join("?" for _ in sources)
+                query = (
+                    f"SELECT session_id FROM {table} "
+                    f"WHERE tool_key=? AND source IN ({marks}) AND session_id IS NOT NULL"
+                )
+                for (session_id,) in connection.execute(query, (tool, *sources)):
+                    if session_id:
+                        found.add((tool, str(session_id)))
+    except sqlite3.Error:
+        return found
+    finally:
+        connection.close()
+    return found
+
+
+def drop_native_duplicates(connection: sqlite3.Connection) -> None:
+    for table in ("usage_events", "unpriced_usage_events"):
+        try:
+            connection.execute(
+                f"""
+                DELETE FROM {table}
+                WHERE source=? AND rowid IN (
+                    SELECT traycer.rowid FROM {table} traycer
+                    JOIN {table} native
+                      ON native.source != traycer.source
+                     AND native.tool_key = traycer.tool_key
+                     AND native.session_id = traycer.session_id
+                    WHERE traycer.source=? AND traycer.session_id IS NOT NULL
+                )
+                """,
+                (SOURCE, SOURCE),
+            )
+        except sqlite3.OperationalError:
+            continue
+
+
+def iter_databases(database_glob: str) -> list[Path]:
+    direct = Path(database_glob)
+    if direct.is_file():
+        return [direct]
+    matches = [Path(name) for name in sorted(adapter_files(database_glob)) if Path(name).is_file()]
+    facts = [path for path in matches if path.name == "app-assets.db"]
+    if facts:
+        return facts
+    if direct.name == "app-assets.db":
+        root = direct.parent.parent
+        fallback = sorted(root.glob("host/epic-state/*/chat/chat.db"))
+        if fallback:
+            return fallback
+    return matches
+
+
+def inspect_source(path: Path) -> dict:
+    from spend_app.connection_paths import LocationError
+
+    root = path if path.is_dir() else path.parent
+    facts = root / "app-assets" / "app-assets.db"
+    if path.is_file():
+        facts = path if path.name == "app-assets.db" else facts
+    candidates = [facts] if facts.is_file() else []
+    if root.is_dir():
+        candidates.extend(list(root.glob("host/epic-state/*/chat/chat.db"))[:3])
+    if not candidates and path.is_file():
+        candidates = [path]
+    if not candidates:
+        raise LocationError("Traycer usage ledger was not found. Install Traycer or connect its host folder.")
+    usable = False
+    for candidate in candidates:
+        try:
+            connection = sqlite_read_only(candidate)
+        except (OSError, sqlite3.Error):
+            continue
+        try:
+            names = _table_names(connection)
+            if "usage_analytics_facts" in names:
+                usable = connection.execute(
+                    "SELECT 1 FROM usage_analytics_facts WHERE usage_completeness != 'absent' LIMIT 1"
+                ).fetchone() is not None
+                if usable:
+                    break
+            elif "chat_projection" in names:
+                usable = connection.execute("SELECT 1 FROM chat_projection LIMIT 1").fetchone() is not None
+                if usable:
+                    break
+        finally:
+            connection.close()
+    if not usable and not any(item.is_file() for item in candidates):
+        raise LocationError("Traycer usage ledger was not found. Install Traycer or connect its host folder.")
+    return {
+        "state": "readable",
+        "usableSample": usable,
+        "detail": "Traycer per-CLI session usage." if usable else "Traycer is installed; waiting for a recorded turn.",
+    }
 
 
 def canonical_model(harness: str, model: str) -> str:
@@ -158,6 +370,9 @@ def parse_database(path: Path, *, database_path=None, observations=False, issues
     rows: list[UsageRow] = []
     from spend_app.connection_paths import cache_identity
     issues = issues if issues is not None else []
+    facts = parse_facts(path, observations=True)
+    if facts is not None:
+        return facts if observations else [item.row for item in facts]
     connection = sqlite_read_only(path)
     stat = path.stat()
     cache_prefix = (cache_identity(database_path or path, path, "traycer-identity-v1"),
@@ -210,8 +425,15 @@ def ingest(
     files = 0
     mirrored = 0
     issues, observations = [], []
-    for file_name in sorted(adapter_files(database_glob)):
-        path = Path(file_name)
+    already = covered_sessions(database_path)
+    opencode_db = Path.home() / ".local" / "share" / "opencode" / "opencode.db"
+    try:
+        from spend_app.providers import default_opencode_database
+        opencode_db = default_opencode_database()
+    except Exception:
+        pass
+    opencode_present = opencode_db.is_file()
+    for path in iter_databases(database_glob):
         if not path.is_file():
             continue
         files += 1
@@ -228,15 +450,26 @@ def ingest(
             if row.tool_key == "grok" and grok_covered_from is not None and row.occurred_at >= grok_covered_from:
                 mirrored += 1
                 continue
+            if row.tool_key == "opencode" and opencode_present:
+                mirrored += 1
+                continue
+            if row.session_id and (row.tool_key, row.session_id) in already:
+                mirrored += 1
+                continue
             usage_rows.append(row)
             observations.append(observation)
     from spend_app.adapters.event_identity import reconcile
+
+    def prepare(connection, _rows):
+        drop_native_duplicates(connection)
+        return reconcile(connection, observations, issues)
+
     result = persist_rows(
         database_path=database_path,
         pricing=pricing,
         source=SOURCE,
         usage_rows=usage_rows, issues=issues,
-        prepare=lambda connection, rows: reconcile(connection, observations, issues),
+        prepare=prepare,
     )
     return {
         **result,

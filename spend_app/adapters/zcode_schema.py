@@ -25,13 +25,18 @@ def select_rows(db, limit=None):
 
 
 def parse_row(record, modern=False):
-    from spend_app.adapters.zcode_local import PLAN_PROVIDERS, canonical_model, _reasoning_tokens
+    from spend_app.adapters.zcode_local import canonical_model, _reasoning_tokens
     provider = record.get("provider_id")
     directory = record.get('_project_directory')
     project = directory.strip().replace('\\', '/').rstrip('/').rsplit('/', 1)[-1] or None if isinstance(directory, str) else None
     if project and (project.endswith(':') or any(ord(ch) < 32 for ch in project)):
         project = None
-    if provider and provider not in PLAN_PROVIDERS:
+    # Account and builtin Z.ai plans are the live ledger. Embedded foreign
+    # CLIs stay on their own logs. Other providers are not a ZCode subscription.
+    lowered = str(provider or "").lower()
+    zcode_plan = not provider or "zai" in lowered or "bigmodel" in lowered or lowered.startswith("account:")
+    foreign_cli = any(token in lowered for token in ("anthropic", "claude", "openai", "codex", "gemini"))
+    if provider and (foreign_cli or not zcode_plan):
         return None, "non_plan"
     stamp = parse_millis(record.get("completed_at") or record.get("started_at"))
     if stamp is None or not record.get("id"):

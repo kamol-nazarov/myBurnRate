@@ -7,418 +7,388 @@ HUD_HTML = """<!doctype html>
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#0b0d10">
+    <meta name="theme-color" content="#f6f5f1">
     <title>BURNRATE · Sidecar HUD</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <style>
       :root {
-        color-scheme: dark;
-        --bg: #0b0d10;
-        --surface: #111419;
-        --raised: #171b22;
-        --border: rgba(255, 255, 255, 0.08);
-        --border-strong: rgba(255, 255, 255, 0.15);
-        --text: #e8ecf2;
-        --secondary: #a4acb9;
-        --muted: #6e7685;
-        --accent: #d9a441;
-        --cyan: #5cd6e8;
-        --green: #63c689;
-        --danger: #ef6461;
-        --font-sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        --font-mono: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+        color-scheme: light;
+        --paper: rgba(246, 245, 241, 0.74);
+        --ink: #1c1b19;
+        --muted: #6f6a62;
+        --faint: #8a847b;
+        --peach: rgba(246, 199, 180, 0.86);
+        --yellow: rgba(246, 227, 154, 0.86);
+        --pink: rgba(246, 211, 222, 0.86);
+        --blue: rgba(201, 223, 246, 0.86);
+        --docs: rgba(238, 242, 246, 0.8);
+        --card: rgba(247, 248, 250, 0.88);
+        --plate: rgba(255, 255, 255, 0.94);
+        --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+        --sans: "Segoe UI", sans-serif;
       }
       * { box-sizing: border-box; margin: 0; padding: 0; }
       html, body {
         height: 100%;
-        background: var(--bg);
-        color: var(--text);
-        font-family: var(--font-sans);
+        background: transparent;
+        color: var(--ink);
+        font-family: var(--sans);
         font-size: 13px;
-        line-height: 1.4;
-        overflow-x: hidden;
+        line-height: 1.3;
+        overflow: auto;
         user-select: none;
-      }
-      .hud-shell {
-        display: flex;
-        flex-direction: column;
-        min-height: 100vh;
-        padding: 10px 12px 12px;
-        gap: 10px;
-      }
-      .hud-titlebar {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-        padding-bottom: 8px;
-        border-bottom: 1px solid var(--border);
         cursor: grab;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(28, 27, 25, 0.28) transparent;
       }
-      .hud-brand {
+      html::-webkit-scrollbar,
+      #hud-quotas::-webkit-scrollbar { width: 10px; }
+      html::-webkit-scrollbar-thumb,
+      #hud-quotas::-webkit-scrollbar-thumb {
+        background: rgba(28, 27, 25, 0.18);
+        border: 3px solid var(--paper);
+        border-radius: 99px;
+      }
+      .page {
+        min-height: 100%;
+        padding: 12px 12px 10px;
+        background: var(--paper);
+      }
+      .top {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .titles { min-width: 0; }
+      .date-row {
         display: flex;
         align-items: center;
         gap: 8px;
         min-width: 0;
       }
-      .hud-brand img {
-        width: 22px;
-        height: 22px;
-        border-radius: 6px;
+      .date {
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--faint);
       }
-      .hud-wordmark {
-        font-size: 12px;
-        font-weight: 700;
-        letter-spacing: 0.08em;
-      }
-      .hud-wordmark strong { color: var(--accent); }
       .hud-status-pill {
         display: inline-flex;
         align-items: center;
-        gap: 5px;
-        padding: 2px 7px;
-        border-radius: 999px;
-        background: var(--surface);
-        border: 1px solid var(--border);
+        gap: 4px;
         font-size: 10px;
-        font-family: var(--font-mono);
-        color: var(--secondary);
+        font-weight: 650;
+        letter-spacing: 0.08em;
+        color: var(--faint);
       }
       .hud-status-pill i {
         width: 6px;
         height: 6px;
-        border-radius: 50%;
-        background: var(--green);
-        box-shadow: 0 0 8px var(--green);
+        border-radius: 99px;
+        background: #7dcea0;
       }
-      .hud-status-pill[data-state="stale"] i {
-        background: var(--accent);
-        box-shadow: none;
+      .hud-status-pill[data-state="stale"] i { background: #d9a441; }
+      .hud-status-pill[data-state="error"] i { background: #c45c4a; }
+      h1 {
+        margin-top: 2px;
+        font-family: var(--serif);
+        font-weight: 560;
+        font-size: 28px;
+        letter-spacing: -0.03em;
+        line-height: 1;
       }
-      .hud-status-pill[data-state="error"] i {
-        background: var(--danger);
-        box-shadow: none;
-      }
-      .hud-controls {
-        display: flex;
-        align-items: center;
-        gap: 4px;
-      }
+      .hud-controls { display: flex; gap: 2px; flex: none; }
       .hud-btn {
-        appearance: none;
-        background: var(--surface);
-        border: 1px solid var(--border);
-        color: var(--secondary);
-        border-radius: 6px;
-        padding: 4px 7px;
+        border: 0;
+        background: transparent;
+        color: var(--faint);
+        font: inherit;
         font-size: 11px;
-        font-family: var(--font-sans);
+        font-weight: 650;
+        padding: 4px 6px;
+        border-radius: 8px;
         cursor: pointer;
-        transition: border-color 0.15s, color 0.15s, background 0.15s;
       }
-      .hud-btn:hover {
-        color: var(--text);
-        border-color: var(--border-strong);
-        background: var(--raised);
-      }
-      .hud-btn.active {
-        color: var(--accent);
-        border-color: rgba(217, 164, 65, 0.45);
-        background: rgba(217, 164, 65, 0.12);
-      }
-      .hud-kpis {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 8px;
-      }
-      .hud-kpi {
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 10px;
-        padding: 8px 10px;
-      }
-      .hud-kpi span {
-        display: block;
-        font-size: 10px;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        color: var(--muted);
-      }
-      .hud-kpi strong {
-        display: block;
-        margin-top: 2px;
-        font-family: var(--font-mono);
-        font-size: 17px;
-        font-weight: 600;
-        font-variant-numeric: tabular-nums;
-        color: var(--text);
-      }
-      .hud-kpi small {
-        display: block;
-        margin-top: 2px;
-        font-size: 11px;
-        color: var(--secondary);
-        font-family: var(--font-mono);
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-      .hud-machines {
+      .hud-btn:hover { background: rgba(28, 27, 25, 0.06); color: var(--ink); }
+      .hud-btn.active { color: var(--ink); }
+      #hud-machines {
         display: flex;
-        align-items: center;
-        gap: 5px;
-        overflow-x: auto;
-        padding-bottom: 2px;
-        scrollbar-width: none;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 8px;
       }
-      .hud-machines::-webkit-scrollbar { display: none; }
+      #hud-machines:empty { display: none; }
       .hud-machine-chip {
-        appearance: none;
         display: inline-flex;
         align-items: center;
-        gap: 5px;
-        padding: 4px 9px;
+        gap: 6px;
+        border: 0;
+        background: var(--plate);
+        color: var(--muted);
+        font: inherit;
+        font-size: 12px;
+        font-weight: 600;
+        padding: 4px 10px;
         border-radius: 999px;
-        background: var(--surface);
-        border: 1px solid var(--border);
-        color: var(--secondary);
-        font-size: 11px;
-        white-space: nowrap;
         cursor: pointer;
       }
-      .hud-machine-chip.active {
-        color: var(--text);
-        border-color: var(--accent);
-        background: rgba(217, 164, 65, 0.14);
-      }
+      .hud-machine-chip.active { background: var(--ink); color: #fff; }
       .hud-machine-chip i {
         width: 6px;
         height: 6px;
-        border-radius: 50%;
-        background: var(--muted);
+        border-radius: 99px;
+        background: #c8c2b8;
       }
-      .hud-machine-chip i.live {
-        background: var(--green);
-        box-shadow: 0 0 6px var(--green);
-      }
-      .hud-section {
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 10px;
-        padding: 9px 10px;
-        display: flex;
-        flex-direction: column;
-        gap: 7px;
-      }
-      .hud-section-head {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-      }
-      .hud-section-head h2 {
-        font-size: 11px;
-        text-transform: uppercase;
-        letter-spacing: 0.07em;
-        color: var(--secondary);
-        font-weight: 600;
-      }
-      .hud-badge {
-        font-family: var(--font-mono);
-        font-size: 10px;
-        padding: 1px 6px;
-        border-radius: 999px;
-        background: var(--raised);
-        color: var(--secondary);
-        border: 1px solid var(--border);
-      }
-      .hud-badge.live {
-        color: var(--green);
-        border-color: rgba(99, 198, 137, 0.35);
-        background: rgba(99, 198, 137, 0.1);
-      }
-      .hud-list {
-        display: flex;
-        flex-direction: column;
+      .hud-machine-chip i.live { background: #7dcea0; }
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
         gap: 6px;
+        margin-top: 10px;
       }
+      .stat {
+        min-width: 0;
+        padding: 8px 8px 9px;
+        border-radius: 14px;
+        display: flex;
+        flex-direction: column;
+      }
+      .stat header span {
+        font-size: 9px;
+        font-weight: 650;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+      .stat strong {
+        margin-top: 4px;
+        font-family: var(--serif);
+        font-size: 20px;
+        font-weight: 460;
+        letter-spacing: -0.03em;
+        line-height: 1;
+      }
+      .stat small { display: none; }
+      .peach { background: var(--peach); }
+      .yellow { background: var(--yellow); }
+      .pink { background: var(--pink); }
+      .blue { background: var(--blue); }
+      .live-list { margin-top: 10px; min-width: 0; }
+      #hud-agents { display: grid; gap: 8px; min-width: 0; }
+      .live-list[hidden] { display: none; }
       .hud-agent {
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 8px;
-        padding: 6px 8px;
-        border-radius: 8px;
-        background: var(--raised);
-        border: 1px solid var(--border);
-      }
-      .hud-agent-main {
-        display: flex;
-        align-items: center;
-        gap: 7px;
         min-width: 0;
+        max-width: 100%;
+        padding: 10px 12px;
+        border-radius: 16px;
+        background: var(--plate);
       }
+      .hud-agent-main { display: flex; align-items: center; gap: 8px; min-width: 0; }
       .hud-pulse {
         width: 7px;
         height: 7px;
-        border-radius: 50%;
-        background: var(--green);
-        box-shadow: 0 0 8px var(--green);
-        flex-shrink: 0;
-        animation: hudPulse 1.8s ease-in-out infinite;
+        border-radius: 99px;
+        background: #7dcea0;
+        flex: none;
       }
-      @keyframes hudPulse {
-        0%, 100% { opacity: 1; transform: scale(1); }
-        50% { opacity: 0.45; transform: scale(0.86); }
-      }
-      .hud-agent-text {
-        min-width: 0;
-      }
-      .hud-agent-text strong {
+      .hud-agent-text { min-width: 0; }
+      .hud-agent-text strong, .hud-agent-text small {
         display: block;
-        font-size: 12px;
-        color: var(--text);
-        white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
-      }
-      .hud-agent-text small {
-        display: block;
-        font-size: 10px;
-        font-family: var(--font-mono);
-        color: var(--secondary);
         white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
       }
+      .hud-agent-text strong { font-size: 13px; }
+      .hud-agent-text small { font-size: 11px; color: var(--muted); }
       .hud-machine-tag {
-        font-family: var(--font-mono);
-        font-size: 10px;
-        padding: 2px 6px;
-        border-radius: 5px;
-        background: rgba(92, 214, 232, 0.1);
-        color: var(--cyan);
-        border: 1px solid rgba(92, 214, 232, 0.25);
-        white-space: nowrap;
-        flex-shrink: 0;
-      }
-      .hud-quota {
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-      }
-      .hud-quota-top {
-        display: flex;
-        align-items: baseline;
-        justify-content: space-between;
-        gap: 6px;
-        font-size: 11px;
-      }
-      .hud-quota-top strong {
-        font-weight: 600;
-        color: var(--text);
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-      .hud-quota-top span {
-        font-family: var(--font-mono);
-        font-size: 11px;
-        color: var(--secondary);
-        flex-shrink: 0;
-      }
-      .hud-track {
-        height: 5px;
-        border-radius: 999px;
-        background: var(--raised);
-        overflow: hidden;
-      }
-      .hud-track i {
-        display: block;
-        height: 100%;
-        border-radius: 999px;
-        background: var(--green);
-        transition: width 0.25s ease;
-      }
-      .hud-empty {
+        flex: none;
         font-size: 11px;
         color: var(--muted);
-        padding: 4px 0;
       }
-      .hud-footer {
-        margin-top: auto;
+      .plans {
+        margin-top: 10px;
+        padding: 8px;
+        border-radius: 18px;
+        background: var(--docs);
+      }
+      .plans-head {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 8px;
-        padding-top: 6px;
-        border-top: 1px solid var(--border);
-        font-size: 10px;
-        font-family: var(--font-mono);
+        padding: 2px 4px 4px;
         color: var(--muted);
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .plan {
+        display: grid;
+        grid-template-columns: 20px max-content minmax(0, 1fr);
+        gap: 4px 8px;
+        align-items: center;
+        margin-top: 4px;
+        padding: 6px 8px;
+        border-radius: 12px;
+        background: var(--card);
+      }
+      .mark {
+        grid-row: 1;
+        grid-column: 1;
+        width: 20px;
+        height: 20px;
+        display: grid;
+        place-items: center;
+        color: var(--ink);
+      }
+      .mark svg { width: 15px; height: 15px; display: block; }
+      .plan-main {
+        grid-column: 2;
+        grid-row: 1;
+        display: flex;
+        flex-direction: column;
+        max-width: 118px;
+        min-width: 0;
+      }
+      .plan b { font-size: 13px; font-weight: 650; }
+      .plan em {
+        font-style: normal;
+        font-size: 10px;
+        color: var(--muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .windows {
+        grid-column: 3;
+        grid-row: 1;
+        display: grid;
+        gap: 4px;
+        min-width: 0;
+      }
+      .plan.is-stack .windows {
+        grid-column: 1 / -1;
+        grid-row: 2;
+      }
+      .win {
+        display: flex;
+        align-items: center;
+        justify-content: flex-start;
+        gap: 6px;
+        min-width: 0;
+        padding: 5px 10px;
+        border-radius: 10px;
+        background: var(--plate);
+      }
+      .win span {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 12px;
+        font-weight: 650;
+        color: var(--muted);
+      }
+      .win i {
+        flex: none;
+        font-style: normal;
+        font-size: 11px;
+        font-weight: 650;
+        color: var(--faint);
+      }
+      .win b {
+        flex: none;
+        margin-left: auto;
+        font-family: var(--serif);
+        font-size: 20px;
+        font-weight: 460;
+        letter-spacing: -0.03em;
+        line-height: 1;
+        color: var(--ink);
+      }
+      .hud-empty { font-size: 12px; color: var(--muted); padding: 8px 6px 4px; }
+      .foot {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        margin-top: 12px;
+        padding: 0 6px;
+        font-size: 11px;
+        color: var(--faint);
       }
     </style>
   </head>
-  <body>
-    <main class="hud-shell" id="hud-shell">
-      <header class="hud-titlebar" data-tauri-drag-region>
-        <div class="hud-brand" data-tauri-drag-region>
-          <img src="/favicon.svg" alt="" width="22" height="22">
-          <span class="hud-wordmark" data-tauri-drag-region>BURN<strong>RATE</strong></span>
-          <span class="hud-status-pill" id="hud-status-pill" data-state="live">
-            <i></i><span id="hud-status-text">LIVE</span>
-          </span>
+  <body data-tauri-drag-region="deep">
+    <main class="page" id="hud-shell">
+      <header class="top">
+        <div class="titles">
+          <p class="date-row">
+            <span class="date" id="hud-date">Today</span>
+            <span class="hud-status-pill" id="hud-status-pill" data-state="live">
+              <i></i><span id="hud-status-text">LIVE</span>
+            </span>
+          </p>
+          <h1>Usage</h1>
         </div>
         <div class="hud-controls">
           <button type="button" class="hud-btn active" id="hud-pin-btn" title="Keep Sidecar HUD Always on Top" aria-pressed="true">Pin</button>
-          <button type="button" class="hud-btn" id="hud-expand-btn" title="Open Full Dashboard">Dashboard ↗</button>
-          <button type="button" class="hud-btn" id="hud-hide-btn" title="Hide Sidecar HUD">×</button>
+          <button type="button" class="hud-btn" id="hud-expand-btn" title="Open Full Dashboard">Open</button>
+          <button type="button" class="hud-btn" id="hud-hide-btn" title="Hide Sidecar HUD">Hide</button>
         </div>
       </header>
 
-      <div class="hud-machines" id="hud-machines" role="radiogroup" aria-label="Computer filter"></div>
+      <div id="hud-machines" role="radiogroup" aria-label="Computer filter"></div>
 
-      <section class="hud-kpis" aria-label="Live BurnRate KPIs">
-        <article class="hud-kpi">
-          <span>Burn rate</span>
+      <section class="stats" aria-label="Live BurnRate KPIs">
+        <article class="stat peach">
+          <header><span>Burn</span></header>
           <strong id="hud-burn-rate">—</strong>
-          <small id="hud-today">Today —</small>
+          <small>Per day</small>
         </article>
-        <article class="hud-kpi">
-          <span>24h Tokens</span>
+        <article class="stat yellow">
+          <header><span>Today</span></header>
+          <strong id="hud-today">—</strong>
+          <small>Tracked so far</small>
+        </article>
+        <article class="stat pink">
+          <header><span>Cache</span></header>
+          <strong id="hud-cache">—</strong>
+        </article>
+        <article class="stat blue">
+          <header><span>Tokens</span></header>
           <strong id="hud-tokens">—</strong>
-          <small id="hud-cache">Cache reuse —</small>
         </article>
       </section>
 
-      <section class="hud-section" aria-label="Running agents across computers">
-        <div class="hud-section-head">
-          <h2>Running now</h2>
-          <span class="hud-badge" id="hud-live-badge">0 live</span>
+      <section class="live-list" id="hud-live" hidden aria-label="Running agents across computers">
+        <div id="hud-agents"></div>
+      </section>
+
+      <section class="plans" aria-label="Subscription usage">
+        <div class="plans-head">
+          <span>Plans</span>
+          <span id="hud-quota-badge">—</span>
         </div>
-        <div class="hud-list" id="hud-agents">
-          <p class="hud-empty">No agents running right now.</p>
+        <div id="hud-quotas">
+          <p class="hud-empty">Waiting for subscription usage…</p>
         </div>
       </section>
 
-      <section class="hud-section" aria-label="Subscription capacity">
-        <div class="hud-section-head">
-          <h2>What runs out first</h2>
-          <span class="hud-badge" id="hud-quota-badge">—</span>
-        </div>
-        <div class="hud-list" id="hud-quotas">
-          <p class="hud-empty">Waiting for capacity snapshot…</p>
-        </div>
-      </section>
-
-      <footer class="hud-footer">
-        <span id="hud-computers-foot">1 computer connected</span>
-        <span id="hud-updated-foot">—</span>
+      <footer class="foot">
+        <span id="hud-computers-foot"></span>
+        <span id="hud-updated-foot"></span>
       </footer>
     </main>
 
     <script>
       (() => {
+        document.addEventListener("mousedown", event => {
+          if (event.detail === 2) event.stopImmediatePropagation();
+        }, true);
+
         const $ = id => document.getElementById(id);
         let selectedMachine = new URLSearchParams(location.search).get("machine") || "all";
         let pinned = true;
@@ -426,7 +396,7 @@ HUD_HTML = """<!doctype html>
         const usd = v => {
           const n = v == null || v === "" ? NaN : Number(v);
           if (!Number.isFinite(n)) return "—";
-          return n >= 1000 ? "$" + Math.round(n).toLocaleString("en-US") : "$" + n.toFixed(2);
+          return "$" + Math.round(n).toLocaleString("en-US");
         };
         const tok = v => {
           const n = v == null || v === "" ? NaN : Number(v);
@@ -436,11 +406,7 @@ HUD_HTML = """<!doctype html>
           if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
           return String(Math.round(n));
         };
-        const pct = v => {
-          const n = v == null || v === "" ? NaN : Number(v);
-          return Number.isFinite(n) ? n.toFixed(0) + "%" : "—";
-        };
-        const quotaColor = v => v >= 85 ? "#ef6461" : v >= 65 ? "#d9a441" : "#63c689";
+        const pctText = value => value == null ? "—" : (value > 0 && value < 1 ? "<1%" : Math.round(value) + "%");
 
         async function tauriInvoke(cmd, args = {}) {
           const internals = window.__TAURI_INTERNALS__;
@@ -470,7 +436,13 @@ HUD_HTML = """<!doctype html>
         function renderMachines(machines) {
           const root = $("hud-machines");
           const list = Array.isArray(machines) ? machines : [];
-          const items = [{id: "all", name: "All (" + Math.max(1, list.length) + ")", isLocal: true}, ...list];
+          $("hud-computers-foot").textContent =
+            list.length === 1 ? "1 computer connected" : list.length + " computers connected";
+          if (list.length < 2) {
+            root.replaceChildren();
+            return;
+          }
+          const items = [{id: "all", name: "All", isLocal: true}, ...list];
           root.replaceChildren(...items.map(item => {
             const btn = document.createElement("button");
             btn.type = "button";
@@ -490,8 +462,42 @@ HUD_HTML = """<!doctype html>
             });
             return btn;
           }));
-          $("hud-computers-foot").textContent =
-            list.length === 1 ? "1 computer connected" : list.length + " computers connected";
+        }
+
+        function windowName(key, label) {
+          const text = String(label || "").toLowerCase();
+          let scope = "";
+          if (key === "antigravity") {
+            if (text.includes("gemini")) scope = "Gemini";
+            else if (text.includes("claude") || text.includes("gpt")) scope = "Other";
+          }
+          let win = label || "Plan";
+          if (text.includes("5-hour") || text.includes("five-hour") || text.includes("5h")) {
+            win = key === "antigravity" ? "5h" : "5 hour";
+          } else if (text.includes("month")) win = "month";
+          else if (text.includes("week")) win = "week";
+          else if (text.includes("other model")) win = "Other";
+          else if (text.includes("model")) win = "Models";
+          else if (text.includes("fund") || text.includes("balance")) win = "Balance";
+          const left = [scope, win].filter(Boolean).join(" ");
+          return left.charAt(0).toUpperCase() + left.slice(1);
+        }
+
+        function resetIn(iso) {
+          if (!iso) return "";
+          const ms = new Date(iso).getTime() - Date.now();
+          if (!Number.isFinite(ms)) return "";
+          if (ms <= 0) return "now";
+          const hours = ms / 3600000;
+          if (hours < 1) return Math.max(1, Math.round(ms / 60000)) + "m";
+          if (hours < 48) return Math.round(hours) + "h";
+          return Math.round(hours / 24) + "d";
+        }
+
+        function resetWhen(iso) {
+          const date = new Date(iso || "");
+          if (Number.isNaN(date.getTime())) return "";
+          return date.toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"});
         }
 
         function renderSummary(data) {
@@ -500,96 +506,120 @@ HUD_HTML = """<!doctype html>
           const status = data.status || "live";
           $("hud-status-pill").dataset.state = status === "success" ? "live" : status;
           $("hud-status-text").textContent = status === "stale" ? "STALE" : status === "error" ? "ERR" : "LIVE";
+          $("hud-date").textContent = new Date().toLocaleDateString("en-US", {
+            weekday: "long", month: "long", day: "numeric"
+          });
 
-          $("hud-burn-rate").textContent = nav.burnRatePerDay != null ? usd(nav.burnRatePerDay) + "/d" : "—";
-          $("hud-today").textContent = "Today " + usd(nav.todayUsd ?? totals.trackedValue);
+          $("hud-burn-rate").textContent = nav.burnRatePerDay != null ? usd(nav.burnRatePerDay) : "—";
+          $("hud-today").textContent = usd(nav.todayUsd ?? totals.trackedValue);
+          $("hud-cache").textContent = totals.cacheReusePct == null || totals.cacheReusePct === ""
+            ? "—"
+            : Math.round(Number(totals.cacheReusePct)) + "%";
           $("hud-tokens").textContent = tok(totals.tokens);
-          $("hud-cache").textContent = "Cache reuse " + pct(totals.cacheReusePct);
 
           renderMachines(data.machines || []);
 
-          const liveRows = (data.activity || []).filter(r => {
-            const s = String(r?.state || "").toLowerCase();
-            return s === "live" || s === "running";
-          });
-          const badge = $("hud-live-badge");
-          badge.textContent = liveRows.length + " live";
-          badge.classList.toggle("live", liveRows.length > 0);
+          const shortNames = {
+            codex: "Codex",
+            cursor: "Cursor",
+            "claude-code": "Claude",
+            antigravity: "Antigravity",
+            grok: "Grok",
+            opencode: "Z.AI",
+            openrouter: "OpenRouter"
+          };
+          const marks = {
+            codex: "M8.086.457a6.105 6.105 0 013.046-.415c1.333.153 2.521.72 3.564 1.7a.117.117 0 00.107.029c1.408-.346 2.762-.224 4.061.366l.063.03.154.076c1.357.703 2.33 1.77 2.918 3.198.278.679.418 1.388.421 2.126a5.655 5.655 0 01-.18 1.631.167.167 0 00.04.155 5.982 5.982 0 011.578 2.891c.385 1.901-.01 3.615-1.183 5.14l-.182.22a6.063 6.063 0 01-2.934 1.851.162.162 0 00-.108.102c-.255.736-.511 1.364-.987 1.992-1.199 1.582-2.962 2.462-4.948 2.451-1.583-.008-2.986-.587-4.21-1.736a.145.145 0 00-.14-.032c-.518.167-1.04.191-1.604.185a5.924 5.924 0 01-2.595-.622 6.058 6.058 0 01-2.146-1.781c-.203-.269-.404-.522-.551-.821a7.74 7.74 0 01-.495-1.283 6.11 6.11 0 01-.017-3.064.166.166 0 00.008-.074.115.115 0 00-.037-.064 5.958 5.958 0 01-1.38-2.202 5.196 5.196 0 01-.333-1.589 6.915 6.915 0 01.188-2.132c.45-1.484 1.309-2.648 2.577-3.493.282-.188.55-.334.802-.438.286-.12.573-.22.861-.304a.129.129 0 00.087-.087A6.016 6.016 0 015.635 2.31C6.315 1.464 7.132.846 8.086.457zm-.804 7.85a.848.848 0 00-1.473.842l1.694 2.965-1.688 2.848a.849.849 0 001.46.864l1.94-3.272a.849.849 0 00.007-.854l-1.94-3.393zm5.446 6.24a.849.849 0 000 1.695h4.848a.849.849 0 000-1.696h-4.848z",
+            "claude-code": "M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z",
+            cursor: "M22.106 5.68L12.5.135a.998.998 0 00-.998 0L1.893 5.68a.84.84 0 00-.419.726v11.186c0 .3.16.577.42.727l9.607 5.547a.999.999 0 00.998 0l9.608-5.547a.84.84 0 00.42-.727V6.407a.84.84 0 00-.42-.726zm-.603 1.176L12.228 22.92c-.063.108-.228.064-.228-.061V12.34a.59.59 0 00-.295-.51l-9.11-5.26c-.107-.062-.063-.228.062-.228h18.55c.264 0 .428.286.296.514z",
+            grok: "M9.27 15.29l7.978-5.897c.391-.29.95-.177 1.137.272.98 2.369.542 5.215-1.41 7.169-1.951 1.954-4.667 2.382-7.149 1.406l-2.711 1.257c3.889 2.661 8.611 2.003 11.562-.953 2.341-2.344 3.066-5.539 2.388-8.42l.006.007c-.983-4.232.242-5.924 2.75-9.383.06-.082.12-.164.179-.248l-3.301 3.305v-.01L9.267 15.292M7.623 16.723c-2.792-2.67-2.31-6.801.071-9.184 1.761-1.763 4.647-2.483 7.166-1.425l2.705-1.25a7.808 7.808 0 00-1.829-1A8.975 8.975 0 005.984 5.83c-2.533 2.536-3.33 6.436-1.962 9.764 1.022 2.487-.653 4.246-2.34 6.022-.599.63-1.199 1.259-1.682 1.925l7.62-6.815",
+            opencode: "M12.105 2L9.927 4.953H.653L2.83 2h9.276zM23.254 19.048L21.078 22h-9.242l2.174-2.952h9.244zM24 2L9.264 22H0L14.736 2H24z",
+            antigravity: "M12 4.5 20 18.5H4z",
+            openrouter: "M7 10a2 2 0 100 4 2 2 0 000-4zm10-4.5a2 2 0 100 4 2 2 0 000-4zM17 14.5a2 2 0 100 4 2 2 0 000-4z"
+          };
+          const iconFor = key => {
+            const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+            svg.setAttribute("viewBox", "0 0 24 24");
+            svg.setAttribute("aria-hidden", "true");
+            const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+            path.setAttribute("fill", "currentColor");
+            path.setAttribute("d", marks[key] || marks.openrouter);
+            svg.append(path);
+            return svg;
+          };
 
-          const agentsRoot = $("hud-agents");
-          if (!liveRows.length) {
-            agentsRoot.innerHTML = '<p class="hud-empty">No agents running right now.</p>';
+          const groups = [];
+          for (const provider of (data.capacity || [])) {
+            const key = provider.providerKey || "";
+            const name = shortNames[key] || provider.providerName || key || "Plan";
+            const sourceRows = Array.isArray(provider.rows) && provider.rows.length ? provider.rows : [provider];
+            const rows = sourceRows.map(row => {
+              const value = row.pct == null || row.pct === "" ? NaN : Number(row.pct);
+              return {
+                label: row.label || row.limitKey || provider.plan || "",
+                title: [provider.providerName || name, row.label || provider.plan || ""].filter(Boolean).join(" · "),
+                pct: Number.isFinite(value) ? value : null,
+                payg: Boolean(row.isPayg || provider.isPayg),
+                resetsAt: row.resetsAt || ""
+              };
+            });
+            if (rows.length) groups.push({ key, name, plan: provider.plan || "", rows });
+          }
+          const shownPeak = group => {
+            const finite = group.rows.map(item => item.pct).filter(value => value != null);
+            if (!finite.length) return group.rows.some(item => item.payg) ? -2 : -1;
+            return Math.max(...finite);
+          };
+          groups.sort((a, b) => shownPeak(b) - shownPeak(a));
+          $("hud-quota-badge").textContent = groups.length ? String(groups.length) : "—";
+          const quotasRoot = $("hud-quotas");
+          if (!groups.length) {
+            quotasRoot.innerHTML = '<p class="hud-empty">No subscription usage yet.</p>';
           } else {
-            agentsRoot.replaceChildren(...liveRows.map(row => {
-              const card = document.createElement("div");
-              card.className = "hud-agent";
-              const started = Date.parse(row.startedAt || "");
-              const mins = Number.isFinite(started) ? Math.max(0, Math.round((Date.now() - started) / 60000)) : null;
-              const age = mins == null ? "" : mins < 1 ? "now" : mins < 60 ? mins + "m" : Math.round(mins / 60) + "h";
+            quotasRoot.replaceChildren(...groups.map(group => {
+              const card = document.createElement("article");
+              card.className = "plan" + (group.rows.length > 2 ? " is-stack" : "");
+              card.setAttribute("aria-label", group.name);
+              const mark = document.createElement("span");
+              mark.className = "mark";
+              mark.append(iconFor(group.key));
+              const name = document.createElement("b");
+              name.textContent = group.name;
               const main = document.createElement("div");
-              main.className = "hud-agent-main";
-              const pulse = document.createElement("i");
-              pulse.className = "hud-pulse";
-              const text = document.createElement("div");
-              text.className = "hud-agent-text";
-              const title = document.createElement("strong");
-              title.textContent = row.name || "Agent";
-              const sub = document.createElement("small");
-              sub.textContent = [row.modelKey || "model", age].filter(Boolean).join(" · ");
-              text.append(title, sub);
-              main.append(pulse, text);
-              const tag = document.createElement("span");
-              tag.className = "hud-machine-tag";
-              tag.textContent = row.machineName || (row.machineId === "local" ? "Local" : row.machineId || "Local");
-              card.append(main, tag);
+              main.className = "plan-main";
+              const em = document.createElement("em");
+              em.textContent = group.key === "opencode" && group.plan === "Max" ? "Coding Plan Max" : group.plan;
+              const windows = document.createElement("div");
+              windows.className = "windows";
+              const count = group.rows.length;
+              const cols = count <= 1 ? 1 : count === 3 ? 3 : 2;
+              windows.style.gridTemplateColumns = "repeat(" + cols + ", minmax(0, 1fr))";
+              for (const q of group.rows) {
+                const cell = document.createElement("div");
+                cell.className = "win";
+                const when = resetWhen(q.resetsAt);
+                const until = resetIn(q.resetsAt);
+                cell.title = q.title + (when ? " · resets " + when : "");
+                const label = document.createElement("span");
+                label.textContent = windowName(group.key, q.label);
+                const value = document.createElement("b");
+                value.textContent = q.pct == null ? (q.payg ? "Payg" : "—") : pctText(q.pct);
+                cell.append(label);
+                if (until) {
+                  const eta = document.createElement("i");
+                  eta.textContent = until;
+                  eta.title = "Resets " + when;
+                  cell.append(eta);
+                }
+                cell.append(value);
+                windows.append(cell);
+              }
+              main.append(name, em);
+              card.append(mark, main, windows);
               return card;
             }));
           }
-
-          const quotas = [];
-          for (const provider of (data.capacity || [])) {
-            if (provider.isPayg) continue;
-            for (const row of (provider.rows || [])) {
-              if (row.pct != null && Number.isFinite(Number(row.pct))) {
-                quotas.push({
-                  provider: provider.providerName || provider.providerKey,
-                  label: row.label || row.key,
-                  pct: Number(row.pct),
-                  resetsAt: row.resetsAt
-                });
-              }
-            }
-          }
-          quotas.sort((a, b) => b.pct - a.pct);
-          const topQuotas = quotas.slice(0, 4);
-          $("hud-quota-badge").textContent = topQuotas.length ? pct(topQuotas[0].pct) + " peak" : "—";
-          const quotasRoot = $("hud-quotas");
-          if (!topQuotas.length) {
-            quotasRoot.innerHTML = '<p class="hud-empty">No active subscription limits reported.</p>';
-          } else {
-            quotasRoot.replaceChildren(...topQuotas.map(q => {
-              const wrap = document.createElement("div");
-              wrap.className = "hud-quota";
-              const top = document.createElement("div");
-              top.className = "hud-quota-top";
-              const name = document.createElement("strong");
-              name.textContent = q.provider + " · " + q.label;
-              const val = document.createElement("span");
-              val.textContent = pct(q.pct);
-              val.style.color = quotaColor(q.pct);
-              top.append(name, val);
-              const track = document.createElement("div");
-              track.className = "hud-track";
-              const fill = document.createElement("i");
-              fill.style.width = Math.max(0, Math.min(100, q.pct)).toFixed(1) + "%";
-              fill.style.background = quotaColor(q.pct);
-              track.append(fill);
-              wrap.append(top, track);
-              return wrap;
-            }));
-          }
-
-          $("hud-updated-foot").textContent = new Date().toLocaleTimeString([], {hour: "numeric", minute: "2-digit", second: "2-digit"});
+          $("hud-updated-foot").textContent = new Date().toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
         }
 
         async function refresh() {

@@ -59,7 +59,8 @@ def default_claude_glob() -> str:
 
 
 def default_traycer_glob() -> str:
-    return str(_home() / ".traycer" / "host" / "epic-state" / "**" / "chat" / "chat.db")
+    # Host 1.4+ stores per-CLI turns in app-assets.db. Older hosts still use chat.db.
+    return str(_home() / ".traycer" / "app-assets" / "app-assets.db")
 
 
 def default_cursor_glob() -> str:
@@ -74,8 +75,12 @@ def default_zcode_database() -> Path:
     return _home() / ".zcode" / "cli" / "db" / "db.sqlite"
 
 
+def default_grok_root() -> Path:
+    return Path(os.getenv("GROK_HOME") or _home() / ".grok").expanduser()
+
+
 def default_grok_log() -> Path:
-    return Path(os.getenv("GROK_HOME") or _home() / ".grok").expanduser() / "logs" / "unified.jsonl"
+    return default_grok_root() / "logs" / "unified.jsonl"
 
 
 def _base_kwargs(settings: Settings, pricing: PricingEngine) -> dict:
@@ -117,7 +122,7 @@ def _zcode_kwargs(settings: Settings, pricing: PricingEngine, **_: object) -> di
 
 
 def _grok_kwargs(settings: Settings, pricing: PricingEngine, **_: object) -> dict:
-    return {**_base_kwargs(settings, pricing), "log_path": default_grok_log()}
+    return {**_base_kwargs(settings, pricing), "log_path": default_grok_root()}
 
 
 def _openai_admin_kwargs(
@@ -186,11 +191,11 @@ class ConnectionSpec:
 CONNECTION_SPECS = {
     "codex_local": ConnectionSpec("Codex", "session_glob", default_codex_glob, "**/*.jsonl", home_name=".codex", child="", location_env="CODEX_HOME"),
     "claude_local": ConnectionSpec("Claude Code", "session_glob", default_claude_glob, "**/*.jsonl", home_name=".claude", child="", location_env="CLAUDE_CONFIG_DIR"),
-    "traycer_local": ConnectionSpec("Traycer", "database_glob", default_traycer_glob, "**/chat/chat.db", "sqlite", ".traycer", "host/epic-state", "chat_projection", ("chat_id", "projection_json")),
+    "traycer_local": ConnectionSpec("Traycer", "database_glob", default_traycer_glob, "app-assets/app-assets.db", "sqlite", ".traycer", "", "usage_analytics_facts", ("fact_id", "harness_id", "occurred_at", "uncached_input_tokens", "output_tokens")),
     "cursor_local": ConnectionSpec("Cursor local", "database_glob", default_cursor_glob, "**/sdk-agent-store/*/index.db", "sqlite", ".cursor", "projects", "runs", ("run_id", "agent_id", "usage_json", "model", "finished_at", "updated_at", "created_at")),
     "opencode_local": ConnectionSpec("OpenCode", "source_database", default_opencode_database, shape="opencode", home_name="opencode", child="", table="session", columns=("id", "project_id", "directory", "path", "model", "cost", "tokens_input", "tokens_output", "tokens_reasoning", "tokens_cache_read", "tokens_cache_write", "time_updated"), location_env="XDG_DATA_HOME"),
     "zcode_local": ConnectionSpec("ZCode", "source_database", default_zcode_database, shape="zcode", home_name=".zcode", child="", table="model_usage", columns=("id", "session_id", "provider_id", "model_id", "completed_at", "input_tokens", "output_tokens", "reasoning_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "raw_usage_json", "status")),
-    "grok_local": ConnectionSpec("Grok Build", "log_path", default_grok_log, shape="grok", home_name=".grok", child="", location_env="GROK_HOME"),
+    "grok_local": ConnectionSpec("Grok Build", "log_path", default_grok_root, shape="grok", home_name=".grok", child="", location_env="GROK_HOME"),
     "cursor_csv": ConnectionSpec("Cursor CSV", "import_path", lambda: _home() / "BURNRATE-imports", "*.csv", "csv"),
     "antigravity_local": ConnectionSpec("Antigravity populated cache", "import_path", lambda: _home() / "BURNRATE-imports" / "antigravity", "*.jsonl", manual_only=True),
     "openai_admin": ConnectionSpec("OpenAI Admin", "admin_key", lambda: "", shape="api", credential_env="OPENAI_ADMIN_KEY", credential_help="Organization Admin API key created by an organization owner, with organization usage and cost read access. Not a ChatGPT subscription login."),
@@ -335,8 +340,8 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         ("usage", "activity"),
         stability="experimental",
         exactness="partial",
-        enabled_by_default=False,
-        tool_keys=("grok", "openrouter"),
+        enabled_by_default=True,
+        tool_keys=("claude-code", "codex", "cursor", "grok", "opencode", "openrouter", "antigravity"),
         ingest=ingest_traycer_local,
         kind="local",
         scheduler_alias="ingest_traycer_local",
@@ -348,7 +353,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         ("usage", "activity"),
         stability="experimental",
         exactness="derived",
-        enabled_by_default=False,
+        enabled_by_default=True,
         tool_keys=("cursor",),
         ingest=ingest_cursor_local,
         kind="local",
@@ -361,7 +366,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         ("usage", "quota"),
         stability="experimental",
         exactness="derived",
-        enabled_by_default=False,
+        enabled_by_default=True,
         tool_keys=("cursor",),
         ingest=ingest_cursor_usage,
         kind="local",
@@ -404,7 +409,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         ("usage", "quota", "activity"),
         stability="experimental",
         exactness="derived",
-        enabled_by_default=False,
+        enabled_by_default=True,
         tool_keys=("grok",),
         ingest=ingest_grok_local,
         kind="local",
@@ -418,7 +423,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         ("usage", "quota", "activity"),
         stability="experimental",
         exactness="derived",
-        enabled_by_default=False,
+        enabled_by_default=True,
         tool_keys=("antigravity",),
         ingest=ingest_antigravity_local,
         kind="local",

@@ -68,7 +68,10 @@ def signal_row(payload, sid, observed_at):
     before = count(payload.get("totalTokensBeforeCompaction", 0))
     total = count(payload.get("totalTokens"))
     context = count(payload.get("contextTokensUsed"))
-    if before is None or total is None:
+    # Current signals.json stores context window stats, not a spend total.
+    if total is None:
+        return None
+    if before is None:
         raise ValueError("invalid_grok_signals")
     # Observed producer contract: total includes compaction when context is
     # present; otherwise total is the post-compaction segment.
@@ -90,7 +93,9 @@ def read_source(root):
             elif file.name == "signals.json":
                 with confined(file).open("r", encoding="utf-8") as stream:
                     payload = json.load(stream)
-                rows.append(signal_row(payload, file.parent.name, datetime.fromtimestamp(file.stat().st_mtime, UTC)))
+                row = signal_row(payload, file.parent.name, datetime.fromtimestamp(file.stat().st_mtime, UTC))
+                if row is not None:
+                    rows.append(row)
             else:
                 records = []
                 with confined(file).open("r", encoding="utf-8") as stream:
@@ -134,9 +139,15 @@ def reconcile(connection, incoming, issues):
                 rows[row.raw_id] = row
         unified = [row for row in rows.values() if row.raw_id.startswith("grok-local:")]
         if unified:
-            start, end = min(row.occurred_at for row in unified), max(row.occurred_at for row in unified)
+            # updates.jsonl is a per-turn ledger. A unified line only replaces
+            # the native row when session, time, and token counts are the same turn.
+            fingerprints = {
+                (row.session_id, row.occurred_at.replace(microsecond=0), row.input_tokens, row.output_tokens)
+                for row in unified
+            }
             for raw_id, row in list(rows.items()):
-                if raw_id.startswith("grok-native-usage:") and start <= row.occurred_at <= end:
+                key = (row.session_id, row.occurred_at.replace(microsecond=0), row.input_tokens, row.output_tokens)
+                if raw_id.startswith("grok-native-usage:") and key in fingerprints:
                     if raw_id in existing:
                         delete_event(connection, raw_id)
                     del rows[raw_id]

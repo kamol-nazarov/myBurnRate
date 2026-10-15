@@ -34,7 +34,6 @@ from spend_app.pricing import PricingEngine
 
 SOURCE = "zcode_local"
 TOOL_KEY = "zcode"
-PLAN_PROVIDERS = frozenset({"builtin:zai-coding-plan", "builtin:bigmodel-coding-plan"})
 
 
 def canonical_model(model: object) -> str:

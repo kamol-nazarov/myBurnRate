@@ -213,6 +213,42 @@ def test_traycer_local_reads_only_structured_grok_and_openrouter_usage(tmp_path:
     assert rows[1].input_tokens == 1_000
 
 
+def test_traycer_facts_count_each_cli_and_skip_absent(tmp_path: Path) -> None:
+    database = tmp_path / "app-assets.db"
+    connection = sqlite3.connect(database)
+    connection.execute(
+        """
+        CREATE TABLE usage_analytics_facts(
+            fact_id TEXT, occurred_at INTEGER, chat_id TEXT, harness_id TEXT, model TEXT,
+            usage_completeness TEXT, uncached_input_tokens INTEGER, cache_read_input_tokens INTEGER,
+            cache_creation_tokens INTEGER, output_tokens INTEGER, reasoning_tokens INTEGER,
+            cost_usd REAL, cost_provenance TEXT, tui_session_id TEXT
+        )
+        """
+    )
+    connection.executemany(
+        "INSERT INTO usage_analytics_facts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [
+            ("fact-claude", 1788100000000, "chat", "claude", "claude-opus-5", "measured", 2, 100, 4, 9, 0, 1.5, "providerReported", "session-a"),
+            ("fact-codex", 1788100001000, "chat", "codex", "gpt-5.6-sol", "measured", 10, 5, 0, 3, 1, 0, "modelPriced", None),
+            ("fact-absent", 1788100002000, "chat", "grok", "grok-4.6", "absent", 0, 0, 0, 0, 0, 0, "unpriced", None),
+        ],
+    )
+    connection.commit()
+    connection.close()
+    rows = parse_traycer(database)
+    assert [row.tool_key for row in rows] == ["claude-code", "codex"]
+    assert rows[0].model_key == "claude-opus-5"
+    assert rows[0].input_tokens == 102
+    assert rows[0].cached_input_tokens == 100
+    assert rows[0].cache_write_tokens == 4
+    assert rows[0].session_id == "session-a"
+    assert rows[0].cost_usd == 1.5
+    assert rows[1].model_key == "gpt-5.6-sol"
+    assert rows[1].cost_usd is None
+    assert rows[1].session_id == "traycer:chat"
+
+
 def test_unpriced_usage_is_idempotent_and_visible_without_fake_spend(tmp_path: Path) -> None:
     database = tmp_path / "spend.db"
     pricing = PricingEngine.load(ROOT / "pricing")
