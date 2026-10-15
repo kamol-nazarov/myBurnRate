@@ -51,7 +51,7 @@ The default runtime is a single lightweight process: **FastAPI + SQLite + Dashbo
   - **Plans & Value**: Compare `This month` or `Last month` subscription expense against recorded API-equivalent usage, shared tool associations, and value multiples.
   - **Action Center**: Tracks quota thresholds, monitored-source issues, and unpriced models with snooze/acknowledge workflows.
   - **Token & Unit Economics**: Breakdown of fresh input, cached input, cache writes, output, and reasoning tokens by tool, model, project, and session, plus counterfactual cache-savings calculations.
-- **Always-on-Top Sidecar HUD (`/hud`)**: Compact, frameless floating window (`360×580`) with live Server-Sent Events streaming, 24h burn rate, computer filter pills, active coding agents, and top quota bars.
+- **Always-on-Top Sidecar HUD (`/hud`)**: Frameless floating window (`440×640`) on a warm paper background. It shows today’s burn, tracked spend, cache reuse, and tokens, then every subscription as a row: the weekly, 5-hour, or monthly window, its percentage, and the time until that window resets. Drag it from the paper surface. Pin, Open, and Hide stay clickable. The window is lightly see-through, and a double-click does not maximize it.
 - **Single-Account Multi-Computer Sync**: Pair laptops and secondary desktops to your primary Hub using a 1-click `brpair_...` pairing code. Spokes automatically push incremental token usage, sessions, and live agent state into your Hub database.
 - **Native Desktop App (`src-tauri/`)**: Tauri v2 desktop wrapper with system tray menu (`Toggle Sidecar HUD`, `Toggle HUD Always on Top`, `Open Full Dashboard`, `Run Setup Wizard…`, `Quit BURNRATE`) and automatic background process supervision.
 
@@ -204,19 +204,21 @@ burnrate backfill <source>
 
 ## What the Dashboard Looks Like
 
-The dashboard is a dark, single-page app titled **BURNRATE · AI Cost Intelligence**. After `burnrate serve`, open [http://127.0.0.1:17331](http://127.0.0.1:17331).
+The dashboard is a light, single-page app titled **BURNRATE · AI Cost Intelligence**. The page is warm paper, headlines and the large figures use a serif face, and the summary tiles use peach, yellow, pink, and blue. After `burnrate serve`, open [http://127.0.0.1:17331](http://127.0.0.1:17331).
 
 A typical overview (synthetic demo data — not a real account):
 
-- **Top nav.** Wordmark, a burn-rate figure, today’s tracked value, and a metering-status chip (live, idle, skipped, or failed).
+- **Top nav.** Wordmark, a peach burn-rate tile, a yellow today tile, a pink metering-status tile (live, stale, or failed), and chips for harnesses, monthly plans, and Attention.
 - **Coverage banner.** Which tools are billed-exact versus published-rate (`≈`). Unpriced usage is named, never filled in.
-- **Capacity.** Per-provider meters for “what runs out first” (weekly windows, 5-hour sessions, PAYG remaining credits). Missing quotas stay blank.
+- **Capacity.** “What runs out first”: one light card per subscription, with the tightest window as the large figure and each weekly, 5-hour, or monthly window listed with its percentage and time until reset. Missing quotas stay blank.
 - **Activity.** In-progress turns only. Opening an editor or an idle shell does not appear here. Usage totals update when a turn completes.
-- **Analysis window.** `15m`, `30m`, `1h`, `3h`, `6h`, `12h`, `1d`, `1w`, `1mo`, `MTD`, `YTD`, `All`.
-- **KPI row.** Tracked value, measured tokens, API-equivalent cost per million tokens, cache reuse, session count.
-- **Token activity chart.** Stacked by tool or cumulative, with a model price reference board below.
+- **Analysis window.** `15m`, `30m`, `1h`, `3h`, `6h`, `12h`, `1d`, `1w`, `1mo`, `MTD`, `YTD`, `All`. The selected range is a black pill.
+- **KPI row.** Tracked value, measured tokens, API-equivalent cost per million tokens, cache reuse, session count, each on its own pastel card.
+- **Token activity chart.** Stacked by tool or cumulative, on a white plot, with a model price reference board below.
 - **Recoverable / forecast.** Cache savings versus a no-cache counterfactual, and a labeled forecast of plan cost versus published-rate value.
-- **Unit economics.** Cost by model (click through for a tool or model detail page), token mix (cached input / fresh input / output), and any subscriptions you configured.
+- **Unit economics.** Cost by model (click through for a tool or model detail page), token mix (cached input / fresh input / output), and any subscriptions you configured. Tables and the hourly grid sit on white cards, not a dark panel.
+
+The Sidecar HUD at [http://127.0.0.1:17331/hud](http://127.0.0.1:17331/hud) uses the same paper system in a shorter window: four tiles (burn, today, cache, tokens) and one row per plan. Each row stretches that plan’s windows across the card and prints how long until the next reset.
 
 Public screenshots, when added, always use synthetic Northwind-style names and placeholder figures. They are not captures of a live database.
 
@@ -261,15 +263,15 @@ Official vs experimental is about the *interface BURNRATE uses*, not about wheth
 | Claude Code | local JSONL transcripts | supported | yes | none for usage | tokens exact; spend exact when the price card is `exact` |
 | OpenCode | local session SQLite | supported | yes | Z.AI quota HTTPS if a Coding Plan key is on disk | session-level tokens; spend derived |
 | ZCode | local `model_usage` SQLite | supported | yes | shares the Z.AI quota card | per-request tokens exact; spend derived |
-| Cursor signed-in usage | `api2.cursor.sh` DashboardService | **experimental** | bearer from `state.vscdb` | HTTPS to Cursor | tokens exact; spend derived |
-| Cursor SDK-agent history | local `index.db` | **experimental** | yes | none | historical cutover only; spend derived |
+| Cursor signed-in usage | `api2.cursor.sh` DashboardService | **experimental**, on by default | bearer from `state.vscdb` | HTTPS to Cursor | tokens exact; spend derived |
+| Cursor SDK-agent history | local `index.db` | **experimental**, on by default | yes | none | historical cutover only; spend derived |
 | Cursor Admin API | `api.cursor.com` | opt-in official | none | HTTPS if `CURSOR_API_KEY` is set | tokens exact; spend derived |
 | Cursor CSV export | drop folder | opt-in import | yes | none | as exported; spend derived |
-| Grok Build CLI | local `unified.jsonl` | **experimental** | yes | none | tokens exact; spend derived |
+| Grok Build CLI | local `unified.jsonl` and session `updates.jsonl` | **experimental**, on by default | yes | none | tokens exact; spend derived |
 | Direct xAI API | — | **not connected** | none | none | unavailable |
-| Google Antigravity | localhost language-server RPC | **experimental** | log for port/CSRF | `https://127.0.0.1:<port>/` | tokens exact; spend derived |
-| OpenRouter (via Traycer) | Traycer `chat.db` + optional credits API | Traycer path **experimental** | yes | `openrouter.ai` only with a management key | tokens classified; spend derived |
-| Traycer CLI quota / activity | `traycer.exe` | **experimental** | `chat.db` + CLI | none (local process) | quota exact if the CLI returns `available` |
+| Google Antigravity | localhost language-server RPC | **experimental**, on by default | log for port/CSRF | `https://127.0.0.1:<port>/` | tokens exact; spend derived |
+| OpenRouter (via Traycer) | Traycer usage facts + optional credits API | Traycer path **experimental**, on by default | yes | `openrouter.ai` only with a management key | tokens classified; spend derived |
+| Traycer per-CLI usage | `app-assets.db` `usage_analytics_facts` (older hosts: `chat.db`) | **experimental**, on by default | yes | none | per-CLI tokens; provider-reported cost only when Traycer marks it as such |
 | OpenAI admin usage/cost | official Usage + Costs APIs | opt-in official | none | `api.openai.com` if `OPENAI_ADMIN_KEY` is set | exact |
 | Anthropic admin usage/cost | official org usage/cost | opt-in official | none | `api.anthropic.com` if `ANTHROPIC_ADMIN_KEY` is set | exact |
 | Claude OAuth usage | undocumented `/api/oauth/usage` | **experimental, opt-in** | `~/.claude/.credentials.json` | Anthropic + Claude platform | quota only; requires `BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE=1` |
