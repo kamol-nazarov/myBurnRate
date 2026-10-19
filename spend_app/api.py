@@ -444,6 +444,8 @@ def create_app(
                 user32.GetWindowTextLengthW.restype = ctypes.c_int
                 user32.GetWindowTextW.argtypes = [ctypes.c_ssize_t, wintypes.LPWSTR, ctypes.c_int]
                 user32.GetWindowTextW.restype = ctypes.c_int
+                user32.GetClassNameW.argtypes = [ctypes.c_ssize_t, wintypes.LPWSTR, ctypes.c_int]
+                user32.GetClassNameW.restype = ctypes.c_int
                 user32.GetWindowLongW.argtypes = [ctypes.c_ssize_t, ctypes.c_int]
                 user32.GetWindowLongW.restype = ctypes.c_long
                 user32.SetWindowLongW.argtypes = [ctypes.c_ssize_t, ctypes.c_int, ctypes.c_long]
@@ -473,7 +475,10 @@ def create_app(
                         user32.GetWindowTextW(hwnd, buf, length + 1)
                         title = buf.value or ""
                         if "Sidecar HUD" in title:
-                            found_hwnds.append(hwnd)
+                            cls_buf = ctypes.create_unicode_buffer(128)
+                            user32.GetClassNameW(hwnd, cls_buf, 128)
+                            if (cls_buf.value or "") == "Tauri Window":
+                                found_hwnds.append(hwnd)
                     return True
 
                 user32.EnumWindows(WNDENUMPROC(_cb), 0)
@@ -517,7 +522,7 @@ def create_app(
                     return {"ok": True, "pinned": pinned, "nativeFound": True, "count": len(found_hwnds)}
             except Exception as exc:
                 return {"ok": False, "error": str(exc)}
-        if exe_path is not None and action == "open":
+        if exe_path is not None and action in {"open", "show", "pin"}:
             try:
                 chk = subprocess.run(
                     ["tasklist", "/FI", "IMAGENAME eq burnrate-desktop.exe", "/NH"],

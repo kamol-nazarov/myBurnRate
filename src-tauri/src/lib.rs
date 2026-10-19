@@ -665,7 +665,66 @@ fn release_webview_lock_if_needed() {
 #[cfg(not(target_os = "windows"))]
 fn release_webview_lock_if_needed() {}
 
+#[cfg(target_os = "windows")]
+fn set_windows_app_id() {
+    #[link(name = "shell32")]
+    extern "system" {
+        fn SetCurrentProcessExplicitAppUserModelID(app_id: *const u16) -> i32;
+    }
+    let app_id: Vec<u16> = "dev.burnrate.desktop\0".encode_utf16().collect();
+    unsafe {
+        let _ = SetCurrentProcessExplicitAppUserModelID(app_id.as_ptr());
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn set_windows_app_id() {}
+
+#[cfg(target_os = "windows")]
+fn apply_win32_window_icons(window: &tauri::WebviewWindow) {
+    if let Ok(hwnd) = window.hwnd() {
+        #[link(name = "user32")]
+        extern "system" {
+            fn SendMessageW(hWnd: isize, Msg: u32, wParam: usize, lParam: isize) -> isize;
+            fn SetClassLongPtrW(hWnd: isize, nIndex: i32, dwNewLong: isize) -> isize;
+        }
+        #[link(name = "shell32")]
+        extern "system" {
+            fn ExtractIconW(hInst: isize, lpszExeFileName: *const u16, nIconIndex: u32) -> isize;
+        }
+        const WM_GETICON: u32 = 0x007F;
+        const WM_SETICON: u32 = 0x0080;
+        const ICON_SMALL: usize = 0;
+        const ICON_BIG: usize = 1;
+        const GCL_HICON: i32 = -14;
+        unsafe {
+            let h = hwnd.0 as isize;
+            let mut hicon = 0isize;
+            if let Ok(exe) = env::current_exe() {
+                let mut wide: Vec<u16> = exe.to_string_lossy().encode_utf16().collect();
+                wide.push(0);
+                hicon = ExtractIconW(0, wide.as_ptr(), 0);
+                if hicon <= 1 {
+                    hicon = 0;
+                }
+            }
+            if hicon == 0 {
+                hicon = SendMessageW(h, WM_GETICON, ICON_SMALL, 0);
+            }
+            if hicon != 0 {
+                SendMessageW(h, WM_SETICON, ICON_BIG, hicon);
+                SendMessageW(h, WM_SETICON, ICON_SMALL, hicon);
+                SetClassLongPtrW(h, GCL_HICON, hicon);
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn apply_win32_window_icons(_window: &tauri::WebviewWindow) {}
+
 pub fn run() {
+    set_windows_app_id();
     release_webview_lock_if_needed();
     let (hub_child, sync_child) = ensure_hub_and_sync_processes();
 
@@ -694,8 +753,19 @@ pub fn run() {
             open_setup_wizard
         ])
         .setup(|app| {
+            let default_icon = app.default_window_icon().cloned();
+            if let Some(main_win) = app.get_webview_window("main") {
+                if let Some(ref ic) = default_icon {
+                    let _ = main_win.set_icon(ic.clone());
+                }
+                apply_win32_window_icons(&main_win);
+            }
             if let Some(hud_win) = app.get_webview_window("hud") {
+                if let Some(ref ic) = default_icon {
+                    let _ = hud_win.set_icon(ic.clone());
+                }
                 let _ = apply_hud_always_on_top(&hud_win, true);
+                apply_win32_window_icons(&hud_win);
             }
 
             let toggle_hud_item = MenuItem::with_id(
