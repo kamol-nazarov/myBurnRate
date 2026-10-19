@@ -744,7 +744,7 @@ function quotaRowModels(rows, idPrefix) {
     const eta = payg
       ? {value: markedUsd(row.monthToDateUsd ?? row.used, false), label: row.etaLabel || "this month"}
       : etaFromReset(row.resetsAt);
-    const etaColor = payg ? "#b1b7c1" : eased == null ? "#eef1f5" : eased >= 85 ? "#dc6c78" : eased >= 60 ? "#d9a441" : "#eef1f5";
+    const etaColor = payg ? "#6f6a62" : eased == null ? "#1c1b19" : eased >= 85 ? "#b43c29" : eased >= 60 ? "#8a5a12" : "#1c1b19";
     const usedKey = easeKey + "-used";
     let usedNow = finite(row.used);
     if (usedNow == null && pctRaw != null && finite(row.allowance) != null) usedNow = finite(row.allowance) * pctRaw / 100;
@@ -1128,7 +1128,11 @@ function renderActivity(data) {
     }
     if (sweep) sweep.style.animationDelay = `${delay}ms`;
     item.querySelector(".dot").style.animationDelay = `${delay}ms`;
-    item.querySelector("strong").textContent = row.name || "Untitled agent";
+    const rawAgentName = String(row.name || "Untitled agent").replace(/\s+/g, " ").replace(/^[#*>-]+\s*/, "").trim() || "Untitled agent";
+    const shortAgentName = rawAgentName.length > 68 ? rawAgentName.slice(0, 67).trimEnd() + "…" : rawAgentName;
+    const strongEl = item.querySelector("strong");
+    strongEl.textContent = shortAgentName;
+    strongEl.title = rawAgentName.length > 68 ? rawAgentName.slice(0, 220) : "";
     const mins = clock[index];
     const age = mins == null ? "" : mins < 1 ? "just now" : mins < 60 ? `${mins}m` : `${Math.round(mins / 60)}h`;
     const multiMachine = (data.machines && data.machines.length > 1) || (row.machineId && row.machineId !== "local");
@@ -1220,7 +1224,7 @@ function renderKpis(data) {
   $("cache-reuse").dataset.ease = "cacheReuse";
   $("cache-reuse").dataset.fmt = "pct";
   $("cache-reuse").textContent = pct(cache);
-  $("cache-reuse").style.color = cache == null ? "" : "#63c689";
+  $("cache-reuse").style.color = "";
   const cachedTok = finite(totals.cachedInputTokens) ?? finite(mixItem(mix, "cached_input")?.tokens);
   const freshTok = finite(totals.freshInputTokens) ?? finite(mixItem(mix, "fresh_input")?.tokens);
   if (cachedTok == null || freshTok == null) {
@@ -1340,7 +1344,7 @@ function renderChart(data) {
   const totalTokens = ease("hoverTotal", totals.tokens);
   $("hover-label").textContent = index == null ? `${windowLabel(data.window?.key || state.window)} total` : series[index].label;
   $("hover-value").textContent = index == null ? tokens(totalTokens) : tokens(series[index].total);
-  $("hover-value").style.color = index == null ? "#eef1f5" : "#78a8f8";
+  $("hover-value").style.color = index == null ? "#1c1b19" : "#2563eb";
   renderChartHover(data);
 }
 
@@ -1369,7 +1373,7 @@ function renderChartHover(data) {
   $("chart-live").textContent = `${bucket.label}, ${tokens(bucket.total)}`;
   $("hover-label").textContent = bucket.label;
   $("hover-value").textContent = tokens(bucket.total);
-  $("hover-value").style.color = "#78a8f8";
+  $("hover-value").style.color = "#2563eb";
 }
 
 function renderWaste(data) {
@@ -1511,7 +1515,7 @@ function renderModels(data) {
     const cache = model.cachePct;
     const unpriced = model.value == null;
     const valueText = unpriced ? unknown : markedUsd(spend, model.isExact);
-    const cacheColor = cache == null ? "#858c98" : "#63c689";
+    const cacheColor = cache == null ? "#6f6a62" : "#246c44";
     const approx = model.valueMarker === "≈" || (model.isExact === false && !unpriced);
     node.dataset.key = model.key;
     const swatch = node.querySelector("strong > i");
@@ -2328,7 +2332,7 @@ function renderDetail() {
       const i = entry.i;
       const shareOfShown = shownTotal > 0 ? (finite(row.value) || 0) / shownTotal * 100 : 0;
       const share = ease("ss-" + i, finite(row.sharePct) ?? shareOfShown);
-      const cacheColor = row.cachePct == null ? "#858c98" : "#63c689";
+      const cacheColor = row.cachePct == null ? "#6f6a62" : "#246c44";
       const sid = String(row.id || "").slice(0, 10);
       const durationText = row.durationMin == null ? unknown : row.durationMin + "m";
       if (entry.part === "row") {
@@ -2374,7 +2378,7 @@ function renderDetailHover(data) {
   document.querySelectorAll("#detail-hits .hit-target").forEach((button, i) => button.classList.toggle("active", index === i));
   $("detail-hover-label").textContent = bucket ? bucket.label : `${windowLabel(state.window)} total`;
   $("detail-hover-value").textContent = bucket ? tokens(bucket.tokens) : tokens(data.tokens);
-  $("detail-hover-value").style.color = bucket ? (data.color || "#78a8f8") : "#eef1f5";
+  $("detail-hover-value").style.color = bucket ? (data.color || "#2563eb") : "#1c1b19";
 }
 
 function renderDiagnostics() {
@@ -2388,7 +2392,7 @@ function renderDiagnostics() {
     setEmpty(grid, `<p class="panel-empty">No ingest runs recorded.</p>`);
   } else {
     reconcileChildren(grid, ingest, item => item.source, () => nodeFrom(`<article class="diagnostic-card"><span></span><strong></strong><small><span class="diag-count"></span><br><span class="diag-detail"></span></small></article>`), (node, item) => {
-      const color = item.status === "success" || item.status === "partial" ? "#63c689" : item.status === "skipped" || item.status === "unavailable" ? "#d9a441" : "#dc6c78";
+      const color = item.status === "success" || item.status === "partial" ? "#246c44" : item.status === "skipped" || item.status === "unavailable" ? "#8a5a12" : "#b43c29";
       setText(node.querySelector("span"), item.source);
       const status = node.querySelector("strong");
       setText(status, item.status);
