@@ -88,9 +88,29 @@ def save_metadata(connection, sample, polled_at):
                        (KEY, json.dumps(value)))
 
 
+def mask_expired_synced(rows, now):
+    """Mask synced rows whose window already reset.
+
+    A ``sync:`` row is another machine's last reading and local polls never
+    overwrite it, so once its reset passes the percentage describes a window
+    that no longer exists. No new zero is inferred.
+    """
+    for row in rows:
+        if not str(row.get('source') or '').startswith('sync:') or row.get('is_payg') or row.get('unit') == 'unavailable':
+            continue
+        reset = timestamp(row.get('resets_at'))
+        if reset is None or reset > now:
+            continue
+        name = str(row.get('label') or row.get('limit_key') or 'Quota window').split(' — ', 1)[0]
+        reason = "Synced quota window reset; wait for a fresh reading. No new zero was inferred."
+        row.update(pct=None, used=None, allowance=None, resets_at=None, unit='unavailable', label=f"{name} — {reason}")
+    return rows
+
+
 def read_rows(connection, *, now=None, rows=None):
-    """Mask unproven/expired Codex rows at read time, including pre-fix rows."""
+    """Mask unproven/expired Codex rows and expired synced rows at read time, including pre-fix rows."""
     rows = [dict(row) for row in (connection.execute("SELECT * FROM quotas") if rows is None else rows)]
+    mask_expired_synced(rows, now or datetime.now(UTC))
     if not any(row['provider_key'] == 'codex' for row in rows):
         return rows
     from spend_app.connections import KEY as CONNECTIONS_KEY

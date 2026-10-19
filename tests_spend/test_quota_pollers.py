@@ -1064,3 +1064,109 @@ def test_muse_records_microsecond_timestamp_and_nested_cwd() -> None:
     assert events[0].model_key == "muse:muse-spark-1.3"
     assert events[0].occurred_at.isoformat().startswith("2026-10-19T05:54:05")
     assert session["project"] == "myBurnRateOfficial"
+
+
+def test_muse_limits_without_subs_usage_is_unavailable_not_zero(tmp_path: Path, monkeypatch) -> None:
+    import json
+    from spend_app.quotas import muse_quota_samples
+
+    auth_file = tmp_path / "auth.json"
+    auth_file.write_text(
+        json.dumps({"providers": {"meta": {"access_token": "muse-test-token"}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MUSE_AUTH_PATH", str(auth_file))
+
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            # What Meta's key mint returns when it reports no usage window:
+            # account and subscription fields, no subs_usage block.
+            return {
+                "api_key": "minted-secret-key",
+                "base_url": "https://api.meta.ai/v1",
+                "is_subs_active": True,
+                "subs_tier_id": "27681631238169137",
+                "subs_tier_name": "Muse Code Power Usage",
+                "is_subs_upgrade_available": True,
+            }
+
+    monkeypatch.setattr("spend_app.limits.httpx.post", lambda *a, **kw: FakeResponse())
+    payload = limits._muse_limits_uncached()
+    assert payload["status"] == "unavailable"
+    assert payload["windows"] == []
+    assert payload["plan"] == "Power Usage"
+    assert "subs_usage" in payload["detail"]
+    assert "minted-secret-key" not in json.dumps(payload)
+    assert "muse-test-token" not in json.dumps(payload)
+    samples = {s.limit_key: s for s in muse_quota_samples(payload, source="muse_quota_endpoint")}
+    assert set(samples) == {"5h", "weekly"}
+    for sample in samples.values():
+        assert sample.unit == "unavailable"
+        assert sample.pct is None
+        assert "subs_usage" in (sample.reason or "")
+
+
+def test_expired_synced_quota_window_is_masked_not_shown_stale(tmp_path: Path) -> None:
+    from spend_app.aggregate import _capacity_from_rows
+    from spend_app.codex_quota import read_rows
+    from spend_app.db import upsert_quota
+
+    database = tmp_path / "spend.db"
+    initialize(database)
+    synced = "sync:mydesktop-ed05:muse_quota_endpoint"
+    with connect(database) as connection:
+        upsert_quota(
+            connection, provider_key="muse", limit_key="5h", label="Muse Code 5-hour window",
+            unit="pct", source=synced, polled_at="2026-09-15T10:41:00Z", pct=77.0,
+            resets_at="2026-09-15T10:45:17Z",
+        )
+        upsert_quota(
+            connection, provider_key="muse", limit_key="weekly", label="Muse Code weekly window",
+            unit="pct", source=synced, polled_at="2026-09-15T10:41:00Z", pct=25.0,
+            resets_at="2026-09-21T00:00:00Z",
+        )
+        # A local row whose reset passed is left to the local poller as before.
+        upsert_quota(
+            connection, provider_key="grok", limit_key="weekly", label="Grok weekly window",
+            unit="pct", source="grok_local", polled_at="2026-09-15T10:00:00Z", pct=40.0,
+            resets_at="2026-09-15T11:00:00Z",
+        )
+
+    # This machine's poll gets no subs_usage; it must not clobber the synced rows.
+    result = poll_quotas(
+        database,
+        collectors={"muse": lambda: [
+            QuotaSample(provider_key="muse", limit_key=key, label=label, unit="unavailable",
+                        source="muse_quota_endpoint", reason="no subs_usage")
+            for key, label in REQUIRED_LIMITS["muse"]
+        ]},
+        now=lambda: POLLED,
+    )
+    assert result["written"] == 0
+
+    with connect(database) as connection:
+        rows = {(r["provider_key"], r["limit_key"]): r for r in read_rows(connection, now=NOW)}
+    expired = rows[("muse", "5h")]
+    assert expired["unit"] == "unavailable"
+    assert expired["pct"] is None and expired["resets_at"] is None
+    assert split_quota_label(expired["label"])[0] == "Muse Code 5-hour window"
+    assert "reset" in split_quota_label(expired["label"])[1]
+    assert expired["source"] == synced
+    assert rows[("muse", "weekly")]["pct"] == 25.0
+    assert rows[("muse", "weekly")]["resets_at"] == "2026-09-21T00:00:00Z"
+    assert rows[("grok", "weekly")]["pct"] == 40.0
+
+    cards = {c["providerKey"]: c for c in _capacity_from_rows(list(rows.values()), now=NOW, month_to_date={})}
+    muse_rows = {r["limitKey"]: r for r in cards["muse"]["rows"]}
+    assert muse_rows["5h"]["pct"] is None
+    assert muse_rows["5h"]["etaLabel"] is None
+    assert muse_rows["weekly"]["pct"] == 25.0
+
+    snapshot = limits.snapshot_limits(database, now=NOW)
+    muse = next(p for p in snapshot["providers"] if p["key"] == "muse")
+    assert [w["key"] for w in muse["windows"]] == ["weekly"]

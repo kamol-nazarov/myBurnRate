@@ -913,6 +913,10 @@ def _muse_limits_uncached() -> dict:
             "detail": f"Muse Code quota lookup failed ({type(exc).__name__}).",
             **_throttle_fields(exc),
         }
+    # The key mint answers account/subscription fields on every call but only
+    # sometimes carries subs_usage; the Muse CLI itself treats it as optional
+    # and also learns usage from response.subscription_usage stream frames.
+    # Absence is "no observation", never an inferred 0%.
     subs_usage = (payload.get("subs_usage") if isinstance(payload, dict) else None) or {}
     if not isinstance(subs_usage, dict):
         subs_usage = {}
@@ -943,7 +947,11 @@ def _muse_limits_uncached() -> dict:
         "status": "exact" if windows else "unavailable",
         "observedAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "windows": windows,
-        "detail": "Meta Muse Code quota endpoint; 5-hour and weekly subscription windows.",
+        "detail": (
+            "Meta Muse Code quota endpoint; 5-hour and weekly subscription windows."
+            if windows
+            else "Meta's Muse Code key endpoint answered without subscription usage (subs_usage); no usage window was reported for this account."
+        ),
     }
 
 
