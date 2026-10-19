@@ -3,6 +3,14 @@
   "identifier": "default",
   "description": "Default capabilities for BURNRATE main dashboard and Always-on-Top Sidecar HUD windows",
   "windows": ["main", "hud"],
+  "remote": {
+    "urls": [
+      "http://127.0.0.1:*",
+      "http://127.0.0.1:*/*",
+      "http://localhost:*",
+      "http://localhost:*/*"
+    ]
+  },
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
@@ -10,6 +18,8 @@
     "core:window:allow-set-size",
     "core:window:allow-set-min-size",
     "core:window:allow-minimize",
+    "core:window:allow-maximize",
+    "core:window:allow-unmaximize",
     "core:window:allow-toggle-maximize",
     "core:window:allow-show",
     "core:window:allow-hide",

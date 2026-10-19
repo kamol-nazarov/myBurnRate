@@ -432,22 +432,22 @@ def create_app(
             repo_root / "src-tauri" / "target" / "debug" / "burnrate-desktop.exe",
         ]
         exe_path = next((p for p in candidates if p.is_file()), None)
-        if sys.platform == "win32" and action in {"pin", "unpin", "open", "show"}:
+        if sys.platform == "win32" and action in {"pin", "unpin", "open", "show", "hide", "resize"}:
             pinned = action != "unpin"
             try:
                 import ctypes
                 from ctypes import wintypes
 
                 user32 = ctypes.windll.user32
-                user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+                user32.GetWindowTextLengthW.argtypes = [ctypes.c_ssize_t]
                 user32.GetWindowTextLengthW.restype = ctypes.c_int
-                user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+                user32.GetWindowTextW.argtypes = [ctypes.c_ssize_t, wintypes.LPWSTR, ctypes.c_int]
                 user32.GetWindowTextW.restype = ctypes.c_int
-                user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+                user32.ShowWindow.argtypes = [ctypes.c_ssize_t, ctypes.c_int]
                 user32.ShowWindow.restype = wintypes.BOOL
                 user32.SetWindowPos.argtypes = [
-                    wintypes.HWND,
-                    wintypes.HWND,
+                    ctypes.c_ssize_t,
+                    ctypes.c_ssize_t,
                     ctypes.c_int,
                     ctypes.c_int,
                     ctypes.c_int,
@@ -455,7 +455,9 @@ def create_app(
                     wintypes.UINT,
                 ]
                 user32.SetWindowPos.restype = wintypes.BOOL
-                WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+                user32.GetDpiForWindow.argtypes = [ctypes.c_ssize_t]
+                user32.GetDpiForWindow.restype = wintypes.UINT
+                WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, ctypes.c_ssize_t, ctypes.c_ssize_t)
                 found_hwnds = []
 
                 def _cb(hwnd, _lparam):
@@ -470,16 +472,35 @@ def create_app(
 
                 user32.EnumWindows(WNDENUMPROC(_cb), 0)
                 if found_hwnds:
-                    ins = wintypes.HWND(-1 if pinned else -2)
                     for hwnd in found_hwnds:
-                        if action in {"open", "show", "pin"}:
-                            user32.ShowWindow(hwnd, 5)
-                        user32.SetWindowPos(hwnd, ins, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010 | 0x0040)
+                        if action == "hide":
+                            user32.ShowWindow(hwnd, 0)
+                        elif action == "resize":
+                            w = int(float((body or {}).get("width") or 440))
+                            h = int(float((body or {}).get("height") or 580))
+                            dpi = user32.GetDpiForWindow(hwnd) or 96
+                            pw = max(240, int(round(w * dpi / 96.0)))
+                            ph = max(140, int(round(h * dpi / 96.0)))
+                            user32.SetWindowPos(hwnd, 0, 0, 0, pw, ph, 0x0002 | 0x0004 | 0x0010)
+                        else:
+                            if action in {"open", "show"}:
+                                user32.ShowWindow(hwnd, 5)
+                            ins = -1 if pinned else -2
+                            user32.SetWindowPos(hwnd, ins, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010 | 0x0040)
                     return {"ok": True, "pinned": pinned, "nativeFound": True, "count": len(found_hwnds)}
-            except Exception:
-                pass
-        if exe_path is not None and action in {"open", "show", "pin"}:
+            except Exception as exc:
+                return {"ok": False, "error": str(exc)}
+        if exe_path is not None and action == "open":
             try:
+                chk = subprocess.run(
+                    ["tasklist", "/FI", "IMAGENAME eq burnrate-desktop.exe", "/NH"],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                    creationflags=0x08000000 if sys.platform == "win32" else 0,
+                )
+                if "burnrate-desktop.exe" in (chk.stdout or "").lower():
+                    return {"ok": True, "pinned": True, "alreadyRunning": True}
                 si = None
                 if sys.platform == "win32":
                     si = subprocess.STARTUPINFO()

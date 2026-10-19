@@ -18,7 +18,6 @@
         "height": 860,
         "minWidth": 420,
         "minHeight": 560,
-        "decorations": false,
         "resizable": true,
         "center": true
       },
@@ -36,6 +35,7 @@
         "decorations": false,
         "maximizable": false,
         "transparent": true,
+        "noRedirectionBitmap": true,
         "resizable": true,
         "visible": true
       }
