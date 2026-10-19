@@ -986,6 +986,78 @@ def post_to_configured_hub(
         return None
 
 
+_EXPIRED_HUB_QUOTA_REASON = "Synced quota window reset; wait for a fresh reading. No new zero was inferred."
+
+
+def _mask_expired_hub_quotas(data: dict, now: datetime) -> dict:
+    """Hub-proxy counterpart of ``codex_quota.mask_expired_synced``.
+
+    Every Hub quota row is another machine's last reading, and an older Hub
+    still serves rows whose window already reset. Mask those on the Spoke
+    (capacity rows and /api/spend/limits windows) without inferring a zero.
+    Returns a copy; the cached Hub payload is never mutated.
+    """
+    from spend_app.codex_quota import timestamp
+
+    def expired(value) -> bool:
+        reset = timestamp(value)
+        return reset is not None and reset <= now
+
+    result = dict(data)
+    if isinstance(data.get("capacity"), list):
+        cards = []
+        for card in data["capacity"]:
+            rows = card.get("rows") if isinstance(card, dict) else None
+            if not isinstance(rows, list) or not any(
+                isinstance(row, dict) and not row.get("isPayg") and row.get("unit") != "unavailable" and expired(row.get("resetsAt"))
+                for row in rows
+            ):
+                cards.append(card)
+                continue
+            new_rows = []
+            for row in rows:
+                if isinstance(row, dict) and not row.get("isPayg") and row.get("unit") != "unavailable" and expired(row.get("resetsAt")):
+                    name = str(row.get("label") or row.get("limitKey") or "Quota window").split(" — ", 1)[0]
+                    row = {
+                        **row,
+                        "label": f"{name} — {_EXPIRED_HUB_QUOTA_REASON}",
+                        "pct": None,
+                        "used": None,
+                        "allowance": None,
+                        "unit": "unavailable",
+                        "resetsAt": None,
+                        "etaLabel": None,
+                        "forecast": None,
+                    }
+                new_rows.append(row)
+            updated = {**card, "rows": new_rows}
+            if not updated.get("isPayg"):
+                primary = next((r for r in new_rows if isinstance(r, dict) and r.get("isPrimary")), None)
+                if primary is not None:
+                    updated["primaryPct"] = primary.get("pct")
+                    updated["peakPct"] = primary.get("pct")
+                    if primary.get("pct") is None:
+                        updated["forecast"] = None
+            cards.append(updated)
+        result["capacity"] = cards
+    if isinstance(data.get("providers"), list):
+        providers = []
+        for provider in data["providers"]:
+            windows = provider.get("windows") if isinstance(provider, dict) else None
+            if not isinstance(windows, list):
+                providers.append(provider)
+                continue
+            # snapshot_limits lists only windows with a value, so a masked
+            # window is dropped rather than shown as an empty reading.
+            kept = [w for w in windows if not (isinstance(w, dict) and expired(w.get("resetAt")))]
+            if len(kept) == len(windows):
+                providers.append(provider)
+                continue
+            providers.append({**provider, "windows": kept, **({} if kept else {"status": "unavailable"})})
+        result["providers"] = providers
+    return result
+
+
 def _overlay_fresher_local_quotas(database_path: Path, capacity: list[dict]) -> list[dict]:
     """Overlay fresher local measured quota rows onto Hub capacity cards for immediate Spoke display."""
     try:
@@ -1112,7 +1184,7 @@ def fetch_from_configured_hub(
     with _HUB_PROXY_LOCK:
         cached = _HUB_PROXY_CACHE.get(cache_key)
         if cached and (now_mono - cached[0]) < ttl_seconds:
-            return cached[1]
+            return _mask_expired_hub_quotas(cached[1], datetime.now(UTC))
 
     headers = {"Authorization": f"Bearer {token}"}
     test_client = _HUB_TEST_CLIENTS.get(hub_url)
@@ -1125,26 +1197,29 @@ def fetch_from_configured_hub(
             with httpx.Client(timeout=8.0) as http:
                 response = http.get(f"{hub_url}{path}", params=clean_params, headers=headers)
         if response.status_code != 200:
-            return cached[1] if cached else None
+            return _mask_expired_hub_quotas(cached[1], datetime.now(UTC)) if cached else None
         data = response.json()
         if not isinstance(data, dict):
-            return cached[1] if cached else None
+            return _mask_expired_hub_quotas(cached[1], datetime.now(UTC)) if cached else None
         if isinstance(data.get("capacity"), list):
-            filtered_capacity = [
+            data["capacity"] = [
                 item for item in data["capacity"]
                 if isinstance(item, dict) and item.get("providerKey") != "cursor"
             ]
-            data["capacity"] = _overlay_fresher_local_quotas(settings.database_path, filtered_capacity)
         if isinstance(data.get("providers"), list):
             data["providers"] = [
                 item for item in data["providers"]
                 if isinstance(item, dict) and item.get("key") != "cursor" and item.get("providerKey") != "cursor"
             ]
+        # Mask before the overlay so a fresher local reading still wins.
+        data = _mask_expired_hub_quotas(data, datetime.now(UTC))
+        if isinstance(data.get("capacity"), list):
+            data["capacity"] = _overlay_fresher_local_quotas(settings.database_path, data["capacity"])
         with _HUB_PROXY_LOCK:
             _HUB_PROXY_CACHE[cache_key] = (now_mono, data)
         return data
     except Exception:
-        return cached[1] if cached else None
+        return _mask_expired_hub_quotas(cached[1], datetime.now(UTC)) if cached else None
 
 
 def _resolve_stream_machines(settings) -> list[dict]:

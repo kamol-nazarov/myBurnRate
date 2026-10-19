@@ -766,3 +766,164 @@ def test_usability_roadmap_endpoints_and_ui_controls(tmp_path: Path) -> None:
         "win-pace-tick",
     ):
         assert token in hud_html, token
+
+
+def _spoke_with_fake_hub(tmp_path: Path, monkeypatch, payloads: dict[str, dict]):
+    from types import SimpleNamespace
+
+    from spend_app import sync as sync_module
+    from spend_app.setup_wizard import write_setup_state
+
+    database = tmp_path / "spoke.db"
+    initialize(database)
+    with connect(database) as connection:
+        write_setup_state(
+            connection,
+            {"role": "spoke", "spokeConfig": {"enabled": True, "hubUrl": "https://hub.test", "token": "spoke-token"}},
+        )
+
+    class FakeResponse:
+        status_code = 200
+
+        def __init__(self, body: dict) -> None:
+            self._body = body
+
+        def json(self) -> dict:
+            import copy
+
+            return copy.deepcopy(self._body)
+
+    class FakeHub:
+        def get(self, path, params=None, headers=None):
+            return FakeResponse(payloads[path])
+
+    monkeypatch.setitem(sync_module._HUB_TEST_CLIENTS, "https://hub.test", FakeHub())
+    sync_module.clear_hub_proxy_cache()
+    return SimpleNamespace(database_path=database)
+
+
+def _iso(moment: datetime) -> str:
+    return moment.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def test_spoke_masks_expired_hub_capacity_rows_without_inferring_zero(tmp_path: Path, monkeypatch) -> None:
+    from spend_app.db import upsert_quota
+    from spend_app.sync import fetch_from_configured_hub
+
+    now = datetime.now(timezone.utc)
+    past, future = _iso(now - timedelta(hours=5)), _iso(now + timedelta(days=6))
+    synced = "sync:mydesktop-ed05:muse_quota_endpoint"
+    hub_summary = {
+        "capacity": [
+            {
+                "providerKey": "muse", "providerName": "Muse Code", "isPayg": False,
+                "peakPct": 77.0, "primaryPct": 77.0, "forecast": {"etaHours": 1},
+                "rows": [
+                    {"limitKey": "5h", "label": "Muse Code 5-hour window", "pct": 77.0, "used": None, "allowance": None,
+                     "unit": "pct", "resetsAt": past, "etaLabel": "due", "source": synced, "isPayg": False,
+                     "order": 0, "isPrimary": True, "forecast": {"etaHours": 1}},
+                    {"limitKey": "weekly", "label": "Muse Code weekly window", "pct": 25.0, "used": None, "allowance": None,
+                     "unit": "pct", "resetsAt": future, "etaLabel": "6d", "source": synced, "isPayg": False,
+                     "order": 1, "isPrimary": False, "forecast": None},
+                ],
+            },
+            {
+                "providerKey": "openrouter", "providerName": "OpenRouter", "isPayg": True,
+                "rows": [
+                    {"limitKey": "balance", "label": "OpenRouter balance", "pct": None, "used": 12.5, "allowance": None,
+                     "unit": "usd", "resetsAt": past, "etaLabel": "available", "source": "sync:hub:openrouter",
+                     "isPayg": True, "order": 0, "isPrimary": True},
+                ],
+            },
+            {
+                "providerKey": "grok", "providerName": "Grok", "isPayg": False, "peakPct": 10.0, "primaryPct": 10.0,
+                "rows": [
+                    {"limitKey": "weekly", "label": "Grok weekly window", "pct": 10.0, "used": None, "allowance": None,
+                     "unit": "pct", "resetsAt": past, "etaLabel": "due", "source": "sync:mydesktop-ed05:grok_local",
+                     "isPayg": False, "order": 0, "isPrimary": True},
+                ],
+            },
+        ]
+    }
+    settings = _spoke_with_fake_hub(tmp_path, monkeypatch, {"/api/spend/summary": hub_summary})
+    # A fresher local reading still replaces the masked Hub row.
+    with connect(settings.database_path) as connection:
+        upsert_quota(
+            connection, provider_key="grok", limit_key="weekly", label="Grok weekly window", unit="pct",
+            source="grok_local", polled_at=_iso(now), pct=42.0, resets_at=future,
+        )
+
+    data = fetch_from_configured_hub(settings, "/api/spend/summary", {"window": "1d"})
+    cards = {card["providerKey"]: card for card in data["capacity"]}
+
+    muse = {row["limitKey"]: row for row in cards["muse"]["rows"]}
+    assert muse["5h"]["pct"] is None
+    assert muse["5h"]["unit"] == "unavailable"
+    assert muse["5h"]["resetsAt"] is None and muse["5h"]["etaLabel"] is None
+    assert muse["5h"]["forecast"] is None
+    assert muse["5h"]["source"] == synced
+    assert muse["5h"]["label"].startswith("Muse Code 5-hour window — ")
+    assert "No new zero was inferred" in muse["5h"]["label"]
+    assert muse["weekly"]["pct"] == 25.0 and muse["weekly"]["resetsAt"] == future
+    assert cards["muse"]["primaryPct"] is None and cards["muse"]["peakPct"] is None
+    assert cards["muse"]["forecast"] is None
+
+    balance = cards["openrouter"]["rows"][0]
+    assert balance["used"] == 12.5 and balance["unit"] == "usd"
+
+    grok = cards["grok"]["rows"][0]
+    assert grok["pct"] == 42.0 and grok["source"] == "grok_local"
+
+
+def test_spoke_drops_expired_hub_limits_windows(tmp_path: Path, monkeypatch) -> None:
+    from spend_app.sync import fetch_from_configured_hub
+
+    now = datetime.now(timezone.utc)
+    past, future = _iso(now - timedelta(hours=5)), _iso(now + timedelta(days=6))
+    hub_limits = {
+        "providers": [
+            {"key": "muse", "name": "muse", "status": "exact", "detail": "Muse Code 5-hour window", "windows": [
+                {"key": "5h", "label": "Muse Code 5-hour window", "usedPct": 77.0, "used": None, "limit": None, "resetAt": past},
+                {"key": "weekly", "label": "Muse Code weekly window", "usedPct": 25.0, "used": None, "limit": None, "resetAt": future},
+            ]},
+            {"key": "grok", "name": "grok", "status": "exact", "detail": "Grok weekly window", "windows": [
+                {"key": "weekly", "label": "Grok weekly window", "usedPct": 10.0, "used": None, "limit": None, "resetAt": past},
+            ]},
+        ],
+        "snapshot": True,
+    }
+    settings = _spoke_with_fake_hub(tmp_path, monkeypatch, {"/api/spend/limits": hub_limits})
+
+    data = fetch_from_configured_hub(settings, "/api/spend/limits")
+    providers = {provider["key"]: provider for provider in data["providers"]}
+    assert [w["key"] for w in providers["muse"]["windows"]] == ["weekly"]
+    assert providers["muse"]["status"] == "exact"
+    assert providers["grok"]["windows"] == []
+    assert providers["grok"]["status"] == "unavailable"
+
+
+def test_cached_hub_payload_is_remasked_and_never_mutated() -> None:
+    from spend_app.sync import _mask_expired_hub_quotas
+
+    reset = datetime(2026, 10, 19, 10, 45, 17, tzinfo=timezone.utc)
+    cached = {
+        "capacity": [{"providerKey": "muse", "isPayg": False, "primaryPct": 77.0, "peakPct": 77.0, "rows": [
+            {"limitKey": "5h", "label": "Muse Code 5-hour window", "pct": 77.0, "unit": "pct",
+             "resetsAt": _iso(reset), "isPayg": False, "isPrimary": True},
+        ]}],
+        "providers": [{"key": "muse", "status": "exact", "windows": [
+            {"key": "5h", "usedPct": 77.0, "resetAt": _iso(reset)},
+        ]}],
+    }
+    before = _mask_expired_hub_quotas(cached, reset - timedelta(minutes=4))
+    assert before["capacity"][0]["rows"][0]["pct"] == 77.0
+    assert before["providers"][0]["windows"][0]["usedPct"] == 77.0
+
+    after = _mask_expired_hub_quotas(cached, reset + timedelta(seconds=1))
+    assert after["capacity"][0]["rows"][0]["pct"] is None
+    assert after["capacity"][0]["primaryPct"] is None
+    assert after["providers"][0]["windows"] == []
+    assert after["providers"][0]["status"] == "unavailable"
+    # The cached copy keeps the Hub's raw values for the next re-mask.
+    assert cached["capacity"][0]["rows"][0]["pct"] == 77.0
+    assert cached["providers"][0]["windows"][0]["usedPct"] == 77.0
