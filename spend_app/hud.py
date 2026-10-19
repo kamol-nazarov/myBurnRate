@@ -429,7 +429,11 @@ HUD_HTML = """<!doctype html>
       }
       #hud-tip.on { opacity: 1; transform: none; }
       #hud-tip .tip-title {
-        display: block;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        word-break: break-word;
         font-size: 11.5px;
         font-weight: 650;
         color: var(--ink);
@@ -1263,8 +1267,10 @@ HUD_HTML = """<!doctype html>
               pulse.className = "hud-pulse";
               const textWrap = document.createElement("div");
               textWrap.className = "hud-agent-text";
+              const rawName = String(agent.name || "Active session").replace(/\s+/g, " ").trim() || "Active session";
+              const shortName = rawName.length > 54 ? rawName.slice(0, 53).trimEnd() + "…" : rawName;
               const strong = document.createElement("strong");
-              strong.textContent = agent.name || "Active session";
+              strong.textContent = shortName;
               const small = document.createElement("small");
               small.textContent = agent.modelKey || "live";
               textWrap.append(strong, small);
@@ -1275,7 +1281,8 @@ HUD_HTML = """<!doctype html>
               row.append(mainWrap, tag);
               const modelLower = String(agent.modelKey || "").toLowerCase();
               const inferredTool = modelLower.includes("claude") ? "claude-code" : modelLower.includes("gpt") || modelLower.includes("codex") ? "codex" : modelLower.includes("grok") ? "grok" : modelLower.includes("muse") ? "muse" : "";
-              row.dataset.tip = '<b class="tip-title">' + esc(agent.name || "Active agent") + '</b>' + tipRow(esc((agent.modelKey || "model") + " · click to inspect in dashboard"));
+              const whereLabel = [agent.modelKey || "live", agent.machineName || ""].filter(Boolean).join(" · ");
+              row.dataset.tip = '<b class="tip-title">' + esc(shortName) + '</b>' + tipRow(esc(whereLabel), "accent") + tipRow("Click to inspect tool in dashboard");
               row.addEventListener("click", () => openToolInDashboard(inferredTool));
               return row;
             }));

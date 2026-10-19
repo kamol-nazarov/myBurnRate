@@ -485,8 +485,23 @@ def create_app(
                         if action == "hide":
                             user32.ShowWindow(hwnd, 0)
                         elif action == "drag":
-                            user32.ReleaseCapture()
-                            user32.PostMessageW(hwnd, 0x00A1, 2, 0)
+                            import threading, time
+                            def _drag_loop(target_hwnd):
+                                pt_start = wintypes.POINT()
+                                rc_start = wintypes.RECT()
+                                if not user32.GetCursorPos(ctypes.byref(pt_start)) or not user32.GetWindowRect(target_hwnd, ctypes.byref(rc_start)):
+                                    return
+                                lx, ly = rc_start.left, rc_start.top
+                                while (user32.GetAsyncKeyState(0x01) & 0x8000) != 0:
+                                    pt_cur = wintypes.POINT()
+                                    if user32.GetCursorPos(ctypes.byref(pt_cur)):
+                                        nx = rc_start.left + (pt_cur.x - pt_start.x)
+                                        ny = rc_start.top + (pt_cur.y - pt_start.y)
+                                        if nx != lx or ny != ly:
+                                            lx, ly = nx, ny
+                                            user32.SetWindowPos(target_hwnd, 0, nx, ny, 0, 0, 0x0001 | 0x0004 | 0x0010)
+                                    time.sleep(0.004)
+                            threading.Thread(target=_drag_loop, args=(hwnd,), daemon=True).start()
                         elif action == "resize":
                             w = int(float((body or {}).get("width") or 440))
                             h = int(float((body or {}).get("height") or 580))
