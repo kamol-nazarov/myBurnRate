@@ -14,6 +14,7 @@ LOCAL_PATHS = {
     "grok_local": (".grok", "logs"),
     "traycer_local": (".traycer", "host"),
     "antigravity_local": ("AppData", "Roaming", "Antigravity"),
+    "muse_local": (".local", "share", "muse"),
 }
 SETTINGS = {
     "openai_admin": "OPENAI_ADMIN_KEY",
@@ -27,6 +28,7 @@ EXPERIMENTAL = {
     "grok_local",
     "traycer_local",
     "antigravity_local",
+    "muse_local",
 }
 HELP_URL = "https://github.com/kamol-nazarov/burnrate/blob/main/docs/providers.md"
 

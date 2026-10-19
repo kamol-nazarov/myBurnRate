@@ -170,7 +170,6 @@ def fixture_collectors(database_path: Path) -> dict:
     return {
         "claude-code": lambda: claude_quota_samples(CLAUDE_PAYLOAD, source="traycer_profile"),
         "codex": lambda: codex_quota_samples(CODEX_PAYLOAD, source="codex_local_telemetry", now=NOW),
-        "cursor": lambda: cursor_quota_samples(CURSOR_PAYLOAD, source="cursor_usage_service"),
         "grok": lambda: grok_quota_samples(GROK_PAYLOAD, source="traycer_profile"),
         "opencode": lambda: zai_quota_samples(ZAI_PAYLOAD, source="zai_quota_endpoint"),
         "openrouter": lambda: openrouter_quota_samples(collector=lambda: OPENROUTER_PAYLOAD),
@@ -226,12 +225,11 @@ def test_poll_quotas_persists_real_rows_with_undocumented_sources_and_resets(
     )
 
     assert result["polledAt"] == POLLED
-    assert result["written"] == 9
+    assert result["written"] == 7
     assert result["skipped"] == 0
     assert result["providers"] == [
         "claude-code",
         "codex",
-        "cursor",
         "grok",
         "opencode",
         "openrouter",
@@ -242,8 +240,6 @@ def test_poll_quotas_persists_real_rows_with_undocumented_sources_and_resets(
         ("claude-code", "5h"),
         ("claude-code", "weekly"),
         ("codex", "weekly"),
-        ("cursor", "cursor_models"),
-        ("cursor", "other_models"),
         ("grok", "weekly"),
         ("opencode", "5h"),
         ("opencode", "weekly"),
@@ -262,12 +258,6 @@ def test_poll_quotas_persists_real_rows_with_undocumented_sources_and_resets(
     assert codex["pct"] == 33.5
     assert codex["source"] == "codex_local_telemetry"
     assert codex["resets_at"] == "2026-09-20T12:00:00Z"
-
-    cursor_models = rows[("cursor", "cursor_models")]
-    other_models = rows[("cursor", "other_models")]
-    assert cursor_models["pct"] == 55.0
-    assert other_models["pct"] == 4.0
-    assert cursor_models["source"] == "cursor_usage_service"
 
     grok = rows[("grok", "weekly")]
     assert grok["pct"] == 26.0
@@ -405,17 +395,6 @@ def test_unavailable_sources_persist_reasons_and_never_fake_zero(
             },
             source="traycer_profile",
         ),
-        "cursor": lambda: cursor_quota_samples(
-            {
-                "key": "cursor",
-                "status": "exact",
-                "windows": [
-                    {"key": "cursor_models", "label": "Cursor Models", "usedPct": None},
-                    {"key": "other_models", "label": "Other Models", "usedPct": 7.0},
-                ],
-            },
-            source="cursor_usage_service",
-        ),
         "opencode": lambda: zai_quota_samples(
             {
                 "key": "opencode",
@@ -441,7 +420,7 @@ def test_unavailable_sources_persist_reasons_and_never_fake_zero(
             ),
     }
     result = poll_quotas(database, collectors=collectors, now=lambda: POLLED)
-    assert result["written"] == 9
+    assert result["written"] == 7
 
     rows = quota_rows(database)
     unavailable = [
@@ -449,9 +428,8 @@ def test_unavailable_sources_persist_reasons_and_never_fake_zero(
         rows[("claude-code", "weekly")],
         rows[("codex", "weekly")],
         rows[("grok", "weekly")],
-        rows[("cursor", "cursor_models")],
         rows[("opencode", "5h")],
-            rows[("openrouter", "balance")],
+        rows[("openrouter", "balance")],
     ]
     for row in unavailable:
         assert row["pct"] is None
@@ -475,14 +453,9 @@ def test_unavailable_sources_persist_reasons_and_never_fake_zero(
         == "Grok Build weekly — Traycer Grok Build quota lookup failed (RuntimeError)."
     )
     assert (
-        rows[("cursor", "cursor_models")]["label"]
-        == "Cursor Models — Experimental Cursor DashboardService omitted the Cursor Models percentage."
-    )
-    assert (
         rows[("opencode", "5h")]["label"]
         == "Z.AI 5-hour credits — The Z.AI quota endpoint omitted the Z.AI 5-hour credits window."
     )
-    assert rows[("cursor", "other_models")]["pct"] == 7.0
     assert rows[("opencode", "weekly")]["pct"] == 9.0
 
     for row in rows.values():
@@ -496,8 +469,8 @@ def test_default_collectors_cover_required_providers_without_invoking() -> None:
         "antigravity",
         "claude-code",
         "codex",
-        "cursor",
         "grok",
+        "muse",
         "opencode",
         "openrouter",
     }
@@ -515,7 +488,7 @@ def test_poll_quotas_public_seam_uses_default_collectors(tmp_path: Path, monkeyp
     monkeypatch.setattr("spend_app.quotas.default_quota_collectors", fake_collectors)
     result = poll_quotas(database, now=lambda: POLLED)
     assert called == [database]
-    assert result["written"] == 9
+    assert result["written"] == 7
     assert ("openrouter", "balance") in quota_rows(database)
 
 
@@ -584,14 +557,14 @@ def test_identical_poll_is_idempotent_and_writes_no_new_rows(tmp_path: Path) -> 
     seed_openrouter_spend(database)
     collectors = fixture_collectors(database)
     first = poll_quotas(database, collectors=collectors, now=lambda: POLLED)
-    assert first["written"] == 9
+    assert first["written"] == 7
 
     second = poll_quotas(database, collectors=collectors, now=lambda: POLLED_LATER)
     assert second["written"] == 0
-    assert second["skipped"] == 9
+    assert second["skipped"] == 7
 
     rows = quota_rows(database)
-    assert len(rows) == 9
+    assert len(rows) == 7
     # No new history row, but each row now names the latest poll that
     # confirmed its value so /health lastPoll reflects the real poll time.
     assert all(row["polled_at"] == POLLED_LATER for row in rows.values())
@@ -613,7 +586,7 @@ def test_changed_value_writes_only_one_new_row(tmp_path: Path) -> None:
 
     assert result["written"] == 1
     rows = quota_rows(database)
-    assert len(rows) == 9
+    assert len(rows) == 7
     with connect(database) as connection:
         grok_rows = connection.execute(
             "SELECT pct, polled_at FROM quotas WHERE provider_key='grok' ORDER BY polled_at"
@@ -913,7 +886,7 @@ def test_poll_quotas_fixture_collectors_do_not_call_providers(
         collectors=fixture_collectors(database),
         now=lambda: POLLED,
     )
-    assert result["written"] == 9
+    assert result["written"] == 7
 
 
 def _desktop_claude(five_hour: float, weekly: float) -> dict:
@@ -1009,3 +982,85 @@ def test_claude_desktop_keeps_an_oauth_reset_when_traycer_is_missing(monkeypatch
     assert samples["weekly"].resets_at == "2026-10-11T02:00:00Z"
     assert samples["5h"].source == "claude_desktop_history"
     limits._CACHE.pop("claude_quota_poll", None)
+
+
+def test_muse_quota_samples_and_limits_uncached(tmp_path: Path, monkeypatch) -> None:
+    import json
+    from spend_app.quotas import muse_quota_samples
+
+    auth_file = tmp_path / "auth.json"
+    auth_file.write_text(
+        json.dumps({"providers": {"meta": {"access_token": "muse-test-token"}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MUSE_AUTH_PATH", str(auth_file))
+
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return {
+                "subs_tier_name": "Muse Code Power Usage",
+                "subs_usage": {
+                    "window": {
+                        "used_percent": 73,
+                        "window_duration_mins": 300,
+                        "resets_at": 1792406717,
+                    },
+                    "weekly": {
+                        "used_percent": 24,
+                        "resets_at": 1792972800,
+                    },
+                },
+            }
+
+    monkeypatch.setattr("spend_app.limits.httpx.post", lambda *a, **kw: FakeResponse())
+    payload = limits._muse_limits_uncached()
+    assert payload["status"] == "exact"
+    assert payload["plan"] == "Power Usage"
+    samples = {s.limit_key: s for s in muse_quota_samples(payload, source="muse_quota_endpoint")}
+    assert samples["5h"].pct == 73.0
+    assert samples["5h"].resets_at == "2026-10-19T10:45:17Z"
+    assert samples["weekly"].pct == 24.0
+    assert samples["weekly"].resets_at == "2026-10-26T00:00:00Z"
+
+
+def test_muse_records_microsecond_timestamp_and_nested_cwd() -> None:
+    from spend_app.adapters.muse_records import reduce_records
+
+    records = [
+        {
+            "recorded_at": 1792389238424505,
+            "stream": {"id": "sess-1"},
+            "payload": {
+                "type": "session_created",
+                "event": {"cwd": "C:/Dev/myBurnRateOfficial"},
+            },
+        },
+        {
+            "recorded_at": 1792389245000000,
+            "stream": {"id": "sess-1"},
+            "payload": {
+                "type": "model_completed",
+                "event": {
+                    "id": "turn-1",
+                    "model": "muse-spark-1.3",
+                    "usage": {
+                        "input_tokens": 1200,
+                        "cache_read_tokens": 400,
+                        "cache_write_tokens": 100,
+                        "output_tokens": 300,
+                    },
+                },
+            },
+        },
+    ]
+    events, session = reduce_records(records, file_key="sess-1")
+    assert len(events) == 1
+    assert events[0].project == "myBurnRateOfficial"
+    assert events[0].model_key == "muse:muse-spark-1.3"
+    assert events[0].occurred_at.isoformat().startswith("2026-10-19T05:54:05")
+    assert session["project"] == "myBurnRateOfficial"

@@ -246,7 +246,7 @@ def test_case_5_overlapping_plans_union_without_multiplying_events():
     by_group, unassigned = assign_events_to_groups(
         [overlap_event, early, late, after], groups
     )
-    assert {e["raw_id"] for e in by_group["tool:cursor"]} == {"overlap", "early", "late"}
+    assert {e["raw_id"] for e in by_group["tool:grok"]} == {"overlap", "early", "late"}
     assert [e["raw_id"] for e in unassigned] == ["after"]
 
 
@@ -331,8 +331,8 @@ def test_case_5_ended_and_scheduled_plans_and_out_of_interval_unassigned():
         },
         {
             "id": 3,
-            "name": "Active Cursor",
-            "tool_key": "cursor",
+            "name": "Active Codex",
+            "tool_key": "codex",
             "start_date": "2026-09-01",
             "end_date": None,
             "accrued_cost": Decimal("40"),
@@ -342,7 +342,7 @@ def test_case_5_ended_and_scheduled_plans_and_out_of_interval_unassigned():
     ids = {g.group_id for g in groups}
     # Scheduled-only future plan does not create a comparison group.
     assert "tool:grok" in ids
-    assert "tool:cursor" in ids
+    assert "tool:codex" in ids
     grok = next(g for g in groups if g.group_id == "tool:grok")
     assert grok.plan_ids == (1,)
     assert grok.accrued_cost == Decimal("15")

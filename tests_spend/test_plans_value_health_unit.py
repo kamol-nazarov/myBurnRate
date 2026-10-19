@@ -101,7 +101,7 @@ def test_loader_payload_scopes_codex_and_preserves_unrelated_cursor_failure():
     assert codex["lastAttemptAt"] == "2026-09-09T04:00:00Z"
     assert codex["lastSuccessAt"] == "2026-09-09T04:00:00Z"
     assert codex["freshness"]["state"] == "recent"
-    assert cursor["toolKeys"] == ["cursor"]
+    assert cursor["toolKeys"] == ["grok", "cursor"]
     assert cursor["status"] == "failed"
 
     evidence = _collection_evidence(rows, tool_keys=("codex",))

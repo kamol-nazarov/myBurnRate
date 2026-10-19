@@ -16,7 +16,8 @@ from zoneinfo import ZoneInfo
 UTC = timezone.utc
 ZERO = Decimal(0)
 
-# Tool keys accepted on plan terms. OpenCode and ZCode share Z.AI telemetry.
+# Tool keys accepted on plan terms. OpenCode and ZCode share Z.AI telemetry;
+# SuperGrok and Cursor share the Grok usage pool.
 SUPPORTED_TOOLS = (
     "codex",
     "claude-code",
@@ -27,12 +28,14 @@ SUPPORTED_TOOLS = (
     "openrouter",
     "xai",
     "antigravity",
+    "muse",
     "custom",
 )
 
 # Canonical association -> event tool_keys that share inseparable telemetry.
 TOOL_ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
     "opencode": ("opencode", "zcode"),
+    "grok": ("grok", "cursor"),
 }
 
 GROUP_DISPLAY_NAMES: dict[str, str] = {
@@ -40,10 +43,11 @@ GROUP_DISPLAY_NAMES: dict[str, str] = {
     "codex": "Codex",
     "claude-code": "Claude Code",
     "cursor": "Cursor",
-    "grok": "Grok",
+    "grok": "Grok (SuperGrok / Cursor)",
     "openrouter": "OpenRouter",
     "xai": "xAI",
     "antigravity": "Antigravity",
+    "muse": "Muse Code",
     "custom": "Custom",
 }
 
@@ -53,6 +57,8 @@ def canonical_tool_key(tool_key: str) -> str:
     key = str(tool_key or "").strip().lower()
     if key == "zcode":
         return "opencode"
+    if key == "cursor":
+        return "grok"
     return key
 
 
@@ -201,7 +207,7 @@ def _plan_display_name(plan: dict) -> str:
 
 def _group_display_name(canonical: str, contributing: list[dict]) -> str:
     if canonical in GROUP_DISPLAY_NAMES and (
-        canonical == "opencode" or len(contributing) > 1
+        canonical in {"opencode", "grok"} or len(contributing) > 1
     ):
         return GROUP_DISPLAY_NAMES[canonical]
     if len(contributing) == 1:

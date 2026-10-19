@@ -351,7 +351,10 @@ class Inspector:
             except OSError:
                 raise LocationError("Antigravity cache is unavailable or unreadable.") from None
         try:
-            patterns = transcript_patterns(source, path, meta.suffix or "*") if source in {"codex_local", "claude_local"} else [meta.suffix or "*"]
+            if source == "muse_local":
+                patterns = ["sessions/**/*.jsonl"] if (Path(path) / "sessions").is_dir() else ["**/*.jsonl"]
+            else:
+                patterns = transcript_patterns(source, path, meta.suffix or "*") if source in {"codex_local", "claude_local", "claude_local_alt"} else [meta.suffix or "*"]
             if source == "zcode_local":
                 patterns = ["cli/db/db.sqlite", "projects/**/*.jsonl"] if Path(path).name == ".zcode" else ["**/*.jsonl"]
             found = 0
@@ -433,9 +436,13 @@ class Inspector:
                             if source == "codex_local":
                                 recognized |= kind in {"session_meta", "event_msg", "response_item", "turn_context"}
                                 usable |= kind == "event_msg" and isinstance(row.get("payload"), dict) and row["payload"].get("type") == "token_count"
-                            elif source == "claude_local":
+                            elif source in {"claude_local", "claude_local_alt"}:
                                 recognized |= kind in {"user", "assistant", "summary", "system", "progress", "file-history-snapshot"}
                                 usable |= kind == "assistant" and isinstance(row.get("message"), dict) and bool(row["message"].get("usage"))
+                            elif source == "muse_local":
+                                from spend_app.adapters.muse_records import reduce_records
+                                recognized |= any(key in row for key in ("kind", "type", "role", "record_type", "payload_type", "schema_version"))
+                                usable |= bool(reduce_records([row])[0])
                             elif source == "zcode_local":
                                 from spend_app.adapters.zcode_transcript import reduce_records
                                 recognized |= row.get("role") in {"user", "assistant", "system"}

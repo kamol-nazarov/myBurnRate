@@ -12,6 +12,7 @@ from spend_app.pricing import PricingEngine
 from spend_app.providers import (
     ProviderSpec,
     REGISTRY,
+    ingest_muse_local,
     ingest_anthropic_admin,
     ingest_antigravity_local,
     ingest_claude_local,
@@ -28,7 +29,7 @@ from spend_app.providers import (
     iter_admin_ingest,
     iter_local_ingest,
 )
-from spend_app.quotas import poll_activity, poll_quotas
+from spend_app.quotas import nudge_quota_lanes, poll_activity, poll_quotas
 from spend_app.subscriptions import materialize_subscription_days
 
 # Re-exported so existing tests can monkeypatch scheduler.ingest_* aliases.
@@ -48,6 +49,19 @@ _ = (
     ingest_traycer_local,
     ingest_zcode_local,
 )
+
+
+_ = (ingest_muse_local,)
+
+_SOURCE_TO_QUOTA_PROVIDER: dict[str, str] = {
+    "codex_local": "codex",
+    "claude_local": "claude-code",
+    "antigravity_local": "antigravity",
+    "grok_local": "grok",
+    "opencode_local": "opencode",
+    "cursor_local": "grok",
+    "muse_local": "muse",
+}
 
 
 def _ingest_callable(spec: ProviderSpec):
@@ -71,6 +85,18 @@ def _run_ingest_specs(jobs: list[tuple[ProviderSpec, dict]], settings=None, pric
             else:
                 from spend_app.connections import execute
                 result = execute(settings, pricing, spec, ingest, window)
+                if isinstance(result, dict) and ((result.get("eventsWritten") or 0) + (result.get("unpricedEventsWritten") or 0)) > 0:
+                    try:
+                        quota_provider = _SOURCE_TO_QUOTA_PROVIDER.get(spec.key)
+                        if quota_provider:
+                            nudge_quota_lanes(settings.database_path, quota_provider)
+                        from spend_app.setup_wizard import maybe_run_configured_spoke_sync
+                        from spend_app.sync import STREAM_BROKER, clear_hub_proxy_cache
+                        maybe_run_configured_spoke_sync(settings, pricing)
+                        clear_hub_proxy_cache()
+                        STREAM_BROKER.publish({"type": "ingest", "source": spec.key})
+                    except Exception:
+                        pass
             if isinstance(result, dict) and result.get("status") == "failed" and spec.stability != "experimental":
                 errors.append(RuntimeError(f"{spec.key} reported failed collection"))
         except Exception as exc:
@@ -110,9 +136,9 @@ def create_scheduler(settings: Settings, pricing: PricingEngine) -> BackgroundSc
         except Exception as exc:
             errors.append(exc)
         warm_summaries()
-        STREAM_BROKER.publish({"type": "ingest"})
         if not is_central:
             maybe_run_configured_spoke_sync(settings, pricing)
+        STREAM_BROKER.publish({"type": "ingest"})
         if errors:
             raise RuntimeError(f"{len(errors)} local ingest job(s) failed") from errors[0]
 

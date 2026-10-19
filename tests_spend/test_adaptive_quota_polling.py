@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from spend_app.db import UsageEvent, connect, initialize, upsert_usage_event
+from spend_app.db import UsageEvent, connect, initialize, upsert_agent_run, upsert_usage_event
 from spend_app.quotas import (
     LANE_CADENCE,
     THROTTLE_BACKOFF_MAX_SECONDS,
@@ -62,6 +62,15 @@ def test_lane_scheduler_follows_active_and_idle_cadence() -> None:
     assert lanes.due("codex"), "local lanes refresh every tick"
 
 
+def test_idle_lane_wakes_immediately_when_tool_becomes_active() -> None:
+    clock = FakeClock()
+    lanes = QuotaLaneScheduler(clock=clock)
+    lanes.record("opencode", [_sample("opencode")], active=False)
+    clock.now += 35
+    assert not lanes.due("opencode", active=False), "still waiting on 300 s idle interval when idle"
+    assert lanes.due("opencode", active=True), "immediately due once active_interval (30 s) has elapsed and lane becomes active"
+
+
 def test_429_backs_off_exponentially_honours_retry_after_and_caps() -> None:
     clock = FakeClock()
     lanes = QuotaLaneScheduler(clock=clock)
@@ -100,7 +109,7 @@ def test_throttled_payload_marks_samples_without_inventing_values() -> None:
     assert all(sample.throttle_seconds is None for sample in untouched)
 
 
-def test_lane_activity_comes_from_recent_usage_events(tmp_path: Path) -> None:
+def test_lane_activity_comes_from_recent_usage_events_or_live_agent_runs(tmp_path: Path) -> None:
     database = tmp_path / "spend.db"
     initialize(database)
     now = datetime(2026, 9, 1, 22, 0, tzinfo=UTC)
@@ -119,6 +128,29 @@ def test_lane_activity_comes_from_recent_usage_events(tmp_path: Path) -> None:
     assert lane_is_active(database, "claude-code", now=now) is True
     assert lane_is_active(database, "claude-code", now=now + timedelta(minutes=10)) is False
     assert lane_is_active(database, "opencode", now=now) is False
+    assert lane_is_active(database, "grok", now=now) is False
+    with connect(database) as connection:
+        upsert_usage_event(
+            connection,
+            UsageEvent(
+                source="cursor_local", tool_key="cursor", model_key="cursor:grok-4.6",
+                occurred_at=(now - timedelta(minutes=1)).isoformat().replace("+00:00", "Z"),
+                session_id="s2", project="p", input_tokens=10, cached_input_tokens=0,
+                cache_write_tokens=0, cache_write_1h_tokens=0, output_tokens=1, reasoning_tokens=None,
+                cost_usd=None, computed_cost_usd=0.0, raw_id="r2", ingested_at="2026-09-01T21:59:30Z",
+            ),
+        )
+        upsert_agent_run(
+            connection,
+            id="opencode:live-1",
+            name="opencode",
+            model_key="zai:glm-5",
+            state="LIVE",
+            started_at=now.isoformat().replace("+00:00", "Z"),
+            last_seen_at=now.isoformat().replace("+00:00", "Z"),
+        )
+    assert lane_is_active(database, "grok", now=now) is True
+    assert lane_is_active(database, "opencode", now=now) is True
 
 
 def test_poll_only_touches_lanes_that_are_due(tmp_path: Path) -> None:
@@ -154,7 +186,6 @@ def test_hourly_external_calls_are_bounded_even_when_continuously_active() -> No
                 lanes.record(provider, [_sample(provider)], active=True)
         clock.now += 15
     assert calls["claude-code"] <= 40 and calls["opencode"] <= 120 and calls["grok"] <= 120
-    assert calls["cursor"] <= 4
     assert calls["codex"] == 240 and calls["openrouter"] == 60
     idle = {provider: 0 for provider in LANE_CADENCE}
     for _tick in range(3600 // 15):
@@ -163,5 +194,5 @@ def test_hourly_external_calls_are_bounded_even_when_continuously_active() -> No
                 idle[provider] += 1
                 lanes.record(provider, [_sample(provider)], active=False)
         clock.now += 15
-    assert idle["claude-code"] <= 12 and idle["opencode"] <= 12 and idle["cursor"] <= 1
+    assert idle["claude-code"] <= 12 and idle["opencode"] <= 12
     assert idle["openrouter"] <= 12

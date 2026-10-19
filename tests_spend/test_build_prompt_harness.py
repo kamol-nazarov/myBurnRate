@@ -224,30 +224,7 @@ def _capacity_rows(connection) -> None:
         resets="2026-09-06T02:25:00Z",
         source="codex_local",
     )
-    _quota(
-        connection,
-        provider="cursor",
-        limit="cursor_models",
-        label="Cursor models",
-        pct=7.3,
-        used=7.3,
-        allowance=100.0,
-        unit="pct",
-        resets="2026-09-16T03:44:00Z",
-        source="authenticated read-only usage service",
-    )
-    _quota(
-        connection,
-        provider="cursor",
-        limit="other_models",
-        label="Other models — Cursor usage service omitted the Other models percentage.",
-        pct=None,
-        used=None,
-        allowance=None,
-        unit="unavailable",
-        resets=None,
-        source="cursor_usage_service",
-    )
+
     _quota(
         connection,
         provider="opencode",

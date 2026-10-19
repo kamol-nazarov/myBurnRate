@@ -11,7 +11,7 @@ const DAYS = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
 const TOOL_COLORS = {
   codex:"#78a8f8",claude:"#9b7bff","claude-code":"#9b7bff",cursor:"#d9a441",
   opencode:"#63c689",zai:"#63c689",zcode:"#f28c45",grok:"#5cd6e8",supergrok:"#5cd6e8","grok-build":"#5cd6e8",
-  openrouter:"#565d69",xai:"#5cd6e8",antigravity:"#4aa5ff"
+  openrouter:"#565d69",xai:"#5cd6e8",antigravity:"#4aa5ff",muse:"#6c8cff"
 };
 const EASE_RATE = 0.13;
 const REDUCE_MOTION = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -30,6 +30,8 @@ const initialWindow = String(params.get("window") || "1d").toLowerCase();
 const state = {
   window: WINDOW_KEYS.has(initialWindow) ? initialWindow : "1d",
   machine: String(params.get("machine") || "all").trim() || "all",
+  tool: String(params.get("tool") || "all").trim() || "all",
+  knownTools: [],
   mode:"stacked",
   hover:null,
   pinned:null,
@@ -161,6 +163,32 @@ function etaFromReset(iso) {
   if (hours < 1) return {value:Math.max(1, Math.round(ms / 60000)) + "m", label:"to reset"};
   if (hours < 48) return {value:Math.round(hours) + "h", label:"to reset"};
   return {value:Math.round(hours / 24) + "d", label:"to reset"};
+}
+function quotaElapsedPct(row) {
+  if (!row || !row.resetsAt || row.isPayg) return null;
+  const resetMs = Date.parse(row.resetsAt);
+  if (!Number.isFinite(resetMs)) return null;
+  const remMs = resetMs - Date.now();
+  if (remMs <= 0) return null;
+  const label = String((row.limitKey || "") + " " + (row.label || "")).toLowerCase();
+  const durMs = label.includes("5h") || label.includes("5-hour") || label.includes("five-hour")
+    ? 5 * 3600000
+    : label.includes("week") || label.includes("7d")
+      ? 7 * 86400000
+      : label.includes("day") || label.includes("24h") || label.includes("daily")
+        ? 86400000
+        : 0;
+  if (!durMs || remMs > durMs) return null;
+  return Math.max(0, Math.min(100, 100 - (remMs / durMs) * 100));
+}
+function quotaFreshnessAge(iso) {
+  const ms = finiteDate(iso);
+  if (ms == null) return "";
+  const ageSec = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (ageSec < 45) return "just now";
+  if (ageSec < 3600) return Math.round(ageSec / 60) + "m ago";
+  if (ageSec < 86400) return Math.round(ageSec / 3600) + "h ago";
+  return Math.round(ageSec / 86400) + "d ago";
 }
 function windowLabel(key) {
   return (WINDOWS.find(item => item.key === key) || {}).label || key;
@@ -430,7 +458,8 @@ function setQuery() {
   url.searchParams.set("window", state.window);
   if (state.machine && state.machine !== "all") url.searchParams.set("machine", state.machine);
   else url.searchParams.delete("machine");
-  url.searchParams.delete("tool");
+  if (state.tool && state.tool !== "all") url.searchParams.set("tool", state.tool);
+  else url.searchParams.delete("tool");
   if (PROBE) url.searchParams.set("probe", "1");
   history.replaceState(null, "", url);
 }
@@ -632,6 +661,13 @@ function capacityNote(row) {
   if (row.source) parts.push(row.source);
   const reset = formatReset(row.resetsAt);
   if (reset) parts.push("resets " + reset);
+  const elapsed = quotaElapsedPct(row);
+  if (elapsed != null && finite(row.pct) != null) {
+    const diff = Math.round(Number(row.pct) - elapsed);
+    parts.push(diff > 2 ? `+${diff}% vs even pace` : diff < -2 ? `${Math.abs(diff)}% under even pace` : "on even pace");
+  }
+  const age = quotaFreshnessAge(row.polledAt || row.observedAt);
+  if (age) parts.push("polled " + age);
   return parts.join(" · ") || "Quota unavailable";
 }
 function sortQuotaRows(rows) {
@@ -715,10 +751,11 @@ function quotaRowModels(rows, idPrefix) {
     if (!payg && usedNow != null) ease(usedKey, usedNow);
     const noteCore = capacityNote(row);
     const paceNote = row.forecast && row.forecast.line ? String(row.forecast.line).replace(/^pace → /, "") : "";
+    const paceTargetPct = quotaElapsedPct(row);
     return {
       rowKey: row.limitKey || index,
       label: row.label || "Limit",
-      easeKey, payg, skipPct, eased, color, eta, etaColor, noteCore, paceNote
+      easeKey, payg, skipPct, eased, color, eta, etaColor, noteCore, paceNote, paceTargetPct
     };
   });
 }
@@ -857,7 +894,7 @@ function shortLimitLabel(label, providerName) {
   let text = String(label || "Limit").trim();
   const name = String(providerName || "").trim();
   if (name && text.toLowerCase().startsWith(name.toLowerCase())) text = text.slice(name.length).trim();
-  text = text.replace(/^(claude|codex|z\.ai|cursor|grok build|openrouter)\s+/i, "")
+  text = text.replace(/^(claude|codex|z\.ai|cursor|grok build|openrouter|muse code)\s+/i, "")
     .replace(/\s+(window|credits|limit|quota)$/i, "")
     .replace(/Gemini models\s*·\s*Five-hour remaining/i, "Gemini · 5h")
     .replace(/Gemini models\s*·\s*Weekly remaining/i, "Gemini · weekly")
@@ -879,7 +916,7 @@ function providerHasQuota(provider) {
 function renderCapacity(data) {
   const checked = data.generatedAt ? "checked " + new Date(data.generatedAt).toLocaleTimeString([], {hour:"numeric", minute:"2-digit", second:"2-digit"}) : "checked —";
   setText($("capacity-checked"), checked);
-  const all = [...(data.capacity || [])].sort((a, b) => {
+  const all = (data.capacity || []).filter(item => item.providerKey !== "cursor").sort((a, b) => {
     if (a.isPayg && !b.isPayg) return 1;
     if (b.isPayg && !a.isPayg) return -1;
     const ad = finiteDate(a.forecast && a.forecast.projectedRunDry);
@@ -958,17 +995,26 @@ function renderCapacity(data) {
     // The full note (used of allowance, source, reset) stays available on hover
     // and in Data health; the lane surface shows only what changes a decision.
     setAttr(node, "title", rows.map(row => `${row.label || "Limit"}: ${capacityNote(row)}`).join("\n") + (provider.activityNote ? `\n${provider.activityNote}` : ""));
+    node.onclick = event => {
+      if (!event.target.closest("button, a")) loadEntity("tool", provider.providerKey);
+    };
+    const polledAge = quotaFreshnessAge(provider.polledAt);
     setStyle(node.querySelector(".lane-who > i"), "background", color);
     setText(node.querySelector(".lane-who b"), provider.providerName || "");
-    setText(node.querySelector(".lane-sub"), [provider.plan, leadModel ? shortLimitLabel(leadModel.label, provider.providerName) : "", provider.activityNote ? "OpenCode Grok activity observed" : ""].filter(Boolean).join(" · "));
+    setText(node.querySelector(".lane-sub"), [provider.plan, leadModel ? shortLimitLabel(leadModel.label, provider.providerName) : "", polledAge, provider.activityNote ? "OpenCode Grok activity observed" : ""].filter(Boolean).join(" · "));
     setText(node.querySelector(".lane-sub-eta"), leadModel && leadModel.eta.value !== unknown ? ` · ${leadModel.eta.value} ${leadModel.eta.label}` : "");
     const tracks = node.querySelector(".lane-tracks");
-    reconcileChildren(tracks, models, model => "bar:" + model.rowKey, () => nodeFrom(`<div class="track"><i data-quota-color="1"></i></div>`), (bar, model, index, fresh) => {
+    reconcileChildren(tracks, models, model => "bar:" + model.rowKey, () => nodeFrom(`<div class="track"><i data-quota-color="1"></i><b class="pace-tick" hidden></b></div>`), (bar, model, index, fresh) => {
       bar.classList.toggle("thin", index > 0);
       const fill = bar.querySelector("i");
       bindWidth(fill, model.easeKey, model.eased, fresh);
       setStyle(fill, "background", barColor);
       setStyle(fill, "animationDelay", `${index * 90}ms`);
+      const paceMarker = bar.querySelector(".pace-tick");
+      if (paceMarker) {
+        paceMarker.hidden = model.paceTargetPct == null || model.payg;
+        if (model.paceTargetPct != null) setStyle(paceMarker, "left", `${model.paceTargetPct.toFixed(1)}%`);
+      }
     });
     const win = node.querySelector(".lane-win");
     if (models.length > 1) {
@@ -1959,6 +2005,73 @@ function changeMachine(machineId) {
   if (state.view === "detail" && state.entity) loadEntity(state.entity.kind, state.entity.key);
   else loadSummary(false);
 }
+function renderToolsFilter(data) {
+  const row = $("range-switch")?.parentElement;
+  if (!row) return;
+  if ((!state.tool || state.tool === "all") && Array.isArray(data?.tools) && data.tools.length) {
+    state.knownTools = data.tools.map(t => ({key: t.key, name: t.name || t.key}));
+  }
+  const byKey = new Map();
+  for (const item of state.knownTools || []) if (item.key) byKey.set(item.key, item.name || item.key);
+  for (const item of data?.tools || []) if (item.key) byKey.set(item.key, item.name || item.key);
+  for (const cap of data?.capacity || []) {
+    if (cap.providerKey && cap.providerKey !== "cursor" && !byKey.has(cap.providerKey)) {
+      byKey.set(cap.providerKey, cap.providerName || cap.providerKey);
+    }
+  }
+  let root = $("tool-switch");
+  if (byKey.size <= 1 && (!state.tool || state.tool === "all")) {
+    if (root) root.remove();
+    return;
+  }
+  if (!root) {
+    root = document.createElement("div");
+    root.id = "tool-switch";
+    root.className = "mode-switch";
+    root.setAttribute("role", "radiogroup");
+    root.setAttribute("aria-label", "Tool filter");
+    root.addEventListener("click", event => {
+      const drill = event.target.closest("[data-drill-tool]");
+      if (drill) { loadEntity("tool", drill.dataset.drillTool); return; }
+      const button = event.target.closest("[data-tool]");
+      if (button) changeTool(button.dataset.tool);
+    });
+    row.insertBefore(root, $("range-switch"));
+  }
+  const items = [{key: "all", name: "All tools"}, ...[...byKey.entries()].map(([key, name]) => ({key, name}))];
+  if (state.tool && state.tool !== "all") {
+    items.push({key: "__drill__:" + state.tool, name: "Detail →", drill: state.tool});
+  }
+  reconcileChildren(root, items, item => item.key, () => nodeFrom(`<button type="button" role="radio" data-tool=""></button>`), (node, item) => {
+    if (item.drill) {
+      node.removeAttribute("role");
+      node.removeAttribute("aria-checked");
+      delete node.dataset.tool;
+      node.dataset.drillTool = item.drill;
+      node.classList.remove("active");
+      setText(node, item.name);
+      return;
+    }
+    delete node.dataset.drillTool;
+    node.setAttribute("role", "radio");
+    const on = item.key === (state.tool || "all");
+    node.dataset.tool = item.key;
+    node.classList.toggle("active", on);
+    node.setAttribute("aria-checked", String(on));
+    setText(node, item.name || item.key);
+  });
+}
+function changeTool(toolKey) {
+  const next = String(toolKey || "all").trim() || "all";
+  if (next === state.tool) return;
+  state.tool = next;
+  state.hover = null;
+  state.pinned = null;
+  state.chartScales = Object.create(null);
+  setQuery();
+  renderToolsFilter(state.summary);
+  loadSummary(false);
+}
 function connectLiveStream() {
   if (PROBE || typeof EventSource !== "function") return;
   let timer = null;
@@ -2036,6 +2149,7 @@ function renderOverview() {
   renderCoverage(data);
   renderRanges(false);
   renderMachines(data);
+  renderToolsFilter(data);
   renderMachineSettings(data);
   renderCapacity(data);
   renderResetAlerts(data);
@@ -2293,28 +2407,30 @@ async function loadSummary(background = false) {
   if (!background) navigateView("overview");
   if (state.view !== "overview" || pendingViews.overview) return;
   const windowKey = state.window;
+  const toolKey = state.tool && state.tool !== "all" ? state.tool : "all";
   const machineSuffix = state.machine && state.machine !== "all" ? '&machine=' + encodeURIComponent(state.machine) : '';
-  const painted = !machineSuffix && (!state.summary || state.summary.window?.key !== state.window) && paintSnapshot(windowKey);
+  const unfiltered = !machineSuffix && toolKey === "all";
+  const painted = unfiltered && (!state.summary || state.summary.window?.key !== state.window) && paintSnapshot(windowKey);
   const request = startViewRequest("overview");
   if (!request) return;
   // Consume startup prefetch once, even when a matching snapshot was painted.
   const startup = window.__prefetch;
-  const prefetch = startup?.window === windowKey ? startup : null;
+  const prefetch = unfiltered && startup?.window === windowKey ? startup : null;
   window.__prefetch = null;
   // A discarded startup request may still reject after navigation.
   startup?.summary.catch(() => {});
   startup?.health.catch(() => {});
   refreshOverviewHealth(prefetch?.health);
   try {
-    const data = await jsonFetch('/api/spend/summary?window=' + encodeURIComponent(windowKey) + '&tool=all' + machineSuffix,
-      machineSuffix ? null : prefetch?.summary, request.controller.signal);
+    const data = await jsonFetch('/api/spend/summary?window=' + encodeURIComponent(windowKey) + '&tool=' + encodeURIComponent(toolKey) + machineSuffix,
+      unfiltered ? prefetch?.summary : null, request.controller.signal);
     if (!ownsRender(request)) return;
     if (data.window?.key !== windowKey) throw new Error("Response range did not match the selection");
     state.summary = data;
     if (data.navigation) state.navigation = data.navigation;
     clearError();
     renderPreservingScroll(background || painted, renderOverview);
-    if (!machineSuffix) writeSnapshot(windowKey, data, state.health);
+    if (unfiltered) writeSnapshot(windowKey, data, state.health);
   } catch (error) {
     failViewRequest(request, error);
   } finally {
@@ -2576,8 +2692,45 @@ bindResetAlerts();
 bindRangeKeys($("range-switch"));
 bindRangeKeys($("detail-ranges"));
 renderRanges(true);
+$("capacity-poll")?.addEventListener("click", async () => {
+  const btn = $("capacity-poll");
+  if (!btn || btn.disabled) return;
+  btn.disabled = true;
+  btn.textContent = "↻ Polling…";
+  try {
+    await postJson("/api/spend/quotas/refresh", {});
+    await loadSummary(true);
+  } catch {} finally {
+    btn.disabled = false;
+    btn.textContent = "↻ Poll";
+  }
+});
+function consumeFocusTool() {
+  try {
+    const url = new URL(location.href);
+    const fromQuery = url.searchParams.get("focusTool");
+    if (fromQuery) {
+      url.searchParams.delete("focusTool");
+      history.replaceState(null, "", url);
+      loadEntity("tool", fromQuery);
+      return true;
+    }
+    const raw = localStorage.getItem("burnrate:focus-tool");
+    if (raw) {
+      localStorage.removeItem("burnrate:focus-tool");
+      const parsed = JSON.parse(raw);
+      if (parsed?.key && Date.now() - Number(parsed.ts || 0) < 25000) {
+        loadEntity("tool", parsed.key);
+        return true;
+      }
+    }
+  } catch {}
+  return false;
+}
+window.addEventListener("focus", () => { consumeFocusTool(); });
+window.addEventListener("storage", event => { if (event.key === "burnrate:focus-tool") consumeFocusTool(); });
 pruneSnapshots();
-loadSummary();
+if (!consumeFocusTool()) loadSummary();
 scheduleEase();
 setInterval(refreshCurrent, POLL_MS);
 connectLiveStream();

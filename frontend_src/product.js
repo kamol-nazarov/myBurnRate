@@ -34,7 +34,7 @@
   const wizardSteps = operation => operation === "add" ? [1,2,3] : operation === "end" ? [3] : [2,3];
 function buildPlanMutation(op,values,p,t,preview,confirmed){const b={operation:op};if(op!=="add")Object.assign(b,{plan_id:p.id,expected_version:p.version});if(op==="schedule")Object.assign(b,{effective_date:values.start_date,values:{amount_usd:values.amount_usd,cadence:values.cadence}});else if(op==="end")b.end_date=values.end_date;else b.values=values;if(op==="correct"){b.term_id=t?.id;if(preview&&confirmed)Object.assign(b,{confirmed:true,preview_token:preview.preview_token});else b.preview=true;}return b;}
   const sourceTool = source => ({claude_local:"claude-code",openai_admin:"codex",anthropic_admin:"claude-code",cursor_usage_service:"cursor",cursor_csv:"cursor",cursor_admin:"cursor"}[source] || source.replace(/_local$/,""));
-  const capacitySourceKey = source => sourceTool(source) === "zcode" ? "opencode" : sourceTool(source);
+  const capacitySourceKey = source => { const t = sourceTool(source); return t === "zcode" ? "opencode" : t === "cursor" ? "grok" : t; };
   const sourceTone = state => ["healthy","partial"].includes(state) ? "good" : ["detected_without_history","stale"].includes(state) ? "warning" : state === "failed" ? "danger" : "quiet";
   const harnessCount = sources => { const count=sources.filter(s=>["healthy","partial"].includes(s.state)).length; return {count,label:count ? `${count} harnesses` : "No harnesses",tone:count ? "good" : sources.some(s=>s.state === "detected_without_history") ? "warning" : "quiet"}; };
   const helpers={decimal,dollars,daysInclusive,periodDays,currentTotal,priceCards,sourceTool,capacitySourceKey,sourceTone,harnessCount,wizardSteps,buildPlanMutation};
@@ -110,16 +110,60 @@ function buildPlanMutation(op,values,p,t,preview,confirmed){const b={operation:o
   const harnessDialog=el("harness-manager"), metadataError="Setup metadata is unavailable. The dashboard remains usable; check Diagnostics or reload to retry.";
   let harnessGeneration=0,harnessController,harnessOpener,harnessScannedAt=null,harnessRestore=true,harnessMetadataReady=false;
   const relative = seconds => seconds == null ? "unavailable" : seconds<60 ? "just now" : seconds<3600 ? Math.floor(seconds/60)+"m ago" : seconds<86400 ? Math.floor(seconds/3600)+"h ago" : Math.floor(seconds/86400)+"d ago";
+  function renderNavSync(payload) {
+    const syncBtn = el("nav-sync"), syncLabel = el("nav-sync-label");
+    if (!syncBtn || !syncLabel) return;
+    const s = payload?.setup || setupData?.setup;
+    const machines = payload?.machines || setupData?.machines || [];
+    if (s?.role === "spoke" && s?.spokeConfig?.enabled) {
+      const cfg = s.spokeConfig;
+      const err = cfg.lastSyncError;
+      const ageSec = cfg.lastSyncAt ? Math.max(0, (Date.now() - Date.parse(cfg.lastSyncAt)) / 1000) : null;
+      syncBtn.dataset.tone = err ? "warning" : "good";
+      syncLabel.textContent = err ? "Sync retry" : ageSec != null ? "Sync · " + relative(ageSec) : "Sync now";
+      syncBtn.title = err ? ("Spoke sync error: " + err) : ("Spoke connected to " + (cfg.hubUrl || "Hub") + " · click to push now");
+    } else if (machines.length > 1) {
+      syncBtn.dataset.tone = "good";
+      syncLabel.textContent = "Hub · " + machines.length + " PCs";
+      syncBtn.title = "Central Hub with " + machines.length + " computers · click to refresh quotas & sync";
+    } else {
+      syncBtn.dataset.tone = "good";
+      syncLabel.textContent = "Sync";
+      syncBtn.title = "Poll subscription quotas and sync now";
+    }
+  }
+  el("nav-sync")?.addEventListener("click", async () => {
+    const syncBtn = el("nav-sync"), syncLabel = el("nav-sync-label");
+    if (!syncBtn || syncBtn.disabled) return;
+    const prev = syncLabel ? syncLabel.textContent : "Sync";
+    syncBtn.disabled = true;
+    if (syncLabel) syncLabel.textContent = "Syncing…";
+    try {
+      const res = await fetch("/api/sync/trigger", {method: "POST", cache: "no-store"});
+      if (res.ok) {
+        const out = await res.json();
+        if (setupData && out.setup) setupData.setup = out.setup;
+        if (setupData && out.machines) setupData.machines = out.machines;
+        renderNavSync(out);
+        window.refreshCapacitySourceHints?.();
+      }
+    } catch {
+      if (syncLabel) syncLabel.textContent = prev;
+    } finally {
+      syncBtn.disabled = false;
+    }
+  });
   function acceptSources(sources) {
     sourceData=sources; const count=harnessCount(sources);
     el("nav-connect").querySelector("span").textContent=count.label; el("nav-connect").dataset.tone=count.tone;
+    renderNavSync(setupData);
     window.productSourceGuidance=sources; window.refreshCapacitySourceHints?.();
   }
   function renderHarnesses(payload) {
     el("harness-content").hidden=false; el("harness-message").hidden=true;
     el("harness-scanned").textContent=harnessScannedAt == null ? "Not checked yet" : "Checked "+relative((Date.now()-harnessScannedAt)/1000);
     el("harness-docs").href=payload.documentation || payload.sources?.find(s=>s.documentation)?.documentation || "";
-    const sourceCopy={antigravity_local:["Antigravity","Local app"],claude_local:["Claude Code","Transcripts"],codex_local:["Codex","Sessions"],cursor_local:["Cursor","Project files"],cursor_usage_service:["Cursor","Usage service"],cursor_csv:["Cursor","CSV import"],grok_local:["Grok","Local logs"],opencode_local:["OpenCode","Local database"],traycer_local:["Traycer","Host"],zcode_local:["ZCode","Local database"]};
+    const sourceCopy={antigravity_local:["Antigravity","Local app"],claude_local:["Claude Code","Transcripts"],codex_local:["Codex","Sessions"],cursor_local:["Cursor","Project files"],cursor_usage_service:["Cursor","Usage service"],cursor_csv:["Cursor","CSV import"],grok_local:["Grok","Local logs"],opencode_local:["OpenCode","Local database"],traycer_local:["Traycer","Host"],zcode_local:["ZCode","Local database"],muse_local:["Muse Code","Sessions"]};
     const integrationCopy={OPENAI_ADMIN_KEY:["OpenAI","Admin API"],ANTHROPIC_ADMIN_KEY:["Anthropic","Admin API"],CURSOR_API_KEY:["Cursor","Admin API"],OPENROUTER_MANAGEMENT_KEY:["OpenRouter","Management API"],BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE:["Claude","Account usage"],BURNRATE_ENABLE_CURSOR_USAGE_SERVICE:["Cursor","Usage service"],BURNRATE_ENABLE_ZAI_QUOTA:["Z.AI","Quota"]};
     const integrationTool={OPENAI_ADMIN_KEY:"codex",ANTHROPIC_ADMIN_KEY:"claude-code",CURSOR_API_KEY:"cursor",OPENROUTER_MANAGEMENT_KEY:"openrouter",BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE:"claude-code",BURNRATE_ENABLE_CURSOR_USAGE_SERVICE:"cursor",BURNRATE_ENABLE_ZAI_QUOTA:"zai"};
     const statusLine=source=>{
@@ -211,7 +255,7 @@ function buildPlanMutation(op,values,p,t,preview,confirmed){const b={operation:o
   let step = 1;
   const expanded = new Set(), histories = new Set();
   const color = key => window.colorFor?.(key) || "var(--dim)";
-  const TOOL_LABELS = {codex:"Codex","claude-code":"Claude Code",cursor:"Cursor",grok:"SuperGrok",zai:"Z.AI",opencode:"Z.AI (OpenCode / ZCode)",zcode:"Z.AI",antigravity:"Antigravity",openrouter:"OpenRouter",xai:"xAI"};
+  const TOOL_LABELS = {codex:"Codex","claude-code":"Claude Code",cursor:"Cursor",grok:"SuperGrok",zai:"Z.AI",opencode:"Z.AI (OpenCode / ZCode)",zcode:"Z.AI",antigravity:"Antigravity",muse:"Muse Code",openrouter:"OpenRouter",xai:"xAI"};
   const displayTool = key => TOOL_LABELS[key] || key;
   const prettyDate = value => /^\d{4}-\d{2}-\d{2}$/.test(value || "") ? new Intl.DateTimeFormat("en-US",{month:"short",day:"numeric",year:"numeric",timeZone:"UTC"}).format(new Date(value+"T12:00:00Z")) : (value || "");
   const cadenceLabel = key => ({monthly:"Monthly",quarterly:"Quarterly",annual:"Yearly"})[key] || key;

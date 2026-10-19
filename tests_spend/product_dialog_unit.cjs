@@ -34,5 +34,8 @@ assert.deepEqual(p.harnessCount([{state:'detected_without_history'}]), {count:0,
 assert.deepEqual(p.harnessCount([]), {count:0,label:'No harnesses',tone:'quiet'});
 assert.equal(p.sourceTool('claude_local'), 'claude-code');
 assert.equal(p.sourceTool('cursor_csv'), 'cursor');
+assert.equal(p.capacitySourceKey('zcode_local'), 'opencode');
+assert.equal(p.capacitySourceKey('cursor_local'), 'grok');
+assert.equal(p.capacitySourceKey('cursor_usage_service'), 'grok');
 assert.equal(p.sourceTone('failed'), 'danger');
-console.log('32 product dialog unit assertions passed');
+console.log('35 product dialog unit assertions passed');

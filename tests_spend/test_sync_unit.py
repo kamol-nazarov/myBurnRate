@@ -474,7 +474,7 @@ def test_setup_wizard_pairing_and_complete(tmp_path: Path) -> None:
         json={
             "computerName": "Main Workstation",
             "role": "hub",
-            "presetKeys": ["cursor-pro", "claude-pro"],
+            "presetKeys": ["grok-super", "claude-pro"],
             "customPlans": [
                 {"tool_key": "codex", "name": "ChatGPT Team", "amount_usd": "30", "cadence": "monthly"}
             ],
@@ -553,14 +553,14 @@ def test_central_server_account_login_subscriptions_and_multi_computer_sync(
         )
         upsert_quota(
             conn,
-            provider_key="cursor",
-            limit_key="monthly",
-            label="Cursor Plan usage ($385.17 / $400.00)",
-            unit="usd",
-            source="cursor_usage_service",
+            provider_key="grok",
+            limit_key="weekly",
+            label="Grok Build weekly",
+            unit="pct",
+            source="traycer_profile",
             polled_at=NOW.isoformat(),
-            used=385.17,
-            allowance=400.0,
+            used=None,
+            allowance=None,
             pct=96.29,
             resets_at=(NOW + timedelta(days=10)).isoformat(),
             is_payg=0,
@@ -575,7 +575,7 @@ def test_central_server_account_login_subscriptions_and_multi_computer_sync(
             "password": "secret-password",
             "computerName": "MyDesktop",
             "serverUrl": central_url,
-            "presetKeys": ["claude_max", "cursor_ultra"],
+            "presetKeys": ["claude_max", "grok_super"],
             "customPlans": [
                 {"tool_key": "opencode", "name": "Z.AI Coding Plan", "amount_usd": 10.0, "cadence": "monthly"}
             ],
@@ -640,8 +640,129 @@ def test_central_server_account_login_subscriptions_and_multi_computer_sync(
     assert len(laptop_subs["plans"]) == 3
 
     laptop_limits = laptop_client.get("/api/spend/limits").json()
-    cursor_limit = next(p for p in laptop_limits["providers"] if p["key"] == "cursor")
-    assert cursor_limit["windows"][0]["usedPct"] == 96.29
+    grok_limit = next(p for p in laptop_limits["providers"] if p["key"] == "grok")
+    assert grok_limit["windows"][0]["usedPct"] == 96.29
+    assert all(p["key"] != "cursor" for p in laptop_limits["providers"])
 
 
+def test_central_server_spoke_heartbeat_keeps_hud_status_live(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from spend_app.sync import apply_sync_push, register_machine
 
+    aggregate.reset_memo()
+    monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
+    hub_settings = _make_settings(tmp_path / "central-hub")
+    pricing = PricingEngine.load(hub_settings.pricing_path)
+    initialize(hub_settings.database_path)
+
+    t0 = NOW - timedelta(minutes=10)
+    reg = register_machine(
+        hub_settings.database_path, name="MyDesktop", os_name="win32", now=t0
+    )
+    machine_id = reg["machine"]["id"]
+
+    # Initial push with 1 usage event at t0 (10 minutes ago)
+    first = apply_sync_push(
+        hub_settings.database_path,
+        pricing,
+        machine_id=machine_id,
+        body={
+            "machine": {"name": "MyDesktop", "os": "win32"},
+            "usageEvents": [
+                {
+                    "raw_id": "ev-old-1",
+                    "source": "codex_local",
+                    "tool_key": "codex",
+                    "model_key": "gpt-5.6-sol",
+                    "session_id": "sess-1",
+                    "project": "burnrate",
+                    "occurred_at": t0.isoformat(),
+                    "input_tokens": 1000,
+                    "output_tokens": 500,
+                    "ingested_at": t0.isoformat(),
+                }
+            ],
+            "unpricedEvents": [],
+            "sessions": [],
+            "agentRuns": [],
+            "quotas": [],
+        },
+        now=t0,
+    )
+    assert first["eventsWritten"] == 1
+
+    # 10 minutes later (NOW), spoke pushes heartbeat/quotas with 0 new usage events
+    heartbeat = apply_sync_push(
+        hub_settings.database_path,
+        pricing,
+        machine_id=machine_id,
+        body={
+            "machine": {"name": "MyDesktop", "os": "win32"},
+            "usageEvents": [],
+            "unpricedEvents": [],
+            "sessions": [],
+            "agentRuns": [],
+            "quotas": [],
+        },
+        now=NOW,
+    )
+    assert heartbeat["eventsWritten"] == 0
+
+    summary = aggregate.aggregate_summary_cached(
+        database_path=hub_settings.database_path,
+        pricing=pricing,
+        window_key="1d",
+        tool="all",
+        timezone="UTC",
+        cache_threshold=0.5,
+        cadence_seconds=15,
+        now=NOW,
+    )
+    assert summary["status"] == "live"
+
+
+def test_usability_roadmap_endpoints_and_ui_controls(tmp_path: Path) -> None:
+    settings = _make_settings(tmp_path / "usability")
+    app = create_app(settings, enable_scheduler=False)
+    client = TestClient(app)
+
+    # 1. Quota refresh endpoint
+    refresh_res = client.post("/api/spend/quotas/refresh")
+    assert refresh_res.status_code == 200
+    r_data = refresh_res.json()
+    assert r_data["ok"] is True
+    assert "refreshedAt" in r_data
+
+    # 2. Spoke sync trigger endpoint
+    trig_res = client.post("/api/sync/trigger")
+    assert trig_res.status_code == 200
+    t_data = trig_res.json()
+    assert t_data["ok"] is True
+    assert "triggeredAt" in t_data
+    assert "setup" in t_data
+
+    # 3. Onboarding exposes setup state for navbar sync pill
+    onb_res = client.get("/api/onboarding").json()
+    assert "setup" in onb_res
+    assert "spokeConfig" in onb_res["setup"]
+
+    # 4. Summary capacity rows include polledAt
+    summary_res = client.get("/api/spend/summary", params={"window": "1d", "tool": "all"}).json()
+    for card in summary_res.get("capacity", []):
+        assert "polledAt" in card
+        for row in card.get("rows", []):
+            assert "polledAt" in row
+
+    # 5. HUD HTML includes Poll Now, Mini mode, Dark mode, Pace tick, and Deep-link drilldown
+    hud_html = client.get("/hud").text
+    for token in (
+        'id="hud-poll-btn"',
+        'id="hud-mini-btn"',
+        'id="hud-theme-btn"',
+        'id="hud-mini-bar"',
+        "openToolInDashboard",
+        "windowElapsedPct",
+        "win-pace-tick",
+    ):
+        assert token in hud_html, token

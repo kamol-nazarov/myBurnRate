@@ -592,7 +592,7 @@ def test_this_cycle_uses_a_weekly_reset_and_marks_a_group_without_one(
     assert report["periodLabel"] == "Each plan's current quota window"
     by_id = {group["groupId"]: group for group in report["groups"]}
     codex = by_id["tool:codex"]
-    cursor = by_id["tool:cursor"]
+    cursor = by_id["tool:grok"]
     assert codex["cycleAvailable"] is True
     assert codex["cycleLimitKey"] == "weekly"
     assert codex["cycleFromUtc"].startswith("2026-09-05")

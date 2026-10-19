@@ -139,7 +139,7 @@ def test_discovery_bounded_catalog_ambiguity_and_no_secret_reads(service):
     codex = next(row for row in result["connections"] if row["source"] == "codex_local")
     assert len(codex["candidates"]) == 2
     assert all(row["kind"] != "api" for row in result["connections"])
-    assert len(result["connections"]) == 8
+    assert len(result["connections"]) == 10
     service.probe.assert_not_called()
     service.inspector.fail = True
     assert all(candidate["state"] == "needs_attention" for row in service.discover()["connections"] for candidate in row["candidates"])
@@ -195,12 +195,16 @@ def test_dispatch_root_change_disable_and_unrelated_source(service, monkeypatch)
 
 
 def test_experimental_gate_legacy_and_managed(service):
-    spec = REGISTRY.get("cursor_local")
+    default_on = REGISTRY.get("cursor_local")
+    assert c.eligible(default_on, service.store.read())
+    spec = REGISTRY.get("cursor_csv")
     assert not c.eligible(spec, service.store.read())
     with service.store.transaction() as state:
         state["legacy"].append(spec.key)
     assert c.eligible(spec, service.store.read())
     service.mutate(body(spec.key, operation="disable"))
+    assert not c.eligible(spec, service.store.read())
+    assert c.eligible(default_on, service.store.read())
     assert not c.eligible(spec, service.store.read())
 
 
@@ -580,7 +584,11 @@ def test_recheck_does_not_reenable_disabled_binding(service):
 def test_existing_external_native_consent_is_preserved_not_created(service, monkeypatch):
     monkeypatch.delenv("BURNRATE_ENABLE_CURSOR_USAGE_SERVICE", raising=False)
     spec = REGISTRY.get("cursor_usage_service")
+    with service.store.transaction() as state:
+        state["bindings"][spec.key] = {"enabled": False, "revision": 0}
     assert not c.eligible(spec, service.store.read())
+    with service.store.transaction() as state:
+        state["bindings"].pop(spec.key, None)
     monkeypatch.setenv("BURNRATE_ENABLE_CURSOR_USAGE_SERVICE", "1")
     assert c.eligible(spec, service.store.read())
     with pytest.raises(LocationError):

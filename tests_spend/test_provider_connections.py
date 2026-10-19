@@ -29,7 +29,7 @@ def test_cursor_included_value_is_read_but_not_persisted_by_contract() -> None:
     /limits reader but deliberately not persisted; enabling it is a product
     decision recorded in docs/PROVIDER_CONNECTIONS.md.
     """
-    assert REQUIRED_LIMITS["cursor"] == (("cursor_models", "Cursor Models"), ("other_models", "Other Models"))
+    assert "cursor" not in REQUIRED_LIMITS
     payload = {
         "status": "exact",
         "windows": [
@@ -103,7 +103,7 @@ def test_grok_and_claude_collectors_fall_through_immediately_while_paused(monkey
 
 def test_external_quota_endpoints_are_called_at_most_once_per_cache_window(tmp_path: Path, monkeypatch) -> None:
     limits._CACHE.clear()
-    counts = {"claude": 0, "zai": 0, "cursor": 0, "codex": 0}
+    counts = {"claude": 0, "zai": 0, "codex": 0}
 
     def counting(name, payload):
         def loader():
@@ -120,6 +120,7 @@ def test_external_quota_endpoints_are_called_at_most_once_per_cache_window(tmp_p
     monkeypatch.setattr("spend_app.quotas._claude_limits_uncached", counting("claude", exact))
     monkeypatch.setattr("spend_app.quotas._traycer_profile_rate_limits", lambda _h: (_ for _ in ()).throw(RuntimeError("paused")))
     monkeypatch.setattr("spend_app.quotas._zai_limits_uncached", counting("zai", exact))
+    monkeypatch.setattr("spend_app.quotas._muse_limits_uncached", lambda: exact)
     monkeypatch.setattr("spend_app.quotas._cursor_limits_uncached", counting("cursor", exact))
     monkeypatch.setattr("spend_app.quotas._codex_limits", counting("codex", {"status": "unavailable", "detail": "none", "windows": []}))
     database = tmp_path / "spend.db"
@@ -128,7 +129,7 @@ def test_external_quota_endpoints_are_called_at_most_once_per_cache_window(tmp_p
     for _ in range(3):
         for collector in collectors.values():
             list(collector())
-    assert counts == {"claude": 1, "zai": 1, "cursor": 1, "codex": 1}, "three polls inside the cache windows hit each source once"
+    assert counts == {"claude": 1, "zai": 1, "codex": 1}, "three polls inside the cache windows hit each source once"
     limits._CACHE.clear()
 
 
@@ -144,8 +145,8 @@ def test_poll_cadences_match_the_documented_rate_table() -> None:
         "openrouter": (60, 300),
         "claude-code": (90, 300),
         "opencode": (30, 300),
+        "muse": (30, 300),
         "grok": (30, 300),
-        "cursor": (900, 3600),
         "antigravity": (90, 300),
     }
     for provider, (active, idle) in LANE_CADENCE.items():

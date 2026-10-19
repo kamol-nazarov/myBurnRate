@@ -208,7 +208,7 @@ def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -
                     "model_key": latest_model,
                 }
             )
-        pending_signatures.append((cache_key, signature, len(events)))
+        pending_signatures.append((cache_key, signature, len(events), not (health.partial or health.quarantined or health.skipped)))
     def finalize(connection):
         for session in session_rows:
             upsert_session(
@@ -224,8 +224,8 @@ def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -
     result = persist_rows(database_path=database_path, pricing=pricing, source=SOURCE, usage_rows=usage_rows,
                           prepare=(lambda connection, rows: reconcile(connection, observations, issues)) if observations else None,
                           finalize=finalize, issues=issues)
-    if not issues:
-        for cache_key, signature, count in pending_signatures:
+    for cache_key, signature, count, file_clean in pending_signatures:
+        if not issues or file_clean:
             _FILE_SIGNATURES[cache_key] = signature
             _FILE_COUNTS[cache_key] = count
     result["files"] = parsed_files

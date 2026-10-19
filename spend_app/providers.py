@@ -29,6 +29,7 @@ from spend_app.adapters.opencode_local import ingest as ingest_opencode_local
 from spend_app.adapters.openai_admin import ingest as ingest_openai_admin
 from spend_app.adapters.traycer_local import ingest as ingest_traycer_local
 from spend_app.adapters.zcode_local import ingest as ingest_zcode_local
+from spend_app.adapters.muse_local import ingest as ingest_muse_local
 from spend_app.config import Settings
 from spend_app.pricing import PricingEngine
 
@@ -56,6 +57,16 @@ def default_codex_glob() -> str:
 
 def default_claude_glob() -> str:
     return str(Path(os.getenv("CLAUDE_CONFIG_DIR") or _home() / ".claude").expanduser() / "projects" / "**" / "*.jsonl")
+
+
+def default_claude_alt_glob() -> str:
+    # A second Claude CLI instance lives wherever its CLAUDE_CONFIG_DIR points;
+    # there is no convention, so this default only seeds the wizard field.
+    return str(_home() / ".claude-2" / "projects" / "**" / "*.jsonl")
+
+
+def default_muse_glob() -> str:
+    return str(Path(os.getenv("XDG_DATA_HOME") or _home() / ".local" / "share").expanduser() / "muse" / "**" / "*.jsonl")
 
 
 def default_traycer_glob() -> str:
@@ -93,6 +104,14 @@ def _codex_kwargs(settings: Settings, pricing: PricingEngine, **_: object) -> di
 
 def _claude_kwargs(settings: Settings, pricing: PricingEngine, **_: object) -> dict:
     return {**_base_kwargs(settings, pricing), "session_glob": default_claude_glob()}
+
+
+def _claude_alt_kwargs(settings: Settings, pricing: PricingEngine, **_: object) -> dict:
+    return {**_base_kwargs(settings, pricing), "session_glob": default_claude_alt_glob()}
+
+
+def _muse_kwargs(settings: Settings, pricing: PricingEngine, **_: object) -> dict:
+    return {**_base_kwargs(settings, pricing), "session_glob": default_muse_glob()}
 
 
 def _traycer_kwargs(settings: Settings, pricing: PricingEngine, **_: object) -> dict:
@@ -191,11 +210,13 @@ class ConnectionSpec:
 CONNECTION_SPECS = {
     "codex_local": ConnectionSpec("Codex", "session_glob", default_codex_glob, "**/*.jsonl", home_name=".codex", child="", location_env="CODEX_HOME"),
     "claude_local": ConnectionSpec("Claude Code", "session_glob", default_claude_glob, "**/*.jsonl", home_name=".claude", child="", location_env="CLAUDE_CONFIG_DIR"),
+    "claude_local_alt": ConnectionSpec("Claude Code (second instance)", "session_glob", default_claude_alt_glob, "**/*.jsonl", home_name=".claude", child=""),
     "traycer_local": ConnectionSpec("Traycer", "database_glob", default_traycer_glob, "app-assets/app-assets.db", "sqlite", ".traycer", "", "usage_analytics_facts", ("fact_id", "harness_id", "occurred_at", "uncached_input_tokens", "output_tokens")),
     "cursor_local": ConnectionSpec("Cursor local", "database_glob", default_cursor_glob, "**/sdk-agent-store/*/index.db", "sqlite", ".cursor", "projects", "runs", ("run_id", "agent_id", "usage_json", "model", "finished_at", "updated_at", "created_at")),
     "opencode_local": ConnectionSpec("OpenCode", "source_database", default_opencode_database, shape="opencode", home_name="opencode", child="", table="session", columns=("id", "project_id", "directory", "path", "model", "cost", "tokens_input", "tokens_output", "tokens_reasoning", "tokens_cache_read", "tokens_cache_write", "time_updated"), location_env="XDG_DATA_HOME"),
     "zcode_local": ConnectionSpec("ZCode", "source_database", default_zcode_database, shape="zcode", home_name=".zcode", child="", table="model_usage", columns=("id", "session_id", "provider_id", "model_id", "completed_at", "input_tokens", "output_tokens", "reasoning_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "raw_usage_json", "status")),
     "grok_local": ConnectionSpec("Grok Build", "log_path", default_grok_root, shape="grok", home_name=".grok", child="", location_env="GROK_HOME"),
+    "muse_local": ConnectionSpec("Muse Code", "session_glob", default_muse_glob, "**/*.jsonl", home_name="muse", child=""),
     "cursor_csv": ConnectionSpec("Cursor CSV", "import_path", lambda: _home() / "BURNRATE-imports", "*.csv", "csv"),
     "antigravity_local": ConnectionSpec("Antigravity populated cache", "import_path", lambda: _home() / "BURNRATE-imports" / "antigravity", "*.jsonl", manual_only=True),
     "openai_admin": ConnectionSpec("OpenAI Admin", "admin_key", lambda: "", shape="api", credential_env="OPENAI_ADMIN_KEY", credential_help="Organization Admin API key created by an organization owner, with organization usage and cost read access. Not a ChatGPT subscription login."),
@@ -335,6 +356,19 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         ingest_kwargs=_claude_kwargs,
     ),
     _spec(
+        "claude_local_alt",
+        "spend_app.adapters.claude_local:ingest",
+        ("usage", "activity"),
+        stability="official",
+        exactness="exact",
+        enabled_by_default=False,
+        tool_keys=("claude-code",),
+        ingest=ingest_claude_local,
+        kind="local",
+        scheduler_alias="ingest_claude_local",
+        ingest_kwargs=_claude_alt_kwargs,
+    ),
+    _spec(
         "traycer_local",
         "spend_app.adapters.traycer_local:ingest",
         ("usage", "activity"),
@@ -363,7 +397,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
     _spec(
         "cursor_usage_service",
         "spend_app.adapters.cursor_usage:ingest",
-        ("usage", "quota"),
+        ("usage",),
         stability="experimental",
         exactness="derived",
         enabled_by_default=True,
@@ -372,7 +406,6 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         kind="local",
         scheduler_alias="ingest_cursor_usage",
         ingest_kwargs=_pricing_only_kwargs,
-        capability_exactness={"quota": "exact"},
         skip_if=_skip_cursor_usage_when_admin_enabled,
     ),
     _spec(
@@ -430,6 +463,20 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         scheduler_alias="ingest_antigravity_local",
         ingest_kwargs=_pricing_only_kwargs,
         capability_exactness={"quota": "exact", "activity": "exact"},
+    ),
+    _spec(
+        "muse_local",
+        "spend_app.adapters.muse_local:ingest",
+        ("usage", "quota"),
+        stability="experimental",
+        exactness="partial",
+        enabled_by_default=True,
+        tool_keys=("muse",),
+        ingest=ingest_muse_local,
+        kind="local",
+        scheduler_alias="ingest_muse_local",
+        ingest_kwargs=_muse_kwargs,
+        capability_exactness={"quota": "exact"},
     ),
     _spec(
         "openai_admin",
@@ -587,6 +634,7 @@ __all__ = (
     "ingest_cursor_local",
     "ingest_cursor_usage",
     "ingest_grok_local",
+    "ingest_muse_local",
     "ingest_opencode_local",
     "ingest_openai_admin",
     "ingest_traycer_local",

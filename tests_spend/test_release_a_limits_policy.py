@@ -87,7 +87,7 @@ def test_scheduled_quota_polling_denies_native_lanes(poisoned, tmp_path, monkeyp
     from spend_app.quotas import QuotaLaneScheduler
 
     result = poll_quotas(database, lanes=QuotaLaneScheduler(), now=lambda: NOW)
-    assert set(result["polledProviders"]) == {"antigravity", "claude-code", "codex", "cursor", "grok", "openrouter", "opencode"}
+    assert set(result["polledProviders"]) == {"antigravity", "claude-code", "codex", "grok", "muse", "openrouter", "opencode"}
     assert poisoned == []
     import sqlite3
 
@@ -98,7 +98,7 @@ def test_scheduled_quota_polling_denies_native_lanes(poisoned, tmp_path, monkeyp
     labels = {provider: label for provider, label in rows}
     # Denial copy is actionable: names the consent variable, no class names.
     assert "BURNRATE_ENABLE_ZAI_QUOTA" in labels.get("opencode", "")
-    assert "BURNRATE_ENABLE_CURSOR_USAGE_SERVICE" in labels.get("cursor", "")
+    assert "cursor" not in labels
     assert "Exception" not in " ".join(labels.values())
 
 
@@ -127,7 +127,7 @@ def test_consent_unlocks_only_the_named_lane(poisoned, tmp_path, monkeypatch):
     samples = collectors["opencode"]()
     assert samples
     # ...while the other native lanes stay denied with actionable copy.
-    for provider in ("cursor", "claude-code"):
+    for provider in ("claude-code",):
         for sample in collectors[provider]():
             assert sample.pct is None
             assert "BURNRATE_ENABLE" in (sample.reason or "")

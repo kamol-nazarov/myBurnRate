@@ -1,21 +1,21 @@
 {
   "sources": {
-    "index.html": "e13b708eba5d6d5c9e17e62536a0eab3cac672bcebd3e1fc4ad8385e7979aa42",
-    "spend.css": "325e5aa0b4ef050d463d98497b647716477d0a56e2280343a760837a10301955",
-    "spend.js": "0457fe25e7eab4f050a45162002184a0e7d7b38a1b967a37d86fac2ed7d046d8",
+    "index.html": "a1d3fa47eed808762bcbf8358bf954fe46f7ac66fb7135775cbb4b949f319570",
+    "spend.css": "c72283cc09db9c68b0469c8488c868127ef133acab49fa1625e9167e89816614",
+    "spend.js": "d1f7df6078e37396046ca755d1f51f5eba8f5a002034f8260e8e71eef2c4d9ba",
     "request-state.js": "16e25a46cd82da526e22415af33dd9bd8ee34dc32661ccf67338b7472ebc4fba",
-    "product.js": "d8f94d545050ce8a0563f9710c1754c1667b52e6dcc4c3b5dab7c44e7fa6de77",
+    "product.js": "481e206b4263a400d185e3c4b96dc5a5d27f2ff8ef6d099b15ce31de70503823",
     "connections.js": "9c2970c1042d2c6b5ac3b9fd4211af3c2ff969c8c9296682d8867f3d8e0d1116",
-    "plans-value.js": "d30fcade2138fb8f8b4eaa5d1b3794d63b8513e6f03b7055f416731129663f7e",
-    "attention.js": "ab043e0f96a22073ba114919b067c3d18edbe54de91555a074761df68739ec77"
+    "plans-value.js": "0b37cbf28dcbdc5580054f87d37444d8f1c908d4f1f52dbf6aebb319488d282e",
+    "attention.js": "b93cb2cad92d20e10ce1d1b72b4aefe9f855b953398ed86bff57f339432e7986"
   },
   "outputs": {
-    "spend.css": "1e1793290acf7b26ed2c382e19231975807e15fdd924ad31b4e963a99e242f14",
-    "dialogs.js": "925b1070011553c49f087437f91b73e760660fedcf27ea3fe1f73449e7e08e35",
+    "spend.css": "6886dfa17497ad884152478138c497b4b7b02ebc7aecfb5ec686906472d038ed",
+    "dialogs.js": "8aaa511ecaaf5f2d5ddb182a4bfc2fe06f1bf6664a2c634b6d20e32187ecf9d4",
     "product.js": "3b20c24c1c51767d1b5236bc183e50b14f0ec6ee6a9eb6d5a74808ac2921f60c",
-    "spend.js": "aabfe2782769b001c3d89760066ba6701108a86698ef164d4366c0415959b9b7",
+    "spend.js": "3f259c6c64a41c607ccff6e42fc98bb56c0ce8905a8b2672348f52bf7f1874c6",
     "request-state.js": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    "index.html": "ba29806e157b8e3039184a7da7e93ae980f589f83750ed9858f87c1baf62e52b"
+    "index.html": "d02a95f84045044cb8c0db56cf8da6338755d929859d6a2df6db2d829bf9caf6"
   },
   "aliases": {
     "skip-link": "c",
@@ -213,6 +213,7 @@
     "attention-pref-nums": "da",
     "burnrate-stat--rate": "db",
     "burnrate-stat--today": "dc",
-    "capacity-lead-fig": "dd"
+    "capacity-lead-fig": "dd",
+    "pace-tick": "de"
   }
 }

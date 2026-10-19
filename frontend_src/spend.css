@@ -707,3 +707,8 @@ html,body{background:var(--paper);color:var(--text)}
 .marker{color:var(--muted)}
 dialog{color-scheme:light}
 dialog input:not([type=checkbox]),dialog select{color-scheme:light;background:#fff;color:var(--text)}
+.track{position:relative}
+.pace-tick{position:absolute;top:0;bottom:0;width:2px;background:rgba(28,27,25,.42);pointer-events:none;z-index:2}
+.capacity-lane{cursor:pointer}
+#capacity-poll[disabled],#nav-sync[disabled]{opacity:.6;cursor:wait}
+#tool-switch{display:inline-flex;flex-wrap:wrap;gap:4px}

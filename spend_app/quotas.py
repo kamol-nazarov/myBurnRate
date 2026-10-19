@@ -1,30 +1,37 @@
 from __future__ import annotations
 
-import math
-import os
-import threading
-import time as time_module
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+import math
+import os
 from pathlib import Path
-from typing import Callable, Sequence
+import threading
+import time as time_module
 
-from spend_app.db import connect, initialize, upsert_agent_run, upsert_quota, utc_now
+from spend_app.db import (
+    connect,
+    initialize,
+    upsert_agent_run,
+    upsert_quota,
+    utc_now,
+)
 from spend_app.integration_policy import PolicyDenied
 from spend_app.limits import (
-    _antigravity_limits_uncached,
     _antigravity_active_sessions,
+    _antigravity_limits_uncached,
     _cached,
-    _claude_desktop_limits_uncached,
     _claude_active_sessions,
+    _claude_desktop_limits_uncached,
     _claude_from_traycer_result,
     _claude_limits_uncached,
-    _codex_limits,
     _codex_active_sessions,
-    _cursor_limits_uncached,
+    _codex_limits,
     _cursor_active_sessions,
+    _cursor_limits_uncached,
     _grok_active_sessions,
     _grok_limits_uncached,
+    _muse_limits_uncached,
     _openrouter_credits_uncached,
     _traycer_activity,
     _traycer_profile_rate_limits,
@@ -32,26 +39,18 @@ from spend_app.limits import (
     _zcode_active_sessions,
 )
 
-# Persistence convention for the quotas table:
-# - available rows carry a real unit ("pct", "credits", "usd") and real values;
-# - unavailable rows carry unit "unavailable" with used/allowance/pct NULL and
-#   the explicit reason appended to the label after LABEL_REASON_SEPARATOR;
-# - source tags preserve undocumented-source labeling ("traycer_profile",
-#   "cursor_usage_service", "antigravity_local_rpc", "claude_oauth_usage" are
-#   experimental observed interfaces, never official);
-# - resets_at is always the real reset timestamp from the source, never invented.
 
 UNAVAILABLE_UNIT = "unavailable"
-LABEL_REASON_SEPARATOR = " — "
+LABEL_REASON_SEPARATOR = " \u2014 "
 WEEKLY_MINUTES = 7 * 24 * 60
 AGENT_LIVE_STATE = "live"
 AGENT_NO_DATA_STATE = "no_data"
 LIVE_STATE_ALIASES = frozenset({"live", "running"})
 QUOTA_LIMIT_ORDER = {
-    "cursor": ("cursor_models", "other_models"),
     "claude-code": ("5h", "weekly"),
     "antigravity": ("gemini-5h", "gemini-weekly", "3p-5h", "3p-weekly"),
     "opencode": ("5h", "weekly"),
+    "muse": ("5h", "weekly"),
     "openrouter": ("balance",),
 }
 PRESSURE_GREEN = "#63c689"
@@ -62,9 +61,9 @@ PRESSURE_RED = "#dc6c78"
 PROVIDER_SOURCES = {
     "codex": "codex_local_telemetry",
     "claude-code": "traycer_profile",
-    "cursor": "cursor_usage_service",
     "grok": "traycer_profile",
     "opencode": "zai_quota_endpoint",
+    "muse": "muse_quota_endpoint",
     "openrouter": "openrouter_credits_api",
     "antigravity": "antigravity_local_rpc",
 }
@@ -72,15 +71,15 @@ PROVIDER_SOURCES = {
 REQUIRED_LIMITS: dict[str, tuple[tuple[str, str], ...]] = {
     "codex": (("weekly", "Codex weekly window"),),
     "claude-code": (("5h", "Claude 5-hour window"), ("weekly", "Claude weekly window")),
-    "cursor": (("cursor_models", "Cursor Models"), ("other_models", "Other Models")),
     "grok": (("weekly", "Grok Build weekly"),),
     "opencode": (("5h", "Z.AI 5-hour credits"), ("weekly", "Z.AI weekly credits")),
+    "muse": (("5h", "Muse Code 5-hour window"), ("weekly", "Muse Code weekly window")),
     "openrouter": (("balance", "OpenRouter funds remaining"),),
     "antigravity": (
-        ("gemini-weekly", "Antigravity Gemini models · Weekly remaining"),
-        ("gemini-5h", "Antigravity Gemini models · Five-hour remaining"),
-        ("3p-weekly", "Antigravity Claude/GPT models · Weekly remaining"),
-        ("3p-5h", "Antigravity Claude/GPT models · Five-hour remaining"),
+        ("gemini-weekly", "Antigravity Gemini models \u00b7 Weekly remaining"),
+        ("gemini-5h", "Antigravity Gemini models \u00b7 Five-hour remaining"),
+        ("3p-weekly", "Antigravity Claude/GPT models \u00b7 Weekly remaining"),
+        ("3p-5h", "Antigravity Claude/GPT models \u00b7 Five-hour remaining"),
     ),
 }
 
@@ -110,14 +109,14 @@ class QuotaSample:
 # tool produced a usage event within QUOTA_ACTIVITY_WINDOW_SECONDS. Local
 # lanes cost nothing and refresh every tick; external endpoints publish no
 # rate limits, so the active cadence caps them at 120 calls per hour and the
-# idle cadence at 12; Cursor's experimental DashboardService stays slow.
+# idle cadence at 12.
 LANE_CADENCE: dict[str, tuple[int, int]] = {
     "codex": (15, 15),
     "openrouter": (60, 300),
     "claude-code": (90, 300),  # 40/h: the OAuth usage endpoint 429s near 120/h with a ~1 h lockout (2026-09-02)
     "opencode": (30, 300),
+    "muse": (30, 300),
     "grok": (30, 300),
-    "cursor": (900, 3600),
     "antigravity": (90, 300),
 }
 QUOTA_ACTIVITY_WINDOW_SECONDS = 300
@@ -133,12 +132,18 @@ class QuotaLaneScheduler:
         self.cadence = dict(cadence or LANE_CADENCE)
         self._clock = clock or time_module.monotonic
         self._next_due: dict[str, float] = {}
+        self._last_polled: dict[str, float] = {}
         self._backoff: dict[str, float] = {}
         self._lock = threading.Lock()
 
-    def due(self, provider_key: str) -> bool:
+    def due(self, provider_key: str, *, active: bool = False) -> bool:
         with self._lock:
-            return self._clock() >= self._next_due.get(provider_key, float("-inf"))
+            now = self._clock()
+            due_at = self._next_due.get(provider_key, float("-inf"))
+            if active and provider_key not in self._backoff and provider_key in self._last_polled:
+                active_interval, _ = self.cadence.get(provider_key, (15, 15))
+                due_at = min(due_at, self._last_polled[provider_key] + float(active_interval))
+            return now >= due_at
 
     def backoff_seconds(self, provider_key: str) -> float:
         with self._lock:
@@ -149,34 +154,88 @@ class QuotaLaneScheduler:
         interval = float(active_interval if active else idle_interval)
         throttles = [s.throttle_seconds for s in samples if s.throttle_seconds is not None]
         with self._lock:
+            now = self._clock()
+            self._last_polled[provider_key] = now
             if throttles:
                 previous = self._backoff.get(provider_key, 0.0)
                 wait = max(max(throttles), previous * 2, THROTTLE_BACKOFF_MIN_SECONDS)
                 wait = max(max(throttles), min(wait, THROTTLE_BACKOFF_MAX_SECONDS))
                 self._backoff[provider_key] = wait
-                self._next_due[provider_key] = self._clock() + wait
+                self._next_due[provider_key] = now + wait
             else:
                 self._backoff.pop(provider_key, None)
-                self._next_due[provider_key] = self._clock() + interval
+                self._next_due[provider_key] = now + interval
+
+    def nudge(self, provider_key: str | None = None) -> None:
+        targets = [provider_key] if provider_key else list(self.cadence)
+        with self._lock:
+            for key in targets:
+                if not key or key in self._backoff:
+                    continue
+                if key in {"codex", "grok", "antigravity"}:
+                    self._next_due[key] = float("-inf")
+                elif key in self._last_polled:
+                    active_interval, _ = self.cadence.get(key, (15, 15))
+                    self._next_due[key] = min(
+                        self._next_due.get(key, float("-inf")),
+                        self._last_polled[key] + float(active_interval),
+                    )
 
 
 _DEFAULT_LANES = QuotaLaneScheduler()
-_DATABASE_LANES = {}
+_DATABASE_LANES: dict[str, QuotaLaneScheduler] = {}
+
+
+def nudge_quota_lanes(database_path: Path | str, provider_key: str | None = None) -> None:
+    """Wake due quota lanes and clear local telemetry caches when new activity/usage lands."""
+    try:
+        from spend_app.limits import _CACHE, _CACHE_LOCK
+
+        with _CACHE_LOCK:
+            if provider_key in {None, "codex"}:
+                for k in [k for k in _CACHE if k.startswith("codex_quota_poll:")]:
+                    _CACHE.pop(k, None)
+            if provider_key in {None, "grok"}:
+                _CACHE.pop("grok_quota_poll", None)
+            if provider_key in {None, "antigravity"}:
+                _CACHE.pop("antigravity_quota_poll", None)
+            if provider_key in {None, "muse"}:
+                _CACHE.pop("muse_quota_poll", None)
+    except Exception:
+        pass
+    scheduler = _DATABASE_LANES.get(str(Path(database_path).resolve()))
+    if scheduler is not None:
+        scheduler.nudge(provider_key)
 
 
 def lane_is_active(database_path: Path | str, provider_key: str, *, now: datetime | None = None) -> bool:
-    """True when the lane's tool produced usage within the activity window."""
+    """True when the lane's tool produced usage or has a live agent within the activity window."""
     moment = now or datetime.now(UTC)
     since = (moment - timedelta(seconds=QUOTA_ACTIVITY_WINDOW_SECONDS)).isoformat().replace("+00:00", "Z")
+    tool_keys = ("grok", "cursor") if provider_key == "grok" else (("opencode", "zcode") if provider_key == "opencode" else (provider_key,))
+    placeholders = ",".join("?" for _ in tool_keys)
+    run_prefixes = {
+        "codex": ("codex:%",),
+        "claude-code": ("claude:%",),
+        "grok": ("grok:%", "cursor:%"),
+        "opencode": ("zcode:%", "opencode:%"),
+        "antigravity": ("antigravity:%",),
+    }.get(provider_key, ())
     with connect(Path(database_path)) as connection:
         row = connection.execute(
-            "SELECT 1 FROM usage_events WHERE occurred_at >= ? AND tool_key = ? LIMIT 1",
-            (since, provider_key),
+            f"SELECT 1 FROM usage_events WHERE occurred_at >= ? AND tool_key IN ({placeholders}) LIMIT 1",
+            (since, *tool_keys),
         ).fetchone()
         if row is None:
             row = connection.execute(
-                "SELECT 1 FROM unpriced_usage_events WHERE occurred_at >= ? AND tool_key = ? LIMIT 1",
-                (since, provider_key),
+                f"SELECT 1 FROM unpriced_usage_events WHERE occurred_at >= ? AND tool_key IN ({placeholders}) LIMIT 1",
+                (since, *tool_keys),
+            ).fetchone()
+        if row is None and run_prefixes:
+            like_clauses = " OR ".join("id LIKE ?" for _ in run_prefixes)
+            row = connection.execute(
+                f"SELECT 1 FROM agent_runs WHERE lower(state) IN ('live', 'running') AND last_seen_at >= ? AND ({like_clauses}) LIMIT 1",
+                (since, *run_prefixes),
             ).fetchone()
     return row is not None
 
@@ -238,7 +297,7 @@ def normalize_reset(value: object) -> str | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     # Round to the nearest second: the observed jitter straddles the second
-    # boundary (…:59.9 and …:00.1 for the same reset), so flooring would
+    # boundary (\u2026:59.9 and \u2026:00.1 for the same reset), so flooring would
     # still flap and would display a :59 reset as the previous minute.
     rounded = (parsed.astimezone(UTC) + timedelta(microseconds=500_000)).replace(microsecond=0)
     return rounded.isoformat().replace("+00:00", "Z")
@@ -319,7 +378,6 @@ def claude_quota_samples(payload: dict, *, source: str) -> list[QuotaSample]:
 
 
 def grok_quota_samples(payload: dict, *, source: str) -> list[QuotaSample]:
-    label = "Grok Build weekly"
     exact = payload.get("status") == "exact"
     detail = str(payload.get("detail") or "Grok Build provider quota is unavailable.")
     window = _windows_by_key(payload).get("weekly") if exact else None
@@ -329,7 +387,7 @@ def grok_quota_samples(payload: dict, *, source: str) -> list[QuotaSample]:
             _unavailable(
                 "grok",
                 "weekly",
-                label,
+                "Grok Build weekly",
                 source,
                 detail if not exact else "Grok Build quota omitted the weekly percentage.",
             )
@@ -338,7 +396,7 @@ def grok_quota_samples(payload: dict, *, source: str) -> list[QuotaSample]:
         QuotaSample(
             provider_key="grok",
             limit_key="weekly",
-            label=label,
+            label="Grok Build weekly",
             unit="pct",
             source=source,
             pct=max(0.0, used_pct),
@@ -349,7 +407,7 @@ def grok_quota_samples(payload: dict, *, source: str) -> list[QuotaSample]:
 
 def antigravity_quota_samples(payload: dict, *, source: str) -> list[QuotaSample]:
     exact = payload.get("status") == "exact"
-    detail = str(payload.get("detail") or "Antigravity local quota is unavailable.")
+    detail = str(payload.get("detail") or "Antigravity local model quota is unavailable.")
     windows = _windows_by_key(payload)
     samples: list[QuotaSample] = []
     for limit_key, label in REQUIRED_LIMITS["antigravity"]:
@@ -362,7 +420,7 @@ def antigravity_quota_samples(payload: dict, *, source: str) -> list[QuotaSample
                     limit_key,
                     label,
                     source,
-                    detail if not exact else "Antigravity omitted this quota percentage.",
+                    detail if not exact else f"Antigravity RPC omitted the {label} pool.",
                 )
             )
             continue
@@ -432,7 +490,7 @@ def cursor_quota_samples(payload: dict, *, source: str) -> list[QuotaSample]:
     detail = str(payload.get("detail") or "Cursor usage is unavailable.")
     windows = _windows_by_key(payload)
     samples: list[QuotaSample] = []
-    for limit_key, label in REQUIRED_LIMITS["cursor"]:
+    for limit_key, label in REQUIRED_LIMITS.get("cursor", (("cursor_models", "Cursor Models"), ("other_models", "Other Models"))):
         window = windows.get(limit_key) if exact else None
         used_pct = _number(window.get("usedPct")) if isinstance(window, dict) else None
         if used_pct is None:
@@ -449,6 +507,39 @@ def cursor_quota_samples(payload: dict, *, source: str) -> list[QuotaSample]:
         samples.append(
             QuotaSample(
                 provider_key="cursor",
+                limit_key=limit_key,
+                label=label,
+                unit="pct",
+                source=source,
+                pct=max(0.0, used_pct),
+                resets_at=_window_reset(window),
+            )
+        )
+    return samples
+
+
+def muse_quota_samples(payload: dict, *, source: str) -> list[QuotaSample]:
+    exact = payload.get("status") == "exact"
+    detail = str(payload.get("detail") or "Muse Code quota is unavailable.")
+    windows = _windows_by_key(payload)
+    samples: list[QuotaSample] = []
+    for limit_key, label in REQUIRED_LIMITS["muse"]:
+        window = windows.get(limit_key) if exact else None
+        used_pct = _number(window.get("usedPct")) if isinstance(window, dict) else None
+        if used_pct is None:
+            samples.append(
+                _unavailable(
+                    "muse",
+                    limit_key,
+                    label,
+                    source,
+                    detail if not exact else f"Muse Code quota endpoint omitted the {label} window.",
+                )
+            )
+            continue
+        samples.append(
+            QuotaSample(
+                provider_key="muse",
                 limit_key=limit_key,
                 label=label,
                 unit="pct",
@@ -562,7 +653,7 @@ def _copy_quota_resets(primary: dict, donor: dict | None) -> dict:
 
 
 def _claude_reset_donor() -> dict | None:
-    """Traycer, then OAuth — the same fallback order as a desktop miss.
+    """Traycer, then OAuth \u2014 the same fallback order as a desktop miss.
 
     Used only to borrow resets. A successful Traycer payload is not replaced
     by OAuth, even when Traycer's resets are empty.
@@ -621,16 +712,16 @@ def default_quota_collectors(
     result = {
         "antigravity": lambda: _collect(
             "antigravity_quota_poll",
-            30,
+            10,
             _antigravity_limits_uncached,
             antigravity_quota_samples,
             "antigravity_local_rpc",
         ),
         "codex": lambda: _codex_quota_collector(database_path),
         "claude-code": _claude_quota_collector,
-        "cursor": lambda: _collect("cursor_quota_poll", 600, _cursor_limits_uncached, cursor_quota_samples, "cursor_usage_service"),
         "grok": _grok_quota_collector,
         "opencode": lambda: _collect("zai_quota_poll", 10, _zai_limits_uncached, zai_quota_samples, "zai_quota_endpoint"),
+        "muse": lambda: _collect("muse_quota_poll", 10, _muse_limits_uncached, muse_quota_samples, "muse_quota_endpoint"),
         "openrouter": openrouter_quota_samples,
     }
     from spend_app.integration_policy import authorize
@@ -643,7 +734,7 @@ def default_quota_collectors(
     from spend_app.providers import REGISTRY
     from dataclasses import replace
     settings = replace(load_settings(), database_path=Path(database_path))
-    sources = {"codex": "codex_local", "claude-code": "claude_local", "cursor": "cursor_local", "grok": "grok_local", "opencode": "opencode_local", "antigravity": "antigravity_local", "openrouter": "openrouter"}
+    sources = {"codex": "codex_local", "claude-code": "claude_local", "grok": "grok_local", "opencode": "opencode_local", "muse": "muse_local", "antigravity": "antigravity_local", "openrouter": "openrouter"}
     def guarded(provider, reader):
         def collect():
             key = None
@@ -691,6 +782,7 @@ def poll_quotas(
     now: Callable[[], str] | None = None,
     lanes: QuotaLaneScheduler | None = None,
     activity: Callable[[str], bool] | None = None,
+    settings=None,
 ) -> dict:
     """Poll the lanes that are due on this tick and persist their samples.
 
@@ -727,14 +819,15 @@ def poll_quotas(
     paced = []
     polled_samples: list[tuple[str, list[QuotaSample]]] = []
     for provider_key in sorted(resolved):
-        if scheduler is not None and not scheduler.due(provider_key):
+        lane_active = bool(is_active(provider_key)) if scheduler is not None else False
+        if scheduler is not None and not scheduler.due(provider_key, active=lane_active):
             deferred.append(provider_key)
             continue
         polled.append(provider_key)
         try:
             samples = list(resolved[provider_key]())
         except PolicyDenied as exc:
-            # Actionable, secret-free denial copy — never a class name.
+            # Actionable, secret-free denial copy \u2014 never a class name.
             samples = unavailable_samples(provider_key, str(exc))
         except Exception:
             samples = unavailable_samples(
@@ -744,7 +837,7 @@ def poll_quotas(
         if provider_key == "openrouter":
             balance_ok = any(sample.used is not None for sample in samples)
         if scheduler is not None:
-            scheduler.record(provider_key, samples, active=is_active(provider_key))
+            scheduler.record(provider_key, samples, active=lane_active)
         present = {sample.limit_key for sample in samples}
         for limit_key, label in REQUIRED_LIMITS.get(provider_key, ()):
             if limit_key not in present:
@@ -759,7 +852,7 @@ def poll_quotas(
                 )
         polled_samples.append((provider_key, samples))
 
-    sources_by_provider = {"codex": "codex_local", "claude-code": "claude_local", "cursor": "cursor_local", "grok": "grok_local", "opencode": "opencode_local", "antigravity": "antigravity_local", "openrouter": "openrouter"}
+    sources_by_provider = {"codex": "codex_local", "claude-code": "claude_local", "grok": "grok_local", "opencode": "opencode_local", "antigravity": "antigravity_local", "openrouter": "openrouter"}
     with lock_for(path):
         current_bindings = {}
         if collectors is None:
@@ -788,7 +881,14 @@ def poll_quotas(
                         sample.unit == "unavailable"
                         and latest is not None
                         and latest["unit"] != "unavailable"
-                        and str(latest["source"] or "").startswith("sync:")
+                        and (
+                            str(latest["source"] or "").startswith("sync:")
+                            or (
+                                collectors is None
+                                and latest["resets_at"]
+                                and str(latest["resets_at"]) > polled_at
+                            )
+                        )
                     ):
                         skipped += 1
                         continue
@@ -824,6 +924,23 @@ def poll_quotas(
             from spend_app.config import load_settings
             from dataclasses import replace
             Service(replace(load_settings(), database_path=path)).completion("openrouter", managed_completion["revision"], {"status": "success" if balance_ok else "failed", "eventsSeen": 0})
+    if written > 0:
+        if collectors is None:
+            try:
+                from dataclasses import replace as _replace
+                from spend_app.config import load_settings as _load_settings
+                from spend_app.pricing import PricingEngine as _PricingEngine
+                from spend_app.setup_wizard import maybe_run_configured_spoke_sync
+                _s = settings if settings is not None else _replace(_load_settings(), database_path=path)
+                maybe_run_configured_spoke_sync(_s, _PricingEngine.default())
+            except Exception:
+                pass
+        try:
+            from spend_app.sync import STREAM_BROKER, clear_hub_proxy_cache
+            clear_hub_proxy_cache()
+            STREAM_BROKER.publish({"type": "quotas", "written": written, "at": polled_at})
+        except Exception:
+            pass
     return {
         "polledAt": polled_at,
         "written": written,
@@ -1010,6 +1127,24 @@ def poll_activity(
                 ):
                     new += 1
             cleared = _clear_unseen_live_runs(connection, {record.id for record in records})
+    if new > 0 or cleared > 0:
+        if collector is None:
+            if cleared > 0:
+                nudge_quota_lanes(path)
+            try:
+                from dataclasses import replace as _replace
+                from spend_app.config import load_settings as _load_settings
+                from spend_app.pricing import PricingEngine as _PricingEngine
+                from spend_app.setup_wizard import maybe_run_configured_spoke_sync
+                _s = _replace(_load_settings(), database_path=path)
+                maybe_run_configured_spoke_sync(_s, _PricingEngine.default())
+            except Exception:
+                pass
+        try:
+            from spend_app.sync import STREAM_BROKER
+            STREAM_BROKER.publish({"type": "activity", "new": new, "cleared": cleared, "at": polled_at})
+        except Exception:
+            pass
     return {
         "polledAt": polled_at,
         "seen": len(records),

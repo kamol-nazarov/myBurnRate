@@ -567,6 +567,8 @@ function Resolve-BurnrateDesktopBinary {
     $localReleaseExe = Join-Path $repoRoot 'src-tauri\target\release\burnrate-desktop.exe'
 
     if (Test-Path -LiteralPath $localReleaseExe) {
+        Get-Process -Name 'burnrate-desktop' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*burnrate-desktop.exe*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
         Copy-Item -LiteralPath $localReleaseExe -Destination $installedExe -Force
         return $installedExe
     }

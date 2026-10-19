@@ -162,7 +162,7 @@ def _summary_state_fingerprint(connection, window: ResolvedWindow, tool: str) ->
                 "SELECT id, name, model_key, state, started_at, last_seen_at FROM agent_runs ORDER BY id"
             )
         ),
-        tuple(connection.execute("SELECT MAX(id) FROM ingest_runs").fetchone()),
+        tuple(connection.execute("SELECT MAX(id), MAX(finished_at) FROM ingest_runs").fetchone()),
         pace_fingerprint(connection),
         alert_fingerprint(connection),
         machines_fingerprint(connection),
@@ -289,6 +289,7 @@ TOOL_NAMES = {
     "zcode": "ZCode",
     "xai": "Direct xAI",
     "antigravity": "Antigravity",
+    "muse": "Muse Code",
 }
 TOOL_COLORS = {
     "claude-code": "#9b7bff",
@@ -300,6 +301,7 @@ TOOL_COLORS = {
     "openrouter": "#565d69",
     "xai": "#5cd6e8",
     "antigravity": "#4aa5ff",
+    "muse": "#6c8cff",
 }
 PROVIDER_META = {
     "claude-code": {
@@ -344,6 +346,12 @@ PROVIDER_META = {
         "plan": "Pay as you go",
         "isPayg": True,
     },
+    "muse": {
+        "providerKey": "muse",
+        "providerName": "Muse Code",
+        "plan": "Power Usage",
+        "isPayg": False,
+    },
     "antigravity": {
         "providerKey": "antigravity",
         "providerName": "Antigravity",
@@ -355,9 +363,9 @@ SUMMARY_CAPACITY_PROVIDERS = (
     "claude-code",
     "grok",
     "codex",
-    "cursor",
     "antigravity",
     "opencode",
+    "muse",
     "openrouter",
 )
 UNAVAILABLE_QUOTA_REASON = "no persisted quota snapshot"
@@ -379,6 +387,12 @@ MODEL_NAMES = {
     "openrouter:glm-5.3-flash": "OpenRouter GLM 5.3 Flash",
     "zcode:glm-5.3-flash": "ZCode GLM 5.3 Flash",
     "antigravity:gemini-3.8-flash": "Antigravity Gemini 3.8 Flash",
+    "muse:muse-spark-1.3": "Muse Spark 1.3",
+    "muse:muse-spark-1.2": "Muse Spark 1.2",
+    "muse:muse-spark-1.1": "Muse Spark 1.1",
+    "muse:muse-wonder": "Muse Wonder",
+    "muse:muse-wonder-full": "Muse Wonder Full",
+    "muse:muse-glimmer": "Muse Glimmer",
 }
 MODEL_REPORTING_ALIASES = {
     # Flash vs Flash High is a thinking/effort label on the same model.
@@ -410,10 +424,10 @@ COVERAGE_TARGETS = (
     ("antigravity", "antigravity:gpt-oss-120b", "Antigravity GPT-OSS 120B"),
 )
 CAPACITY_LIMIT_ORDER = {
-    "cursor": ("cursor_models", "other_models"),
     "claude-code": ("5h", "weekly"),
     "antigravity": ("gemini-5h", "gemini-weekly", "3p-5h", "3p-weekly"),
     "opencode": ("5h", "weekly"),
+    "muse": ("5h", "weekly"),
     "openrouter": ("balance",),
 }
 MIX_KEYS = (
@@ -438,6 +452,8 @@ def display_model(model_key: str) -> str:
         return "SuperGrok " + model_key.split(":", 1)[1].replace("-", " ").title()
     if model_key.startswith("antigravity:"):
         return "Antigravity " + model_key.split(":", 1)[1].replace("-", " ").title()
+    if model_key.startswith("muse:"):
+        return "Muse " + model_key.split(":", 1)[1].replace("-", " ").title()
     return model_key
 
 
@@ -708,9 +724,17 @@ def _subscription_cost(
                 active_end = date.fromisoformat(row["end_date"]) if row["end_date"] else None
                 if current < active_start or (active_end and current > active_end):
                     continue
-                by_tool[row["tool_key"]] += daily_cost(row["amount_usd"], row["cadence"], current) * fraction_of_day
+                by_tool[_subscription_tool_key(row["tool_key"])] += daily_cost(row["amount_usd"], row["cadence"], current) * fraction_of_day
         current += timedelta(days=1)
     return sum(by_tool.values(), Decimal(0)), dict(by_tool)
+
+
+def _subscription_tool_key(tool: str) -> str:
+    if tool == "zcode":
+        return "opencode"
+    if tool == "cursor":
+        return "grok"
+    return tool
 
 
 def _monthly_equivalent(amount: Decimal, cadence: str) -> Decimal:
@@ -726,8 +750,8 @@ def _monthly_equivalent(amount: Decimal, cadence: str) -> Decimal:
 def _monthly_subscription_cost(connection, tool: str, on_date: date) -> Decimal:
     total = Decimal(0)
     for row in effective_terms(connection):
-        subscription_tool = "opencode" if tool == "zcode" else tool
-        if tool != "all" and row["tool_key"] != subscription_tool:
+        subscription_tool = _subscription_tool_key(tool)
+        if tool != "all" and _subscription_tool_key(row["tool_key"]) != subscription_tool:
             continue
         active_start = date.fromisoformat(row["start_date"])
         active_end = date.fromisoformat(row["end_date"]) if row["end_date"] else None
@@ -1233,7 +1257,7 @@ def _tracked_value(
         connection, start, end, timezone, cap_date=cap_date
     )
     if tool != "all":
-        subscription_tool = "opencode" if tool == "zcode" else tool
+        subscription_tool = _subscription_tool_key(tool)
         subscriptions = by_tool.get(subscription_tool, Decimal(0))
     return _tracked_from_loaded(
         events=events,
@@ -1430,6 +1454,7 @@ def _quota_row(row: dict, now: datetime, *, month_to_date: Decimal | None = None
         eta_label = _eta_label(row["resets_at"], now)
     return {
         **({"observedAt": row.get("observed_at")} if row.get("provider_key") == "codex" else {}),
+        "polledAt": row.get("polled_at"),
         "limitKey": row["limit_key"],
         "label": row["label"],
         "pct": pct,
@@ -1446,6 +1471,7 @@ def _quota_row(row: dict, now: datetime, *, month_to_date: Decimal | None = None
 def _unavailable_limit_row(provider_key: str, limit_key: str, label: str) -> dict:
     is_payg = bool(PROVIDER_META.get(provider_key, {}).get("isPayg")) or limit_key == "payg"
     return {
+        "polledAt": None,
         "limitKey": limit_key,
         "label": label,
         "pct": None,
@@ -1506,6 +1532,8 @@ def _capacity_from_rows(
 ) -> list[dict]:
     latest: dict[tuple[str, str], dict] = {}
     for row in rows:
+        if row["provider_key"] == "cursor":
+            continue
         key = (row["provider_key"], row["limit_key"])
         previous = latest.get(key)
         if previous is None or row["polled_at"] >= previous["polled_at"]:
@@ -1580,6 +1608,7 @@ def _capacity_from_rows(
                 "primaryPct": None if is_payg else primary_pct,
                 "monthToDateUsd": _money(mtd) if is_payg else None,
                 "fundsRemainingUsd": _money(Decimal(str(funds_remaining))) if funds_remaining is not None else None,
+                "polledAt": max((str(r["polledAt"]) for r in provider_rows if r.get("polledAt")), default=None),
                 "rows": provider_rows,
             }
         )
@@ -1643,8 +1672,24 @@ def _ingest_status(connection, now: datetime, cadence_seconds: int) -> tuple[str
         """
     ).fetchone()
     last_refresh = _parse(latest_success_value) if latest_success_value else None
+    machines = list_machines(connection, now=now)
+    has_remote = False
+    for machine in machines:
+        if not machine.get("isLocal", True):
+            has_remote = True
+            seen_iso = machine.get("lastSeenAt")
+            if seen_iso:
+                try:
+                    seen_dt = _parse(str(seen_iso))
+                    effective_dt = min(seen_dt, now)
+                    if last_refresh is None or effective_dt > last_refresh:
+                        last_refresh = effective_dt
+                except Exception:
+                    pass
     stale_minutes = max(0, int((now - last_refresh).total_seconds() // 60)) if last_refresh else None
     stale_after_seconds = max(60, cadence_seconds * 4)
+    if has_remote:
+        stale_after_seconds = max(stale_after_seconds, 90)
     if failing:
         status = "error"
     elif last_refresh is None or (now - last_refresh) > timedelta(seconds=stale_after_seconds):
@@ -1654,9 +1699,14 @@ def _ingest_status(connection, now: datetime, cadence_seconds: int) -> tuple[str
     return status, failing["source"] if failing else None, _iso(last_refresh) if last_refresh else None, stale_minutes
 
 
-def _seven_day_burn(
+def _seven_day_pace(
     connection, pricing: PricingEngine, now: datetime, timezone: str
-) -> Decimal | None:
+) -> tuple[Decimal | None, float | None]:
+    """Average reference value per day and average measured tokens per day.
+
+    Both averages share the same denominator: complete local days with at
+    least one record in the last seven (today is excluded).
+    """
     zone = ZoneInfo(timezone)
     local_now = now.astimezone(zone)
     today_start = datetime.combine(local_now.date(), time.min, zone)
@@ -1669,9 +1719,9 @@ def _seven_day_burn(
         _range_fingerprint(connection, range_start, today_start.astimezone(UTC), "all"),
     )
     return _memo(
-        "seven_day_burn",
+        "seven_day_pace",
         key,
-        lambda: _seven_day_burn_uncached(connection, pricing, local_now, today_start, timezone),
+        lambda: _seven_day_pace_uncached(connection, pricing, local_now, today_start, timezone),
     )
 
 
@@ -1680,10 +1730,11 @@ def _connection_identity(connection) -> str:
     return str(row[2]) if row is not None else ""
 
 
-def _seven_day_burn_uncached(
+def _seven_day_pace_uncached(
     connection, pricing: PricingEngine, local_now: datetime, today_start: datetime, timezone: str
-) -> Decimal | None:
-    days: list[Decimal] = []
+) -> tuple[Decimal | None, float | None]:
+    values: list[Decimal] = []
+    token_counts: list[int] = []
     for offset in range(7, 0, -1):
         start_local = today_start - timedelta(days=offset)
         end_local = start_local + timedelta(days=1)
@@ -1698,10 +1749,14 @@ def _seven_day_burn_uncached(
         )
         if parts.records == 0:
             continue
-        days.append(parts.usage_value)
-    if not days:
-        return None
-    return sum(days, Decimal(0)) / Decimal(len(days))
+        values.append(parts.usage_value)
+        token_counts.append(parts.tokens)
+    if not values:
+        return None, None
+    return (
+        sum(values, Decimal(0)) / Decimal(len(values)),
+        sum(token_counts) / len(token_counts),
+    )
 
 
 def _day_coverage(connection, timezone: str, now: datetime) -> list[dict]:
@@ -1884,7 +1939,7 @@ def aggregate_nav(
             timezone,
             cap_date=local_now.date(),
         )
-        burn = _seven_day_burn(connection, pricing, now, timezone)
+        burn, tokens_per_day = _seven_day_pace(connection, pricing, now, timezone)
         status, failing_source, last_refresh, stale_minutes = _ingest_status(
             connection, now, cadence_seconds
         )
@@ -1892,6 +1947,8 @@ def aggregate_nav(
     return {
         "burnRatePerDay": float(burn) if burn is not None else None,
         "todayUsd": float(today.usage_value) if today.records and today.usage_value is not None else None,
+        "todayTokens": int(today.tokens) if today.records else 0,
+        "tokensAvgPerDay": tokens_per_day,
         "todayKnown": bool(today.records) and today.usage_value is not None,
         "todayComplete": today.complete if today.records else False,
         "lastRefreshAt": last_refresh,
@@ -2149,7 +2206,7 @@ def aggregate_summary(
             connection, window.start, window.end, timezone, cap_date=local_now.date()
         )
         if tool != "all":
-            subscription_tool = "opencode" if tool == "zcode" else tool
+            subscription_tool = _subscription_tool_key(tool)
             subscription_total = subscription_by_tool.get(subscription_tool, Decimal(0))
             subscription_by_tool = {tool: subscription_total} if subscription_total else {}
         parts = _tracked_from_loaded(
@@ -2325,6 +2382,9 @@ def aggregate_summary(
         month_usage["opencode"] = month_usage.get("opencode", Decimal(0)) + month_usage.get(
             "zcode", Decimal(0)
         )
+        month_usage["grok"] = month_usage.get("grok", Decimal(0)) + month_usage.get(
+            "cursor", Decimal(0)
+        )
         monthly_plans: dict[str, tuple[str, Decimal]] = {}
         subscription_rows = []
         for row in effective_terms(connection):
@@ -2355,9 +2415,10 @@ def aggregate_summary(
             active_end = date.fromisoformat(row["end_date"]) if row["end_date"] else None
             if local_now.date() < active_start or (active_end and local_now.date() > active_end):
                 continue
-            old_name, old_monthly = monthly_plans.get(row["tool_key"], (row["name"], Decimal(0)))
-            plan_name = TOOL_NAMES.get(row["tool_key"], row["tool_key"]) + " configured plans" if old_monthly else old_name
-            monthly_plans[row["tool_key"]] = (plan_name, old_monthly + monthly)
+            sub_tool = _subscription_tool_key(row["tool_key"])
+            old_name, old_monthly = monthly_plans.get(sub_tool, (row["name"], Decimal(0)))
+            plan_name = TOOL_NAMES.get(sub_tool, sub_tool) + " configured plans" if old_monthly else old_name
+            monthly_plans[sub_tool] = (plan_name, old_monthly + monthly)
 
         machines_list = list_machines(connection, now=now)
         machines_by_id = {m["id"]: m["name"] for m in machines_list}
@@ -2386,7 +2447,7 @@ def aggregate_summary(
             timezone,
             cap_date=local_now.date(),
         )
-        burn = _seven_day_burn(connection, pricing, now, timezone)
+        burn, tokens_per_day = _seven_day_pace(connection, pricing, now, timezone)
         day_coverage = _day_coverage(connection, timezone, now)
         heat_start, heat_end, heat_fallback = _heatmap_window(window, now, timezone)
         heat = _heatmap_cells(connection, pricing, heat_start, heat_end, tool, zone, machine)
@@ -2490,7 +2551,7 @@ def aggregate_summary(
         )
         next_month = _next_month_start_utc(now, zone)
         all_plan_cost, plan_costs = _subscription_cost(connection, month_start, next_month.astimezone(UTC), timezone)
-        plan_cost = all_plan_cost if tool == "all" else plan_costs.get("opencode" if tool == "zcode" else tool, Decimal(0))
+        plan_cost = all_plan_cost if tool == "all" else plan_costs.get(_subscription_tool_key(tool), Decimal(0))
         # Same-period comparison (C02): month-to-date reference usage versus
         # configured accrual for the identical elapsed interval. The full
         # month's configured cost travels separately as context, never as the
@@ -2498,7 +2559,7 @@ def aggregate_summary(
         accrual_to_date = (
             month_accrual_total
             if tool == "all"
-            else month_accrual.get("opencode" if tool == "zcode" else tool, Decimal(0))
+            else month_accrual.get(_subscription_tool_key(tool), Decimal(0))
         )
         usage_month = month_parts.priced + month_parts.published
         projected_value, multiple_basis, multiple = plan_value_comparison(
@@ -2536,6 +2597,8 @@ def aggregate_summary(
             "navigation": {
                 "burnRatePerDay": float(burn) if burn is not None else None,
                 "todayUsd": float(today.usage_value) if today.records else None,
+                "todayTokens": int(today.tokens) if today.records else 0,
+                "tokensAvgPerDay": tokens_per_day,
                 "todayKnown": bool(today.records) and today.usage_value is not None,
                 "todayComplete": today.complete if today.records else False,
                 "todayBasis": "reference usage value (configured cost reported separately)",
@@ -2548,6 +2611,7 @@ def aggregate_summary(
                     "Z.AI Coding Plan / OpenCode / ZCode",
                     "SuperGrok / Grok Build",
                     "OpenRouter",
+                    "Muse Code (Meta)",
                 ],
                 "note": "Exact providers use invoice or native cost; derived providers use official published rates and render ≈.",
             },
@@ -2645,7 +2709,7 @@ def aggregate_entity(
             _total, by_tool = _subscription_cost(
                 connection, window.start, window.end, timezone, cap_date=cap_date
             )
-            subscription_tool = "opencode" if key == "zcode" else key
+            subscription_tool = _subscription_tool_key(key)
             subscriptions = by_tool.get(subscription_tool, Decimal(0))
         parts = _tracked_from_loaded(
             events=events,
@@ -2899,6 +2963,8 @@ def aggregate_health(
         quota_rows = _load_quota_rows(connection, now=now)
         latest_quota: dict[str, dict] = {}
         for row in quota_rows:
+            if row["provider_key"] == "cursor":
+                continue
             previous = latest_quota.get(row["provider_key"])
             if previous is None or row["polled_at"] >= previous["polled_at"]:
                 latest_quota[row["provider_key"]] = row
@@ -2916,7 +2982,7 @@ def aggregate_health(
                 }
             )
         for provider_key, meta in PROVIDER_META.items():
-            if provider_key in seen_providers:
+            if provider_key in seen_providers or provider_key == "cursor":
                 continue
             quotas.append(
                 {

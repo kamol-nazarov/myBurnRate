@@ -17,6 +17,7 @@ TOOLS = (
     "openrouter",
     "xai",
     "antigravity",
+    "muse",
     "custom",
 )
 CADENCES = ("monthly", "quarterly", "annual")
@@ -80,7 +81,11 @@ def validate_term(values):
     return {
         **values,
         "name": name.strip(),
-        "tool_key": "opencode" if values["tool_key"] == "zcode" else values["tool_key"],
+        "tool_key": (
+            "opencode"
+            if values["tool_key"] == "zcode"
+            else ("grok" if values["tool_key"] == "cursor" else values["tool_key"])
+        ),
         "amount_usd": float(amount),
     }
 

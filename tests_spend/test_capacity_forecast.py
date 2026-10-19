@@ -124,7 +124,7 @@ def test_idle_hour_falls_back_to_24h():
 
 def test_stale_codex_is_five_minutes_and_cursor_is_thirty_when_active():
     assert stale_after_seconds("codex", active=True) == 300
-    assert stale_after_seconds("cursor", active=True) == 1800
+    assert stale_after_seconds("grok", active=True) == 300
     resets = iso(NOW + timedelta(days=4))
     codex = [
         pace("codex", "weekly", 70, NOW - timedelta(minutes=10), resets),
@@ -136,16 +136,16 @@ def test_stale_codex_is_five_minutes_and_cursor_is_thirty_when_active():
         pace("codex", "weekly", 80, NOW - timedelta(minutes=4), resets),
     ]
     assert project(fresh, pct=80, resets=resets, stale_after=300)["state"] != "stale"
-    cursor_stale = [
-        pace("cursor", "cursor_models", 40, NOW - timedelta(minutes=50), resets),
-        pace("cursor", "cursor_models", 55, NOW - timedelta(minutes=31), resets),
+    grok_stale = [
+        pace("grok", "weekly", 40, NOW - timedelta(minutes=50), resets),
+        pace("grok", "weekly", 55, NOW - timedelta(minutes=31), resets),
     ]
-    assert project(cursor_stale, pct=55, resets=resets, stale_after=stale_after_seconds("cursor", active=True))["state"] == "stale"
-    cursor_fresh = [
-        pace("cursor", "cursor_models", 40, NOW - timedelta(minutes=40), resets),
-        pace("cursor", "cursor_models", 55, NOW - timedelta(minutes=20), resets),
+    assert project(grok_stale, pct=55, resets=resets, stale_after=stale_after_seconds("grok", active=True))["state"] == "stale"
+    grok_fresh = [
+        pace("grok", "weekly", 40, NOW - timedelta(minutes=40), resets),
+        pace("grok", "weekly", 55, NOW - timedelta(minutes=20), resets),
     ]
-    assert project(cursor_fresh, pct=55, resets=resets, stale_after=1800)["state"] == "dry"
+    assert project(grok_fresh, pct=55, resets=resets, stale_after=1800)["state"] == "dry"
 
 
 def test_quiet_hours_wrap_midnight():

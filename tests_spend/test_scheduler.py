@@ -61,6 +61,7 @@ LOCAL_INGEST_ALIASES = (
     "zcode",
     "grok",
     "antigravity",
+    "muse",
 )
 
 
@@ -183,7 +184,7 @@ def test_local_ingest_job_runs_readers_serially(tmp_path: Path, monkeypatch) -> 
     jobs = {job.id: job for job in scheduler.get_jobs()}
     jobs["local-ingest"].func()
     assert calls == [
-        "codex", "claude", "traycer", "cursor", "cursor-usage", "opencode", "zcode", "grok", "antigravity"
+        "codex", "claude", "claude", "traycer", "cursor", "cursor-usage", "opencode", "zcode", "grok", "antigravity", "muse"
     ]
 
 
@@ -233,6 +234,7 @@ def test_experimental_provider_failure_is_isolated(tmp_path: Path, monkeypatch) 
     assert calls == [
         "codex",
         "claude",
+        "claude",
         "traycer",
         "injected",
         "cursor",
@@ -241,6 +243,7 @@ def test_experimental_provider_failure_is_isolated(tmp_path: Path, monkeypatch) 
         "zcode",
         "grok",
         "antigravity",
+        "muse",
     ]
 
 
@@ -270,6 +273,7 @@ def test_official_provider_failure_still_runs_remaining(tmp_path: Path, monkeypa
     assert calls == [
         "codex",
         "claude",
+        "claude",
         "traycer",
         "cursor",
         "cursor-usage",
@@ -277,16 +281,18 @@ def test_official_provider_failure_still_runs_remaining(tmp_path: Path, monkeypa
         "zcode",
         "grok",
         "antigravity",
+        "muse",
     ]
 
 
 def test_local_ingest_follows_registry_and_keeps_adapter_signatures() -> None:
-    from spend_app.adapters import antigravity_local, claude_local, codex_local, grok_local
+    from spend_app.adapters import antigravity_local, claude_local, codex_local, grok_local, muse_local
     from spend_app.providers import CAPABILITIES, EXACTNESS, REGISTRY, STABILITIES
 
     assert [spec.key for spec in REGISTRY.local_ingest()] == [
         "codex_local",
         "claude_local",
+        "claude_local_alt",
         "traycer_local",
         "cursor_local",
         "cursor_usage_service",
@@ -294,6 +300,7 @@ def test_local_ingest_follows_registry_and_keeps_adapter_signatures() -> None:
         "zcode_local",
         "grok_local",
         "antigravity_local",
+        "muse_local",
     ]
     assert [spec.key for spec in REGISTRY.admin_ingest()] == [
         "openai_admin",
@@ -310,6 +317,7 @@ def test_local_ingest_follows_registry_and_keeps_adapter_signatures() -> None:
         (claude_local, "claude_local"),
         (grok_local, "grok_local"),
         (antigravity_local, "antigravity_local"),
+        (muse_local, "muse_local"),
     ):
         spec = REGISTRY.get(key)
         assert spec is not None

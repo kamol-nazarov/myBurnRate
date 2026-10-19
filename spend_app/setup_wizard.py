@@ -64,6 +64,7 @@ HARNESS_CATALOG = {
     "grok_local": {"name": "Grok CLI", "tool": "grok", "desc": "Local ~/.grok session logs"},
     "antigravity_local": {"name": "Antigravity", "tool": "antigravity", "desc": "Local Antigravity app state"},
     "traycer_local": {"name": "Traycer", "tool": "traycer", "desc": "Local Traycer host database"},
+    "muse_local": {"name": "Muse Code", "tool": "muse", "desc": "Local Muse Code session logs"},
 }
 
 SUBSCRIPTION_PRESETS = (
@@ -71,10 +72,9 @@ SUBSCRIPTION_PRESETS = (
     {"key": "claude_pro", "tool_key": "claude-code", "name": "Claude Pro", "amount_usd": 20.0, "cadence": "monthly", "badge": "Anthropic"},
     {"key": "codex_pro", "tool_key": "codex", "name": "ChatGPT Pro", "amount_usd": 200.0, "cadence": "monthly", "badge": "OpenAI"},
     {"key": "codex_plus", "tool_key": "codex", "name": "ChatGPT Plus", "amount_usd": 20.0, "cadence": "monthly", "badge": "OpenAI"},
-    {"key": "cursor_pro", "tool_key": "cursor", "name": "Cursor Pro", "amount_usd": 20.0, "cadence": "monthly", "badge": "Cursor"},
-    {"key": "cursor_ultra", "tool_key": "cursor", "name": "Cursor Ultra", "amount_usd": 200.0, "cadence": "monthly", "badge": "Cursor"},
     {"key": "grok_super", "tool_key": "grok", "name": "SuperGrok", "amount_usd": 30.0, "cadence": "monthly", "badge": "xAI"},
     {"key": "zai_coding", "tool_key": "opencode", "name": "Z.AI Coding Plan", "amount_usd": 10.0, "cadence": "monthly", "badge": "Z.AI"},
+    {"key": "muse_power", "tool_key": "muse", "name": "Muse Code Power Usage", "amount_usd": 0.0, "cadence": "monthly", "badge": "Meta"},
 )
 
 
@@ -1524,8 +1524,7 @@ SETUP_WIZARD_HTML = """<!doctype html>
               <select id="wiz-custom-tool" class="text-input" style="max-width: 170px;">
                 <option value="claude-code">Claude Code</option>
                 <option value="codex">Codex / OpenAI</option>
-                <option value="cursor">Cursor</option>
-                <option value="grok">SuperGrok / xAI</option>
+                <option value="grok">SuperGrok / Cursor (xAI)</option>
                 <option value="opencode">Z.AI / OpenCode</option>
                 <option value="openrouter">OpenRouter</option>
                 <option value="custom">Custom</option>

@@ -29,6 +29,7 @@ from spend_app.db import (
     UsageEvent,
     connect,
     initialize,
+    prune_ingest_runs,
     upsert_agent_run,
     upsert_quota,
     upsert_session,
@@ -111,6 +112,7 @@ def _write_state(connection: sqlite3.Connection, state: dict) -> None:
 
 def machines_fingerprint(connection: sqlite3.Connection) -> str:
     state = _read_state(connection)
+    online_by_id = {m["id"]: bool(m.get("online")) for m in list_machines(connection)}
     items = [
         (
             mid,
@@ -118,6 +120,7 @@ def machines_fingerprint(connection: sqlite3.Connection) -> str:
             str(rec.get("os") or ""),
             bool(rec.get("revoked")),
             int(rec.get("events_pushed") or 0),
+            online_by_id.get(mid, False),
         )
         for mid, rec in sorted((state.get("machines") or {}).items())
         if isinstance(rec, dict)
@@ -382,9 +385,10 @@ def _db_live_signature(database_path: Path) -> tuple:
             u = connection.execute("SELECT COUNT(*), MAX(id), MAX(ingested_at) FROM usage_events").fetchone()
             un = connection.execute("SELECT COUNT(*), MAX(id) FROM unpriced_usage_events").fetchone()
             ar = connection.execute("SELECT COUNT(*), MAX(last_seen_at) FROM agent_runs").fetchone()
+            q = connection.execute("SELECT COUNT(*), MAX(id), MAX(polled_at) FROM quotas").fetchone()
             ir = connection.execute("SELECT MAX(id), MAX(finished_at) FROM ingest_runs").fetchone()
             mf = machines_fingerprint(connection)
-            return (tuple(u), tuple(un), tuple(ar), tuple(ir), mf)
+            return (tuple(u), tuple(un), tuple(ar), tuple(q), tuple(ir), mf)
     except Exception:
         return ()
 
@@ -438,6 +442,8 @@ def apply_sync_push(
         raise ValueError("Sync collections must be JSON arrays.")
 
     written = 0
+    agents_changed = False
+    quotas_changed = False
     with connect(database_path) as connection:
         try:
             for item in usage_items:
@@ -563,7 +569,7 @@ def apply_sync_push(
                 for item in agent_items:
                     rid = prefix_machine_id(machine_id, str(item["id"]))
                     seen_ids.add(rid)
-                    upsert_agent_run(
+                    if upsert_agent_run(
                         connection,
                         id=rid,
                         name=str(item["name"]),
@@ -571,7 +577,8 @@ def apply_sync_push(
                         state=str(item.get("state") or "LIVE"),
                         started_at=str(item.get("started_at") or item.get("startedAt") or stamp),
                         last_seen_at=str(item.get("last_seen_at") or item.get("lastSeenAt") or stamp),
-                    )
+                    ):
+                        agents_changed = True
                 if body.get("replaceAgentRuns", True):
                     prefix = f"m:{machine_id}:%"
                     existing_ids = [
@@ -583,15 +590,21 @@ def apply_sync_push(
                     for old_id in existing_ids:
                         if old_id not in seen_ids:
                             connection.execute("DELETE FROM agent_runs WHERE id=?", (old_id,))
+                            agents_changed = True
 
             for item in quota_items:
+                provider_key = str(item["provider_key"])
+                if provider_key == "cursor":
+                    continue
+                limit_key = str(item["limit_key"])
                 unit_val = str(item.get("unit") or "pct")
+                existing = connection.execute(
+                    "SELECT id, label, used, allowance, unit, pct, resets_at, source, is_payg "
+                    "FROM quotas WHERE provider_key=? AND limit_key=? ORDER BY polled_at DESC, id DESC LIMIT 1",
+                    (provider_key, limit_key),
+                ).fetchone()
                 if unit_val == "unavailable":
-                    existing = connection.execute(
-                        "SELECT unit FROM quotas WHERE provider_key=? AND limit_key=? ORDER BY polled_at DESC, id DESC LIMIT 1",
-                        (str(item["provider_key"]), str(item["limit_key"])),
-                    ).fetchone()
-                    if existing and existing[0] and existing[0] != "unavailable":
+                    if existing and existing["unit"] and existing["unit"] != "unavailable":
                         continue
                 orig_source = str(item.get("source") or "").strip()
                 sync_source = (
@@ -601,24 +614,50 @@ def apply_sync_push(
                     if orig_source
                     else f"sync:{machine_id}"
                 )
-                upsert_quota(
+                label_val = str(item["label"])
+                used_val = float(item["used"]) if item.get("used") is not None else None
+                allowance_val = (
+                    float(item["allowance"])
+                    if item.get("allowance") is not None
+                    else None
+                )
+                pct_val = float(item["pct"]) if item.get("pct") is not None else None
+                resets_val = item.get("resets_at")
+                payg_val = item.get("is_payg")
+                polled_val = str(item.get("polled_at") or stamp)
+                fields = (
+                    label_val,
+                    used_val,
+                    allowance_val,
+                    unit_val,
+                    pct_val,
+                    resets_val,
+                    sync_source,
+                    int(bool(payg_val)) if payg_val is not None else None,
+                )
+                if existing is not None and tuple(existing)[1:] == fields:
+                    cursor_upd = connection.execute(
+                        "UPDATE quotas SET polled_at=? WHERE id=? AND polled_at<?",
+                        (polled_val, existing["id"], polled_val),
+                    )
+                    if cursor_upd.rowcount:
+                        quotas_changed = True
+                    continue
+                if upsert_quota(
                     connection,
-                    provider_key=str(item["provider_key"]),
-                    limit_key=str(item["limit_key"]),
-                    label=str(item["label"]),
+                    provider_key=provider_key,
+                    limit_key=limit_key,
+                    label=label_val,
                     unit=unit_val,
                     source=sync_source,
-                    polled_at=str(item.get("polled_at") or stamp),
-                    used=float(item["used"]) if item.get("used") is not None else None,
-                    allowance=(
-                        float(item["allowance"])
-                        if item.get("allowance") is not None
-                        else None
-                    ),
-                    pct=float(item["pct"]) if item.get("pct") is not None else None,
-                    resets_at=item.get("resets_at"),
-                    is_payg=item.get("is_payg"),
-                )
+                    polled_at=polled_val,
+                    used=used_val,
+                    allowance=allowance_val,
+                    pct=pct_val,
+                    resets_at=resets_val,
+                    is_payg=payg_val,
+                ):
+                    quotas_changed = True
 
             state = _read_state(connection)
             rec = state["machines"].setdefault(
@@ -639,14 +678,19 @@ def apply_sync_push(
             rec["last_seen_at"] = stamp
             rec["events_pushed"] = int(rec.get("events_pushed") or 0) + written
             _write_state(connection, state)
-            if written > 0:
-                run = IngestRun.start(connection, f"sync:{machine_id}")
-                run.events_written = written
-                run.finish(status="success")
+            run = IngestRun.start(connection, f"sync:{machine_id}")
+            run.events_written = written
+            run.finish(status="success")
+            if now is not None:
+                connection.execute(
+                    "UPDATE ingest_runs SET started_at=?, finished_at=? WHERE id=?",
+                    (stamp, stamp, run.id),
+                )
+            prune_ingest_runs(connection, now=stamp)
         except Exception:
             raise
 
-    if written > 0:
+    if written > 0 or agents_changed or quotas_changed:
         STREAM_BROKER.publish(
             {
                 "type": "sync",
@@ -720,6 +764,7 @@ def export_sync_batch(
                     SELECT provider_key, limit_key, MAX(id) AS max_id
                     FROM quotas
                     WHERE source NOT LIKE 'sync:%'
+                      AND COALESCE(unit, '') != 'unavailable'
                     GROUP BY provider_key, limit_key
                 ) latest ON q.id = latest.max_id
                 """
@@ -746,7 +791,7 @@ def export_sync_batch(
                 "is_payg": r.get("is_payg"),
             }
             for r in verified_quotas
-            if str(r.get("unit") or "") != "unavailable"
+            if str(r.get("unit") or "") != "unavailable" and r.get("provider_key") != "cursor"
         ]
         state = _read_state(connection)
         hub_name = state.get("hub_name") or _default_hub_name()
@@ -941,12 +986,107 @@ def post_to_configured_hub(
         return None
 
 
+def _overlay_fresher_local_quotas(database_path: Path, capacity: list[dict]) -> list[dict]:
+    """Overlay fresher local measured quota rows onto Hub capacity cards for immediate Spoke display."""
+    try:
+        with connect(database_path) as connection:
+            raw_quotas = [
+                dict(row)
+                for row in connection.execute(
+                    """
+                    SELECT q.*
+                    FROM quotas q
+                    JOIN (
+                        SELECT provider_key, limit_key, MAX(id) AS max_id
+                        FROM quotas
+                        WHERE source NOT LIKE 'sync:%'
+                          AND COALESCE(unit, '') != 'unavailable'
+                        GROUP BY provider_key, limit_key
+                    ) latest ON q.id = latest.max_id
+                    """
+                )
+            ]
+            try:
+                from spend_app.codex_quota import read_rows as verify_codex_rows
+
+                verified_quotas = verify_codex_rows(connection, rows=raw_quotas)
+            except Exception:
+                verified_quotas = raw_quotas
+    except Exception:
+        return capacity
+
+    local_by_key: dict[tuple[str, str], dict] = {}
+    for row in verified_quotas:
+        if str(row.get("unit") or "") == "unavailable" or row.get("provider_key") == "cursor":
+            continue
+        local_by_key[(str(row["provider_key"]), str(row["limit_key"]))] = row
+
+    if not local_by_key:
+        return capacity
+
+    now_utc = datetime.now(UTC)
+    from spend_app.aggregate import PROVIDER_META, _capacity_limit_rank, _eta_label
+
+    merged_cards: list[dict] = []
+    for card in capacity:
+        if not isinstance(card, dict) or not isinstance(card.get("rows"), list):
+            if isinstance(card, dict):
+                merged_cards.append(card)
+            continue
+        provider_key = str(card.get("providerKey") or "")
+        updated_card = dict(card)
+        meta = PROVIDER_META.get(provider_key)
+        if meta:
+            updated_card["providerName"] = meta.get("providerName") or updated_card.get("providerName")
+            if not updated_card.get("plan") and meta.get("plan"):
+                updated_card["plan"] = meta["plan"]
+            updated_card["isPayg"] = bool(meta.get("isPayg", updated_card.get("isPayg")))
+        new_rows: list[dict] = []
+        for row_item in card["rows"]:
+            if not isinstance(row_item, dict):
+                continue
+            limit_key = str(row_item.get("limitKey") or "")
+            local_row = local_by_key.get((provider_key, limit_key))
+            if local_row is not None and local_row.get("pct") is not None:
+                updated_row = dict(row_item)
+                updated_row["label"] = local_row.get("label") or row_item.get("label")
+                updated_row["used"] = float(local_row["used"]) if local_row.get("used") is not None else None
+                updated_row["allowance"] = float(local_row["allowance"]) if local_row.get("allowance") is not None else None
+                updated_row["unit"] = local_row.get("unit") or row_item.get("unit") or "pct"
+                updated_row["pct"] = float(local_row["pct"])
+                updated_row["resetsAt"] = local_row.get("resets_at")
+                updated_row["etaLabel"] = _eta_label(local_row.get("resets_at"), now_utc)
+                updated_row["source"] = local_row.get("source") or row_item.get("source")
+                updated_row["polledAt"] = local_row.get("polled_at") or row_item.get("polledAt")
+                new_rows.append(updated_row)
+            else:
+                new_rows.append(row_item)
+        for idx, r in enumerate(new_rows):
+            if isinstance(r, dict):
+                r["order"] = _capacity_limit_rank(provider_key, str(r.get("limitKey") or ""))
+        new_rows.sort(key=lambda r: (int(r.get("order", 100)), r.get("pct") is None))
+        for idx, r in enumerate(new_rows):
+            if isinstance(r, dict):
+                r["isPrimary"] = idx == 0
+        updated_card["rows"] = new_rows
+        polled_candidates = [str(r["polledAt"]) for r in new_rows if isinstance(r, dict) and r.get("polledAt")]
+        if polled_candidates:
+            updated_card["polledAt"] = max(polled_candidates)
+        if not updated_card.get("isPayg") and new_rows:
+            primary_row = next((r for r in new_rows if r.get("isPrimary")), new_rows[0])
+            primary_pct = primary_row.get("pct")
+            updated_card["primaryPct"] = primary_pct
+            updated_card["peakPct"] = primary_pct
+        merged_cards.append(updated_card)
+    return merged_cards
+
+
 def fetch_from_configured_hub(
     settings,
     path: str,
     params: dict | None = None,
     *,
-    ttl_seconds: float = 2.0,
+    ttl_seconds: float = 1.0,
 ) -> dict | None:
     """When this instance is a paired Spoke, read unified dashboard data from the Hub."""
     try:
@@ -989,11 +1129,30 @@ def fetch_from_configured_hub(
         data = response.json()
         if not isinstance(data, dict):
             return cached[1] if cached else None
+        if isinstance(data.get("capacity"), list):
+            filtered_capacity = [
+                item for item in data["capacity"]
+                if isinstance(item, dict) and item.get("providerKey") != "cursor"
+            ]
+            data["capacity"] = _overlay_fresher_local_quotas(settings.database_path, filtered_capacity)
+        if isinstance(data.get("providers"), list):
+            data["providers"] = [
+                item for item in data["providers"]
+                if isinstance(item, dict) and item.get("key") != "cursor" and item.get("providerKey") != "cursor"
+            ]
         with _HUB_PROXY_LOCK:
             _HUB_PROXY_CACHE[cache_key] = (now_mono, data)
         return data
     except Exception:
         return cached[1] if cached else None
+
+
+def _resolve_stream_machines(settings) -> list[dict]:
+    hub_data = fetch_from_configured_hub(settings, "/api/machines", ttl_seconds=1.0)
+    if hub_data is not None and isinstance(hub_data.get("machines"), list):
+        return hub_data["machines"]
+    with connect(settings.database_path) as connection:
+        return list_machines(connection)
 
 
 def sync_router(settings, pricing: PricingEngine) -> APIRouter:
@@ -1047,6 +1206,45 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=422)
 
+    @router.post("/api/sync/trigger")
+    async def sync_trigger():
+        from starlette.concurrency import run_in_threadpool
+        from spend_app import aggregate
+        from spend_app.quotas import nudge_quota_lanes, poll_quotas
+        from spend_app.setup_wizard import (
+            maybe_run_configured_spoke_sync,
+            public_setup_state,
+            read_setup_state,
+        )
+
+        def _do_trigger() -> dict:
+            initialize(settings.database_path)
+            try:
+                nudge_quota_lanes(database_path=settings.database_path, now=datetime.now(UTC))
+            except Exception:
+                pass
+            try:
+                poll_quotas(database_path=settings.database_path, settings=settings)
+            except Exception:
+                pass
+            sync_res = maybe_run_configured_spoke_sync(settings, pricing)
+            clear_hub_proxy_cache()
+            aggregate.reset_memo()
+            STREAM_BROKER.publish({"type": "sync_trigger", "at": utc_now()})
+            with connect(settings.database_path) as connection:
+                setup_state = public_setup_state(read_setup_state(connection))
+                machines = list_machines(connection)
+            return {
+                "ok": bool(sync_res.get("ok", True)) if isinstance(sync_res, dict) else True,
+                "triggeredAt": utc_now(),
+                "setup": setup_state,
+                "machines": machines,
+                "syncResult": sync_res,
+            }
+
+        res = await run_in_threadpool(_do_trigger)
+        return JSONResponse(res, headers={"Cache-Control": "no-store"})
+
     @router.post("/api/sync/push")
     async def sync_push(request: Request):
         auth = request.headers.get("authorization", "")
@@ -1082,8 +1280,10 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
             _, flag = sub
             try:
                 last_sig = _db_live_signature(settings.database_path)
-                with connect(settings.database_path) as connection:
-                    machines = list_machines(connection)
+                machines = _resolve_stream_machines(settings)
+                last_machines_sig = json.dumps(
+                    [(m.get("id"), m.get("online"), m.get("eventsPushed")) for m in machines]
+                )
                 ready = json.dumps(
                     {
                         "type": "ready",
@@ -1102,11 +1302,19 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
                         pass
                     cur_rev = STREAM_BROKER.revision
                     cur_sig = _db_live_signature(settings.database_path)
-                    if cur_rev != last_rev or cur_sig != last_sig:
+                    machines = _resolve_stream_machines(settings)
+                    cur_machines_sig = json.dumps(
+                        [(m.get("id"), m.get("online"), m.get("eventsPushed")) for m in machines]
+                    )
+                    if (
+                        cur_rev != last_rev
+                        or cur_sig != last_sig
+                        or cur_machines_sig != last_machines_sig
+                    ):
                         last_rev = cur_rev
                         last_sig = cur_sig
-                        with connect(settings.database_path) as connection:
-                            machines = list_machines(connection)
+                        last_machines_sig = cur_machines_sig
+                        clear_hub_proxy_cache()
                         payload = json.dumps(
                             {
                                 "type": "update",

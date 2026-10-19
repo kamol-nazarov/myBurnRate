@@ -74,6 +74,13 @@ LANES: dict[str, LanePolicy] = {
         "127.0.0.1 using its ephemeral CSRF token; never an external host.",
         allowed_hosts=("127.0.0.1",),
     ),
+    "muse_quota_endpoint": LanePolicy(
+        "muse_quota_endpoint",
+        Lane.LOCAL,
+        "Queries the Muse Code key/usage endpoint using the locally stored "
+        "Muse Code session token.",
+        allowed_hosts=("api.meta.ai",),
+    ),
     "openrouter_credits": LanePolicy(
         "openrouter_credits",
         Lane.CONFIGURED,

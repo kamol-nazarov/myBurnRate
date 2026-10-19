@@ -829,8 +829,9 @@ def test_s03_14_capacity_order_and_heatmap_fallback(tmp_path: Path) -> None:
         assert 0 <= point["weekday"] <= 6
         assert 0 <= point["hour"] <= 23
     by_key = {card["providerKey"]: card for card in cards}
-    for provider in ("claude-code", "grok", "codex", "cursor", "opencode", "openrouter"):
+    for provider in ("claude-code", "grok", "codex", "opencode", "openrouter"):
         assert provider in by_key
+    assert "cursor" not in by_key
     assert cards[-1]["providerKey"] == "openrouter"
     openrouter = by_key["openrouter"]
     assert openrouter["rows"][0]["etaLabel"] == "available"
@@ -842,7 +843,8 @@ def test_s03_capacity_emits_six_providers_when_quotas_empty(tmp_path: Path) -> N
     initialize(database)
     summary = client_for(database).get("/api/spend/summary").json()
     by_key = {card["providerKey"]: card for card in summary["capacity"]}
-    for provider in ("claude-code", "grok", "codex", "cursor", "opencode", "openrouter"):
+    assert "cursor" not in by_key
+    for provider in ("claude-code", "grok", "codex", "opencode", "openrouter"):
         assert provider in by_key, provider
         for row in by_key[provider]["rows"]:
             assert row["pct"] is None

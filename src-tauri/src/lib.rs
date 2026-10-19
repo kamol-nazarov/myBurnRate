@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager, RunEvent, State, WindowEvent};
+use tauri::{AppHandle, LogicalSize, Manager, RunEvent, Size, State, WindowEvent};
 
 pub struct HudPinState {
     pub pinned: AtomicBool,
@@ -206,6 +206,19 @@ fn toggle_hud_pin(app: AppHandle, state: State<'_, HudPinState>) -> Result<bool,
 }
 
 #[tauri::command]
+fn set_hud_size(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("hud") {
+        let w = width.clamp(260.0, 900.0);
+        let h = height.clamp(160.0, 1000.0);
+        let _ = window.set_min_size(Some(Size::Logical(LogicalSize::new(260.0, 160.0))));
+        window
+            .set_size(Size::Logical(LogicalSize::new(w, h)))
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn show_dashboard(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("main") {
         window.show().map_err(|e| e.to_string())?;
@@ -226,7 +239,33 @@ fn open_setup_wizard(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
+fn release_webview_lock_if_needed() {
+    let my_pid = std::process::id();
+    let script = format!(
+        "Get-CimInstance Win32_Process -Filter \"Name='burnrate-desktop.exe' OR Name='msedgewebview2.exe'\" -ErrorAction SilentlyContinue | Where-Object {{ ($_.Name -eq 'burnrate-desktop.exe' -and $_.ProcessId -ne {my_pid}) -or ($_.Name -eq 'msedgewebview2.exe' -and $_.CommandLine -like '*burnrate-desktop.exe*') }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}"
+    );
+    let mut cmd = Command::new("powershell");
+    cmd.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-WindowStyle",
+        "Hidden",
+        "-Command",
+        &script,
+    ])
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null());
+    apply_no_window(&mut cmd);
+    let _ = cmd.status();
+}
+
+#[cfg(not(target_os = "windows"))]
+fn release_webview_lock_if_needed() {}
+
 pub fn run() {
+    release_webview_lock_if_needed();
     let (hub_child, sync_child) = ensure_hub_and_sync_processes();
 
     let app = tauri::Builder::default()
@@ -242,6 +281,7 @@ pub fn run() {
             show_hud,
             hide_hud,
             toggle_hud_pin,
+            set_hud_size,
             show_dashboard,
             open_setup_wizard
         ])
@@ -324,38 +364,22 @@ pub fn run() {
                 });
 
             if let Some(icon) = app.default_window_icon().cloned() {
-                if let Some(main_win) = app.get_webview_window("main") {
-                    let _ = main_win.set_icon(icon.clone());
-                }
-                if let Some(hud_win) = app.get_webview_window("hud") {
-                    let _ = hud_win.set_icon(icon.clone());
-                }
                 tray_builder = tray_builder.icon(icon);
             }
-            if let Some(main_win) = app.get_webview_window("main") {
-                if env::var("BURNRATE_OPEN_SETUP").ok().as_deref() == Some("1") {
-                    if let Ok(url) = "http://127.0.0.1:17331/setup".parse() {
-                        let _ = main_win.navigate(url);
-                    }
-                }
-                let _ = main_win.show();
-                let _ = main_win.unminimize();
-                let _ = main_win.set_focus();
-            }
+
             let _tray = tray_builder.build(app)?;
             Ok(())
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                let label = window.label();
-                if label == "main" || label == "hud" {
+                if window.label() == "hud" || window.label() == "main" {
                     api.prevent_close();
                     let _ = window.hide();
                 }
             }
         })
         .build(tauri::generate_context!())
-        .expect("error while building BURNRATE Tauri application");
+        .expect("error while building BURNRATE desktop application");
 
     app.run(|app_handle, event| {
         if let RunEvent::Exit = event {

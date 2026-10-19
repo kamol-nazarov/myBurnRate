@@ -82,15 +82,6 @@ LEGACY_IDENTITY_PATTERNS = (
         "legacy_cadences": ("monthly",),
     },
     {
-        "tool_key": "cursor",
-        "legacy_name": "Cursor - free",
-        "name": "Cursor",
-        "amount_usd": 0.0,
-        "cadence": "monthly",
-        "legacy_amounts": (0.0,),
-        "legacy_cadences": ("monthly",),
-    },
-    {
         "tool_key": "opencode",
         "legacy_name": "Z.AI - $400 for 3 months",
         "name": "Z.AI Coding Plan",

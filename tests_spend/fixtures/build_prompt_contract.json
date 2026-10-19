@@ -65,7 +65,6 @@
     "claude-code": [["5h", "5-hour session"], ["weekly", "weekly all models"]],
     "grok": [["weekly", "weekly"]],
     "codex": [["weekly", "weekly"]],
-    "cursor": [["cursor_models", "Cursor models"], ["other_models", "other models"]],
     "opencode": [["5h", "5-hour credits"], ["weekly", "weekly credits"]],
     "openrouter": [["payg", "pay-as-you-go"]]
   },

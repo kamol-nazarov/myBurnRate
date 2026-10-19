@@ -79,8 +79,10 @@ CURSOR_DASHBOARD_ALLOWED_HOSTS = frozenset({"api2.cursor.sh"})
 CLAUDE_OAUTH_TOKEN_ALLOWED_HOSTS = frozenset({"platform.claude.com"})
 CLAUDE_OAUTH_USAGE_ALLOWED_HOSTS = frozenset({"api.anthropic.com"})
 ZAI_QUOTA_ALLOWED_HOSTS = frozenset({"api.z.ai"})
+MUSE_QUOTA_ALLOWED_HOSTS = frozenset({"api.meta.ai"})
 ANTIGRAVITY_RPC_ALLOWED_HOSTS = frozenset({"127.0.0.1"})
 ZAI_QUOTA_URL = "https://api.z.ai/api/monitor/usage/quota/limit"
+MUSE_QUOTA_URL = "https://api.meta.ai/muse-code/key"
 
 
 def reset_activity_cache() -> None:
@@ -865,6 +867,83 @@ def _claude_limits_uncached() -> dict:
             "usedCredits": extra.get("used_credits"),
         },
         "detail": "Experimental undocumented Anthropic /api/oauth/usage snapshot; polled adaptively (90 s while Claude is in use, 5 min idle).",
+    }
+
+
+def _muse_limits_uncached() -> dict:
+    allowed, reason = authorize("muse_quota_endpoint")
+    if not allowed:
+        return {"key": "muse", "name": "Muse Code", "status": "unavailable", "windows": [], "detail": reason}
+    auth_override = os.environ.get("MUSE_AUTH_PATH", "").strip()
+    auth_path = Path(auth_override) if auth_override else (Path.home() / ".config" / "muse" / "auth.json")
+    token = None
+    try:
+        raw = json.loads(auth_path.read_text(encoding="utf-8"))
+        meta = ((raw.get("providers") or {}).get("meta") if isinstance(raw, dict) else None) or {}
+        if isinstance(meta, dict):
+            token = str(meta.get("access_token") or "").strip() or None
+    except (OSError, json.JSONDecodeError, AttributeError):
+        token = None
+    if not token:
+        return {"key": "muse", "name": "Muse Code", "status": "unavailable", "windows": [], "detail": "No Muse Code Meta access token was found."}
+    try:
+        _assert_allowed_https_host(MUSE_QUOTA_URL, MUSE_QUOTA_ALLOWED_HOSTS)
+        response = httpx.post(
+            MUSE_QUOTA_URL,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "x-api-version": "1.0.0",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                **identity_headers(),
+            },
+            json={},
+            timeout=15,
+            trust_env=False,
+            follow_redirects=False,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        return {
+            "key": "muse",
+            "name": "Muse Code",
+            "status": "error",
+            "windows": [],
+            "detail": f"Muse Code quota lookup failed ({type(exc).__name__}).",
+            **_throttle_fields(exc),
+        }
+    subs_usage = (payload.get("subs_usage") if isinstance(payload, dict) else None) or {}
+    if not isinstance(subs_usage, dict):
+        subs_usage = {}
+    tier_raw = str((payload.get("subs_tier_name") if isinstance(payload, dict) else "") or "Muse Code Power Usage").strip()
+    plan = tier_raw[len("Muse Code "):].strip() if tier_raw.lower().startswith("muse code ") else (tier_raw or "Power Usage")
+    windows = []
+    for out_key, label, src_key in (("5h", "5-hour window", "window"), ("weekly", "Weekly window", "weekly")):
+        win = subs_usage.get(src_key)
+        if not isinstance(win, dict):
+            continue
+        used = _finite_number(win.get("used_percent"))
+        if used is None:
+            continue
+        used_clamped = max(0.0, min(100.0, used))
+        windows.append(
+            {
+                "key": out_key,
+                "label": label,
+                "usedPct": used_clamped,
+                "remainingPct": max(0.0, 100.0 - used_clamped),
+                "resetAt": _iso_from_seconds(_finite_number(win.get("resets_at"))),
+            }
+        )
+    return {
+        "key": "muse",
+        "name": "Muse Code",
+        "plan": plan,
+        "status": "exact" if windows else "unavailable",
+        "observedAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "windows": windows,
+        "detail": "Meta Muse Code quota endpoint; 5-hour and weekly subscription windows.",
     }
 
 
@@ -2107,6 +2186,8 @@ def snapshot_limits(database_path: Path | None = None, *, now: datetime | None =
         rows = sorted(read_rows(connection, now=now), key=lambda row: (row["polled_at"], row["id"]))
     latest = {}
     for row in rows:
+        if row["provider_key"] == "cursor":
+            continue
         latest[(row["provider_key"], row["limit_key"])] = row
     for (key, limit), row in latest.items():
         item = providers.setdefault(key, {"key": key, "name": key, "status": "unavailable", "windows": [], "detail": row["label"]})
@@ -2120,9 +2201,9 @@ def _collect_live_limits() -> dict:
     loaders = [
         _codex_limits,
         lambda: _cached("claude", 90, _claude_limits_via_traycer),
-        lambda: _cached("cursor", 60, _cursor_limits_uncached),
         lambda: _cached("grok", 90, _grok_limits_uncached),
         lambda: _cached("zai", 60, _zai_limits_uncached),
+        lambda: _cached("muse", 60, _muse_limits_uncached),
         lambda: _cached("antigravity", 90, _antigravity_limits_uncached),
         lambda: _cached("openrouter", 60, _openrouter_credits_uncached),
     ]

@@ -303,11 +303,13 @@ def create_app(
         from spend_app.diagnostics import integration_reports, HELP_URL
         from spend_app.connections import Store
         from spend_app.sync import fetch_from_configured_hub, list_machines
-        from spend_app.setup_wizard import read_setup_state
+        from spend_app.setup_wizard import public_setup_state, read_setup_state
         with connect(settings.database_path) as connection:
             history = connection.execute("SELECT EXISTS(SELECT 1 FROM usage_events) OR EXISTS(SELECT 1 FROM unpriced_usage_events)").fetchone()[0]
             machines = list_machines(connection)
-            setup_completed = bool(read_setup_state(connection).get("completed"))
+            raw_setup = read_setup_state(connection)
+            setup_completed = bool(raw_setup.get("completed"))
+            public_setup = public_setup_state(raw_setup)
         hub_onboarding = fetch_from_configured_hub(settings, "/api/onboarding")
         if hub_onboarding is not None:
             if isinstance(hub_onboarding.get("machines"), list):
@@ -318,8 +320,39 @@ def create_app(
                 "integrations": integration_reports(settings, bindings=Store(settings.database_path).read()["bindings"]),
                 "machines": machines,
                 "setupCompleted": setup_completed,
+                "setup": public_setup,
                 "documentation": HELP_URL,
                 "detail": "BURNRATE stores usage locally. Provider network integrations are optional and remain under your existing configuration."}
+
+    @app.post("/api/spend/quotas/refresh")
+    def refresh_quotas() -> dict:
+        from spend_app.quotas import nudge_quota_lanes, poll_quotas
+        from spend_app.setup_wizard import maybe_run_configured_spoke_sync
+        from spend_app.sync import STREAM_BROKER, clear_hub_proxy_cache
+
+        now_val = current_now()
+        stamp = now_val.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        try:
+            nudge_quota_lanes(database_path=settings.database_path)
+        except Exception:
+            pass
+        try:
+            outcomes = poll_quotas(database_path=settings.database_path, now=lambda: stamp, settings=settings)
+        except Exception:
+            outcomes = {}
+        sync_res = maybe_run_configured_spoke_sync(settings, pricing)
+        clear_hub_proxy_cache()
+        from spend_app import aggregate as _agg
+        _agg.reset_memo()
+        polled_list = outcomes.get("polledProviders", []) if isinstance(outcomes, dict) else []
+        STREAM_BROKER.publish({"type": "quota_refresh", "at": stamp})
+        return {
+            "ok": True,
+            "refreshedAt": stamp,
+            "providersPolled": len(polled_list),
+            "polledProviders": polled_list,
+            "syncResult": sync_res,
+        }
 
     @app.get("/api/spend/limits")
     def spend_limits() -> dict:

@@ -25,20 +25,17 @@ def test_capacity_is_grouped_by_provider_with_prompt_limit_inventory(
     client = client_for(database, monkeypatch)
     body = client.get("/api/spend/summary", params={"window": "1d"}).json()
     by_key = {card["providerKey"]: card for card in body["capacity"]}
-    for provider in ("claude-code", "grok", "codex", "cursor", "opencode", "openrouter"):
+    for provider in ("claude-code", "grok", "codex", "opencode", "openrouter"):
         assert provider in by_key, provider
+    assert "cursor" not in by_key
     assert by_key["claude-code"]["plan"] == "Claude Max"
     assert by_key["grok"]["plan"] == "SuperGrok Heavy"
     assert by_key["codex"]["plan"] == "ChatGPT Pro"
-    assert by_key["cursor"]["plan"] == "Ultra"
     assert by_key["opencode"]["plan"] == "Max"
     assert by_key["openrouter"]["plan"] in {"Pay as you go", "Pay-as-you-go", "pay as you go"}
     claude_keys = {row["limitKey"] for row in by_key["claude-code"]["rows"]}
     assert any(key in claude_keys for key in ("5h", "session", "five_hour"))
     assert "weekly" in claude_keys
-    cursor_labels = " ".join(row["label"] for row in by_key["cursor"]["rows"]).lower()
-    assert "cursor" in cursor_labels
-    assert "included value" not in cursor_labels
     zai_labels = " ".join(row["label"] for row in by_key["opencode"]["rows"]).lower()
     assert "5-hour" in zai_labels or "5h" in zai_labels
     assert "weekly" in zai_labels
@@ -56,7 +53,6 @@ def test_providers_sort_by_peak_and_openrouter_is_pinned_last(
     peaks = [card["peakPct"] for card in cards if not card["isPayg"] and card["peakPct"] is not None]
     assert peaks == sorted(peaks, reverse=True)
     expected_primary = {
-        "cursor": "cursor_models",
         "claude-code": "5h",
         "opencode": "5h",
     }
