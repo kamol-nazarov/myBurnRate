@@ -96,6 +96,50 @@ fn apply_no_window(cmd: &mut Command) {
 #[cfg(not(target_os = "windows"))]
 fn apply_no_window(_cmd: &mut Command) {}
 
+#[cfg(target_os = "windows")]
+fn enforce_win32_topmost(window: &tauri::WebviewWindow, pinned: bool) {
+    if let Ok(hwnd) = window.hwnd() {
+        #[link(name = "user32")]
+        extern "system" {
+            fn SetWindowPos(
+                hWnd: isize,
+                hWndInsertAfter: isize,
+                X: i32,
+                Y: i32,
+                cx: i32,
+                cy: i32,
+                uFlags: u32,
+            ) -> i32;
+        }
+        const HWND_TOPMOST: isize = -1;
+        const HWND_NOTOPMOST: isize = -2;
+        const SWP_NOMOVE: u32 = 0x0002;
+        const SWP_NOSIZE: u32 = 0x0001;
+        const SWP_NOACTIVATE: u32 = 0x0010;
+        const SWP_SHOWWINDOW: u32 = 0x0040;
+        unsafe {
+            SetWindowPos(
+                hwnd.0 as isize,
+                if pinned { HWND_TOPMOST } else { HWND_NOTOPMOST },
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            );
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn enforce_win32_topmost(_window: &tauri::WebviewWindow, _pinned: bool) {}
+
+fn apply_hud_always_on_top(window: &tauri::WebviewWindow, pinned: bool) -> Result<(), String> {
+    window.set_always_on_top(pinned).map_err(|e| e.to_string())?;
+    enforce_win32_topmost(window, pinned);
+    Ok(())
+}
+
 fn ensure_hub_and_sync_processes() -> (Option<Child>, Option<Child>) {
     let port: u16 = env::var("BURNRATE_PORT")
         .ok()
@@ -163,7 +207,7 @@ fn ensure_hub_and_sync_processes() -> (Option<Child>, Option<Child>) {
 }
 
 #[tauri::command]
-fn toggle_hud(app: AppHandle) -> Result<bool, String> {
+fn toggle_hud(app: AppHandle, state: State<'_, HudPinState>) -> Result<bool, String> {
     let window = app
         .get_webview_window("hud")
         .ok_or_else(|| "Sidecar HUD window not found".to_string())?;
@@ -173,15 +217,19 @@ fn toggle_hud(app: AppHandle) -> Result<bool, String> {
         Ok(false)
     } else {
         window.show().map_err(|e| e.to_string())?;
+        let pinned = state.pinned.load(Ordering::SeqCst);
+        let _ = apply_hud_always_on_top(&window, pinned);
         let _ = window.set_focus();
         Ok(true)
     }
 }
 
 #[tauri::command]
-fn show_hud(app: AppHandle) -> Result<(), String> {
+fn show_hud(app: AppHandle, state: State<'_, HudPinState>) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("hud") {
         window.show().map_err(|e| e.to_string())?;
+        let pinned = state.pinned.load(Ordering::SeqCst);
+        let _ = apply_hud_always_on_top(&window, pinned);
         let _ = window.set_focus();
     }
     Ok(())
@@ -196,17 +244,35 @@ fn hide_hud(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn get_hud_pin(app: AppHandle, state: State<'_, HudPinState>) -> Result<bool, String> {
+    let pinned = state.pinned.load(Ordering::SeqCst);
+    if let Some(window) = app.get_webview_window("hud") {
+        let _ = apply_hud_always_on_top(&window, pinned);
+    }
+    Ok(pinned)
+}
+
+#[tauri::command]
+fn set_hud_pin(app: AppHandle, state: State<'_, HudPinState>, pinned: bool) -> Result<bool, String> {
+    state.pinned.store(pinned, Ordering::SeqCst);
+    if let Some(window) = app.get_webview_window("hud") {
+        apply_hud_always_on_top(&window, pinned)?;
+    }
+    Ok(pinned)
+}
+
+#[tauri::command]
 fn toggle_hud_pin(app: AppHandle, state: State<'_, HudPinState>) -> Result<bool, String> {
     let next = !state.pinned.load(Ordering::SeqCst);
-    if let Some(window) = app.get_webview_window("hud") {
-        window.set_always_on_top(next).map_err(|e| e.to_string())?;
-    }
     state.pinned.store(next, Ordering::SeqCst);
+    if let Some(window) = app.get_webview_window("hud") {
+        apply_hud_always_on_top(&window, next)?;
+    }
     Ok(next)
 }
 
 #[tauri::command]
-fn set_hud_size(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
+fn set_hud_size(app: AppHandle, state: State<'_, HudPinState>, width: f64, height: f64) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("hud") {
         let w = width.clamp(260.0, 900.0);
         let h = height.clamp(160.0, 1000.0);
@@ -214,6 +280,24 @@ fn set_hud_size(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
         window
             .set_size(Size::Logical(LogicalSize::new(w, h)))
             .map_err(|e| e.to_string())?;
+        let pinned = state.pinned.load(Ordering::SeqCst);
+        let _ = apply_hud_always_on_top(&window, pinned);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn start_hud_drag(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("hud") {
+        window.start_dragging().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn start_main_drag(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        window.start_dragging().map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -224,6 +308,30 @@ fn show_dashboard(app: AppHandle) -> Result<(), String> {
         window.show().map_err(|e| e.to_string())?;
         let _ = window.unminimize();
         window.set_focus().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn minimize_main(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        window.minimize().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn toggle_maximize_main(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        if window.is_maximized().unwrap_or(false) { window.unmaximize().map_err(|e| e.to_string())?; } else { window.maximize().map_err(|e| e.to_string())?; }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn hide_main(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        window.hide().map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -280,12 +388,23 @@ pub fn run() {
             toggle_hud,
             show_hud,
             hide_hud,
+            get_hud_pin,
+            set_hud_pin,
             toggle_hud_pin,
             set_hud_size,
+            start_hud_drag,
+            start_main_drag,
             show_dashboard,
+            minimize_main,
+            toggle_maximize_main,
+            hide_main,
             open_setup_wizard
         ])
         .setup(|app| {
+            if let Some(hud_win) = app.get_webview_window("hud") {
+                let _ = apply_hud_always_on_top(&hud_win, true);
+            }
+
             let toggle_hud_item = MenuItem::with_id(
                 app,
                 "toggle_hud",
@@ -334,7 +453,8 @@ pub fn run() {
                 .tooltip("BURNRATE · Live Multi-Computer Spend & Sidecar HUD")
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "toggle_hud" => {
-                        let _ = toggle_hud(app.clone());
+                        let state = app.state::<HudPinState>();
+                        let _ = toggle_hud(app.clone(), state);
                     }
                     "pin_hud" => {
                         let state = app.state::<HudPinState>();
@@ -359,24 +479,32 @@ pub fn run() {
                         ..
                     } = event
                     {
-                        let _ = toggle_hud(tray.app_handle().clone());
+                        let app = tray.app_handle();
+                        let state = app.state::<HudPinState>();
+                        let _ = toggle_hud(app.clone(), state);
                     }
                 });
 
-            if let Some(icon) = app.default_window_icon().cloned() {
-                tray_builder = tray_builder.icon(icon);
+            if let Some(icon) = app.default_window_icon() {
+                tray_builder = tray_builder.icon(icon.clone());
             }
 
             let _tray = tray_builder.build(app)?;
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == "hud" || window.label() == "main" {
-                    api.prevent_close();
-                    let _ = window.hide();
+        .on_window_event(|window, event| match event {
+            WindowEvent::CloseRequested { api, .. } => {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+            WindowEvent::Focused(true) => {
+                if window.label() == "hud" {
+                    let state = window.app_handle().state::<HudPinState>();
+                    let pinned = state.pinned.load(Ordering::SeqCst);
+                    let _ = apply_hud_always_on_top(&window.app_handle().get_webview_window("hud").unwrap(), pinned);
                 }
             }
+            _ => {}
         })
         .build(tauri::generate_context!())
         .expect("error while building BURNRATE desktop application");

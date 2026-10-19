@@ -412,6 +412,92 @@ def create_app(
     def spend_hud():
         return HTMLResponse(_live_hud_html(), headers={"Cache-Control": ASSET_REVALIDATE_CACHE})
 
+    @app.post("/api/hud/native")
+    async def launch_native_hud(request: Request) -> dict:
+        import subprocess
+        import sys
+
+        if os.getenv("BURNRATE_CENTRAL_SERVER", "").strip().lower() in {"1", "true", "yes"}:
+            return {"ok": False, "reason": "central_server"}
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        action = str((body or {}).get("action") or "open").strip().lower()
+        repo_root = Path(__file__).resolve().parents[1]
+        data_root = Path(os.getenv("LOCALAPPDATA") or (Path.home() / "AppData" / "Local")) / "BURNRATE"
+        candidates = [
+            repo_root / "src-tauri" / "target" / "release" / "burnrate-desktop.exe",
+            data_root / "burnrate-desktop.exe",
+            repo_root / "src-tauri" / "target" / "debug" / "burnrate-desktop.exe",
+        ]
+        exe_path = next((p for p in candidates if p.is_file()), None)
+        if sys.platform == "win32" and action in {"pin", "unpin", "open", "show"}:
+            pinned = action != "unpin"
+            try:
+                import ctypes
+                from ctypes import wintypes
+
+                user32 = ctypes.windll.user32
+                user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+                user32.GetWindowTextLengthW.restype = ctypes.c_int
+                user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+                user32.GetWindowTextW.restype = ctypes.c_int
+                user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+                user32.ShowWindow.restype = wintypes.BOOL
+                user32.SetWindowPos.argtypes = [
+                    wintypes.HWND,
+                    wintypes.HWND,
+                    ctypes.c_int,
+                    ctypes.c_int,
+                    ctypes.c_int,
+                    ctypes.c_int,
+                    wintypes.UINT,
+                ]
+                user32.SetWindowPos.restype = wintypes.BOOL
+                WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+                found_hwnds = []
+
+                def _cb(hwnd, _lparam):
+                    length = user32.GetWindowTextLengthW(hwnd)
+                    if length > 0:
+                        buf = ctypes.create_unicode_buffer(length + 1)
+                        user32.GetWindowTextW(hwnd, buf, length + 1)
+                        title = buf.value or ""
+                        if "Sidecar HUD" in title:
+                            found_hwnds.append(hwnd)
+                    return True
+
+                user32.EnumWindows(WNDENUMPROC(_cb), 0)
+                if found_hwnds:
+                    ins = wintypes.HWND(-1 if pinned else -2)
+                    for hwnd in found_hwnds:
+                        if action in {"open", "show", "pin"}:
+                            user32.ShowWindow(hwnd, 5)
+                        user32.SetWindowPos(hwnd, ins, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010 | 0x0040)
+                    return {"ok": True, "pinned": pinned, "nativeFound": True, "count": len(found_hwnds)}
+            except Exception:
+                pass
+        if exe_path is not None and action in {"open", "show", "pin"}:
+            try:
+                si = None
+                if sys.platform == "win32":
+                    si = subprocess.STARTUPINFO()
+                    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                    si.wShowWindow = 5
+                subprocess.Popen(
+                    [str(exe_path)],
+                    cwd=str(repo_root),
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    startupinfo=si,
+                )
+                return {"ok": True, "pinned": True, "launchedNative": True, "exe": str(exe_path)}
+            except Exception as exc:
+                return {"ok": False, "error": str(exc)}
+        return {"ok": False, "reason": "native_not_available"}
+
     @app.get("/spend.css")
     def spend_css(request: Request):
         path = web_root / "spend.css"

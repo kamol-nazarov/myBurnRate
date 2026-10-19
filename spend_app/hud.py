@@ -13,22 +13,25 @@ HUD_HTML = """<!doctype html>
     <style>
       :root {
         color-scheme: light;
-        --paper: rgba(246, 245, 241, 0.74);
+        --paper: rgba(246, 245, 241, 0.92);
         --ink: #1c1b19;
         --muted: #6f6a62;
         --faint: #8a847b;
-        --peach: rgba(246, 199, 180, 0.86);
-        --yellow: rgba(246, 227, 154, 0.86);
-        --pink: rgba(246, 211, 222, 0.86);
-        --blue: rgba(201, 223, 246, 0.86);
-        --docs: rgba(238, 242, 246, 0.8);
-        --card: rgba(247, 248, 250, 0.88);
-        --plate: rgba(255, 255, 255, 0.94);
+        --peach: rgba(246, 199, 180, 0.88);
+        --yellow: rgba(246, 227, 154, 0.88);
+        --pink: rgba(246, 211, 222, 0.88);
+        --blue: rgba(201, 223, 246, 0.88);
+        --docs: rgba(235, 239, 244, 0.86);
+        --card: rgba(247, 248, 250, 0.92);
+        --plate: rgba(255, 255, 255, 0.96);
+        --chrome-bg: rgba(28, 27, 25, 0.055);
+        --chrome-border: rgba(28, 27, 25, 0.1);
+        --pill-bg: rgba(255, 255, 255, 0.78);
         --ok: #7dcea0;
         --warn: #d9a441;
         --crit: #c45c4a;
         --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
-        --sans: "Segoe UI", sans-serif;
+        --sans: "Segoe UI", system-ui, -apple-system, sans-serif;
       }
       * { box-sizing: border-box; margin: 0; padding: 0; }
       html, body {
@@ -44,6 +47,7 @@ HUD_HTML = """<!doctype html>
         scrollbar-width: thin;
         scrollbar-color: rgba(28, 27, 25, 0.28) transparent;
       }
+      body:active { cursor: grabbing; }
       html::-webkit-scrollbar,
       #hud-quotas::-webkit-scrollbar { width: 10px; }
       html::-webkit-scrollbar-thumb,
@@ -54,15 +58,73 @@ HUD_HTML = """<!doctype html>
       }
       .page {
         min-height: 0;
-        padding: 12px 12px 10px;
-        border-radius: 16px;
+        padding: 8px 12px 10px;
+        border-radius: 18px;
         background: var(--paper);
+        border: 1px solid var(--chrome-border);
+        box-shadow: 0 16px 38px rgba(15, 17, 22, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.65);
       }
+      body.is-pinned .page {
+        border-color: rgba(217, 164, 65, 0.38);
+      }
+      .hud-chrome-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 4px 6px 6px;
+        margin: -2px -4px 6px;
+        border-bottom: 1px solid var(--chrome-border);
+      }
+      .hud-chrome-brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+      }
+      .hud-grip {
+        display: inline-grid;
+        grid-template-columns: repeat(3, 3px);
+        gap: 2px;
+        padding: 2px 1px;
+        opacity: 0.45;
+      }
+      .hud-grip i {
+        width: 3px;
+        height: 3px;
+        border-radius: 50%;
+        background: var(--ink);
+        display: block;
+      }
+      .hud-brand-word {
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--ink);
+      }
+      .hud-brand-word strong {
+        color: #c88a1e;
+      }
+      .hud-pin-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 9px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        padding: 1.5px 6px;
+        border-radius: 999px;
+        background: rgba(217, 164, 65, 0.18);
+        color: #9e6c11;
+      }
+      .hud-pin-badge[hidden] { display: none; }
       .top {
         display: flex;
-        align-items: flex-start;
+        align-items: flex-end;
         justify-content: space-between;
-        gap: 12px;
+        gap: 10px;
       }
       .titles { min-width: 0; }
       .date-row {
@@ -74,7 +136,7 @@ HUD_HTML = """<!doctype html>
       .date {
         font-size: 11px;
         font-weight: 600;
-        letter-spacing: 0.12em;
+        letter-spacing: 0.1em;
         text-transform: uppercase;
         color: var(--faint);
       }
@@ -82,10 +144,13 @@ HUD_HTML = """<!doctype html>
         display: inline-flex;
         align-items: center;
         gap: 4px;
-        font-size: 10px;
-        font-weight: 650;
+        font-size: 9.5px;
+        font-weight: 700;
         letter-spacing: 0.08em;
-        color: var(--faint);
+        padding: 1.5px 6px;
+        border-radius: 999px;
+        background: var(--pill-bg);
+        color: var(--muted);
       }
       .hud-status-pill i {
         width: 6px;
@@ -99,24 +164,61 @@ HUD_HTML = """<!doctype html>
         margin-top: 2px;
         font-family: var(--serif);
         font-weight: 560;
-        font-size: 28px;
+        font-size: 26px;
         letter-spacing: -0.03em;
         line-height: 1;
       }
-      .hud-controls { display: flex; gap: 2px; flex: none; }
+      .hud-controls {
+        display: inline-flex;
+        align-items: center;
+        gap: 2px;
+        flex: none;
+        padding: 2px;
+        border-radius: 10px;
+        background: var(--chrome-bg);
+        border: 1px solid var(--chrome-border);
+      }
       .hud-btn {
         border: 0;
         background: transparent;
-        color: var(--faint);
+        color: var(--muted);
         font: inherit;
-        font-size: 11px;
+        font-size: 10.5px;
         font-weight: 650;
-        padding: 4px 6px;
-        border-radius: 8px;
+        padding: 3px 7px;
+        border-radius: 7px;
         cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        transition: background 0.12s ease, color 0.12s ease, box-shadow 0.12s ease;
       }
-      .hud-btn:hover { background: rgba(28, 27, 25, 0.06); color: var(--ink); }
-      .hud-btn.active { color: var(--ink); }
+      .hud-btn:hover { background: rgba(28, 27, 25, 0.08); color: var(--ink); }
+      .hud-btn.active {
+        background: var(--ink);
+        color: #fff;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.16);
+      }
+      .hud-btn-pin-dot {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: currentColor;
+        opacity: 0.55;
+      }
+      .hud-btn.active .hud-btn-pin-dot {
+        background: #f5b841;
+        opacity: 1;
+        box-shadow: 0 0 6px #f5b841;
+      }
+      .hud-btn--close {
+        padding: 3px 6px;
+        font-weight: 700;
+      }
+      .hud-btn--close:hover {
+        background: rgba(196, 92, 74, 0.18);
+        color: #b43c29;
+      }
       #hud-machines {
         display: flex;
         flex-wrap: wrap;
@@ -456,15 +558,18 @@ HUD_HTML = """<!doctype html>
         display: none !important;
       }
       body.is-mini { font-size: 11px; }
-      body.is-mini .page { padding: 7px 8px 6px; border-radius: 12px; }
+      body.is-mini .page { padding: 6px 8px 6px; border-radius: 14px; }
+      body.is-mini .hud-chrome-bar { padding: 2px 4px 4px; margin: -1px -2px 4px; }
+      body.is-mini .hud-brand-word { font-size: 8.5px; }
+      body.is-mini .hud-pin-badge { font-size: 8px; padding: 1px 5px; }
       body.is-mini .top { gap: 6px; align-items: center; }
       body.is-mini .date-row { gap: 5px; }
       body.is-mini .date { font-size: 9px; letter-spacing: 0.08em; }
-      body.is-mini .hud-status-pill { font-size: 8.5px; gap: 3px; }
+      body.is-mini .hud-status-pill { font-size: 8.5px; gap: 3px; padding: 1px 5px; }
       body.is-mini .hud-status-pill i { width: 5px; height: 5px; }
       body.is-mini h1 { font-size: 17px; margin-top: 1px; }
-      body.is-mini .hud-controls { gap: 1px; }
-      body.is-mini .hud-btn { font-size: 9.5px; padding: 2px 4px; border-radius: 6px; }
+      body.is-mini .hud-controls { gap: 1px; padding: 1.5px; border-radius: 8px; }
+      body.is-mini .hud-btn { font-size: 9px; padding: 2px 5px; border-radius: 5px; gap: 3px; }
       body.is-mini #hud-machines { gap: 4px; margin-top: 5px; }
       body.is-mini .hud-machine-chip { font-size: 10px; padding: 2px 7px; gap: 4px; }
       body.is-mini .hud-machine-chip i { width: 5px; height: 5px; }
@@ -546,7 +651,7 @@ HUD_HTML = """<!doctype html>
 
       body[data-theme="dark"] {
         color-scheme: dark;
-        --paper: rgba(14, 17, 23, 0.92);
+        --paper: rgba(13, 16, 22, 0.96);
         --ink: #eef2f7;
         --muted: #9aa3b2;
         --faint: #758092;
@@ -554,12 +659,33 @@ HUD_HTML = """<!doctype html>
         --yellow: rgba(217, 164, 65, 0.22);
         --pink: rgba(212, 106, 132, 0.22);
         --blue: rgba(88, 154, 228, 0.22);
-        --docs: rgba(23, 28, 36, 0.92);
-        --card: rgba(30, 36, 46, 0.94);
-        --plate: rgba(38, 45, 58, 0.96);
+        --docs: rgba(21, 26, 34, 0.94);
+        --card: rgba(28, 34, 44, 0.95);
+        --plate: rgba(36, 43, 56, 0.96);
+        --chrome-bg: rgba(255, 255, 255, 0.05);
+        --chrome-border: rgba(255, 255, 255, 0.1);
+        --pill-bg: rgba(255, 255, 255, 0.07);
+      }
+      body[data-theme="dark"] .page {
+        box-shadow: 0 18px 42px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+      }
+      body[data-theme="dark"].is-pinned .page {
+        border-color: rgba(245, 184, 65, 0.42);
+      }
+      body[data-theme="dark"] .hud-pin-badge {
+        background: rgba(245, 184, 65, 0.16);
+        color: #f5c45e;
       }
       body[data-theme="dark"] .stat small { color: rgba(226, 232, 240, 0.68); }
-      body[data-theme="dark"] .hud-btn:hover { background: rgba(255, 255, 255, 0.08); }
+      body[data-theme="dark"] .hud-btn:hover { background: rgba(255, 255, 255, 0.09); }
+      body[data-theme="dark"] .hud-btn.active {
+        background: #eef2f7;
+        color: #0e1117;
+      }
+      body[data-theme="dark"] .hud-btn.active .hud-btn-pin-dot {
+        background: #d98218;
+        box-shadow: 0 0 6px #d98218;
+      }
       body[data-theme="dark"] .hud-poll-btn { border-color: rgba(255, 255, 255, 0.14); }
       body[data-theme="dark"] .win::before { background: rgba(255, 255, 255, 0.09); }
       body[data-theme="dark"] .win-pace-tick { background: rgba(255, 255, 255, 0.65); }
@@ -573,10 +699,25 @@ HUD_HTML = """<!doctype html>
       body[data-theme="dark"] #hud-tip .sep { background: rgba(255, 255, 255, 0.1); }
     </style>
   </head>
-  <body data-tauri-drag-region="deep">
+  <body data-tauri-drag-region="deep" class="is-pinned">
     <main class="page" id="hud-shell">
-      <header class="top">
-        <div class="titles">
+      <div class="hud-chrome-bar" id="hud-chrome-bar" data-tauri-drag-region>
+        <div class="hud-chrome-brand" data-tauri-drag-region>
+          <span class="hud-grip" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></span>
+          <span class="hud-brand-word">BURN<strong>RATE</strong> · HUD</span>
+          <span class="hud-pin-badge" id="hud-pin-badge">Pinned</span>
+        </div>
+        <div class="hud-controls">
+          <button type="button" class="hud-btn" id="hud-mini-btn" data-tip="&lt;b class=&quot;tip-title&quot;&gt;Mini HUD&lt;/b&gt;&lt;span class=&quot;row&quot;&gt;Shrink the HUD into a compact size while keeping all metrics and plans visible.&lt;/span&gt;" aria-pressed="false">Mini</button>
+          <button type="button" class="hud-btn" id="hud-theme-btn" data-tip="&lt;b class=&quot;tip-title&quot;&gt;Theme&lt;/b&gt;&lt;span class=&quot;row&quot;&gt;Toggle light or dark HUD palette.&lt;/span&gt;" aria-pressed="false">Dark</button>
+          <button type="button" class="hud-btn active" id="hud-pin-btn" data-tip="&lt;b class=&quot;tip-title&quot;&gt;Pin Always-on-Top&lt;/b&gt;&lt;span class=&quot;row&quot;&gt;Keep the Sidecar HUD floating above all other windows.&lt;/span&gt;" aria-pressed="true"><i class="hud-btn-pin-dot" aria-hidden="true"></i><span id="hud-pin-text">Pin</span></button>
+          <button type="button" class="hud-btn" id="hud-expand-btn" data-tip="&lt;b class=&quot;tip-title&quot;&gt;Open Dashboard&lt;/b&gt;&lt;span class=&quot;row&quot;&gt;Open the full dashboard with forecasts, unit economics and plans.&lt;/span&gt;">Open</button>
+          <button type="button" class="hud-btn hud-btn--close" id="hud-hide-btn" data-tip="&lt;b class=&quot;tip-title&quot;&gt;Hide HUD&lt;/b&gt;&lt;span class=&quot;row&quot;&gt;Hide the HUD. Reopen it from the BURNRATE tray icon or dashboard.&lt;/span&gt;" aria-label="Hide HUD">&#x2715;</button>
+        </div>
+      </div>
+
+      <header class="top" data-tauri-drag-region>
+        <div class="titles" data-tauri-drag-region>
           <p class="date-row">
             <span class="date" id="hud-date">Today</span>
             <span class="hud-status-pill" id="hud-status-pill" data-state="live">
@@ -584,13 +725,6 @@ HUD_HTML = """<!doctype html>
             </span>
           </p>
           <h1>Usage</h1>
-        </div>
-        <div class="hud-controls">
-          <button type="button" class="hud-btn" id="hud-mini-btn" data-tip="&lt;b class=&quot;tip-title&quot;&gt;Mini HUD&lt;/b&gt;&lt;span class=&quot;row&quot;&gt;Shrink the HUD into a compact size while keeping all metrics and plans visible.&lt;/span&gt;" aria-pressed="false">Mini</button>
-          <button type="button" class="hud-btn" id="hud-theme-btn" data-tip="&lt;b class=&quot;tip-title&quot;&gt;Theme&lt;/b&gt;&lt;span class=&quot;row&quot;&gt;Toggle light or dark HUD palette.&lt;/span&gt;" aria-pressed="false">Dark</button>
-          <button type="button" class="hud-btn active" id="hud-pin-btn" data-tip="&lt;b class=&quot;tip-title&quot;&gt;Pin&lt;/b&gt;&lt;span class=&quot;row&quot;&gt;Keep the Sidecar HUD always on top of other windows.&lt;/span&gt;" aria-pressed="true">Pin</button>
-          <button type="button" class="hud-btn" id="hud-expand-btn" data-tip="&lt;b class=&quot;tip-title&quot;&gt;Open&lt;/b&gt;&lt;span class=&quot;row&quot;&gt;Open the full dashboard with forecasts, unit economics and plans.&lt;/span&gt;">Open</button>
-          <button type="button" class="hud-btn" id="hud-hide-btn" data-tip="&lt;b class=&quot;tip-title&quot;&gt;Hide&lt;/b&gt;&lt;span class=&quot;row&quot;&gt;Hide the HUD. Reopen it from the BURNRATE tray menu.&lt;/span&gt;">Hide</button>
         </div>
       </header>
 
@@ -651,12 +785,25 @@ HUD_HTML = """<!doctype html>
     <script>
       (() => {
         document.addEventListener("mousedown", event => {
-          if (event.detail === 2) event.stopImmediatePropagation();
+          if (event.detail === 2) {
+            event.stopImmediatePropagation();
+            return;
+          }
+          if (event.button === 0 && !event.target.closest("button, a, input, .plan, .hud-agent, .hud-machine-chip")) {
+            const internals = window.__TAURI_INTERNALS__;
+            if (internals && typeof internals.invoke === "function") {
+              internals.invoke("start_hud_drag").catch(() => {});
+            }
+          }
         }, true);
 
         const $ = id => document.getElementById(id);
         let selectedMachine = new URLSearchParams(location.search).get("machine") || "all";
         let pinned = true;
+        try {
+          const savedPin = localStorage.getItem("burnrate:hud-pinned");
+          if (savedPin === "0") pinned = false;
+        } catch {}
 
         const usd = v => {
           const n = v == null || v === "" ? NaN : Number(v);
@@ -754,16 +901,69 @@ HUD_HTML = """<!doctype html>
         async function tauriInvoke(cmd, args = {}) {
           const internals = window.__TAURI_INTERNALS__;
           if (internals && typeof internals.invoke === "function") {
-            return internals.invoke(cmd, args);
+            try {
+              return await internals.invoke(cmd, args);
+            } catch {
+              return null;
+            }
           }
           return null;
         }
 
+        function applyPinUi(stateVal) {
+          pinned = Boolean(stateVal);
+          try { localStorage.setItem("burnrate:hud-pinned", pinned ? "1" : "0"); } catch {}
+          const btn = $("hud-pin-btn");
+          if (btn) {
+            btn.classList.toggle("active", pinned);
+            btn.setAttribute("aria-pressed", String(pinned));
+          }
+          const badge = $("hud-pin-badge");
+          if (badge) badge.hidden = !pinned;
+          document.body.classList.toggle("is-pinned", pinned);
+        }
+
+        async function syncInitialPin() {
+          const tauriState = await tauriInvoke("set_hud_pin", { pinned });
+          if (typeof tauriState === "boolean") {
+            applyPinUi(tauriState);
+            return;
+          }
+          applyPinUi(pinned);
+          if (pinned) {
+            try {
+              await fetch("/api/hud/native", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action: "pin" })
+              });
+            } catch {}
+          }
+        }
+        syncInitialPin();
+
         $("hud-pin-btn").addEventListener("click", async () => {
-          const res = await tauriInvoke("toggle_hud_pin");
-          pinned = typeof res === "boolean" ? res : !pinned;
-          $("hud-pin-btn").classList.toggle("active", pinned);
-          $("hud-pin-btn").setAttribute("aria-pressed", String(pinned));
+          const nextPin = !pinned;
+          const res = await tauriInvoke("set_hud_pin", { pinned: nextPin });
+          if (typeof res === "boolean") {
+            applyPinUi(res);
+            return;
+          }
+          try {
+            const resp = await fetch("/api/hud/native", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ action: nextPin ? "pin" : "unpin" })
+            });
+            const data = await resp.json();
+            if (data && data.launchedNative && window.opener) {
+              window.close();
+              return;
+            }
+            applyPinUi(typeof data?.pinned === "boolean" ? data.pinned : nextPin);
+          } catch {
+            applyPinUi(nextPin);
+          }
         });
 
         $("hud-expand-btn").addEventListener("click", async () => {

@@ -1833,7 +1833,16 @@ SETUP_WIZARD_HTML = """<!doctype html>
                 try { await internals.invoke("hide_hud"); } catch {}
               }
             } else if (autoHud) {
-              try { window.open("/hud", "burnrate-hud", "popup=yes,width=360,height=580,left=24,top=72"); } catch {}
+              try {
+                const nat = await fetch("/api/hud/native", {
+                  method: "POST",
+                  headers: {"Content-Type": "application/json"},
+                  body: JSON.stringify({action: topHud ? "pin" : "open"})
+                }).then(r => r.json()).catch(() => null);
+                if (!nat || !nat.ok) {
+                  window.open("/hud", "burnrate-hud", "popup=yes,width=440,height=580,left=24,top=72");
+                }
+              } catch {}
             }
             window.location.href = "/";
           } catch (err) {

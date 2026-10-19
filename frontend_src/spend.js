@@ -2084,14 +2084,57 @@ function connectLiveStream() {
   } catch {}
 }
 
-window.openSidecarHud = () => {
+window.openSidecarHud = async () => {
   const internals = window.__TAURI_INTERNALS__;
   if (internals && typeof internals.invoke === "function") {
     internals.invoke("toggle_hud");
     return;
   }
-  window.open("/hud", "burnrate-hud", "popup=yes,width=360,height=580,left=36,top=72");
+  try {
+    const res = await fetch("/api/hud/native", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({action: "open"})
+    });
+    const data = await res.json();
+    if (data && data.ok) return;
+  } catch {}
+  window.open("/hud", "burnrate-hud", "popup=yes,width=440,height=580,left=36,top=72");
 };
+
+function initTopbarChrome() {
+  const nav = document.querySelector(".burnrate-nav");
+  const settings = document.querySelector(".nav-settings");
+  if (settings && !document.getElementById("nav-hud")) {
+    const hudBtn = nodeFrom(`<button id="nav-hud" class="nav-chip" type="button" title="Toggle Always-on-Top Sidecar HUD"><i class="settings-dot good-dot" aria-hidden="true"></i><span>HUD</span></button>`);
+    hudBtn.addEventListener("click", () => window.openSidecarHud());
+    settings.insertBefore(hudBtn, settings.firstChild);
+  }
+  const internals = window.__TAURI_INTERNALS__;
+  if (!nav || !internals || typeof internals.invoke !== "function") return;
+  nav.classList.add("is-tauri-bar");
+  nav.addEventListener("mousedown", event => {
+    if (event.button !== 0 || event.target.closest("button, a, input, select")) return;
+    if (event.detail === 2) {
+      internals.invoke("toggle_maximize_main").catch(() => {});
+      return;
+    }
+    internals.invoke("start_main_drag").catch(() => {});
+  });
+  if (settings && !document.getElementById("tauri-window-controls")) {
+    const winControls = nodeFrom(`<div id="tauri-window-controls" class="tauri-win-controls" aria-label="Window controls"><button type="button" class="tauri-win-btn" data-win="min" title="Minimize" aria-label="Minimize window">&#x2013;</button><button type="button" class="tauri-win-btn" data-win="max" title="Maximize or restore" aria-label="Maximize window">&#x25A1;</button><button type="button" class="tauri-win-btn tauri-win-btn--close" data-win="close" title="Hide to system tray" aria-label="Close window">&#x2715;</button></div>`);
+    winControls.addEventListener("click", event => {
+      const btn = event.target.closest("[data-win]");
+      if (!btn) return;
+      const act = btn.dataset.win;
+      if (act === "min") internals.invoke("minimize_main").catch(() => {});
+      else if (act === "max") internals.invoke("toggle_maximize_main").catch(() => {});
+      else if (act === "close") internals.invoke("hide_main").catch(() => {});
+    });
+    settings.appendChild(winControls);
+  }
+}
+initTopbarChrome();
 
 window.openSetupWizard = () => {
   const internals = window.__TAURI_INTERNALS__;
