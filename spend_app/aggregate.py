@@ -1248,9 +1248,10 @@ def _tracked_value(
     timezone: str,
     *,
     cap_date: date | None = None,
+    machine: str = "all",
 ) -> TrackedParts:
-    events = _load_events(connection, start, end, tool)
-    unpriced = _load_unpriced_events(connection, start, end, tool)
+    events = _load_events(connection, start, end, tool, machine)
+    unpriced = _load_unpriced_events(connection, start, end, tool, machine)
     authority = _cost_buckets(connection, start, end)
     enriched = _enrich(events, pricing, authority)
     subscriptions, by_tool = _subscription_cost(
@@ -1700,7 +1701,7 @@ def _ingest_status(connection, now: datetime, cadence_seconds: int) -> tuple[str
 
 
 def _seven_day_pace(
-    connection, pricing: PricingEngine, now: datetime, timezone: str
+    connection, pricing: PricingEngine, now: datetime, timezone: str, machine: str = "all"
 ) -> tuple[Decimal | None, float | None]:
     """Average reference value per day and average measured tokens per day.
 
@@ -1716,12 +1717,13 @@ def _seven_day_pace(
         id(pricing),
         timezone,
         local_now.date().isoformat(),
+        machine,
         _range_fingerprint(connection, range_start, today_start.astimezone(UTC), "all"),
     )
     return _memo(
         "seven_day_pace",
         key,
-        lambda: _seven_day_pace_uncached(connection, pricing, local_now, today_start, timezone),
+        lambda: _seven_day_pace_uncached(connection, pricing, local_now, today_start, timezone, machine),
     )
 
 
@@ -1731,7 +1733,7 @@ def _connection_identity(connection) -> str:
 
 
 def _seven_day_pace_uncached(
-    connection, pricing: PricingEngine, local_now: datetime, today_start: datetime, timezone: str
+    connection, pricing: PricingEngine, local_now: datetime, today_start: datetime, timezone: str, machine: str = "all"
 ) -> tuple[Decimal | None, float | None]:
     values: list[Decimal] = []
     token_counts: list[int] = []
@@ -1746,6 +1748,7 @@ def _seven_day_pace_uncached(
             "all",
             timezone,
             cap_date=local_now.date(),
+            machine=machine,
         )
         if parts.records == 0:
             continue
@@ -2446,8 +2449,9 @@ def aggregate_summary(
             "all",
             timezone,
             cap_date=local_now.date(),
+            machine=machine,
         )
-        burn, tokens_per_day = _seven_day_pace(connection, pricing, now, timezone)
+        burn, tokens_per_day = _seven_day_pace(connection, pricing, now, timezone, machine)
         day_coverage = _day_coverage(connection, timezone, now)
         heat_start, heat_end, heat_fallback = _heatmap_window(window, now, timezone)
         heat = _heatmap_cells(connection, pricing, heat_start, heat_end, tool, zone, machine)

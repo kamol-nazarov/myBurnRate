@@ -819,7 +819,7 @@ HUD_HTML = r"""<!doctype html>
         <article class="stat blue" id="hud-stat-tokens">
           <header><span>Tokens used today</span></header>
           <strong id="hud-tokens">—</strong>
-          <small>running daily</small>
+          <small>since midnight</small>
         </article>
       </section>
 
@@ -1272,7 +1272,7 @@ HUD_HTML = r"""<!doctype html>
             '<span class="sep"></span>' +
             tipRow("Reference usage value per day, averaged over the last 7 complete days. Today is excluded; derived providers are priced at published rates.");
 
-          const today = nav.todayUsd ?? (totals.trackedValue != null ? totals.trackedValue : null);
+          const today = nav.todayUsd;
           const coverage = nav.todayComplete === false ? "partial — some usage is unpriced" : "complete";
           $("hud-stat-today").dataset.tip =
             '<b class="tip-title">API spend today</b>' +
@@ -1288,11 +1288,11 @@ HUD_HTML = r"""<!doctype html>
             '<span class="sep"></span>' +
             tipRow("Cache-read input ÷ all prompt tokens (reads + fresh input + cache writes), rolling 24h. Unclassified usage is excluded, never estimated.");
 
-          const todayTokens = nav.todayTokens != null ? nav.todayTokens : totals.tokens;
+          const todayTokens = nav.todayTokens ?? 0;
           const avg = nav.tokensAvgPerDay;
           $("hud-stat-tokens").dataset.tip =
             '<b class="tip-title">Tokens used today</b>' +
-            tipRow(esc(tok(todayTokens) + " tokens since local midnight — a running daily total.")) +
+            tipRow(esc(tok(todayTokens) + " tokens since local midnight.")) +
             (avg == null ? "" : '<span class="sep"></span>' +
               tipRow(esc("7-day average: ≈ " + tok(avg) + " tokens/day"), "accent"));
         }
@@ -1319,11 +1319,11 @@ HUD_HTML = r"""<!doctype html>
           });
 
           setStat("hud-burn-rate", nav.burnRatePerDay != null ? usd(nav.burnRatePerDay) : "—");
-          setStat("hud-today", usd(nav.todayUsd ?? totals.trackedValue));
+          setStat("hud-today", usd(nav.todayUsd));
           setStat("hud-cache", totals.cacheReusePct == null || totals.cacheReusePct === ""
             ? "—"
             : Math.round(Number(totals.cacheReusePct)) + "%");
-          setStat("hud-tokens", tok(nav.todayTokens != null ? nav.todayTokens : totals.tokens));
+          setStat("hud-tokens", tok(nav.todayTokens ?? 0));
           statTips(nav, totals);
 
           renderMachines(data.machines || []);
