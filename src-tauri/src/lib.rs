@@ -44,6 +44,12 @@ fn hub_port_reachable(port: u16) -> bool {
 
 fn resolve_python_and_root() -> (PathBuf, PathBuf) {
     let mut candidate_roots = Vec::new();
+    if let Ok(env_root) = env::var("BURNRATE_ROOT") {
+        let p = PathBuf::from(env_root.trim());
+        if p.is_dir() {
+            candidate_roots.push(p);
+        }
+    }
     if let Ok(exe) = env::current_exe() {
         // Handle .../src-tauri/target/{release,debug}/burnrate-desktop.exe
         if let Some(repo_from_exe) = exe
@@ -65,6 +71,13 @@ fn resolve_python_and_root() -> (PathBuf, PathBuf) {
         }
     }
     candidate_roots.push(cwd.clone());
+    #[cfg(target_os = "windows")]
+    {
+        let dev_repo = PathBuf::from(r"C:\Dev\myBurnRateOfficial");
+        if dev_repo.is_dir() {
+            candidate_roots.push(dev_repo);
+        }
+    }
 
     for root in &candidate_roots {
         #[cfg(target_os = "windows")]
@@ -101,6 +114,112 @@ fn enforce_win32_topmost(window: &tauri::WebviewWindow, pinned: bool) {
     if let Ok(hwnd) = window.hwnd() {
         #[link(name = "user32")]
         extern "system" {
+            fn GetWindowLongW(hWnd: isize, nIndex: i32) -> i32;
+            fn SetWindowLongW(hWnd: isize, nIndex: i32, dwNewLong: i32) -> i32;
+            fn SetWindowPos(
+                hWnd: isize,
+                hWndInsertAfter: isize,
+                X: i32,
+                Y: i32,
+                cx: i32,
+                cy: i32,
+                uFlags: u32,
+            ) -> i32;
+        }
+        #[link(name = "dwmapi")]
+        extern "system" {
+            fn DwmSetWindowAttribute(
+                hwnd: isize,
+                dwAttribute: u32,
+                pvAttribute: *const i32,
+                cbAttribute: u32,
+            ) -> i32;
+        }
+        const GWL_STYLE: i32 = -16;
+        const GWL_EXSTYLE: i32 = -20;
+        const WS_POPUP: u32 = 0x8000_0000;
+        const WS_VISIBLE: u32 = 0x1000_0000;
+        const WS_CLIPSIBLINGS: u32 = 0x0400_0000;
+        const WS_CLIPCHILDREN: u32 = 0x0200_0000;
+        const WS_EX_DLGMODALFRAME: u32 = 0x0000_0001;
+        const WS_EX_TOPMOST: u32 = 0x0000_0008;
+        const WS_EX_WINDOWEDGE: u32 = 0x0000_0100;
+        const WS_EX_CLIENTEDGE: u32 = 0x0000_0200;
+        const WS_EX_STATICEDGE: u32 = 0x0002_0000;
+        const WS_EX_APPWINDOW: u32 = 0x0004_0000;
+        const WS_EX_NOREDIRECTIONBITMAP: u32 = 0x0020_0000;
+        const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
+        const DWMWCP_ROUND: i32 = 2;
+        const HWND_TOPMOST: isize = -1;
+        const HWND_NOTOPMOST: isize = -2;
+        const SWP_NOSIZE: u32 = 0x0001;
+        const SWP_NOMOVE: u32 = 0x0002;
+        const SWP_NOACTIVATE: u32 = 0x0010;
+        const SWP_FRAMECHANGED: u32 = 0x0020;
+        const SWP_SHOWWINDOW: u32 = 0x0040;
+        unsafe {
+            let h = hwnd.0 as isize;
+            let target_style = (WS_POPUP | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN) as i32;
+            let cur_style = GetWindowLongW(h, GWL_STYLE);
+            let mut flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW;
+            if cur_style != target_style {
+                SetWindowLongW(h, GWL_STYLE, target_style);
+                flags |= SWP_FRAMECHANGED;
+            }
+            let old_ex = GetWindowLongW(h, GWL_EXSTYLE) as u32;
+            let mut new_ex = (old_ex
+                & !(WS_EX_DLGMODALFRAME
+                    | WS_EX_WINDOWEDGE
+                    | WS_EX_CLIENTEDGE
+                    | WS_EX_STATICEDGE
+                    | WS_EX_NOREDIRECTIONBITMAP))
+                | WS_EX_APPWINDOW;
+            if pinned {
+                new_ex |= WS_EX_TOPMOST;
+            } else {
+                new_ex &= !WS_EX_TOPMOST;
+            }
+            if new_ex != old_ex {
+                SetWindowLongW(h, GWL_EXSTYLE, new_ex as i32);
+                flags |= SWP_FRAMECHANGED;
+            }
+            let corner_pref: i32 = DWMWCP_ROUND;
+            DwmSetWindowAttribute(
+                h,
+                DWMWA_WINDOW_CORNER_PREFERENCE,
+                &corner_pref as *const i32,
+                std::mem::size_of::<i32>() as u32,
+            );
+            SetWindowPos(
+                h,
+                if pinned { HWND_TOPMOST } else { HWND_NOTOPMOST },
+                0,
+                0,
+                0,
+                0,
+                flags,
+            );
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn enforce_win32_topmost(_window: &tauri::WebviewWindow, _pinned: bool) {}
+
+fn apply_hud_always_on_top(window: &tauri::WebviewWindow, pinned: bool) -> Result<(), String> {
+    #[cfg(not(target_os = "windows"))]
+    window.set_always_on_top(pinned).map_err(|e| e.to_string())?;
+    enforce_win32_topmost(window, pinned);
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn resize_hud_window(window: &tauri::WebviewWindow, width: f64, height: f64, pinned: bool) -> Result<(), String> {
+    enforce_win32_topmost(window, pinned);
+    if let Ok(hwnd) = window.hwnd() {
+        #[link(name = "user32")]
+        extern "system" {
+            fn GetDpiForWindow(hwnd: isize) -> u32;
             fn SetWindowPos(
                 hWnd: isize,
                 hWndInsertAfter: isize,
@@ -114,29 +233,35 @@ fn enforce_win32_topmost(window: &tauri::WebviewWindow, pinned: bool) {
         const HWND_TOPMOST: isize = -1;
         const HWND_NOTOPMOST: isize = -2;
         const SWP_NOMOVE: u32 = 0x0002;
-        const SWP_NOSIZE: u32 = 0x0001;
         const SWP_NOACTIVATE: u32 = 0x0010;
         const SWP_SHOWWINDOW: u32 = 0x0040;
         unsafe {
+            let h = hwnd.0 as isize;
+            let dpi = GetDpiForWindow(h);
+            let scale = if dpi > 0 { (dpi as f64) / 96.0 } else { 1.0 };
+            let pw = ((width * scale).round() as i32).max(240);
+            let ph = ((height * scale).round() as i32).max(140);
             SetWindowPos(
-                hwnd.0 as isize,
+                h,
                 if pinned { HWND_TOPMOST } else { HWND_NOTOPMOST },
                 0,
                 0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                pw,
+                ph,
+                SWP_NOMOVE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
             );
         }
     }
+    Ok(())
 }
 
 #[cfg(not(target_os = "windows"))]
-fn enforce_win32_topmost(_window: &tauri::WebviewWindow, _pinned: bool) {}
-
-fn apply_hud_always_on_top(window: &tauri::WebviewWindow, pinned: bool) -> Result<(), String> {
-    window.set_always_on_top(pinned).map_err(|e| e.to_string())?;
-    enforce_win32_topmost(window, pinned);
+fn resize_hud_window(window: &tauri::WebviewWindow, width: f64, height: f64, pinned: bool) -> Result<(), String> {
+    let _ = window.set_min_size(Some(Size::Logical(LogicalSize::new(260.0, 160.0))));
+    window
+        .set_size(Size::Logical(LogicalSize::new(width, height)))
+        .map_err(|e| e.to_string())?;
+    let _ = apply_hud_always_on_top(window, pinned);
     Ok(())
 }
 
@@ -276,12 +401,8 @@ fn set_hud_size(app: AppHandle, state: State<'_, HudPinState>, width: f64, heigh
     if let Some(window) = app.get_webview_window("hud") {
         let w = width.clamp(260.0, 900.0);
         let h = height.clamp(160.0, 1000.0);
-        let _ = window.set_min_size(Some(Size::Logical(LogicalSize::new(260.0, 160.0))));
-        window
-            .set_size(Size::Logical(LogicalSize::new(w, h)))
-            .map_err(|e| e.to_string())?;
         let pinned = state.pinned.load(Ordering::SeqCst);
-        let _ = apply_hud_always_on_top(&window, pinned);
+        resize_hud_window(&window, w, h, pinned)?;
     }
     Ok(())
 }
@@ -289,6 +410,21 @@ fn set_hud_size(app: AppHandle, state: State<'_, HudPinState>, width: f64, heigh
 #[tauri::command]
 fn start_hud_drag(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("hud") {
+        #[cfg(target_os = "windows")]
+        if let Ok(hwnd) = window.hwnd() {
+            #[link(name = "user32")]
+            extern "system" {
+                fn ReleaseCapture() -> i32;
+                fn PostMessageW(hWnd: isize, Msg: u32, wParam: usize, lParam: isize) -> i32;
+            }
+            const WM_NCLBUTTONDOWN: u32 = 0x00A1;
+            const HTCAPTION: usize = 2;
+            unsafe {
+                ReleaseCapture();
+                PostMessageW(hwnd.0 as isize, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+            }
+            return Ok(());
+        }
         window.start_dragging().map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -501,7 +637,9 @@ pub fn run() {
                 if window.label() == "hud" {
                     let state = window.app_handle().state::<HudPinState>();
                     let pinned = state.pinned.load(Ordering::SeqCst);
-                    let _ = apply_hud_always_on_top(&window.app_handle().get_webview_window("hud").unwrap(), pinned);
+                    if let Some(hud_win) = window.app_handle().get_webview_window("hud") {
+                        let _ = apply_hud_always_on_top(&hud_win, pinned);
+                    }
                 }
             }
             _ => {}

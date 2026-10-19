@@ -34,9 +34,7 @@
         "alwaysOnTop": true,
         "decorations": false,
         "maximizable": false,
-        "transparent": true,
-        "noRedirectionBitmap": true,
-        "resizable": true,
+        "resizable": false,
         "visible": true
       }
     ],
