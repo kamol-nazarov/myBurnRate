@@ -432,19 +432,25 @@ def create_app(
             repo_root / "src-tauri" / "target" / "debug" / "burnrate-desktop.exe",
         ]
         exe_path = next((p for p in candidates if p.is_file()), None)
-        if sys.platform == "win32" and action in {"pin", "unpin", "open", "show", "hide", "resize"}:
+        if sys.platform == "win32" and action in {"pin", "unpin", "open", "show", "hide", "resize", "drag"}:
             pinned = action != "unpin"
             try:
                 import ctypes
                 from ctypes import wintypes
 
                 user32 = ctypes.windll.user32
+                dwmapi = ctypes.windll.dwmapi
                 user32.GetWindowTextLengthW.argtypes = [ctypes.c_ssize_t]
                 user32.GetWindowTextLengthW.restype = ctypes.c_int
                 user32.GetWindowTextW.argtypes = [ctypes.c_ssize_t, wintypes.LPWSTR, ctypes.c_int]
                 user32.GetWindowTextW.restype = ctypes.c_int
+                user32.GetWindowLongW.argtypes = [ctypes.c_ssize_t, ctypes.c_int]
+                user32.GetWindowLongW.restype = ctypes.c_long
+                user32.SetWindowLongW.argtypes = [ctypes.c_ssize_t, ctypes.c_int, ctypes.c_long]
+                user32.SetWindowLongW.restype = ctypes.c_long
                 user32.ShowWindow.argtypes = [ctypes.c_ssize_t, ctypes.c_int]
                 user32.ShowWindow.restype = wintypes.BOOL
+                user32.PostMessageW.argtypes = [ctypes.c_ssize_t, wintypes.UINT, ctypes.c_size_t, ctypes.c_ssize_t]
                 user32.SetWindowPos.argtypes = [
                     ctypes.c_ssize_t,
                     ctypes.c_ssize_t,
@@ -473,20 +479,26 @@ def create_app(
                 user32.EnumWindows(WNDENUMPROC(_cb), 0)
                 if found_hwnds:
                     for hwnd in found_hwnds:
+                        user32.SetWindowLongW(hwnd, -16, ctypes.c_long(0x96000000 - 0x100000000))
+                        pref = ctypes.c_int(2)
+                        dwmapi.DwmSetWindowAttribute(ctypes.c_ssize_t(hwnd), 33, ctypes.byref(pref), 4)
                         if action == "hide":
                             user32.ShowWindow(hwnd, 0)
+                        elif action == "drag":
+                            user32.ReleaseCapture()
+                            user32.PostMessageW(hwnd, 0x00A1, 2, 0)
                         elif action == "resize":
                             w = int(float((body or {}).get("width") or 440))
                             h = int(float((body or {}).get("height") or 580))
                             dpi = user32.GetDpiForWindow(hwnd) or 96
                             pw = max(240, int(round(w * dpi / 96.0)))
                             ph = max(140, int(round(h * dpi / 96.0)))
-                            user32.SetWindowPos(hwnd, 0, 0, 0, pw, ph, 0x0002 | 0x0004 | 0x0010)
+                            user32.SetWindowPos(hwnd, 0, 0, 0, pw, ph, 0x0002 | 0x0004 | 0x0010 | 0x0020)
                         else:
                             if action in {"open", "show"}:
                                 user32.ShowWindow(hwnd, 5)
                             ins = -1 if pinned else -2
-                            user32.SetWindowPos(hwnd, ins, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010 | 0x0040)
+                            user32.SetWindowPos(hwnd, ins, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010 | 0x0020 | 0x0040)
                     return {"ok": True, "pinned": pinned, "nativeFound": True, "count": len(found_hwnds)}
             except Exception as exc:
                 return {"ok": False, "error": str(exc)}

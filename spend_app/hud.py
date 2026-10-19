@@ -13,7 +13,7 @@ HUD_HTML = """<!doctype html>
     <style>
       :root {
         color-scheme: light;
-        --paper: rgba(246, 245, 241, 0.94);
+        --paper: #f6f5f1;
         --ink: #1c1b19;
         --muted: #6f6a62;
         --faint: #8a847b;
@@ -25,7 +25,7 @@ HUD_HTML = """<!doctype html>
         --card: rgba(247, 248, 250, 0.92);
         --plate: rgba(255, 255, 255, 0.96);
         --chrome-bg: rgba(28, 27, 25, 0.055);
-        --chrome-border: rgba(28, 27, 25, 0.11);
+        --chrome-border: rgba(28, 27, 25, 0.12);
         --ok: #7dcea0;
         --warn: #d9a441;
         --crit: #c45c4a;
@@ -34,7 +34,7 @@ HUD_HTML = """<!doctype html>
       }
       * { box-sizing: border-box; margin: 0; padding: 0; }
       html, body {
-        background: transparent;
+        background: var(--paper);
         color: var(--ink);
         font-family: var(--sans);
         font-size: 13px;
@@ -43,23 +43,25 @@ HUD_HTML = """<!doctype html>
         overflow-y: auto;
         user-select: none;
         cursor: grab;
-        scrollbar-width: thin;
-        scrollbar-color: rgba(28, 27, 25, 0.28) transparent;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      body {
+        min-height: 100vh;
+        border: 1px solid var(--chrome-border);
+        border-radius: 8px;
       }
       html::-webkit-scrollbar,
-      #hud-quotas::-webkit-scrollbar { width: 10px; }
-      html::-webkit-scrollbar-thumb,
-      #hud-quotas::-webkit-scrollbar-thumb {
-        background: rgba(28, 27, 25, 0.18);
-        border: 3px solid var(--paper);
-        border-radius: 99px;
+      body::-webkit-scrollbar,
+      #hud-quotas::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
       }
       .page {
         min-height: 0;
         padding: 10px 12px 10px;
-        border-radius: 16px;
         background: var(--paper);
-        border: 1px solid var(--chrome-border);
       }
       .hud-drag-pill {
         width: 34px;
@@ -139,9 +141,13 @@ HUD_HTML = """<!doctype html>
         display: inline-flex;
         align-items: center;
         gap: 4px;
+        line-height: 1.1;
         transition: background 0.12s ease, color 0.12s ease;
       }
-      .hud-btn:hover { background: rgba(28, 27, 25, 0.08); color: var(--ink); }
+      .hud-btn:hover {
+        background: rgba(28, 27, 25, 0.08);
+        color: var(--ink);
+      }
       .hud-btn.active {
         background: var(--ink);
         color: #fff;
@@ -149,25 +155,21 @@ HUD_HTML = """<!doctype html>
       .hud-btn-pin-dot {
         width: 5px;
         height: 5px;
-        border-radius: 50%;
-        background: currentColor;
-        opacity: 0.5;
+        border-radius: 99px;
+        background: rgba(111, 106, 98, 0.45);
+        display: inline-block;
       }
       .hud-btn.active .hud-btn-pin-dot {
-        background: #f5b841;
-        opacity: 1;
+        background: #f5b95f;
       }
       #hud-machines {
         display: flex;
         flex-wrap: wrap;
         gap: 6px;
-        margin-top: 8px;
+        margin-top: 10px;
       }
-      #hud-machines:empty { display: none; }
+      #hud-machines:empty { display: none; margin-top: 0; }
       .hud-machine-chip {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
         border: 0;
         background: var(--plate);
         color: var(--muted);
@@ -177,6 +179,9 @@ HUD_HTML = """<!doctype html>
         padding: 4px 10px;
         border-radius: 999px;
         cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
       }
       .hud-machine-chip.active { background: var(--ink); color: #fff; }
       .hud-machine-chip i {
@@ -408,8 +413,7 @@ HUD_HTML = """<!doctype html>
       }
       #hud-tip {
         position: fixed;
-        z-index: 40;
-        max-width: 252px;
+        z-index: 40;\n        max-width: 252px;
         padding: 8px 10px;
         border-radius: 12px;
         background: #fffdf8;
@@ -496,7 +500,7 @@ HUD_HTML = """<!doctype html>
         display: none !important;
       }
       body.is-mini { font-size: 11px; }
-      body.is-mini .page { padding: 6px 8px 6px; border-radius: 12px; }
+      body.is-mini .page { padding: 6px 8px 6px; }
       body.is-mini .hud-drag-pill { width: 26px; height: 3px; margin: -2px auto 4px; }
       body.is-mini .top { gap: 6px; align-items: center; }
       body.is-mini .date-row { gap: 5px; }
@@ -585,9 +589,10 @@ HUD_HTML = """<!doctype html>
         font-size: 9px;
       }
 
+      html[data-theme="dark"],
       body[data-theme="dark"] {
         color-scheme: dark;
-        --paper: rgba(14, 17, 23, 0.94);
+        --paper: #0e1117;
         --ink: #eef2f7;
         --muted: #9aa3b2;
         --faint: #758092;
@@ -624,7 +629,7 @@ HUD_HTML = """<!doctype html>
       body[data-theme="dark"] #hud-tip .sep { background: rgba(255, 255, 255, 0.1); }
     </style>
   </head>
-  <body data-tauri-drag-region="deep">
+  <body>
     <main class="page" id="hud-shell">
       <div class="hud-drag-pill" aria-hidden="true"></div>
       <header class="top">
@@ -702,10 +707,6 @@ HUD_HTML = """<!doctype html>
 
     <script>
       (() => {
-        document.addEventListener("mousedown", event => {
-          if (event.detail === 2) event.stopImmediatePropagation();
-        }, true);
-
         const $ = id => document.getElementById(id);
         let selectedMachine = new URLSearchParams(location.search).get("machine") || "all";
         let pinned = true;
@@ -818,6 +819,21 @@ HUD_HTML = """<!doctype html>
           }
           return null;
         }
+
+        document.addEventListener("mousedown", async event => {
+          if (event.button !== 0 || event.detail > 1) return;
+          if (event.target.closest("button, a, input, select, textarea, [role='button'], [role='radio'], .plan, .hud-agent, .hud-machine-chip")) return;
+          const handled = await tauriInvoke("start_hud_drag");
+          if (handled === null && !window.opener) {
+            try {
+              await fetch("/api/hud/native", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action: "drag" })
+              });
+            } catch {}
+          }
+        });
 
         function applyPinUi(stateVal) {
           pinned = Boolean(stateVal);
@@ -958,9 +974,10 @@ HUD_HTML = """<!doctype html>
         try {
           const saved = localStorage.getItem("burnrate:hud-theme");
           if (saved === "dark" || saved === "light") theme = saved;
-          else if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)\").matches) theme = "dark";
+          else if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) theme = "dark";
         } catch {}
         function applyTheme() {
+          document.documentElement.dataset.theme = theme;
           document.body.dataset.theme = theme;
           const btn = $("hud-theme-btn");
           if (btn) {
@@ -1419,7 +1436,13 @@ HUD_HTML = """<!doctype html>
               if (debounce) clearTimeout(debounce);
               debounce = setTimeout(() => { debounce = null; refresh(); }, 100);
             });
-          } catch {}\n        }\n      })();\n    </script>\n  </body>\n</html>\n"""
+          } catch {}
+        }
+      })();
+    </script>
+  </body>
+</html>
+"""
 
 
 def render_hud() -> str:
