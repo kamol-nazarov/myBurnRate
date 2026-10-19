@@ -232,7 +232,7 @@ fn enforce_win32_topmost(window: &tauri::WebviewWindow, pinned: bool) {
         unsafe {
             let h = hwnd.0 as isize;
             let mut needs_frame_refresh = false;
-            let subclass_fn = hud_subclass_wndproc as usize as isize;
+            let subclass_fn = hud_subclass_wndproc as *const () as usize as isize;
             let cur_proc = GetWindowLongPtrW(h, GWLP_WNDPROC);
             if cur_proc != 0 && cur_proc != subclass_fn {
                 ORIG_HUD_WNDPROC.store(cur_proc, Ordering::SeqCst);
