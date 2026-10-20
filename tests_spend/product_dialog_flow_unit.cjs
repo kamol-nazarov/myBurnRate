@@ -42,7 +42,9 @@ for(const [asset,old] of [['spend.css','42'],['product.js','1']]){
   assert.ok(apiSource.includes(`("${asset}", "${marker}")`),'HTML and content-hash marker must agree');
 }
 const newStyles=fs.readFileSync(require.resolve('../frontend_src/spend.css'),'utf8').split('/* Source and subscription entry points:')[1];
-const palette=new Set(['--surface','--soft','--raised','--border','--border-strong','--hair','--text','--secondary','--muted','--dim','--accent','--green','--amber','--danger','--warn-bg','--warn-border','--good-bg','--good-border','--font-mono','--font-sans','--danger-bg','--danger-border','--dialog-shadow']);
+const palette=new Set(['--surface','--soft','--raised','--border','--border-strong','--hair','--text','--secondary','--muted','--dim','--accent','--green','--amber','--danger','--warn-bg','--warn-border','--good-bg','--good-border','--font-mono','--font-sans','--danger-bg','--danger-border','--dialog-shadow',
+  // Instrument redesign tokens, declared in both theme blocks of spend.css.
+  '--bg','--line','--sunken','--track','--on-accent','--on-danger','--accent-soft','--fd','--fm','--ease']);
 for(const match of newStyles.matchAll(/var\((--[\w-]+)/g))assert.ok(palette.has(match[1]),`Undeclared palette use: ${match[1]}`);
 assert.doesNotMatch(newStyles,/#[\da-f]{3,8}\b|rgba?\(/i);
 const document={body:new Element(),createTextNode:text=>text,activeElement:null,getElementById(id){assert.ok(ids.includes(id),`Missing markup for ${id}`);if(!nodes.has(id))nodes.set(id,new Element(id));return nodes.get(id);},createElement(tag='div'){const n=new Element();n.tagName=tag.toUpperCase();return n;}};

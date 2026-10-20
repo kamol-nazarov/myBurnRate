@@ -1,7 +1,7 @@
 {
   "sources": {
     "index.html": "50b338c213866ea6cd7688f8e66e3818bf845f303cb61586c503debf0920bbab",
-    "spend.css": "0f40e3a77d654de72f8c24200f3b3bb10fd3b6fe861b1f3db159ed532492561e",
+    "spend.css": "3223a28aa6bcf5cd17c89e7176a07291ff78cad0c546d2312758594dfc89614c",
     "spend.js": "58b9eb163672780201115e99892faa82166ce26552c4b4b3a60d8bc9b4ac21f9",
     "request-state.js": "16e25a46cd82da526e22415af33dd9bd8ee34dc32661ccf67338b7472ebc4fba",
     "product.js": "ae664e63336a57ba5dd1b5665eb96a8ef28d75b404241747524285e8becc6f6d",
@@ -10,7 +10,7 @@
     "attention.js": "b93cb2cad92d20e10ce1d1b72b4aefe9f855b953398ed86bff57f339432e7986"
   },
   "outputs": {
-    "spend.css": "2a09cc1934f213b4ef199fcc0869551f5fe4e963dd3e2db4a92cec684708eb26",
+    "spend.css": "f4127141c6eac01e84f9b60ecfe72d6fb5338709a63c502339a1d1cee096295f",
     "dialogs.js": "37b844dddf41a31f037974591dfea46bfa4058a453b0aaf0a003a607952a7d1e",
     "product.js": "3b20c24c1c51767d1b5236bc183e50b14f0ec6ee6a9eb6d5a74808ac2921f60c",
     "spend.js": "3373509da015fe81f87d115159ccfca6cd048d2c8a37c7b85098645596fa9f8c",
