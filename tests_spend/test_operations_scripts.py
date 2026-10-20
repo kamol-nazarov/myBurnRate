@@ -284,3 +284,40 @@ def test_service_write_pid(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     path = burnrate_service.write_pid()
     assert path == tmp_path / "BURNRATE" / "run" / "burnrate.pid"
     assert path.read_text(encoding="utf-8") == str(os.getpid())
+
+
+def _pe_subsystem(path: Path) -> int:
+    data = path.read_bytes()
+    offset = int.from_bytes(data[0x3C:0x40], "little")
+    return int.from_bytes(data[offset + 0x18 + 0x44:offset + 0x18 + 0x46], "little")
+
+
+def test_install_replaces_a_console_pythonw_launcher(tmp_path: Path) -> None:
+    # Regression: uv wrote the console launcher as .venv\Scripts\pythonw.exe, so the
+    # dashboard and the 5-minute watchdog each opened a console window.
+    import sys
+
+    shell = _powershell()
+    base_dir = Path(sys.base_prefix)
+    console, windowless = base_dir / "python.exe", base_dir / "pythonw.exe"
+    if not (console.is_file() and windowless.is_file()):
+        pytest.skip("Windows CPython console and windowless interpreters are not available")
+    venv = tmp_path / "venv"
+    (venv / "Scripts").mkdir(parents=True)
+    shutil.copyfile(console, venv / "Scripts" / "pythonw.exe")
+    base = tmp_path / "base"
+    (base / "Lib" / "venv" / "scripts" / "nt").mkdir(parents=True)
+    shutil.copyfile(windowless, base / "Lib" / "venv" / "scripts" / "nt" / "pythonw.exe")
+    (venv / "pyvenv.cfg").write_text(f"home = {base}\nversion_info = 3.12\n", encoding="utf-8")
+    assert _pe_subsystem(venv / "Scripts" / "pythonw.exe") == 3
+    runtime = str(SCRIPTS / "BurnrateRuntime.ps1").replace("'", "''")
+    command = f". '{runtime}'; Repair-BurnrateWindowlessLauncher -VenvDir '{venv}'"
+    completed = subprocess.run([shell, "-NoProfile", "-Command", command], capture_output=True, text=True, timeout=60)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert _pe_subsystem(venv / "Scripts" / "pythonw.exe") == 2
+    assert len(list((venv / "Scripts").glob("pythonw.exe.console-*"))) == 1
+    # A launcher that is already windowless is left alone.
+    again = subprocess.run([shell, "-NoProfile", "-Command", command], capture_output=True, text=True, timeout=60)
+    assert again.returncode == 0 and "Replaced" not in again.stdout
+    install = _read("BurnrateRuntime.ps1")
+    assert "Repair-BurnrateWindowlessLauncher -VenvDir $venvDir" in install[install.index("function Initialize-BurnrateRepoEnvironment"):]

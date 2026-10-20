@@ -673,6 +673,47 @@ function Get-BurnrateStatus {
     }
 }
 
+function Get-BurnratePeSubsystem {
+    # 2 = Windows GUI (no console), 3 = console.
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
+    return [int][BitConverter]::ToUInt16($bytes, $peOffset + 0x18 + 0x44)
+}
+
+function Repair-BurnrateWindowlessLauncher {
+    # Some uv builds write the console launcher as .venv\Scripts\pythonw.exe, so a
+    # windowless start opens a console window every time (and closing that window
+    # ends the process). Swap in the base interpreter's windowless venv launcher.
+    param(
+        [Parameter(Mandatory = $true)][string]$VenvDir,
+        [switch]$DryRun
+    )
+    $pythonw = Join-Path $VenvDir 'Scripts\pythonw.exe'
+    $config = Join-Path $VenvDir 'pyvenv.cfg'
+    if (-not (Test-Path -LiteralPath $pythonw) -or -not (Test-Path -LiteralPath $config)) {
+        return
+    }
+    if ((Get-BurnratePeSubsystem -Path $pythonw) -eq 2) {
+        return
+    }
+    $homeLine = Get-Content -LiteralPath $config | Where-Object { $_ -match '^\s*home\s*=' } | Select-Object -First 1
+    $launcher = if ($homeLine) { Join-Path (($homeLine -split '=', 2)[1].Trim()) 'Lib\venv\scripts\nt\pythonw.exe' } else { $null }
+    if (-not $launcher -or -not (Test-Path -LiteralPath $launcher) -or (Get-BurnratePeSubsystem -Path $launcher) -ne 2) {
+        Write-Host "Warning: $pythonw opens a console window and no windowless venv launcher was found to replace it."
+        return
+    }
+    if ($DryRun) {
+        Write-Host "DryRun: would replace the console launcher $pythonw with $launcher"
+        return
+    }
+    # A running launcher cannot be overwritten, but it can be renamed aside.
+    $backup = "$pythonw.console-$([DateTime]::UtcNow.ToString('yyyyMMddHHmmss'))"
+    Move-Item -LiteralPath $pythonw -Destination $backup
+    Copy-Item -LiteralPath $launcher -Destination $pythonw
+    Write-Host "Replaced the console launcher $pythonw with the windowless venv launcher."
+}
+
 function Initialize-BurnrateRepoEnvironment {
     param([switch]$DryRun)
     $repoRoot = Get-BurnrateRepoRoot
@@ -687,6 +728,7 @@ function Initialize-BurnrateRepoEnvironment {
 
     if ($DryRun) {
         Write-Host "DryRun: would ensure Python 3.12 virtualenv at $venvDir and initialize database"
+        Repair-BurnrateWindowlessLauncher -VenvDir $venvDir -DryRun
         return
     }
 
@@ -716,6 +758,8 @@ function Initialize-BurnrateRepoEnvironment {
     } finally {
         Pop-Location
     }
+
+    Repair-BurnrateWindowlessLauncher -VenvDir $venvDir
 
     if (Test-Path -LiteralPath $venvPython) {
         Write-Host 'Initializing BURNRATE database...'

@@ -9,6 +9,11 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+- Stop the console window that opened every 5 minutes. uv had written the
+  console launcher as `.venv\Scripts\pythonw.exe`, so the watchdog (and the
+  dashboard at sign-in) each opened a console, and closing it ended the
+  service. Install now swaps in the base interpreter's windowless venv launcher
+  whenever it finds a console one.
 - Track every signed-in Claude Code account. Each extra profile (for example
   `~/.claude-work`, or any directory in `BURNRATE_CLAUDE_ACCOUNT_DIRS`) gets its
   own quota lane, "Claude Code · Work", in the dashboard, Sidecar HUD, and Mini
