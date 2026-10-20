@@ -9,6 +9,8 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+## [0.3.0-beta.14] - 2026-10-19
+
 - Stop the console window that opened every 5 minutes. uv had written the
   console launcher as `.venv\Scripts\pythonw.exe`, so the watchdog (and the
   dashboard at sign-in) each opened a console, and closing it ended the
