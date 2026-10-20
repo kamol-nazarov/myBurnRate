@@ -166,9 +166,20 @@ def combine_results(results, *, issues=(), formats=()):
 
 
 def ingest(*, database_path, pricing, source_database):
+    from spend_app.adapters import unchanged
     path = Path(source_database)
     if not path.exists():
         raise ValueError("OpenCode location is missing or moved.")
+    cache_key, current, replayed = unchanged.check(
+        database_path, "opencode_local", path, lambda: list(opencode_files(path)), pricing)
+    if replayed is not None:
+        return replayed
+    result = _collect(database_path=database_path, pricing=pricing, path=path)
+    unchanged.remember(database_path, "opencode_local", cache_key, current, result)
+    return result
+
+
+def _collect(*, database_path, pricing, path):
     messages, cumulative, issues, formats = read_source(path)
     from spend_app.adapters.opencode_local import _ingest_cumulative
     legacy_results = []

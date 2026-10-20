@@ -17,6 +17,7 @@ PUBLIC_SCRIPTS = (
     "uninstall-burnrate.ps1",
     "start-burnrate.ps1",
     "stop-burnrate.ps1",
+    "restart-burnrate.ps1",
     "status-burnrate.ps1",
     "BurnrateRuntime.ps1",
     "Bench-Burnrate.ps1",
@@ -121,6 +122,19 @@ def test_public_scripts_use_pythonw_and_task_name() -> None:
     assert "spend_app.api" in install
 
 
+def test_install_registers_windowless_watchdog() -> None:
+    install = _read("install-burnrate.ps1") + "\n" + _read("BurnrateRuntime.ps1")
+    assert "BURNRATE Watchdog" in install
+    assert "spend_app.watchdog" in install
+    assert "Register-BurnrateWatchdogTask" in _read("BurnrateRuntime.ps1")
+    uninstall = _read("BurnrateRuntime.ps1")
+    assert "Unregister-BurnrateWatchdogTask" in uninstall[uninstall.index("function Uninstall-BurnrateDashboard"):]
+    # An explicit stop is respected; any start clears it.
+    assert "Set-BurnrateStopMarker" in _read("stop-burnrate.ps1")
+    assert "Clear-BurnrateStopMarker" in uninstall[uninstall.index("function Start-BurnrateDashboard"):]
+    assert "Restart-BurnrateDashboard" in _read("restart-burnrate.ps1")
+
+
 def test_uninstall_identifies_public_process_and_keeps_db() -> None:
     uninstall = _read("uninstall-burnrate.ps1") + "\n" + _read("BurnrateRuntime.ps1")
     assert "BURNRATE Dashboard" in uninstall
@@ -214,6 +228,7 @@ def test_install_dry_run_does_not_register_live_task(tmp_path: Path) -> None:
         assert "127.0.0.1" in output
         assert "17331" in output
         assert "would register" in output.lower()
+        assert "BURNRATE Watchdog" in output
         listed = subprocess.run(
             [
                 shell,

@@ -77,12 +77,14 @@ def test_short_limit_labels_drop_provider_and_unit_words() -> None:
     assert short("Other Models", "Cursor") == "Other Models"
 
 
-def test_mobile_lane_hides_the_eta_column_and_moves_it_into_the_subtitle() -> None:
+def test_mobile_lane_keeps_the_reset_beside_the_figure_without_repeating_it() -> None:
     phone = CSS.split("@media(max-width:767px){", 1)[1].split("\n}\n", 1)[0].replace(" ", "")
-    assert ".capacity-lane.lane-eta{display:none}" in phone
-    assert ".lane-sub-eta{display:inline}" in phone
+    # The gauge readout (figure + reset countdown) fits a phone row, so the reset
+    # keeps its own column and is never repeated in the subtitle.
+    assert '.capacity-lane{grid-template-areas:"whowho""pcteta""barsbars"' in phone
+    assert ".capacity-lane.lane-eta{display:none}" not in phone
+    assert "lane-sub-eta" not in phone
     assert ".lane-sub-eta{display:none}" in CSS.split("@media")[0].replace(" ", "")
-    assert ".capacity-lane{grid-template-columns:minmax(0,1fr)56px" in phone
 
 
 def test_pace_line_and_forecast_tone_are_part_of_the_strip() -> None:

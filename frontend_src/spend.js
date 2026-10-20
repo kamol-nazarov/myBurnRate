@@ -5,13 +5,14 @@ const WINDOWS = [
 ];
 const WINDOW_KEYS = new Set(WINDOWS.map(item => item.key));
 const SHORT_WINDOWS = new Set(["15m","30m","1h","3h","6h","12h","1d"]);
-const MIX_COLORS = {cached_input:"#63c689",fresh_input:"#78a8f8",output:"#d9a441",cache_write:"#b1b7c1"};
+const MIX_COLORS = {cached_input:"var(--mix-cached)",fresh_input:"var(--mix-fresh)",output:"var(--mix-output)",cache_write:"var(--mix-write)"};
 const MIX_LABELS = {cached_input:"Cached input",fresh_input:"Fresh input",output:"Output",cache_write:"Cache write"};
 const DAYS = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+// Categorical tool colors resolve per theme (graphite or paper) in spend.css.
 const TOOL_COLORS = {
-  codex:"#78a8f8",claude:"#9b7bff","claude-code":"#9b7bff",cursor:"#d9a441",
-  opencode:"#63c689",zai:"#63c689",zcode:"#f28c45",grok:"#5cd6e8",supergrok:"#5cd6e8","grok-build":"#5cd6e8",
-  openrouter:"#565d69",xai:"#5cd6e8",antigravity:"#4aa5ff",muse:"#6c8cff"
+  codex:"var(--t-codex)",claude:"var(--t-claude)","claude-code":"var(--t-claude)",cursor:"var(--t-cursor)",
+  opencode:"var(--t-opencode)",zai:"var(--t-opencode)",zcode:"var(--t-zcode)",grok:"var(--t-grok)",supergrok:"var(--t-grok)","grok-build":"var(--t-grok)",
+  openrouter:"var(--t-openrouter)",xai:"var(--t-grok)",antigravity:"var(--t-antigravity)",muse:"var(--t-muse)"
 };
 const EASE_RATE = 0.13;
 const REDUCE_MOTION = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -75,8 +76,35 @@ try {
 
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? "").replace(/[&<>'"]/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[ch]));
-const colorFor = key => TOOL_COLORS[key] || "#858c98";
+const colorFor = key => TOOL_COLORS[key] || "var(--t-other)";
 window.colorFor = colorFor;
+// Provider marks live in one cached sprite (/logos.svg) referenced with <use>.
+const LOGO_URL = document.querySelector('meta[name="burnrate-logos"]')?.content || "/logos.svg";
+const TOOL_LOGOS = {
+  codex:"codex","claude-code":"claude",claude:"claude",cursor:"cursor",opencode:"opencode",zai:"zai",zcode:"zai",
+  grok:"grok",supergrok:"grok","grok-build":"grok",xai:"xai",antigravity:"antigravity",muse:"meta",openrouter:"openrouter",
+  traycer:"traycer",anthropic:"anthropic",openai:"openai",gemini:"gemini"
+};
+const LOGO_HINTS = [
+  [/claude|anthropic|opus|sonnet|haiku/i, "claude"], [/codex|gpt|chatgpt/i, "codex"], [/grok|xai/i, "grok"],
+  [/glm|z\.ai|zhipu/i, "zai"], [/muse|meta/i, "meta"], [/antigravity/i, "antigravity"], [/gemini/i, "gemini"],
+  [/cursor/i, "cursor"], [/openrouter/i, "openrouter"], [/traycer/i, "traycer"], [/opencode/i, "opencode"]
+];
+// A name hint wins when the key is generic ("custom") or when the caller prefers it.
+function logoKey(key, hint, preferHint) {
+  const hinted = LOGO_HINTS.find(([pattern]) => pattern.test(String(hint || "")))?.[1];
+  const direct = TOOL_LOGOS[String(key || "").toLowerCase()];
+  return (preferHint && hinted) || direct || hinted || "custom";
+}
+function logoSvg(id) {
+  return `<svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><use href="${esc(LOGO_URL)}#${esc(id)}"></use></svg>`;
+}
+function setLogo(slot, id) {
+  if (!slot || slot.dataset.logo === id) return;
+  slot.dataset.logo = id;
+  slot.querySelector(":scope > svg.logo")?.remove();
+  slot.insertAdjacentHTML("afterbegin", logoSvg(id));
+}
 window.openHarnessUsage = key => loadEntity("tool", key);
 const finite = value => {
   if (value == null || value === "") return null;
@@ -134,11 +162,10 @@ function gridTop(fr) {
 }
 function quotaColor(value) {
   const n = finite(value);
-  if (n == null) return "#565d69";
-  if (n >= 85) return "#dc6c78";
-  if (n >= 60) return "#d9a441";
-  if (n >= 30) return "#78a8f8";
-  return "#63c689";
+  if (n == null) return "var(--dim)";
+  if (n >= 85) return "var(--danger)";
+  if (n >= 60) return "var(--accent)";
+  return "var(--meter)";
 }
 function formatUnit(value, unit) {
   const n = finite(value);
@@ -740,11 +767,11 @@ function quotaRowModels(rows, idPrefix) {
     const pctRaw = finite(row.pct);
     const skipPct = payg || pctRaw == null;
     const eased = skipPct ? ease(easeKey, null) : ease(easeKey, Math.max(0, Math.min(100, pctRaw)));
-    const color = payg ? "#565d69" : quotaColor(eased);
+    const color = payg ? "var(--dim)" : quotaColor(eased);
     const eta = payg
       ? {value: markedUsd(row.monthToDateUsd ?? row.used, false), label: row.etaLabel || "this month"}
       : etaFromReset(row.resetsAt);
-    const etaColor = payg ? "#6f6a62" : eased == null ? "#1c1b19" : eased >= 85 ? "#b43c29" : eased >= 60 ? "#8a5a12" : "#1c1b19";
+    const etaColor = payg ? "var(--muted)" : eased == null ? "var(--text)" : eased >= 85 ? "var(--danger)" : eased >= 60 ? "var(--accent)" : "var(--text)";
     const usedKey = easeKey + "-used";
     let usedNow = finite(row.used);
     if (usedNow == null && pctRaw != null && finite(row.allowance) != null) usedNow = finite(row.allowance) * pctRaw / 100;
@@ -818,6 +845,14 @@ function renderNavbar(payload) {
     detail.textContent = "Waiting for telemetry";
     status.setAttribute("aria-label", "Metering status loading");
     announce = "Metering status loading";
+  } else if (freshIssues().length) {
+    const issues = freshIssues();
+    const lead = issues[0];
+    status.dataset.state = state.freshness.status === "alarm" ? "error" : "stale";
+    label.textContent = `${lead.short} ${lead.state}`;
+    detail.textContent = issues.length > 1 ? `+${issues.length - 1} more · diagnostics` : lead.ageSeconds != null ? `${agoText(lead.ageSeconds)} old · diagnostics` : "open diagnostics";
+    status.setAttribute("aria-label", `${lead.short} ${lead.state}. ${lead.detail} Open diagnostics.`);
+    announce = `${lead.short} ${lead.state}`;
   } else {
     label.textContent = "Metering";
     detail.textContent = [stamp, cadenceText].filter(part => part && part !== unknown).join(" · ") || unknown;
@@ -830,6 +865,56 @@ function renderNavbar(payload) {
     state.lastStatusAnnounce = signature;
     $("status-live").textContent = announce;
   }
+}
+
+// This computer's own freshness (local only, never proxied to the hub).
+function freshIssues() {
+  return (state.freshness?.issues || []).filter(item => item.severity !== "info");
+}
+function agoText(seconds) {
+  const n = Number(seconds);
+  if (seconds == null || !Number.isFinite(n)) return unknown;
+  if (n < 90) return `${Math.round(n)}s`;
+  if (n < 5400) return `${Math.round(n / 60)}m`;
+  if (n < 172800) return `${Math.round(n / 3600)}h`;
+  return `${Math.round(n / 86400)}d`;
+}
+async function loadFreshness() {
+  if (document.hidden || Date.now() - (state.freshnessAt || 0) < 10000) return;
+  state.freshnessAt = Date.now();
+  try {
+    state.freshness = await jsonFetch("/api/spend/freshness");
+  } catch {
+    state.freshness = null;
+  }
+  renderNavbar();
+  renderFreshness();
+}
+function renderFreshness() {
+  const data = state.freshness;
+  const list = $("freshness-list");
+  if (!list || state.view !== "diagnostics") return;
+  const beat = data?.ingest || {};
+  const parts = [];
+  if (beat.lastPassSeconds != null) parts.push(`Last collection pass ${beat.lastPassSeconds}s, ${agoText(beat.lastPassAgeSeconds)} ago`);
+  if (data?.sync) parts.push(data.sync.failing ? "Hub sync failing" : `Hub sync ${agoText(data.sync.ageSeconds)} ago`);
+  if (data?.hub?.version) parts.push(`Hub ${data.hub.version}${data.hub.matches ? "" : `, this computer ${data.version}`}`);
+  setText($("freshness-note"), data ? parts.join(" · ") || "Waiting for the first collection pass." : "Freshness unavailable.");
+  const rows = [...(data?.issues || []), ...(data?.machines || []).filter(item => item.state !== "online").map(item => ({
+    key: "machine:" + item.key, short: item.key, state: "quiet", severity: "info", ageSeconds: item.ageSeconds,
+    detail: item.lastSeenAt ? "Last synced " + new Date(item.lastSeenAt).toLocaleString() : "Never synced"
+  }))];
+  if (!rows.length) {
+    setEmpty(list, `<p class="panel-empty">Every source on this computer is current.</p>`);
+    return;
+  }
+  reconcileChildren(list, rows, item => item.key, () => nodeFrom(`<div class="waste-item"><div><strong></strong><small></small></div><span></span></div>`), (node, item) => {
+    setText(node.querySelector("strong"), item.short);
+    setText(node.querySelector("small"), item.detail);
+    const tag = node.querySelector(":scope > span");
+    setText(tag, item.state + (item.ageSeconds != null ? " · " + agoText(item.ageSeconds) : ""));
+    setStyle(tag, "color", item.severity === "alarm" ? "var(--danger)" : item.severity === "warn" ? "var(--accent)" : "var(--dim)");
+  });
 }
 
 function renderCoverage(data) {
@@ -872,7 +957,12 @@ function renderRanges(scrollActive) {
   if (scrollActive) {
     const active = document.querySelector("#range-switch button.active, #detail-ranges button.active");
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    active?.scrollIntoView({inline:"center", block:"nearest", behavior: reduceMotion ? "auto" : "smooth"});
+    // Center the active window inside its own strip only; never scroll the page.
+    const strip = active?.parentElement;
+    if (strip && strip.scrollWidth > strip.clientWidth) {
+      const left = active.getBoundingClientRect().left - strip.getBoundingClientRect().left + strip.scrollLeft;
+      strip.scrollTo({left: left - (strip.clientWidth - active.offsetWidth) / 2, behavior: reduceMotion ? "auto" : "smooth"});
+    }
   }
 }
 function changeRange(key) {
@@ -973,7 +1063,7 @@ function renderCapacity(data) {
   const body = shell.querySelector(".capacity-lanes");
   const foot = shell.querySelector(".capacity-foot");
   reconcileChildren(body, providers, provider => "provider:" + provider.providerKey, () => nodeFrom(`<div class="capacity-lane">
-      <div class="lane-who"><i></i><div><b></b><em><span class="lane-sub"></span><span class="lane-sub-eta"></span></em></div></div>
+      <div class="lane-who"><span class="logo-tile"></span><div><b></b><em><span class="lane-sub"></span><span class="lane-sub-eta"></span></em></div></div>
       <div class="lane-bars"><div class="lane-tracks"></div><p class="lane-pace" hidden></p><div class="lane-win"></div></div>
       <b class="lane-pct"></b>
       <div class="lane-eta"><strong></strong><span></span></div>
@@ -983,7 +1073,6 @@ function renderCapacity(data) {
     const leadModel = models[0];
     const peakValue = finite(provider.peakPct);
     const easedPeak = peakValue == null ? ease("peak-" + provider.providerKey, null) : ease("peak-" + provider.providerKey, peakValue);
-    const color = colorFor(provider.providerKey);
     const forecastState = provider.forecast && provider.forecast.state || "";
     let tone = laneTone(easedPeak);
     if (forecastState === "safe") tone = "quiet";
@@ -991,7 +1080,6 @@ function renderCapacity(data) {
     else if (forecastState === "dry") tone = "hot";
     setAttr(node, "data-tone", tone);
     setAttr(node, "data-forecast", forecastState === "tight" || forecastState === "dry" ? forecastState : null);
-    const barColor = forecastState === "dry" ? "#dc6c78" : forecastState === "tight" ? "#d9a441" : color;
     // The full note (used of allowance, source, reset) stays available on hover
     // and in Data health; the lane surface shows only what changes a decision.
     setAttr(node, "title", rows.map(row => `${row.label || "Limit"}: ${capacityNote(row)}`).join("\n") + (provider.activityNote ? `\n${provider.activityNote}` : ""));
@@ -999,7 +1087,7 @@ function renderCapacity(data) {
       if (!event.target.closest("button, a")) loadEntity("tool", provider.providerKey);
     };
     const polledAge = quotaFreshnessAge(provider.polledAt);
-    setStyle(node.querySelector(".lane-who > i"), "background", color);
+    setLogo(node.querySelector(".lane-who > .logo-tile"), provider.providerKey === "opencode" ? "zai" : logoKey(provider.providerKey, provider.providerName));
     setText(node.querySelector(".lane-who b"), provider.providerName || "");
     setText(node.querySelector(".lane-sub"), [provider.plan, leadModel ? shortLimitLabel(leadModel.label, provider.providerName) : "", polledAge, provider.activityNote ? "OpenCode Grok activity observed" : ""].filter(Boolean).join(" · "));
     setText(node.querySelector(".lane-sub-eta"), leadModel && leadModel.eta.value !== unknown ? ` · ${leadModel.eta.value} ${leadModel.eta.label}` : "");
@@ -1008,6 +1096,10 @@ function renderCapacity(data) {
       bar.classList.toggle("thin", index > 0);
       const fill = bar.querySelector("i");
       bindWidth(fill, model.easeKey, model.eased, fresh);
+      // Each meter carries its own pressure; a dry or tight forecast also marks the lead window.
+      let barColor = quotaColor(model.eased);
+      if (index === 0 && forecastState === "dry") barColor = "var(--danger)";
+      else if (index === 0 && forecastState === "tight" && barColor === "var(--meter)") barColor = "var(--accent)";
       setStyle(fill, "background", barColor);
       setStyle(fill, "animationDelay", `${index * 90}ms`);
       const paceMarker = bar.querySelector(".pace-tick");
@@ -1021,6 +1113,7 @@ function renderCapacity(data) {
       reconcileChildren(win, models, model => "win:" + model.rowKey, () => nodeFrom(`<span><span></span> <b></b><em></em></span>`), (span, model) => {
         setText(span.firstElementChild, shortLimitLabel(model.label, provider.providerName));
         bindEase(span.querySelector("b"), model.skipPct ? "" : model.easeKey, "pct", model.eased == null ? unknown : pct(model.eased));
+        setStyle(span.querySelector("b"), "color", model.eased == null ? "" : quotaColor(model.eased));
         const etaText = model.eta.value === unknown ? "" : ` · ${model.eta.value}`;
         setText(span.querySelector("em"), etaText + (model.paceNote ? ` · ${model.paceNote}` : ""));
       });
@@ -1040,7 +1133,7 @@ function renderCapacity(data) {
   reconcileChildren(foot, withoutQuota, provider => "foot:" + provider.providerKey, () => nodeFrom(`<span class="capacity-foot-item"><i></i><b></b><span></span><button type="button" class="settings-link row-secondary" hidden>Connect →</button></span>`), (node, provider) => {
     node.dataset.provider = provider.providerKey;
     const rows = provider.rows || [];
-    setStyle(node.querySelector("i"), "background", colorFor(provider.providerKey));
+    setLogo(node.querySelector("i"), logoKey(provider.providerKey, provider.providerName));
     setText(node.querySelector("b"), provider.providerName || "");
     // Pollers put the human reason after an em dash in the row label.
     const labelReason = rows.map(row => String(row.label || "").split(" — ").slice(1).join(" — ").trim()).find(Boolean);
@@ -1059,7 +1152,7 @@ function renderCapacity(data) {
     const detailNode = node.querySelector("span");
     setText(detailNode, detail);
     if (detailNode) detailNode.title = detail;
-    if (detected) setStyle(node.querySelector("i"), "background", "var(--amber)");
+    setStyle(node.querySelector("i"), "color", detected ? "var(--amber)" : "");
     const connect = node.querySelector("button"); connect.hidden = !detected;
     connect.onclick = event => window.openHarnessManager?.(event.currentTarget);
   });
@@ -1113,7 +1206,7 @@ function renderActivity(data) {
       item = document.createElement("div");
       item.className = "activity-row";
       item.dataset.activityId = activityId;
-      item.innerHTML = `<i class="dot"></i><div><strong></strong><small></small><span class="activity-share"></span></div><em></em>`;
+      item.innerHTML = `<span class="logo-tile"><i class="dot"></i></span><div><strong></strong><small></small><span class="activity-share"></span></div><em></em>`;
     }
     item.classList.toggle("live", liveNow);
     item.classList.toggle("nodata", !liveNow);
@@ -1128,6 +1221,7 @@ function renderActivity(data) {
     }
     if (sweep) sweep.style.animationDelay = `${delay}ms`;
     item.querySelector(".dot").style.animationDelay = `${delay}ms`;
+    setLogo(item.querySelector(".logo-tile"), logoKey(null, row.modelKey));
     const rawAgentName = String(row.name || "Untitled agent").replace(/\s+/g, " ").replace(/^[#*>-]+\s*/, "").trim() || "Untitled agent";
     const shortAgentName = rawAgentName.length > 68 ? rawAgentName.slice(0, 67).trimEnd() + "…" : rawAgentName;
     const strongEl = item.querySelector("strong");
@@ -1310,7 +1404,7 @@ function renderChart(data) {
   } else {
     reconcileChildren(legend, tools, tool => tool.key, () => {
       const node = nodeFrom(`<button type="button" class="legend-card">
-        <span><i></i></span>
+        <span><i class="logo-slot"></i></span>
         <strong></strong>
         <em><span class="legend-cache"></span> cache · <span class="legend-value"></span></em>
       </button>`);
@@ -1328,7 +1422,8 @@ function renderChart(data) {
       const cache = ease("toolCache-" + tool.key, tool.cachePct);
       const marker = tool.valueMarker ?? (tool.isExact === false ? "≈" : "");
       const swatch = node.querySelector("span > i");
-      setStyle(swatch, "background", colorFor(tool.key));
+      setLogo(swatch, logoKey(tool.key, tool.name));
+      setStyle(swatch, "color", colorFor(tool.key));
       setTextAfter(swatch, tool.name || tool.key);
       bindEase(node.querySelector("strong"), "toolTok-" + tool.key, "tokens", tokens(value));
       bindEase(node.querySelector(".legend-cache"), "toolCache-" + tool.key, "pct", pct(cache));
@@ -1344,7 +1439,7 @@ function renderChart(data) {
   const totalTokens = ease("hoverTotal", totals.tokens);
   $("hover-label").textContent = index == null ? `${windowLabel(data.window?.key || state.window)} total` : series[index].label;
   $("hover-value").textContent = index == null ? tokens(totalTokens) : tokens(series[index].total);
-  $("hover-value").style.color = index == null ? "#1c1b19" : "#2563eb";
+  $("hover-value").style.color = index == null ? "var(--text)" : "var(--accent)";
   renderChartHover(data);
 }
 
@@ -1367,13 +1462,13 @@ function renderChartHover(data) {
   tooltip.style.transform = index < series.length * 0.2 ? "translateX(-12%)" : index > series.length * 0.8 ? "translateX(-88%)" : "translateX(-50%)";
   const rows = tools.map(tool => {
     const value = finite(bucket.byTool?.[tool.key]);
-    return value == null ? "" : `<div class="tooltip-row"><span><i style="background:${colorFor(tool.key)}"></i>${esc(tool.name)}</span><strong>${tokens(value)}</strong></div>`;
+    return value == null ? "" : `<div class="tooltip-row"><span><i class="logo-slot" style="color:${colorFor(tool.key)}">${logoSvg(logoKey(tool.key, tool.name))}</i>${esc(tool.name)}</span><strong>${tokens(value)}</strong></div>`;
   }).join("");
   tooltip.innerHTML = `<div class="tooltip-head"><span>${esc(bucket.label)}</span><strong>${tokens(bucket.total)}</strong></div><div class="tooltip-rows">${rows}</div><div class="tooltip-hint">${state.pinned != null ? "Pinned · tap again or press Escape to release" : "Tap to pin"}</div>`;
   $("chart-live").textContent = `${bucket.label}, ${tokens(bucket.total)}`;
   $("hover-label").textContent = bucket.label;
   $("hover-value").textContent = tokens(bucket.total);
-  $("hover-value").style.color = "#2563eb";
+  $("hover-value").style.color = "var(--accent)";
 }
 
 function renderWaste(data) {
@@ -1482,7 +1577,7 @@ function renderModels(data) {
     const key = entry.model.key;
     const node = entry.part === "row"
       ? nodeFrom(`<div class="model-row" tabindex="0" role="button">
-          <strong><i></i></strong>
+          <strong><i class="logo-slot"></i></strong>
           <span class="model-tool"></span>
           <span class="numeric"><span class="model-value"></span></span>
           <span class="numeric model-tokens"></span>
@@ -1491,7 +1586,7 @@ function renderModels(data) {
           <span class="model-share"></span>
         </div>`)
       : nodeFrom(`<button type="button" class="model-card">
-          <div class="model-card-top"><strong><i style="display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:8px"></i></strong><span class="model-tool"></span></div>
+          <div class="model-card-top"><strong><i class="logo-slot"></i></strong><span class="model-tool"></span></div>
           <div class="model-figures">
             <span>Value<b class="card-value"></b></span>
             <span>Tokens<b class="card-tokens"></b></span>
@@ -1515,11 +1610,12 @@ function renderModels(data) {
     const cache = model.cachePct;
     const unpriced = model.value == null;
     const valueText = unpriced ? unknown : markedUsd(spend, model.isExact);
-    const cacheColor = cache == null ? "#6f6a62" : "#246c44";
+    const cacheColor = cache == null ? "var(--dim)" : "var(--text)";
     const approx = model.valueMarker === "≈" || (model.isExact === false && !unpriced);
     node.dataset.key = model.key;
     const swatch = node.querySelector("strong > i");
-    setStyle(swatch, "background", colorFor(model.toolKey));
+    setLogo(swatch, logoKey(model.toolKey, model.name));
+    setStyle(swatch, "color", colorFor(model.toolKey));
     setTextAfter(swatch, model.name || model.key);
     setText(node.querySelector(".model-tool"), tool?.name || model.toolKey);
     if (entry.part === "row") {
@@ -1559,11 +1655,11 @@ function renderMix(data) {
     const share = finite(item.share);
     const eased = share == null ? ease("mixShare-" + item.key, null) : ease("mixShare-" + item.key, share);
     bindWidth(node, "mixShare-" + item.key, eased == null ? null : Math.max(eased, 0), fresh);
-    setStyle(node, "background", MIX_COLORS[item.key] || "#858c98");
+    setStyle(node, "background", MIX_COLORS[item.key] || "var(--t-other)");
   });
   reconcileChildren($("mix-rows"), rows, item => item.key, () => nodeFrom(`<div class="mix-row"><span><i></i></span><em></em><strong></strong></div>`), (node, item) => {
     const swatch = node.querySelector("span > i");
-    setStyle(swatch, "background", MIX_COLORS[item.key] || "#858c98");
+    setStyle(swatch, "background", MIX_COLORS[item.key] || "var(--t-other)");
     setTextAfter(swatch, item.label || MIX_LABELS[item.key] || item.key);
     bindEase(node.querySelector("em"), "mix-" + item.key, "tokens", tokens(ease("mix-" + item.key, item.tokens)));
     bindEase(node.querySelector("strong"), "mixShare-" + item.key, "pct", pct(item.share));
@@ -1588,9 +1684,10 @@ function renderSubs(data) {
     setEmpty(root, `<p class="panel-empty">No configured subscriptions.</p>`);
     return;
   }
-  reconcileChildren(root, rows, (row, i) => `${row.toolKey || ""}:${row.name || i}`, () => nodeFrom(`<div class="sub-row"><div><span><i></i></span><small></small></div><b></b></div>`), (node, row) => {
+  reconcileChildren(root, rows, (row, i) => `${row.toolKey || ""}:${row.name || i}`, () => nodeFrom(`<div class="sub-row"><div><span><i class="logo-slot"></i></span><small></small></div><b></b></div>`), (node, row) => {
     const swatch = node.querySelector("span > i");
-    setStyle(swatch, "background", colorFor(row.toolKey));
+    setLogo(swatch, logoKey(row.toolKey, row.name, true));
+    setStyle(swatch, "color", colorFor(row.toolKey));
     setTextAfter(swatch, row.name || "");
     setText(node.querySelector("small"), row.note || row.cadence || "");
     // Cadence-honest labels (C12): an annual plan states its annual amount;
@@ -1653,7 +1750,8 @@ function renderUnitPrice(data) {
       rate: value / count * 1e6,
       tokens: count,
       exact,
-      color: colorFor(model.toolKey)
+      color: colorFor(model.toolKey),
+      logo: logoKey(model.toolKey, model.name)
     }];
   }).sort((a, b) => b.rate - a.rate);
   const solid = rows.filter(row => row.tokens >= 10e6);
@@ -1710,7 +1808,9 @@ function renderUnitPrice(data) {
     const who = document.createElement("span");
     who.className = "price-who";
     const swatch = document.createElement("i");
-    swatch.style.background = row.color;
+    swatch.className = "logo-slot";
+    swatch.style.color = row.color;
+    setLogo(swatch, row.logo);
     const label = document.createElement("b");
     label.textContent = row.name;
     const tool = document.createElement("small");
@@ -1784,7 +1884,7 @@ function renderHeat(data) {
     setText($("heat-label"), button.dataset.label);
     // Heat cells are reference usage USD (N03) with the unit spoken and shown.
     setText($("heat-value"), button.dataset.value === "" ? unknown : usd(button.dataset.value));
-    $("heat-value").style.color = short ? "#6f6a62" : "#1c1b19";
+    $("heat-value").style.color = short ? "var(--muted)" : "var(--text)";
   };
   const hours = Array.from({length:24}, (_, hour) => hour);
   reconcileChildren($("heatmap"), DAYS, (label, day) => day, label => nodeFrom(`<div class="heat-row"><span>${esc(label)}</span><div class="heat-cells"></div></div>`), (rowNode, label, day) => {
@@ -1797,14 +1897,15 @@ function renderHeat(data) {
     }, (button, hour) => {
       const cell = map.get(`${day}:${hour}`);
       const value = cell ? finite(cell.value) : null;
-      const alpha = value == null ? "0.16" : (0.22 + (value / max) * 0.78).toFixed(3);
+      // Ember ramp: the share of the accent mixed into the sunken cell colour.
+      // A square-root curve keeps quiet hours distinguishable from empty ones.
+      const alpha = value == null ? "0" : (0.14 + Math.sqrt(Math.max(0, value) / max) * 0.86).toFixed(3);
       const shown = value == null ? unknown : heatValueLabel(value);
       const stored = value == null ? "" : String(value);
       if (button.dataset.value !== stored) button.dataset.value = stored;
       setAttr(button, "aria-label", `${button.dataset.label} ${shown}`);
       setAttr(button, "title", `${button.dataset.label} · ${shown}`);
-      const heatBg = `rgba(120,168,248,${alpha})`;
-      if (button.style.getPropertyValue("--heat-bg") !== heatBg) button.style.setProperty("--heat-bg", heatBg);
+      if (button.style.getPropertyValue("--heat-a") !== alpha) button.style.setProperty("--heat-a", alpha);
       button.classList.toggle("is-peak", Number(hour) === peakHour && total > 0);
     });
   });
@@ -1841,7 +1942,7 @@ function renderHeat(data) {
     if (peak) gridCells[state.heatFocus].tabIndex = 0;
     setText($("heat-label"), peak?.dataset.label || "Peak window");
     setText($("heat-value"), peak ? usd(peak.dataset.value) : unknown);
-    $("heat-value").style.color = short ? "#6f6a62" : "#1c1b19";
+    $("heat-value").style.color = short ? "var(--muted)" : "var(--text)";
   }
   setText($("heat-unit"), data.heatmapUnit || "reference usage (USD at documented rates)");
 }
@@ -2062,7 +2163,17 @@ function renderToolsFilter(data) {
     node.dataset.tool = item.key;
     node.classList.toggle("active", on);
     node.setAttribute("aria-checked", String(on));
-    setText(node, item.name || item.key);
+    if (item.key === "all") {
+      setText(node, item.name);
+      delete node.dataset.logo;
+    } else {
+      if (!node.querySelector(":scope > span")) {
+        node.replaceChildren(document.createElement("span"));
+        delete node.dataset.logo;
+      }
+      setLogo(node, logoKey(item.key, item.name));
+      setText(node.querySelector(":scope > span"), item.name || item.key);
+    }
   });
 }
 function changeTool(toolKey) {
@@ -2103,7 +2214,7 @@ window.openSidecarHud = async () => {
     const data = await res.json();
     if (data && data.ok) return;
   } catch {}
-  window.open("/hud", "burnrate-hud", "popup=yes,width=440,height=580,left=36,top=72");
+  window.open("/hud", "burnrate-hud", "popup=yes,width=380,height=640,left=36,top=72");
 };
 
 function initTopbarChrome() {
@@ -2112,6 +2223,22 @@ function initTopbarChrome() {
     const hudBtn = nodeFrom(`<button id="nav-hud" class="nav-chip" type="button" title="Toggle Always-on-Top Sidecar HUD"><i class="settings-dot good-dot" aria-hidden="true"></i><span>HUD</span></button>`);
     hudBtn.addEventListener("click", () => window.openSidecarHud());
     settings.insertBefore(hudBtn, settings.firstChild);
+  }
+  const themeBtn = $("nav-theme");
+  if (themeBtn) {
+    // The <head> script already applied the saved or OS theme; this only flips it.
+    const label = () => {
+      const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+      themeBtn.setAttribute("aria-label", `Switch to ${next} theme`);
+      themeBtn.title = `Switch to ${next} theme`;
+    };
+    label();
+    themeBtn.addEventListener("click", () => {
+      const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+      document.documentElement.dataset.theme = next;
+      try { localStorage.setItem("burnrate:theme", next); } catch {}
+      label();
+    });
   }
 }
 initTopbarChrome();
@@ -2205,7 +2332,7 @@ function renderDetail() {
   const exact = data.isExact !== false;
   setText($("detail-kind"), data.kind === "model" ? "Model detail" : "Tool detail");
   setText($("detail-name"), data.name || unknown);
-  setStyle($("detail-swatch"), "background", data.color || colorFor(data.providerKey));
+  setLogo($("detail-swatch"), logoKey(data.providerKey || data.toolKey, data.name));
   setText($("detail-plan"), data.plan || unknown);
   setText($("detail-cov"), exact ? "exact rates" : "published rates");
   $("detail-cov").className = "chip " + (exact ? "good" : "warn");
@@ -2270,12 +2397,12 @@ function renderDetail() {
     const share = finite(item.share);
     const eased = share == null ? ease("detailMixShare-" + item.key, null) : ease("detailMixShare-" + item.key, share);
     const swatch = node.querySelector("span > i");
-    setStyle(swatch, "background", MIX_COLORS[item.key] || "#858c98");
+    setStyle(swatch, "background", MIX_COLORS[item.key] || "var(--t-other)");
     setTextAfter(swatch, item.label || MIX_LABELS[item.key] || item.key);
     setText(node.querySelector("strong"), tokens(item.tokens));
     const bar = node.querySelector(".mini-track > i");
     bindWidth(bar, "detailMixShare-" + item.key, eased == null ? null : Math.max(eased, 0), fresh);
-    setStyle(bar, "background", MIX_COLORS[item.key] || "#858c98");
+    setStyle(bar, "background", MIX_COLORS[item.key] || "var(--t-other)");
     setText(node.querySelector("em"), `${pct(item.share)} of volume`);
   });
   const opp = data.opportunity || {};
@@ -2332,7 +2459,7 @@ function renderDetail() {
       const i = entry.i;
       const shareOfShown = shownTotal > 0 ? (finite(row.value) || 0) / shownTotal * 100 : 0;
       const share = ease("ss-" + i, finite(row.sharePct) ?? shareOfShown);
-      const cacheColor = row.cachePct == null ? "#6f6a62" : "#246c44";
+      const cacheColor = row.cachePct == null ? "var(--dim)" : "var(--text)";
       const sid = String(row.id || "").slice(0, 10);
       const durationText = row.durationMin == null ? unknown : row.durationMin + "m";
       if (entry.part === "row") {
@@ -2378,7 +2505,7 @@ function renderDetailHover(data) {
   document.querySelectorAll("#detail-hits .hit-target").forEach((button, i) => button.classList.toggle("active", index === i));
   $("detail-hover-label").textContent = bucket ? bucket.label : `${windowLabel(state.window)} total`;
   $("detail-hover-value").textContent = bucket ? tokens(bucket.tokens) : tokens(data.tokens);
-  $("detail-hover-value").style.color = bucket ? (data.color || "#2563eb") : "#1c1b19";
+  $("detail-hover-value").style.color = bucket ? "var(--accent)" : "var(--text)";
 }
 
 function renderDiagnostics() {
@@ -2386,14 +2513,19 @@ function renderDiagnostics() {
   if (!data || state.view !== "diagnostics") return;
   window.renderSourceGuidance?.(data);
   renderNavbar({...data, navigation: state.navigation, status: state.summary?.status, cadenceSeconds: state.summary?.cadenceSeconds, cadenceMinutes: state.summary?.cadenceMinutes, generatedAt: data.generatedAt, failingSource: state.summary?.failingSource});
+  renderFreshness();
   const grid = $("diagnostic-grid");
   const ingest = data.ingest || [];
   if (!ingest.length) {
     setEmpty(grid, `<p class="panel-empty">No ingest runs recorded.</p>`);
   } else {
-    reconcileChildren(grid, ingest, item => item.source, () => nodeFrom(`<article class="diagnostic-card"><span></span><strong></strong><small><span class="diag-count"></span><br><span class="diag-detail"></span></small></article>`), (node, item) => {
-      const color = item.status === "success" || item.status === "partial" ? "#246c44" : item.status === "skipped" || item.status === "unavailable" ? "#8a5a12" : "#b43c29";
+    reconcileChildren(grid, ingest, item => item.source, () => nodeFrom(`<article class="diagnostic-card"><i class="logo-slot"></i><span></span><strong></strong><small><span class="diag-count"></span><br><span class="diag-detail"></span></small></article>`), (node, item) => {
+      const color = item.status === "success" || item.status === "partial" ? "var(--green)" : item.status === "skipped" || item.status === "unavailable" ? "var(--accent)" : "var(--danger)";
       setText(node.querySelector("span"), item.source);
+      const sourceKey = String(item.source || "").split(/[_:]/)[0];
+      const sourceLogo = node.querySelector(".logo-slot");
+      sourceLogo.hidden = sourceKey === "sync";
+      if (sourceKey !== "sync") setLogo(sourceLogo, logoKey(sourceKey, sourceKey));
       const status = node.querySelector("strong");
       setText(status, item.status);
       setStyle(status, "color", color);
@@ -2502,6 +2634,7 @@ async function loadDiagnostics(background = false) {
 }
 function refreshCurrent() {
   if (document.hidden || pendingViews[state.view]) return;
+  loadFreshness();
   window.BurnrateAttention?.refresh();
   if (state.view === "overview") loadSummary(true);
   else if (state.view === "detail" && state.entity) loadEntity(state.entity.kind, state.entity.key, true);
@@ -2754,6 +2887,7 @@ window.addEventListener("focus", () => { consumeFocusTool(); });
 window.addEventListener("storage", event => { if (event.key === "burnrate:focus-tool") consumeFocusTool(); });
 pruneSnapshots();
 if (!consumeFocusTool()) loadSummary();
+loadFreshness();
 scheduleEase();
 setInterval(refreshCurrent, POLL_MS);
 connectLiveStream();

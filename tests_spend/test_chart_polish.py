@@ -42,7 +42,7 @@ def test_nice_max_gives_round_quarter_ticks() -> None:
 
 def test_baseline_and_bar_caps() -> None:
     assert '<div class="grid-line${fr === 0 ? " base" : ""}"' in JS
-    assert ".grid-line.base{border-top-color:#2a303a}" in CSS
+    assert ".grid-line.base{border-top-color:var(--border);border-top-style:solid}" in CSS
     assert ".day-column::after{" not in CSS
     assert 'segment.classList.toggle("top", visible)' in JS
     assert "gap:0;height:100%" in CSS

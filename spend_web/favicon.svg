@@ -1,32 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
-  <defs>
-    <linearGradient id="bg" x1="6" y1="4" x2="58" y2="60" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#1D222D"/>
-      <stop offset="0.5" stop-color="#0E1117"/>
-      <stop offset="1" stop-color="#050608"/>
-    </linearGradient>
-    <linearGradient id="rim" x1="6" y1="4" x2="58" y2="60" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#D9A441" stop-opacity="0.72"/>
-      <stop offset="0.5" stop-color="#8AB7FF" stop-opacity="0.38"/>
-      <stop offset="1" stop-color="#10B981" stop-opacity="0.55"/>
-    </linearGradient>
-    <linearGradient id="barCyan" x1="0" y1="18" x2="0" y2="49" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#8AB7FF"/>
-      <stop offset="1" stop-color="#10B981"/>
-    </linearGradient>
-    <linearGradient id="barGold" x1="0" y1="12" x2="0" y2="49" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#FDE68A"/>
-      <stop offset="0.45" stop-color="#F5A623"/>
-      <stop offset="1" stop-color="#D9A441"/>
-    </linearGradient>
-  </defs>
-  <rect x="2" y="2" width="60" height="60" rx="16" fill="url(#bg)" stroke="url(#rim)" stroke-width="1.6"/>
-  <rect x="5.5" y="5.5" width="53" height="53" rx="13" stroke="#FFFFFF" stroke-opacity="0.07"/>
-  <path d="M12 49H52" stroke="#252A34" stroke-width="1.5" stroke-linecap="round"/>
-  <rect x="14.5" y="35" width="6.8" height="14" rx="2.4" fill="url(#barCyan)" fill-opacity="0.58"/>
-  <rect x="24.2" y="27.5" width="6.8" height="21.5" rx="2.4" fill="url(#barCyan)" fill-opacity="0.82"/>
-  <rect x="33.9" y="20.5" width="6.8" height="28.5" rx="2.4" fill="url(#barCyan)"/>
-  <rect x="43.6" y="13" width="6.8" height="36" rx="2.4" fill="url(#barGold)"/>
-  <path d="M16 28L26.5 21.5L36.8 15.8L47 10.2" stroke="#F8FAFC" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="47" cy="10.2" r="3.4" fill="#D9A441" stroke="#050608" stroke-width="1.5"/>
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#0E0E10"/>
+  <rect x="2.5" y="2.5" width="59" height="59" rx="13.5" stroke="#FFFFFF" stroke-opacity="0.1"/>
+  <g stroke-width="4.2" stroke-linecap="round">
+    <path d="M19.9 42L13 46M18 35H10M19.9 28L13 24M25 22.9L21 16M32 21V13M39 22.9L43 16" stroke="#F2F0EB"/>
+    <path d="M44.1 28L51 24M46 35H54M44.1 42L51 46" stroke="#FF6B22"/>
+  </g>
+  <path d="M32 35L44.5 22.5" stroke="#FF6B22" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="32" cy="35" r="4.4" fill="#F2F0EB" stroke="#0E0E10" stroke-width="2"/>
 </svg>

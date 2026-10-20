@@ -22,7 +22,8 @@ def test_loading_chrome_never_flashes_zero_money() -> None:
     live = HTML.split('id="live-count"', 1)[1].split("</span>", 1)[0]
     assert "0 live" not in live
     assert "$0.00" not in HTML
-    assert "background:#252a32" in CSS
+    skeleton = CSS.split(".burnrate-skeleton,.skel{", 1)[1].split("}", 1)[0]
+    assert "background:var(--track)" in skeleton
 
 
 def test_empty_window_fixture_stays_unknown_not_zero() -> None:

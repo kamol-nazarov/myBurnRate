@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 from spend_app.adapters.common import UsageRow, persist_rows, stable_id
-from spend_app.adapters.local_common import number, optional_number, parse_iso_time, sqlite_read_only
+from spend_app.adapters.local_common import number, optional_number, parse_iso_time, sqlite_read_only, store_read_only
 from spend_app.pricing import PricingEngine
 
 
@@ -30,10 +30,15 @@ SESSION_MESSAGE = "session created"
 # Reader state per log path: byte offset already persisted plus the
 # session -> model / project maps learned from lines before that offset.
 _STATE: dict[str, dict] = {}
+# updates.jsonl path -> (file signature, parsed rows, issues). reduce_updates is
+# a pure function of one file's records, so an unchanged file reuses its parse
+# instead of re-reading hundreds of megabytes of session updates every pass.
+_UPDATES: dict[str, tuple] = {}
 
 
 def reset_state() -> None:
     _STATE.clear()
+    _UPDATES.clear()
 
 
 def canonical_model(model: str | None) -> str:
@@ -110,7 +115,7 @@ def coverage_start(path: Path, database_path: Path | None = None) -> datetime | 
     db_file = Path(database_path) if database_path is not None else None
     if db_file is not None and db_file.is_file():
         try:
-            connection = sqlite_read_only(db_file)
+            connection = store_read_only(db_file)
             try:
                 row = connection.execute(
                     "SELECT MIN(occurred_at) FROM (SELECT occurred_at FROM usage_events WHERE source=? UNION ALL SELECT occurred_at FROM unpriced_usage_events WHERE source=?)",
@@ -130,10 +135,18 @@ def ingest(*, database_path: Path, pricing: PricingEngine, log_path: Path) -> di
     from spend_app.connection_paths import cache_identity
     from spend_app.adapters.grok_native import read_source, reconcile
     if log_path.is_dir() or log_path.name in {"updates.jsonl", "signals.json"}:
+        from spend_app.adapters import unchanged
+        from spend_app.adapters.grok_native import files as native_files
+        cache_key, current, replayed = unchanged.check(
+            database_path, SOURCE, log_path, lambda: list(native_files(log_path)), pricing)
+        if replayed is not None:
+            return replayed
         rows, issues, files = read_source(log_path)
         result = persist_rows(database_path=database_path, pricing=pricing, source=SOURCE, usage_rows=rows,
                               prepare=lambda connection, _: reconcile(connection, rows, issues), issues=issues)
-        return {**result, "files": files, "issues": sorted(set(issues))}
+        result = {**result, "files": files, "issues": sorted(set(issues))}
+        unchanged.remember(database_path, SOURCE, cache_key, current, result)
+        return result
     key = cache_identity(database_path, log_path, "grok-generation-v1")
     if not log_path.is_file():
         from spend_app.adapters.common import failed_result
@@ -173,21 +186,39 @@ def _session_updates(root: Path) -> tuple[list[UsageRow], list[str], int]:
         update_files = list(source_files(root, "sessions/*/*/updates.jsonl"))
     except LocationError:
         return rows, issues, found
+    from spend_app.connection_paths import confined, file_signature
+    seen = set()
     for file in update_files:
         found += 1
-        records = []
+        key = str(file)
+        seen.add(key)
         try:
-            from spend_app.connection_paths import LocationError, confined
+            signature = file_signature(file)
+        except OSError:
+            signature = None
+        cached = _UPDATES.get(key)
+        if signature is not None and cached and cached[0] == signature:
+            rows.extend(cached[1])
+            issues.extend(cached[2])
+            continue
+        records = []
+        file_issues = []
+        try:
             with confined(file).open("r", encoding="utf-8") as stream:
                 for line in stream:
                     try:
                         records.append(json.loads(line))
                     except ValueError:
-                        issues.append("malformed_grok_native_metadata")
+                        file_issues.append("malformed_grok_native_metadata")
         except OSError:
             issues.append("grok_native_source_unavailable")
             continue
         parsed, errors = reduce_updates(records)
+        file_issues.extend(errors)
         rows.extend(parsed)
-        issues.extend(errors)
+        issues.extend(file_issues)
+        if signature is not None:
+            _UPDATES[key] = (signature, tuple(parsed), tuple(file_issues))
+    for key in [key for key in _UPDATES if key not in seen]:
+        _UPDATES.pop(key, None)
     return rows, issues, found

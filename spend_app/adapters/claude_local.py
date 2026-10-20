@@ -43,11 +43,17 @@ SOURCE = "claude_local"
 from spend_app.adapters.claude_records import PARSER_VERSION
 _FILE_COUNTS = {}
 _FILE_SIGNATURES: dict[str, tuple[int, int]] = {}
+# Quarantined-record count of a cached file whose content has permanently
+# unusable records (older revisions, conflicting cache durations). Re-reading
+# identical bytes cannot change that, so the file is cached like a clean one
+# and its count is replayed so the pass still reports it as partial.
+_FILE_QUARANTINED: dict = {}
 
 
 def reset_file_cache() -> None:
     _FILE_SIGNATURES.clear()
     _FILE_COUNTS.clear()
+    _FILE_QUARANTINED.clear()
 
 
 def _iso(value: datetime) -> str:
@@ -155,6 +161,9 @@ def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -
         if _FILE_SIGNATURES.get(cache_key) == signature:
             skipped_files += 1
             confirmed_events += _FILE_COUNTS.get(cache_key, 0)
+            if _FILE_QUARANTINED.get(cache_key):
+                issues.append("claude_partial_source_metadata")
+                quarantined += _FILE_QUARANTINED[cache_key]
             continue
         try:
             session, events, health = parse_file_with_health(path)
@@ -208,7 +217,7 @@ def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -
                     "model_key": latest_model,
                 }
             )
-        pending_signatures.append((cache_key, signature, len(events), not (health.partial or health.quarantined or health.skipped)))
+        pending_signatures.append((cache_key, signature, len(events), health.quarantined + health.skipped))
     def finalize(connection):
         for session in session_rows:
             upsert_session(
@@ -224,10 +233,16 @@ def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -
     result = persist_rows(database_path=database_path, pricing=pricing, source=SOURCE, usage_rows=usage_rows,
                           prepare=(lambda connection, rows: reconcile(connection, observations, issues)) if observations else None,
                           finalize=finalize, issues=issues)
-    for cache_key, signature, count, file_clean in pending_signatures:
-        if not issues or file_clean:
-            _FILE_SIGNATURES[cache_key] = signature
-            _FILE_COUNTS[cache_key] = count
+    # The rows were persisted (a failure raises before this point), so every
+    # parsed file is cached: an unchanged signature means identical bytes and
+    # an identical parse, whatever records it had to quarantine.
+    for cache_key, signature, count, unusable in pending_signatures:
+        _FILE_SIGNATURES[cache_key] = signature
+        _FILE_COUNTS[cache_key] = count
+        if unusable:
+            _FILE_QUARANTINED[cache_key] = unusable
+        else:
+            _FILE_QUARANTINED.pop(cache_key, None)
     result["files"] = parsed_files
     result["filesSkippedUnchanged"] = skipped_files
     result["eventsSeen"] = parsed_events + confirmed_events

@@ -902,6 +902,83 @@ def test_spoke_drops_expired_hub_limits_windows(tmp_path: Path, monkeypatch) -> 
     assert providers["grok"]["status"] == "unavailable"
 
 
+def test_spoke_overlay_never_resurrects_a_reset_superseded_or_older_local_reading(tmp_path: Path, monkeypatch) -> None:
+    # Regression: the overlay took the newest *available* local row, so a
+    # 77% Muse 5-hour reading from the morning kept being pasted over the Hub
+    # long after its window reset and newer local polls said "unavailable".
+    from spend_app.db import upsert_quota
+    from spend_app.sync import fetch_from_configured_hub
+
+    now = datetime.now(timezone.utc)
+    past, future = _iso(now - timedelta(hours=13)), _iso(now + timedelta(days=6))
+    synced = "sync:mydesktop-ed05:muse_quota_endpoint"
+    hub_summary = {
+        "capacity": [
+            {
+                "providerKey": "muse", "providerName": "Muse Code", "isPayg": False, "peakPct": 77.0, "primaryPct": 77.0,
+                "rows": [
+                    {"limitKey": "5h", "label": "Muse Code 5-hour window", "pct": 77.0, "unit": "pct", "resetsAt": past,
+                     "polledAt": _iso(now - timedelta(hours=13)), "source": synced, "isPayg": False, "order": 0, "isPrimary": True},
+                    {"limitKey": "weekly", "label": "Muse Code weekly window", "pct": 25.0, "unit": "pct", "resetsAt": future,
+                     "polledAt": _iso(now - timedelta(minutes=10)), "source": synced, "isPayg": False, "order": 1, "isPrimary": False},
+                ],
+            },
+            {
+                "providerKey": "grok", "providerName": "Grok", "isPayg": False, "peakPct": 10.0, "primaryPct": 10.0,
+                "rows": [
+                    {"limitKey": "weekly", "label": "Grok weekly window", "pct": 10.0, "unit": "pct", "resetsAt": future,
+                     "polledAt": _iso(now - timedelta(minutes=30)), "source": "sync:mydesktop-ed05:grok_local",
+                     "isPayg": False, "order": 0, "isPrimary": True},
+                ],
+            },
+        ]
+    }
+    settings = _spoke_with_fake_hub(tmp_path, monkeypatch, {"/api/spend/summary": hub_summary})
+    with connect(settings.database_path) as connection:
+        # Morning reading, then the endpoint stopped reporting the window.
+        upsert_quota(connection, provider_key="muse", limit_key="5h", label="Muse Code 5-hour window", unit="pct",
+                     source="muse_quota_endpoint", polled_at=_iso(now - timedelta(hours=13)), pct=77.0, resets_at=past)
+        upsert_quota(connection, provider_key="muse", limit_key="5h", label="Muse Code 5-hour window — no usage reported",
+                     unit="unavailable", source="muse_quota_endpoint", polled_at=_iso(now - timedelta(minutes=1)))
+        # A local weekly reading older than the Hub's must not win.
+        upsert_quota(connection, provider_key="muse", limit_key="weekly", label="Muse Code weekly window", unit="pct",
+                     source="muse_quota_endpoint", polled_at=_iso(now - timedelta(hours=2)), pct=30.0, resets_at=future)
+        # A fresher local reading still wins.
+        upsert_quota(connection, provider_key="grok", limit_key="weekly", label="Grok weekly window", unit="pct",
+                     source="grok_local", polled_at=_iso(now - timedelta(seconds=20)), pct=12.0, resets_at=future)
+
+    data = fetch_from_configured_hub(settings, "/api/spend/summary", {"window": "1d"})
+    cards = {card["providerKey"]: card for card in data["capacity"]}
+    muse = {row["limitKey"]: row for row in cards["muse"]["rows"]}
+    assert muse["5h"]["pct"] is None and muse["5h"]["unit"] == "unavailable"
+    assert "No new zero was inferred" in muse["5h"]["label"]
+    assert cards["muse"]["primaryPct"] is None
+    assert muse["weekly"]["pct"] == 25.0 and muse["weekly"]["source"] == synced
+    grok = cards["grok"]["rows"][0]
+    assert grok["pct"] == 12.0 and grok["source"] == "grok_local"
+
+
+def test_spoke_overlay_skips_a_local_reading_whose_window_already_reset(tmp_path: Path, monkeypatch) -> None:
+    from spend_app.db import upsert_quota
+    from spend_app.sync import fetch_from_configured_hub
+
+    now = datetime.now(timezone.utc)
+    hub_summary = {"capacity": [{
+        "providerKey": "grok", "providerName": "Grok", "isPayg": False, "peakPct": None, "primaryPct": None,
+        "rows": [{"limitKey": "weekly", "label": "Grok weekly window", "pct": None, "unit": "unavailable",
+                  "resetsAt": None, "polledAt": None, "source": "unavailable", "isPayg": False, "order": 0, "isPrimary": True}],
+    }]}
+    settings = _spoke_with_fake_hub(tmp_path, monkeypatch, {"/api/spend/summary": hub_summary})
+    with connect(settings.database_path) as connection:
+        upsert_quota(connection, provider_key="grok", limit_key="weekly", label="Grok weekly window", unit="pct",
+                     source="grok_local", polled_at=_iso(now - timedelta(days=8)), pct=96.0,
+                     resets_at=_iso(now - timedelta(days=1)))
+
+    data = fetch_from_configured_hub(settings, "/api/spend/summary", {"window": "1d"})
+    row = data["capacity"][0]["rows"][0]
+    assert row["pct"] is None and row["unit"] == "unavailable"
+
+
 def test_cached_hub_payload_is_remasked_and_never_mutated() -> None:
     from spend_app.sync import _mask_expired_hub_quotas
 

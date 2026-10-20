@@ -1,7 +1,8 @@
 """Windowless BURNRATE dashboard process (pythonw -m spend_app.service).
 
 Scheduled-task autostart launches this module via pythonw so no console
-appears. Self-heal is the task RestartCount, not a separate supervisor.
+appears. Self-heal is the task RestartCount plus the watchdog task, which
+restarts the service when it stops answering or its ingest stalls.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ import argparse
 import atexit
 import ctypes
 import logging
+import logging.handlers
 import os
 import sys
 from pathlib import Path
@@ -21,6 +23,19 @@ MUTEX_NAME = r"Local\BURNRATE-Dashboard"
 PID_NAME = "burnrate.pid"
 ERROR_ALREADY_EXISTS = 183
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+LOG_MAX_BYTES = 5 * 1024 * 1024
+LOG_BACKUPS = 3
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
+# Per-request and per-job chatter that buried real problems in a 150 MB log.
+QUIET_LOGGERS = {
+    "httpx": "WARNING",
+    "httpcore": "WARNING",
+    "apscheduler": "WARNING",
+    # "skipped: maximum number of running instances reached" fires every
+    # interval while a slow pass overlaps; the ingest timing line covers it.
+    "apscheduler.scheduler": "ERROR",
+    "apscheduler.executors.default": "WARNING",
+}
 
 
 def data_root() -> Path:
@@ -96,21 +111,24 @@ def _log_config(log_path: Path) -> dict:
         "version": 1,
         "disable_existing_loggers": False,
         "formatters": {
-            "default": {"format": "%(asctime)s %(levelname)s %(name)s %(message)s"},
+            "default": {"format": LOG_FORMAT},
         },
         "handlers": {
             "file": {
-                "class": "logging.FileHandler",
+                "class": "logging.handlers.RotatingFileHandler",
                 "filename": filename,
                 "formatter": "default",
                 "encoding": "utf-8",
+                "maxBytes": LOG_MAX_BYTES,
+                "backupCount": LOG_BACKUPS,
             },
         },
         "root": {"handlers": ["file"], "level": "INFO"},
         "loggers": {
             "uvicorn": {"handlers": ["file"], "level": "INFO", "propagate": False},
             "uvicorn.error": {"handlers": ["file"], "level": "INFO", "propagate": False},
-            "uvicorn.access": {"handlers": ["file"], "level": "INFO", "propagate": False},
+            "uvicorn.access": {"handlers": ["file"], "level": "WARNING", "propagate": False},
+            **{name: {"level": level} for name, level in QUIET_LOGGERS.items()},
         },
     }
 
@@ -118,13 +136,13 @@ def _log_config(log_path: Path) -> dict:
 def configure_logging() -> Path:
     ensure_directories()
     log_path = log_dir() / "dashboard.log"
-    logging.basicConfig(
-        filename=str(log_path),
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-        encoding="utf-8",
-        force=True,
+    handler = logging.handlers.RotatingFileHandler(
+        log_path, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUPS, encoding="utf-8"
     )
+    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    logging.basicConfig(level=logging.INFO, handlers=[handler], force=True)
+    for name, level in QUIET_LOGGERS.items():
+        logging.getLogger(name).setLevel(level)
     return log_path
 
 
@@ -149,6 +167,11 @@ def serve(
         return 0
 
     pid_path = write_pid()
+    # Running again, by any launcher, ends an explicit stop; the watchdog resumes.
+    try:
+        (run_dir() / "stopped").unlink(missing_ok=True)
+    except OSError:
+        pass
 
     def _cleanup() -> None:
         try:

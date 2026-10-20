@@ -25,7 +25,7 @@
         "label": "hud",
         "title": "BURNRATE · Sidecar HUD",
         "url": "http://127.0.0.1:17331/hud",
-        "width": 440,
+        "width": 380,
         "height": 580,
         "minWidth": 260,
         "minHeight": 160,

@@ -61,7 +61,8 @@ def test_html_references_hash_versioned_assets_and_revalidates(tmp_path: Path) -
     assert page.headers["cache-control"] == ASSET_REVALIDATE_CACHE
     body = page.text
     assert '?v=42"' not in body
-    assert "/favicon.svg?v=1" not in body
+    # The literal source marker is rewritten; a content hash may itself start with "1".
+    assert '/favicon.svg?v=1"' not in body
     js_version = hashlib.sha256((WEB / "spend.js").read_bytes()).hexdigest()[:12]
     css_version = hashlib.sha256((WEB / "spend.css").read_bytes()).hexdigest()[:12]
     icon_version = hashlib.sha256((WEB / "favicon.svg").read_bytes()).hexdigest()[:12]
@@ -135,3 +136,20 @@ def test_head_prefetch_starts_data_requests_before_the_script() -> None:
     assert "prefetch?.summary" in load and "prefetch?.health" in load
     assert "async function jsonFetch(url, prefetched, signal)" in JS
     assert 'await (prefetched || fetch(url, {cache:"no-store", signal}))' in JS
+
+
+def test_provider_logo_sprite_is_versioned_cached_and_complete(tmp_path: Path) -> None:
+    # Provider marks ship as one sprite so spend.js stays inside its size budget.
+    client = _client(tmp_path)
+    version = asset_version(WEB / "logos.svg")
+    assert f'name="burnrate-logos" content="/logos.svg?v={version}"' in client.get("/").text
+    sprite = client.get(f"/logos.svg?v={version}")
+    assert sprite.status_code == 200
+    assert sprite.headers["content-type"].startswith("image/svg+xml")
+    assert sprite.headers["cache-control"] == ASSET_IMMUTABLE_CACHE
+    for symbol in ("codex", "openai", "claude", "anthropic", "cursor", "grok", "xai", "zai", "opencode",
+                   "antigravity", "openrouter", "meta", "gemini", "traycer", "custom"):
+        assert f'<symbol id="{symbol}" viewBox="0 0 24 24">' in sprite.text, symbol
+    for unsafe in ("<script", "<foreignObject", "<image", " on"):
+        assert unsafe not in sprite.text
+    assert client.get("/logos.svg").headers["cache-control"] == ASSET_REVALIDATE_CACHE

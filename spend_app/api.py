@@ -50,7 +50,7 @@ def asset_version(path: Path) -> str:
 
 def render_index(web_root: Path) -> str:
     html = (web_root / "index.html").read_text(encoding="utf-8")
-    for name, marker in (("spend.css", "43"), ("spend.js", "42"), ("request-state.js", "1"), ("product.js", "2"), ("dialogs.js", "1"), ("favicon.svg", "1")):
+    for name, marker in (("spend.css", "43"), ("spend.js", "42"), ("request-state.js", "1"), ("product.js", "2"), ("dialogs.js", "1"), ("favicon.svg", "1"), ("logos.svg", "1")):
         html = html.replace(f"/{name}?v={marker}", f"/{name}?v={asset_version(web_root / name)}")
     return html
 
@@ -297,6 +297,14 @@ def create_app(
             now=slot_now(),
         )
         return {**payload, "sources": source_guidance()}
+
+    @app.get("/api/spend/freshness")
+    def spend_freshness() -> dict:
+        # This computer's own collection, quota and sync state. Never proxied:
+        # on a spoke the hub cannot see that a local source or meter stalled.
+        from spend_app.freshness import report
+
+        return report(settings)
 
     @app.get("/api/onboarding")
     def onboarding():
@@ -593,6 +601,16 @@ def create_app(
     @app.get("/favicon.svg")
     def favicon(request: Request):
         path = web_root / "favicon.svg"
+        return FileResponse(
+            path,
+            media_type="image/svg+xml",
+            headers={"Cache-Control": _asset_cache_header(request, path)},
+        )
+
+    @app.get("/logos.svg")
+    def provider_logos(request: Request):
+        # One sprite of provider marks; pages reference symbols with <use href>.
+        path = web_root / "logos.svg"
         return FileResponse(
             path,
             media_type="image/svg+xml",

@@ -165,7 +165,7 @@ function buildPlanMutation(op,values,p,t,preview,confirmed){const b={operation:o
     el("harness-docs").href=payload.documentation || payload.sources?.find(s=>s.documentation)?.documentation || "";
     const sourceCopy={antigravity_local:["Antigravity","Local app"],claude_local:["Claude Code","Transcripts"],codex_local:["Codex","Sessions"],cursor_local:["Cursor","Project files"],cursor_usage_service:["Cursor","Usage service"],cursor_csv:["Cursor","CSV import"],grok_local:["Grok","Local logs"],opencode_local:["OpenCode","Local database"],traycer_local:["Traycer","Host"],zcode_local:["ZCode","Local database"],muse_local:["Muse Code","Sessions"]};
     const integrationCopy={OPENAI_ADMIN_KEY:["OpenAI","Admin API"],ANTHROPIC_ADMIN_KEY:["Anthropic","Admin API"],CURSOR_API_KEY:["Cursor","Admin API"],OPENROUTER_MANAGEMENT_KEY:["OpenRouter","Management API"],BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE:["Claude","Account usage"],BURNRATE_ENABLE_CURSOR_USAGE_SERVICE:["Cursor","Usage service"],BURNRATE_ENABLE_ZAI_QUOTA:["Z.AI","Quota"]};
-    const integrationTool={OPENAI_ADMIN_KEY:"codex",ANTHROPIC_ADMIN_KEY:"claude-code",CURSOR_API_KEY:"cursor",OPENROUTER_MANAGEMENT_KEY:"openrouter",BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE:"claude-code",BURNRATE_ENABLE_CURSOR_USAGE_SERVICE:"cursor",BURNRATE_ENABLE_ZAI_QUOTA:"zai"};
+    const integrationTool={OPENAI_ADMIN_KEY:"openai",ANTHROPIC_ADMIN_KEY:"anthropic",CURSOR_API_KEY:"cursor",OPENROUTER_MANAGEMENT_KEY:"openrouter",BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE:"claude-code",BURNRATE_ENABLE_CURSOR_USAGE_SERVICE:"cursor",BURNRATE_ENABLE_ZAI_QUOTA:"zai"};
     const statusLine=source=>{
       const state=source.state;
       if(state==="healthy")return "Updated "+relative(source.freshnessSeconds);

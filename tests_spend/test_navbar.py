@@ -40,7 +40,8 @@ def test_burnrate_brand_mark_is_static_crisp_and_productized() -> None:
         assert token in css or token in (ROOT / "frontend_src" / "index.html").read_text(encoding="utf-8")
     favicon = (ROOT / "spend_web" / "favicon.svg").read_text(encoding="utf-8")
     assert 'viewBox="0 0 64 64"' in favicon
-    assert "#D9A441" in favicon and "#8AB7FF" in favicon
+    # Gauge mark: neutral ticks rising into an ember redline and needle.
+    assert "#F2F0EB" in favicon and "#FF6B22" in favicon
     assert "animation-fill-mode:both" not in css
     assert "animation-fill-mode: both" not in css
     assert "@media(prefers-reduced-motion:reduce)" in css
@@ -51,7 +52,8 @@ def test_burnrate_navbar_is_scoped_sticky_and_responsive() -> None:
     css = (ROOT / "frontend_src" / "spend.css").read_text(encoding="utf-8")
     assert ".burnrate-nav{" in css
     assert "position:sticky;top:0;z-index:30;" in css
-    assert "background:rgba(10,12,15,.94)" in css
+    assert "background:var(--nav-bg)" in css
+    assert "--nav-bg:rgba(8,8,10,.82)" in css
     assert "backdrop-filter:blur(14px)" in css
     assert "width:min(1620px,calc(100% - 48px));min-height:78px" in css
     assert "@media(max-width:1439px)" in css

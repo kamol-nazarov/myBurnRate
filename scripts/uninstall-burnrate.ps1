@@ -5,7 +5,7 @@ param(
     [switch]$DryRun
 )
 
-# Unregister "BURNRATE Dashboard". Stop the process identified by the PID file
+# Unregister "BURNRATE Watchdog" and "BURNRATE Dashboard". Stop the process identified by the PID file
 # or a command line containing spend_app.api or burnrate serve AND listening
 # on 17331. Does not delete the database unless -PurgeData.
 

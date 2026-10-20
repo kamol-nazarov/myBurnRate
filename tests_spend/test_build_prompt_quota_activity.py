@@ -95,18 +95,18 @@ def test_supporting_capacity_notes_are_derived_from_the_same_row_percentage() ->
     assert "literal" not in note
 
 
-def test_pressure_colors_match_the_attached_file_not_a_shifted_scale() -> None:
+def test_pressure_colors_follow_the_instrument_meter_scale() -> None:
     import inspect
 
     _html, _css, js = sources()
     color_fn = js.split("function quotaColor(value)", 1)[1].split("function formatUnit", 1)[0]
-    assert "n >= 85" in color_fn
-    assert "n >= 60" in color_fn
-    assert "n >= 30" in color_fn
-    assert "#dc6c78" in color_fn
-    assert "#d9a441" in color_fn
-    assert "#78a8f8" in color_fn
-    assert "#63c689" in color_fn
+    # Meters stay neutral below 60%, turn ember from 60%, and red from 85%;
+    # an unknown reading stays dim. Colors resolve per theme in spend.css.
+    assert 'if (n == null) return "var(--dim)"' in color_fn
+    assert 'if (n >= 85) return "var(--danger)"' in color_fn
+    assert 'if (n >= 60) return "var(--accent)"' in color_fn
+    assert 'return "var(--meter)"' in color_fn
+    assert "#" not in color_fn
     source = inspect.getsource(pressure_color)
     assert "85" in source and "60" in source and "30" in source, (
         "Quota pressure colors are <30 green, <60 blue, <85 amber, else red. "

@@ -49,8 +49,11 @@ def test_typography_layout_and_chart_geometry_match_the_attached_file() -> None:
     assert "Inter" not in fonts
     assert "JetBrains" not in fonts
     assert "font-size:10px" in css and "letter-spacing:.12em" in css and "text-transform:uppercase" in css
-    assert "font-size:21px" in css and "letter-spacing:-.02em" in css
-    assert "letter-spacing:-.045em" in css
+    # Instrument type: DIN-style Bahnschrift for numerals, headings and labels.
+    assert "--fd:Bahnschrift" in css
+    assert ".panel h2{margin:6px 0 0;font:600 19px/1.15 var(--fd)" in css
+    assert ".kpi-value{display:block;margin:16px 0 10px;font:300 38px/1 var(--fd)" in css
+    assert "letter-spacing:-.02em" in css
     assert "width:min(1620px,calc(100%-48px))" in css.replace(" ", "")
     assert "minmax(0,1.42fr)minmax(340px,.6fr)" in css.replace(" ", "")
     assert "align-items:stretch" in css

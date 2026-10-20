@@ -232,3 +232,42 @@ def test_zcode_account_plan_counts_and_foreign_cli_does_not() -> None:
     assert issue != "non_plan"
     skipped, reason = parse_row(dict(base, provider_id="anthropic"), modern=True)
     assert skipped is None and reason == "non_plan"
+
+
+def test_unchanged_store_is_not_re_reconciled_but_changes_and_age_force_a_pass(tmp_path: Path, monkeypatch) -> None:
+    # Re-reconciling an idle store every pass held the serial local pass behind
+    # it for seconds, long enough for every source to read as stale.
+    import spend_app.adapters.zcode_local as module
+    from spend_app.adapters import unchanged
+
+    unchanged.reset_state()
+    source = tmp_path / "zcode.sqlite"
+    _database(source)
+    spend = tmp_path / "spend.db"
+    pricing = PricingEngine.load(ROOT / "pricing")
+    first = ingest(database_path=spend, pricing=pricing, source_database=source)
+    assert first["eventsWritten"] == 1 and not first.get("unchanged")
+
+    parses: list[int] = []
+    original = module.parse_database
+    monkeypatch.setattr(module, "parse_database", lambda *args, **kwargs: parses.append(1) or original(*args, **kwargs))
+
+    second = ingest(database_path=spend, pricing=pricing, source_database=source)
+    assert second["unchanged"] is True and second["status"] == first["status"] and parses == []
+    with connect(spend) as connection:
+        runs = [row[0] for row in connection.execute("SELECT status FROM ingest_runs WHERE source='zcode_local' ORDER BY id")]
+    assert runs == [first["status"], first["status"]]  # health keeps a fresh run
+
+    with sqlite3.connect(source) as connection:
+        connection.execute(
+            "INSERT INTO model_usage VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("usage-4", "session-1", "builtin:zai-coding-plan", "GLM-5.3-Flash", "completed",
+             1788404299999, 50, 5, 0, 0, 0, "{}"),
+        )
+    third = ingest(database_path=spend, pricing=pricing, source_database=source)
+    assert not third.get("unchanged") and third["eventsWritten"] == 1 and parses == [1]
+
+    monkeypatch.setattr(unchanged, "FORCE_SECONDS", 0)
+    fourth = ingest(database_path=spend, pricing=pricing, source_database=source)
+    assert not fourth.get("unchanged") and parses == [1, 1]
+    unchanged.reset_state()

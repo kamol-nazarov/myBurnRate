@@ -1,6 +1,8 @@
 # Shared helpers for the public BURNRATE dashboard lifecycle scripts.
-# Default bind is 127.0.0.1:17331. Self-heal is the scheduled task RestartCount
-# (3 restarts, 1 minute interval). There is no separate supervisor script.
+# Default bind is 127.0.0.1:17331. Self-heal has two parts: the dashboard task
+# RestartCount (3 restarts, 1 minute interval) covers a failed launch, and the
+# "BURNRATE Watchdog" task (pythonw -m spend_app.watchdog every 5 minutes)
+# restarts a service that stopped answering or whose collection stalled.
 
 $ErrorActionPreference = 'Stop'
 
@@ -12,6 +14,9 @@ $script:BurnrateAppSpec = 'spend_app.api:app'
 $script:BurnrateLaunchModule = 'spend_app.service'
 $script:BurnrateRestartCount = 3
 $script:BurnrateRestartInterval = New-TimeSpan -Minutes 1
+$script:BurnrateWatchdogTaskName = 'BURNRATE Watchdog'
+$script:BurnrateWatchdogModule = 'spend_app.watchdog'
+$script:BurnrateWatchdogInterval = New-TimeSpan -Minutes 5
 
 function Get-BurnrateDataRoot {
     if (-not [string]::IsNullOrWhiteSpace($env:BURNRATE_DATA_ROOT)) {
@@ -33,6 +38,23 @@ function Get-BurnrateLogDir {
 
 function Get-BurnratePidFile {
     Join-Path (Get-BurnrateRunDir) 'burnrate.pid'
+}
+
+function Get-BurnrateStopMarker {
+    Join-Path (Get-BurnrateRunDir) 'stopped'
+}
+
+function Set-BurnrateStopMarker {
+    # An explicit stop: the watchdog leaves the dashboard down until it starts again.
+    Initialize-BurnrateDirectories
+    Set-Content -LiteralPath (Get-BurnrateStopMarker) -Value ([DateTime]::UtcNow.ToString('o')) -Encoding ascii
+}
+
+function Clear-BurnrateStopMarker {
+    $marker = Get-BurnrateStopMarker
+    if (Test-Path -LiteralPath $marker) {
+        Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Get-BurnrateDbPath {
@@ -350,7 +372,7 @@ function Register-BurnrateDashboardTask {
         -ExecutionTimeLimit ([TimeSpan]::Zero) `
         -StartWhenAvailable `
         -Hidden
-    $description = 'BURNRATE dashboard. Windowless pythonw bound to 127.0.0.1:17331 at sign-in. Self-heal is RestartCount 3 / RestartInterval 1 minute, not a separate supervisor script.'
+    $description = 'BURNRATE dashboard. Windowless pythonw bound to 127.0.0.1:17331 at sign-in. RestartCount 3 / RestartInterval 1 minute covers a failed launch; the BURNRATE Watchdog task restarts a stalled service.'
     $task = New-ScheduledTask -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description $description
 
     if ($DryRun) {
@@ -381,6 +403,82 @@ function Unregister-BurnrateDashboardTask {
     Write-Host "Unregistered scheduled task '$TaskName'"
 }
 
+function Test-BurnrateWatchdogPayload {
+    param($Task)
+    if (-not $Task) {
+        return $false
+    }
+    $action = @($Task.Actions) | Select-Object -First 1
+    if (-not $action) {
+        return $false
+    }
+    $execute = [string]$action.Execute
+    $arguments = [string]$action.Arguments
+    return ($execute.IndexOf('pythonw', [StringComparison]::OrdinalIgnoreCase) -ge 0) -and
+        ($arguments.IndexOf($script:BurnrateWatchdogModule, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+}
+
+function Register-BurnrateWatchdogTask {
+    param(
+        [string]$TaskName = $script:BurnrateWatchdogTaskName,
+        [Parameter(Mandatory = $true)]$Launch,
+        [switch]$DryRun
+    )
+
+    if (-not $DryRun) {
+        $existing = Get-BurnrateScheduledTask -TaskName $TaskName
+        if ($existing -and -not (Test-BurnrateWatchdogPayload -Task $existing)) {
+            throw "Scheduled task '$TaskName' exists but is not a BURNRATE watchdog task. Aborting."
+        }
+    }
+
+    $identity = Get-CurrentWindowsIdentityName
+    # pythonw keeps every run windowless; powershell.exe would flash a console.
+    $action = New-ScheduledTaskAction -Execute $Launch.FilePath -Argument "-m $($script:BurnrateWatchdogModule)" -WorkingDirectory $Launch.WorkingDirectory
+    $trigger = New-ScheduledTaskTrigger -Once -At ([DateTime]::Now.AddMinutes(1)) -RepetitionInterval $script:BurnrateWatchdogInterval
+    $principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive -RunLevel Limited
+    $settings = New-ScheduledTaskSettingsSet `
+        -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries `
+        -MultipleInstances IgnoreNew `
+        -ExecutionTimeLimit (New-TimeSpan -Minutes 10) `
+        -StartWhenAvailable `
+        -Hidden
+    $description = 'BURNRATE watchdog. Every 5 minutes, restarts the dashboard on 127.0.0.1:17331 when it stops answering or its collection stalls. Leaves an explicitly stopped dashboard alone; at most 3 restarts an hour.'
+    $task = New-ScheduledTask -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description $description
+
+    if ($DryRun) {
+        Write-Host "DryRun: would register scheduled task '$TaskName' (every $($script:BurnrateWatchdogInterval.TotalMinutes) minutes, Limited, Hidden)"
+        Write-Host "DryRun: action $($Launch.FilePath) -m $($script:BurnrateWatchdogModule)"
+        return
+    }
+
+    Register-ScheduledTask -TaskName $TaskName -InputObject $task -Force | Out-Null
+    Write-Host "Registered scheduled task '$TaskName'"
+}
+
+function Unregister-BurnrateWatchdogTask {
+    param(
+        [string]$TaskName = $script:BurnrateWatchdogTaskName,
+        [switch]$DryRun
+    )
+    $existing = Get-BurnrateScheduledTask -TaskName $TaskName
+    if (-not $existing) {
+        Write-Host "Scheduled task '$TaskName' is not registered."
+        return
+    }
+    if (-not (Test-BurnrateWatchdogPayload -Task $existing)) {
+        Write-Host "Scheduled task '$TaskName' is not a BURNRATE watchdog task; leaving it."
+        return
+    }
+    if ($DryRun) {
+        Write-Host "DryRun: would unregister scheduled task '$TaskName'"
+        return
+    }
+    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+    Write-Host "Unregistered scheduled task '$TaskName'"
+}
+
 function Start-BurnrateDashboard {
     param([switch]$DryRun)
 
@@ -396,6 +494,7 @@ function Start-BurnrateDashboard {
         return
     }
 
+    Clear-BurnrateStopMarker
     $listeners = @(Get-BurnrateListeners)
 
     if ($listeners.Count -gt 0) {
@@ -486,9 +585,71 @@ function Stop-BurnrateDashboard {
     }
 }
 
+function Stop-BurnrateStartingInstance {
+    # A dashboard stuck before it listens still holds the single-instance mutex,
+    # so every new start exits at once. Only the restart path calls this, after
+    # the listener is gone; it matches the service launch line on this port and
+    # never the watchdog (spend_app.watchdog) or other spend_app commands.
+    param([switch]$DryRun)
+    $port = [string]$script:BurnratePort
+    $stuck = @(Get-CimInstance -ClassName Win32_Process -Filter "CommandLine like '%$($script:BurnrateLaunchModule)%'" -ErrorAction SilentlyContinue | Where-Object {
+        $line = [string]$_.CommandLine
+        $_.ProcessId -ne $PID -and $line.IndexOf("--port $port", [StringComparison]::OrdinalIgnoreCase) -ge 0
+    })
+    foreach ($process in $stuck) {
+        if ($DryRun) {
+            Write-Host "DryRun: would stop unresponsive BURNRATE dashboard PID $($process.ProcessId)"
+            continue
+        }
+        Stop-Process -Id $process.ProcessId -ErrorAction SilentlyContinue
+        Write-Host "Stopped unresponsive BURNRATE dashboard (PID $($process.ProcessId))"
+    }
+}
+
+function Restart-BurnrateDashboard {
+    param(
+        [string]$TaskName = $script:BurnrateTaskName,
+        [switch]$DryRun
+    )
+    Stop-BurnrateDashboard -DryRun:$DryRun
+    Stop-BurnrateStartingInstance -DryRun:$DryRun
+    $task = Get-BurnrateScheduledTask -TaskName $TaskName
+    $viaTask = $task -and (Test-BurnrateTaskPayload -Task $task)
+    if ($DryRun) {
+        if ($viaTask) {
+            Write-Host "DryRun: would start scheduled task '$TaskName'"
+        } else {
+            Start-BurnrateDashboard -DryRun
+        }
+        return
+    }
+    if (-not $viaTask) {
+        Start-BurnrateDashboard
+        return
+    }
+    # Start through the sign-in task so the service runs exactly as it does at
+    # logon, owned by Task Scheduler rather than by this short-lived script.
+    Clear-BurnrateStopMarker
+    if ($task.State -eq 'Running') {
+        Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    }
+    Start-ScheduledTask -TaskName $TaskName
+    try {
+        Wait-BurnrateHealth -Seconds 120
+        Write-Host "Restarted BURNRATE dashboard through scheduled task '$TaskName'"
+        return
+    } catch {
+        Write-Host "The dashboard started by '$TaskName' did not answer; starting it directly."
+    }
+    Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    Stop-BurnrateStartingInstance
+    Start-BurnrateDashboard
+}
+
 function Get-BurnrateStatus {
     param([string]$TaskName = $script:BurnrateTaskName)
     $task = Get-BurnrateScheduledTask -TaskName $TaskName
+    $watchdog = Get-BurnrateScheduledTask -TaskName $script:BurnrateWatchdogTaskName
     $listeners = @(Get-BurnrateListeners)
     $listener = $listeners | Select-Object -First 1
     $pidValue = if ($listener) { [int]$listener.OwningProcess } else { Read-BurnratePidFile }
@@ -498,6 +659,8 @@ function Get-BurnrateStatus {
         registered   = [bool]$task
         hidden       = if ($task) { [bool]$task.Settings.Hidden } else { $null }
         restartCount = if ($task) { $task.Settings.RestartCount } else { $null }
+        watchdog     = if ($watchdog) { [string]$watchdog.State } else { 'not registered' }
+        stopped      = Test-Path -LiteralPath (Get-BurnrateStopMarker)
         host         = $script:BurnrateHost
         port         = $script:BurnratePort
         listening    = [bool]$listener
@@ -809,7 +972,9 @@ function Install-BurnrateDashboard {
     Write-Host "pid file: $($launch.PidFile)"
     Write-Host "data root: $($launch.DataRoot)"
     Write-Host "self-heal: scheduled task RestartCount $($script:BurnrateRestartCount) / RestartInterval $($script:BurnrateRestartInterval)"
+    Write-Host "watchdog: '$($script:BurnrateWatchdogTaskName)' every $($script:BurnrateWatchdogInterval.TotalMinutes) minutes"
     Register-BurnrateDashboardTask -TaskName $TaskName -Launch $launch -DryRun:$DryRun
+    Register-BurnrateWatchdogTask -Launch $launch -DryRun:$DryRun
     if ($DryRun) {
         Start-BurnrateDashboard -DryRun
         Install-BurnrateShortcuts -DryRun
@@ -834,6 +999,7 @@ function Uninstall-BurnrateDashboard {
         [switch]$PurgeData,
         [switch]$DryRun
     )
+    Unregister-BurnrateWatchdogTask -DryRun:$DryRun
     Stop-BurnrateDashboard -DryRun:$DryRun
     Unregister-BurnrateDashboardTask -TaskName $TaskName -DryRun:$DryRun
     $dbPath = Get-BurnrateDbPath

@@ -417,3 +417,40 @@ def test_traycer_drops_grok_rows_the_cli_log_already_covers(tmp_path: Path, monk
     seen.clear()
     traycer_local.ingest(database_path=tmp_path / "spend.db", pricing=None, database_glob=str(fake_db))
     assert len(seen) == 4, "without a Grok log nothing is dropped"
+
+
+def test_session_updates_reuse_the_parse_of_unchanged_files(tmp_path, monkeypatch) -> None:
+    # Regression: every pass re-read every sessions/*/*/updates.jsonl (hundreds
+    # of MB on a busy machine), which made Grok the slowest local source.
+    import json as _json
+
+    from spend_app.adapters import grok_local
+
+    def update(session: str, ms: int, event: str) -> str:
+        return _json.dumps({"params": {"sessionId": session, "_meta": {"agentTimestampMs": ms, "eventId": event},
+                                       "update": {"usage": {"inputTokens": 10, "outputTokens": 2,
+                                                            "cachedReadTokens": 0, "cachedWriteTokens": 0}}}}) + "\n"
+
+    root = tmp_path / ".grok"
+    first = root / "sessions" / "project" / "s1" / "updates.jsonl"
+    second = root / "sessions" / "project" / "s2" / "updates.jsonl"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.write_text(update("s1", 1_790_000_000_000, "e1"), encoding="utf-8")
+    second.write_text(update("s2", 1_790_000_100_000, "e2"), encoding="utf-8")
+    grok_local.reset_state()
+    rows, issues, found = grok_local._session_updates(root)
+    assert found == 2 and len(rows) == 2 and issues == []
+
+    opened = []
+    original = grok_local.json.loads
+    monkeypatch.setattr(grok_local.json, "loads", lambda text, *a, **k: opened.append(1) or original(text, *a, **k))
+    again, _issues, _found = grok_local._session_updates(root)
+    assert [row.raw_id for row in again] == [row.raw_id for row in rows]
+    assert opened == []  # neither file was re-parsed
+
+    with second.open("a", encoding="utf-8") as stream:
+        stream.write(update("s2", 1_790_000_200_000, "e3"))
+    grown, _issues, _found = grok_local._session_updates(root)
+    assert len(grown) == 3 and len(opened) == 2  # only the changed file was re-read
+    grok_local.reset_state()

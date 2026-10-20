@@ -280,3 +280,31 @@ def test_idle_terminal_or_expired_claude_session_is_not_live(tmp_path: Path) -> 
     )
     sessions = _claude_active_sessions(tmp_path, now=now)
     assert [row["sessionId"] for row in sessions] == ["live-session"]
+
+
+def test_unchanged_file_with_quarantined_records_is_not_reparsed(tmp_path: Path, monkeypatch) -> None:
+    # Regression: a transcript with a permanently unusable record (here, an
+    # invalid JSON line) was never cached, so every pass re-read and
+    # re-reconciled it. Large idle transcripts like that made the Claude pass
+    # take ~20 seconds. The cached pass must still report the file as partial.
+    from spend_app.adapters import claude_local
+
+    fixture = tmp_path / "claude.jsonl"
+    write_fixture(fixture)
+    with fixture.open("a", encoding="utf-8") as stream:
+        stream.write("{not json\n")
+    database = tmp_path / "spend.db"
+    pricing = PricingEngine.load(ROOT / "pricing")
+    reset_file_cache()
+    first = ingest(database_path=database, pricing=pricing, session_glob=str(fixture))
+    calls = []
+    original = claude_local.parse_file_with_health
+    monkeypatch.setattr(claude_local, "parse_file_with_health", lambda path: calls.append(path) or original(path))
+    second = ingest(database_path=database, pricing=pricing, session_glob=str(fixture))
+    assert calls == []
+    assert second["filesSkippedUnchanged"] == 1
+    assert "claude_partial_source_metadata" in first["issues"]
+    assert "claude_partial_source_metadata" in second["issues"]
+    assert second["quarantined"] == first["quarantined"] >= 1
+    assert second["status"] == first["status"] == "partial"
+    reset_file_cache()

@@ -1059,7 +1059,14 @@ def _mask_expired_hub_quotas(data: dict, now: datetime) -> dict:
 
 
 def _overlay_fresher_local_quotas(database_path: Path, capacity: list[dict]) -> list[dict]:
-    """Overlay fresher local measured quota rows onto Hub capacity cards for immediate Spoke display."""
+    """Overlay fresher local measured quota rows onto Hub capacity cards for immediate Spoke display.
+
+    Only the newest local observation per limit counts. When that observation
+    is "unavailable", or its window has already reset, an older reading is not
+    resurrected in its place, and a local reading never replaces a newer Hub one.
+    """
+    from spend_app.codex_quota import timestamp
+
     try:
         with connect(database_path) as connection:
             raw_quotas = [
@@ -1072,7 +1079,6 @@ def _overlay_fresher_local_quotas(database_path: Path, capacity: list[dict]) -> 
                         SELECT provider_key, limit_key, MAX(id) AS max_id
                         FROM quotas
                         WHERE source NOT LIKE 'sync:%'
-                          AND COALESCE(unit, '') != 'unavailable'
                         GROUP BY provider_key, limit_key
                     ) latest ON q.id = latest.max_id
                     """
@@ -1087,16 +1093,24 @@ def _overlay_fresher_local_quotas(database_path: Path, capacity: list[dict]) -> 
     except Exception:
         return capacity
 
+    now_utc = datetime.now(UTC)
     local_by_key: dict[tuple[str, str], dict] = {}
     for row in verified_quotas:
         if str(row.get("unit") or "") == "unavailable" or row.get("provider_key") == "cursor":
+            continue
+        reset = timestamp(row.get("resets_at"))
+        if reset is not None and reset <= now_utc:
             continue
         local_by_key[(str(row["provider_key"]), str(row["limit_key"]))] = row
 
     if not local_by_key:
         return capacity
 
-    now_utc = datetime.now(UTC)
+    def not_older(local_polled, hub_polled) -> bool:
+        hub_at = timestamp(hub_polled)
+        local_at = timestamp(local_polled)
+        return hub_at is None or (local_at is not None and local_at >= hub_at)
+
     from spend_app.aggregate import PROVIDER_META, _capacity_limit_rank, _eta_label
 
     merged_cards: list[dict] = []
@@ -1119,7 +1133,12 @@ def _overlay_fresher_local_quotas(database_path: Path, capacity: list[dict]) -> 
                 continue
             limit_key = str(row_item.get("limitKey") or "")
             local_row = local_by_key.get((provider_key, limit_key))
-            if local_row is not None and local_row.get("pct") is not None:
+            hub_has_reading = row_item.get("pct") is not None and row_item.get("unit") != "unavailable"
+            if (
+                local_row is not None
+                and local_row.get("pct") is not None
+                and (not hub_has_reading or not_older(local_row.get("polled_at"), row_item.get("polledAt")))
+            ):
                 updated_row = dict(row_item)
                 updated_row["label"] = local_row.get("label") or row_item.get("label")
                 updated_row["used"] = float(local_row["used"]) if local_row.get("used") is not None else None

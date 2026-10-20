@@ -3,13 +3,21 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="light" />
-    <meta name="theme-color" content="#f6f5f1" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#08080a" />
     <meta name="application-name" content="BURNRATE" />
     <meta name="description" content="Private AI usage, capacity, and cost intelligence." />
     <title>BURNRATE · AI Cost Intelligence</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=1" />
+    <meta name="burnrate-logos" content="/logos.svg?v=1" />
     <script>
+      // Resolve the theme before first paint: a saved choice wins, then the OS.
+      (() => {
+        let theme = null;
+        try { theme = localStorage.getItem("burnrate:theme"); } catch {}
+        if (theme !== "dark" && theme !== "light") theme = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+        document.documentElement.dataset.theme = theme;
+      })();
       // Start the first data requests before spend.js has even downloaded.
       // spend.js consumes window.__prefetch once; nothing here renders.
       (() => {
@@ -60,6 +68,7 @@
             <button id="nav-connect" class="nav-chip" type="button"><i class="settings-dot" aria-hidden="true"></i><span>Harnesses</span></button>
             <button id="nav-plans" class="nav-chip" type="button"><span class="mono" id="nav-plans-total">—</span><span class="nav-chip-suffix">/mo plans</span></button>
             <button id="nav-attention" class="nav-chip" type="button" data-tone="quiet">Attention —</button>
+            <button id="nav-theme" class="nav-chip" type="button" aria-label="Switch theme" title="Switch theme"><i class="theme-glyph" aria-hidden="true"></i></button>
           </div>
           <!-- Announces state transitions (live/stale/error and the failing
                source), never each poll's timestamp. -->
@@ -444,6 +453,12 @@
             <p>Ingest, quota polls, pricing gaps, and provider versus computed variance.</p>
           </div>
         </div>
+        <article class="panel">
+          <p class="eyebrow">This computer</p>
+          <h2>Freshness</h2>
+          <p id="freshness-note">—</p>
+          <div id="freshness-list"></div>
+        </article>
         <div class="diagnostic-grid" id="diagnostic-grid"></div>
         <div id="source-guidance" aria-label="Source status and next actions"></div>
         <article class="panel">

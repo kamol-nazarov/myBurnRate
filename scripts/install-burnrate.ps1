@@ -8,7 +8,9 @@ param(
 # Per-user scheduled task "BURNRATE Dashboard": AtLogOn, Limited, Hidden.
 # Action starts pythonw -m spend_app (spend_app.service) bound to 127.0.0.1:17331.
 # Foreground equivalent: burnrate serve
-# Self-heal is RestartCount 3 / RestartInterval 1 minute, not a separate supervisor.
+# Self-heal: RestartCount 3 / RestartInterval 1 minute for a failed launch, plus
+# the "BURNRATE Watchdog" task (pythonw -m spend_app.watchdog every 5 minutes)
+# that restarts a service which stopped answering or whose collection stalled.
 # Mutex Local\BURNRATE-Dashboard; PID under $env:LOCALAPPDATA\BURNRATE\run.
 
 $ErrorActionPreference = 'Stop'

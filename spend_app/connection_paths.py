@@ -151,8 +151,22 @@ def approved(root, revision=0, patterns=None):
         APPROVED_PATTERNS.reset(patterns_token)
 
 
+_DATABASE_IDENTITIES: dict[str, str] = {}
+
+
+def _database_identity(database):
+    # One store per process, asked once per source file on every pass.
+    key = os.fspath(database)
+    found = _DATABASE_IDENTITIES.get(key)
+    if found is None:
+        found = identity(_resolve(database, strict=False))
+        if len(_DATABASE_IDENTITIES) < 64:
+            _DATABASE_IDENTITIES[key] = found
+    return found
+
+
 def cache_identity(database, path, parser_version="0.3.0"):
-    return (identity(_resolve(database, strict=False)), identity(_resolve(path, strict=False)), APPROVED_REVISION.get(), parser_version)
+    return (_database_identity(database), identity(_resolve(path, strict=False)), APPROVED_REVISION.get(), parser_version)
 
 
 def file_signature(path, stat=None):
@@ -258,6 +272,18 @@ def _entry_kind(entry):
         raise
 
 
+def _confined_child(path, base):
+    """``confined`` for a file found by a scan that already checked its root.
+
+    The scan verifies the approved root once; each file is still resolved and
+    must stay inside it. Opening a file runs the full ``confined`` check again.
+    """
+    resolved = _resolve(path, strict=True)
+    if resolved != base and not resolved.is_relative_to(base):
+        raise LocationError("A source link points outside the approved location.")
+    return resolved
+
+
 def source_files(root, suffix, budget=100000):
     base = Path(root)
     confined(base, root)
@@ -292,7 +318,7 @@ def source_files(root, suffix, budget=100000):
                 elif kind == "file":
                     relative = entry_path.relative_to(base).as_posix()
                     if any(matches_parts(relative.split("/"), pattern) for pattern in patterns):
-                        yield confined(entry_path, root)
+                        yield _confined_child(entry_path, base) if root else confined(entry_path, root)
 
 
 def opencode_files(root, budget=100000):

@@ -19,6 +19,7 @@ import httpx
 
 from spend_app.adapters.common import UsageRow, failed_result, persist_rows, skipped_result, stable_id
 from spend_app.adapters.local_common import optional_number, positive_cost
+from spend_app.db import connect, initialize
 from spend_app.limits import (
     CURSOR_DASHBOARD_ALLOWED_HOSTS,
     _assert_allowed_https_host,
@@ -32,12 +33,43 @@ TOOL_KEY = "cursor"
 BASE_URL = "https://api2.cursor.sh/aiserver.v1.DashboardService/"
 AUTHORITY_START = datetime(2026, 9, 2, tzinfo=UTC)
 PAGE_SIZE = 100
+# Each poll re-reads only the recent tail. The overlap catches events Cursor
+# publishes late; stable raw ids make the re-read idempotent. The first poll
+# after a restart looks further back to heal any gap while the app was off.
+# Re-reading the full history every poll took minutes per poll once it grew to
+# hundreds of pages and stalled every other local source behind it.
+INCREMENTAL_OVERLAP = timedelta(hours=3)
+RESTART_LOOKBACK = timedelta(hours=72)
 _NEXT_POLL_AT = 0.0
+_CAUGHT_UP = False
 
 
 def reset_state() -> None:
-    global _NEXT_POLL_AT
+    global _NEXT_POLL_AT, _CAUGHT_UP
     _NEXT_POLL_AT = 0.0
+    _CAUGHT_UP = False
+
+
+def fetch_start(database_path: Path) -> datetime:
+    """Oldest event time this poll must request: full history only when empty."""
+    initialize(database_path)
+    with connect(database_path) as connection:
+        newest = connection.execute(
+            "SELECT MAX(occurred_at) FROM ("
+            "SELECT occurred_at FROM usage_events WHERE source=? "
+            "UNION ALL SELECT occurred_at FROM unpriced_usage_events WHERE source=?)",
+            (SOURCE, SOURCE),
+        ).fetchone()[0]
+    if not newest:
+        return AUTHORITY_START
+    try:
+        newest_at = datetime.fromisoformat(str(newest).replace("Z", "+00:00"))
+    except ValueError:
+        return AUTHORITY_START
+    if newest_at.tzinfo is None:
+        newest_at = newest_at.replace(tzinfo=UTC)
+    lookback = INCREMENTAL_OVERLAP if _CAUGHT_UP else RESTART_LOOKBACK
+    return max(AUTHORITY_START, newest_at - lookback)
 
 
 def _count(value: object) -> int:
@@ -121,7 +153,7 @@ def ingest(*, database_path: Path, pricing: PricingEngine) -> dict:
     allowed, reason = authorize("cursor_usage_service")
     if not allowed:
         return skipped_result(database_path=database_path, source=SOURCE, reason=reason)
-    global _NEXT_POLL_AT
+    global _NEXT_POLL_AT, _CAUGHT_UP
     current_tick = time.monotonic()
     if current_tick < _NEXT_POLL_AT:
         return {"source": SOURCE, "status": "skipped", "reason": "adaptive cadence"}
@@ -133,6 +165,7 @@ def ingest(*, database_path: Path, pricing: PricingEngine) -> dict:
             reason="Experimental Cursor DashboardService: Cursor is not signed in locally or its access token is unavailable.",
         )
     now = datetime.now(UTC)
+    start = fetch_start(database_path)
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
@@ -150,7 +183,7 @@ def ingest(*, database_path: Path, pricing: PricingEngine) -> dict:
                     headers=headers,
                     json={
                         "teamId": 0,
-                        "startDate": str(int(AUTHORITY_START.timestamp() * 1000)),
+                        "startDate": str(int(start.timestamp() * 1000)),
                         "endDate": str(int(now.timestamp() * 1000)),
                         "page": page,
                         "pageSize": PAGE_SIZE,
@@ -182,4 +215,10 @@ def ingest(*, database_path: Path, pricing: PricingEngine) -> dict:
         source=SOURCE,
         usage_rows=rows,
     )
-    return {**result, "eventsReturned": len(events), "pages": max(1, math.ceil(len(events) / PAGE_SIZE))}
+    _CAUGHT_UP = True
+    return {
+        **result,
+        "eventsReturned": len(events),
+        "pages": max(1, math.ceil(len(events) / PAGE_SIZE)),
+        "fetchedSince": start.isoformat().replace("+00:00", "Z"),
+    }

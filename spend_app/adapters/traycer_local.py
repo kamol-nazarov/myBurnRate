@@ -21,6 +21,7 @@ from spend_app.adapters.local_common import (
     number,
     positive_cost,
     sqlite_read_only,
+    store_read_only,
 )
 from spend_app.pricing import PricingEngine
 
@@ -170,7 +171,8 @@ def covered_sessions(database_path: Path | None) -> set[tuple[str, str]]:
         return set()
     found: set[tuple[str, str]] = set()
     try:
-        connection = sqlite_read_only(path)
+        # BURNRATE's own store: outside the approved Traycer location by design.
+        connection = store_read_only(path)
     except (OSError, sqlite3.Error):
         return found
     try:
@@ -433,6 +435,9 @@ def ingest(
     except Exception:
         pass
     opencode_present = opencode_db.is_file()
+    # Cursor agents launched by Traycer write to Cursor's own local store, which
+    # cursor_local reads; where that store exists it is the authority.
+    cursor_present = (Path.home() / ".cursor" / "projects").is_dir()
     for path in iter_databases(database_glob):
         if not path.is_file():
             continue
@@ -451,6 +456,9 @@ def ingest(
                 mirrored += 1
                 continue
             if row.tool_key == "opencode" and opencode_present:
+                mirrored += 1
+                continue
+            if row.tool_key == "cursor" and cursor_present:
                 mirrored += 1
                 continue
             if row.session_id and (row.tool_key, row.session_id) in already:

@@ -7,531 +7,304 @@ HUD_HTML = r"""<!doctype html>
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#f6f5f1">
+    <meta name="color-scheme" content="dark light">
+    <meta name="theme-color" content="#08080a">
     <title>BURNRATE · Sidecar HUD</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <script>
+      // Resolve the theme before first paint: the HUD's own choice, then the
+      // dashboard's, then the OS.
+      (() => {
+        let theme = null;
+        try { theme = localStorage.getItem("burnrate:hud-theme") || localStorage.getItem("burnrate:theme"); } catch {}
+        if (theme !== "dark" && theme !== "light") theme = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+        document.documentElement.dataset.theme = theme;
+        try { if (localStorage.getItem("burnrate:hud-mini") === "1") document.documentElement.classList.add("is-mini"); } catch {}
+      })();
+    </script>
     <style>
       /* data-tauri-drag-region toggle_hud_pin */
+      /* "Instrument" HUD: one glance number, then every plan as a segmented meter row. */
       :root {
         color-scheme: light;
-        --paper: #f5f3ee;
-        --paper-grad: radial-gradient(120% 90% at 10% 0%, #faf8f4 0%, #f3f0e8 100%);
-        --ink: #181715;
-        --muted: #656058;
-        --faint: #878076;
-        --peach: linear-gradient(160deg, rgba(248, 206, 188, 0.92) 0%, rgba(244, 190, 168, 0.78) 100%);
-        --peach-border: rgba(196, 108, 74, 0.22);
-        --yellow: linear-gradient(160deg, rgba(248, 232, 166, 0.92) 0%, rgba(242, 219, 138, 0.78) 100%);
-        --yellow-border: rgba(186, 142, 42, 0.22);
-        --pink: linear-gradient(160deg, rgba(247, 214, 224, 0.92) 0%, rgba(241, 196, 210, 0.78) 100%);
-        --pink-border: rgba(188, 96, 126, 0.22);
-        --blue: linear-gradient(160deg, rgba(206, 227, 248, 0.92) 0%, rgba(188, 214, 244, 0.78) 100%);
-        --blue-border: rgba(78, 132, 196, 0.22);
-        --docs: rgba(232, 236, 242, 0.85);
-        --docs-border: rgba(24, 23, 21, 0.08);
-        --card: rgba(248, 249, 251, 0.95);
-        --card-border: rgba(24, 23, 21, 0.075);
-        --plate: #ffffff;
-        --plate-border: rgba(24, 23, 21, 0.085);
-        --track-bg: rgba(24, 23, 21, 0.085);
-        --chrome-bg: rgba(24, 23, 21, 0.05);
-        --chrome-border: rgba(24, 23, 21, 0.11);
-        --specular: inset 0 1px 0 rgba(255, 255, 255, 0.75);
-        --ok: #259c62;
-        --warn: #d4922a;
-        --crit: #c84b37;
-        --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
-        --sans: "Segoe UI", system-ui, -apple-system, sans-serif;
-        --mono: ui-monospace, "Cascadia Mono", "Segoe UI Mono", Consolas, monospace;
+        --bg: #f4f2ee;
+        --surface: #fbfaf8;
+        --sunken: #e7e4de;
+        --text: #141311;
+        --secondary: #4a4741;
+        --muted: #5f5b55;
+        --dim: #74706a;
+        --line: rgba(20, 18, 15, 0.1);
+        --hair: rgba(20, 18, 15, 0.07);
+        --accent: #cf4509;
+        --accent-soft: rgba(207, 69, 9, 0.1);
+        --green: #13804c;
+        --danger: #c42b24;
+        --meter: #141311;
+        --track: rgba(20, 18, 15, 0.13);
+        --tip-bg: #ffffff;
+        --tip-shadow: 0 14px 34px -10px rgba(20, 18, 15, 0.35);
+        --sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+        --fd: Bahnschrift, "DIN Alternate", "DIN 2014", Barlow, "Segoe UI", system-ui, sans-serif;
+        --mono: "Cascadia Mono", ui-monospace, "Segoe UI Mono", Consolas, monospace;
+      }
+      html[data-theme="dark"] {
+        color-scheme: dark;
+        --bg: #0a0a0c;
+        --surface: #121215;
+        --sunken: #0d0d0f;
+        --text: #f2f0eb;
+        --secondary: #b8b4ac;
+        --muted: #9a968f;
+        --dim: #807d76;
+        --line: rgba(255, 255, 255, 0.08);
+        --hair: rgba(255, 255, 255, 0.06);
+        --accent: #ff6b22;
+        --accent-soft: rgba(255, 107, 34, 0.14);
+        --green: #3dd68c;
+        --danger: #ff5247;
+        --meter: #f2f0eb;
+        --track: rgba(255, 255, 255, 0.11);
+        --tip-bg: #1b1b1f;
+        --tip-shadow: 0 16px 40px -8px #000;
       }
       * { box-sizing: border-box; margin: 0; padding: 0; }
       html, body {
-        background: var(--paper);
-        color: var(--ink);
-        font-family: var(--sans);
-        font-size: 13px;
-        line-height: 1.3;
+        background: var(--bg);
+        color: var(--text);
+        font: 13px/1.3 var(--sans);
+        font-variant-numeric: tabular-nums;
         overflow-x: hidden;
         overflow-y: auto;
         user-select: none;
         cursor: grab;
         scrollbar-width: none;
-        -ms-overflow-style: none;
         -webkit-font-smoothing: antialiased;
       }
-      body {
-        min-height: 100vh;
-        background: var(--paper-grad);
-        border: 1px solid var(--chrome-border);
-        border-radius: 8px;
-        box-shadow: var(--specular);
+      html::-webkit-scrollbar, body::-webkit-scrollbar { display: none; width: 0; height: 0; }
+      body { min-height: 100vh; border: 1px solid var(--line); border-radius: 10px; }
+      button { font: inherit; color: inherit; }
+      .page { padding: 10px 14px 12px; }
+
+      /* Chrome row: brand on the left, icon controls on the right. */
+      .top { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 30px; }
+      .brand { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+      .brand img { width: 20px; height: 20px; border-radius: 5px; display: block; }
+      .brand b { font: 700 12px/1 var(--fd); letter-spacing: 0.08em; }
+      .brand b span { color: var(--accent); }
+      .hud-controls { display: inline-flex; align-items: center; gap: 1px; flex: none; }
+      .hud-btn {
+        display: inline-grid;
+        place-items: center;
+        width: 28px;
+        height: 28px;
+        padding: 0;
+        border: 0;
+        border-radius: 7px;
+        background: none;
+        color: var(--dim);
+        cursor: pointer;
+        transition: background 0.12s ease, color 0.12s ease;
       }
-      html::-webkit-scrollbar,
-      body::-webkit-scrollbar,
-      #hud-quotas::-webkit-scrollbar {
-        display: none;
-        width: 0;
-        height: 0;
-      }
-      .page {
-        min-height: 0;
-        padding: 9px 12px 10px;
-        background: transparent;
-      }
-      .hud-drag-pill {
-        width: 32px;
-        height: 3.5px;
-        border-radius: 999px;
-        background: rgba(24, 23, 21, 0.16);
-        margin: -2px auto 6px;
-        transition: background 0.15s ease, width 0.15s ease;
-      }
-      body:hover .hud-drag-pill {
-        background: rgba(24, 23, 21, 0.26);
-      }
-      .top {
-        display: flex;
-        align-items: flex-start;
-        justify-content: space-between;
-        gap: 8px;
-      }
-      .titles { min-width: 0; }
-      .date-row {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        min-width: 0;
-      }
-      .date {
-        font-family: var(--mono);
-        font-size: 9.5px;
-        font-weight: 650;
-        letter-spacing: 0.08em;
+      .hud-btn svg { width: 15px; height: 15px; display: block; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+      .hud-btn:hover { background: var(--hair); color: var(--text); }
+      .hud-btn.active { color: var(--accent); }
+      .hud-btn.active .pin-head { fill: currentColor; }
+      .hud-btn:focus-visible, .hud-poll-btn:focus-visible, .hud-machine-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+      .icon-expand { display: none; }
+      html.is-mini .icon-expand { display: block; }
+      html.is-mini .icon-shrink { display: none; }
+
+      /* Readout. */
+      .date-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 12px; }
+      .label, .date, .stat header span, .plans-head, .win-label {
+        font: 600 9.5px/1.1 var(--fd);
+        letter-spacing: 0.14em;
         text-transform: uppercase;
-        color: var(--muted);
+        color: var(--dim);
       }
       .hud-status-pill {
         display: inline-flex;
         align-items: center;
-        gap: 4.5px;
-        font-family: var(--mono);
-        font-size: 9px;
-        font-weight: 700;
-        letter-spacing: 0.08em;
-        padding: 1.5px 6.5px;
-        border-radius: 999px;
-        background: var(--plate);
-        border: 1px solid var(--plate-border);
-        color: var(--ink);
-        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+        gap: 6px;
+        font: 600 9.5px/1 var(--fd);
+        letter-spacing: 0.14em;
+        color: var(--green);
       }
-      .hud-status-pill i {
-        width: 5.5px;
-        height: 5.5px;
-        border-radius: 99px;
-        background: var(--ok);
-        box-shadow: 0 0 0 2.5px rgba(37, 156, 98, 0.18);
+      .hud-status-pill i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: hudPing 2.2s ease-out infinite; }
+      .hud-status-pill[data-state="stale"] { color: var(--accent); }
+      .hud-status-pill[data-state="error"] { color: var(--danger); }
+      .hud-status-pill[data-state="stale"] i, .hud-status-pill[data-state="error"] i { animation: none; }
+      .hud-status-pill > span { max-width: 210px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      @keyframes hudPing {
+        0% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 55%, transparent); }
+        80%, 100% { box-shadow: 0 0 0 6px transparent; }
       }
-      .hud-status-pill[data-state="stale"] i {
-        background: var(--warn);
-        box-shadow: 0 0 0 2.5px rgba(212, 146, 42, 0.2);
+      .hero { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-top: 6px; }
+      .hero strong {
+        font: 300 46px/0.95 var(--fd);
+        letter-spacing: -0.02em;
+        border-radius: 4px;
       }
-      .hud-status-pill[data-state="error"] i {
-        background: var(--crit);
-        box-shadow: 0 0 0 2.5px rgba(200, 75, 55, 0.2);
-      }
-      h1 {
-        margin-top: 2px;
-        font-family: var(--serif);
-        font-weight: 560;
-        font-size: 25px;
-        letter-spacing: -0.03em;
-        line-height: 1.02;
-      }
-      .hud-controls {
-        display: inline-flex;
-        align-items: center;
-        gap: 2px;
-        flex: none;
-        padding: 2.5px;
-        border-radius: 10px;
-        background: var(--chrome-bg);
-        border: 1px solid var(--chrome-border);
-        box-shadow: var(--specular);
-      }
-      .hud-btn {
-        border: 0;
-        background: transparent;
-        color: var(--muted);
-        font: inherit;
-        font-size: 10.5px;
-        font-weight: 650;
-        padding: 3.5px 7px;
-        border-radius: 7px;
-        cursor: pointer;
-        display: inline-flex;
-        align-items: center;
-        gap: 4px;
-        line-height: 1.1;
-        transition: background 0.12s ease, color 0.12s ease, box-shadow 0.12s ease;
-      }
-      .hud-btn:hover {
-        background: rgba(24, 23, 21, 0.075);
-        color: var(--ink);
-      }
-      .hud-btn.active {
-        background: var(--ink);
-        color: #fff;
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.16);
-      }
-      .hud-btn-pin-dot {
-        width: 5px;
-        height: 5px;
-        border-radius: 99px;
-        background: rgba(111, 106, 98, 0.45);
-        display: inline-block;
-      }
-      .hud-btn.active .hud-btn-pin-dot {
-        background: #f5b95f;
-        box-shadow: 0 0 6px #f5b95f;
-      }
-      #hud-machines {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 5px;
-        margin-top: 8px;
-      }
-      #hud-machines:empty { display: none; margin-top: 0; }
-      .hud-machine-chip {
-        border: 1px solid var(--plate-border);
-        background: var(--plate);
-        color: var(--muted);
-        font: inherit;
-        font-size: 11px;
-        font-weight: 650;
-        padding: 3.5px 9px;
-        border-radius: 999px;
-        cursor: pointer;
-        display: inline-flex;
-        align-items: center;
-        gap: 5.5px;
-        transition: all 0.12s ease;
-      }
-      .hud-machine-chip:hover {
-        border-color: var(--chrome-border);
-        color: var(--ink);
-      }
-      .hud-machine-chip.active {
-        background: var(--ink);
-        border-color: var(--ink);
-        color: #fff;
-      }
-      .hud-machine-chip i {
-        width: 5.5px;
-        height: 5.5px;
-        border-radius: 99px;
-        background: #c8c2b8;
-      }
-      .hud-machine-chip i.live {
-        background: var(--ok);
-        box-shadow: 0 0 0 2px rgba(37, 156, 98, 0.22);
-      }
+      .hero small { color: var(--muted); font-size: 11.5px; text-align: right; }
+      .tick { animation: stat-tick 1.1s ease-out; }
+      @keyframes stat-tick { 0% { color: var(--accent); } 100% { color: inherit; } }
       .stats {
         display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        margin-top: 12px;
+        border-top: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+      }
+      .stat { min-width: 0; padding: 9px 0 9px 10px; border-left: 1px solid var(--line); }
+      .stat:first-child { padding-left: 0; border-left: 0; }
+      .stat header span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .stat strong { display: block; margin-top: 5px; font: 400 18px/1 var(--fd); white-space: nowrap; }
+      .stat small { display: block; margin-top: 3px; color: var(--dim); font-size: 10.5px; white-space: nowrap; }
+
+      #hud-machines { display: flex; gap: 2px; margin-top: 10px; padding: 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--sunken); }
+      #hud-machines:empty { display: none; }
+      .hud-machine-chip {
+        flex: 1 1 0;
+        min-width: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
         gap: 6px;
-        margin-top: 9px;
-      }
-      .stat {
-        position: relative;
-        min-width: 0;
-        min-height: 76px;
-        padding: 8px 9px 7px;
-        border-radius: 13px;
-        display: flex;
-        flex-direction: column;
-        box-shadow: var(--specular), 0 1px 2px rgba(24, 23, 21, 0.035);
-      }
-      .stat header span {
-        font-size: 8.5px;
-        font-weight: 700;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        line-height: 1.25;
-        color: rgba(24, 23, 21, 0.72);
-        display: block;
-      }
-      .stat strong {
-        margin-top: auto;
-        padding-top: 5px;
-        font-family: var(--serif);
-        font-size: 20px;
-        font-weight: 520;
-        font-variant-numeric: tabular-nums;
-        font-feature-settings: "tnum" 1;
-        letter-spacing: -0.03em;
-        line-height: 1;
+        height: 26px;
+        padding: 0 8px;
+        border: 0;
         border-radius: 6px;
-        width: max-content;
-        max-width: 100%;
+        background: none;
+        color: var(--muted);
+        font-size: 11.5px;
+        font-weight: 600;
+        cursor: pointer;
       }
-      .stat strong.tick { animation: stat-tick 0.8s ease; }
-      @keyframes stat-tick {
-        0% { background: rgba(255, 255, 255, 0.55); }
-        100% { background: transparent; }
-      }
-      .stat small {
-        display: block;
-        margin-top: 3px;
-        font-family: var(--mono);
-        font-size: 8.5px;
-        line-height: 1.2;
-        color: rgba(24, 23, 21, 0.62);
-      }
-      .peach { background: var(--peach); border: 1px solid var(--peach-border); }
-      .yellow { background: var(--yellow); border: 1px solid var(--yellow-border); }
-      .pink { background: var(--pink); border: 1px solid var(--pink-border); }
-      .blue { background: var(--blue); border: 1px solid var(--blue-border); }
-      .live-list { margin-top: 8px; min-width: 0; }
-      #hud-agents { display: grid; gap: 6px; min-width: 0; }
+      .hud-machine-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .hud-machine-chip:hover { color: var(--text); }
+      .hud-machine-chip.active { background: var(--text); color: var(--bg); }
+      .hud-machine-chip i { flex: none; width: 5px; height: 5px; border-radius: 50%; background: var(--dim); }
+      .hud-machine-chip i.live { background: var(--green); }
+
+      .live-list { margin-top: 10px; }
       .live-list[hidden] { display: none; }
-      @keyframes hudPulse {
-        0%, 100% { box-shadow: 0 0 0 2.5px rgba(37, 156, 98, 0.22); opacity: 1; }
-        50% { box-shadow: 0 0 0 5px rgba(37, 156, 98, 0.06); opacity: 0.82; }
-      }
-      .hud-agent {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-        min-width: 0;
-        max-width: 100%;
-        padding: 8px 11px;
-        border-radius: 13px;
-        background: var(--plate);
-        border: 1px solid var(--plate-border);
-        border-left: 2.5px solid var(--ok);
-        box-shadow: 0 1px 3px rgba(24, 23, 21, 0.035);
-      }
-      .hud-agent-main { display: flex; align-items: center; gap: 8px; min-width: 0; }
-      .hud-pulse {
-        width: 7px;
-        height: 7px;
-        border-radius: 99px;
-        background: var(--ok);
-        flex: none;
-        animation: hudPulse 2.2s ease-in-out infinite;
-      }
+      #hud-agents { display: grid; gap: 0; }
+      .hud-agent { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; padding: 7px 0; cursor: pointer; }
+      .hud-agent + .hud-agent { border-top: 1px solid var(--hair); }
+      .hud-agent-main { display: flex; align-items: center; gap: 9px; min-width: 0; }
+      .hud-agent-mark { position: relative; flex: none; display: grid; place-items: center; width: 26px; height: 26px; padding: 6px; border: 1px solid var(--line); border-radius: 7px; color: var(--text); }
+      .hud-agent-mark svg { width: 100%; height: 100%; display: block; }
+      .hud-pulse { position: absolute; right: -3px; bottom: -3px; width: 9px; height: 9px; border: 2px solid var(--bg); border-radius: 50%; background: var(--green); animation: hudPulse 2.2s ease-in-out infinite; }
+      @keyframes hudPulse { 50% { transform: scale(1.3); opacity: 0.6; } }
       .hud-agent-text { min-width: 0; }
-      .hud-agent-text strong, .hud-agent-text small {
-        display: block;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .hud-agent-text strong { font-size: 12px; font-weight: 650; }
-      .hud-agent-text small {
-        font-family: var(--mono);
-        font-size: 10px;
-        color: var(--muted);
-        margin-top: 1px;
-      }
-      .hud-machine-tag {
-        flex: none;
-        font-family: var(--mono);
-        font-size: 9.5px;
-        font-weight: 600;
-        padding: 2px 7px;
-        border-radius: 999px;
-        background: var(--chrome-bg);
-        border: 1px solid var(--chrome-border);
-        color: var(--muted);
-      }
-      .plans {
-        margin-top: 8px;
-        padding: 8px;
-        border-radius: 16px;
-        background: var(--docs);
-        border: 1px solid var(--docs-border);
-        box-shadow: var(--specular);
-      }
-      .plans-head {
-        display: flex;
+      .hud-agent-text strong, .hud-agent-text small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .hud-agent-text strong { font-size: 12.5px; font-weight: 600; }
+      .hud-agent-text small { margin-top: 1px; color: var(--dim); font: 10.5px var(--mono); }
+      .hud-agent:hover strong { color: var(--accent); }
+      .hud-machine-tag { flex: none; color: var(--dim); font: 600 9.5px/1 var(--fd); letter-spacing: 0.1em; text-transform: uppercase; }
+
+      /* Plans: aligned meter rows. */
+      .plans { margin-top: 12px; }
+      .plans-head { display: flex; align-items: center; justify-content: space-between; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+      #hud-quota-badge { margin-left: 6px; color: var(--accent); }
+      .hud-poll-btn {
+        display: inline-flex;
         align-items: center;
-        justify-content: space-between;
-        padding: 1px 4px 5px;
-        color: var(--muted);
-        font-size: 11px;
-        font-weight: 700;
-        letter-spacing: 0.04em;
+        gap: 5px;
+        height: 22px;
+        padding: 0 8px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: none;
+        color: var(--secondary);
+        font: 600 9.5px/1 var(--fd);
+        letter-spacing: 0.12em;
         text-transform: uppercase;
+        cursor: pointer;
       }
-      #hud-quota-badge {
-        display: inline-block;
-        margin-left: 4px;
-        padding: 1px 6px;
-        border-radius: 999px;
-        background: var(--chrome-bg);
-        border: 1px solid var(--chrome-border);
-        font-family: var(--mono);
-        font-size: 9.5px;
-        color: var(--ink);
-      }
-      .plan {
-        display: grid;
-        grid-template-columns: 24px max-content minmax(0, 1fr);
-        gap: 5px 8px;
-        align-items: center;
-        margin-top: 5px;
-        padding: 7px 8px;
-        border-radius: 12px;
-        background: var(--card);
-        border: 1px solid var(--card-border);
-        box-shadow: var(--specular);
-      }
-      .plan:first-child { margin-top: 2px; }
-      .mark {
-        grid-row: 1;
-        grid-column: 1;
-        width: 24px;
-        height: 24px;
-        border-radius: 7px;
-        background: var(--chrome-bg);
-        border: 1px solid var(--chrome-border);
-        display: grid;
-        place-items: center;
-        color: var(--ink);
-      }
-      .mark svg { width: 14px; height: 14px; display: block; }
-      .plan-main {
-        grid-column: 2;
-        grid-row: 1;
-        display: flex;
-        flex-direction: column;
-        max-width: 118px;
-        min-width: 0;
-      }
-      .plan.is-stack .plan-main {
-        grid-column: 2 / -1;
-        max-width: none;
-        flex-direction: row;
-        align-items: baseline;
-        justify-content: space-between;
-        gap: 8px;
-      }
-      .plan b { font-size: 12.5px; font-weight: 700; letter-spacing: -0.01em; }
-      .plan em {
-        font-style: normal;
-        font-family: var(--mono);
-        font-size: 9.5px;
-        color: var(--muted);
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .windows {
-        grid-column: 3;
-        grid-row: 1;
-        display: grid;
-        gap: 5px;
-        min-width: 0;
-      }
-      .plan.is-stack .windows {
-        grid-column: 1 / -1;
-        grid-row: 2;
-      }
-      .win {
-        position: relative;
-        overflow: hidden;
-        display: flex;
-        align-items: baseline;
-        justify-content: flex-start;
-        gap: 5px;
-        min-width: 0;
-        padding: 5.5px 9px 11px;
-        border-radius: 9px;
-        background: var(--plate);
-        border: 1px solid var(--plate-border);
-      }
-      .win::before {
-        content: "";
+      .hud-poll-btn svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+      .hud-poll-btn:hover { border-color: var(--text); color: var(--text); }
+      .hud-poll-btn:disabled { opacity: 0.55; cursor: wait; }
+      .hud-poll-btn.spinning svg { animation: hud-spin 0.75s linear infinite; }
+      @keyframes hud-spin { to { transform: rotate(360deg); } }
+      .plan { padding: 9px 0 8px; border-bottom: 1px solid var(--hair); cursor: pointer; }
+      .plan:last-child { border-bottom: 0; }
+      .plan-head { display: flex; align-items: center; gap: 8px; min-width: 0; margin-bottom: 7px; }
+      .mark { flex: none; width: 16px; height: 16px; display: grid; place-items: center; color: var(--text); }
+      .mark svg { width: 15px; height: 15px; display: block; }
+      .plan-head b { flex: none; font: 600 13.5px/1 var(--fd); letter-spacing: 0.01em; }
+      .plan-head em { min-width: 0; margin-left: auto; overflow: hidden; color: var(--dim); font-size: 11px; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
+      .plan:hover .plan-head b { color: var(--accent); }
+      .windows { display: grid; gap: 4px; }
+      .win { position: relative; display: grid; grid-template-columns: 62px minmax(0, 1fr) 46px 32px; align-items: center; gap: 9px; min-height: 18px; }
+      .win-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .win-label .short { display: none; }
+      html.is-mini .win-label .long { display: none; }
+      html.is-mini .win-label .short { display: inline; }
+      .meter { position: relative; height: 9px; }
+      .meter::before { content: ""; position: absolute; inset: 0; background: repeating-linear-gradient(90deg, var(--track) 0 2px, transparent 2px 4px); }
+      .meter.payg::before { background: repeating-linear-gradient(135deg, var(--track) 0 2px, transparent 2px 6px); }
+      .meter .fill {
         position: absolute;
-        left: 8px;
-        right: 8px;
-        bottom: 4.5px;
-        height: 3.5px;
-        border-radius: 999px;
-        background: var(--track-bg);
+        inset: 0 auto 0 0;
+        width: var(--fill, 0%);
+        background: var(--meter);
+        -webkit-mask: repeating-linear-gradient(90deg, #000 0 2px, transparent 2px 4px);
+        mask: repeating-linear-gradient(90deg, #000 0 2px, transparent 2px 4px);
+        transition: width 0.45s cubic-bezier(.2, .7, .25, 1);
       }
-      .win::after {
-        content: "";
-        position: absolute;
-        left: 8px;
-        right: 8px;
-        bottom: 4.5px;
-        height: 3.5px;
-        border-radius: 999px;
-        background: var(--fillc, var(--ok));
-        clip-path: inset(0 calc(100% - var(--fill, 0%)) 0 0 round 999px);
-        transition: clip-path 0.45s ease;
-      }
-      .win.crit::after { background: var(--crit); }
-      .win.warn::after { background: var(--warn); }
-      .win span {
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        font-size: 11px;
-        font-weight: 650;
-        color: var(--muted);
-      }
-      .win i:not(.win-pace-tick) {
-        flex: none;
-        font-style: normal;
-        font-family: var(--mono);
-        font-size: 9.5px;
-        font-weight: 600;
-        color: var(--faint);
-      }
-      .win b {
-        flex: none;
-        margin-left: auto;
-        font-family: var(--serif);
-        font-size: 18px;
-        font-weight: 520;
-        font-variant-numeric: tabular-nums;
-        font-feature-settings: "tnum" 1;
-        letter-spacing: -0.03em;
-        line-height: 1;
-        color: var(--ink);
-      }
-      .win.warn i:not(.win-pace-tick), .win.warn b { color: #b57814; }
-      .win.crit i:not(.win-pace-tick), .win.crit b { color: #b83d27; }
-      .hud-empty { font-size: 12px; color: var(--muted); padding: 8px 6px 4px; }
-      .foot {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 8px;
-        margin-top: 9px;
-        padding: 0 4px;
-        font-family: var(--mono);
-        font-size: 9.5px;
-        color: var(--faint);
-      }
+      .win.warn .fill { background: var(--accent); }
+      .win.crit .fill { background: var(--danger); }
+      .win-pace-tick { position: absolute; top: -3px; bottom: -3px; z-index: 2; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--text); opacity: 0.85; pointer-events: none; }
+      .win b { font: 400 16px/1 var(--fd); text-align: right; }
+      .win b.payg { color: var(--dim); font: 600 9.5px/1 var(--fd); letter-spacing: 0.12em; }
+      .win.warn b { color: var(--accent); }
+      .win.crit b { color: var(--danger); }
+      .win .win-reset { color: var(--dim); font: 500 11px/1 var(--fd); font-style: normal; text-align: right; }
+      .win.warn .win-reset, .win.crit .win-reset { color: var(--secondary); }
+      .hud-empty { padding: 12px 0 4px; color: var(--muted); font-size: 12px; }
+      .foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--dim); font-size: 10.5px; }
+      .hud-mini-bar, .mini-head { display: none !important; }
+
+      /* Mini: a glance strip. One line per plan, its tightest window only. */
+      html.is-mini .page { padding: 6px 10px 8px; }
+      html.is-mini .brand, html.is-mini .date-row, html.is-mini .hero, html.is-mini .stats,
+      html.is-mini #hud-machines, html.is-mini .live-list, html.is-mini .plans-head, html.is-mini .foot,
+      html.is-mini #hud-theme-btn, html.is-mini #hud-expand-btn { display: none !important; }
+      html.is-mini .mini-head { display: flex !important; align-items: baseline; gap: 7px; min-width: 0; }
+      .mini-head strong { font: 400 21px/1 var(--fd); letter-spacing: -0.01em; }
+      .mini-head span { color: var(--dim); font-size: 10.5px; white-space: nowrap; }
+      .mini-head .mini-live { color: var(--green); font: 600 9.5px/1 var(--fd); letter-spacing: 0.12em; text-transform: uppercase; }
+      .mini-head .mini-alert { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--accent); font: 600 9.5px/1 var(--fd); letter-spacing: 0.12em; text-transform: uppercase; }
+      .mini-head .mini-alert[data-state="error"] { color: var(--danger); }
+      .mini-head:has(.mini-alert:not([hidden])) .mini-today-label { display: none; }
+      html.is-mini .top { min-height: 28px; }
+      html.is-mini .plans { margin-top: 4px; border-top: 1px solid var(--line); }
+      html.is-mini .plan { display: grid; grid-template-columns: 74px minmax(0, 1fr); align-items: center; gap: 8px; padding: 6px 0; }
+      html.is-mini .plan-head { margin: 0; }
+      html.is-mini .plan-head { gap: 6px; }
+      html.is-mini .plan-head em { display: none; }
+      html.is-mini .mark { width: 13px; height: 13px; }
+      html.is-mini .mark svg { width: 13px; height: 13px; }
+      html.is-mini .plan-head b { flex: 1 1 auto; min-width: 0; overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+      html.is-mini .win:not(.is-peak) { display: none; }
+      html.is-mini .win { grid-template-columns: 34px minmax(0, 1fr) 36px 26px; gap: 6px; }
+      html.is-mini .win b { font-size: 14px; }
+      html.is-mini .win b.payg { font-size: 9.5px; }
+      html.is-mini .meter { height: 7px; }
+
       #hud-tip {
         position: fixed;
         z-index: 40;
-        max-width: 256px;
-        padding: 8px 10px;
-        border-radius: 11px;
-        background: rgba(255, 253, 248, 0.98);
-        backdrop-filter: blur(10px);
-        border: 1px solid rgba(24, 23, 21, 0.14);
-        box-shadow: 0 10px 26px rgba(24, 23, 21, 0.18);
-        font-size: 11px;
-        line-height: 1.42;
+        max-width: 250px;
+        padding: 9px 11px;
+        border-radius: 8px;
+        background: var(--tip-bg);
+        border: 1px solid var(--line);
+        box-shadow: var(--tip-shadow);
+        font-size: 11.5px;
+        line-height: 1.45;
         color: var(--muted);
         pointer-events: none;
         opacity: 0;
@@ -545,283 +318,77 @@ HUD_HTML = r"""<!doctype html>
         -webkit-box-orient: vertical;
         overflow: hidden;
         word-break: break-word;
-        font-size: 11.5px;
-        font-weight: 700;
-        color: var(--ink);
         margin-bottom: 3px;
+        color: var(--text);
+        font: 600 12.5px/1.25 var(--fd);
       }
       #hud-tip .row { display: block; }
-      #hud-tip .row.accent { color: var(--ink); font-weight: 600; font-family: var(--mono); font-size: 10.5px; }
-      #hud-tip .sep { display: block; height: 1px; background: rgba(24, 23, 21, 0.09); margin: 5px 0; }
-      #hud-tip .row.dry { color: #b83d27; font-weight: 650; }
-      #hud-tip .row.tight { color: #b57814; font-weight: 650; }
-      #hud-tip .row.safe { color: #1f8250; font-weight: 650; }
-      .plans-head-right {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
+      #hud-tip .row.accent { color: var(--text); font-weight: 600; }
+      #hud-tip .sep { display: block; height: 1px; margin: 6px 0; background: var(--line); }
+      #hud-tip .row.dry { color: var(--danger); font-weight: 600; }
+      #hud-tip .row.tight { color: var(--accent); font-weight: 600; }
+      #hud-tip .row.safe { color: var(--green); font-weight: 600; }
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after { animation: none !important; transition: none !important; }
       }
-      .hud-poll-btn {
-        border: 1px solid var(--chrome-border);
-        background: var(--plate);
-        color: var(--ink);
-        font-family: var(--sans);
-        font-size: 10px;
-        font-weight: 650;
-        text-transform: none;
-        letter-spacing: 0;
-        padding: 2px 8px;
-        border-radius: 999px;
-        cursor: pointer;
-        display: inline-flex;
-        align-items: center;
-        gap: 4px;
-        transition: all 0.12s ease;
-      }
-      .hud-poll-btn:hover { background: var(--card); border-color: var(--ink); }
-      .hud-poll-btn:disabled { opacity: 0.6; cursor: wait; }
-      .hud-poll-btn i {
-        display: inline-block;
-        font-style: normal;
-      }
-      .hud-poll-btn.spinning i {
-        animation: hud-spin 0.75s linear infinite;
-      }
-      @keyframes hud-spin {
-        to { transform: rotate(360deg); }
-      }
-      .plan, .hud-agent {
-        cursor: pointer;
-        transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease;
-      }
-      .plan:hover, .hud-agent:hover {
-        transform: translateY(-1px);
-        border-color: var(--chrome-border);
-        box-shadow: 0 4px 12px rgba(24, 23, 21, 0.08);
-      }
-      .plan-age {
-        font-size: 9.5px;
-        font-weight: 600;
-        color: var(--faint);
-        letter-spacing: 0.01em;
-      }
-      .win-pace-tick {
-        position: absolute;
-        bottom: 3px;
-        height: 6.5px;
-        width: 2px;
-        background: rgba(24, 23, 21, 0.52);
-        z-index: 2;
-        pointer-events: none;
-        border-radius: 1px;
-      }
-      .hud-mini-bar {
-        display: none !important;
-      }
-      body.is-mini { font-size: 11px; }
-      body.is-mini .page { padding: 6px 8px 6px; }
-      body.is-mini .hud-drag-pill { width: 26px; height: 3px; margin: -1px auto 4px; }
-      body.is-mini .top { gap: 6px; align-items: center; }
-      body.is-mini .date-row { gap: 5px; }
-      body.is-mini .date { font-size: 8.5px; letter-spacing: 0.06em; }
-      body.is-mini .hud-status-pill { font-size: 8px; gap: 3.5px; padding: 1px 5px; }
-      body.is-mini .hud-status-pill i { width: 4.5px; height: 4.5px; }
-      body.is-mini h1 { font-size: 17px; margin-top: 1px; }
-      body.is-mini .hud-controls { gap: 1px; padding: 1.5px; border-radius: 8px; }
-      body.is-mini .hud-btn { font-size: 9px; padding: 2.5px 5.5px; border-radius: 5.5px; gap: 3px; }
-      body.is-mini #hud-machines { gap: 4px; margin-top: 5px; }
-      body.is-mini .hud-machine-chip { font-size: 9.5px; padding: 2px 7px; gap: 4px; }
-      body.is-mini .hud-machine-chip i { width: 4.5px; height: 4.5px; }
-      body.is-mini .stats {
-        grid-template-columns: repeat(4, minmax(0, 1fr));
-        gap: 4px;
-        margin-top: 5px;
-      }
-      body.is-mini .stat {
-        min-height: 46px;
-        padding: 4.5px 6px;
-        border-radius: 9px;
-      }
-      body.is-mini .stat header span {
-        font-size: 7px;
-        letter-spacing: 0.05em;
-        line-height: 1.15;
-      }
-      body.is-mini .stat strong { font-size: 14px; padding-top: 2px; }
-      body.is-mini .stat small {
-        font-size: 7px;
-        margin-top: 1px;
-        line-height: 1.1;
-      }
-      body.is-mini .live-list { margin-top: 5px; }
-      body.is-mini #hud-agents { gap: 4px; }
-      body.is-mini .hud-agent {
-        padding: 5px 8px;
-        border-radius: 9px;
-        gap: 6px;
-      }
-      body.is-mini .hud-pulse { width: 5.5px; height: 5.5px; }
-      body.is-mini .hud-agent-text strong { font-size: 10.5px; }
-      body.is-mini .hud-agent-text small { font-size: 8.5px; }
-      body.is-mini .hud-machine-tag { font-size: 8.5px; padding: 1px 5px; }
-      body.is-mini .plans {
-        margin-top: 5px;
-        padding: 5px;
-        border-radius: 12px;
-      }
-      body.is-mini .plans-head {
-        padding: 1px 3px 3px;
-        font-size: 9.5px;
-      }
-      body.is-mini #hud-quota-badge { font-size: 8.5px; padding: 0.5px 4.5px; }
-      body.is-mini .hud-poll-btn {
-        font-size: 8.5px;
-        padding: 1px 6px;
-        gap: 3px;
-      }
-      body.is-mini .plan {
-        grid-template-columns: 18px max-content minmax(0, 1fr);
-        gap: 3px 5px;
-        margin-top: 3.5px;
-        padding: 4.5px 6px;
-        border-radius: 9px;
-      }
-      body.is-mini .mark { width: 18px; height: 18px; border-radius: 5px; }
-      body.is-mini .mark svg { width: 11px; height: 11px; }
-      body.is-mini .plan:not(.is-stack) .plan-main { max-width: 78px; }
-      body.is-mini .plan b { font-size: 10.5px; line-height: 1.1; }
-      body.is-mini .plan em { font-size: 8px; line-height: 1.1; }
-      body.is-mini .windows { gap: 3.5px; }
-      body.is-mini .win {
-        padding: 3.5px 6px 7.5px;
-        border-radius: 7px;
-        gap: 3.5px;
-      }
-      body.is-mini .win::before,
-      body.is-mini .win::after {
-        left: 5px;
-        right: 5px;
-        bottom: 3px;
-        height: 2.5px;
-      }
-      body.is-mini .win-pace-tick { bottom: 2px; height: 4.5px; width: 1.5px; }
-      body.is-mini .win span { font-size: 9.5px; }
-      body.is-mini .win i:not(.win-pace-tick) { font-size: 8px; }
-      body.is-mini .win b { font-size: 13.5px; }
-      body.is-mini .foot {
-        margin-top: 5px;
-        padding: 0 3px;
-        font-size: 8.5px;
-      }
-
-      html[data-theme="dark"],
-      body[data-theme="dark"] {
-        color-scheme: dark;
-        --paper: #0b0e14;
-        --paper-grad: radial-gradient(125% 95% at 15% 0%, #131824 0%, #0b0e14 68%, #080a0f 100%);
-        --ink: #f1f5f9;
-        --muted: #94a3b8;
-        --faint: #64748b;
-        --peach: linear-gradient(160deg, rgba(235, 126, 84, 0.24) 0%, rgba(235, 126, 84, 0.08) 100%);
-        --peach-border: rgba(235, 126, 84, 0.30);
-        --yellow: linear-gradient(160deg, rgba(234, 179, 72, 0.24) 0%, rgba(234, 179, 72, 0.08) 100%);
-        --yellow-border: rgba(234, 179, 72, 0.30);
-        --pink: linear-gradient(160deg, rgba(226, 108, 142, 0.24) 0%, rgba(226, 108, 142, 0.08) 100%);
-        --pink-border: rgba(226, 108, 142, 0.30);
-        --blue: linear-gradient(160deg, rgba(86, 162, 242, 0.24) 0%, rgba(86, 162, 242, 0.08) 100%);
-        --blue-border: rgba(86, 162, 242, 0.30);
-        --docs: rgba(18, 23, 33, 0.92);
-        --docs-border: rgba(255, 255, 255, 0.075);
-        --card: rgba(25, 31, 44, 0.95);
-        --card-border: rgba(255, 255, 255, 0.075);
-        --plate: rgba(33, 41, 56, 0.96);
-        --plate-border: rgba(255, 255, 255, 0.09);
-        --track-bg: rgba(255, 255, 255, 0.10);
-        --chrome-bg: rgba(255, 255, 255, 0.055);
-        --chrome-border: rgba(255, 255, 255, 0.11);
-        --specular: inset 0 1px 0 rgba(255, 255, 255, 0.07);
-        --ok: #34d399;
-        --warn: #fbbf24;
-        --crit: #f87171;
-      }
-      body[data-theme="dark"] .hud-drag-pill { background: rgba(255, 255, 255, 0.18); }
-      body[data-theme="dark"]:hover .hud-drag-pill { background: rgba(255, 255, 255, 0.30); }
-      body[data-theme="dark"] .stat header span { color: rgba(241, 245, 249, 0.80); }
-      body[data-theme="dark"] .stat small { color: rgba(203, 213, 225, 0.68); }
-      body[data-theme="dark"] .hud-btn:hover { background: rgba(255, 255, 255, 0.09); }
-      body[data-theme="dark"] .hud-btn.active {
-        background: #f1f5f9;
-        color: #0b0e14;
-      }
-      body[data-theme="dark"] .hud-btn.active .hud-btn-pin-dot {
-        background: #d97706;
-        box-shadow: 0 0 6px rgba(217, 119, 6, 0.6);
-      }
-      body[data-theme="dark"] .hud-machine-chip.active {
-        background: #f1f5f9;
-        border-color: #f1f5f9;
-        color: #0b0e14;
-      }
-      body[data-theme="dark"] .win-pace-tick { background: rgba(255, 255, 255, 0.72); }
-      body[data-theme="dark"] .win.warn i:not(.win-pace-tick), body[data-theme="dark"] .win.warn b { color: #fcd34d; }
-      body[data-theme="dark"] .win.crit i:not(.win-pace-tick), body[data-theme="dark"] .win.crit b { color: #fca5a5; }
-      body[data-theme="dark"] #hud-tip {
-        background: rgba(19, 24, 34, 0.97);
-        border-color: rgba(255, 255, 255, 0.14);
-        box-shadow: 0 12px 28px rgba(0, 0, 0, 0.55);
-      }
-      body[data-theme="dark"] #hud-tip .sep { background: rgba(255, 255, 255, 0.10); }
-      body[data-theme="dark"] #hud-tip .row.dry { color: #fca5a5; }
-      body[data-theme="dark"] #hud-tip .row.tight { color: #fcd34d; }
-      body[data-theme="dark"] #hud-tip .row.safe { color: #6ee7b7; }
     </style>
   </head>
   <body>
     <main class="page" id="hud-shell">
-      <div class="hud-drag-pill" aria-hidden="true"></div>
       <header class="top">
-        <div class="titles">
-          <p class="date-row">
-            <span class="date" id="hud-date">Today</span>
-            <span class="hud-status-pill" id="hud-status-pill" data-state="live">
-              <i></i><span id="hud-status-text">LIVE</span>
-            </span>
-          </p>
-          <h1>Usage</h1>
+        <span class="brand"><img src="/favicon.svg" alt=""><b>BURN<span>RATE</span></b></span>
+        <div class="mini-head" aria-live="polite">
+          <strong id="hud-mini-today">—</strong><span class="mini-today-label">today</span><span class="mini-live" id="hud-mini-live" hidden></span><span class="mini-alert" id="hud-mini-alert" hidden></span>
         </div>
         <div class="hud-controls">
-          <button type="button" class="hud-btn" id="hud-mini-btn" data-tip="&lt;b class=&quot;tip-title&quot;&gt;Mini HUD&lt;/b&gt;&lt;span class=&quot;row&quot;&gt;Shrink the HUD into a compact size while keeping all metrics and plans visible.&lt;/span&gt;" aria-pressed="false">Mini</button>
-          <button type="button" class="hud-btn" id="hud-theme-btn" data-tip="&lt;b class=&quot;tip-title&quot;&gt;Theme&lt;/b&gt;&lt;span class=&quot;row&quot;&gt;Toggle light or dark HUD palette.&lt;/span&gt;" aria-pressed="false">Dark</button>
-          <button type="button" class="hud-btn active" id="hud-pin-btn" data-tip="&lt;b class=&quot;tip-title&quot;&gt;Pin Always-on-Top&lt;/b&gt;&lt;span class=&quot;row&quot;&gt;Keep the Sidecar HUD floating above all other windows.&lt;/span&gt;" aria-pressed="true"><i class="hud-btn-pin-dot" aria-hidden="true"></i><span>Pin</span></button>
-          <button type="button" class="hud-btn" id="hud-expand-btn" data-tip="&lt;b class=&quot;tip-title&quot;&gt;Open&lt;/b&gt;&lt;span class=&quot;row&quot;&gt;Open the full dashboard with forecasts, unit economics and plans.&lt;/span&gt;">Open</button>
-          <button type="button" class="hud-btn" id="hud-hide-btn" data-tip="&lt;b class=&quot;tip-title&quot;&gt;Hide&lt;/b&gt;&lt;span class=&quot;row&quot;&gt;Hide the HUD. Reopen it from the BURNRATE tray menu.&lt;/span&gt;">Hide</button>
+          <button type="button" class="hud-btn" id="hud-mini-btn" aria-label="Mini HUD" aria-pressed="false" data-tip="&lt;b class=&quot;tip-title&quot;&gt;Mini HUD&lt;/b&gt;&lt;span class=&quot;row&quot;&gt;Collapse into a glance strip: one line per plan, showing its tightest window.&lt;/span&gt;">
+            <svg class="icon-shrink" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></svg>
+            <svg class="icon-expand" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
+          </button>
+          <button type="button" class="hud-btn" id="hud-theme-btn" aria-label="Switch theme" aria-pressed="false" data-tip="&lt;b class=&quot;tip-title&quot;&gt;Theme&lt;/b&gt;&lt;span class=&quot;row&quot;&gt;Switch between the graphite and paper palettes.&lt;/span&gt;">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none"/></svg>
+          </button>
+          <button type="button" class="hud-btn active" id="hud-pin-btn" aria-label="Pin always on top" aria-pressed="true" data-tip="&lt;b class=&quot;tip-title&quot;&gt;Pin Always-on-Top&lt;/b&gt;&lt;span class=&quot;row&quot;&gt;Keep the Sidecar HUD floating above all other windows.&lt;/span&gt;">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16v5"/><path class="pin-head" d="M9 4h6l-1 5 3 3v3H7v-3l3-3z"/></svg>
+          </button>
+          <button type="button" class="hud-btn" id="hud-expand-btn" aria-label="Open dashboard" data-tip="&lt;b class=&quot;tip-title&quot;&gt;Open dashboard&lt;/b&gt;&lt;span class=&quot;row&quot;&gt;Forecasts, unit economics, and plans in the full window.&lt;/span&gt;">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>
+          </button>
+          <button type="button" class="hud-btn" id="hud-hide-btn" aria-label="Hide HUD" data-tip="&lt;b class=&quot;tip-title&quot;&gt;Hide&lt;/b&gt;&lt;span class=&quot;row&quot;&gt;Hide the HUD. Reopen it from the BURNRATE tray menu.&lt;/span&gt;">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg>
+          </button>
         </div>
       </header>
 
-      <div id="hud-machines" role="radiogroup" aria-label="Computer filter"></div>
+      <p class="date-row">
+        <span class="date" id="hud-date">Today</span>
+        <span class="hud-status-pill" id="hud-status-pill" data-state="live"><i></i><span id="hud-status-text">LIVE</span></span>
+      </p>
+
+      <section class="hero" id="hud-stat-today" aria-label="API-rate spend today">
+        <strong id="hud-today">—</strong>
+        <small>API-rate value<br>since midnight</small>
+      </section>
 
       <section class="stats" aria-label="Live BurnRate KPIs">
-        <article class="stat peach" id="hud-stat-burn">
-          <header><span>Avg burn rate</span></header>
+        <article class="stat" id="hud-stat-burn">
+          <header><span>Burn rate</span></header>
           <strong id="hud-burn-rate">—</strong>
-          <small>last 7 days</small>
+          <small>per day · 7d avg</small>
         </article>
-        <article class="stat yellow" id="hud-stat-today">
-          <header><span>API spend today</span></header>
-          <strong id="hud-today">—</strong>
-          <small>since midnight</small>
-        </article>
-        <article class="stat pink" id="hud-stat-cache">
-          <header><span>Cache hit rate</span></header>
+        <article class="stat" id="hud-stat-cache">
+          <header><span>Cache hit</span></header>
           <strong id="hud-cache">—</strong>
           <small>last 24 hours</small>
         </article>
-        <article class="stat blue" id="hud-stat-tokens">
-          <header><span>Tokens used today</span></header>
+        <article class="stat" id="hud-stat-tokens">
+          <header><span>Tokens</span></header>
           <strong id="hud-tokens">—</strong>
           <small>since midnight</small>
         </article>
       </section>
+
+      <div id="hud-machines" role="radiogroup" aria-label="Computer filter"></div>
 
       <section class="live-list" id="hud-live" hidden aria-label="Running agents across computers">
         <div id="hud-agents"></div>
@@ -834,10 +401,8 @@ HUD_HTML = r"""<!doctype html>
 
       <section class="plans" aria-label="Subscription usage">
         <div class="plans-head">
-          <span>Plans <span id="hud-quota-badge">—</span></span>
-          <div class="plans-head-right">
-            <button type="button" class="hud-poll-btn" id="hud-poll-btn" data-tip="&lt;b class=&quot;tip-title&quot;&gt;Poll quotas now&lt;/b&gt;&lt;span class=&quot;row&quot;&gt;Immediately query all connected subscription providers and sync.&lt;/span&gt;"><i>↻</i><span>Poll</span></button>
-          </div>
+          <span>Plans<span id="hud-quota-badge">—</span></span>
+          <button type="button" class="hud-poll-btn" id="hud-poll-btn" data-tip="&lt;b class=&quot;tip-title&quot;&gt;Poll quotas now&lt;/b&gt;&lt;span class=&quot;row&quot;&gt;Immediately query all connected subscription providers and sync.&lt;/span&gt;"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg><span>Poll</span></button>
         </div>
         <div id="hud-quotas">
           <p class="hud-empty">Waiting for subscription usage…</p>
@@ -855,6 +420,7 @@ HUD_HTML = r"""<!doctype html>
     <script>
       (() => {
         const $ = id => document.getElementById(id);
+        const root = document.documentElement;
         let selectedMachine = new URLSearchParams(location.search).get("machine") || "all";
         let pinned = true;
         try {
@@ -870,7 +436,7 @@ HUD_HTML = r"""<!doctype html>
         const usd2 = v => {
           const n = v == null || v === "" ? NaN : Number(v);
           if (!Number.isFinite(n)) return "—";
-          return "$" + (Math.round(n * 100) / 100).toLocaleString("en-US", {minimumFractionDigits: 2});
+          return "$" + n.toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2});
         };
         const tok = v => {
           const n = v == null || v === "" ? NaN : Number(v);
@@ -949,7 +515,9 @@ HUD_HTML = r"""<!doctype html>
         function setStat(id, text) {
           const el = $(id);
           if (!el || el.textContent === text) return;
+          const first = el.textContent === "—";
           el.textContent = text;
+          if (first) return;
           el.classList.remove("tick");
           void el.offsetWidth;
           el.classList.add("tick");
@@ -1047,18 +615,17 @@ HUD_HTML = r"""<!doctype html>
           }
         }
 
-        let isMini = false;
-        try { isMini = localStorage.getItem("burnrate:hud-mini") === "1"; } catch {}
+        let isMini = root.classList.contains("is-mini");
         let lastAppliedWidth = 0;
         let lastAppliedHeight = 0;
 
         async function syncHudWindowSize(force = false) {
           const shell = $("hud-shell");
           if (!shell) return;
-          const targetWidth = isMini ? 336 : 440;
+          const targetWidth = isMini ? 296 : 380;
           const rect = shell.getBoundingClientRect();
-          const measuredH = Math.ceil(rect.height || shell.offsetHeight || (isMini ? 340 : 540));
-          const targetHeight = Math.max(180, Math.min(820, measuredH + 2));
+          const measuredH = Math.ceil(rect.height || shell.offsetHeight || (isMini ? 200 : 540));
+          const targetHeight = Math.max(160, Math.min(820, measuredH + 2));
           if (!force && targetWidth === lastAppliedWidth && Math.abs(targetHeight - lastAppliedHeight) <= 2) {
             return;
           }
@@ -1080,7 +647,7 @@ HUD_HTML = r"""<!doctype html>
           }
           setTimeout(async () => {
             const rectAfter = shell.getBoundingClientRect();
-            const hAfter = Math.max(180, Math.min(820, Math.ceil(rectAfter.height || shell.offsetHeight || targetHeight) + 2));
+            const hAfter = Math.max(160, Math.min(820, Math.ceil(rectAfter.height || shell.offsetHeight || targetHeight) + 2));
             if (Math.abs(hAfter - lastAppliedHeight) > 2) {
               lastAppliedHeight = hAfter;
               const h2 = await tauriInvoke("set_hud_size", { width: targetWidth, height: hAfter });
@@ -1098,11 +665,11 @@ HUD_HTML = r"""<!doctype html>
         }
 
         function applyMini(forceResize = false) {
-          document.body.classList.toggle("is-mini", isMini);
+          root.classList.toggle("is-mini", isMini);
           const btn = $("hud-mini-btn");
           if (btn) {
-            btn.classList.toggle("active", isMini);
             btn.setAttribute("aria-pressed", String(isMini));
+            btn.setAttribute("aria-label", isMini ? "Expand HUD" : "Mini HUD");
           }
           syncHudWindowSize(forceResize);
         }
@@ -1110,6 +677,7 @@ HUD_HTML = r"""<!doctype html>
         $("hud-mini-btn").addEventListener("click", () => {
           isMini = !isMini;
           try { localStorage.setItem("burnrate:hud-mini", isMini ? "1" : "0"); } catch {}
+          hideTip();
           applyMini(true);
         });
         $("hud-mini-bar").addEventListener("click", () => {
@@ -1117,26 +685,18 @@ HUD_HTML = r"""<!doctype html>
           openToolInDashboard(key);
         });
 
-        let theme = "light";
-        try {
-          const saved = localStorage.getItem("burnrate:hud-theme");
-          if (saved === "dark" || saved === "light") theme = saved;
-          else if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) theme = "dark";
-        } catch {}
         function applyTheme() {
-          document.documentElement.dataset.theme = theme;
-          document.body.dataset.theme = theme;
+          const dark = root.dataset.theme === "dark";
           const btn = $("hud-theme-btn");
           if (btn) {
-            const dark = theme === "dark";
-            btn.classList.toggle("active", dark);
             btn.setAttribute("aria-pressed", String(dark));
-            btn.textContent = dark ? "Light" : "Dark";
+            btn.setAttribute("aria-label", dark ? "Switch to light theme" : "Switch to dark theme");
           }
         }
         applyTheme();
         $("hud-theme-btn").addEventListener("click", () => {
-          theme = theme === "dark" ? "light" : "dark";
+          const theme = root.dataset.theme === "dark" ? "light" : "dark";
+          root.dataset.theme = theme;
           try { localStorage.setItem("burnrate:hud-theme", theme); } catch {}
           applyTheme();
         });
@@ -1186,16 +746,16 @@ HUD_HTML = r"""<!doctype html>
         }
 
         function renderMachines(machines) {
-          const root = $("hud-machines");
+          const host = $("hud-machines");
           const list = Array.isArray(machines) ? machines : [];
           $("hud-computers-foot").textContent =
-            list.length === 1 ? "1 computer connected" : list.length + " computers connected";
+            list.length === 1 ? "1 computer" : list.length + " computers";
           if (list.length < 2) {
-            root.replaceChildren();
+            host.replaceChildren();
             return;
           }
           const items = [{id: "all", name: "All", isLocal: true}, ...list];
-          root.replaceChildren(...items.map(item => {
+          host.replaceChildren(...items.map(item => {
             const btn = document.createElement("button");
             btn.type = "button";
             btn.className = "hud-machine-chip" + (item.id === selectedMachine ? " active" : "");
@@ -1236,15 +796,20 @@ HUD_HTML = r"""<!doctype html>
             else if (text.includes("claude") || text.includes("gpt")) scope = "Other";
           }
           let win = label || "Plan";
-          if (text.includes("5-hour") || text.includes("five-hour") || text.includes("5h")) {
-            win = key === "antigravity" ? "5h" : "5 hour";
-          } else if (text.includes("month")) win = "month";
-          else if (text.includes("week")) win = "week";
+          if (text.includes("5-hour") || text.includes("five-hour") || text.includes("5h")) win = "5h";
+          else if (text.includes("month")) win = "Month";
+          else if (text.includes("week")) win = scope ? "Wk" : "Week";
           else if (text.includes("other model")) win = "Other";
           else if (text.includes("model")) win = "Models";
           else if (text.includes("fund") || text.includes("balance")) win = "Balance";
-          const left = [scope, win].filter(Boolean).join(" ");
-          return left.charAt(0).toUpperCase() + left.slice(1);
+          return [scope, win].filter(Boolean).join(" ");
+        }
+        function windowShort(key, label) {
+          const long = windowName(key, label).toLowerCase();
+          const scope = long.startsWith("gemini ") ? "G·" : long.startsWith("other ") && long !== "other" ? "O·" : "";
+          const win = long.replace(/^(gemini|other) /, "");
+          const short = {"5h": "5H", "week": "WK", "wk": "WK", "month": "MO", "balance": "BAL", "models": "MOD", "other": "OTH"}[win];
+          return scope + (short || win.slice(0, 3).toUpperCase());
         }
 
         function resetIn(iso) {
@@ -1268,7 +833,7 @@ HUD_HTML = r"""<!doctype html>
           const burn = nav.burnRatePerDay;
           $("hud-stat-burn").dataset.tip =
             '<b class="tip-title">Avg burn rate</b>' +
-            tipRow(burn == null ? null : esc(usd(burn) + " per day")) +
+            tipRow(burn == null ? null : esc(usd(burn) + " per day"), "accent") +
             '<span class="sep"></span>' +
             tipRow("Reference usage value per day, averaged over the last 7 complete days. Today is excluded; derived providers are priced at published rates.");
 
@@ -1276,7 +841,7 @@ HUD_HTML = r"""<!doctype html>
           const coverage = nav.todayComplete === false ? "partial — some usage is unpriced" : "complete";
           $("hud-stat-today").dataset.tip =
             '<b class="tip-title">API spend today</b>' +
-            tipRow(today == null ? null : esc(usd2(today) + " so far")) +
+            tipRow(today == null ? null : esc(usd2(today) + " so far"), "accent") +
             '<span class="sep"></span>' +
             tipRow("Reference usage value since local midnight. Not a bill; provider-reported charges appear only when exact.") +
             tipRow(esc("Coverage: " + coverage + "."));
@@ -1284,7 +849,7 @@ HUD_HTML = r"""<!doctype html>
           const cache = totals.cacheReusePct;
           $("hud-stat-cache").dataset.tip =
             '<b class="tip-title">Cache hit rate</b>' +
-            tipRow(cache == null ? null : esc(Math.round(Number(cache)) + "% of prompt tokens were cache reads")) +
+            tipRow(cache == null ? null : esc(Math.round(Number(cache)) + "% of prompt tokens were cache reads"), "accent") +
             '<span class="sep"></span>' +
             tipRow("Cache-read input ÷ all prompt tokens (reads + fresh input + cache writes), rolling 24h. Unclassified usage is excluded, never estimated.");
 
@@ -1297,68 +862,36 @@ HUD_HTML = r"""<!doctype html>
               tipRow(esc("7-day average: ≈ " + tok(avg) + " tokens/day"), "accent"));
         }
 
-        function renderSummary(data) {
-          const nav = data.navigation || {};
-          const totals = data.totals || {};
-          const status = data.status || "live";
-          const pill = $("hud-status-pill");
-          pill.dataset.state = status === "success" ? "live" : status;
-          $("hud-status-text").textContent = status === "stale" ? "STALE" : status === "error" ? "ERR" : "LIVE";
-          const failing = data.failingSource ? " · " + data.failingSource : "";
-          pill.dataset.tip =
-            '<b class="tip-title">' + (status === "stale" ? "Stale" : status === "error" ? "Offline" : "Live ingest") + "</b>" +
-            tipRow(esc(
-              status === "error"
-                ? "The local BURNRATE service is unreachable."
-                : status === "stale"
-                  ? "Ingest has not refreshed on schedule" + failing + "."
-                  : "Local harness ingest is refreshing on schedule."
-            ));
-          $("hud-date").textContent = new Date().toLocaleDateString("en-US", {
-            weekday: "long", month: "long", day: "numeric"
-          });
+        const shortNames = {
+          codex: "Codex",
+          cursor: "Cursor",
+          "claude-code": "Claude",
+          antigravity: "Antigravity",
+          grok: "Grok",
+          opencode: "Z.AI",
+          muse: "Muse",
+          openrouter: "OpenRouter"
+        };
+        // Provider marks come from the shared sprite served at /logos.svg.
+        const PLAN_LOGOS = {
+          codex: "codex", "claude-code": "claude", cursor: "cursor", grok: "grok", opencode: "zai",
+          antigravity: "antigravity", muse: "meta", openrouter: "openrouter", traycer: "traycer"
+        };
+        const MODEL_LOGOS = [
+          [/claude|opus|sonnet|haiku/i, "claude"], [/gpt|codex/i, "codex"], [/grok/i, "grok"],
+          [/glm|z\.ai/i, "zai"], [/muse/i, "meta"], [/gemini/i, "gemini"]
+        ];
+        const iconFor = id => {
+          const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+          svg.setAttribute("viewBox", "0 0 24 24");
+          svg.setAttribute("aria-hidden", "true");
+          const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+          use.setAttribute("href", "/logos.svg#" + id);
+          svg.append(use);
+          return svg;
+        };
 
-          setStat("hud-burn-rate", nav.burnRatePerDay != null ? usd(nav.burnRatePerDay) : "—");
-          setStat("hud-today", usd(nav.todayUsd));
-          setStat("hud-cache", totals.cacheReusePct == null || totals.cacheReusePct === ""
-            ? "—"
-            : Math.round(Number(totals.cacheReusePct)) + "%");
-          setStat("hud-tokens", tok(nav.todayTokens ?? 0));
-          statTips(nav, totals);
-
-          renderMachines(data.machines || []);
-
-          const shortNames = {
-            codex: "Codex",
-            cursor: "Cursor",
-            "claude-code": "Claude",
-            antigravity: "Antigravity",
-            grok: "Grok",
-            opencode: "Z.AI",
-            muse: "Muse",
-            openrouter: "OpenRouter"
-          };
-          const marks = {
-            codex: "M8.086.457a6.105 6.105 0 013.046-.415c1.333.153 2.521.72 3.564 1.7a.117.117 0 00.107.029c1.408-.346 2.762-.224 4.061.366l.063.03.154.076c1.357.703 2.33 1.77 2.918 3.198.278.679.418 1.388.421 2.126a5.655 5.655 0 01-.18 1.631.167.167 0 00.04.155 5.982 5.982 0 011.578 2.891c.385 1.901-.01 3.615-1.183 5.14l-.182.22a6.063 6.063 0 01-2.934 1.851.162.162 0 00-.108.102c-.255.736-.511 1.364-.987 1.992-1.199 1.582-2.962 2.462-4.948 2.451-1.583-.008-2.986-.587-4.21-1.736a.145.145 0 00-.14-.032c-.518.167-1.04.191-1.604.185a5.924 5.924 0 01-2.595-.622 6.058 6.058 0 01-2.146-1.781c-.203-.269-.404-.522-.551-.821a7.74 7.74 0 01-.495-1.283 6.11 6.11 0 01-.017-3.064.166.166 0 00.008-.074.115.115 0 00-.037-.064 5.958 5.958 0 01-1.38-2.202 5.196 5.196 0 01-.333-1.589 6.915 6.915 0 01.188-2.132c.45-1.484 1.309-2.648 2.577-3.493.282-.188.55-.334.802-.438.286-.12.573-.22.861-.304a.129.129 0 00.087-.087A6.016 6.016 0 015.635 2.31C6.315 1.464 7.132.846 8.086.457zm-.804 7.85a.848.848 0 00-1.473.842l1.694 2.965-1.688 2.848a.849.849 0 001.46.864l1.94-3.272a.849.849 0 00.007-.854l-1.94-3.393zm5.446 6.24a.849.849 0 000 1.695h4.848a.849.849 0 000-1.696h-4.848z",
-            "claude-code": "M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z",
-            cursor: "M22.106 5.68L12.5.135a.998.998 0 00-.998 0L1.893 5.68a.84.84 0 00-.419.726v11.186c0 .3.16.577.42.727l9.607 5.547a.999.999 0 00.998 0l9.608-5.547a.84.84 0 00.42-.727V6.407a.84.84 0 00-.42-.726zm-.603 1.176L12.228 22.92c-.063.108-.228.064-.228-.061V12.34a.59.59 0 00-.295-.51l-9.11-5.26c-.107-.062-.063-.228.062-.228h18.55c.264 0 .428.286.296.514z",
-            grok: "M9.27 15.29l7.978-5.897c.391-.29.95-.177 1.137.272.98 2.369.542 5.215-1.41 7.169-1.951 1.954-4.667 2.382-7.149 1.406l-2.711 1.257c3.889 2.661 8.611 2.003 11.562-.953 2.341-2.344 3.066-5.539 2.388-8.42l.006.007c-.983-4.232.242-5.924 2.75-9.383.06-.082.12-.164.179-.248l-3.301 3.305h-.01L9.267 15.292M7.623 16.723c-2.792-2.67-2.31-6.801.071-9.184 1.761-1.763 4.647-2.483 7.166-1.425l2.705-1.25a7.808 7.808 0 00-1.829-1A8.975 8.975 0 005.984 5.83c-2.533 2.536-3.33 6.436-1.962 9.764 1.022 2.487-.653 4.246-2.34 6.022-.599.63-1.199 1.259-1.682 1.925l7.62-6.815",
-            opencode: "M12.105 2L9.927 4.953H.653L2.83 2h9.276zM23.254 19.048L21.078 22h-9.242l2.174-2.952h9.244zM24 2L9.264 22H0L14.736 2H24z",
-            antigravity: "M12 4.5 20 18.5H4z",
-            muse: "M3 19V5l9 9 9-9v14h-3V11.5l-6 6-6-6V19H3z",
-            openrouter: "M7 10a2 2 0 100 4 2 2 0 000-4zm10-4.5a2 2 0 100 4 2 2 0 000-4zM17 14.5a2 2 0 100 4 2 2 0 000-4z"
-          };
-          const iconFor = key => {
-            const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-            svg.setAttribute("viewBox", "0 0 24 24");
-            svg.setAttribute("aria-hidden", "true");
-            const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-            path.setAttribute("fill", "currentColor");
-            path.setAttribute("d", marks[key] || marks.openrouter);
-            svg.append(path);
-            return svg;
-          };
-
+        function planGroups(data) {
           const groups = [];
           for (const provider of (data.capacity || [])) {
             const key = provider.providerKey || "";
@@ -1385,177 +918,223 @@ HUD_HTML = r"""<!doctype html>
             const polledAt = provider.polledAt || (rows.find(r => r.polledAt)?.polledAt) || "";
             if (rows.length) groups.push({ key, name, plan: provider.plan || "", rows, providerName: provider.providerName || name, polledAt });
           }
-          const shownPeak = group => {
-            const finite = group.rows.map(item => item.pct).filter(value => value != null);
-            if (!finite.length) return group.rows.some(item => item.payg) ? -2 : -1;
-            return Math.max(...finite);
-          };
-          groups.sort((a, b) => shownPeak(b) - shownPeak(a));
+          return groups;
+        }
+        const shownPeak = group => {
+          const finite = group.rows.map(item => item.pct).filter(value => value != null);
+          if (!finite.length) return group.rows.some(item => item.payg) ? -2 : -1;
+          return Math.max(...finite);
+        };
+
+        function windowTip(q) {
+          const when = resetWhen(q.resetsAt);
+          const until = resetIn(q.resetsAt);
+          const elapsed = windowElapsedPct(q);
+          const f = q.forecast || {};
+          const fstate = f.state || "";
+          const usageRows = [];
+          if (q.payg) {
+            const balance = q.unit === "usd" && q.used != null
+              ? "Balance " + usd2(q.used)
+              : (q.used != null && qtyText(q.used, q.unit) ? qtyText(q.used, q.unit) + " remaining" : null);
+            if (balance) usageRows.push(tipRow(esc(balance + " · pay-as-you-go"), "accent"));
+          } else if (q.allowance != null && q.allowance > 0 && q.used != null) {
+            usageRows.push(tipRow(esc(qtyText(q.used, q.unit) + " of " + qtyText(q.allowance, q.unit) + " used"), "accent"));
+          } else if (q.used != null && (q.unit === "pct" || q.unit === "percent")) {
+            usageRows.push(tipRow(esc(Math.round(q.used) + "% of the window cap used"), "accent"));
+          }
+          const resetRows = [];
+          if (when) resetRows.push(tipRow(esc("Resets " + when + " · in " + (until || "under a minute"))));
+          if (elapsed != null && q.pct != null && !q.payg) {
+            const delta = Math.round(q.pct - elapsed);
+            const paceCls = delta >= 15 ? "dry" : delta >= 5 ? "tight" : "safe";
+            const paceText = delta > 2
+              ? "Pace: +" + delta + "% ahead of even window pace (" + Math.round(elapsed) + "% elapsed)"
+              : delta < -2
+                ? "Pace: " + Math.abs(delta) + "% under safe even pace (" + Math.round(elapsed) + "% elapsed)"
+                : "Pace: right on even window pace (" + Math.round(elapsed) + "% elapsed)";
+            resetRows.push(tipRow(esc(paceText), paceCls));
+          }
+          if (fstate === "tight" || fstate === "dry") {
+            if (f.line) resetRows.push(tipRow(esc(f.line), fstate));
+            if (f.burnPctPerHour != null) resetRows.push(tipRow(esc("+" + (Math.round(f.burnPctPerHour * 10) / 10).toFixed(1) + "%/hr recent burn pace")));
+          } else if (fstate === "stale") {
+            resetRows.push(tipRow("Pace unknown — the newest quota sample is stale."));
+          }
+          const rowAge = relTime(q.polledAt);
+          if (rowAge) resetRows.push(tipRow(esc("Polled " + rowAge + " · click to inspect tool")));
+          if (q.pct == null && !q.payg && q.source) resetRows.push(tipRow(esc(q.source)));
+          return '<b class="tip-title">' + esc(q.title) + "</b>" +
+            usageRows.join("") +
+            (resetRows.length ? '<span class="sep"></span>' + resetRows.join("") : "");
+        }
+
+        function windowRow(group, q, isPeak) {
+          const cell = document.createElement("div");
+          cell.className = "win" + (isPeak ? " is-peak" : "");
+          const f = q.forecast || {};
+          const fstate = f.state || "";
+          const label = document.createElement("span");
+          label.className = "win-label";
+          const longLabel = document.createElement("span");
+          longLabel.className = "long";
+          longLabel.textContent = windowName(group.key, q.label);
+          const shortLabel = document.createElement("span");
+          shortLabel.className = "short";
+          shortLabel.textContent = windowShort(group.key, q.label);
+          label.append(longLabel, shortLabel);
+          const meter = document.createElement("div");
+          meter.className = "meter" + (q.payg ? " payg" : "");
+          const fill = document.createElement("i");
+          fill.className = "fill";
+          meter.append(fill);
+          if (q.pct != null && !q.payg) {
+            const p = Math.max(0, Math.min(100, q.pct));
+            meter.style.setProperty("--fill", p.toFixed(1) + "%");
+            if (fstate === "dry" || p >= 90) cell.classList.add("crit");
+            else if (fstate === "tight" || p >= 75) cell.classList.add("warn");
+          }
+          const elapsed = windowElapsedPct(q);
+          if (elapsed != null && !q.payg) {
+            const tick = document.createElement("i");
+            tick.className = "win-pace-tick";
+            tick.style.left = elapsed.toFixed(2) + "%";
+            meter.append(tick);
+          }
+          const value = document.createElement("b");
+          value.textContent = q.pct == null ? (q.payg ? "PAYG" : "—") : pctText(q.pct);
+          if (q.pct == null && q.payg) value.className = "payg";
+          const eta = document.createElement("i");
+          eta.className = "win-reset";
+          eta.textContent = resetIn(q.resetsAt);
+          cell.append(label, meter, value, eta);
+          cell.dataset.tip = windowTip(q);
+          return cell;
+        }
+
+        function renderPlans(groups) {
           const badge = $("hud-quota-badge");
           badge.textContent = groups.length ? String(groups.length) : "—";
           badge.dataset.tip =
             '<b class="tip-title">Plans</b>' +
             tipRow(esc(groups.length ? groups.length + (groups.length === 1 ? " subscription tracked" : " subscriptions tracked") + ", sorted by what runs out first." : "No subscription usage yet."));
-          const liveAgents = (data.activity || []).filter(item => String(item.state || "").toUpperCase() === "LIVE");
-          const liveSection = $("hud-live");
-          const agentsRoot = $("hud-agents");
-          if (liveSection && agentsRoot) {
-            liveSection.hidden = !liveAgents.length;
-            agentsRoot.replaceChildren(...liveAgents.slice(0, 3).map(agent => {
-              const row = document.createElement("div");
-              row.className = "hud-agent";
-              const mainWrap = document.createElement("div");
-              mainWrap.className = "hud-agent-main";
-              const pulse = document.createElement("i");
-              pulse.className = "hud-pulse";
-              const textWrap = document.createElement("div");
-              textWrap.className = "hud-agent-text";
-              const rawName = String(agent.name || "Active session").replace(/\s+/g, " ").trim() || "Active session";
-              const shortName = rawName.length > 54 ? rawName.slice(0, 53).trimEnd() + "…" : rawName;
-              const strong = document.createElement("strong");
-              strong.textContent = shortName;
-              const small = document.createElement("small");
-              small.textContent = agent.modelKey || "live";
-              textWrap.append(strong, small);
-              mainWrap.append(pulse, textWrap);
-              const tag = document.createElement("span");
-              tag.className = "hud-machine-tag";
-              tag.textContent = agent.machineName || "LIVE";
-              row.append(mainWrap, tag);
-              const modelLower = String(agent.modelKey || "").toLowerCase();
-              const inferredTool = modelLower.includes("claude") ? "claude-code" : modelLower.includes("gpt") || modelLower.includes("codex") ? "codex" : modelLower.includes("grok") ? "grok" : modelLower.includes("muse") ? "muse" : "";
-              const whereLabel = [agent.modelKey || "live", agent.machineName || ""].filter(Boolean).join(" · ");
-              row.dataset.tip = '<b class="tip-title">' + esc(shortName) + '</b>' + tipRow(esc(whereLabel), "accent") + tipRow("Click to inspect tool in dashboard");
-              row.addEventListener("click", () => openToolInDashboard(inferredTool));
-              return row;
-            }));
-          }
-
-          const topGroup = groups.find(g => shownPeak(g) >= 0) || groups[0] || null;
-          const miniBar = $("hud-mini-bar");
-          if (miniBar) {
-            if (topGroup) {
-              const topRow = topGroup.rows.find(r => r.pct != null) || topGroup.rows[0];
-              const until = topRow ? resetIn(topRow.resetsAt) : "";
-              $("hud-mini-lead").textContent = topGroup.name + (topRow ? " · " + windowName(topGroup.key, topRow.label) : "") + (until ? " (" + until + ")" : "");
-              $("hud-mini-pct").textContent = topRow && topRow.pct != null ? pctText(topRow.pct) : "—";
-              miniBar.dataset.providerKey = topGroup.key;
-            } else {
-              $("hud-mini-lead").textContent = "All subscription limits healthy";
-              $("hud-mini-pct").textContent = "—";
-              miniBar.dataset.providerKey = "";
-            }
-          }
-
           const quotasRoot = $("hud-quotas");
           if (!groups.length) {
             quotasRoot.innerHTML = '<p class="hud-empty">No subscription usage yet.</p>';
-          } else {
-            quotasRoot.replaceChildren(...groups.map(group => {
-              const card = document.createElement("article");
-              card.className = "plan" + (group.rows.length > 2 ? " is-stack" : "");
-              card.setAttribute("aria-label", group.name);
-              card.dataset.providerKey = group.key;
-              card.addEventListener("click", () => openToolInDashboard(group.key));
-              const mark = document.createElement("span");
-              mark.className = "mark";
-              mark.append(iconFor(group.key));
-              const name = document.createElement("b");
-              name.textContent = group.name;
-              const main = document.createElement("div");
-              main.className = "plan-main";
-              const em = document.createElement("em");
-              const planLabel = group.key === "opencode" && group.plan === "Max" ? "Coding Plan Max" : group.plan;
-              const ageLabel = relTime(group.polledAt);
-              em.textContent = [planLabel, ageLabel].filter(Boolean).join(" · ");
-              const windows = document.createElement("div");
-              windows.className = "windows";
-              const count = group.rows.length;
-              const cols = count <= 1 ? 1 : count === 3 ? 3 : 2;
-              windows.style.gridTemplateColumns = "repeat(" + cols + ", minmax(0, 1fr))";
-              for (const q of group.rows) {
-                const cell = document.createElement("div");
-                cell.className = "win";
-                const when = resetWhen(q.resetsAt);
-                const until = resetIn(q.resetsAt);
-                const elapsed = windowElapsedPct(q);
-                const f = q.forecast || {};
-                const fstate = f.state || "";
-                const label = document.createElement("span");
-                label.textContent = windowName(group.key, q.label);
-                const value = document.createElement("b");
-                value.textContent = q.pct == null ? (q.payg ? "Payg" : "—") : pctText(q.pct);
-
-                const usageRows = [];
-                if (q.payg) {
-                  const balance = q.unit === "usd" && q.used != null
-                    ? "Balance " + usd2(q.used)
-                    : (q.used != null && qtyText(q.used, q.unit) ? qtyText(q.used, q.unit) + " remaining" : null);
-                  if (balance) usageRows.push(tipRow(esc(balance + " · pay-as-you-go"), "accent"));
-                } else if (q.allowance != null && q.allowance > 0 && q.used != null) {
-                  usageRows.push(tipRow(esc(qtyText(q.used, q.unit) + " of " + qtyText(q.allowance, q.unit) + " used"), "accent"));
-                } else if (q.used != null && (q.unit === "pct" || q.unit === "percent")) {
-                  usageRows.push(tipRow(esc(Math.round(q.used) + "% of the window cap used"), "accent"));
-                }
-                const resetRows = [];
-                if (when) resetRows.push(tipRow(esc("Resets " + when + " · in " + (until || "under a minute"))));
-                if (elapsed != null && q.pct != null && !q.payg) {
-                  const delta = Math.round(q.pct - elapsed);
-                  const paceCls = delta >= 15 ? "dry" : delta >= 5 ? "tight" : "safe";
-                  const paceText = delta > 2
-                    ? "Pace: +" + delta + "% ahead of even window pace (" + Math.round(elapsed) + "% elapsed)"
-                    : delta < -2
-                      ? "Pace: " + Math.abs(delta) + "% under safe even pace (" + Math.round(elapsed) + "% elapsed)"
-                      : "Pace: right on even window pace (" + Math.round(elapsed) + "% elapsed)";
-                  resetRows.push(tipRow(esc(paceText), paceCls));
-                }
-                if (fstate === "tight" || fstate === "dry") {
-                  if (f.line) resetRows.push(tipRow(esc(f.line), fstate));
-                  if (f.burnPctPerHour != null) resetRows.push(tipRow(esc("+" + (Math.round(f.burnPctPerHour * 10) / 10).toFixed(1) + "%/hr recent burn pace")));
-                } else if (fstate === "stale") {
-                  resetRows.push(tipRow("Pace unknown — the newest quota sample is stale."));
-                }
-                const rowAge = relTime(q.polledAt);
-                if (rowAge) resetRows.push(tipRow(esc("Polled " + rowAge + " · click to inspect tool")));
-                if (q.pct == null && !q.payg && q.source) {
-                  resetRows.push(tipRow(esc(q.source)));
-                }
-                cell.dataset.tip =
-                  '<b class="tip-title">' + esc(q.title) + "</b>" +
-                  usageRows.join("") +
-                  (resetRows.length ? '<span class="sep"></span>' + resetRows.join("") : "");
-
-                if (q.pct != null && !q.payg) {
-                  const p = Math.max(0, Math.min(100, q.pct));
-                  cell.style.setProperty("--fill", p.toFixed(1) + "%");
-                  if (fstate === "dry" || p >= 90) cell.classList.add("crit");
-                  else if (fstate === "tight" || p >= 75) cell.classList.add("warn");
-                }
-                if (elapsed != null && !q.payg) {
-                  const tick = document.createElement("i");
-                  tick.className = "win-pace-tick";
-                  tick.style.left = "calc(8px + (100% - 16px) * " + (elapsed / 100).toFixed(4) + ")";
-                  cell.append(tick);
-                }
-
-                cell.append(label);
-                if (until) {
-                  const eta = document.createElement("i");
-                  eta.textContent = until;
-                  cell.append(eta);
-                }
-                cell.append(value);
-                windows.append(cell);
-              }
-              main.append(name, em);
-              main.dataset.tip =
-                '<b class="tip-title">' + esc(group.providerName) + "</b>" +
-                tipRow(esc((group.plan ? group.plan + " · " : "") + (ageLabel ? "polled " + ageLabel + " · " : "") + "click to open tool detail."));
-              card.append(mark, main, windows);
-              return card;
-            }));
+            return;
           }
-          $("hud-updated-foot").textContent = new Date().toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
+          quotasRoot.replaceChildren(...groups.map(group => {
+            const card = document.createElement("article");
+            card.className = "plan";
+            card.setAttribute("aria-label", group.name);
+            card.dataset.providerKey = group.key;
+            card.addEventListener("click", () => openToolInDashboard(group.key));
+            const head = document.createElement("header");
+            head.className = "plan-head";
+            const mark = document.createElement("span");
+            mark.className = "mark";
+            mark.append(iconFor(PLAN_LOGOS[group.key] || "custom"));
+            const name = document.createElement("b");
+            name.textContent = group.name;
+            const em = document.createElement("em");
+            const planLabel = group.key === "opencode" && group.plan === "Max" ? "Coding Plan Max" : group.plan;
+            const ageLabel = relTime(group.polledAt);
+            em.textContent = [planLabel, ageLabel].filter(Boolean).join(" · ");
+            head.append(mark, name, em);
+            head.dataset.tip =
+              '<b class="tip-title">' + esc(group.providerName) + "</b>" +
+              tipRow(esc((group.plan ? group.plan + " · " : "") + (ageLabel ? "polled " + ageLabel + " · " : "") + "click to open tool detail."));
+            const windows = document.createElement("div");
+            windows.className = "windows";
+            const peak = group.rows.reduce((best, row) => (row.pct != null && (best == null || row.pct > best.pct) ? row : best), null) || group.rows[0];
+            for (const q of group.rows) windows.append(windowRow(group, q, q === peak));
+            card.append(head, windows);
+            return card;
+          }));
+        }
+
+        function renderAgents(data) {
+          const liveAgents = (data.activity || []).filter(item => String(item.state || "").toUpperCase() === "LIVE");
+          const miniLive = $("hud-mini-live");
+          miniLive.hidden = !liveAgents.length;
+          miniLive.textContent = liveAgents.length ? "● " + liveAgents.length + " live" : "";
+          const liveSection = $("hud-live");
+          const agentsRoot = $("hud-agents");
+          liveSection.hidden = !liveAgents.length;
+          agentsRoot.replaceChildren(...liveAgents.slice(0, 3).map(agent => {
+            const row = document.createElement("div");
+            row.className = "hud-agent";
+            const mainWrap = document.createElement("div");
+            mainWrap.className = "hud-agent-main";
+            const pulse = document.createElement("span");
+            pulse.className = "hud-agent-mark";
+            const modelId = MODEL_LOGOS.find(([pattern]) => pattern.test(String(agent.modelKey || "")))?.[1] || "custom";
+            const badge = document.createElement("i");
+            badge.className = "hud-pulse";
+            pulse.append(iconFor(modelId), badge);
+            const textWrap = document.createElement("div");
+            textWrap.className = "hud-agent-text";
+            const rawName = String(agent.name || "Active session").replace(/\s+/g, " ").trim() || "Active session";
+            const shortName = rawName.length > 54 ? rawName.slice(0, 53).trimEnd() + "…" : rawName;
+            const strong = document.createElement("strong");
+            strong.textContent = shortName;
+            const small = document.createElement("small");
+            small.textContent = agent.modelKey || "live";
+            textWrap.append(strong, small);
+            mainWrap.append(pulse, textWrap);
+            const tag = document.createElement("span");
+            tag.className = "hud-machine-tag";
+            tag.textContent = agent.machineName || "LIVE";
+            row.append(mainWrap, tag);
+            const modelLower = String(agent.modelKey || "").toLowerCase();
+            const inferredTool = modelLower.includes("claude") ? "claude-code" : modelLower.includes("gpt") || modelLower.includes("codex") ? "codex" : modelLower.includes("grok") ? "grok" : modelLower.includes("muse") ? "muse" : "";
+            const whereLabel = [agent.modelKey || "live", agent.machineName || ""].filter(Boolean).join(" · ");
+            row.dataset.tip = '<b class="tip-title">' + esc(shortName) + '</b>' + tipRow(esc(whereLabel), "accent") + tipRow("Click to inspect tool in dashboard");
+            row.addEventListener("click", () => openToolInDashboard(inferredTool));
+            return row;
+          }));
+        }
+
+        function renderSummary(data) {
+          const nav = data.navigation || {};
+          const totals = data.totals || {};
+          statusView.summary = data.status || "live";
+          statusView.failing = data.failingSource || "";
+          statusView.offline = false;
+          paintStatus();
+          $("hud-date").textContent = "Today · " + new Date().toLocaleDateString("en-US", {
+            weekday: "short", month: "short", day: "numeric"
+          });
+
+          setStat("hud-burn-rate", nav.burnRatePerDay != null ? usd(nav.burnRatePerDay) : "—");
+          setStat("hud-today", usd2(nav.todayUsd));
+          setStat("hud-mini-today", usd2(nav.todayUsd));
+          setStat("hud-cache", totals.cacheReusePct == null || totals.cacheReusePct === ""
+            ? "—"
+            : Math.round(Number(totals.cacheReusePct)) + "%");
+          setStat("hud-tokens", tok(nav.todayTokens ?? 0));
+          statTips(nav, totals);
+
+          renderMachines(data.machines || []);
+          renderAgents(data);
+
+          const groups = planGroups(data);
+          groups.sort((a, b) => shownPeak(b) - shownPeak(a));
+          const topGroup = groups.find(g => shownPeak(g) >= 0) || groups[0] || null;
+          const miniBar = $("hud-mini-bar");
+          if (topGroup) {
+            const topRow = topGroup.rows.find(r => r.pct != null) || topGroup.rows[0];
+            const until = topRow ? resetIn(topRow.resetsAt) : "";
+            $("hud-mini-lead").textContent = topGroup.name + (topRow ? " · " + windowName(topGroup.key, topRow.label) : "") + (until ? " (" + until + ")" : "");
+            $("hud-mini-pct").textContent = topRow && topRow.pct != null ? pctText(topRow.pct) : "—";
+            miniBar.dataset.providerKey = topGroup.key;
+          } else {
+            $("hud-mini-lead").textContent = "All subscription limits healthy";
+            $("hud-mini-pct").textContent = "—";
+            miniBar.dataset.providerKey = "";
+          }
+          renderPlans(groups);
+          $("hud-updated-foot").textContent = "Updated " + new Date().toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
           syncHudWindowSize();
         }
 
@@ -1567,16 +1146,86 @@ HUD_HTML = r"""<!doctype html>
             const data = await res.json();
             renderSummary(data);
           } catch {
-            $("hud-status-pill").dataset.state = "error";
-            $("hud-status-text").textContent = "OFFLINE";
+            statusView.offline = true;
+            paintStatus();
           }
         }
 
+        // This computer's own freshness (local only, never the hub's view):
+        // a stalled source, a meter holding an old reading, a failing sync.
+        const statusView = {summary: "loading", failing: "", offline: false, freshness: null};
+        const ago = seconds => {
+          const n = Number(seconds);
+          if (seconds == null || !Number.isFinite(n)) return "";
+          if (n < 90) return Math.round(n) + "s";
+          if (n < 5400) return Math.round(n / 60) + "m";
+          if (n < 172800) return Math.round(n / 3600) + "h";
+          return Math.round(n / 86400) + "d";
+        };
+        function paintStatus() {
+          const pill = $("hud-status-pill");
+          const miniAlert = $("hud-mini-alert");
+          const fresh = statusView.freshness;
+          const all = fresh && Array.isArray(fresh.issues) ? fresh.issues : [];
+          const issues = all.filter(item => item.severity !== "info");
+          const notes = all.filter(item => item.severity === "info");
+          const lead = issues[0];
+          const summary = statusView.offline ? "offline" : statusView.summary;
+          let state = summary === "success" || summary === "live" || summary === "loading" ? "live" : summary === "offline" ? "error" : summary;
+          let label = summary === "offline" ? "OFFLINE" : summary === "stale" ? "STALE" : summary === "error" ? "ERR" : "LIVE";
+          let title = summary === "offline" ? "Offline" : summary === "stale" ? "Stale" : summary === "error" ? "Ingest failed" : "Live ingest";
+          let body = summary === "offline"
+            ? tipRow(esc("The local BURNRATE service is unreachable."))
+            : summary === "stale"
+              ? tipRow(esc("Ingest has not refreshed on schedule" + (statusView.failing ? " · " + statusView.failing : "") + "."))
+              : summary === "error"
+                ? tipRow(esc("A source failed to collect" + (statusView.failing ? ": " + statusView.failing : "") + "."))
+                : lead ? "" : tipRow(esc("Every source on this computer is collecting on schedule."));
+          if (state === "live" && lead) {
+            state = fresh.status === "alarm" ? "error" : "stale";
+            label = (lead.short + " " + lead.state).toUpperCase() + (issues.length > 1 ? " +" + (issues.length - 1) : "");
+            title = issues.length === 1 ? "1 source needs attention" : issues.length + " sources need attention";
+          }
+          if (!statusView.offline) {
+            issues.forEach(item => {
+              const age = ago(item.ageSeconds);
+              body += tipRow(esc(item.short + " · " + item.state + (age ? " " + age : "")), item.severity === "alarm" ? "dry" : "tight") +
+                tipRow(esc(item.detail));
+            });
+            if (notes.length) body += '<span class="sep"></span>' + notes.map(item => tipRow(esc(item.detail))).join("");
+            const beat = fresh && fresh.ingest;
+            if (beat && beat.lastPassSeconds != null) {
+              body += '<span class="sep"></span>' + tipRow(esc("Last collection pass " + beat.lastPassSeconds + "s, " + (ago(beat.lastPassAgeSeconds) || "0s") + " ago."));
+            }
+          }
+          pill.dataset.state = state;
+          $("hud-status-text").textContent = label;
+          pill.dataset.tip = '<b class="tip-title">' + esc(title) + "</b>" + body;
+          miniAlert.hidden = state === "live";
+          miniAlert.dataset.state = state;
+          miniAlert.textContent = state === "live" ? "" : "! " + (lead && summary !== "offline" && summary !== "stale" && summary !== "error"
+            ? lead.short.toUpperCase() + (issues.length > 1 ? " +" + (issues.length - 1) : "")
+            : label);
+          miniAlert.dataset.tip = pill.dataset.tip;
+        }
+        async function refreshFreshness() {
+          try {
+            const res = await fetch("/api/spend/freshness", {cache: "no-store"});
+            if (!res.ok) throw new Error(String(res.status));
+            statusView.freshness = await res.json();
+          } catch {
+            statusView.freshness = null;
+          }
+          paintStatus();
+        }
+
         refresh();
+        refreshFreshness();
         setInterval(refresh, 5000);
-        window.addEventListener("focus", refresh);
+        setInterval(refreshFreshness, 20000);
+        window.addEventListener("focus", () => { refresh(); refreshFreshness(); });
         document.addEventListener("visibilitychange", () => {
-          if (!document.hidden) refresh();
+          if (!document.hidden) { refresh(); refreshFreshness(); }
         });
         if (typeof EventSource === "function") {
           let debounce = null;

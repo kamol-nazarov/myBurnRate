@@ -51,7 +51,19 @@ def positive_cost(value: object) -> float | None:
 
 def sqlite_read_only(path: Path) -> sqlite3.Connection:
     from spend_app.connection_paths import confined
-    path = confined(path)
+    return _read_only_connection(confined(path))
+
+
+def store_read_only(path: Path) -> sqlite3.Connection:
+    """Read-only connection to BURNRATE's own database, never a provider store.
+
+    Provider files are confined to the approved source location; the app's
+    database lives elsewhere by design, so confining it would always fail.
+    """
+    return _read_only_connection(Path(path))
+
+
+def _read_only_connection(path: Path) -> sqlite3.Connection:
     uri_path = quote(path.resolve().as_posix(), safe="/:.")
     connection = sqlite3.connect(f"file:{uri_path}?mode=ro", uri=True, timeout=5)
     connection.execute("PRAGMA query_only=ON")

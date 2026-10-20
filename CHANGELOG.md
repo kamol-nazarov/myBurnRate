@@ -9,6 +9,63 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+- Redesign the dashboard, Sidecar HUD, and setup wizard as one "Instrument"
+  system: a graphite (dark) or paper (light) ground that follows the OS until
+  you pick one with the new theme button, Bahnschrift (DIN) numerals and labels,
+  hairline grids instead of pastel cards, numbered sections, and a single ember
+  accent for what needs attention.
+- Show every quota window as a segmented meter with an even-pace tick, colored by
+  that window's own pressure (neutral, ember from 60%, red from 85%), so a hot
+  weekly window is flagged even when the card's lead window is quiet.
+- Rebuild the Sidecar HUD around one large "today" readout, a three-cell strip
+  (burn rate, cache, tokens), and aligned per-window meter rows. Mini mode is now
+  a glance strip: today's spend plus one line per plan showing its tightest window.
+- Replace the brand mark and native app icons with a gauge whose redline is ember.
+- Show each provider's real logo wherever it appears: capacity gauges, live
+  agents, tool filters, the chart legend and tooltip (tinted in the tool's chart
+  color), model and subscription rows, the price ladder, tool detail pages, data
+  health, every dialog, the Sidecar HUD (including Mini), and the setup wizard.
+  The marks ship as one cached sprite, `/logos.svg`.
+- Render the weekday-by-hour heatmap on an ember ramp with a square-root scale so
+  quiet hours stay distinguishable from empty ones.
+- Stop the dashboard from scrolling itself down on load at phone widths.
+- Keep usage meters current: Cursor's usage service now fetches only the recent
+  tail on its own scheduler job instead of re-downloading the whole history in
+  the shared local pass, which had held every other source behind it for
+  minutes. On a spoke, a fresher local quota reading now replaces the hub's
+  older one.
+- Skip re-reconciling OpenCode, ZCode, and Grok stores whose files have not
+  changed since the last clean pass (a full pass still runs every 5 minutes).
+- Stop re-reading every Grok session `updates.jsonl` on each pass. An unchanged
+  file reuses its parse, so this step drops from about 6 s (777 MB across 446
+  files here) to under 1 s.
+- Stop re-reading idle Claude Code transcripts on every pass. A transcript with
+  any permanently unusable record (an older revision, a conflicting cache
+  duration) was never cached, so about 1 GB of days-old transcripts was parsed
+  and reconciled every 30 seconds. The Claude pass drops from about 20 s to
+  about 4 s, and those files are still reported as partial.
+- Fix the Traycer source, which failed on every pass with "A source link points
+  outside the approved location": its duplicate check opened BURNRATE's own
+  database through the provider-file confinement. Usage that only Traycer
+  recorded (Codex, Claude Code and pre-log Grok runs it launched) is now
+  counted; Cursor runs it launched are left to Cursor's own local store.
+- Add a freshness alarm. `GET /api/spend/freshness` reports, for this computer
+  only, every source that failed or went stale, quota meters holding a reading
+  that newer polls could not confirm (with the provider's reason), hub sync
+  failures, a stalled collection loop, quiet synced computers, and a hub running
+  a different BURNRATE version. The Sidecar HUD status pill (and the Mini HUD)
+  and the dashboard status pill name the first issue in amber, and Diagnostics
+  lists them all.
+- Add a watchdog: `install-burnrate.ps1` registers `BURNRATE Watchdog`, which runs
+  `pythonw -m spend_app.watchdog` every 5 minutes and restarts the service through
+  the new `restart-burnrate.ps1` when it stops answering or its collection loop
+  stalls (10 minutes without a finished pass; 30 for the first pass after a
+  start). An explicit `stop-burnrate.ps1` is respected; restarts are capped at
+  3 an hour.
+- Rotate `dashboard.log` at 5 MB with three backups, and drop per-request HTTP
+  and per-job scheduler chatter, which had grown the log to about 150 MB. Each
+  local collection pass now logs one line with its duration and slowest sources.
+
 ## [0.3.0-beta.9] - 2026-10-14
 
 - Add central account server hosting on `tk-server` (`/api/account/register`,

@@ -9,3 +9,7 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'BurnrateRuntime.ps1')
 Stop-BurnrateDashboard -DryRun:$DryRun
+if (-not $DryRun) {
+    # Deliberate stop: the watchdog leaves the dashboard down until it starts again.
+    Set-BurnrateStopMarker
+}

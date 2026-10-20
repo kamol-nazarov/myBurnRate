@@ -1068,402 +1068,481 @@ SETUP_WIZARD_HTML = """<!doctype html>
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#0b0d10">
+    <meta name="color-scheme" content="dark light">
+    <meta name="theme-color" content="#ebe9e4">
     <title>BURNRATE · Application Setup Wizard</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <script>
+      (() => {
+        let theme = null;
+        try { theme = localStorage.getItem("burnrate:theme"); } catch {}
+        if (theme !== "dark" && theme !== "light") theme = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+        document.documentElement.dataset.theme = theme;
+        document.querySelector('meta[name="theme-color"]').content = theme === "dark" ? "#08080a" : "#ebe9e4";
+      })();
+    </script>
     <style>
+      /* "Instrument" tokens, copied from frontend_src/spend.css. Light is the default; dark overrides below. */
       :root {
+        color-scheme: light;
+        --bg: #ebe9e4;
+        --surface: #f8f7f4;
+        --raised: #ffffff;
+        --soft: #f1efeb;
+        --sunken: #e5e2dc;
+        --text: #141311;
+        --secondary: #4a4741;
+        --muted: #5f5b55;
+        --dim: #74706a;
+        --line: rgba(20, 18, 15, 0.1);
+        --border: rgba(20, 18, 15, 0.12);
+        --border-strong: rgba(20, 18, 15, 0.22);
+        --accent: #cf4509;
+        --accent-soft: rgba(207, 69, 9, 0.09);
+        --on-accent: #ffffff;
+        --green: #13804c;
+        --danger: #c42b24;
+        --good-bg: rgba(19, 128, 76, 0.07);
+        --good-border: rgba(19, 128, 76, 0.28);
+        --danger-bg: rgba(196, 43, 36, 0.07);
+        --danger-border: rgba(196, 43, 36, 0.3);
+        --meter: #141311;
+        --track: rgba(20, 18, 15, 0.13);
+        --lift: 0 1px 2px rgba(20, 18, 15, 0.05);
+        --fd: Bahnschrift, "DIN Alternate", "DIN 2014", Barlow, "Segoe UI", system-ui, sans-serif;
+        --font-sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+        --font-mono: "Cascadia Mono", ui-monospace, Consolas, monospace;
+      }
+      [data-theme=dark] {
         color-scheme: dark;
-        --bg: #090b0e;
-        --surface: #11141a;
-        --raised: #171b23;
-        --card-hover: #1c212b;
-        --border: rgba(255, 255, 255, 0.08);
-        --border-strong: rgba(255, 255, 255, 0.16);
-        --text: #eef1f6;
-        --secondary: #a4adbb;
-        --muted: #6d7685;
-        --accent: #d9a441;
-        --accent-soft: rgba(217, 164, 65, 0.14);
-        --cyan: #5cd6e8;
-        --green: #63c689;
-        --green-soft: rgba(99, 198, 137, 0.12);
-        --danger: #ef6461;
-        --font-sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        --font-mono: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+        --bg: #08080a;
+        --surface: #111114;
+        --raised: #19191d;
+        --soft: #151518;
+        --sunken: #0c0c0e;
+        --text: #f2f0eb;
+        --secondary: #b8b4ac;
+        --muted: #9a968f;
+        --dim: #807d76;
+        --line: rgba(255, 255, 255, 0.075);
+        --border: rgba(255, 255, 255, 0.1);
+        --border-strong: rgba(255, 255, 255, 0.2);
+        --accent: #ff6b22;
+        --accent-soft: rgba(255, 107, 34, 0.12);
+        --on-accent: #0a0a0b;
+        --green: #3dd68c;
+        --danger: #ff5247;
+        --good-bg: rgba(61, 214, 140, 0.07);
+        --good-border: rgba(61, 214, 140, 0.26);
+        --danger-bg: rgba(255, 82, 71, 0.08);
+        --danger-border: rgba(255, 82, 71, 0.32);
+        --meter: #f2f0eb;
+        --track: rgba(255, 255, 255, 0.1);
+        --lift: none;
       }
       * { box-sizing: border-box; margin: 0; padding: 0; }
       [hidden] { display: none !important; }
-      html, body {
+      body {
         min-height: 100vh;
-        background: radial-gradient(circle at 18% 0%, rgba(217, 164, 65, 0.08), transparent 45%),
-                    radial-gradient(circle at 85% 10%, rgba(92, 214, 232, 0.06), transparent 45%),
-                    var(--bg);
+        background: var(--bg);
         color: var(--text);
-        font-family: var(--font-sans);
-        font-size: 14px;
-        line-height: 1.5;
+        font: 14px/1.5 var(--font-sans);
+        font-variant-numeric: tabular-nums;
+        -webkit-font-smoothing: antialiased;
       }
+      button, input, select { font: inherit; color: inherit; }
+      code { font-family: var(--font-mono); font-size: 0.9em; }
+      :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+      ::selection { background: var(--accent); color: var(--on-accent); }
+
+      .eyebrow {
+        font: 600 10px/1.2 var(--fd);
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        font-stretch: 87.5%;
+        color: var(--muted);
+      }
+      .eyebrow .n { color: var(--accent); letter-spacing: 0.04em; margin-right: 8px; }
+
       .wizard-shell {
-        max-width: 780px;
-        margin: 0 auto;
-        padding: 20px 24px 36px;
-        display: flex;
-        flex-direction: column;
-        gap: 20px;
         min-height: 100vh;
+        max-width: 1120px;
+        margin: 0 auto;
+        padding: 22px 32px 40px;
+        display: grid;
+        grid-template-columns: 232px minmax(0, 1fr);
+        grid-template-areas: "top top" "rail card";
+        column-gap: 48px;
+        row-gap: 28px;
+        align-content: start;
       }
       .wizard-topbar {
+        grid-area: top;
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 12px;
-        padding-bottom: 14px;
-        border-bottom: 1px solid var(--border);
-        cursor: grab;
+        min-height: 44px;
+        padding-bottom: 18px;
+        border-bottom: 1px solid var(--line);
       }
-      .wizard-brand {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-      }
-      .wizard-brand img {
-        width: 30px;
-        height: 30px;
-        border-radius: 8px;
-      }
+      .wizard-brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+      .wizard-brand img { flex: 0 0 32px; width: 32px; height: 32px; border-radius: 8px; display: block; }
       .wizard-wordmark {
-        font-size: 15px;
-        font-weight: 700;
-        letter-spacing: 0.08em;
+        font: 700 18px/0.88 var(--fd);
+        letter-spacing: 0.035em;
+        white-space: nowrap;
       }
-      .wizard-wordmark strong { color: var(--accent); }
+      .wizard-wordmark strong { color: var(--accent); font: inherit; }
       .wizard-sub {
-        font-size: 12px;
-        color: var(--secondary);
-        margin-left: 6px;
-        padding-left: 10px;
-        border-left: 1px solid var(--border);
+        padding-left: 12px;
+        border-left: 1px solid var(--line);
+        white-space: nowrap;
       }
-      .wizard-skip {
-        appearance: none;
-        background: transparent;
-        border: 1px solid var(--border);
-        color: var(--secondary);
-        border-radius: 8px;
-        padding: 6px 12px;
-        font-size: 12px;
-        cursor: pointer;
-        text-decoration: none;
-      }
-      .wizard-skip:hover {
-        color: var(--text);
-        border-color: var(--border-strong);
-        background: var(--surface);
-      }
-      .wizard-stepper {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 10px;
-        list-style: none;
-      }
-      .wizard-stepper li {
-        padding: 10px 14px;
-        border-radius: 10px;
-        background: var(--surface);
-        border: 1px solid var(--border);
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        font-size: 13px;
-        color: var(--muted);
-        cursor: pointer;
-        transition: all 0.15s;
-      }
-      .wizard-stepper li span.num {
-        width: 22px;
-        height: 22px;
-        border-radius: 50%;
+      .wizard-actions { display: flex; align-items: center; gap: 8px; }
+
+      .btn {
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        font-family: var(--font-mono);
-        font-size: 11px;
-        background: var(--raised);
-        color: var(--secondary);
-        flex-shrink: 0;
-      }
-      .wizard-stepper li.active {
-        border-color: var(--accent);
-        background: var(--accent-soft);
+        gap: 8px;
+        min-height: 44px;
+        padding: 0 18px;
+        border: 1px solid var(--border-strong);
+        border-radius: 8px;
+        background: transparent;
         color: var(--text);
-        font-weight: 600;
+        font: 600 14px/1 var(--font-sans);
+        text-decoration: none;
+        white-space: nowrap;
+        cursor: pointer;
+        transition: border-color 0.15s, background-color 0.15s, opacity 0.15s;
       }
-      .wizard-stepper li.active span.num {
-        background: var(--accent);
-        color: #090b0e;
-        font-weight: 700;
+      .btn:hover:not(:disabled) { border-color: var(--text); }
+      .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+      .btn-sm { min-height: 36px; padding: 0 14px; font-size: 13px; }
+      .btn-primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+      .btn-primary:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); opacity: 0.9; }
+      .icon-btn {
+        width: 44px;
+        height: 44px;
+        display: inline-grid;
+        place-items: center;
+        border: 1px solid var(--border-strong);
+        border-radius: 8px;
+        background: transparent;
+        color: var(--text);
+        cursor: pointer;
       }
-      .wizard-stepper li.done {
-        border-color: rgba(99, 198, 137, 0.35);
-        color: var(--secondary);
-      }
-      .wizard-stepper li.done span.num {
-        background: var(--green-soft);
-        color: var(--green);
-      }
-      .wizard-card {
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 16px;
-        padding: 26px 28px;
+      .icon-btn:hover { border-color: var(--text); }
+      .icon-btn svg { width: 16px; height: 16px; display: block; }
+
+      .wizard-rail {
+        grid-area: rail;
+        align-self: start;
+        position: sticky;
+        top: 22px;
         display: flex;
         flex-direction: column;
-        gap: 20px;
-        box-shadow: 0 18px 42px rgba(0, 0, 0, 0.38);
+        gap: 6px;
       }
-      .step-eyebrow {
-        font-size: 11px;
-        text-transform: uppercase;
-        letter-spacing: 0.09em;
-        color: var(--accent);
-        font-weight: 600;
+      .wizard-stepper { list-style: none; display: flex; flex-direction: column; }
+      .wizard-stepper li {
+        position: relative;
+        display: grid;
+        grid-template-columns: 30px minmax(0, 1fr);
+        column-gap: 10px;
+        align-items: start;
+        padding: 18px 0 20px;
+        cursor: pointer;
       }
-      .step-head h1 {
-        font-size: 22px;
-        font-weight: 600;
-        margin-top: 3px;
+      .wizard-stepper li::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 2px;
+        background: var(--track);
       }
-      .step-head p {
+      .wizard-stepper li.active::before,
+      .wizard-stepper li.done::before { background: var(--meter); }
+      .wizard-stepper .num {
+        font: 600 13px/1 var(--fd);
+        letter-spacing: 0.04em;
+        padding-top: 3px;
+        color: var(--muted);
+      }
+      .wizard-stepper .step-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+      .wizard-stepper strong {
+        font: 600 16px/1.25 var(--fd);
+        letter-spacing: 0.01em;
         color: var(--secondary);
-        font-size: 13.5px;
-        margin-top: 5px;
       }
+      .wizard-stepper small { font-size: 12px; line-height: 1.4; color: var(--muted); }
+      .wizard-stepper li.active .num { color: var(--accent); }
+      .wizard-stepper li.active strong,
+      .wizard-stepper li.done strong { color: var(--text); }
+      .wizard-stepper li.done .num { color: var(--green); }
+
+      .wizard-card {
+        grid-area: card;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 26px;
+        padding: 32px 36px 28px;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        box-shadow: var(--lift);
+      }
+      .wiz-pane { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+      .step-head { display: flex; flex-direction: column; gap: 10px; }
+      .step-head h1 {
+        font: 600 30px/1.12 var(--fd);
+        letter-spacing: -0.005em;
+        color: var(--text);
+      }
+      .lede { color: var(--secondary); font-size: 14px; line-height: 1.55; max-width: 62ch; }
+
       .auth-tabs {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 8px;
-        background: var(--raised);
-        padding: 5px;
-        border-radius: 11px;
-        border: 1px solid var(--border);
+        gap: 4px;
+        padding: 4px;
+        background: var(--sunken);
+        border: 1px solid var(--line);
+        border-radius: 10px;
       }
       .auth-tab {
         appearance: none;
+        min-height: 40px;
+        padding: 0 14px;
+        border: 0;
+        border-radius: 7px;
         background: transparent;
-        border: 1px solid transparent;
-        border-radius: 8px;
-        padding: 9px 14px;
-        color: var(--secondary);
-        font-size: 13px;
-        font-weight: 600;
+        color: var(--muted);
+        font: 600 14px/1 var(--fd);
+        letter-spacing: 0.02em;
         cursor: pointer;
-        transition: all 0.15s;
+        transition: background-color 0.15s, color 0.15s;
       }
-      .auth-tab.active {
-        background: var(--accent-soft);
-        border-color: var(--accent);
-        color: var(--text);
-      }
+      .auth-tab:hover:not(.active) { color: var(--text); }
+      .auth-tab.active { background: var(--text); color: var(--bg); }
+
       .form-grid {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 12px;
+        gap: 16px;
       }
-      .field-group {
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-      }
-      .field-group label {
-        font-size: 12px;
-        font-weight: 600;
-        color: var(--secondary);
-      }
-      .text-input {
-        background: var(--raised);
-        border: 1px solid var(--border-strong);
-        color: var(--text);
-        border-radius: 9px;
-        padding: 10px 12px;
-        font-size: 14px;
-        font-family: var(--font-sans);
-        outline: none;
-      }
-      .text-input:focus {
-        border-color: var(--accent);
-      }
-      .mono-input {
-        font-family: var(--font-mono);
-        font-size: 12.5px;
-      }
-      .sub-box {
-        background: var(--raised);
-        border: 1px solid var(--border);
-        border-radius: 12px;
-        padding: 16px;
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-      }
-      .sub-box h3 {
-        font-size: 13px;
-        font-weight: 600;
-        color: var(--text);
-      }
-      .inline-row {
-        display: flex;
-        gap: 8px;
-        align-items: center;
-        flex-wrap: wrap;
-      }
-      .inline-row .text-input {
-        flex: 1 1 180px;
-      }
-      .btn {
-        appearance: none;
-        border: 1px solid var(--border-strong);
-        background: var(--raised);
-        color: var(--text);
-        border-radius: 9px;
-        padding: 9px 15px;
-        font-size: 13px;
-        font-weight: 600;
-        cursor: pointer;
-        transition: all 0.15s;
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-      }
-      .btn:hover:not(:disabled) {
-        background: var(--card-hover);
-        border-color: var(--text);
-      }
-      .btn:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
-      }
-      .btn-primary {
-        background: var(--accent);
-        border-color: var(--accent);
-        color: #090b0e;
-      }
-      .btn-primary:hover:not(:disabled) {
-        background: #e5b252;
-        border-color: #e5b252;
-      }
-      .harness-grid {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 10px;
-      }
-      .harness-item {
-        background: var(--raised);
-        border: 1px solid var(--border);
-        border-radius: 10px;
-        padding: 11px 13px;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 10px;
-      }
-      .harness-item.detected {
-        border-color: rgba(99, 198, 137, 0.38);
-      }
-      .harness-item strong {
-        display: block;
-        font-size: 13px;
-      }
-      .harness-item small {
-        display: block;
-        font-size: 11px;
-        color: var(--secondary);
-        font-family: var(--font-mono);
-      }
-      .status-chip {
-        font-family: var(--font-mono);
-        font-size: 10.5px;
-        padding: 3px 8px;
-        border-radius: 999px;
-        background: rgba(255, 255, 255, 0.06);
+      .field-group { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+      .field-group > label {
+        font: 600 10px/1.2 var(--fd);
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
         color: var(--muted);
-        white-space: nowrap;
       }
-      .status-chip.good {
-        background: var(--green-soft);
-        color: var(--green);
+      .hint { font-size: 12px; line-height: 1.4; color: var(--muted); }
+      .hint code { color: var(--secondary); }
+      .text-input {
+        width: 100%;
+        min-height: 42px;
+        padding: 0 12px;
+        background: var(--sunken);
+        border: 1px solid var(--border-strong);
+        border-radius: 8px;
+        color: var(--text);
+        font-size: 14px;
+        outline: none;
+        transition: border-color 0.15s;
       }
+      .text-input::placeholder { color: var(--muted); }
+      .text-input:focus { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+      .text-input.mono { font-family: var(--font-mono); font-size: 13px; }
+
+      .sub-box {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        min-width: 0;
+        padding: 18px;
+        background: var(--soft);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+      }
+      .sub-box h3 { font: 600 17px/1.25 var(--fd); color: var(--text); }
+      .plans-line { font-size: 12.5px; line-height: 1.5; color: var(--secondary); }
+      .inline-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .inline-row > .text-input { flex: 1 1 160px; }
+      .inline-row > .select-sm { flex: 0 1 170px; }
+      .inline-row > .amount-input { flex: 0 1 120px; }
+
       .presets-grid {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 10px;
       }
       .preset-card {
+        appearance: none;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        width: 100%;
+        min-height: 56px;
+        padding: 12px 14px;
         background: var(--surface);
         border: 1px solid var(--border);
         border-radius: 10px;
-        padding: 11px 13px;
+        color: var(--text);
+        text-align: left;
+        cursor: pointer;
+        transition: border-color 0.15s;
+      }
+      .preset-card:hover { border-color: var(--border-strong); }
+      .preset-card.selected { border-color: var(--text); }
+      .preset-card::before {
+        content: "\\2713";
+        display: grid;
+        place-items: center;
+        flex: 0 0 18px;
+        width: 18px;
+        height: 18px;
+        border: 1px solid var(--border-strong);
+        border-radius: 5px;
+        color: transparent;
+        font: 700 11px/1 var(--font-sans);
+      }
+      .preset-card.selected::before { background: var(--text); border-color: var(--text); color: var(--bg); }
+      .preset-card > div { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+      .preset-card strong { font: 600 15px/1.25 var(--fd); color: var(--text); }
+      .preset-card small { font-size: 12px; color: var(--muted); }
+      .preset-price { font: 500 16px/1 var(--fd); color: var(--text); white-space: nowrap; }
+
+      .harness-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+      .harness-item {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        cursor: pointer;
+        gap: 12px;
+        min-width: 0;
+        padding: 14px 16px;
+        background: var(--soft);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+      }
+      .harness-item.detected { border-color: var(--good-border); }
+      .harness-item > div { flex: 1; min-width: 0; }
+      .logo-tile {
+        flex: none;
+        display: grid;
+        place-items: center;
+        width: 34px;
+        height: 34px;
+        padding: 8px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--surface);
         color: var(--text);
-        text-align: left;
       }
-      .preset-card.selected {
-        border-color: var(--accent);
-        background: var(--accent-soft);
-      }
-      .preset-card strong {
+      .logo-tile svg { display: block; width: 100%; height: 100%; }
+      .harness-item strong { display: block; font: 600 15px/1.3 var(--fd); color: var(--text); overflow-wrap: anywhere; }
+      .harness-item small {
         display: block;
-        font-size: 13px;
+        margin-top: 2px;
+        font: 12px/1.4 var(--font-mono);
+        color: var(--muted);
+        overflow-wrap: anywhere;
       }
-      .preset-card small {
-        font-size: 11px;
+      .status-chip {
+        flex: 0 0 auto;
+        display: inline-flex;
+        align-items: center;
+        min-height: 24px;
+        padding: 0 9px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        font: 600 10px/1 var(--fd);
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--muted);
+        white-space: nowrap;
+      }
+      .status-chip.good { color: var(--green); border-color: var(--good-border); background: var(--good-bg); }
+
+      .status-banner {
+        padding: 12px 14px;
+        background: var(--soft);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        font-size: 13px;
+        line-height: 1.45;
         color: var(--secondary);
       }
-      .preset-price {
-        font-family: var(--font-mono);
-        font-size: 12.5px;
-        font-weight: 600;
-        color: var(--accent);
+      .status-banner.good { color: var(--green); border-color: var(--good-border); background: var(--good-bg); }
+      .status-banner.err { color: var(--danger); border-color: var(--danger-border); background: var(--danger-bg); }
+      .scan-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+      .scan-row > .status-banner { flex: 1 1 260px; }
+
+      .check-row { display: flex; align-items: flex-start; gap: 12px; cursor: pointer; }
+      .check-row input[type=checkbox] {
+        flex: 0 0 18px;
+        width: 18px;
+        height: 18px;
+        margin-top: 2px;
+        accent-color: var(--text);
+        cursor: pointer;
       }
+      .check-row strong { display: block; font: 600 15px/1.3 var(--fd); color: var(--text); }
+      .check-row small { display: block; margin-top: 2px; font-size: 12.5px; color: var(--muted); }
+
+      details.advanced-server { color: var(--muted); }
+      details.advanced-server summary {
+        cursor: pointer;
+        user-select: none;
+        font: 600 10px/1.2 var(--fd);
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+      details.advanced-server summary code { text-transform: none; letter-spacing: 0; font-size: 12px; }
+      details.advanced-server .field-group { margin-top: 12px; }
+
       .wizard-footer {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding-top: 10px;
-        border-top: 1px solid var(--border);
+        gap: 12px;
+        padding-top: 22px;
+        border-top: 1px solid var(--line);
       }
-      .status-banner {
-        padding: 10px 12px;
-        border-radius: 9px;
-        font-size: 12.5px;
-        background: var(--raised);
-        border: 1px solid var(--border);
-        color: var(--secondary);
-      }
-      .status-banner.good {
-        border-color: rgba(99, 198, 137, 0.4);
-        color: var(--green);
-        background: var(--green-soft);
-      }
-      .status-banner.err {
-        border-color: rgba(239, 100, 97, 0.4);
-        color: var(--danger);
-      }
-      details.advanced-server {
-        font-size: 12px;
-        color: var(--muted);
-      }
-      details.advanced-server summary {
-        cursor: pointer;
-        user-select: none;
-      }
-      @media (max-width: 720px) {
-        .wizard-stepper, .form-grid, .harness-grid, .presets-grid {
-          grid-template-columns: 1fr;
+      .wizard-footer .btn-primary { min-width: 220px; }
+
+      @media (max-width: 760px) {
+        .wizard-shell {
+          grid-template-columns: minmax(0, 1fr);
+          grid-template-areas: "top" "rail" "card";
+          row-gap: 20px;
+          padding: 16px 16px 28px;
         }
+        .wizard-rail { position: static; }
+        .wizard-stepper { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 14px; }
+        .wizard-stepper li { grid-template-columns: auto minmax(0, 1fr); padding-top: 14px; padding-bottom: 0; }
+        .wizard-stepper small { display: none; }
+        .wizard-card { padding: 22px 18px 20px; gap: 22px; }
+        .auth-tab { min-height: 44px; padding: 6px 8px; font-size: 13px; line-height: 1.2; }
+        .scan-row > .btn { width: 100%; }
+        .step-head h1 { font-size: 24px; }
+        .form-grid, .harness-grid, .presets-grid { grid-template-columns: minmax(0, 1fr); }
+        .wizard-footer { flex-direction: column-reverse; align-items: stretch; }
+        .wizard-footer .btn-primary { min-width: 0; }
+      }
+      @media (max-width: 520px) {
+        .wizard-sub { display: none; }
+        .skip-lead { display: none; }
       }
     </style>
   </head>
@@ -1471,33 +1550,41 @@ SETUP_WIZARD_HTML = """<!doctype html>
     <main class="wizard-shell" id="wizard-shell">
       <header class="wizard-topbar" data-tauri-drag-region>
         <div class="wizard-brand" data-tauri-drag-region>
-          <img src="/favicon.svg" alt="" width="30" height="30">
+          <img src="/favicon.svg" alt="" width="32" height="32">
           <span class="wizard-wordmark" data-tauri-drag-region>BURN<strong>RATE</strong></span>
-          <span class="wizard-sub">Application Setup Wizard</span>
+          <span class="wizard-sub eyebrow" data-tauri-drag-region>Setup</span>
         </div>
-        <a href="/" class="wizard-skip" id="wizard-skip-link">Skip to Dashboard →</a>
+        <div class="wizard-actions">
+          <button type="button" class="icon-btn" id="wiz-theme-toggle" aria-label="Switch color theme" title="Switch color theme">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.75a6.25 6.25 0 0 1 0 12.5z" fill="currentColor"/></svg>
+          </button>
+          <a href="/" class="btn" id="wizard-skip-link"><span><span class="skip-lead">Skip to </span>Dashboard →</span></a>
+        </div>
       </header>
 
-      <ol class="wizard-stepper" id="wizard-stepper" aria-label="Setup steps">
-        <li data-step="1" class="active"><span class="num">1</span><span>Account Login</span></li>
-        <li data-step="2"><span class="num">2</span><span>Installed Providers</span></li>
-      </ol>
+      <aside class="wizard-rail" aria-label="Progress">
+        <p class="eyebrow">Progress</p>
+        <ol class="wizard-stepper" id="wizard-stepper" aria-label="Setup steps">
+          <li data-step="1" class="active"><span class="num">01</span><span class="step-text"><strong>Account login</strong><small>Central account on tk-server</small></span></li>
+          <li data-step="2"><span class="num">02</span><span class="step-text"><strong>Installed providers</strong><small>AI tools on this computer</small></span></li>
+        </ol>
+      </aside>
 
       <section class="wizard-card">
         <!-- STEP 1: ACCOUNT LOGIN / CREATE ACCOUNT -->
         <div id="wiz-step-1" class="wiz-pane">
           <div class="step-head">
-            <p class="step-eyebrow">Step 1 of 2 · Central Account (tk-server)</p>
+            <p class="eyebrow"><span class="n">01</span>Central account · tk-server</p>
             <h1 id="wiz-auth-heading">Sign in to your BURNRATE account</h1>
-            <p id="wiz-auth-sub">Log in once on any computer. Your central server on <code>tk-server</code> automatically aggregates usage, live agents, and subscriptions across every computer on your account.</p>
+            <p class="lede" id="wiz-auth-sub">Log in once on any computer. Your central server on <code>tk-server</code> automatically aggregates usage, live agents, and subscriptions across every computer on your account.</p>
           </div>
 
-          <div class="auth-tabs" role="tablist" aria-label="Account mode" style="margin-top: 14px;">
+          <div class="auth-tabs" role="tablist" aria-label="Account mode">
             <button type="button" class="auth-tab active" data-auth-mode="login" id="wiz-tab-login">Sign In</button>
             <button type="button" class="auth-tab" data-auth-mode="register" id="wiz-tab-register">Create Account &amp; Subscriptions</button>
           </div>
 
-          <div class="form-grid" style="margin-top: 14px;">
+          <div class="form-grid">
             <div class="field-group">
               <label for="wiz-username">Account username or email</label>
               <input id="wiz-username" class="text-input" autocomplete="username" placeholder="e.g. kamol">
@@ -1508,20 +1595,21 @@ SETUP_WIZARD_HTML = """<!doctype html>
             </div>
           </div>
 
-          <div class="field-group" style="margin-top: 12px;">
-            <label for="wiz-computer-name">This computer's name (shown in dashboard filters &amp; live agents)</label>
+          <div class="field-group">
+            <label for="wiz-computer-name">This computer's name</label>
             <input id="wiz-computer-name" class="text-input" maxlength="64" placeholder="e.g. MyDesktop, MacBook Pro">
+            <span class="hint">Shown in dashboard filters and live agents.</span>
           </div>
 
           <!-- SUBSCRIPTIONS PICKER (SHOWN WHEN CREATING AN ACCOUNT) -->
-          <div id="wiz-register-subs" class="sub-box" style="margin-top: 14px;" hidden>
+          <div id="wiz-register-subs" class="sub-box" hidden>
             <div>
               <h3>Set up your active AI subscriptions</h3>
-              <p style="font-size: 12px; color: var(--secondary); margin-top: 2px;">Saved to your account on <code>tk-server</code> so plan ROI is tracked across all your computers.</p>
+              <p class="hint">Saved to your account on <code>tk-server</code> so plan ROI is tracked across all your computers.</p>
             </div>
             <div class="presets-grid" id="wiz-presets-grid"></div>
-            <div class="inline-row" style="margin-top: 4px;">
-              <select id="wiz-custom-tool" class="text-input" style="max-width: 170px;">
+            <div class="inline-row">
+              <select id="wiz-custom-tool" class="text-input select-sm">
                 <option value="claude-code">Claude Code</option>
                 <option value="codex">Codex / OpenAI</option>
                 <option value="grok">SuperGrok / Cursor (xAI)</option>
@@ -1530,19 +1618,19 @@ SETUP_WIZARD_HTML = """<!doctype html>
                 <option value="custom">Custom</option>
               </select>
               <input id="wiz-custom-name" class="text-input" placeholder="Custom plan name (optional)">
-              <input id="wiz-custom-amount" type="number" min="0" step="0.01" class="text-input mono-input" placeholder="USD/mo" style="max-width: 120px;">
-              <button type="button" class="btn" id="wiz-add-custom-plan-btn">Add Plan</button>
+              <input id="wiz-custom-amount" type="number" min="0" step="0.01" class="text-input amount-input" placeholder="USD/mo">
+              <button type="button" class="btn btn-sm" id="wiz-add-custom-plan-btn">Add Plan</button>
             </div>
-            <div id="wiz-existing-plans" style="font-size: 12px; color: var(--secondary);"></div>
+            <div id="wiz-existing-plans" class="plans-line"></div>
           </div>
 
-          <div id="wiz-auth-status" class="status-banner" style="margin-top: 14px;" hidden></div>
+          <div id="wiz-auth-status" class="status-banner" hidden></div>
 
-          <details class="advanced-server" style="margin-top: 10px;">
+          <details class="advanced-server">
             <summary>Account server: <code id="wiz-server-label">tk-server (100.71.45.59)</code></summary>
-            <div class="field-group" style="margin-top: 8px;">
-              <label for="wiz-server-url">Central Account Server URL</label>
-              <input id="wiz-server-url" class="text-input mono-input" placeholder="https://ai-harness-vps.tail982d0e.ts.net:8449">
+            <div class="field-group">
+              <label for="wiz-server-url">Central account server URL</label>
+              <input id="wiz-server-url" class="text-input mono" placeholder="https://ai-harness-vps.tail982d0e.ts.net:8449">
             </div>
           </details>
         </div>
@@ -1550,36 +1638,34 @@ SETUP_WIZARD_HTML = """<!doctype html>
         <!-- STEP 2: CONNECT INSTALLED PROVIDERS -->
         <div id="wiz-step-2" class="wiz-pane" hidden>
           <div class="step-head">
-            <p class="step-eyebrow">Step 2 of 2 · Installed Providers</p>
+            <p class="eyebrow"><span class="n">02</span>Installed providers · this computer</p>
             <h1>Connect installed AI providers on this computer</h1>
-            <p>BURNRATE automatically detects the AI coding tools installed on this computer and streams their usage and live quotas to your account.</p>
+            <p class="lede">BURNRATE automatically detects the AI coding tools installed on this computer and streams their usage and live quotas to your account.</p>
           </div>
 
-          <div class="inline-row" style="margin-top: 12px; justify-content: space-between;">
+          <div class="scan-row">
             <span id="wiz-scan-summary" class="status-banner">Checking installed AI providers…</span>
             <button type="button" class="btn btn-primary" id="wiz-scan-btn">Reconnect &amp; Sync Installed Providers</button>
           </div>
 
-          <div class="harness-grid" id="wiz-harness-grid" style="margin-top: 12px;"></div>
+          <div class="harness-grid" id="wiz-harness-grid"></div>
 
-          <div class="sub-box" style="margin-top: 14px;">
-            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
-              <input type="checkbox" id="wiz-hud-auto" checked style="width: 17px; height: 17px;">
-              <span><strong>Launch Sidecar HUD automatically</strong> — Keep a compact live burn-rate &amp; quota meter pinned on your screen</span>
+          <div class="sub-box">
+            <label class="check-row">
+              <input type="checkbox" id="wiz-hud-auto" checked>
+              <span><strong>Launch Sidecar HUD automatically</strong><small>Keep a compact live burn-rate &amp; quota meter pinned on your screen</small></span>
             </label>
             <input type="checkbox" id="wiz-hud-top" checked hidden>
           </div>
 
-          <div id="wiz-finish-banner" class="status-banner good" style="margin-top: 12px;">
+          <div id="wiz-finish-banner" class="status-banner good">
             Account connected. Installed providers on this computer will sync automatically in the background.
           </div>
         </div>
 
         <footer class="wizard-footer">
           <button type="button" class="btn" id="wiz-back-btn" disabled>← Back</button>
-          <div class="inline-row">
-            <button type="button" class="btn btn-primary" id="wiz-next-btn">Sign In &amp; Continue →</button>
-          </div>
+          <button type="button" class="btn btn-primary" id="wiz-next-btn">Sign In &amp; Continue →</button>
         </footer>
       </section>
     </main>
@@ -1640,6 +1726,19 @@ SETUP_WIZARD_HTML = """<!doctype html>
           }
         }
 
+        // Provider marks come from the shared sprite served at /logos.svg.
+        const TOOL_LOGOS = {
+          codex: "codex", "claude-code": "claude", cursor: "cursor", opencode: "opencode", zcode: "zai",
+          grok: "grok", antigravity: "antigravity", muse: "meta", openrouter: "openrouter", traycer: "traycer"
+        };
+        const logoFor = (key, name) => /z[.]?ai|glm/i.test(String(name || "")) ? "zai" : (TOOL_LOGOS[key] || "custom");
+        function logoTile(id) {
+          const tile = document.createElement("span");
+          tile.className = "logo-tile";
+          tile.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><use href="/logos.svg#' + id + '"></use></svg>';
+          return tile;
+        }
+
         function renderHarnesses(harnesses, stats) {
           const grid = $("wiz-harness-grid");
           const list = harnesses || [];
@@ -1660,7 +1759,7 @@ SETUP_WIZARD_HTML = """<!doctype html>
             const chip = document.createElement("span");
             chip.className = "status-chip" + (h.detected ? " good" : "");
             chip.textContent = h.detected ? "Connected" : "Not installed";
-            card.append(left, chip);
+            card.append(logoTile(logoFor(h.tool, h.name)), left, chip);
             return card;
           }));
         }
@@ -1683,7 +1782,7 @@ SETUP_WIZARD_HTML = """<!doctype html>
             const price = document.createElement("span");
             price.className = "preset-price";
             price.textContent = "$" + p.amount_usd + "/mo";
-            btn.append(left, price);
+            btn.append(logoTile(logoFor(p.tool_key, p.name)), left, price);
             btn.addEventListener("click", () => {
               if (already) return;
               if (selectedPresets.has(p.key)) selectedPresets.delete(p.key);
@@ -1761,6 +1860,13 @@ SETUP_WIZARD_HTML = """<!doctype html>
           $("wiz-custom-name").value = "";
           $("wiz-custom-amount").value = "";
           renderPresets(stateData?.presets || [], stateData?.subscriptions || []);
+        });
+
+        $("wiz-theme-toggle").addEventListener("click", () => {
+          const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+          document.documentElement.dataset.theme = next;
+          try { localStorage.setItem("burnrate:theme", next); } catch {}
+          document.querySelector('meta[name="theme-color"]').content = next === "dark" ? "#08080a" : "#ebe9e4";
         });
 
         $("wiz-back-btn").addEventListener("click", () => setStep(step - 1));

@@ -81,10 +81,15 @@ def parse_database(path: Path, issues=None) -> tuple[list[UsageRow], int]:
 
 
 def ingest(*, database_path: Path, pricing: PricingEngine, source_database: Path) -> dict:
+    from spend_app.adapters import unchanged
     from spend_app.connection_paths import source_files, confined
     from spend_app.adapters.zcode_transcript import reduce_records, reconcile
     from spend_app.adapters.event_identity import Observation
     patterns = ("cli/db/db.sqlite", "projects/**/*.jsonl") if source_database.name == ".zcode" else ("**/*.jsonl",)
+    cache_key, current, replayed = unchanged.check(
+        database_path, SOURCE, source_database, lambda: list(source_files(source_database, patterns)), pricing)
+    if replayed is not None:
+        return replayed
     usage_rows, transcript_rows, issues = [], [], []
     skipped_non_plan, files = 0, 0
     for file in source_files(source_database, patterns):
@@ -117,4 +122,6 @@ def ingest(*, database_path: Path, pricing: PricingEngine, source_database: Path
     result = persist_rows(database_path=database_path, pricing=pricing, source=SOURCE,
                           usage_rows=usage_rows, issues=issues,
                           prepare=lambda connection, _: reconcile(connection, observations, issues))
-    return {**result, "files": files, "nonPlanCallsSkipped": skipped_non_plan, "issues": sorted(set(issues))}
+    result = {**result, "files": files, "nonPlanCallsSkipped": skipped_non_plan, "issues": sorted(set(issues))}
+    unchanged.remember(database_path, SOURCE, cache_key, current, result)
+    return result

@@ -51,7 +51,7 @@ The default runtime is a single lightweight process: **FastAPI + SQLite + Dashbo
   - **Plans & Value**: Compare `This month` or `Last month` subscription expense against recorded API-equivalent usage, shared tool associations, and value multiples.
   - **Action Center**: Tracks quota thresholds, monitored-source issues, and unpriced models with snooze/acknowledge workflows.
   - **Token & Unit Economics**: Breakdown of fresh input, cached input, cache writes, output, and reasoning tokens by tool, model, project, and session, plus counterfactual cache-savings calculations.
-- **Always-on-Top Sidecar HUD (`/hud`)**: Frameless floating window (`440×640`) on a warm paper background. It shows today’s burn, tracked spend, cache reuse, and tokens, then every subscription as a row: the weekly, 5-hour, or monthly window, its percentage, and the time until that window resets. Drag it from the paper surface. Pin, Open, and Hide stay clickable. The window is lightly see-through, and a double-click does not maximize it.
+- **Always-on-Top Sidecar HUD (`/hud`)**: Frameless floating window (`380` wide, sized to its content) in the same graphite or paper theme as the dashboard. It leads with today’s API-rate spend, then burn rate, cache reuse, and tokens, then every subscription window as a segmented meter row: percentage, an even-pace tick, and the time until that window resets. **Mini** collapses it to a `296`-wide glance strip with one line per plan (its tightest window). Drag it from any empty surface; Mini, Theme, Pin, Open, and Hide stay clickable, and a double-click does not maximize it.
 - **Single-Account Multi-Computer Sync**: Pair laptops and secondary desktops to your primary Hub using a 1-click `brpair_...` pairing code. Spokes automatically push incremental token usage, sessions, and live agent state into your Hub database.
 - **Native Desktop App (`src-tauri/`)**: Tauri v2 desktop wrapper with system tray menu (`Toggle Sidecar HUD`, `Toggle HUD Always on Top`, `Open Full Dashboard`, `Run Setup Wizard…`, `Quit BURNRATE`) and automatic background process supervision.
 
@@ -116,17 +116,20 @@ Then open:
 
 ### Option B: Windowless Windows Background Service (Auto-Start at Sign-In)
 
-Use the included PowerShell lifecycle scripts to run BURNRATE silently in the background (`pythonw.exe`) and register a self-healing Windows Scheduled Task (`BURNRATE Dashboard`) that starts automatically when you sign in:
+Use the included PowerShell lifecycle scripts to run BURNRATE silently in the background (`pythonw.exe`) and register a Windows Scheduled Task (`BURNRATE Dashboard`) that starts automatically when you sign in. Install also registers `BURNRATE Watchdog`, which runs `pythonw -m spend_app.watchdog` every 5 minutes, with no console window. It restarts the service when it stops answering or when no collection pass has finished for 10 minutes (30 for the first pass after a start), at most 3 restarts an hour,, and it leaves a service you stopped on purpose alone. Its actions are logged to `logs\watchdog.log`.
 
 ```powershell
-# Register auto-start scheduled task and launch in background
+# Register auto-start and watchdog scheduled tasks and launch in background
 .\scripts\install-burnrate.ps1
 .\scripts\start-burnrate.ps1
 
-# Check live service health, PID, and database path
+# Check live service health, PID, watchdog state, and database path
 .\scripts\status-burnrate.ps1
 
-# Stop the background service
+# Restart the service (stops only the owned listener, starts it through the sign-in task)
+.\scripts\restart-burnrate.ps1
+
+# Stop the background service (the watchdog leaves it stopped until the next start)
 .\scripts\stop-burnrate.ps1
 
 # Uninstall scheduled task (keeps spend.db unless -PurgeData is passed)
@@ -204,21 +207,21 @@ burnrate backfill <source>
 
 ## What the Dashboard Looks Like
 
-The dashboard is a light, single-page app titled **BURNRATE · AI Cost Intelligence**. The page is warm paper, headlines and the large figures use a serif face, and the summary tiles use peach, yellow, pink, and blue. After `burnrate serve`, open [http://127.0.0.1:17331](http://127.0.0.1:17331).
+The dashboard is a single-page app titled **BURNRATE · AI Cost Intelligence**, styled like an instrument panel: a graphite (dark) or paper (light) ground that follows your OS until you pick one with the theme button, DIN-style Bahnschrift numerals, hairline grids instead of cards, and a single ember accent reserved for what needs your eye. Quota meters are segmented gauges; sections are numbered `01`, `02`, … After `burnrate serve`, open [http://127.0.0.1:17331](http://127.0.0.1:17331).
 
 A typical overview (synthetic demo data — not a real account):
 
-- **Top nav.** Wordmark, a peach burn-rate tile, a yellow today tile, a pink metering-status tile (live, stale, or failed), and chips for harnesses, monthly plans, and Attention.
+- **Top nav.** A full-width strip: gauge mark and wordmark, burn rate, today’s spend (in ember), metering status (live, stale, or failed), and chips for the HUD, sync, harnesses, monthly plans, Attention, and the theme.
 - **Coverage banner.** Which tools are billed-exact versus published-rate (`≈`). Unpriced usage is named, never filled in.
-- **Capacity.** “What runs out first”: one light card per subscription, with the tightest window as the large figure and each weekly, 5-hour, or monthly window listed with its percentage and time until reset. Missing quotas stay blank.
+- **Capacity.** “What runs out first”: a hairline grid with one gauge per subscription. The tightest window is the large figure beside its reset countdown, and every weekly, 5-hour, or monthly window gets a segmented meter with an even-pace tick. Meters turn ember from 60% and red from 85%. Missing quotas stay blank.
 - **Activity.** In-progress turns only. Opening an editor or an idle shell does not appear here. Usage totals update when a turn completes.
-- **Analysis window.** `15m`, `30m`, `1h`, `3h`, `6h`, `12h`, `1d`, `1w`, `1mo`, `MTD`, `YTD`, `All`. The selected range is a black pill.
-- **KPI row.** Tracked value, measured tokens, API-equivalent cost per million tokens, cache reuse, session count, each on its own pastel card.
-- **Token activity chart.** Stacked by tool or cumulative, on a white plot, with a model price reference board below.
+- **Analysis window.** `15m`, `30m`, `1h`, `3h`, `6h`, `12h`, `1d`, `1w`, `1mo`, `MTD`, `YTD`, `All`. The selected range is the inverted segment.
+- **KPI band.** Tracked value, measured tokens, API-equivalent cost per million tokens, cache reuse, and session count in one hairline-divided strip.
+- **Token activity chart.** Stacked by tool or cumulative, with per-tool totals below and a model price board plus an ember weekday-by-hour heatmap further down.
 - **Recoverable / forecast.** Cache savings versus a no-cache counterfactual, and a labeled forecast of plan cost versus published-rate value.
-- **Unit economics.** Cost by model (click through for a tool or model detail page), token mix (cached input / fresh input / output), and any subscriptions you configured. Tables and the hourly grid sit on white cards, not a dark panel.
+- **Unit economics.** Cost by model (click through for a tool or model detail page), token mix (cached input / fresh input / output), and any subscriptions you configured, as hairline tables with inline share bars.
 
-The Sidecar HUD at [http://127.0.0.1:17331/hud](http://127.0.0.1:17331/hud) uses the same paper system in a shorter window: four tiles (burn, today, cache, tokens) and one row per plan. Each row stretches that plan’s windows across the card and prints how long until the next reset.
+The Sidecar HUD at [http://127.0.0.1:17331/hud](http://127.0.0.1:17331/hud) uses the same system in a narrow window: today’s spend as one large readout, a three-cell strip (burn rate, cache, tokens), any live agents, then one aligned meter row per plan window with its percentage and reset countdown. Mini mode keeps only today’s spend and each plan’s tightest window.
 
 Public screenshots, when added, always use synthetic Northwind-style names and placeholder figures. They are not captures of a live database.
 
@@ -373,6 +376,8 @@ Common cases:
 - Admin job `skipped` — empty key; not a failure.
 - `unavailable` / `—` — missing telemetry or pricing; not zero.
 - Port `17331` already in use — another BURNRATE process is running (`.\scripts\status-burnrate.ps1`).
+- Amber status pill naming a source (for example `MUSE WEEKLY HELD` or `TRAYCER FAILED`) — that source or meter on *this* computer stopped refreshing. Hover the pill (or open **Diagnostics → Freshness**) for the reason and its age; `GET /api/spend/freshness` returns the same report and is never proxied to the hub.
+- Service logs live in `%LOCALAPPDATA%\BURNRATE\logs\dashboard.log` and rotate at 5 MB (three backups kept). Each local collection pass logs one line with its duration and slowest sources.
 - Experimental provider down — that lane fails independently.
 
 Full legend: [docs/troubleshooting.md](docs/troubleshooting.md).

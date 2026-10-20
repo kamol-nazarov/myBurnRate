@@ -39,7 +39,7 @@ def isolated_scheduler_sources(monkeypatch, tmp_path):
 
     monkeypatch.setattr("apscheduler.schedulers.background.BackgroundScheduler.start", no_background_start)
 
-LOCAL_INGEST_JOB_IDS = ("local-ingest",)
+LOCAL_INGEST_JOB_IDS = ("local-ingest", "network-ingest")
 INGEST_JOB_IDS = (*LOCAL_INGEST_JOB_IDS, "provider-admin")
 QUOTA_JOB_ID = "quota-poll"
 ACTIVITY_JOB_ID = "activity"
@@ -47,6 +47,7 @@ SCHEDULER_JOB_IDS = (
     "attention",
     "capacity-forecast",
     "local-ingest",
+    "network-ingest",
     "provider-admin",
     "subscriptions",
     "quota-poll",
@@ -184,8 +185,35 @@ def test_local_ingest_job_runs_readers_serially(tmp_path: Path, monkeypatch) -> 
     jobs = {job.id: job for job in scheduler.get_jobs()}
     jobs["local-ingest"].func()
     assert calls == [
-        "codex", "claude", "claude", "traycer", "cursor", "cursor-usage", "opencode", "zcode", "grok", "antigravity", "muse"
+        "codex", "claude", "claude", "traycer", "cursor", "opencode", "zcode", "grok", "antigravity", "muse"
     ]
+
+
+def test_network_backed_source_runs_on_its_own_job(tmp_path: Path, monkeypatch) -> None:
+    # Regression: Cursor's usage service re-downloaded its whole history inside
+    # the serial local pass, so every local source waited minutes behind it and
+    # went stale. Network-backed readers now have their own job.
+    _previously_monitored_sources(monkeypatch)
+    calls = []
+
+    def recorder(name):
+        def run(**_kwargs):
+            calls.append(name)
+            return {"status": "success"}
+
+        return run
+
+    for name in LOCAL_INGEST_ALIASES:
+        monkeypatch.setattr(f"spend_app.scheduler.ingest_{name}_local", recorder(name))
+    monkeypatch.setattr("spend_app.scheduler.ingest_cursor_usage", recorder("cursor-usage"))
+    scheduler = make_scheduler(tmp_path)
+    jobs = {job.id: job for job in scheduler.get_jobs()}
+    jobs["local-ingest"].func()
+    assert "cursor-usage" not in calls
+    calls.clear()
+    jobs["network-ingest"].func()
+    assert calls == ["cursor-usage"]
+    assert jobs["network-ingest"].max_instances == 1
 
 
 def test_experimental_provider_failure_is_isolated(tmp_path: Path, monkeypatch) -> None:
@@ -238,7 +266,6 @@ def test_experimental_provider_failure_is_isolated(tmp_path: Path, monkeypatch) 
         "traycer",
         "injected",
         "cursor",
-        "cursor-usage",
         "opencode",
         "zcode",
         "grok",
@@ -276,7 +303,6 @@ def test_official_provider_failure_still_runs_remaining(tmp_path: Path, monkeypa
         "claude",
         "traycer",
         "cursor",
-        "cursor-usage",
         "opencode",
         "zcode",
         "grok",

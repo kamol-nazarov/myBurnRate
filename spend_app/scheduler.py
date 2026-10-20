@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from datetime import UTC, datetime, timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -8,6 +9,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from spend_app.aggregate import aggregate_summary_cached, data_clock, recently_requested_summaries
 from spend_app.config import Settings
 from spend_app.db import connect, initialize, prune_ingest_runs
+from spend_app.freshness import pass_finished, pass_started
 from spend_app.pricing import PricingEngine
 from spend_app.providers import (
     ProviderSpec,
@@ -53,6 +55,11 @@ _ = (
 
 _ = (ingest_muse_local,)
 
+# Local sources that read a remote service rather than files on this computer.
+# They run on their own job, so a slow or unreachable provider never holds the
+# local transcript sources (and every figure derived from them) behind it.
+NETWORK_LOCAL_SOURCES = frozenset({"cursor_usage_service"})
+
 _SOURCE_TO_QUOTA_PROVIDER: dict[str, str] = {
     "codex_local": "codex",
     "claude_local": "claude-code",
@@ -64,6 +71,22 @@ _SOURCE_TO_QUOTA_PROVIDER: dict[str, str] = {
 }
 
 
+def _failed_sources(database_path, keys) -> list[str]:
+    """Sources in this pass whose latest recorded run failed."""
+    if not keys:
+        return []
+    try:
+        with connect(database_path) as connection:
+            return [
+                key for key in keys
+                if (connection.execute(
+                    "SELECT status FROM ingest_runs WHERE source=? ORDER BY id DESC LIMIT 1", (key,)
+                ).fetchone() or ["skipped"])[0] == "failed"
+            ]
+    except Exception:
+        return []
+
+
 def _ingest_callable(spec: ProviderSpec):
     alias = spec.scheduler_alias
     if alias:
@@ -73,12 +96,13 @@ def _ingest_callable(spec: ProviderSpec):
     return spec.ingest
 
 
-def _run_ingest_specs(jobs: list[tuple[ProviderSpec, dict]], settings=None, pricing=None, window=None) -> None:
+def _run_ingest_specs(jobs: list[tuple[ProviderSpec, dict]], settings=None, pricing=None, window=None, timings=None) -> None:
     errors: list[BaseException] = []
     for spec, kwargs in jobs:
         ingest = _ingest_callable(spec)
         if ingest is None:
             continue
+        began = time.perf_counter()
         try:
             if settings is None:
                 result = ingest(**kwargs)
@@ -105,6 +129,9 @@ def _run_ingest_specs(jobs: list[tuple[ProviderSpec, dict]], settings=None, pric
             if spec.stability == "experimental":
                 continue
             errors.append(exc)
+        finally:
+            if timings is not None:
+                timings[spec.key] = time.perf_counter() - began
     if errors:
         raise RuntimeError(f"{len(errors)} ingest job(s) failed") from errors[0]
 
@@ -125,11 +152,24 @@ def create_scheduler(settings: Settings, pricing: PricingEngine) -> BackgroundSc
         from spend_app.setup_wizard import maybe_run_configured_spoke_sync
 
         errors: list[BaseException] = []
+        timings: dict[str, float] = {}
+        began = time.perf_counter()
+        pass_started()
         if not is_central:
             try:
-                _run_ingest_specs([(spec, {}) for spec in REGISTRY if spec.kind in {"local", "manual"}], settings, pricing)
+                _run_ingest_specs(
+                    [
+                        (spec, {})
+                        for spec in REGISTRY
+                        if spec.kind in {"local", "manual"} and spec.key not in NETWORK_LOCAL_SOURCES
+                    ],
+                    settings,
+                    pricing,
+                    timings=timings,
+                )
             except Exception as exc:
                 errors.append(exc)
+        pass_finished(timings, _failed_sources(settings.database_path, timings), time.perf_counter() - began)
         try:
             with connect(settings.database_path) as connection:
                 prune_ingest_runs(connection)
@@ -173,6 +213,24 @@ def create_scheduler(settings: Settings, pricing: PricingEngine) -> BackgroundSc
         **local_ingest_interval,
         id="local-ingest",
         next_run_time=datetime.now(UTC) + timedelta(seconds=1),
+    )
+
+    def network_ingest_jobs() -> None:
+        if os.getenv("BURNRATE_CENTRAL_SERVER", "").strip().lower() in {"1", "true", "yes"}:
+            return
+        # Each adapter keeps its own adaptive cadence; this tick only offers it a turn.
+        _run_ingest_specs(
+            [(spec, {}) for spec in REGISTRY if spec.kind == "local" and spec.key in NETWORK_LOCAL_SOURCES],
+            settings,
+            pricing,
+        )
+
+    scheduler.add_job(
+        network_ingest_jobs,
+        "interval",
+        **local_ingest_interval,
+        id="network-ingest",
+        next_run_time=datetime.now(UTC) + timedelta(seconds=2),
     )
 
     def admin_jobs() -> None:
