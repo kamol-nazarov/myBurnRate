@@ -76,7 +76,8 @@ try {
 
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? "").replace(/[&<>'"]/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[ch]));
-const colorFor = key => TOOL_COLORS[key] || "var(--t-other)";
+// Extra Claude account lanes (claude-code-<name>) wear Claude's color and mark.
+const colorFor = key => TOOL_COLORS[key] || (String(key || "").startsWith("claude-code-") ? TOOL_COLORS.claude : "var(--t-other)");
 window.colorFor = colorFor;
 // Provider marks live in one cached sprite (/logos.svg) referenced with <use>.
 const LOGO_URL = document.querySelector('meta[name="burnrate-logos"]')?.content || "/logos.svg";
@@ -1084,7 +1085,7 @@ function renderCapacity(data) {
     // and in Data health; the lane surface shows only what changes a decision.
     setAttr(node, "title", rows.map(row => `${row.label || "Limit"}: ${capacityNote(row)}`).join("\n") + (provider.activityNote ? `\n${provider.activityNote}` : ""));
     node.onclick = event => {
-      if (!event.target.closest("button, a")) loadEntity("tool", provider.providerKey);
+      if (!event.target.closest("button, a")) loadEntity("tool", provider.toolKey || provider.providerKey);
     };
     const polledAge = quotaFreshnessAge(provider.polledAt);
     setLogo(node.querySelector(".lane-who > .logo-tile"), provider.providerKey === "opencode" ? "zai" : logoKey(provider.providerKey, provider.providerName));

@@ -278,9 +278,19 @@ Official vs experimental is about the *interface BURNRATE uses*, not about wheth
 | OpenAI admin usage/cost | official Usage + Costs APIs | opt-in official | none | `api.openai.com` if `OPENAI_ADMIN_KEY` is set | exact |
 | Anthropic admin usage/cost | official org usage/cost | opt-in official | none | `api.anthropic.com` if `ANTHROPIC_ADMIN_KEY` is set | exact |
 | Claude OAuth usage | undocumented `/api/oauth/usage` | **experimental, opt-in** | `~/.claude/.credentials.json` | Anthropic + Claude platform | quota only; requires `BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE=1` |
+| Additional Claude accounts | each profile's cached plan usage, else its `/api/oauth/usage` | **experimental**, on when a second profile is signed in | `~/.claude-<name>/.claude.json` (and `.credentials.json` for the fallback) | none while the profile is in use; Anthropic + Claude platform when idle, under the same opt-in | quota only, one lane per account |
 | Requesty | — | **not connected** | none | none | not a rate authority |
 
 Full file patterns, hosts, credentials, mutation risk, and double-count rules: [docs/providers.md](docs/providers.md).
+
+### More than one Claude account
+
+Claude Code keeps one signed-in account per config directory. Run a second account with `CLAUDE_CONFIG_DIR=%USERPROFILE%\.claude-work` (any `.claude-<name>` works), sign in once, and BURNRATE shows it as its own plan lane, **Claude Code · Work**, beside the default account in the dashboard, the Sidecar HUD, and the Mini HUD.
+
+- Profiles are found automatically in `~/.claude-*`. Put other directories in `BURNRATE_CLAUDE_ACCOUNT_DIRS` (separated by `;` on Windows).
+- A profile signed in to the same account as the default lane is ignored, so nothing is shown twice.
+- While a profile is in use, its lane reads the plan usage Claude Code itself cached, which needs no network call. When that cache is more than 20 minutes old, the lane asks Anthropic's usage endpoint with that profile's own credentials, on the same throttled cadence as the default Claude lane.
+- Lanes are named after the directory. The account's email address is never shown.
 
 ---
 

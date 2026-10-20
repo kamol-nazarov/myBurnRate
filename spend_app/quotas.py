@@ -53,6 +53,15 @@ QUOTA_LIMIT_ORDER = {
     "muse": ("5h", "weekly"),
     "openrouter": ("balance",),
 }
+
+
+def _limit_order(provider_key: str) -> tuple[str, ...]:
+    # Extra Claude account lanes order their windows like the default lane.
+    if provider_key not in QUOTA_LIMIT_ORDER and str(provider_key).startswith("claude-code-"):
+        return QUOTA_LIMIT_ORDER["claude-code"]
+    return QUOTA_LIMIT_ORDER.get(provider_key, ())
+
+
 PRESSURE_GREEN = "#63c689"
 PRESSURE_BLUE = "#78a8f8"
 PRESSURE_AMBER = "#d9a441"
@@ -136,12 +145,19 @@ class QuotaLaneScheduler:
         self._backoff: dict[str, float] = {}
         self._lock = threading.Lock()
 
+    def lane_cadence(self, provider_key: str) -> tuple[int, int]:
+        from spend_app.claude_accounts import PRIMARY_KEY, is_account_key
+
+        if provider_key not in self.cadence and is_account_key(provider_key):
+            return self.cadence.get(PRIMARY_KEY, (90, 300))
+        return self.cadence.get(provider_key, (15, 15))
+
     def due(self, provider_key: str, *, active: bool = False) -> bool:
         with self._lock:
             now = self._clock()
             due_at = self._next_due.get(provider_key, float("-inf"))
             if active and provider_key not in self._backoff and provider_key in self._last_polled:
-                active_interval, _ = self.cadence.get(provider_key, (15, 15))
+                active_interval, _ = self.lane_cadence(provider_key)
                 due_at = min(due_at, self._last_polled[provider_key] + float(active_interval))
             return now >= due_at
 
@@ -150,7 +166,7 @@ class QuotaLaneScheduler:
             return self._backoff.get(provider_key, 0.0)
 
     def record(self, provider_key: str, samples: Sequence[QuotaSample], *, active: bool) -> None:
-        active_interval, idle_interval = self.cadence.get(provider_key, (15, 15))
+        active_interval, idle_interval = self.lane_cadence(provider_key)
         interval = float(active_interval if active else idle_interval)
         throttles = [s.throttle_seconds for s in samples if s.throttle_seconds is not None]
         with self._lock:
@@ -175,7 +191,7 @@ class QuotaLaneScheduler:
                 if key in {"codex", "grok", "antigravity"}:
                     self._next_due[key] = float("-inf")
                 elif key in self._last_polled:
-                    active_interval, _ = self.cadence.get(key, (15, 15))
+                    active_interval, _ = self.lane_cadence(key)
                     self._next_due[key] = min(
                         self._next_due.get(key, float("-inf")),
                         self._last_polled[key] + float(active_interval),
@@ -211,6 +227,17 @@ def nudge_quota_lanes(database_path: Path | str, provider_key: str | None = None
 def lane_is_active(database_path: Path | str, provider_key: str, *, now: datetime | None = None) -> bool:
     """True when the lane's tool produced usage or has a live agent within the activity window."""
     moment = now or datetime.now(UTC)
+    from spend_app.claude_accounts import account_for_key, is_account_key
+
+    if is_account_key(provider_key):
+        # Usage is not attributed per account; Claude Code rewrites the
+        # profile's state file while that account is in use.
+        account = account_for_key(provider_key)
+        try:
+            modified = account.state_path.stat().st_mtime if account else None
+        except OSError:
+            modified = None
+        return modified is not None and moment.timestamp() - modified <= QUOTA_ACTIVITY_WINDOW_SECONDS
     since = (moment - timedelta(seconds=QUOTA_ACTIVITY_WINDOW_SECONDS)).isoformat().replace("+00:00", "Z")
     tool_keys = ("grok", "cursor") if provider_key == "grok" else (("opencode", "zcode") if provider_key == "opencode" else (provider_key,))
     placeholders = ",".join("?" for _ in tool_keys)
@@ -341,21 +368,23 @@ def unavailable_samples(
     ]
 
 
-def claude_quota_samples(payload: dict, *, source: str) -> list[QuotaSample]:
+def claude_quota_samples(
+    payload: dict, *, source: str, provider_key: str = "claude-code", name: str = "Claude"
+) -> list[QuotaSample]:
     exact = payload.get("status") == "exact"
     detail = str(payload.get("detail") or "Claude provider quota is unavailable.")
     windows = _windows_by_key(payload)
     samples: list[QuotaSample] = []
     for limit_key, label, missing_reason in (
-        ("5h", "Claude 5-hour window", "Claude quota omitted the 5-hour percentage."),
-        ("weekly", "Claude weekly window", "Claude quota omitted the weekly percentage."),
+        ("5h", f"{name} 5-hour window", "Claude quota omitted the 5-hour percentage."),
+        ("weekly", f"{name} weekly window", "Claude quota omitted the weekly percentage."),
     ):
         window = windows.get(limit_key) if exact else None
         used_pct = _number(window.get("usedPct")) if isinstance(window, dict) else None
         if used_pct is None:
             samples.append(
                 _unavailable(
-                    "claude-code",
+                    provider_key,
                     limit_key,
                     label,
                     source,
@@ -365,7 +394,7 @@ def claude_quota_samples(payload: dict, *, source: str) -> list[QuotaSample]:
             continue
         samples.append(
             QuotaSample(
-                provider_key="claude-code",
+                provider_key=provider_key,
                 limit_key=limit_key,
                 label=label,
                 unit="pct",
@@ -688,6 +717,19 @@ def _claude_quota_collector() -> list[QuotaSample]:
     return _apply_throttle(claude_quota_samples(payload, source=source), payload)
 
 
+def _claude_account_collector(account) -> Callable[[], list[QuotaSample]]:
+    """Quota for one extra Claude Code account: its own cache or credentials, its own lane."""
+    from spend_app.limits import claude_account_limits
+
+    def collect() -> list[QuotaSample]:
+        payload, source = _cached(f"claude_account_poll:{account.key}", 10, lambda: claude_account_limits(account))
+        # Window labels match the default lane; the card names the account.
+        samples = claude_quota_samples(payload, source=source, provider_key=account.key)
+        return _apply_throttle(samples, payload)
+
+    return collect
+
+
 def _grok_quota_collector() -> list[QuotaSample]:
     # Local CLI billing snapshot first (no network); Traycer profile otherwise.
     payload = _cached("grok_quota_poll", 10, _grok_limits_uncached)
@@ -724,6 +766,9 @@ def default_quota_collectors(
         "muse": lambda: _collect("muse_quota_poll", 10, _muse_limits_uncached, muse_quota_samples, "muse_quota_endpoint"),
         "openrouter": openrouter_quota_samples,
     }
+    from spend_app.claude_accounts import extra_accounts
+    for account in extra_accounts():
+        result[account.key] = _claude_account_collector(account)
     from spend_app.integration_policy import authorize
     if authorize("claude_statusline_snapshot")[0]:
         from spend_app.claude_statusline import read_snapshot
@@ -740,7 +785,7 @@ def default_quota_collectors(
             key = None
             with lock_for(database_path):
                 state = Store(database_path).read()
-                binding = state["bindings"].get(sources[provider])
+                binding = state["bindings"].get(sources.get(provider))
                 if binding and provider != "openrouter":
                     return unavailable_samples(provider, "Managed location grants usage only. Activity/quota at custom locations are not supported; no default profile was read.")
                 if binding and provider == "openrouter":
@@ -1173,7 +1218,7 @@ def order_capacity_rows(rows: Sequence[QuotaSample]) -> list[QuotaSample]:
         grouped.setdefault(row.provider_key, []).append(row)
     primary_values: dict[str, float] = {}
     for provider_key, provider_rows in grouped.items():
-        order = QUOTA_LIMIT_ORDER.get(provider_key, ())
+        order = _limit_order(provider_key)
         primary = next(
             (row for row in provider_rows if order and row.limit_key == order[0]),
             max(provider_rows, key=lambda row: row.pct if row.pct is not None else float("-inf")),
@@ -1187,7 +1232,7 @@ def order_capacity_rows(rows: Sequence[QuotaSample]) -> list[QuotaSample]:
 
     def row_key(row: QuotaSample) -> tuple[int, float, int, str]:
         group, provider_primary = provider_rank(row.provider_key)
-        order = QUOTA_LIMIT_ORDER.get(row.provider_key, ())
+        order = _limit_order(row.provider_key)
         try:
             limit_rank = order.index(row.limit_key)
         except ValueError:

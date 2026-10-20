@@ -1517,8 +1517,17 @@ def _attach_observed_grok_routes(capacity: list[dict], connection) -> None:
             return
 
 
+def provider_meta(provider_key: str) -> dict | None:
+    """Card metadata: the fixed providers, then any extra Claude account lane."""
+    from spend_app.claude_accounts import provider_meta as claude_account_meta
+
+    return PROVIDER_META.get(provider_key) or claude_account_meta(provider_key)
+
+
 def _capacity_limit_rank(provider_key: str, limit_key: str) -> int:
-    order = CAPACITY_LIMIT_ORDER.get(provider_key, ())
+    order = CAPACITY_LIMIT_ORDER.get(provider_key) or (
+        CAPACITY_LIMIT_ORDER["claude-code"] if provider_key.startswith("claude-code-") else ()
+    )
     try:
         return order.index(limit_key)
     except ValueError:
@@ -1574,15 +1583,12 @@ def _capacity_from_rows(
         provider_rows = grouped[provider_key]
         if not provider_rows:
             continue
-        meta = PROVIDER_META.get(
-            provider_key,
-            {
-                "providerKey": provider_key,
-                "providerName": TOOL_NAMES.get(provider_key, provider_key),
-                "plan": None,
-                "isPayg": bool(payg.get(provider_key)),
-            },
-        )
+        meta = provider_meta(provider_key) or {
+            "providerKey": provider_key,
+            "providerName": TOOL_NAMES.get(provider_key, provider_key),
+            "plan": None,
+            "isPayg": bool(payg.get(provider_key)),
+        }
         is_payg = bool(meta.get("isPayg") or payg.get(provider_key))
         provider_rows.sort(
             key=lambda row: (
@@ -1599,8 +1605,10 @@ def _capacity_from_rows(
             None,
         )
         mtd = month_to_date.get(provider_key)
+        card_extras = {name: meta[name] for name in ("shortName", "accountLabel", "toolKey") if meta.get(name)}
         cards.append(
             {
+                **card_extras,
                 "providerKey": meta["providerKey"],
                 "providerName": meta["providerName"],
                 "plan": meta.get("plan"),

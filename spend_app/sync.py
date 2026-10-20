@@ -1064,6 +1064,8 @@ def _overlay_fresher_local_quotas(database_path: Path, capacity: list[dict]) -> 
     Only the newest local observation per limit counts. When that observation
     is "unavailable", or its window has already reset, an older reading is not
     resurrected in its place, and a local reading never replaces a newer Hub one.
+    A lane the Hub has no card for yet (an older Hub, or one that has not
+    received this computer's first sync) is shown from the local readings.
     """
     from spend_app.codex_quota import timestamp
 
@@ -1111,7 +1113,7 @@ def _overlay_fresher_local_quotas(database_path: Path, capacity: list[dict]) -> 
         local_at = timestamp(local_polled)
         return hub_at is None or (local_at is not None and local_at >= hub_at)
 
-    from spend_app.aggregate import PROVIDER_META, _capacity_limit_rank, _eta_label
+    from spend_app.aggregate import _capacity_from_rows, _capacity_limit_rank, _eta_label, provider_meta
 
     merged_cards: list[dict] = []
     for card in capacity:
@@ -1121,12 +1123,15 @@ def _overlay_fresher_local_quotas(database_path: Path, capacity: list[dict]) -> 
             continue
         provider_key = str(card.get("providerKey") or "")
         updated_card = dict(card)
-        meta = PROVIDER_META.get(provider_key)
+        meta = provider_meta(provider_key)
         if meta:
             updated_card["providerName"] = meta.get("providerName") or updated_card.get("providerName")
             if not updated_card.get("plan") and meta.get("plan"):
                 updated_card["plan"] = meta["plan"]
             updated_card["isPayg"] = bool(meta.get("isPayg", updated_card.get("isPayg")))
+            for name in ("shortName", "accountLabel", "toolKey"):
+                if meta.get(name):
+                    updated_card[name] = meta[name]
         new_rows: list[dict] = []
         for row_item in card["rows"]:
             if not isinstance(row_item, dict):
@@ -1169,6 +1174,18 @@ def _overlay_fresher_local_quotas(database_path: Path, capacity: list[dict]) -> 
             updated_card["primaryPct"] = primary_pct
             updated_card["peakPct"] = primary_pct
         merged_cards.append(updated_card)
+    hub_keys = {str(card.get("providerKey") or "") for card in merged_cards if isinstance(card, dict)}
+    local_only = [
+        row for (provider_key, _limit_key), row in local_by_key.items()
+        if provider_key not in hub_keys and provider_meta(provider_key)
+    ]
+    if local_only:
+        keys = {str(row["provider_key"]) for row in local_only}
+        # The builder also adds placeholders for every built-in provider; keep only these lanes.
+        merged_cards.extend(
+            card for card in _capacity_from_rows(local_only, now=now_utc, month_to_date={})
+            if card["providerKey"] in keys
+        )
     return merged_cards
 
 

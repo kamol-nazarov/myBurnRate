@@ -9,6 +9,13 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+- Track every signed-in Claude Code account. Each extra profile (for example
+  `~/.claude-work`, or any directory in `BURNRATE_CLAUDE_ACCOUNT_DIRS`) gets its
+  own quota lane, "Claude Code · Work", in the dashboard, Sidecar HUD, and Mini
+  HUD. The lane reads the plan usage Claude Code cached for that account (no
+  network) and falls back to that profile's own OAuth usage when the cache is
+  older than 20 minutes. A spoke shows the lane even before its hub knows it.
+
 ## [0.3.0-beta.13] - 2026-10-19
 
 - Redesign the dashboard, Sidecar HUD, and setup wizard as one "Instrument"

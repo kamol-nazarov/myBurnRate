@@ -74,6 +74,9 @@ OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits"
 CLAUDE_OAUTH_REFRESH_ENV = "BURNRATE_CLAUDE_OAUTH_REFRESH"
 CLAUDE_TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000
 CLAUDE_DESKTOP_HISTORY_MAX_AGE_SECONDS = 45 * 60
+# Claude Code refreshes its cached plan usage while that profile is in use; an
+# older cache means the profile is idle and the OAuth endpoint is asked instead.
+CLAUDE_CACHED_USAGE_MAX_AGE_SECONDS = 20 * 60
 OPENROUTER_ALLOWED_HOSTS = frozenset({"openrouter.ai"})
 CURSOR_DASHBOARD_ALLOWED_HOSTS = frozenset({"api2.cursor.sh"})
 CLAUDE_OAUTH_TOKEN_ALLOWED_HOSTS = frozenset({"platform.claude.com"})
@@ -766,11 +769,83 @@ def _refresh_claude_access_token(credentials_path: Path, *, force: bool = False)
         return new_access, subscription
 
 
-def _claude_limits_uncached() -> dict:
+def _claude_limits_uncached(credentials_path: Path | None = None, *, key: str = "claude-code") -> dict:
+    payload = _claude_oauth_usage(credentials_path or Path.home() / ".claude" / ".credentials.json")
+    return {**payload, "key": key}
+
+
+def _claude_usage_windows(usage: dict) -> list[dict]:
+    """5-hour and weekly windows from an /api/oauth/usage document (or Claude Code's cached copy)."""
+    windows = []
+    for key, label in (("five_hour", "5-hour window"), ("seven_day", "Weekly window")):
+        window = usage.get(key)
+        if not isinstance(window, dict):
+            continue
+        used = _finite_number(window.get("utilization"))
+        if used is None:
+            continue
+        windows.append(
+            {
+                "key": "5h" if key == "five_hour" else "weekly",
+                "label": label,
+                "usedPct": used,
+                "remainingPct": max(0.0, 100 - used),
+                "resetAt": window.get("resets_at"),
+            }
+        )
+    return windows
+
+
+def claude_cached_usage(state_path: Path, *, key: str, plan: str | None = None, now: datetime | None = None) -> dict:
+    """Plan usage Claude Code cached for its signed-in account (no network).
+
+    Claude Code stores the /api/oauth/usage response it last fetched in the
+    profile's ``.claude.json`` as ``cachedUsageUtilization``, stamped with the
+    fetch time and the account it belongs to. It is used only while it is
+    recent and still belongs to the profile's signed-in account.
+    """
+    from spend_app.claude_accounts import account_uuid, read_state
+
+    state = read_state(state_path)
+    cached = state.get("cachedUsageUtilization")
+    if not isinstance(cached, dict) or not isinstance(cached.get("utilization"), dict):
+        raise RuntimeError("Claude Code has not cached plan usage for this profile")
+    owner = account_uuid(state)
+    if not owner or cached.get("accountUuid") != owner:
+        raise RuntimeError("Claude Code's cached usage belongs to a different account")
+    observed_at = _iso_from_millis(cached.get("fetchedAtMs"))
+    if not observed_at:
+        raise RuntimeError("Claude Code's cached usage has no fetch time")
+    observed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+    moment = (now or datetime.now(UTC)).astimezone(UTC)
+    if moment - observed > timedelta(seconds=CLAUDE_CACHED_USAGE_MAX_AGE_SECONDS):
+        raise RuntimeError("Claude Code's cached usage is stale")
+    windows = _claude_usage_windows(cached["utilization"])
+    if not windows:
+        raise RuntimeError("Claude Code's cached usage omitted utilization")
+    return {
+        "key": key,
+        "name": "Claude Code",
+        "plan": plan or "Claude",
+        "status": "exact",
+        "observedAt": observed_at,
+        "windows": windows,
+        "detail": "Plan usage Claude Code fetched for this account and cached in its profile.",
+    }
+
+
+def claude_account_limits(account, *, now: datetime | None = None) -> tuple[dict, str]:
+    """An extra Claude account's quota: its fresh local cache, else the OAuth usage endpoint."""
+    try:
+        return claude_cached_usage(account.state_path, key=account.key, plan=account.plan, now=now), "claude_code_cache"
+    except Exception:
+        return _claude_limits_uncached(account.credentials_path, key=account.key), "claude_oauth_usage"
+
+
+def _claude_oauth_usage(credentials_path: Path) -> dict:
     allowed, reason = authorize("claude_oauth_usage")
     if not allowed:
         return {"key": "claude-code", "name": "Claude Code", "status": "unavailable", "windows": [], "detail": reason}
-    credentials_path = Path.home() / ".claude" / ".credentials.json"
     try:
         token, subscription = _refresh_claude_access_token(credentials_path)
     except Exception as exc:
@@ -836,23 +911,7 @@ def _claude_limits_uncached() -> dict:
             "detail": f"Experimental Anthropic /api/oauth/usage lookup failed ({type(exc).__name__}).",
             **_throttle_fields(exc),
         }
-    windows = []
-    for key, label in (("five_hour", "5-hour window"), ("seven_day", "Weekly window")):
-        window = usage.get(key)
-        if not isinstance(window, dict):
-            continue
-        used = _finite_number(window.get("utilization"))
-        if used is None:
-            continue
-        windows.append(
-            {
-                "key": "5h" if key == "five_hour" else "weekly",
-                "label": label,
-                "usedPct": used,
-                "remainingPct": max(0.0, 100 - used),
-                "resetAt": window.get("resets_at"),
-            }
-        )
+    windows = _claude_usage_windows(usage)
     extra = usage.get("extra_usage") or {}
     return {
         "key": "claude-code",

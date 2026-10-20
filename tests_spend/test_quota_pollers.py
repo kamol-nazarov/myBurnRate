@@ -462,7 +462,10 @@ def test_unavailable_sources_persist_reasons_and_never_fake_zero(
         assert not (row["pct"] == 0 and row["unit"] == "unavailable")
 
 
-def test_default_collectors_cover_required_providers_without_invoking() -> None:
+def test_default_collectors_cover_required_providers_without_invoking(monkeypatch) -> None:
+    from spend_app import claude_accounts
+
+    monkeypatch.setattr(claude_accounts, "extra_accounts", lambda: ())
     collectors = default_quota_collectors(Path("unused.db"))
     assert set(collectors) == set(REQUIRED_LIMITS)
     assert set(collectors) == {
@@ -474,6 +477,12 @@ def test_default_collectors_cover_required_providers_without_invoking() -> None:
         "opencode",
         "openrouter",
     }
+    # Each extra signed-in Claude Code profile adds exactly its own lane.
+    work = claude_accounts.ClaudeAccount(key="claude-code-work", label="Work", config_dir=Path("w"),
+                                         state_path=Path("w/.claude.json"), credentials_path=Path("w/.credentials.json"),
+                                         account_uuid="work-uuid", plan="Claude Max")
+    monkeypatch.setattr(claude_accounts, "extra_accounts", lambda: (work,))
+    assert set(default_quota_collectors(Path("unused.db"))) - set(REQUIRED_LIMITS) == {"claude-code-work"}
 
 
 def test_poll_quotas_public_seam_uses_default_collectors(tmp_path: Path, monkeypatch) -> None:

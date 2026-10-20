@@ -242,6 +242,9 @@ HUD_HTML = r"""<!doctype html>
       .win-label .short { display: none; }
       html.is-mini .win-label .long { display: none; }
       html.is-mini .win-label .short { display: inline; }
+      .plan-head b .short { display: none; }
+      html.is-mini .plan-head b .long { display: none; }
+      html.is-mini .plan-head b .short { display: inline; }
       .meter { position: relative; height: 9px; }
       .meter::before { content: ""; position: absolute; inset: 0; background: repeating-linear-gradient(90deg, var(--track) 0 2px, transparent 2px 4px); }
       .meter.payg::before { background: repeating-linear-gradient(135deg, var(--track) 0 2px, transparent 2px 6px); }
@@ -896,7 +899,7 @@ HUD_HTML = r"""<!doctype html>
           for (const provider of (data.capacity || [])) {
             const key = provider.providerKey || "";
             if (key === "cursor") continue;
-            const name = shortNames[key] || provider.providerName || key || "Plan";
+            const name = shortNames[key] || provider.shortName || provider.providerName || key || "Plan";
             const sourceRows = Array.isArray(provider.rows) && provider.rows.length ? provider.rows : [provider];
             const rows = sourceRows.map(row => {
               const value = row.pct == null || row.pct === "" ? NaN : Number(row.pct);
@@ -916,7 +919,9 @@ HUD_HTML = r"""<!doctype html>
               };
             });
             const polledAt = provider.polledAt || (rows.find(r => r.polledAt)?.polledAt) || "";
-            if (rows.length) groups.push({ key, name, plan: provider.plan || "", rows, providerName: provider.providerName || name, polledAt });
+            // An extra Claude account lane opens Claude Code's tool view.
+            const toolKey = provider.toolKey || key;
+            if (rows.length) groups.push({ key, toolKey, name, accountLabel: provider.accountLabel || "", plan: provider.plan || "", rows, providerName: provider.providerName || name, polledAt });
           }
           return groups;
         }
@@ -1028,14 +1033,25 @@ HUD_HTML = r"""<!doctype html>
             card.className = "plan";
             card.setAttribute("aria-label", group.name);
             card.dataset.providerKey = group.key;
-            card.addEventListener("click", () => openToolInDashboard(group.key));
+            card.addEventListener("click", () => openToolInDashboard(group.toolKey || group.key));
             const head = document.createElement("header");
             head.className = "plan-head";
             const mark = document.createElement("span");
             mark.className = "mark";
-            mark.append(iconFor(PLAN_LOGOS[group.key] || "custom"));
+            mark.append(iconFor(PLAN_LOGOS[group.key] || (String(group.key).startsWith("claude") ? "claude" : "custom")));
             const name = document.createElement("b");
-            name.textContent = group.name;
+            if (group.accountLabel) {
+              // Mini mode keeps only the account ("Work"); the Claude mark says the rest.
+              const long = document.createElement("span");
+              long.className = "long";
+              long.textContent = group.name;
+              const short = document.createElement("span");
+              short.className = "short";
+              short.textContent = group.accountLabel;
+              name.append(long, short);
+            } else {
+              name.textContent = group.name;
+            }
             const em = document.createElement("em");
             const planLabel = group.key === "opencode" && group.plan === "Max" ? "Coding Plan Max" : group.plan;
             const ageLabel = relTime(group.polledAt);
@@ -1127,7 +1143,7 @@ HUD_HTML = r"""<!doctype html>
             const until = topRow ? resetIn(topRow.resetsAt) : "";
             $("hud-mini-lead").textContent = topGroup.name + (topRow ? " · " + windowName(topGroup.key, topRow.label) : "") + (until ? " (" + until + ")" : "");
             $("hud-mini-pct").textContent = topRow && topRow.pct != null ? pctText(topRow.pct) : "—";
-            miniBar.dataset.providerKey = topGroup.key;
+            miniBar.dataset.providerKey = topGroup.toolKey || topGroup.key;
           } else {
             $("hud-mini-lead").textContent = "All subscription limits healthy";
             $("hud-mini-pct").textContent = "—";

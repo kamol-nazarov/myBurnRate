@@ -198,7 +198,10 @@ def _lane_issues(connection, now: datetime) -> list[dict]:
             (provider, polled_at),
         ).fetchone()
         reason = str(why[0]).split(" — ", 1)[1] if why and " — " in str(why[0]) else None
-        short = f"{LANE_NAMES.get(provider, provider)} {str(limit).replace('-', ' ')}"
+        from spend_app.claude_accounts import provider_meta as claude_account_meta
+
+        lane_name = LANE_NAMES.get(provider) or (claude_account_meta(provider) or {}).get("shortName") or provider
+        short = f"{lane_name} {str(limit).replace('-', ' ')}"
         issues.append({"kind": "lane", "key": f"{provider}:{limit}", "name": name, "short": short, "state": "held", "severity": "warn",
                        "ageSeconds": age, "detail": reason or "The meter shows the last confirmed reading; newer polls returned no value."})
     return sorted(issues, key=lambda item: -item["ageSeconds"])
