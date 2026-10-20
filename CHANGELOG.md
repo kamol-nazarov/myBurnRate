@@ -9,6 +9,8 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+## [0.3.0-beta.13] - 2026-10-19
+
 - Redesign the dashboard, Sidecar HUD, and setup wizard as one "Instrument"
   system: a graphite (dark) or paper (light) ground that follows the OS until
   you pick one with the new theme button, Bahnschrift (DIN) numerals and labels,

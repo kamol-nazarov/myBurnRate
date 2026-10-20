@@ -1,6 +1,6 @@
 [package]
 name = "burnrate-desktop"
-version = "0.3.0-beta.12"
+version = "0.3.0-beta.13"
 description = "BURNRATE Native Desktop App & Always-on-Top Multi-Computer Sidecar HUD"
 authors = ["BURNRATE contributors"]
 license = "Apache-2.0"
