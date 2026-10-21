@@ -144,6 +144,9 @@ def main():
                 "/api/spend",
                 "/api/spend/summary?window=1d",
                 "/api/spend/health",
+                "/api/spend/hud",
+                "/api/spend/hud/usage",
+                "/api/spend/freshness?view=hud",
                 "/api/subscriptions",
                 "/api/onboarding",
             ):

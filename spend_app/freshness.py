@@ -273,26 +273,34 @@ def hub_version(settings, *, background: bool = True) -> str | None:
     return version
 
 
-def report(settings, now: datetime | None = None, *, background: bool = True) -> dict:
+def report(settings, now: datetime | None = None, *, background: bool = True,
+           history_active: bool = True, include_history: bool = True) -> dict:
     from spend_app.db import connect, initialize
     from spend_app.setup_wizard import read_setup_state
 
     now = now or datetime.now(UTC)
     beat = heartbeat(now)
+    beat["deferred"] = not history_active and not beat["running"]
+    if beat["deferred"]:
+        beat["stalled"] = False
     initialize(settings.database_path)
     with connect(settings.database_path) as connection:
-        sources = _source_issues(connection, now)
+        sources = _source_issues(connection, now) if include_history and not beat["deferred"] else []
         lanes = _lane_issues(connection, now)
         machines = _machines(connection, now)
         state = read_setup_state(connection)
     sync, sync_issues = _sync_state(state, now, beat)
     issues: list[dict] = []
-    if beat["stalled"]:
+    if include_history and beat["stalled"]:
         age = beat["lastPassAgeSeconds"]
         issues.append({"kind": "ingest", "key": "local-ingest", "name": "Collection", "short": "Collection", "state": "stalled",
                        "severity": "alarm", "ageSeconds": age,
                        "detail": "No local collection pass has finished recently; the watchdog restarts the service."})
-    if beat["passes"] < 2 and not beat["stalled"]:
+    if include_history and beat["deferred"]:
+        issues.append({"kind": "ingest", "key": "local-ingest", "name": "History", "short": "History",
+                       "state": "deferred", "severity": "info", "ageSeconds": None,
+                       "detail": "Open the full dashboard to refresh usage history. Live limits continue polling."})
+    elif include_history and beat["passes"] < 2 and not beat["stalled"]:
         # The first pass after a start re-reads every store and can take
         # minutes, so sources it reached early, or has not reached yet, look
         # old until the next (normal-length) pass. A pass that never finishes

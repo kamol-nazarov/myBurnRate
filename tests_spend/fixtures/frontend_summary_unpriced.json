@@ -26,14 +26,14 @@
   },
   "capacity": [
     {
-      "providerKey": "cursor",
-      "providerName": "Cursor",
-      "plan": "Ultra",
+      "providerKey": "grok",
+      "providerName": "Grok Build",
+      "plan": "SuperGrok",
       "isPayg": false,
       "peakPct": null,
       "reason": "credential missing",
       "rows": [
-        {"limitKey": "cursor-models", "label": "Cursor models", "pct": null, "used": null, "allowance": null, "unit": "%", "resetsAt": null, "etaLabel": null, "source": "credential missing"}
+        {"limitKey": "weekly", "label": "Grok weekly", "pct": null, "used": null, "allowance": null, "unit": "%", "resetsAt": null, "etaLabel": null, "source": "credential missing"}
       ]
     },
     {

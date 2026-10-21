@@ -9,6 +9,19 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+## [0.3.0-beta.15] - 2026-10-20
+
+- Start HUD quota and activity polling without importing transcript history or
+  computing the full dashboard summary. Recorded spend statistics load through
+  a separate endpoint so they cannot hold up the live meters.
+- Request historical collection only from a visible full dashboard. After two
+  minutes without dashboard requests, finish the current source and defer
+  further scans. Quota polling, activity polling, and spoke sync keep running.
+- Keep deferred history separate from HUD freshness and watchdog stall checks.
+- Move live-stream database and hub reads off the web server's event loop.
+  Detect committed database changes with SQLite's change counter instead of
+  scanning usage history for every viewer every two seconds.
+
 ## [0.3.0-beta.14] - 2026-10-19
 
 - Stop the console window that opened every 5 minutes. uv had written the

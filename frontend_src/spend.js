@@ -554,7 +554,8 @@ function paintSnapshot(windowKey) {
   return true;
 }
 async function jsonFetch(url, prefetched, signal) {
-  const response = await (prefetched || fetch(url, {cache:"no-store", signal}));
+  const response = await (prefetched || fetch(url, {cache:"no-store", signal,
+    headers: document.hidden ? {} : {"X-Burnrate-View": "dashboard"}}));
   if (!response.ok) {
     let detail = "";
     try {
@@ -2887,7 +2888,7 @@ function consumeFocusTool() {
 window.addEventListener("focus", () => { consumeFocusTool(); });
 window.addEventListener("storage", event => { if (event.key === "burnrate:focus-tool") consumeFocusTool(); });
 pruneSnapshots();
-if (!consumeFocusTool()) loadSummary();
+if (!document.hidden && !consumeFocusTool()) loadSummary();
 loadFreshness();
 scheduleEase();
 setInterval(refreshCurrent, POLL_MS);

@@ -786,6 +786,8 @@ HUD_HTML = r"""<!doctype html>
             btn.addEventListener("click", () => {
               selectedMachine = item.id;
               refresh();
+              refreshUsage();
+              refreshMachines();
             });
             return btn;
           }));
@@ -1111,13 +1113,9 @@ HUD_HTML = r"""<!doctype html>
           }));
         }
 
-        function renderSummary(data) {
+        function renderUsage(data) {
           const nav = data.navigation || {};
           const totals = data.totals || {};
-          statusView.summary = data.status || "live";
-          statusView.failing = data.failingSource || "";
-          statusView.offline = false;
-          paintStatus();
           $("hud-date").textContent = "Today · " + new Date().toLocaleDateString("en-US", {
             weekday: "short", month: "short", day: "numeric"
           });
@@ -1130,8 +1128,19 @@ HUD_HTML = r"""<!doctype html>
             : Math.round(Number(totals.cacheReusePct)) + "%");
           setStat("hud-tokens", tok(nav.todayTokens ?? 0));
           statTips(nav, totals);
+          const imported = relTime(data.historyUpdatedAt);
+          for (const id of ["hud-stat-today", "hud-stat-cache", "hud-stat-tokens", "hud-stat-burn"]) {
+            const node = $(id);
+            if (node) node.dataset.tip += '<span class="sep"></span>' +
+              tipRow(esc("Recorded usage" + (imported ? " · imported " + imported : "") + ". Open the full dashboard to refresh history."));
+          }
+        }
 
-          renderMachines(data.machines || []);
+        function renderSummary(data) {
+          statusView.summary = data.status || "live";
+          statusView.failing = data.failingSource || "";
+          statusView.offline = false;
+          paintStatus();
           renderAgents(data);
 
           const groups = planGroups(data);
@@ -1154,17 +1163,43 @@ HUD_HTML = r"""<!doctype html>
           syncHudWindowSize();
         }
 
+        let livePending = false, usagePending = false, machinesPending = false;
         async function refresh() {
-          const suffix = selectedMachine && selectedMachine !== "all" ? "&machine=" + encodeURIComponent(selectedMachine) : "";
+          if (livePending) return;
+          livePending = true;
+          const machine = selectedMachine;
           try {
-            const res = await fetch("/api/spend/summary?window=1d&tool=all" + suffix, {cache: "no-store"});
+            const res = await fetch("/api/spend/hud?machine=" + encodeURIComponent(machine || "all"), {cache: "no-store"});
             if (!res.ok) throw new Error(String(res.status));
             const data = await res.json();
-            renderSummary(data);
+            if (machine === selectedMachine) renderSummary(data);
           } catch {
             statusView.offline = true;
             paintStatus();
+          } finally {
+            livePending = false;
           }
+        }
+
+        async function refreshUsage() {
+          if (usagePending) return;
+          usagePending = true;
+          const machine = selectedMachine;
+          try {
+            const res = await fetch("/api/spend/hud/usage?machine=" + encodeURIComponent(machine || "all"), {cache: "no-store"});
+            if (!res.ok) return;
+            const data = await res.json();
+            if (machine === selectedMachine) renderUsage(data);
+          } catch {} finally { usagePending = false; }
+        }
+
+        async function refreshMachines() {
+          if (machinesPending) return;
+          machinesPending = true;
+          try {
+            const res = await fetch("/api/machines", {cache: "no-store"});
+            if (res.ok) renderMachines((await res.json()).machines || []);
+          } catch {} finally { machinesPending = false; }
         }
 
         // This computer's own freshness (local only, never the hub's view):
@@ -1226,7 +1261,7 @@ HUD_HTML = r"""<!doctype html>
         }
         async function refreshFreshness() {
           try {
-            const res = await fetch("/api/spend/freshness", {cache: "no-store"});
+            const res = await fetch("/api/spend/freshness?view=hud", {cache: "no-store"});
             if (!res.ok) throw new Error(String(res.status));
             statusView.freshness = await res.json();
           } catch {
@@ -1236,12 +1271,16 @@ HUD_HTML = r"""<!doctype html>
         }
 
         refresh();
+        refreshUsage();
+        refreshMachines();
         refreshFreshness();
         setInterval(refresh, 5000);
+        setInterval(refreshUsage, 20000);
+        setInterval(refreshMachines, 20000);
         setInterval(refreshFreshness, 20000);
-        window.addEventListener("focus", () => { refresh(); refreshFreshness(); });
+        window.addEventListener("focus", () => { refresh(); refreshUsage(); refreshMachines(); refreshFreshness(); });
         document.addEventListener("visibilitychange", () => {
-          if (!document.hidden) { refresh(); refreshFreshness(); }
+          if (!document.hidden) { refresh(); refreshUsage(); refreshMachines(); refreshFreshness(); }
         });
         if (typeof EventSource === "function") {
           let debounce = null;

@@ -21,13 +21,14 @@
       // Start the first data requests before spend.js has even downloaded.
       // spend.js consumes window.__prefetch once; nothing here renders.
       (() => {
+        if (document.hidden) return;
         const keys = new Set(["15m", "30m", "1h", "3h", "6h", "12h", "1d", "1w", "1mo", "mtd", "ytd", "all"]);
         const requested = String(new URLSearchParams(location.search).get("window") || "1d").toLowerCase();
         const key = keys.has(requested) ? requested : "1d";
         window.__prefetch = {
           window: key,
-          summary: fetch(`/api/spend/summary?window=${encodeURIComponent(key)}&tool=all`, {cache: "no-store"}),
-          health: fetch("/api/spend/health", {cache: "no-store"})
+          summary: fetch(`/api/spend/summary?window=${encodeURIComponent(key)}&tool=all`, {cache: "no-store", headers: {"X-Burnrate-View": "dashboard"}}),
+          health: fetch("/api/spend/health", {cache: "no-store", headers: {"X-Burnrate-View": "dashboard"}})
         };
       })();
     </script>

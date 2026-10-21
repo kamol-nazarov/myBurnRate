@@ -37,7 +37,7 @@ def test_snapshot_storage_is_versioned_bounded_and_best_effort() -> None:
     assert "catch {}" in write
     prune = JS.split("function pruneSnapshots", 1)[1].split("\nfunction ", 1)[0]
     assert '!key.startsWith(SNAPSHOT_PREFIX)' in prune
-    assert "pruneSnapshots();\nloadSummary();" in JS
+    assert "pruneSnapshots();\nif (!document.hidden && !consumeFocusTool()) loadSummary();" in JS
 
 
 def test_snapshot_is_painted_first_but_never_presented_as_live() -> None:

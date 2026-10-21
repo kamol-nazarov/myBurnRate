@@ -7,6 +7,7 @@ from contextlib import ExitStack, asynccontextmanager
 from datetime import UTC, datetime
 from importlib.resources import as_file, files
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -76,7 +77,7 @@ from spend_app.config import Settings, load_settings
 from spend_app.db import initialize
 from spend_app.pricing import PricingEngine
 from spend_app.limits import snapshot_limits
-from spend_app.scheduler import create_scheduler
+from spend_app.scheduler import HistoryDemand, create_scheduler
 
 
 SPEND_WINDOWS = set(WINDOW_SPECS) | {"7d", "30d", "MTD", "YTD", "All"}
@@ -115,7 +116,17 @@ def create_app(
     settings = settings or load_settings()
     initialize(settings.database_path)
     pricing = PricingEngine.load(settings.pricing_path)
-    scheduler = create_scheduler(settings, pricing) if enable_scheduler else None
+    history_demand = HistoryDemand()
+    scheduler = create_scheduler(settings, pricing, history_active=history_demand.active) if enable_scheduler else None
+
+    def request_history(request: Request):
+        # Only the visible dashboard opts in. API readers and older HUD
+        # windows must never start a cold transcript scan implicitly.
+        if request.headers.get("x-burnrate-view") != "dashboard":
+            return
+        if history_demand.touch() and scheduler:
+            for job_id in ("local-ingest", "network-ingest", "provider-admin"):
+                scheduler.modify_job(job_id, next_run_time=datetime.now(UTC))
     from spend_app.diagnostics import detect_local_sources, source_reports
     from spend_app.db import connect
 
@@ -139,19 +150,6 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        try:
-            aggregate_summary_cached(
-                database_path=settings.database_path,
-                pricing=pricing,
-                window_key="1d",
-                tool="all",
-                timezone=settings.timezone,
-                cache_threshold=settings.cache_hit_threshold,
-                cadence_seconds=settings.local_ingest_interval_seconds,
-                now=slot_now(),
-            )
-        except Exception:
-            pass
         if scheduler:
             scheduler.start()
         try:
@@ -162,6 +160,7 @@ def create_app(
             resource_stack.close()
 
     app = FastAPI(title="BURNRATE", version=__version__, lifespan=lifespan)
+    app.state.history_demand = history_demand
     from spend_app.connections import Store
     Store(settings.database_path).bootstrap()
     from spend_app.connection_api import connection_router
@@ -221,11 +220,18 @@ def create_app(
 
     @app.get("/api/spend/summary")
     def spend_summary(
+        request: Request,
         window: str = Query(default="1d"),
         tool: str = Query(default="all"),
         machine: str = Query(default="all"),
     ) -> dict:
         resolved = _window_or_400(window)
+        # An already-open HUD may still run the previous embedded script
+        # after a backend upgrade. It must not activate a historical scan.
+        referrer = urlsplit(request.headers.get("referer", ""))
+        if referrer.path == "/hud" or parse_qs(referrer.query).get("hud") == ["1"]:
+            return {**spend_hud_usage(machine), **spend_hud_live(machine)}
+        request_history(request)
         record_summary_request(resolved, tool)
         from spend_app.sync import fetch_from_configured_hub
         hub_data = fetch_from_configured_hub(
@@ -248,7 +254,8 @@ def create_app(
         )
 
     @app.get("/api/spend/nav")
-    def spend_nav() -> dict:
+    def spend_nav(request: Request) -> dict:
+        request_history(request)
         from spend_app.sync import fetch_from_configured_hub
         hub_data = fetch_from_configured_hub(settings, "/api/spend/nav")
         if hub_data is not None:
@@ -263,12 +270,14 @@ def create_app(
 
     @app.get("/api/spend/entity")
     def spend_entity(
+        request: Request,
         kind: str = Query(..., pattern="^(model|tool)$"),
         key: str = Query(..., min_length=1),
         window: str = Query(default="1d"),
         machine: str = Query(default="all"),
     ) -> dict:
         resolved = _window_or_400(window)
+        request_history(request)
         from spend_app.sync import fetch_from_configured_hub
         hub_data = fetch_from_configured_hub(
             settings,
@@ -290,7 +299,8 @@ def create_app(
         )
 
     @app.get("/api/spend/health")
-    def spend_health() -> dict:
+    def spend_health(request: Request) -> dict:
+        request_history(request)
         payload = aggregate_health_cached(
             database_path=settings.database_path,
             timezone=settings.timezone,
@@ -299,12 +309,33 @@ def create_app(
         return {**payload, "sources": source_guidance()}
 
     @app.get("/api/spend/freshness")
-    def spend_freshness() -> dict:
+    def spend_freshness(view: str = Query(default="dashboard", pattern="^(dashboard|hud)$")) -> dict:
         # This computer's own collection, quota and sync state. Never proxied:
         # on a spoke the hub cannot see that a local source or meter stalled.
         from spend_app.freshness import report
 
-        return report(settings)
+        return report(settings, history_active=history_demand.active() if scheduler else True,
+                      include_history=view != "hud")
+
+    @app.get("/api/spend/hud")
+    def spend_hud_live(machine: str = Query(default="all")) -> dict:
+        from spend_app.hud_data import live_snapshot
+        from spend_app.sync import fetch_from_configured_hub
+
+        hub = fetch_from_configured_hub(settings, "/api/spend/hud", {"machine": machine})
+        if hub is not None:
+            return hub
+        return live_snapshot(settings, now=current_now(), machine=machine)
+
+    @app.get("/api/spend/hud/usage")
+    def spend_hud_usage(machine: str = Query(default="all")) -> dict:
+        from spend_app.hud_data import recorded_usage
+        from spend_app.sync import fetch_from_configured_hub
+
+        hub = fetch_from_configured_hub(settings, "/api/spend/hud/usage", {"machine": machine})
+        if hub is not None:
+            return hub
+        return recorded_usage(settings, pricing, now=current_now(), machine=machine)
 
     @app.get("/api/onboarding")
     def onboarding():

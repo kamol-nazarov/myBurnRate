@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
 from datetime import UTC, datetime, timedelta
 
@@ -96,9 +97,11 @@ def _ingest_callable(spec: ProviderSpec):
     return spec.ingest
 
 
-def _run_ingest_specs(jobs: list[tuple[ProviderSpec, dict]], settings=None, pricing=None, window=None, timings=None) -> None:
+def _run_ingest_specs(jobs: list[tuple[ProviderSpec, dict]], settings=None, pricing=None, window=None, timings=None, should_continue=None) -> None:
     errors: list[BaseException] = []
     for spec, kwargs in jobs:
+        if should_continue is not None and not should_continue():
+            break
         ingest = _ingest_callable(spec)
         if ingest is None:
             continue
@@ -136,8 +139,30 @@ def _run_ingest_specs(jobs: list[tuple[ProviderSpec, dict]], settings=None, pric
         raise RuntimeError(f"{len(errors)} ingest job(s) failed") from errors[0]
 
 
-def create_scheduler(settings: Settings, pricing: PricingEngine) -> BackgroundScheduler:
+class HistoryDemand:
+    """Keep historical collection active while a dashboard is being used."""
+
+    def __init__(self, *, clock=time.monotonic, ttl_seconds=120):
+        self._clock = clock
+        self._ttl = ttl_seconds
+        self._until = float("-inf")
+        self._lock = threading.Lock()
+
+    def active(self) -> bool:
+        with self._lock:
+            return self._clock() < self._until
+
+    def touch(self) -> bool:
+        with self._lock:
+            now = self._clock()
+            activated = now >= self._until
+            self._until = now + self._ttl
+            return activated
+
+
+def create_scheduler(settings: Settings, pricing: PricingEngine, *, history_active=None) -> BackgroundScheduler:
     scheduler = BackgroundScheduler(timezone="UTC")
+    collect_history = history_active or (lambda: True)
 
     local_ingest_interval = {
         "seconds": settings.local_ingest_interval_seconds,
@@ -151,6 +176,12 @@ def create_scheduler(settings: Settings, pricing: PricingEngine) -> BackgroundSc
         from spend_app.sync import STREAM_BROKER
         from spend_app.setup_wizard import maybe_run_configured_spoke_sync
 
+        if not collect_history():
+            # The HUD still syncs quota/activity snapshots, without opening
+            # transcript stores or rebuilding historical summaries.
+            if not is_central:
+                maybe_run_configured_spoke_sync(settings, pricing)
+            return
         errors: list[BaseException] = []
         timings: dict[str, float] = {}
         began = time.perf_counter()
@@ -166,6 +197,7 @@ def create_scheduler(settings: Settings, pricing: PricingEngine) -> BackgroundSc
                     settings,
                     pricing,
                     timings=timings,
+                    should_continue=collect_history,
                 )
             except Exception as exc:
                 errors.append(exc)
@@ -216,6 +248,8 @@ def create_scheduler(settings: Settings, pricing: PricingEngine) -> BackgroundSc
     )
 
     def network_ingest_jobs() -> None:
+        if not collect_history():
+            return
         if os.getenv("BURNRATE_CENTRAL_SERVER", "").strip().lower() in {"1", "true", "yes"}:
             return
         # Each adapter keeps its own adaptive cadence; this tick only offers it a turn.
@@ -234,6 +268,8 @@ def create_scheduler(settings: Settings, pricing: PricingEngine) -> BackgroundSc
     )
 
     def admin_jobs() -> None:
+        if not collect_history():
+            return
         if os.getenv("BURNRATE_CENTRAL_SERVER", "").strip().lower() in {"1", "true", "yes"}:
             return
         from spend_app.adapters.report_pages import reporting_window

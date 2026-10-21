@@ -19,8 +19,10 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
+from anyio import CancelScope
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 from spend_app.connection_api import payload as read_trusted_json, trusted
 from spend_app.db import (
@@ -379,18 +381,12 @@ class StreamBroker:
 STREAM_BROKER = StreamBroker()
 
 
-def _db_live_signature(database_path: Path) -> tuple:
-    try:
-        with connect(database_path) as connection:
-            u = connection.execute("SELECT COUNT(*), MAX(id), MAX(ingested_at) FROM usage_events").fetchone()
-            un = connection.execute("SELECT COUNT(*), MAX(id) FROM unpriced_usage_events").fetchone()
-            ar = connection.execute("SELECT COUNT(*), MAX(last_seen_at) FROM agent_runs").fetchone()
-            q = connection.execute("SELECT COUNT(*), MAX(id), MAX(polled_at) FROM quotas").fetchone()
-            ir = connection.execute("SELECT MAX(id), MAX(finished_at) FROM ingest_runs").fetchone()
-            mf = machines_fingerprint(connection)
-            return (tuple(u), tuple(un), tuple(ar), tuple(q), tuple(ir), mf)
-    except Exception:
-        return ()
+def _db_live_signature(connection: sqlite3.Connection) -> int:
+    # This read-only connection lives for the entire stream. data_version
+    # changes when another connection commits, including in-place updates and
+    # deletes, without scanning usage history for every viewer every 2 seconds.
+    # Values are comparable only across reads on the SAME connection.
+    return connection.execute("PRAGMA data_version").fetchone()[0]
 
 
 def _price_pushed_event(pricing: PricingEngine, item: dict) -> tuple[float, bool]:
@@ -1389,9 +1385,16 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
         async def event_generator():
             sub, last_rev = STREAM_BROKER.subscribe()
             _, flag = sub
+            observer = None
             try:
-                last_sig = _db_live_signature(settings.database_path)
-                machines = _resolve_stream_machines(settings)
+                observer = await run_in_threadpool(
+                    sqlite3.connect,
+                    settings.database_path.resolve().as_uri() + "?mode=ro",
+                    uri=True,
+                    check_same_thread=False,
+                )
+                last_sig = await run_in_threadpool(_db_live_signature, observer)
+                machines = await run_in_threadpool(_resolve_stream_machines, settings)
                 last_machines_sig = json.dumps(
                     [(m.get("id"), m.get("online"), m.get("eventsPushed")) for m in machines]
                 )
@@ -1412,8 +1415,10 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
                     except TimeoutError:
                         pass
                     cur_rev = STREAM_BROKER.revision
-                    cur_sig = _db_live_signature(settings.database_path)
-                    machines = _resolve_stream_machines(settings)
+                    # SQLite reads and a spoke's hub HTTP request can both
+                    # block. Neither may run on the web server's event loop.
+                    cur_sig = await run_in_threadpool(_db_live_signature, observer)
+                    machines = await run_in_threadpool(_resolve_stream_machines, settings)
                     cur_machines_sig = json.dumps(
                         [(m.get("id"), m.get("online"), m.get("eventsPushed")) for m in machines]
                     )
@@ -1439,6 +1444,11 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
                         yield ": keepalive\n\n"
             finally:
                 STREAM_BROKER.unsubscribe(sub)
+                if observer is not None:
+                    # StreamingResponse cancels its task group on disconnect.
+                    # Release the observer even inside that cancelled scope.
+                    with CancelScope(shield=True):
+                        await run_in_threadpool(observer.close)
 
         return StreamingResponse(
             event_generator(),

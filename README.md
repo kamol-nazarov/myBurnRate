@@ -2,7 +2,7 @@
 
 **Private, local-first AI coding-agent spend, quota & multi-computer telemetry application.**
 
-Version: `0.3.0-beta.9` · Current release notes: [RELEASE-0.3.0-beta.8.md](RELEASE-0.3.0-beta.8.md) · [Changelog](CHANGELOG.md)
+Version: `0.3.0-beta.15` · Current release notes: [RELEASE-0.3.0-beta.15.md](RELEASE-0.3.0-beta.15.md) · [Changelog](CHANGELOG.md)
 
 ---
 
@@ -113,6 +113,8 @@ Then open:
 - **First-Run Setup Wizard:** [http://127.0.0.1:17331/setup](http://127.0.0.1:17331/setup)
 - **Main Dashboard:** [http://127.0.0.1:17331](http://127.0.0.1:17331)
 - **Sidecar HUD:** [http://127.0.0.1:17331/hud](http://127.0.0.1:17331/hud)
+
+The HUD starts live quota and activity polling without importing transcript history or building dashboard summaries. Its spend statistics use recorded usage and load separately from the live meters. Opening and using the full dashboard requests historical collection; after two minutes without dashboard requests, collection finishes its current source and defers further scans. Live polling and spoke sync continue.
 
 ### Option B: Windowless Windows Background Service (Auto-Start at Sign-In)
 

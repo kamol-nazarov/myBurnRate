@@ -128,14 +128,16 @@ def test_head_prefetch_starts_data_requests_before_the_script() -> None:
     assert "window.__prefetch" in head
     assert head.index("window.__prefetch") < head.index('src="/spend.js?v=42"')
     assert '"15m", "30m", "1h", "3h", "6h", "12h", "1d", "1w", "1mo", "mtd", "ytd", "all"' in head
-    assert 'fetch(`/api/spend/summary?window=${encodeURIComponent(key)}&tool=all`, {cache: "no-store"})' in head
-    assert 'fetch("/api/spend/health", {cache: "no-store"})' in head
+    assert 'if (document.hidden) return;' in head
+    assert 'fetch(`/api/spend/summary?window=${encodeURIComponent(key)}&tool=all`, {cache: "no-store", headers: {"X-Burnrate-View": "dashboard"}})' in head
+    assert 'fetch("/api/spend/health", {cache: "no-store", headers: {"X-Burnrate-View": "dashboard"}})' in head
     load = JS.split("async function loadSummary", 1)[1].split("\nasync function ", 1)[0]
     assert "startup?.window === windowKey ? startup : null" in load
     assert "window.__prefetch = null;" in load
     assert "prefetch?.summary" in load and "prefetch?.health" in load
     assert "async function jsonFetch(url, prefetched, signal)" in JS
-    assert 'await (prefetched || fetch(url, {cache:"no-store", signal}))' in JS
+    assert 'await (prefetched || fetch(url, {cache:"no-store", signal,' in JS
+    assert 'headers: document.hidden ? {} : {"X-Burnrate-View": "dashboard"}' in JS
 
 
 def test_provider_logo_sprite_is_versioned_cached_and_complete(tmp_path: Path) -> None:
