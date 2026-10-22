@@ -914,44 +914,78 @@ def _muse_limits_uncached() -> dict:
     }
 
 
+def _zai_coding_plan_keys() -> list[str]:
+    """Every stored Z.AI Coding Plan key, the one that last answered first.
+
+    OpenCode 1 and 2, ZCode and the GLM ACP agent each keep their own copy;
+    a key replaced in one tool leaves a rejected copy in the others.
+    """
+    home = Path.home()
+
+    def read(path: Path, *names: str):
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+            for name in names:
+                value = value.get(name) or {}
+            return value
+        except (OSError, json.JSONDecodeError, AttributeError):
+            return None
+
+    keys = [
+        read(home / ".local" / "share" / "opencode" / "auth.json", "zai-coding-plan", "key"),
+        _opencode_credential("zai-coding-plan"),
+        read(home / ".zcode" / "v2" / "config.json", "provider", "builtin:zai-coding-plan", "options", "apiKey"),
+        os.environ.get("Z_AI_API_KEY"),
+        read(home / ".config" / "glm-acp-agent" / "credentials.json", "z_ai_api_key"),
+    ]
+    keys = list(dict.fromkeys(key.strip() for key in keys if isinstance(key, str) and key.strip()))
+    keys.sort(key=lambda key: key != _ZAI_ACCEPTED_KEY["key"])
+    return keys
+
+
+_ZAI_ACCEPTED_KEY: dict = {"key": None}
+
+
+def _zai_rejected(response: httpx.Response, payload) -> bool:
+    if response.status_code in (401, 403):
+        return True
+    return isinstance(payload, dict) and payload.get("success") is False and payload.get("code") in (401, 1000, 1001, 1002)
+
+
 def _zai_limits_uncached() -> dict:
     allowed, reason = authorize("zai_quota_endpoint")
     if not allowed:
         return {"key": "opencode", "name": "Z.AI Coding Plan", "status": "unavailable", "windows": [], "detail": reason}
-    token = None
-    auth_path = Path.home() / ".local" / "share" / "opencode" / "auth.json"
-    try:
-        auth = json.loads(auth_path.read_text(encoding="utf-8"))
-        token = (auth.get("zai-coding-plan") or {}).get("key")
-    except (OSError, json.JSONDecodeError):
-        pass
-    if not token:
-        token = _opencode_credential("zai-coding-plan")
-    if not token:
-        zcode_config = Path.home() / ".zcode" / "v2" / "config.json"
-        try:
-            providers = json.loads(zcode_config.read_text(encoding="utf-8")).get("provider") or {}
-            token = (
-                (providers.get("builtin:zai-coding-plan") or {}).get("options") or {}
-            ).get("apiKey")
-        except (OSError, json.JSONDecodeError, AttributeError):
-            token = None
-    if not token:
+    keys = _zai_coding_plan_keys()
+    if not keys:
         return {"key": "opencode", "name": "Z.AI Coding Plan", "status": "unavailable", "windows": [], "detail": "No OpenCode or ZCode Coding Plan key was found."}
+    payload = None
     try:
         _assert_allowed_https_host(ZAI_QUOTA_URL, ZAI_QUOTA_ALLOWED_HOSTS)
-        response = httpx.get(
-            ZAI_QUOTA_URL,
-            headers={"Authorization": token, "Accept-Language": "en-US,en", "Content-Type": "application/json", **identity_headers()},
-            timeout=15,
-            trust_env=False,
-            follow_redirects=False,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        limits = (payload.get("data") or {}).get("limits") or []
+        for token in keys:
+            response = httpx.get(
+                ZAI_QUOTA_URL,
+                headers={"Authorization": token, "Accept-Language": "en-US,en", "Content-Type": "application/json", **identity_headers()},
+                timeout=15,
+                trust_env=False,
+                follow_redirects=False,
+            )
+            try:
+                body = response.json()
+            except ValueError:
+                body = None
+            if _zai_rejected(response, body):
+                continue
+            response.raise_for_status()
+            payload = body if isinstance(body, dict) else {}
+            _ZAI_ACCEPTED_KEY["key"] = token
+            break
     except Exception as exc:
         return {"key": "opencode", "name": "Z.AI Coding Plan", "status": "error", "windows": [], "detail": f"Z.AI quota lookup failed ({type(exc).__name__}).", **_throttle_fields(exc)}
+    if payload is None:
+        return {"key": "opencode", "name": "Z.AI Coding Plan", "status": "error", "windows": [],
+                "detail": "Z.AI rejected every stored Coding Plan key (Authentication Failed). Update the key in OpenCode, ZCode or glm-acp-agent."}
+    limits = (payload.get("data") or {}).get("limits") or []
     windows = []
     for index, limit in enumerate(limits):
         number = int(limit.get("number") or 0)

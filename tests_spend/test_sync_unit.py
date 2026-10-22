@@ -360,7 +360,9 @@ def test_sidecar_hud_and_tauri_native_scaffold(tmp_path: Path, monkeypatch) -> N
     assert "main" in windows and "hud" in windows
     assert windows["hud"]["alwaysOnTop"] is True
     assert windows["hud"]["decorations"] is False
-    assert windows["hud"]["url"].endswith("/hud")
+    # The transparent HUD window asks the page for its glass card.
+    assert windows["hud"]["url"].endswith("/hud?glass=1")
+    assert windows["hud"]["transparent"] is True
 
     lib_rs = (repo_root / "src-tauri" / "src" / "lib.rs").read_text(encoding="utf-8")
     for symbol in (

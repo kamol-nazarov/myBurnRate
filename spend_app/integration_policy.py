@@ -109,7 +109,7 @@ LANES: dict[str, LanePolicy] = {
     "zai_quota_endpoint": LanePolicy(
         "zai_quota_endpoint",
         Lane.OPT_IN_NATIVE,
-        "Z.AI quota endpoint reusing the API key file stored by OpenCode.",
+        "Z.AI quota endpoint reusing the Coding Plan key stored by OpenCode, ZCode or glm-acp-agent.",
         allowed_hosts=("api.z.ai",),
         consent_env="BURNRATE_ENABLE_ZAI_QUOTA",
     ),

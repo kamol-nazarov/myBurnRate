@@ -547,6 +547,48 @@ def test_zai_quota_falls_back_to_zcode_coding_plan_key(tmp_path: Path, monkeypat
     assert [window["usedPct"] for window in result["windows"]] == [1, 3]
 
 
+def test_zai_quota_skips_a_rejected_key_for_the_next_stored_one(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BURNRATE_ENABLE_ZAI_QUOTA", "1")
+    monkeypatch.delenv("Z_AI_API_KEY", raising=False)
+    auth = tmp_path / ".local" / "share" / "opencode" / "auth.json"
+    auth.parent.mkdir(parents=True)
+    auth.write_text(json.dumps({"zai-coding-plan": {"key": "replaced-key"}}), encoding="utf-8")
+    agent = tmp_path / ".config" / "glm-acp-agent" / "credentials.json"
+    agent.parent.mkdir(parents=True)
+    agent.write_text(json.dumps({"z_ai_api_key": "current-key"}), encoding="utf-8")
+    monkeypatch.setattr("spend_app.limits.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("spend_app.limits._opencode_credential", lambda _integration: None)
+    sent = []
+
+    def fake_get(*_args, **kwargs):
+        sent.append(kwargs["headers"]["Authorization"])
+        request = httpx.Request("GET", "https://api.z.ai/api/monitor/usage/quota/limit")
+        if kwargs["headers"]["Authorization"] != "current-key":
+            # Z.AI answers a rejected key with HTTP 200 and success=false.
+            return httpx.Response(200, request=request, json={"code": 1000, "msg": "Authentication Failed", "success": False})
+        return httpx.Response(200, request=request, json={"code": 200, "success": True, "data": {"limits": [
+            {"number": 5, "usage": 28_000, "currentValue": 5_099, "percentage": 18},
+            {"number": 1, "usage": 140_000, "currentValue": 29_344, "percentage": 20},
+        ]}})
+
+    monkeypatch.setattr("spend_app.limits.httpx.get", fake_get)
+    monkeypatch.setitem(limits._ZAI_ACCEPTED_KEY, "key", None)
+    result = _zai_limits_uncached()
+    assert sent == ["replaced-key", "current-key"]
+    assert result["status"] == "exact"
+    assert [window["usedPct"] for window in result["windows"]] == [18, 20]
+
+    # The accepted key goes first from then on.
+    sent.clear()
+    _zai_limits_uncached()
+    assert sent == ["current-key"]
+
+    agent.unlink()
+    result = _zai_limits_uncached()
+    assert result["status"] == "error"
+    assert "Authentication Failed" in result["detail"]
+
+
 def test_traycer_sender_falls_back_to_active_chat_projection_head(tmp_path: Path, monkeypatch) -> None:
     import sqlite3
     from spend_app.limits import _traycer_sender

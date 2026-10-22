@@ -9,6 +9,28 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+- Show tokens burned inside each quota window when hovering a HUD meter, split
+  into fresh input, output and cache reads, from the usage already collected for
+  that plan (`windowTokens` on `/api/spend/hud/usage`). Weekly meters also list
+  today's tokens since local midnight by model. Z.AI counts OpenCode and ZCode
+  usage only, Antigravity splits Gemini from its other models, and extra Claude
+  accounts show no figure because only the default profile's sessions are
+  collected.
+- Rebuild the HUD tooltips: one card layout (title, figure, label/value rows,
+  footer), short labels on the icon buttons, a single pace verdict per meter,
+  and tips that close when the pointer leaves the window, follow the hovered
+  row through a data refresh, and are swept if their row is no longer hovered.
+- Make the native HUD window transparent. The card is see-through at rest and
+  firms up under the pointer; tooltips stay solid. A tall tooltip grows the
+  window downward instead of being clipped.
+- Animate collapse/expand between the full and mini HUD, and fix the mini
+  button drawing both of its icons at once: one icon now turns between
+  "collapse" and "expand".
+- Fix Z.AI quota readings freezing after a key change: every stored Coding Plan
+  key is tried (OpenCode 1 and 2, ZCode, and now glm-acp-agent or
+  `Z_AI_API_KEY`), the one Z.AI accepts is remembered, and a rejected key is
+  reported as an authentication error instead of an empty reading.
+
 ## [0.3.0-beta.16] - 2026-10-22
 
 - Add OpenCode Go. OpenCode messages served by Go (`providerID=opencode-go`)

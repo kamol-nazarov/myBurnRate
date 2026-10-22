@@ -20,6 +20,9 @@ HUD_HTML = r"""<!doctype html>
         if (theme !== "dark" && theme !== "light") theme = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
         document.documentElement.dataset.theme = theme;
         try { if (localStorage.getItem("burnrate:hud-mini") === "1") document.documentElement.classList.add("is-mini"); } catch {}
+        // A native shell with a transparent HUD window asks for glass; older
+        // shells and the browser sidecar stay opaque.
+        if (new URLSearchParams(location.search).get("glass") === "1") document.documentElement.classList.add("is-glass");
       })();
     </script>
     <style>
@@ -43,7 +46,11 @@ HUD_HTML = r"""<!doctype html>
         --meter: #141311;
         --track: rgba(20, 18, 15, 0.13);
         --tip-bg: #ffffff;
-        --tip-shadow: 0 14px 34px -10px rgba(20, 18, 15, 0.35);
+        --tip-line: rgba(20, 18, 15, 0.12);
+        --tip-shadow: 0 12px 30px -12px rgba(20, 18, 15, 0.4), 0 2px 6px -2px rgba(20, 18, 15, 0.12);
+        --glass: rgba(244, 242, 238, 0.8);
+        --glass-hover: rgba(244, 242, 238, 0.96);
+        --glass-line: rgba(20, 18, 15, 0.14);
         --sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
         --fd: Bahnschrift, "DIN Alternate", "DIN 2014", Barlow, "Segoe UI", system-ui, sans-serif;
         --mono: "Cascadia Mono", ui-monospace, "Segoe UI Mono", Consolas, monospace;
@@ -65,8 +72,12 @@ HUD_HTML = r"""<!doctype html>
         --danger: #ff5247;
         --meter: #f2f0eb;
         --track: rgba(255, 255, 255, 0.11);
-        --tip-bg: #1b1b1f;
-        --tip-shadow: 0 16px 40px -8px #000;
+        --tip-bg: #18181b;
+        --tip-line: rgba(255, 255, 255, 0.1);
+        --tip-shadow: 0 14px 36px -10px rgba(0, 0, 0, 0.9);
+        --glass: rgba(10, 10, 12, 0.78);
+        --glass-hover: rgba(10, 10, 12, 0.95);
+        --glass-line: rgba(255, 255, 255, 0.12);
       }
       * { box-sizing: border-box; margin: 0; padding: 0; }
       html, body {
@@ -85,6 +96,29 @@ HUD_HTML = r"""<!doctype html>
       body { min-height: 100vh; border: 1px solid var(--line); border-radius: 10px; }
       button { font: inherit; color: inherit; }
       .page { padding: 10px 14px 12px; }
+
+      /* Glass: the native window is transparent; the card is see-through at
+         rest and firms up under the pointer so it stays easy to read. */
+      html.is-glass, html.is-glass body { background: transparent; }
+      html.is-glass body { min-height: 0; border: 0; border-radius: 0; }
+      html.is-glass .page {
+        /* A fixed width, so the card never follows the window mid-morph. */
+        width: 380px;
+        background: var(--glass);
+        border: 1px solid var(--glass-line);
+        border-radius: 12px;
+        transition: background-color 0.25s ease;
+      }
+      html.is-glass.is-mini .page { width: 296px; }
+      /* Whatever shows through shifts the card's tone, so quiet labels sit a
+         step closer to the text colour than on the opaque card. */
+      html.is-glass { --dim: #66625c; --muted: #55524c; }
+      html.is-glass[data-theme="dark"] { --dim: #94908a; --muted: #aaa69f; }
+      html.is-glass body:hover .page { background: var(--glass-hover); }
+      html.is-glass .hud-machine-chip.active { background: color-mix(in srgb, var(--text) 88%, transparent); }
+      html.is-glass #hud-machines { background: color-mix(in srgb, var(--sunken) 60%, transparent); }
+      html.is-glass .hud-pulse { border-color: transparent; }
+      .page.morphing { overflow: hidden; }
 
       /* Chrome row: brand on the left, icon controls on the right. */
       .top { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 30px; }
@@ -111,9 +145,10 @@ HUD_HTML = r"""<!doctype html>
       .hud-btn.active { color: var(--accent); }
       .hud-btn.active .pin-head { fill: currentColor; }
       .hud-btn:focus-visible, .hud-poll-btn:focus-visible, .hud-machine-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-      .icon-expand { display: none; }
-      html.is-mini .icon-expand { display: block; }
-      html.is-mini .icon-shrink { display: none; }
+      /* One icon for collapse/expand: each corner arrow turns about its own
+         centre, so "inward" becomes "outward" as the HUD changes size. */
+      .icon-fold g { transform-box: fill-box; transform-origin: center; transition: transform 0.36s cubic-bezier(.3, .7, .2, 1); }
+      html.is-mini .icon-fold g { transform: rotate(180deg); }
 
       /* Readout. */
       .date-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 12px; }
@@ -302,40 +337,61 @@ HUD_HTML = r"""<!doctype html>
       html.is-mini .win b.payg { font-size: 9.5px; }
       html.is-mini .meter { height: 7px; }
 
+      /* Tooltips: one solid card, a title row, an optional big figure,
+         label/value rows and a muted footer. Never translucent. */
       #hud-tip {
         position: fixed;
+        top: 0;
+        left: 0;
         z-index: 40;
-        max-width: 250px;
-        padding: 9px 11px;
-        border-radius: 8px;
+        width: max-content;
+        max-width: 252px;
+        padding: 9px 11px 10px;
+        border-radius: 9px;
         background: var(--tip-bg);
-        border: 1px solid var(--line);
+        border: 1px solid var(--tip-line);
         box-shadow: var(--tip-shadow);
         font-size: 11.5px;
-        line-height: 1.45;
-        color: var(--muted);
+        line-height: 1.4;
+        color: var(--secondary);
         pointer-events: none;
+        visibility: hidden;
         opacity: 0;
-        transform: translateY(2px);
-        transition: opacity 0.12s ease, transform 0.12s ease;
+        transform: translateY(3px);
+        transition: opacity 0.14s ease, transform 0.14s ease, visibility 0s linear 0.14s;
       }
-      #hud-tip.on { opacity: 1; transform: none; }
-      #hud-tip .tip-title {
-        display: -webkit-box;
-        -webkit-line-clamp: 2;
-        -webkit-box-orient: vertical;
-        overflow: hidden;
-        word-break: break-word;
-        margin-bottom: 3px;
-        color: var(--text);
-        font: 600 12.5px/1.25 var(--fd);
-      }
-      #hud-tip .row { display: block; }
-      #hud-tip .row.accent { color: var(--text); font-weight: 600; }
-      #hud-tip .sep { display: block; height: 1px; margin: 6px 0; background: var(--line); }
-      #hud-tip .row.dry { color: var(--danger); font-weight: 600; }
-      #hud-tip .row.tight { color: var(--accent); font-weight: 600; }
-      #hud-tip .row.safe { color: var(--green); font-weight: 600; }
+      #hud-tip.on { visibility: visible; opacity: 1; transform: none; transition: opacity 0.14s ease, transform 0.14s ease; }
+      #hud-tip.snap { transition: none; }
+      #hud-tip.is-wide { width: 252px; }
+      #hud-tip.is-label { padding: 5px 8px; border-radius: 7px; color: var(--text); font-size: 11px; font-weight: 600; white-space: nowrap; }
+      .tt-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+      .tt-head b { min-width: 0; overflow: hidden; color: var(--text); font: 600 12.5px/1.25 var(--fd); text-overflow: ellipsis; white-space: nowrap; }
+      .tt-head span { flex: none; color: var(--dim); font-size: 10.5px; }
+      .tt-hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 10px; margin-top: 7px; }
+      .tt-hero strong { color: var(--text); font: 400 24px/0.9 var(--fd); letter-spacing: -0.01em; }
+      .tt-hero span { color: var(--muted); font-size: 10.5px; line-height: 1.3; text-align: right; }
+      .tt-hero span b { display: block; color: var(--text); font-size: 11.5px; font-weight: 600; }
+      .tt-kv { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px; margin-top: 9px; }
+      .tt-kv dt { color: var(--dim); }
+      .tt-kv dd { min-width: 0; color: var(--text); font-weight: 600; text-align: right; }
+      .tt-kv dd small { display: block; color: var(--dim); font-size: 10px; font-weight: 400; }
+      .tt-line { margin-top: 6px; }
+      .tt-line.dim, .tt-foot { color: var(--dim); }
+      .tt-foot { margin-top: 9px; font-size: 10.5px; }
+      .tt-sep { height: 1px; margin: 9px 0 8px; border: 0; background: var(--tip-line); }
+      .tt-sep + .tt-foot { margin-top: 0; }
+      .tt-section { display: flex; justify-content: space-between; gap: 10px; color: var(--dim); font: 600 9.5px/1.2 var(--fd); letter-spacing: 0.14em; text-transform: uppercase; }
+      .tt-section b { color: var(--text); font: 600 11.5px/1 var(--fd); letter-spacing: 0; }
+      .tt-models { display: grid; gap: 6px; margin-top: 7px; list-style: none; }
+      .tt-models li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 10px; align-items: baseline; }
+      .tt-models span { overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
+      .tt-models b { color: var(--secondary); font-weight: 600; }
+      .tt-models i { grid-column: 1 / -1; display: block; height: 3px; border-radius: 2px; background: var(--track); }
+      .tt-models i::before { content: ""; display: block; width: var(--share, 0%); min-width: 2px; height: 100%; border-radius: inherit; background: var(--meter); }
+      .tt-models li.more span, .tt-models li.more b { color: var(--dim); font-weight: 400; }
+      #hud-tip .safe { color: var(--green); }
+      #hud-tip .tight { color: var(--accent); }
+      #hud-tip .dry { color: var(--danger); }
       @media (prefers-reduced-motion: reduce) {
         *, *::before, *::after { animation: none !important; transition: none !important; }
       }
@@ -343,26 +399,26 @@ HUD_HTML = r"""<!doctype html>
   </head>
   <body>
     <main class="page" id="hud-shell">
+      <div id="hud-body">
       <header class="top">
         <span class="brand"><img src="/favicon.svg" alt=""><b>BURN<span>RATE</span></b></span>
         <div class="mini-head" aria-live="polite">
           <strong id="hud-mini-today">—</strong><span class="mini-today-label">today</span><span class="mini-live" id="hud-mini-live" hidden></span><span class="mini-alert" id="hud-mini-alert" hidden></span>
         </div>
         <div class="hud-controls">
-          <button type="button" class="hud-btn" id="hud-mini-btn" aria-label="Mini HUD" aria-pressed="false" data-tip="&lt;b class=&quot;tip-title&quot;&gt;Mini HUD&lt;/b&gt;&lt;span class=&quot;row&quot;&gt;Collapse into a glance strip: one line per plan, showing its tightest window.&lt;/span&gt;">
-            <svg class="icon-shrink" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></svg>
-            <svg class="icon-expand" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
+          <button type="button" class="hud-btn" id="hud-mini-btn" aria-label="Collapse HUD" aria-pressed="false" data-tip>
+            <svg class="icon-fold" viewBox="0 0 24 24" aria-hidden="true"><g><path d="M14 10l7-7"/><path d="M20 10h-6V4"/></g><g><path d="M3 21l7-7"/><path d="M4 14h6v6"/></g></svg>
           </button>
-          <button type="button" class="hud-btn" id="hud-theme-btn" aria-label="Switch theme" aria-pressed="false" data-tip="&lt;b class=&quot;tip-title&quot;&gt;Theme&lt;/b&gt;&lt;span class=&quot;row&quot;&gt;Switch between the graphite and paper palettes.&lt;/span&gt;">
+          <button type="button" class="hud-btn" id="hud-theme-btn" aria-label="Switch theme" aria-pressed="false" data-tip>
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none"/></svg>
           </button>
-          <button type="button" class="hud-btn active" id="hud-pin-btn" aria-label="Pin always on top" aria-pressed="true" data-tip="&lt;b class=&quot;tip-title&quot;&gt;Pin Always-on-Top&lt;/b&gt;&lt;span class=&quot;row&quot;&gt;Keep the Sidecar HUD floating above all other windows.&lt;/span&gt;">
+          <button type="button" class="hud-btn active" id="hud-pin-btn" aria-label="Pin always on top" aria-pressed="true" data-tip>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16v5"/><path class="pin-head" d="M9 4h6l-1 5 3 3v3H7v-3l3-3z"/></svg>
           </button>
-          <button type="button" class="hud-btn" id="hud-expand-btn" aria-label="Open dashboard" data-tip="&lt;b class=&quot;tip-title&quot;&gt;Open dashboard&lt;/b&gt;&lt;span class=&quot;row&quot;&gt;Forecasts, unit economics, and plans in the full window.&lt;/span&gt;">
+          <button type="button" class="hud-btn" id="hud-expand-btn" aria-label="Open dashboard" data-tip>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>
           </button>
-          <button type="button" class="hud-btn" id="hud-hide-btn" aria-label="Hide HUD" data-tip="&lt;b class=&quot;tip-title&quot;&gt;Hide&lt;/b&gt;&lt;span class=&quot;row&quot;&gt;Hide the HUD. Reopen it from the BURNRATE tray menu.&lt;/span&gt;">
+          <button type="button" class="hud-btn" id="hud-hide-btn" aria-label="Hide HUD" data-tip>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg>
           </button>
         </div>
@@ -410,7 +466,7 @@ HUD_HTML = r"""<!doctype html>
       <section class="plans" aria-label="Subscription usage">
         <div class="plans-head">
           <span>Plans<span id="hud-quota-badge">—</span></span>
-          <button type="button" class="hud-poll-btn" id="hud-poll-btn" data-tip="&lt;b class=&quot;tip-title&quot;&gt;Poll quotas now&lt;/b&gt;&lt;span class=&quot;row&quot;&gt;Immediately query all connected subscription providers and sync.&lt;/span&gt;"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg><span>Poll</span></button>
+          <button type="button" class="hud-poll-btn" id="hud-poll-btn" data-tip><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg><span>Poll</span></button>
         </div>
         <div id="hud-quotas">
           <p class="hud-empty">Waiting for subscription usage…</p>
@@ -421,6 +477,7 @@ HUD_HTML = r"""<!doctype html>
         <span id="hud-computers-foot"></span>
         <span id="hud-updated-foot"></span>
       </footer>
+      </div>
     </main>
 
     <div id="hud-tip" role="tooltip" aria-hidden="true"></div>
@@ -431,6 +488,9 @@ HUD_HTML = r"""<!doctype html>
         const root = document.documentElement;
         // The full dashboard is optional (BURNRATE_ENABLE_DASHBOARD=1).
         const dashboardOn = root.dataset.dashboard !== "off";
+        const glass = root.classList.contains("is-glass");
+        // True while the card animates between the full and mini layouts.
+        let morphing = false;
         let selectedMachine = new URLSearchParams(location.search).get("machine") || "all";
         let pinned = true;
         try {
@@ -477,50 +537,144 @@ HUD_HTML = r"""<!doctype html>
           if (u === "unavailable" || u === "") return fmtNum(n);
           return fmtNum(n) + " " + u;
         };
-        const tipRow = (text, cls) => text ? '<span class="row' + (cls ? " " + cls : "") + '">' + text + "</span>" : "";
+        const tok1 = v => {
+          const n = v == null || v === "" ? NaN : Number(v);
+          if (!Number.isFinite(n)) return "—";
+          const a = Math.abs(n);
+          if (a >= 1e9) return (n / 1e9).toFixed(a >= 1e10 ? 1 : 2) + "B";
+          if (a >= 1e6) return (n / 1e6).toFixed(a >= 1e8 ? 0 : 1) + "M";
+          if (a >= 1e3) return (n / 1e3).toFixed(a >= 1e5 ? 0 : 1) + "K";
+          return String(Math.round(n));
+        };
+
+        // Tooltip markup. Every builder escapes its own text.
+        const T = {
+          head: (title, sub) => '<div class="tt-head"><b>' + esc(title) + "</b>" + (sub ? "<span>" + esc(sub) + "</span>" : "") + "</div>",
+          hero: (big, strong, side) => '<div class="tt-hero"><strong>' + esc(big) + "</strong><span>" +
+            (strong ? "<b>" + esc(strong) + "</b>" : "") + esc(side || "") + "</span></div>",
+          kv: rows => {
+            const body = rows.filter(Boolean).map(([key, value, cls, note]) =>
+              "<dt>" + esc(key) + "</dt><dd" + (cls ? ' class="' + cls + '"' : "") + ">" + esc(value) +
+              (note ? "<small>" + esc(note) + "</small>" : "") + "</dd>").join("");
+            return body ? '<dl class="tt-kv">' + body + "</dl>" : "";
+          },
+          line: (text, cls) => text ? '<p class="tt-line' + (cls ? " " + cls : "") + '">' + esc(text) + "</p>" : "",
+          section: (label, value) => '<div class="tt-section"><span>' + esc(label) + "</span>" + (value ? "<b>" + esc(value) + "</b>" : "") + "</div>",
+          sep: '<hr class="tt-sep">',
+          foot: text => text ? '<p class="tt-foot">' + esc(text) + "</p>" : ""
+        };
+
+        // An element's tip is built when shown (and rebuilt on every data
+        // refresh while open), so an open tip always shows current values.
+        const tipContent = new WeakMap();
+        function setTip(el, content, kind = "wide") {
+          if (!el) return;
+          tipContent.set(el, {content, kind});
+          el.setAttribute("data-tip", "");
+        }
+        const labelTip = (el, text) => setTip(el, text, "label");
 
         const tipEl = $("hud-tip");
-        let tipTimer = null;
-        let tipTarget = null;
-        function showTip(target) {
-          const html = target.dataset.tip;
-          if (!html) return;
-          tipEl.innerHTML = html;
-          tipEl.classList.add("on");
-          tipEl.setAttribute("aria-hidden", "false");
-          tipEl.style.left = "0px";
-          tipEl.style.top = "0px";
+        const TIP_DELAY_MS = 320;
+        const TIP_WARM_MS = 600;
+        const tip = {target: null, pending: null, timer: 0, leaveTimer: 0, restoreTimer: 0, hiddenAt: 0, x: -1, y: -1, inside: false, grown: false};
+        const tipUnderPointer = () => {
+          if (!tip.inside || tip.x < 0) return null;
+          const el = document.elementFromPoint(tip.x, tip.y);
+          return el ? el.closest("[data-tip]") : null;
+        };
+        function placeTip(target) {
           const rect = target.getBoundingClientRect();
           const tw = tipEl.offsetWidth;
           const th = tipEl.offsetHeight;
-          let x = rect.left + rect.width / 2 - tw / 2;
-          x = Math.min(Math.max(8, x), Math.max(8, window.innerWidth - tw - 8));
-          let y = rect.top - th - 8;
-          if (y < 8) y = rect.bottom + 8;
-          y = Math.min(y, Math.max(8, window.innerHeight - th - 8));
+          const x = Math.min(Math.max(6, rect.left + rect.width / 2 - tw / 2), Math.max(6, window.innerWidth - tw - 6));
+          let y = rect.top - th - 6;
+          if (y < 6) {
+            y = rect.bottom + 6;
+            const bottom = y + th + 6;
+            if (bottom > window.innerHeight) {
+              // Glass: the window is transparent past the card, so it can
+              // grow downward for a tall tip instead of clipping it.
+              if (glass && !morphing) growWindowForTip(bottom);
+              else y = Math.max(6, window.innerHeight - th - 6);
+            }
+          }
           tipEl.style.left = Math.round(x) + "px";
           tipEl.style.top = Math.round(y) + "px";
         }
-        function hideTip() {
-          if (tipTimer) { clearTimeout(tipTimer); tipTimer = null; }
-          tipEl.classList.remove("on");
-          tipEl.setAttribute("aria-hidden", "true");
-          tipTarget = null;
+        function showTip(target, snap) {
+          const entry = target && target.isConnected ? tipContent.get(target) : null;
+          const value = entry ? (typeof entry.content === "function" ? entry.content() : entry.content) : "";
+          if (!value) { hideTip(); return; }
+          clearTimeout(tip.leaveTimer);
+          clearTimeout(tip.restoreTimer);
+          tip.target = target;
+          tipEl.className = "is-" + entry.kind + (snap ? " snap" : "");
+          tipEl.innerHTML = entry.kind === "label" ? esc(value) : value;
+          placeTip(target);
+          tipEl.classList.add("on");
+          tipEl.setAttribute("aria-hidden", "false");
         }
-        document.addEventListener("mouseover", event => {
-          const target = event.target.closest("[data-tip]");
-          if (target === tipTarget) return;
-          if (tipTimer) { clearTimeout(tipTimer); tipTimer = null; }
-          if (!target || !target.dataset.tip) { hideTip(); return; }
-          const picked = target;
-          tipTimer = setTimeout(() => {
-            tipTarget = picked;
-            showTip(picked);
-          }, 140);
+        function hideTip() {
+          clearTimeout(tip.timer);
+          clearTimeout(tip.leaveTimer);
+          tip.pending = null;
+          if (tip.target) tip.hiddenAt = Date.now();
+          tip.target = null;
+          tipEl.classList.remove("on", "snap");
+          tipEl.setAttribute("aria-hidden", "true");
+          if (tip.grown) {
+            clearTimeout(tip.restoreTimer);
+            tip.restoreTimer = setTimeout(() => {
+              if (tip.target) return;
+              tip.grown = false;
+              syncHudWindowSize(true);
+            }, 160);
+          }
+        }
+        function wantTip(target) {
+          if (morphing) { hideTip(); return; }
+          if (target && (target === tip.target || target === tip.pending)) { clearTimeout(tip.leaveTimer); return; }
+          clearTimeout(tip.timer);
+          tip.pending = null;
+          if (!target) {
+            // A short grace so crossing the gap between two rows moves the
+            // open tip instead of closing and reopening it.
+            if (tip.target) { clearTimeout(tip.leaveTimer); tip.leaveTimer = setTimeout(hideTip, 90); }
+            return;
+          }
+          if (tip.target || Date.now() - tip.hiddenAt < TIP_WARM_MS) { showTip(target, Boolean(tip.target)); return; }
+          tip.pending = target;
+          tip.timer = setTimeout(() => {
+            tip.pending = null;
+            const live = target.isConnected ? target : tipUnderPointer();
+            if (live && tip.inside) showTip(live, false);
+          }, TIP_DELAY_MS);
+        }
+        // After a re-render the hovered element may be a new node: follow the
+        // pointer to it, or close the tip when nothing tipped is under it.
+        function refreshTip() {
+          if (!tip.target) return;
+          const target = tip.target.isConnected && tip.target.matches(":hover") ? tip.target : tipUnderPointer();
+          if (target) showTip(target, true); else hideTip();
+        }
+        document.addEventListener("pointermove", event => { tip.x = event.clientX; tip.y = event.clientY; tip.inside = true; }, {passive: true});
+        document.addEventListener("pointerover", event => {
+          tip.inside = true;
+          tip.x = event.clientX;
+          tip.y = event.clientY;
+          wantTip(event.target instanceof Element ? event.target.closest("[data-tip]") : null);
         });
-        document.addEventListener("mousedown", hideTip, true);
+        const leaveWindow = () => { tip.inside = false; hideTip(); };
+        document.addEventListener("pointerout", event => { if (!event.relatedTarget) leaveWindow(); });
+        document.documentElement.addEventListener("pointerleave", leaveWindow);
+        document.addEventListener("pointerdown", hideTip, true);
+        window.addEventListener("wheel", hideTip, {passive: true});
         window.addEventListener("scroll", hideTip, true);
         window.addEventListener("blur", hideTip);
+        document.addEventListener("visibilitychange", () => { if (document.hidden) hideTip(); });
+        // Last line of defence against a tip left behind by a missed event.
+        setInterval(() => { if (tip.target && !(tip.target.isConnected && tip.target.matches(":hover"))) refreshTip(); }, 700);
 
         function setStat(id, text) {
           const el = $(id);
@@ -571,6 +725,12 @@ HUD_HTML = r"""<!doctype html>
         }
         applyPinUi(pinned);
         tauriInvoke("set_hud_pin", { pinned });
+        labelTip($("hud-pin-btn"), () => pinned ? "Unpin from top" : "Keep on top");
+        labelTip($("hud-mini-btn"), () => isMini ? "Expand" : "Collapse");
+        labelTip($("hud-theme-btn"), () => root.dataset.theme === "dark" ? "Light theme" : "Dark theme");
+        labelTip($("hud-expand-btn"), "Open dashboard");
+        labelTip($("hud-hide-btn"), "Hide · reopen from the tray");
+        labelTip($("hud-poll-btn"), "Poll every plan now");
 
         $("hud-pin-btn").addEventListener("click", async () => {
           const nextPin = !pinned;
@@ -629,68 +789,137 @@ HUD_HTML = r"""<!doctype html>
         let isMini = root.classList.contains("is-mini");
         let lastAppliedWidth = 0;
         let lastAppliedHeight = 0;
+        const hudWidth = () => isMini ? 296 : 380;
+        // An opaque window frames the card with the body's 1px border; a
+        // glass card carries its own border inside its measured rect.
+        const frameExtra = glass ? 0 : 2;
+        const windowHeightFor = cardHeight => Math.max(160, Math.min(820, Math.ceil(cardHeight) + frameExtra));
+
+        async function setWindowSize(width, height) {
+          const handled = await tauriInvoke("set_hud_size", { width, height });
+          if (handled !== null) return;
+          if (window.opener) {
+            try { window.resizeTo(width + 16, height + 38); } catch {}
+            return;
+          }
+          try {
+            await fetch("/api/hud/native", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ action: "resize", width, height })
+            });
+          } catch {}
+        }
+
+        function measuredCardHeight() {
+          const shell = $("hud-shell");
+          return shell.getBoundingClientRect().height || shell.offsetHeight || (isMini ? 200 : 540);
+        }
 
         async function syncHudWindowSize(force = false) {
-          const shell = $("hud-shell");
-          if (!shell) return;
-          const targetWidth = isMini ? 296 : 380;
-          const rect = shell.getBoundingClientRect();
-          const measuredH = Math.ceil(rect.height || shell.offsetHeight || (isMini ? 200 : 540));
-          const targetHeight = Math.max(160, Math.min(820, measuredH + 2));
+          // A morph or a tall tip owns the window size until it finishes.
+          if (morphing || tip.grown) return;
+          const targetWidth = hudWidth();
+          const targetHeight = windowHeightFor(measuredCardHeight());
           if (!force && targetWidth === lastAppliedWidth && Math.abs(targetHeight - lastAppliedHeight) <= 2) {
             return;
           }
           lastAppliedWidth = targetWidth;
           lastAppliedHeight = targetHeight;
-          const handled = await tauriInvoke("set_hud_size", { width: targetWidth, height: targetHeight });
-          if (handled === null) {
-            if (window.opener) {
-              try { window.resizeTo(targetWidth + 16, targetHeight + 38); } catch {}
-            } else {
-              try {
-                await fetch("/api/hud/native", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ action: "resize", width: targetWidth, height: targetHeight })
-                });
-              } catch {}
-            }
-          }
-          setTimeout(async () => {
-            const rectAfter = shell.getBoundingClientRect();
-            const hAfter = Math.max(160, Math.min(820, Math.ceil(rectAfter.height || shell.offsetHeight || targetHeight) + 2));
-            if (Math.abs(hAfter - lastAppliedHeight) > 2) {
-              lastAppliedHeight = hAfter;
-              const h2 = await tauriInvoke("set_hud_size", { width: targetWidth, height: hAfter });
-              if (h2 === null && !window.opener) {
-                try {
-                  await fetch("/api/hud/native", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ action: "resize", width: targetWidth, height: hAfter })
-                  });
-                } catch {}
-              }
+          await setWindowSize(targetWidth, targetHeight);
+          setTimeout(() => {
+            if (morphing || tip.grown) return;
+            const settled = windowHeightFor(measuredCardHeight());
+            if (Math.abs(settled - lastAppliedHeight) > 2) {
+              lastAppliedHeight = settled;
+              setWindowSize(targetWidth, settled);
             }
           }, 45);
         }
 
-        function applyMini(forceResize = false) {
-          root.classList.toggle("is-mini", isMini);
-          const btn = $("hud-mini-btn");
-          if (btn) {
-            btn.setAttribute("aria-pressed", String(isMini));
-            btn.setAttribute("aria-label", isMini ? "Expand HUD" : "Mini HUD");
-          }
-          syncHudWindowSize(forceResize);
+        function growWindowForTip(bottom) {
+          const height = Math.min(820, Math.ceil(bottom));
+          if (height <= window.innerHeight) return;
+          tip.grown = true;
+          clearTimeout(tip.restoreTimer);
+          setWindowSize(lastAppliedWidth || hudWidth(), height);
         }
-        applyMini(true);
-        $("hud-mini-btn").addEventListener("click", () => {
-          isMini = !isMini;
-          try { localStorage.setItem("burnrate:hud-mini", isMini ? "1" : "0"); } catch {}
+
+        function paintMiniButton() {
+          const btn = $("hud-mini-btn");
+          btn.setAttribute("aria-pressed", String(isMini));
+          btn.setAttribute("aria-label", isMini ? "Expand HUD" : "Collapse HUD");
+        }
+        paintMiniButton();
+        syncHudWindowSize(true);
+
+        // Collapse/expand: the content dissolves, the card glides to its new
+        // size with the next layout laid out at its final width (so nothing
+        // reflows mid-flight), then the content settles in. A growing card
+        // gets its window first; a shrinking one gives it back at the end.
+        const MORPH = {fadeOut: 90, resize: 300, fadeIn: 220};
+        async function setMini(next) {
+          if (morphing || next === isMini) return;
+          try { localStorage.setItem("burnrate:hud-mini", next ? "1" : "0"); } catch {}
           hideTip();
-          applyMini(true);
-        });
+          const shell = $("hud-shell");
+          const body = $("hud-body");
+          if (matchMedia("(prefers-reduced-motion: reduce)").matches || typeof shell.animate !== "function") {
+            isMini = next;
+            root.classList.toggle("is-mini", isMini);
+            paintMiniButton();
+            syncHudWindowSize(true);
+            return;
+          }
+          morphing = true;
+          try {
+            const from = shell.getBoundingClientRect();
+            shell.classList.add("morphing");
+            shell.style.width = from.width + "px";
+            shell.style.height = from.height + "px";
+            await body.animate(
+              [{opacity: 1, transform: "none"}, {opacity: 0, transform: "scale(0.985)"}],
+              {duration: MORPH.fadeOut, easing: "cubic-bezier(.4, 0, 1, 1)", fill: "forwards"}
+            ).finished;
+
+            isMini = next;
+            root.classList.toggle("is-mini", isMini);
+            paintMiniButton();
+            const toWidth = hudWidth();
+            shell.style.width = toWidth + "px";
+            shell.style.height = "auto";
+            const toHeight = shell.getBoundingClientRect().height;
+            const box = getComputedStyle(shell);
+            const inset = ["paddingLeft", "paddingRight", "borderLeftWidth", "borderRightWidth"]
+              .reduce((sum, name) => sum + (parseFloat(box[name]) || 0), 0);
+            body.style.width = (toWidth - inset) + "px";
+            shell.style.width = from.width + "px";
+            shell.style.height = from.height + "px";
+
+            if (toWidth > from.width || toHeight > from.height) {
+              await setWindowSize(Math.max(toWidth, Math.ceil(from.width)), windowHeightFor(Math.max(toHeight, from.height)));
+            }
+            const resize = shell.animate(
+              [{width: from.width + "px", height: from.height + "px"}, {width: toWidth + "px", height: toHeight + "px"}],
+              {duration: MORPH.resize, easing: "cubic-bezier(.22, .8, .24, 1)"}
+            );
+            body.getAnimations().forEach(animation => animation.cancel());
+            const fadeIn = body.animate(
+              [{opacity: 0, transform: "translateY(4px)"}, {opacity: 1, transform: "none"}],
+              {duration: MORPH.fadeIn, delay: MORPH.resize * 0.2, easing: "cubic-bezier(.2, .7, .3, 1)", fill: "backwards"}
+            );
+            await Promise.all([resize.finished, fadeIn.finished]);
+          } catch {} finally {
+            shell.style.width = "";
+            shell.style.height = "";
+            body.style.width = "";
+            shell.classList.remove("morphing");
+            body.getAnimations().forEach(animation => animation.cancel());
+            morphing = false;
+            syncHudWindowSize(true);
+          }
+        }
+        $("hud-mini-btn").addEventListener("click", () => setMini(!isMini));
         $("hud-mini-bar").addEventListener("click", () => {
           const key = $("hud-mini-bar").dataset.providerKey || "";
           openToolInDashboard(key);
@@ -787,20 +1016,15 @@ HUD_HTML = r"""<!doctype html>
             const label = document.createElement("span");
             label.textContent = item.name || item.id;
             btn.append(dot, label);
-            const name = item.name || item.id;
-            let where;
-            if (item.id === "all") {
-              where = "Usage aggregated across every connected computer.";
-            } else if (item.isLocal || item.id === "local") {
-              where = "This computer.";
-            } else {
+            labelTip(btn, () => {
+              if (item.id === "all") return "Every computer combined";
+              if (item.isLocal || item.id === "local") return "This computer";
               const seen = relTime(item.lastSeenAt);
-              where = "Paired spoke" + (seen ? " · last seen " + seen : "");
-            }
-            btn.dataset.tip =
-              '<b class="tip-title">' + esc(name) + "</b>" + tipRow(esc(where));
+              return "Paired computer" + (seen ? " · seen " + seen : "");
+            });
             btn.addEventListener("click", () => {
               selectedMachine = item.id;
+              windowTokens = {};
               refresh();
               refreshUsage();
               refreshMachines();
@@ -850,38 +1074,41 @@ HUD_HTML = r"""<!doctype html>
           return date.toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"});
         }
 
-        function statTips(nav, totals) {
-          const burn = nav.burnRatePerDay;
-          $("hud-stat-burn").dataset.tip =
-            '<b class="tip-title">Avg burn rate</b>' +
-            tipRow(burn == null ? null : esc(usd(burn) + " per day"), "accent") +
-            '<span class="sep"></span>' +
-            tipRow("Reference usage value per day, averaged over the last 7 complete days. Today is excluded; derived providers are priced at published rates.");
-
-          const today = nav.todayUsd;
-          const coverage = nav.todayComplete === false ? "partial — some usage is unpriced" : "complete";
-          $("hud-stat-today").dataset.tip =
-            '<b class="tip-title">API spend today</b>' +
-            tipRow(today == null ? null : esc(usd2(today) + " so far"), "accent") +
-            '<span class="sep"></span>' +
-            tipRow("Reference usage value since local midnight. Not a bill; provider-reported charges appear only when exact.") +
-            tipRow(esc("Coverage: " + coverage + "."));
-
-          const cache = totals.cacheReusePct;
-          $("hud-stat-cache").dataset.tip =
-            '<b class="tip-title">Cache hit rate</b>' +
-            tipRow(cache == null ? null : esc(Math.round(Number(cache)) + "% of prompt tokens were cache reads"), "accent") +
-            '<span class="sep"></span>' +
-            tipRow("Cache-read input ÷ all prompt tokens (reads + fresh input + cache writes), rolling 24h. Unclassified usage is excluded, never estimated.");
-
-          const todayTokens = nav.todayTokens ?? 0;
-          const avg = nav.tokensAvgPerDay;
-          $("hud-stat-tokens").dataset.tip =
-            '<b class="tip-title">Tokens used today</b>' +
-            tipRow(esc(tok(todayTokens) + " tokens since local midnight.")) +
-            (avg == null ? "" : '<span class="sep"></span>' +
-              tipRow(esc("7-day average: ≈ " + tok(avg) + " tokens/day"), "accent"));
-        }
+        // Stat tips read the latest usage response when shown.
+        let usageView = {nav: {}, totals: {}, importedAt: null};
+        const importedFoot = () => {
+          const imported = relTime(usageView.importedAt);
+          return imported ? "Usage imported " + imported : "";
+        };
+        setTip($("hud-stat-today"), () => {
+          const nav = usageView.nav;
+          return T.head("API-rate value", "today") +
+            T.hero(usd2(nav.todayUsd), "", "since local midnight") +
+            T.line("What today's usage would cost at published API rates. Not a bill.", "dim") +
+            (nav.todayComplete === false && nav.todayUsd != null ? T.line("Partial: some usage has no price yet.", "tight") : "") +
+            T.foot(importedFoot());
+        });
+        setTip($("hud-stat-burn"), () => {
+          const burn = usageView.nav.burnRatePerDay;
+          return T.head("Burn rate", "7-day average") +
+            T.hero(burn == null ? "—" : usd(burn), "", "per day") +
+            T.line("Average API-rate value over the last 7 full days. Today is not counted.", "dim") +
+            T.foot(importedFoot());
+        });
+        setTip($("hud-stat-cache"), () => {
+          const cache = usageView.totals.cacheReusePct;
+          return T.head("Cache hit", "last 24 hours") +
+            T.hero(cache == null ? "—" : Math.round(Number(cache)) + "%", "", "of prompt tokens") +
+            T.line("Prompt tokens served from cache instead of processed fresh.", "dim") +
+            T.foot(importedFoot());
+        });
+        setTip($("hud-stat-tokens"), () => {
+          const nav = usageView.nav;
+          return T.head("Tokens", "today") +
+            T.hero(tok1(nav.todayTokens ?? 0), "", "since local midnight") +
+            T.kv([nav.tokensAvgPerDay == null ? null : ["7-day average", tok1(nav.tokensAvgPerDay) + " / day"]]) +
+            T.foot(importedFoot());
+        });
 
         const shortNames = {
           codex: "Codex",
@@ -981,48 +1208,87 @@ HUD_HTML = r"""<!doctype html>
           return Math.max(...finite);
         };
 
-        function windowTip(q) {
-          const when = resetWhen(q.resetsAt);
-          const until = resetIn(q.resetsAt);
-          const elapsed = windowElapsedPct(q);
+        // Tokens burned inside each plan window, from the usage read and
+        // scoped to the selected computer like every other usage figure.
+        let windowTokens = {};
+        const burnFor = (group, q) => {
+          const lane = (windowTokens[group.key] || {})[q.limitKey];
+          return lane && Number.isFinite(Number(lane.tokens)) ? lane : null;
+        };
+
+        function windowTitle(key, label) {
+          const name = windowName(key, label);
+          const scoped = /^(Gemini|Other) (.+)$/.exec(name);
+          const win = scoped ? scoped[2] : name;
+          const text = {"5h": "5-hour window", "Week": "Weekly window", "Wk": "Weekly window", "Month": "Monthly window"}[win] || win;
+          return scoped ? scoped[1] + " · " + text.toLowerCase() : text;
+        }
+
+        function modelList(today) {
+          const models = Array.isArray(today.models) ? today.models : [];
+          if (!models.length) return T.line("Nothing yet since midnight.", "dim");
+          const total = Number(today.tokens) || models.reduce((sum, m) => sum + Number(m.tokens || 0), 0) || 1;
+          const items = models.slice(0, 4).map(m =>
+            "<li><span>" + esc(m.name) + "</span><b>" + esc(tok1(m.tokens)) + '</b><i style="--share:' +
+            Math.min(100, Number(m.tokens || 0) / total * 100).toFixed(1) + '%"></i></li>');
+          const rest = models.slice(4);
+          if (rest.length) {
+            items.push('<li class="more"><span>' + esc(rest.length === 1 ? "1 more model" : rest.length + " more models") + "</span><b>" +
+              esc(tok1(rest.reduce((sum, m) => sum + Number(m.tokens || 0), 0))) + "</b></li>");
+          }
+          return '<ul class="tt-models">' + items.join("") + "</ul>";
+        }
+
+        function windowTip(group, q) {
           const f = q.forecast || {};
           const fstate = f.state || "";
-          const usageRows = [];
+          let html = T.head(group.providerName || group.name, windowTitle(group.key, q.label));
           if (q.payg) {
-            const balance = q.unit === "usd" && q.used != null
-              ? "Balance " + usd2(q.used)
-              : (q.used != null && qtyText(q.used, q.unit) ? qtyText(q.used, q.unit) + " remaining" : null);
-            if (balance) usageRows.push(tipRow(esc(balance + " · pay-as-you-go"), "accent"));
-          } else if (q.allowance != null && q.allowance > 0 && q.used != null) {
-            usageRows.push(tipRow(esc(qtyText(q.used, q.unit) + " of " + qtyText(q.allowance, q.unit) + " used"), "accent"));
-          } else if (q.used != null && (q.unit === "pct" || q.unit === "percent")) {
-            usageRows.push(tipRow(esc(Math.round(q.used) + "% of the window cap used"), "accent"));
+            const balance = q.unit === "usd" && q.used != null ? usd2(q.used) : (q.used != null ? qtyText(q.used, q.unit) : null);
+            html += T.hero(balance || "—", "", balance ? "left · pay as you go" : "pay as you go");
+          } else if (q.pct != null) {
+            const until = resetIn(q.resetsAt);
+            html += T.hero(pctText(q.pct), until ? (until === "now" ? "resets now" : "resets in " + until) : "", resetWhen(q.resetsAt));
+          } else {
+            html += T.hero("—", "", "no reading");
           }
-          const resetRows = [];
-          if (when) resetRows.push(tipRow(esc("Resets " + when + " · in " + (until || "under a minute"))));
-          if (elapsed != null && q.pct != null && !q.payg) {
-            const delta = Math.round(q.pct - elapsed);
-            const paceCls = delta >= 15 ? "dry" : delta >= 5 ? "tight" : "safe";
-            const paceText = delta > 2
-              ? "Pace: +" + delta + "% ahead of even window pace (" + Math.round(elapsed) + "% elapsed)"
-              : delta < -2
-                ? "Pace: " + Math.abs(delta) + "% under safe even pace (" + Math.round(elapsed) + "% elapsed)"
-                : "Pace: right on even window pace (" + Math.round(elapsed) + "% elapsed)";
-            resetRows.push(tipRow(esc(paceText), paceCls));
+
+          const rows = [];
+          if (!q.payg && q.allowance != null && q.allowance > 0 && q.used != null) {
+            rows.push(["Used", qtyText(q.used, q.unit) + " of " + qtyText(q.allowance, q.unit)]);
           }
+          const lane = q.payg ? null : burnFor(group, q);
+          if (lane) {
+            const tokens = Number(lane.tokens);
+            rows.push(["Burned", tokens ? tok1(tokens) + " tokens" : "none recorded", "",
+              tokens ? tok1(lane.input) + " in · " + tok1(lane.output) + " out · " + tok1(lane.cached) + " cached" : ""]);
+          }
+          // One pace verdict: a run-dry forecast from the recent burn wins
+          // over the whole-window average, which it would otherwise contradict.
+          const elapsed = windowElapsedPct(q);
           if (fstate === "tight" || fstate === "dry") {
-            if (f.line) resetRows.push(tipRow(esc(f.line), fstate));
-            if (f.burnPctPerHour != null) resetRows.push(tipRow(esc("+" + (Math.round(f.burnPctPerHour * 10) / 10).toFixed(1) + "%/hr recent burn pace")));
-          } else if (fstate === "stale") {
-            resetRows.push(tipRow("Pace unknown — the newest quota sample is stale."));
+            const [when, before] = String(f.line || "").replace(/^pace\s*→\s*/, "").replace(/\)$/, "").split(" (");
+            const lately = f.burnPctPerHour != null ? "+" + (Math.round(f.burnPctPerHour * 10) / 10).toFixed(1) + "%/h lately" : "";
+            rows.push(["Pace", when || "running dry", fstate, [before, lately].filter(Boolean).join(" · ")]);
+          } else if (elapsed != null && q.pct != null && !q.payg) {
+            const delta = Math.round(q.pct - elapsed);
+            rows.push(["Pace",
+              delta > 2 ? delta + "% ahead of even" : delta < -2 ? Math.abs(delta) + "% under even" : "on even pace",
+              delta >= 15 ? "dry" : delta >= 5 ? "tight" : "safe",
+              Math.round(elapsed) + "% of the window gone"]);
+          } else if (fstate === "stale" && q.pct != null) {
+            rows.push(["Pace", "unknown", "", "the newest sample is stale"]);
           }
-          const rowAge = relTime(q.polledAt);
-          if (q.held) resetRows.push(tipRow(esc("Holding the last reading" + (rowAge ? " from " + rowAge : "") + ". The newest poll returned no value."), "tight"));
-          else if (rowAge) resetRows.push(tipRow(esc("Polled " + rowAge)));
-          if (q.pct == null && !q.payg && q.source) resetRows.push(tipRow(esc(q.source)));
-          return '<b class="tip-title">' + esc(q.title) + "</b>" +
-            usageRows.join("") +
-            (resetRows.length ? '<span class="sep"></span>' + resetRows.join("") : "");
+          html += T.kv(rows);
+          const detail = String(q.label || "").split(" · ").slice(1).join(" · ");
+          if (q.pct == null && !q.payg && detail) html += T.line(detail, "dim");
+
+          if (lane && lane.today) html += T.sep + T.section("Today by model", tok1(lane.today.tokens)) + modelList(lane.today);
+
+          const age = relTime(q.polledAt);
+          if (q.held) html += T.line("Showing the reading from " + (age || "earlier") + "; the newest poll came back empty.", "tight");
+          else html += T.foot(age ? "Polled " + age : "");
+          return html;
         }
 
         function windowRow(group, q, isPeak) {
@@ -1064,7 +1330,7 @@ HUD_HTML = r"""<!doctype html>
           eta.className = "win-reset";
           eta.textContent = resetIn(q.resetsAt);
           cell.append(label, meter, value, eta);
-          cell.dataset.tip = windowTip(q);
+          setTip(cell, () => windowTip(group, q));
           return cell;
         }
 
@@ -1072,9 +1338,7 @@ HUD_HTML = r"""<!doctype html>
         function renderPlans(groups) {
           const badge = $("hud-quota-badge");
           badge.textContent = groups.length ? String(groups.length) : "—";
-          badge.dataset.tip =
-            '<b class="tip-title">Plans</b>' +
-            tipRow(esc(groups.length ? groups.length + (groups.length === 1 ? " subscription tracked" : " subscriptions tracked") + ", sorted by what runs out first." : "No subscription usage yet."));
+          labelTip(badge, groups.length ? (groups.length === 1 ? "1 plan" : groups.length + " plans") + " · tightest first" : "No plans yet");
           const quotasRoot = $("hud-quotas");
           if (!groups.length) {
             quotasRoot.innerHTML = '<p class="hud-empty">No subscription usage yet.</p>';
@@ -1118,10 +1382,14 @@ HUD_HTML = r"""<!doctype html>
             const ageLabel = relTime(group.polledAt);
             em.textContent = [planLabel, ageLabel].filter(Boolean).join(" · ");
             head.append(mark, name, em);
-            head.dataset.tip =
-              '<b class="tip-title">' + esc(group.providerName) + "</b>" +
-              tipRow(esc([group.plan, ageLabel ? "polled " + ageLabel : "",
-                dashboardOn ? "click to open tool detail" : isMini ? "click to show every window" : ""].filter(Boolean).join(" · ")));
+            // The full row already shows plan and age; the tip earns its
+            // place only where that text is hidden or a click does something.
+            setTip(head, () => {
+              if (!isMini && !dashboardOn) return "";
+              const age = relTime(group.polledAt);
+              return T.head(group.providerName, planLabel) +
+                T.foot([age ? "Polled " + age : "", dashboardOn ? "Click for tool detail" : "Click to show every window"].filter(Boolean).join(" · "));
+            });
             const windows = document.createElement("div");
             windows.className = "windows";
             const peak = group.rows.reduce((best, row) => (row.pct != null && (best == null || row.pct > best.pct) ? row : best), null) || group.rows[0];
@@ -1167,8 +1435,7 @@ HUD_HTML = r"""<!doctype html>
             const modelLower = String(agent.modelKey || "").toLowerCase();
             const inferredTool = modelLower.includes("claude") ? "claude-code" : modelLower.includes("gpt") || modelLower.includes("codex") ? "codex" : modelLower.includes("grok") ? "grok" : modelLower.includes("muse") ? "muse" : "";
             const whereLabel = [agent.modelKey || "live", agent.machineName || ""].filter(Boolean).join(" · ");
-            row.dataset.tip = '<b class="tip-title">' + esc(shortName) + '</b>' + tipRow(esc(whereLabel), "accent") +
-              (dashboardOn ? tipRow("Click to inspect tool in dashboard") : "");
+            setTip(row, () => T.head(shortName) + T.line(whereLabel, "dim") + (dashboardOn ? T.foot("Click to open it in the dashboard") : ""));
             if (dashboardOn) row.addEventListener("click", () => openToolInDashboard(inferredTool));
             return row;
           }));
@@ -1196,13 +1463,10 @@ HUD_HTML = r"""<!doctype html>
           setStat("hud-mini-today", usd2(today));
           setStat("hud-cache", cache == null ? "—" : Math.round(Number(cache)) + "%");
           setStat("hud-tokens", tok(nav.todayTokens ?? 0));
-          statTips(nav, totals);
-          const imported = relTime(data.historyUpdatedAt);
-          for (const id of ["hud-stat-today", "hud-stat-cache", "hud-stat-tokens", "hud-stat-burn"]) {
-            const node = $(id);
-            if (node) node.dataset.tip += '<span class="sep"></span>' +
-              tipRow(esc("Recorded usage" + (imported ? " · imported " + imported : "") + ". Usage refreshes in the background while the HUD is open."));
-          }
+          usageView = {nav: {...nav, todayUsd: today, burnRatePerDay: burn}, totals: {cacheReusePct: cache}, importedAt: data.historyUpdatedAt};
+          // An older hub sends no window tokens; meter tips then omit them.
+          if (data.windowTokens && typeof data.windowTokens === "object") windowTokens = data.windowTokens;
+          refreshTip();
         }
 
         function renderSummary(data) {
@@ -1230,6 +1494,7 @@ HUD_HTML = r"""<!doctype html>
           renderPlans(groups);
           $("hud-updated-foot").textContent = "Updated " + new Date().toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
           syncHudWindowSize();
+          refreshTip();
         }
 
         let livePending = null, liveAgain = false, usagePending = false, machinesPending = false;
@@ -1276,7 +1541,7 @@ HUD_HTML = r"""<!doctype html>
           machinesPending = true;
           try {
             const res = await fetch("/api/machines", {cache: "no-store"});
-            if (res.ok) renderMachines((await res.json()).machines || []);
+            if (res.ok) { renderMachines((await res.json()).machines || []); refreshTip(); }
           } catch {} finally { machinesPending = false; }
         }
 
@@ -1291,6 +1556,7 @@ HUD_HTML = r"""<!doctype html>
           if (n < 172800) return Math.round(n / 3600) + "h";
           return Math.round(n / 86400) + "d";
         };
+        let statusTip = "";
         function paintStatus() {
           const pill = $("hud-status-pill");
           const miniAlert = $("hud-mini-alert");
@@ -1304,39 +1570,41 @@ HUD_HTML = r"""<!doctype html>
           let label = summary === "offline" ? "OFFLINE" : summary === "stale" ? "STALE" : summary === "error" ? "ERR" : "LIVE";
           let title = summary === "offline" ? "Offline" : summary === "stale" ? "Stale" : summary === "error" ? "Ingest failed" : "Live ingest";
           let body = summary === "offline"
-            ? tipRow(esc("The local BURNRATE service is unreachable."))
+            ? T.line("The local BURNRATE service is unreachable.", "dim")
             : summary === "stale"
-              ? tipRow(esc("Ingest has not refreshed on schedule" + (statusView.failing ? " · " + statusView.failing : "") + "."))
+              ? T.line("Ingest has not refreshed on schedule" + (statusView.failing ? ": " + statusView.failing : "") + ".", "dim")
               : summary === "error"
-                ? tipRow(esc("A source failed to collect" + (statusView.failing ? ": " + statusView.failing : "") + "."))
-                : lead ? "" : tipRow(esc("Every source on this computer is collecting on schedule."));
+                ? T.line("A source failed to collect" + (statusView.failing ? ": " + statusView.failing : "") + ".", "dim")
+                : lead ? "" : T.line("Every source on this computer is collecting on schedule.", "dim");
           if (state === "live" && lead) {
             state = fresh.status === "alarm" ? "error" : "stale";
             label = (lead.short + " " + lead.state).toUpperCase() + (issues.length > 1 ? " +" + (issues.length - 1) : "");
             title = issues.length === 1 ? "1 source needs attention" : issues.length + " sources need attention";
           }
+          let foot = "";
           if (!statusView.offline) {
-            issues.forEach(item => {
+            body += T.kv(issues.map(item => {
               const age = ago(item.ageSeconds);
-              body += tipRow(esc(item.short + " · " + item.state + (age ? " " + age : "")), item.severity === "alarm" ? "dry" : "tight") +
-                tipRow(esc(item.detail));
-            });
-            if (notes.length) body += '<span class="sep"></span>' + notes.map(item => tipRow(esc(item.detail))).join("");
+              return [item.short, item.state + (age ? " " + age : ""), item.severity === "alarm" ? "dry" : "tight", item.detail];
+            }));
+            if (notes.length) body += T.sep + notes.map(item => T.line(item.detail, "dim")).join("");
             const beat = fresh && fresh.ingest;
             if (beat && beat.lastPassSeconds != null) {
-              body += '<span class="sep"></span>' + tipRow(esc("Last collection pass " + beat.lastPassSeconds + "s, " + (ago(beat.lastPassAgeSeconds) || "0s") + " ago."));
+              foot = "Last collection pass " + beat.lastPassSeconds + "s, " + (ago(beat.lastPassAgeSeconds) || "0s") + " ago";
             }
           }
           pill.dataset.state = state;
           $("hud-status-text").textContent = label;
-          pill.dataset.tip = '<b class="tip-title">' + esc(title) + "</b>" + body;
+          statusTip = T.head(title) + body + T.foot(foot);
           miniAlert.hidden = state === "live";
           miniAlert.dataset.state = state;
           miniAlert.textContent = state === "live" ? "" : "! " + (lead && summary !== "offline" && summary !== "stale" && summary !== "error"
             ? lead.short.toUpperCase() + (issues.length > 1 ? " +" + (issues.length - 1) : "")
             : label);
-          miniAlert.dataset.tip = pill.dataset.tip;
+          refreshTip();
         }
+        setTip($("hud-status-pill"), () => statusTip);
+        setTip($("hud-mini-alert"), () => statusTip);
         async function refreshFreshness() {
           try {
             const res = await fetch("/api/spend/freshness?view=hud", {cache: "no-store"});

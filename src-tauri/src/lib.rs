@@ -221,7 +221,11 @@ fn enforce_win32_topmost(window: &tauri::WebviewWindow, pinned: bool) {
         const WS_EX_APPWINDOW: u32 = 0x0004_0000;
         const WS_EX_NOREDIRECTIONBITMAP: u32 = 0x0020_0000;
         const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
-        const DWMWCP_ROUND: i32 = 2;
+        const DWMWA_BORDER_COLOR: u32 = 34;
+        // The window is transparent and the page draws a rounded glass card,
+        // so DWM must neither clip the corners nor outline the window rect.
+        const DWMWCP_DONOTROUND: i32 = 1;
+        const DWMWA_COLOR_NONE: i32 = 0xFFFF_FFFEu32 as i32;
         const HWND_TOPMOST: isize = -1;
         const HWND_NOTOPMOST: isize = -2;
         const SWP_NOSIZE: u32 = 0x0001;
@@ -263,11 +267,18 @@ fn enforce_win32_topmost(window: &tauri::WebviewWindow, pinned: bool) {
                 SetWindowLongW(h, GWL_EXSTYLE, new_ex as i32);
                 needs_frame_refresh = true;
             }
-            let corner_pref: i32 = DWMWCP_ROUND;
+            let corner_pref: i32 = DWMWCP_DONOTROUND;
             DwmSetWindowAttribute(
                 h,
                 DWMWA_WINDOW_CORNER_PREFERENCE,
                 &corner_pref as *const i32,
+                std::mem::size_of::<i32>() as u32,
+            );
+            let border_color: i32 = DWMWA_COLOR_NONE;
+            DwmSetWindowAttribute(
+                h,
+                DWMWA_BORDER_COLOR,
+                &border_color as *const i32,
                 std::mem::size_of::<i32>() as u32,
             );
 
