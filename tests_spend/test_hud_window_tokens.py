@@ -58,6 +58,8 @@ def test_meter_windows_carry_their_burned_tokens_and_todays_models(tmp_path):
         quota(connection, "antigravity", "gemini-weekly", NOW + timedelta(days=2))
         quota(connection, "antigravity", "3p-weekly", NOW + timedelta(days=2))
         quota(connection, "grok", "weekly", NOW + timedelta(days=2))
+        # A window that already reset has no burn until its next reading.
+        quota(connection, "muse", "5h", NOW - timedelta(minutes=10))
 
         event(connection, "c1", "claude-code", "claude-opus-5-5", NOW - timedelta(hours=1),
               fresh=400, cached=600, writes=100, output=50)
@@ -94,6 +96,7 @@ def test_meter_windows_carry_their_burned_tokens_and_todays_models(tmp_path):
     assert tokens["antigravity"]["gemini-weekly"]["today"]["models"] == [{"name": "Gemini 3.8 Flash", "tokens": 40}]
     assert tokens["antigravity"]["3p-weekly"]["today"]["models"] == [{"name": "Claude 4.6", "tokens": 60}]
     assert tokens["grok"]["weekly"]["tokens"] == 75
+    assert "muse" not in tokens
 
 
 def test_window_starts_follow_each_window_length():

@@ -149,58 +149,75 @@ def window_burn(connection, capacity: list[dict], *, now: datetime, today_start:
         for row in card.get("rows") or []:
             limit_key = row.get("limitKey") or ""
             start = _window_start(limit_key, row.get("resetsAt"))
-            if start is not None and start <= now:
+            if start is not None and start <= now < aggregate._parse(row["resetsAt"]):
                 lanes.append((provider_key, limit_key, start))
     if not lanes:
         return {}
     since = min(min(start for *_, start in lanes), today_start)
-    fingerprint = tuple(
+    tools = tuple(sorted({tool for provider_key, *_ in lanes for tool in BURN_TOOL_KEYS[provider_key]}))
+    # Usage before the last full hour rarely changes: reuse it until its own
+    # fingerprint moves (a late spoke sync, a backfill) and read only the
+    # latest hour or two on each poll.
+    cutoff = max(since, now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1))
+    key = (aggregate._connection_identity(connection), machine, tools, since, cutoff,
+           _usage_fingerprint(connection, since, cutoff))
+    settled = aggregate._memo("hud_burn_rows", key, lambda: _burn_rows(connection, tools, since, cutoff, machine))
+    recent = _burn_rows(connection, tools, cutoff, now, machine)
+    return _burn_lanes(lanes, {tool: settled[tool] + recent[tool] for tool in tools}, today_start)
+
+
+def _usage_fingerprint(connection, start: datetime, end: datetime) -> tuple:
+    return tuple(
         tuple(connection.execute(
             f"SELECT COUNT(*), MAX(id), MAX(ingested_at) FROM {table} "
-            "WHERE occurred_epoch_us IS NOT NULL AND occurred_epoch_us >= ?",
-            (epoch_micros(since),),
+            "WHERE occurred_epoch_us IS NOT NULL AND occurred_epoch_us >= ? AND occurred_epoch_us < ?",
+            (epoch_micros(start), epoch_micros(end)),
         ).fetchone())
         for table in ("usage_events", "unpriced_usage_events")
     )
-    key = (aggregate._connection_identity(connection), machine, tuple(lanes), today_start, fingerprint)
-    return aggregate._memo(
-        "hud_window_burn", key, lambda: _window_burn_uncached(connection, lanes, since, now, today_start, machine)
-    )
 
 
-def _window_burn_uncached(connection, lanes, since, now, today_start, machine) -> dict:
-    tools = {tool for provider_key, *_ in lanes for tool in BURN_TOOL_KEYS[provider_key]}
-    events: dict[str, list[tuple]] = {}
-    for tool in sorted(tools):
-        rows = [*aggregate._load_events(connection, since, now, tool, machine),
-                *aggregate._load_unpriced_events(connection, since, now, tool, machine)]
-        events[tool] = [
-            (int(row["occurred_epoch_us"]), str(row.get("model_key") or "unknown"),
-             int(row.get("cached_input_tokens") or 0), aggregate._fresh(row),
-             int(row.get("cache_write_tokens") or 0), int(row.get("output_tokens") or 0))
-            for row in rows
+def _burn_rows(connection, tools, start: datetime, end: datetime, machine: str) -> dict[str, list[tuple]]:
+    """(epoch_us, model, cache reads, fresh input + cache writes, output) per tool."""
+    rows: dict[str, list[tuple]] = {}
+    for tool in tools:
+        events = [*aggregate._load_events(connection, start, end, tool, machine),
+                  *aggregate._load_unpriced_events(connection, start, end, tool, machine)]
+        rows[tool] = [
+            (int(event["occurred_epoch_us"]), str(event.get("model_key") or "unknown"),
+             int(event.get("cached_input_tokens") or 0),
+             aggregate._fresh(event) + int(event.get("cache_write_tokens") or 0),
+             int(event.get("output_tokens") or 0))
+            for event in events
         ]
+    return rows
+
+
+def _burn_lanes(lanes, rows: dict[str, list[tuple]], today_start: datetime) -> dict:
     today_us = epoch_micros(today_start)
     result: dict[str, dict] = {}
     for provider_key, limit_key, start in lanes:
         takes = _lane_takes(provider_key, limit_key)
         start_us = epoch_micros(start)
         cached = fresh = output = 0
-        today_models: dict[str, int] = defaultdict(int)
+        today_by_model: dict[str, int] = defaultdict(int)
         for tool in BURN_TOOL_KEYS[provider_key]:
-            for when, model, cache_read, new_input, cache_write, out in events[tool]:
+            for when, model, cache_read, new_input, out in rows[tool]:
                 if not takes(model):
                     continue
                 if when >= start_us:
                     cached += cache_read
-                    fresh += new_input + cache_write
+                    fresh += new_input
                     output += out
                 if when >= today_us:
-                    today_models[_model_name(provider_key, model)] += cache_read + new_input + cache_write + out
+                    today_by_model[model] += cache_read + new_input + out
         lane = {"since": aggregate._iso(start), "tokens": cached + fresh + output,
                 "input": fresh, "cached": cached, "output": output}
         if limit_key.rsplit("-", 1)[-1] == "weekly":
-            models = sorted(((name, tokens) for name, tokens in today_models.items() if tokens > 0),
+            named: dict[str, int] = defaultdict(int)
+            for model, tokens in today_by_model.items():
+                named[_model_name(provider_key, model)] += tokens
+            models = sorted(((name, tokens) for name, tokens in named.items() if tokens > 0),
                             key=lambda item: (-item[1], item[0]))
             lane["today"] = {"tokens": sum(tokens for _, tokens in models),
                              "models": [{"name": name, "tokens": tokens} for name, tokens in models]}
