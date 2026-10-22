@@ -123,6 +123,7 @@ def test_poll_cadences_match_the_documented_rate_table() -> None:
         "claude-code": (90, 300),
         "opencode": (30, 300),
         "muse": (30, 300),
+        "opencode-go": (30, 300),
         "grok": (30, 300),
         "antigravity": (90, 300),
     }

@@ -9,6 +9,19 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+## [0.3.0-beta.16] - 2026-10-22
+
+- Add OpenCode Go. OpenCode messages served by Go (`providerID=opencode-go`)
+  are now their own tool instead of counting toward the Z.AI Coding Plan, with
+  reasoning billed as output, and are valued with a new `pricing/opencode-go.yaml`
+  card built from the official Go rates (it reproduces OpenCode's recorded Go
+  cost). A new OpenCode Go card shows the 5-hour, weekly and monthly limits from
+  OpenCode's usage endpoint, using the Console key OpenCode already stores
+  (consent `BURNRATE_ENABLE_OPENCODE_GO_QUOTA`, on by default; no card without a
+  Go subscription). OpenCode Go and Go Plus are plan presets, and the HUD shows
+  a pace tick for monthly windows.
+- Read the Z.AI Coding Plan key from OpenCode 2's credential store when the
+  OpenCode 1 `auth.json` has none.
 - Keep usage collection active while the HUD is open, including on paired
   spokes and hubs, so spend and tokens continue updating after midnight.
   Quota meters still load independently of collection and dashboard summaries.

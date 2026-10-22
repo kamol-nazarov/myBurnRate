@@ -1,0 +1,242 @@
+# Derived pricing for OpenCode Go models from the official OpenCode Go page.
+# https://opencode.ai/docs/go/
+#
+# Go and Go Plus bill every request in dollars at these per-token rates against
+# 5-hour, weekly and monthly allowances. A cached write of "-" is not a billed
+# class (0). OpenCode reports reasoning separately from output; the OpenCode
+# reader adds it to output, which is how the recorded Go cost reproduces.
+#
+# DeepSeek V4.1 Flash and V4 Pro bill double during peak hours (01:00-04:00 and
+# 06:00-10:00 UTC, Monday to Friday). A card cannot vary by hour of day, so
+# they use the off-peak rates that apply to every other hour.
+#
+# effective_from is the date this table was read from the official page; Go
+# usage before it stays unpriced rather than back-dated.
+provider: opencode-go
+exactness: derived
+prices:
+  - model_key: opencode-go:glm-5.3-flash
+    input_per_mtok: 0.15
+    cached_input_per_mtok: 0.03
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 0.50
+    effective_from: 2026-10-22T00:00:00Z
+    source_url: https://opencode.ai/docs/go/
+  - model_key: opencode-go:glm-5.3
+    input_per_mtok: 1.40
+    cached_input_per_mtok: 0.26
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 4.40
+    effective_from: 2026-10-22T00:00:00Z
+    source_url: https://opencode.ai/docs/go/
+  - model_key: opencode-go:glm-5.2
+    input_per_mtok: 1.40
+    cached_input_per_mtok: 0.26
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 4.40
+    effective_from: 2026-10-22T00:00:00Z
+    source_url: https://opencode.ai/docs/go/
+  - model_key: opencode-go:kimi-k3
+    input_per_mtok: 3.00
+    cached_input_per_mtok: 0.30
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 15.00
+    effective_from: 2026-10-22T00:00:00Z
+    source_url: https://opencode.ai/docs/go/
+  - model_key: opencode-go:kimi-k2.7-code
+    input_per_mtok: 0.95
+    cached_input_per_mtok: 0.19
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 4.00
+    effective_from: 2026-10-22T00:00:00Z
+    source_url: https://opencode.ai/docs/go/
+  - model_key: opencode-go:longcat-2.0
+    input_per_mtok: 0.30
+    cached_input_per_mtok: 0.006
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 1.20
+    effective_from: 2026-10-22T00:00:00Z
+    source_url: https://opencode.ai/docs/go/
+  - model_key: opencode-go:longcat-2.5-preview-free
+    input_per_mtok: 0.00
+    cached_input_per_mtok: 0.00
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 0.00
+    effective_from: 2026-10-22T00:00:00Z
+    source_url: https://opencode.ai/docs/go/
+  - model_key: opencode-go:step-5-preview
+    input_per_mtok: 1.00
+    cached_input_per_mtok: 0.10
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 2.70
+    effective_from: 2026-10-22T00:00:00Z
+    source_url: https://opencode.ai/docs/go/
+  - model_key: opencode-go:beam-free
+    input_per_mtok: 0.00
+    cached_input_per_mtok: 0.00
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 0.00
+    effective_from: 2026-10-22T00:00:00Z
+    source_url: https://opencode.ai/docs/go/
+  - model_key: opencode-go:mimo-v2.6-flash
+    input_per_mtok: 0.14
+    cached_input_per_mtok: 0.0028
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 0.28
+    effective_from: 2026-10-22T00:00:00Z
+    source_url: https://opencode.ai/docs/go/
+  - model_key: opencode-go:mimo-v2.6-pro
+    input_per_mtok: 0.435
+    cached_input_per_mtok: 0.003625
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 0.87
+    effective_from: 2026-10-22T00:00:00Z
+    source_url: https://opencode.ai/docs/go/
+  - model_key: opencode-go:mimo-v2.5
+    input_per_mtok: 0.14
+    cached_input_per_mtok: 0.0028
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 0.28
+    effective_from: 2026-10-22T00:00:00Z
+    source_url: https://opencode.ai/docs/go/
+  - model_key: opencode-go:mimo-v2.5-pro
+    input_per_mtok: 0.435
+    cached_input_per_mtok: 0.003625
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 0.87
+    effective_from: 2026-10-22T00:00:00Z
+    source_url: https://opencode.ai/docs/go/
+  - model_key: opencode-go:minimax-m3.1-flash
+    input_per_mtok: 0.15
+    cached_input_per_mtok: 0.015
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 0.60
+    effective_from: 2026-10-22T00:00:00Z
+    source_url: https://opencode.ai/docs/go/
+  - model_key: opencode-go:minimax-m3
+    input_per_mtok: 0.30
+    cached_input_per_mtok: 0.06
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 1.20
+    effective_from: 2026-10-22T00:00:00Z
+    source_url: https://opencode.ai/docs/go/
+  - model_key: opencode-go:muse-spark-1.3-contributor
+    input_per_mtok: 0.10
+    cached_input_per_mtok: 0.002
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 0.20
+    effective_from: 2026-10-22T00:00:00Z
+    source_url: https://opencode.ai/docs/go/
+  - model_key: opencode-go:muse-spark-1.2-contributor
+    input_per_mtok: 0.10
+    cached_input_per_mtok: 0.002
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 0.20
+    effective_from: 2026-10-22T00:00:00Z
+    source_url: https://opencode.ai/docs/go/
+  - model_key: opencode-go:qwen3.8-max
+    input_per_mtok: 2.00
+    cached_input_per_mtok: 0.25
+    cache_write_per_mtok: 2.50
+    output_per_mtok: 6.00
+    effective_from: 2026-10-22T00:00:00Z
+    source_url: https://opencode.ai/docs/go/
+  - model_key: opencode-go:qwen3.8-flash
+    input_per_mtok: 0.15
+    cached_input_per_mtok: 0.016
+    cache_write_per_mtok: 0.20
+    output_per_mtok: 0.47
+    effective_from: 2026-10-22T00:00:00Z
+    source_url: https://opencode.ai/docs/go/
+  - model_key: opencode-go:qwen3.7-plus
+    # Above 256K prompt tokens every class is 3x.
+    input_per_mtok: 0.40
+    cached_input_per_mtok: 0.04
+    cache_write_per_mtok: 0.50
+    output_per_mtok: 1.60
+    long_context_threshold: 256000
+    long_input_multiplier: 3
+    long_output_multiplier: 3
+    effective_from: 2026-10-22T00:00:00Z
+    source_url: https://opencode.ai/docs/go/
+  - model_key: opencode-go:deepseek-v4.1-flash
+    # Off-peak rates; peak hours bill 2x (see header).
+    input_per_mtok: 0.15
+    cached_input_per_mtok: 0.003
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 0.60
+    effective_from: 2026-10-22T00:00:00Z
+    source_url: https://opencode.ai/docs/go/
+  - model_key: opencode-go:deepseek-v4-pro
+    # Off-peak rates; peak hours bill 2x (see header).
+    input_per_mtok: 0.66
+    cached_input_per_mtok: 0.022
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 1.98
+    effective_from: 2026-10-22T00:00:00Z
+    source_url: https://opencode.ai/docs/go/
+  - model_key: opencode-go:hy4-preview
+    input_per_mtok: 0.834
+    cached_input_per_mtok: 0.042
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 2.501
+    effective_from: 2026-10-22T00:00:00Z
+    source_url: https://opencode.ai/docs/go/
+  - model_key: opencode-go:hy3
+    input_per_mtok: 0.14
+    cached_input_per_mtok: 0.035
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 0.58
+    effective_from: 2026-10-22T00:00:00Z
+    source_url: https://opencode.ai/docs/go/
+  - model_key: opencode-go:grok-4.7
+    # Above 200K prompt tokens input-class and output are 2x.
+    input_per_mtok: 2.00
+    cached_input_per_mtok: 0.50
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 6.00
+    long_context_threshold: 200000
+    long_input_multiplier: 2
+    long_output_multiplier: 2
+    effective_from: 2026-10-22T00:00:00Z
+    source_url: https://opencode.ai/docs/go/
+  - model_key: opencode-go:gpt-6-luna
+    # Above 272K prompt tokens input-class is 2x and output 1.5x.
+    input_per_mtok: 0.10
+    cached_input_per_mtok: 0.01
+    cache_write_per_mtok: 0.125
+    output_per_mtok: 0.50
+    long_context_threshold: 272000
+    long_input_multiplier: 2
+    long_output_multiplier: 1.5
+    effective_from: 2026-10-22T00:00:00Z
+    source_url: https://opencode.ai/docs/go/
+  - model_key: opencode-go:gpt-5.6-luna
+    # Above 272K prompt tokens input-class is 2x and output 1.5x.
+    input_per_mtok: 0.20
+    cached_input_per_mtok: 0.02
+    cache_write_per_mtok: 0.25
+    output_per_mtok: 1.20
+    long_context_threshold: 272000
+    long_input_multiplier: 2
+    long_output_multiplier: 1.5
+    effective_from: 2026-10-22T00:00:00Z
+    source_url: https://opencode.ai/docs/go/
+  - model_key: opencode-go:claude-haiku-5-5
+    # Above 100K prompt tokens every class is 5x.
+    input_per_mtok: 0.10
+    cached_input_per_mtok: 0.01
+    cache_write_per_mtok: 0.125
+    output_per_mtok: 0.50
+    long_context_threshold: 100000
+    long_input_multiplier: 5
+    long_output_multiplier: 5
+    effective_from: 2026-10-22T00:00:00Z
+    source_url: https://opencode.ai/docs/go/
+  - model_key: opencode-go:gemini-4-argon-contributor
+    input_per_mtok: 4.00
+    cached_input_per_mtok: 0.20
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 20.00
+    effective_from: 2026-10-22T00:00:00Z
+    source_url: https://opencode.ai/docs/go/

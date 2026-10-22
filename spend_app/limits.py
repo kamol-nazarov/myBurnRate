@@ -77,10 +77,14 @@ OPENROUTER_ALLOWED_HOSTS = frozenset({"openrouter.ai"})
 CLAUDE_OAUTH_TOKEN_ALLOWED_HOSTS = frozenset({"platform.claude.com"})
 CLAUDE_OAUTH_USAGE_ALLOWED_HOSTS = frozenset({"api.anthropic.com"})
 ZAI_QUOTA_ALLOWED_HOSTS = frozenset({"api.z.ai"})
+OPENCODE_GO_ALLOWED_HOSTS = frozenset({"opencode.ai"})
 MUSE_QUOTA_ALLOWED_HOSTS = frozenset({"api.meta.ai"})
 ANTIGRAVITY_RPC_ALLOWED_HOSTS = frozenset({"127.0.0.1"})
 ZAI_QUOTA_URL = "https://api.z.ai/api/monitor/usage/quota/limit"
 MUSE_QUOTA_URL = "https://api.meta.ai/muse-code/key"
+# Undocumented; the same route OpenCode clients use for Go limits.
+OPENCODE_GO_USAGE_URL = "https://opencode.ai/zen/go/v1/usage"
+OPENCODE_CONSOLE_SERVER = "https://opencode.ai/console"
 
 
 def reset_activity_cache() -> None:
@@ -922,6 +926,8 @@ def _zai_limits_uncached() -> dict:
     except (OSError, json.JSONDecodeError):
         pass
     if not token:
+        token = _opencode_credential("zai-coding-plan")
+    if not token:
         zcode_config = Path.home() / ".zcode" / "v2" / "config.json"
         try:
             providers = json.loads(zcode_config.read_text(encoding="utf-8")).get("provider") or {}
@@ -991,6 +997,103 @@ def _zai_limits_uncached() -> dict:
         "observedAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "windows": windows,
         "detail": "Official Z.AI Coding Plan quota endpoint shared by OpenCode and ZCode.",
+    }
+
+
+def _opencode_credential(integration_id: str) -> str | None:
+    """An API key OpenCode 2 stores for ``integration_id`` in its own database.
+
+    Read-only, following OpenCode's own choice: the active (or not
+    deactivated) credential, newest first. Console keys must belong to the
+    hosted OpenCode console.
+    """
+    from spend_app.providers import default_opencode_database
+
+    path = Path(os.environ.get("OPENCODE_DB") or default_opencode_database())
+    if not path.is_file():
+        return None
+    try:
+        connection = sqlite_read_only(path)
+        try:
+            row = connection.execute(
+                "SELECT value FROM credential WHERE integration_id=? AND active IS NOT 0 "
+                "ORDER BY active DESC, time_created DESC, id DESC LIMIT 1",
+                (integration_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        value = json.loads(row[0]) if row and row[0] else {}
+    except (OSError, sqlite3.Error, ValueError, TypeError):
+        return None
+    if not isinstance(value, dict) or value.get("type") not in {"key", "api"}:
+        return None
+    server = str(((value.get("metadata") or {}) if isinstance(value.get("metadata"), dict) else {}).get("server") or "")
+    if integration_id == "opencode" and server and server.rstrip("/") != OPENCODE_CONSOLE_SERVER:
+        return None
+    key = value.get("key")
+    return key.strip() if isinstance(key, str) and key.strip() else None
+
+
+def _opencode_go_keys() -> list[str]:
+    """Keys that may read Go usage: the Console key first, then a Go-only key."""
+    keys = [_opencode_credential("opencode")]
+    from spend_app.providers import default_opencode_database
+
+    auth_path = default_opencode_database().parent / "auth.json"
+    try:
+        entry = (json.loads(auth_path.read_text(encoding="utf-8")) or {}).get("opencode-go") or {}
+        if isinstance(entry, dict) and entry.get("type") == "api":
+            keys.append(str(entry.get("key") or "").strip() or None)
+    except (OSError, ValueError, AttributeError):
+        pass
+    keys.append(os.environ.get("OPENCODE_API_KEY", "").strip() or None)
+    return list(dict.fromkeys(key for key in keys if key))
+
+
+def _opencode_go_limits_uncached() -> dict:
+    base = {"key": "opencode-go", "name": "OpenCode Go", "plan": "Go", "windows": []}
+    allowed, reason = authorize("opencode_go_quota")
+    if not allowed:
+        return {**base, "status": "unavailable", "detail": reason}
+    keys = _opencode_go_keys()
+    if not keys:
+        return {**base, "status": "absent", "detail": "No OpenCode Console or Go key was found."}
+    try:
+        _assert_allowed_https_host(OPENCODE_GO_USAGE_URL, OPENCODE_GO_ALLOWED_HOSTS)
+        response = None
+        for key in keys:
+            response = httpx.get(
+                OPENCODE_GO_USAGE_URL,
+                headers={"Authorization": f"Bearer {key}", "Accept": "application/json", **identity_headers()},
+                timeout=10,
+                trust_env=False,
+                follow_redirects=False,
+            )
+            # A Console key without Go answers 401/403; a separate Go key may still work.
+            if response.status_code not in {401, 403}:
+                break
+        if response.status_code in {401, 403}:
+            return {**base, "status": "absent", "detail": "This OpenCode account has no Go subscription."}
+        response.raise_for_status()
+        usage = (response.json() or {}).get("usage") or {}
+    except Exception as exc:
+        return {**base, "status": "error", "detail": f"OpenCode Go usage lookup failed ({type(exc).__name__}).", **_throttle_fields(exc)}
+    windows = []
+    for out_key, label, source_key in (("5h", "5-hour window", "rolling"), ("weekly", "Weekly window", "weekly"),
+                                       ("monthly", "Monthly window", "monthly")):
+        window = usage.get(source_key) if isinstance(usage, dict) else None
+        used = _finite_number(window.get("percent")) if isinstance(window, dict) else None
+        if used is None:
+            continue
+        windows.append({"key": out_key, "label": label, "usedPct": max(0.0, min(100.0, used)),
+                        "resetAt": window.get("resetsAt") if isinstance(window.get("resetsAt"), str) else None})
+    return {
+        **base,
+        "status": "exact" if windows else "unavailable",
+        "observedAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "windows": windows,
+        "detail": "OpenCode Go usage endpoint (undocumented); dollar limits per 5 hours, week and month."
+        if windows else "The OpenCode Go usage endpoint returned no usage windows.",
     }
 
 
@@ -2110,6 +2213,7 @@ def _collect_live_limits() -> dict:
         lambda: _cached("grok", 90, _grok_limits_uncached),
         lambda: _cached("zai", 60, _zai_limits_uncached),
         lambda: _cached("muse", 60, _muse_limits_uncached),
+        lambda: _cached("opencode-go", 60, _opencode_go_limits_uncached),
         lambda: _cached("antigravity", 90, _antigravity_limits_uncached),
         lambda: _cached("openrouter", 60, _openrouter_credits_uncached),
     ]

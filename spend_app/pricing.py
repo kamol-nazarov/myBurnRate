@@ -20,6 +20,7 @@ _OFFICIAL_SOURCE_PREFIXES = (
     "https://docs.x.ai/",
     "https://docs.z.ai/",
     "https://openrouter.ai/",
+    "https://opencode.ai/",
     "https://ai.google.dev/",
 )
 

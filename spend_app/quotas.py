@@ -30,6 +30,7 @@ from spend_app.limits import (
     _grok_active_sessions,
     _grok_limits_uncached,
     _muse_limits_uncached,
+    _opencode_go_limits_uncached,
     _openrouter_credits_uncached,
     _traycer_activity,
     _traycer_profile_rate_limits,
@@ -49,6 +50,7 @@ QUOTA_LIMIT_ORDER = {
     "antigravity": ("gemini-5h", "gemini-weekly", "3p-5h", "3p-weekly"),
     "opencode": ("5h", "weekly"),
     "muse": ("5h", "weekly"),
+    "opencode-go": ("5h", "weekly", "monthly"),
     "openrouter": ("balance",),
 }
 
@@ -71,6 +73,7 @@ PROVIDER_SOURCES = {
     "grok": "traycer_profile",
     "opencode": "zai_quota_endpoint",
     "muse": "muse_quota_endpoint",
+    "opencode-go": "opencode_go_usage_endpoint",
     "openrouter": "openrouter_credits_api",
     "antigravity": "antigravity_local_rpc",
 }
@@ -123,6 +126,7 @@ LANE_CADENCE: dict[str, tuple[int, int]] = {
     "claude-code": (90, 300),  # 40/h: the OAuth usage endpoint 429s near 120/h with a ~1 h lockout (2026-09-02)
     "opencode": (30, 300),
     "muse": (30, 300),
+    "opencode-go": (30, 300),
     "grok": (30, 300),
     "antigravity": (90, 300),
 }
@@ -215,6 +219,8 @@ def nudge_quota_lanes(database_path: Path | str, provider_key: str | None = None
                 _CACHE.pop("antigravity_quota_poll", None)
             if provider_key in {None, "muse"}:
                 _CACHE.pop("muse_quota_poll", None)
+            if provider_key in {None, "opencode-go"}:
+                _CACHE.pop("opencode_go_quota_poll", None)
     except Exception:
         pass
     scheduler = _DATABASE_LANES.get(str(Path(database_path).resolve()))
@@ -545,6 +551,44 @@ def muse_quota_samples(payload: dict, *, source: str) -> list[QuotaSample]:
     return samples
 
 
+# Not a required lane: a computer without a Go subscription shows no Go card.
+OPENCODE_GO_WINDOWS = (
+    ("5h", "OpenCode Go 5-hour window"),
+    ("weekly", "OpenCode Go weekly window"),
+    ("monthly", "OpenCode Go monthly window"),
+)
+
+
+def opencode_go_quota_samples(payload: dict, *, source: str) -> list[QuotaSample]:
+    status = payload.get("status")
+    # No consent, no Go subscription, or nothing reported: no card at all.
+    if status in {"absent", "unavailable"}:
+        return []
+    exact = status == "exact"
+    detail = str(payload.get("detail") or "OpenCode Go usage is unavailable.")
+    windows = _windows_by_key(payload)
+    samples: list[QuotaSample] = []
+    for limit_key, label in OPENCODE_GO_WINDOWS:
+        window = windows.get(limit_key) if exact else None
+        used_pct = _number(window.get("usedPct")) if isinstance(window, dict) else None
+        if used_pct is None:
+            samples.append(_unavailable("opencode-go", limit_key, label, source,
+                                        detail if not exact else f"OpenCode Go omitted the {label}."))
+            continue
+        samples.append(
+            QuotaSample(
+                provider_key="opencode-go",
+                limit_key=limit_key,
+                label=label,
+                unit="pct",
+                source=source,
+                pct=max(0.0, used_pct),
+                resets_at=_window_reset(window),
+            )
+        )
+    return samples
+
+
 def zai_quota_samples(payload: dict, *, source: str) -> list[QuotaSample]:
     exact = payload.get("status") == "exact"
     detail = str(payload.get("detail") or "Z.AI quota is unavailable.")
@@ -729,6 +773,8 @@ def default_quota_collectors(
         "grok": _grok_quota_collector,
         "opencode": lambda: _collect("zai_quota_poll", 10, _zai_limits_uncached, zai_quota_samples, "zai_quota_endpoint"),
         "muse": lambda: _collect("muse_quota_poll", 10, _muse_limits_uncached, muse_quota_samples, "muse_quota_endpoint"),
+        "opencode-go": lambda: _collect("opencode_go_quota_poll", 10, _opencode_go_limits_uncached,
+                                        opencode_go_quota_samples, "opencode_go_usage_endpoint"),
         "openrouter": openrouter_quota_samples,
     }
     from spend_app.claude_accounts import extra_accounts
@@ -744,7 +790,7 @@ def default_quota_collectors(
     from spend_app.providers import REGISTRY
     from dataclasses import replace
     settings = replace(load_settings(), database_path=Path(database_path))
-    sources = {"codex": "codex_local", "claude-code": "claude_local", "grok": "grok_local", "opencode": "opencode_local", "muse": "muse_local", "antigravity": "antigravity_local", "openrouter": "openrouter"}
+    sources = {"codex": "codex_local", "claude-code": "claude_local", "grok": "grok_local", "opencode": "opencode_local", "opencode-go": "opencode_local", "muse": "muse_local", "antigravity": "antigravity_local", "openrouter": "openrouter"}
     def guarded(provider, reader):
         def collect():
             key = None
@@ -862,7 +908,7 @@ def poll_quotas(
                 )
         polled_samples.append((provider_key, samples))
 
-    sources_by_provider = {"codex": "codex_local", "claude-code": "claude_local", "grok": "grok_local", "opencode": "opencode_local", "antigravity": "antigravity_local", "openrouter": "openrouter"}
+    sources_by_provider = {"codex": "codex_local", "claude-code": "claude_local", "grok": "grok_local", "opencode": "opencode_local", "opencode-go": "opencode_local", "antigravity": "antigravity_local", "openrouter": "openrouter"}
     with lock_for(path):
         current_bindings = {}
         if collectors is None:

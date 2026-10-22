@@ -99,6 +99,8 @@ Quota collectors tick every 15 seconds; each lane decides whether it is due:
 | OpenRouter credits | 60 / 300 |
 | Claude Code | 90 / 300 |
 | OpenCode / Z.AI | 30 / 300 |
+| OpenCode Go | 30 / 300 |
+| Muse Code | 30 / 300 |
 | Grok Build | 30 / 300 |
 | Antigravity | 90 / 300 |
 

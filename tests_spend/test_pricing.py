@@ -20,6 +20,7 @@ _OFFICIAL_SOURCE_HOSTS = (
     "https://docs.z.ai/",
     "https://openrouter.ai/",
     "https://ai.google.dev/",
+    "https://opencode.ai/",
 )
 
 

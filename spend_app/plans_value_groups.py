@@ -25,6 +25,7 @@ SUPPORTED_TOOLS = (
     "cursor",
     "grok",
     "opencode",
+    "opencode-go",
     "zcode",
     "openrouter",
     "xai",
@@ -40,6 +41,7 @@ TOOL_ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
 
 GROUP_DISPLAY_NAMES: dict[str, str] = {
     "opencode": "Z.AI (OpenCode / ZCode)",
+    "opencode-go": "OpenCode Go",
     "codex": "Codex",
     "claude-code": "Claude Code",
     "grok": "Grok (SuperGrok)",

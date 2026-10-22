@@ -113,6 +113,13 @@ LANES: dict[str, LanePolicy] = {
         allowed_hosts=("api.z.ai",),
         consent_env="BURNRATE_ENABLE_ZAI_QUOTA",
     ),
+    "opencode_go_quota": LanePolicy(
+        "opencode_go_quota",
+        Lane.OPT_IN_NATIVE,
+        "OpenCode Go usage endpoint reusing the OpenCode Console key stored by OpenCode.",
+        allowed_hosts=("opencode.ai",),
+        consent_env="BURNRATE_ENABLE_OPENCODE_GO_QUOTA",
+    ),
 }
 
 _DISABLED_REASON = (

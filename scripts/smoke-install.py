@@ -125,10 +125,14 @@ def main():
                     time.sleep(0.1)
             else:
                 raise AssertionError("Smoke server did not become ready")
+            # The HUD is the product: "/" opens it unless the dashboard is enabled.
             with urlopen(base) as response:
+                assert 'location.replace("/hud")' in response.read().decode()
+            with urlopen(base + "/hud") as response:
                 html = response.read().decode()
+            assert 'fetch("/api/spend/hud?machine=' in html
             assets = re.findall(r'(?:src|href)="(/[^"#]+)', html)
-            assert any("request-state.js?v=" in asset for asset in assets)
+            assert "/favicon.svg" in assets
             for asset in assets:
                 with urlopen(base + asset) as response:
                     assert response.status == 200

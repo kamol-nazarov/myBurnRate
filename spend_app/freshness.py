@@ -57,6 +57,7 @@ LANE_NAMES = {
     "grok": "Grok",
     "muse": "Muse",
     "opencode": "Z.ai",
+    "opencode-go": "OpenCode Go",
     "openrouter": "OpenRouter",
 }
 

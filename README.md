@@ -158,7 +158,7 @@ When you open [http://127.0.0.1:17331/setup](http://127.0.0.1:17331/setup) (or c
    - **Connected Spoke (`spoke`):** Connects to your Primary Hub using a `brpair_...` pairing code and automatically streams local usage in the background.
    - **Standalone (`standalone`):** Tracks only this computer locally.
 3. **Step 3 — AI Harnesses Auto-Scan & Import:** Automatically detects local installations of **Claude Code**, **OpenAI Codex CLI**, **OpenCode**, **ZCode**, **Grok CLI**, **Antigravity**, and **Traycer**, and imports historical usage and active agents with one click.
-4. **Step 4 — Active Subscriptions:** Select from 1-click monthly plan presets (`Claude Max`, `Claude Pro`, `ChatGPT Pro`, `ChatGPT Plus`, `SuperGrok`, `Z.AI Coding Plan`) or add custom plans so Plans & Value and daily burn proration work immediately.
+4. **Step 4 — Active Subscriptions:** Select from 1-click monthly plan presets (`Claude Max`, `Claude Pro`, `ChatGPT Pro`, `ChatGPT Plus`, `SuperGrok`, `Z.AI Coding Plan`, `OpenCode Go`, `OpenCode Go Plus`) or add custom plans so Plans & Value and daily burn proration work immediately.
 5. **Step 5 — Sidecar HUD Configuration:** Choose whether the frameless Sidecar HUD opens automatically on launch and stays pinned Always-on-Top.
 
 ---
@@ -268,6 +268,7 @@ Official vs experimental is about the *interface BURNRATE uses*, not about wheth
 | Claude Code | local JSONL transcripts | supported | yes | none for usage | tokens exact; spend exact when the price card is `exact` |
 | OpenCode | local session SQLite | supported | yes | Z.AI quota HTTPS if a Coding Plan key is on disk | session-level tokens; spend derived |
 | ZCode | local `model_usage` SQLite | supported | yes | shares the Z.AI quota card | per-request tokens exact; spend derived |
+| OpenCode Go | OpenCode messages with `providerID=opencode-go` + `opencode.ai/zen/go/v1/usage` | **experimental** usage endpoint, on by default | OpenCode's own credential store (read-only) | HTTPS to `opencode.ai` | per-message tokens; spend derived from the Go price card; 5-hour, weekly and monthly limits exact |
 | Grok Build CLI | local `unified.jsonl` and session `updates.jsonl` | **experimental**, on by default | yes | none | tokens exact; spend derived |
 | Direct xAI API | — | **not connected** | none | none | unavailable |
 | Google Antigravity | localhost language-server RPC | **experimental**, on by default | log for port/CSRF | `https://127.0.0.1:<port>/` | tokens exact; spend derived |
@@ -338,6 +339,7 @@ Optional keys in `.env` (all empty by default — copy `.env.example` to `.env` 
 | `BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE` | Set to `1` to consent to native Claude OAuth usage reads |
 | `BURNRATE_CLAUDE_OAUTH_REFRESH` | With usage consent enabled, set to `1` to additionally allow token refresh |
 | `BURNRATE_ENABLE_ZAI_QUOTA` | Set to `1` to consent to quota reads using a stored Z.AI key |
+| `BURNRATE_ENABLE_OPENCODE_GO_QUOTA` | Set to `1` to consent to OpenCode Go limit reads using OpenCode's stored Console key |
 | `SPEND_DATABASE_PATH` | SQLite path (default `%LOCALAPPDATA%\BURNRATE`) |
 | `SPEND_PRICING_PATH` | YAML cards (packaged default) |
 | `SPEND_TIMEZONE` | IANA zone for midnight and windows (default `UTC`) |

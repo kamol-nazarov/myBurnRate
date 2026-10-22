@@ -286,6 +286,7 @@ TOOL_NAMES = {
     "grok": "SuperGrok",
     "openrouter": "OpenRouter",
     "opencode": "OpenCode",
+    "opencode-go": "OpenCode Go",
     "zcode": "ZCode",
     "xai": "Direct xAI",
     "antigravity": "Antigravity",
@@ -297,6 +298,7 @@ TOOL_COLORS = {
     "cursor": "#d9a441",
     "grok": "#5cd6e8",
     "opencode": "#63c689",
+    "opencode-go": "#3fb4a0",
     "zcode": "#f28c45",
     "openrouter": "#565d69",
     "xai": "#5cd6e8",
@@ -344,6 +346,12 @@ PROVIDER_META = {
         "providerKey": "muse",
         "providerName": "Muse Code",
         "plan": "Power Usage",
+        "isPayg": False,
+    },
+    "opencode-go": {
+        "providerKey": "opencode-go",
+        "providerName": "OpenCode Go",
+        "plan": "Go",
         "isPayg": False,
     },
     "antigravity": {
@@ -422,6 +430,7 @@ CAPACITY_LIMIT_ORDER = {
     "antigravity": ("gemini-5h", "gemini-weekly", "3p-5h", "3p-weekly"),
     "opencode": ("5h", "weekly"),
     "muse": ("5h", "weekly"),
+    "opencode-go": ("5h", "weekly", "monthly"),
     "openrouter": ("balance",),
 }
 MIX_KEYS = (
@@ -438,6 +447,8 @@ def display_model(model_key: str) -> str:
         return "Cursor " + model_key.split(":", 1)[1].replace("-", " ").title()
     if model_key.startswith("opencode:"):
         return "OpenCode " + model_key.split(":", 1)[1].replace("-", " ").upper()
+    if model_key.startswith("opencode-go:"):
+        return "OpenCode Go " + model_key.split(":", 1)[1].replace("-", " ").upper()
     if model_key.startswith("openrouter:"):
         return "OpenRouter " + model_key.split(":", 1)[1].replace("-", " ").upper()
     if model_key.startswith("zcode:"):

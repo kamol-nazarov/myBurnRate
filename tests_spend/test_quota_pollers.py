@@ -451,8 +451,10 @@ def test_default_collectors_cover_required_providers_without_invoking(monkeypatc
 
     monkeypatch.setattr(claude_accounts, "extra_accounts", lambda: ())
     collectors = default_quota_collectors(Path("unused.db"))
-    assert set(collectors) == set(REQUIRED_LIMITS)
+    # OpenCode Go is polled but not required: without Go there is no card.
+    assert set(collectors) == set(REQUIRED_LIMITS) | {"opencode-go"}
     assert set(collectors) == {
+        "opencode-go",
         "antigravity",
         "claude-code",
         "codex",
@@ -466,7 +468,7 @@ def test_default_collectors_cover_required_providers_without_invoking(monkeypatc
                                          state_path=Path("w/.claude.json"), credentials_path=Path("w/.credentials.json"),
                                          account_uuid="work-uuid", plan="Claude Max")
     monkeypatch.setattr(claude_accounts, "extra_accounts", lambda: (work,))
-    assert set(default_quota_collectors(Path("unused.db"))) - set(REQUIRED_LIMITS) == {"claude-code-work"}
+    assert set(default_quota_collectors(Path("unused.db"))) - set(REQUIRED_LIMITS) == {"claude-code-work", "opencode-go"}
 
 
 def test_poll_quotas_public_seam_uses_default_collectors(tmp_path: Path, monkeypatch) -> None:

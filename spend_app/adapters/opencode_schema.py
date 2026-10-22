@@ -14,6 +14,10 @@ from spend_app.adapters.common import UsageRow, stable_id
 from spend_app.adapters.local_common import parse_millis, positive_cost
 
 PARSER_VERSION = "opencode-message-v1"
+# OpenCode Go is its own subscription (not the Z.AI plan the "opencode" tool
+# stands for). It bills reasoning on top of the reported output tokens: the
+# recorded cost reproduces exactly from published rates only that way.
+GO_PROVIDER = "opencode-go"
 LEGACY_COLUMNS = frozenset(("id", "project_id", "directory", "path", "model", "cost", "tokens_input", "tokens_output", "tokens_reasoning", "tokens_cache_read", "tokens_cache_write", "time_updated"))
 
 
@@ -98,10 +102,14 @@ def parse_message(data, *, row_id=None, session_id=None, role=None, format="json
     complete = all(value is not None for value in values)
     # OpenCode's output already includes reasoning; retain reasoning as detail.
     reasoning = count(tokens.get("reasoning"))
+    go = provider == GO_PROVIDER
+    if go and reasoning:
+        output += reasoning
     unknown = max(0, (total or 0) - fresh - read - write - output) if not complete else 0
     path = data.get("path")
     project = Path(path["root"]).name if isinstance(path, dict) and isinstance(path.get("root"), str) else None
-    row = UsageRow(source="opencode_local", tool_key="opencode", model_key="opencode:" + model_id.strip().lower(), occurred_at=when,
+    tool = GO_PROVIDER if go else "opencode"
+    row = UsageRow(source="opencode_local", tool_key=tool, model_key=tool + ":" + model_id.strip().lower(), occurred_at=when,
                    session_id=session, project=project, input_tokens=fresh + read, cached_input_tokens=read,
                    cache_write_tokens=write, cache_write_1h_tokens=0, output_tokens=output, reasoning_tokens=reasoning,
                    cost_usd=positive_cost(data.get("cost")), raw_id=stable_id("opencode-message", provider, message_id),

@@ -72,6 +72,8 @@ SUBSCRIPTION_PRESETS = (
     {"key": "codex_plus", "tool_key": "codex", "name": "ChatGPT Plus", "amount_usd": 20.0, "cadence": "monthly", "badge": "OpenAI"},
     {"key": "grok_super", "tool_key": "grok", "name": "SuperGrok", "amount_usd": 30.0, "cadence": "monthly", "badge": "xAI"},
     {"key": "zai_coding", "tool_key": "opencode", "name": "Z.AI Coding Plan", "amount_usd": 10.0, "cadence": "monthly", "badge": "Z.AI"},
+    {"key": "opencode_go", "tool_key": "opencode-go", "name": "OpenCode Go", "amount_usd": 10.0, "cadence": "monthly", "badge": "OpenCode"},
+    {"key": "opencode_go_plus", "tool_key": "opencode-go", "name": "OpenCode Go Plus", "amount_usd": 40.0, "cadence": "monthly", "badge": "OpenCode"},
     {"key": "muse_power", "tool_key": "muse", "name": "Muse Code Power Usage", "amount_usd": 0.0, "cadence": "monthly", "badge": "Meta"},
 )
 
@@ -1612,6 +1614,7 @@ SETUP_WIZARD_HTML = """<!doctype html>
                 <option value="codex">Codex / OpenAI</option>
                 <option value="grok">SuperGrok (xAI)</option>
                 <option value="opencode">Z.AI / OpenCode</option>
+                <option value="opencode-go">OpenCode Go</option>
                 <option value="openrouter">OpenRouter</option>
                 <option value="custom">Custom</option>
               </select>
@@ -1729,7 +1732,7 @@ SETUP_WIZARD_HTML = """<!doctype html>
         // Provider marks come from the shared sprite served at /logos.svg.
         const TOOL_LOGOS = {
           codex: "codex", "claude-code": "claude", opencode: "opencode", zcode: "zai",
-          grok: "grok", antigravity: "antigravity", muse: "meta", openrouter: "openrouter", traycer: "traycer"
+          grok: "grok", antigravity: "antigravity", muse: "meta", openrouter: "openrouter", traycer: "traycer", "opencode-go": "opencode"
         };
         const logoFor = (key, name) => /z[.]?ai|glm/i.test(String(name || "")) ? "zai" : (TOOL_LOGOS[key] || "custom");
         function logoTile(id) {

@@ -12,6 +12,7 @@ TOOLS = (
     "claude-code",
     "grok",
     "opencode",
+    "opencode-go",
     "zcode",
     "openrouter",
     "xai",

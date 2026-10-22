@@ -83,6 +83,7 @@ def load_user_env() -> None:
             env_file.parent.mkdir(parents=True, exist_ok=True)
             env_file.write_text(
                 "BURNRATE_ENABLE_ZAI_QUOTA=1\n"
+                "BURNRATE_ENABLE_OPENCODE_GO_QUOTA=1\n"
                 "BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE=1\n"
                 "BURNRATE_CLAUDE_OAUTH_REFRESH=1\n",
                 encoding="utf-8",
@@ -92,6 +93,7 @@ def load_user_env() -> None:
     load_dotenv(env_file, override=False)
     for key in (
         "BURNRATE_ENABLE_ZAI_QUOTA",
+        "BURNRATE_ENABLE_OPENCODE_GO_QUOTA",
         "BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE",
         "BURNRATE_CLAUDE_OAUTH_REFRESH",
     ):

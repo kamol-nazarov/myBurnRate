@@ -744,6 +744,11 @@ HUD_HTML = r"""<!doctype html>
             durMs = 7 * 86400 * 1000;
           } else if (text.includes("day") || text.includes("24h") || text.includes("daily")) {
             durMs = 86400 * 1000;
+          } else if (text.includes("month")) {
+            // A monthly window runs from the same day of the previous month.
+            const start = new Date(resetMs);
+            start.setUTCMonth(start.getUTCMonth() - 1);
+            durMs = resetMs - start.getTime();
           }
           if (!durMs || remMs > durMs) return null;
           return Math.max(0, Math.min(100, 100 - (remMs / durMs) * 100));
@@ -884,12 +889,13 @@ HUD_HTML = r"""<!doctype html>
           antigravity: "Antigravity",
           grok: "Grok",
           opencode: "Z.AI",
+          "opencode-go": "OpenCode Go",
           muse: "Muse",
           openrouter: "OpenRouter"
         };
         // Provider marks come from the shared sprite served at /logos.svg.
         const PLAN_LOGOS = {
-          codex: "codex", "claude-code": "claude", grok: "grok", opencode: "zai",
+          codex: "codex", "claude-code": "claude", grok: "grok", opencode: "zai", "opencode-go": "opencode",
           antigravity: "antigravity", muse: "meta", openrouter: "openrouter", traycer: "traycer"
         };
         const MODEL_LOGOS = [

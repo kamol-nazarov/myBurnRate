@@ -79,13 +79,14 @@ def test_scheduled_quota_polling_denies_native_lanes(poisoned, tmp_path, monkeyp
     monkeypatch.delenv("BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE", raising=False)
     monkeypatch.delenv("BURNRATE_ENABLE_CURSOR_USAGE_SERVICE", raising=False)
     monkeypatch.delenv("BURNRATE_ENABLE_ZAI_QUOTA", raising=False)
+    monkeypatch.delenv("BURNRATE_ENABLE_OPENCODE_GO_QUOTA", raising=False)
     database = tmp_path / "spend.db"
     # A fresh lane scheduler: the module-global one may still owe back-off
     # from an earlier test's polls.
     from spend_app.quotas import QuotaLaneScheduler
 
     result = poll_quotas(database, lanes=QuotaLaneScheduler(), now=lambda: NOW)
-    assert set(result["polledProviders"]) == {"antigravity", "claude-code", "codex", "grok", "muse", "openrouter", "opencode"}
+    assert set(result["polledProviders"]) == {"antigravity", "claude-code", "codex", "grok", "muse", "openrouter", "opencode", "opencode-go"}
     assert poisoned == []
     import sqlite3
 
