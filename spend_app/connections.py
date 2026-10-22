@@ -105,8 +105,6 @@ def source_spec(source):
 
 def default_location(spec, settings):
     meta = spec.connection
-    if spec.key == "cursor_csv":
-        return str(settings.cursor_import_path)
     value = str(meta.default())
     if meta.suffix:
         value = value.replace("\\", "/").removesuffix("/" + meta.suffix)
@@ -115,12 +113,12 @@ def default_location(spec, settings):
 
 def external_key(spec, settings):
     name = spec.connection.credential_env
-    attribute = {"OPENAI_ADMIN_KEY": "openai_admin_key", "ANTHROPIC_ADMIN_KEY": "anthropic_admin_key", "CURSOR_API_KEY": "cursor_api_key"}.get(name)
+    attribute = {"OPENAI_ADMIN_KEY": "openai_admin_key", "ANTHROPIC_ADMIN_KEY": "anthropic_admin_key"}.get(name)
     return os.getenv(name) or (getattr(settings, attribute, None) if attribute else None) if name else None
 
 
 def external(spec, settings):
-    return bool(external_key(spec, settings) or (spec.key == "cursor_csv" and os.getenv("CURSOR_IMPORT_PATH")) or (spec.connection.location_env and os.getenv(spec.connection.location_env)))
+    return bool(external_key(spec, settings) or (spec.connection.location_env and os.getenv(spec.connection.location_env)))
 
 
 def location_conflict(spec, location):
@@ -140,10 +138,6 @@ def eligible(spec, state):
     binding = state["bindings"].get(spec.key)
     if binding:
         return binding["enabled"]
-    if spec.key == "cursor_usage_service":
-        from spend_app.integration_policy import authorize
-        if authorize("cursor_usage_service")[0]:
-            return True
     return spec.enabled_by_default or spec.key in state.get("legacy", [])
 
 
@@ -412,10 +406,6 @@ def managed_job(settings, pricing, spec, window=None):
                     kwargs[meta.argument] = str(Path(path) / meta.suffix)
                 else:
                     kwargs[meta.argument] = Path(path) if meta.argument not in {"session_glob", "database_glob"} else path
-    if spec.key == "cursor_usage_service":
-        admin = state["bindings"].get("cursor_admin")
-        if admin and admin["enabled"]:
-            return service, binding, None
     if spec.skip_if and not binding and spec.skip_if(settings):
         return service, binding, None
     return service, binding, kwargs

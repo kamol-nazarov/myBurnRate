@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import sqlite3
+import threading
 from contextlib import contextmanager, closing
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
@@ -555,6 +557,77 @@ def prune_ingest_runs(
 def initialize(path: Path) -> None:
     from spend_app.subscription_schema import upgrade_database
     upgrade_database(path, _initialize_base)
+    retire_cursor_usage(path)
+
+
+# Cursor usage duplicates SuperGrok usage, so BURNRATE neither collects nor
+# counts it. Sources whose old collection runs and rows are retired:
+RETIRED_SOURCES = frozenset({"cursor_local", "cursor_usage_service", "cursor_admin", "cursor_csv"})
+RETIRED_USAGE_KEY = "retired_usage.cursor.v1"
+_RETIRED_USAGE_CHECKED: set[str] = set()
+_RETIRED_USAGE_LOCK = threading.Lock()
+
+
+def retire_cursor_usage(path: Path) -> int:
+    """Remove recorded Cursor usage once per database, after a verified backup.
+
+    Runs on every database (local or Hub, including rows synced from other
+    computers) and records a marker so later calls are a single lookup. The
+    schema version is unchanged, so an older BURNRATE can still open the file.
+    """
+    path = Path(path)
+    marker = str(path.resolve())
+    if marker in _RETIRED_USAGE_CHECKED:
+        return 0
+    with _RETIRED_USAGE_LOCK:
+        return _retire_cursor_usage(path, marker)
+
+
+def _retire_cursor_usage(path: Path, marker: str) -> int:
+    if marker in _RETIRED_USAGE_CHECKED:
+        return 0
+    with connect(path) as connection:
+        if connection.execute("SELECT 1 FROM app_meta WHERE key=?", (RETIRED_USAGE_KEY,)).fetchone():
+            _RETIRED_USAGE_CHECKED.add(marker)
+            return 0
+        recorded = connection.execute(
+            "SELECT EXISTS(SELECT 1 FROM usage_events WHERE tool_key='cursor') "
+            "OR EXISTS(SELECT 1 FROM unpriced_usage_events WHERE tool_key='cursor')"
+        ).fetchone()[0]
+    if recorded:
+        target = path.parent / "backups" / (
+            "pre-cursor-removal-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%S") + ".db"
+        )
+        backup_database(path, target)
+        with closing(sqlite3.connect(target)) as backup:
+            if backup.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise RuntimeError("Backup before removing Cursor usage failed; nothing was removed")
+    sources = sorted(RETIRED_SOURCES)
+    marks = ",".join("?" for _ in sources)
+    removed = 0
+    with connect(path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        for table in ("usage_events", "unpriced_usage_events"):
+            removed += connection.execute(f"DELETE FROM {table} WHERE tool_key='cursor'").rowcount
+        connection.execute("DELETE FROM sessions WHERE tool_key='cursor'")
+        connection.execute("DELETE FROM coverage_gap_events WHERE tool_key='cursor'")
+        connection.execute("DELETE FROM pricing_gaps WHERE model_key LIKE 'cursor:%'")
+        connection.execute("DELETE FROM pricing_gap_events WHERE model_key LIKE 'cursor:%'")
+        connection.execute(f"DELETE FROM provider_cost_buckets WHERE source IN ({marks})", sources)
+        connection.execute(f"DELETE FROM ingest_runs WHERE source IN ({marks})", sources)
+        connection.execute("DELETE FROM quotas WHERE provider_key='cursor'")
+        connection.execute("DELETE FROM quota_pace_samples WHERE provider_key='cursor'")
+        connection.execute("DELETE FROM agent_runs WHERE model_key LIKE 'cursor:%'")
+        # Ingest identity bookkeeping for the retired sources.
+        connection.execute(
+            "DELETE FROM app_meta WHERE key LIKE 'usage.alias.v1:cursor%' OR key LIKE 'usage.identity.v1:cursor%'"
+        )
+        connection.execute(
+            "INSERT INTO app_meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (RETIRED_USAGE_KEY, json.dumps({"removedEvents": removed, "at": utc_now()})),
+        )
+    _RETIRED_USAGE_CHECKED.add(marker)
+    return removed
 
 
 def _initialize_base(path: Path) -> None:
@@ -738,7 +811,7 @@ def upsert_usage_event(connection: sqlite3.Connection, event: UsageEvent) -> boo
     ).fetchone()
     existed = existing is not None
     if _same_content(existing, values):
-        # Read-only local stores (Cursor, OpenCode, Traycer) are re-read every
+        # Read-only local stores (OpenCode, Traycer) are re-read every
         # cycle; rewriting unchanged rows only churned the WAL and made
         # ingested_at meaningless as a change marker.
         connection.execute("DELETE FROM unpriced_usage_events WHERE raw_id=?", (event.raw_id,))

@@ -160,22 +160,21 @@ def test_integration_metadata_exposes_booleans_not_values():
     settings = SimpleNamespace(
         openai_admin_key="private-key-do-not-return",
         anthropic_admin_key=None,
-        cursor_api_key=None,
     )
     reports = integration_reports(
         settings,
         environ={
             "BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE": "true",
-            "BURNRATE_ENABLE_CURSOR_USAGE_SERVICE": "false",
+            "BURNRATE_ENABLE_ZAI_QUOTA": "false",
             "OPENROUTER_MANAGEMENT_KEY": "another-private-key",
         },
     )
-    assert len(reports) == 7
+    assert len(reports) == 5
     by_setting = {row["setting"]: row for row in reports}
     assert by_setting["OPENAI_ADMIN_KEY"]["configured"] is True
     assert by_setting["OPENAI_ADMIN_KEY"]["host"] == "api.openai.com"
     assert by_setting["BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE"]["configured"] is True
-    assert by_setting["BURNRATE_ENABLE_CURSOR_USAGE_SERVICE"]["configured"] is False
+    assert by_setting["BURNRATE_ENABLE_ZAI_QUOTA"]["configured"] is False
     assert all(type(row["configured"]) is bool for row in reports)
     assert "private-key" not in json.dumps(reports)
 
@@ -190,7 +189,7 @@ def test_integration_metadata_preserves_vault_connections_without_secret_read():
         environ={},
         bindings={
             "openai_admin": {"enabled": True, "credentialRef": "opaque-reference"},
-            "cursor_admin": {"enabled": False, "credentialRef": "disabled-reference"},
+            "anthropic_admin": {"enabled": False, "credentialRef": "disabled-reference"},
         },
     )
     by_setting = {row["setting"]: row for row in reports}
@@ -198,5 +197,5 @@ def test_integration_metadata_preserves_vault_connections_without_secret_read():
         by_setting["OPENAI_ADMIN_KEY"]["configured"]
         and by_setting["OPENAI_ADMIN_KEY"]["managed"]
     )
-    assert not by_setting["CURSOR_API_KEY"]["configured"]
+    assert not by_setting["ANTHROPIC_ADMIN_KEY"]["configured"]
     assert "reference" not in json.dumps(reports)

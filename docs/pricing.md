@@ -36,7 +36,7 @@ Invoice-exact spend (`usage_events.is_exact = 1`) requires both:
 1. `source` in `codex_local`, `openai_admin`, `claude_local`, `anthropic_admin`
 2. A matching YAML card with `exactness: exact`
 
-Everything else that can be priced is **derived** (dashboard `≈`). Cursor charged cents, OpenRouter session cost, and Z.AI credits are stored as observed numbers where the adapter has them, but computed spend still follows the YAML card’s exactness.
+Everything else that can be priced is **derived** (dashboard `≈`). OpenRouter session cost and Z.AI credits are stored as observed numbers where the adapter has them, but computed spend still follows the YAML card’s exactness.
 
 | State | Behavior |
 | --- | --- |
@@ -96,7 +96,7 @@ Forecasts are labeled as forecasts. Method text names the basis (for example mon
 | `pricing/anthropic.yaml` | exact | Claude Code / Anthropic admin |
 | `pricing/openai-auto-review.yaml` | derived, owner-asserted | Codex auto-review when no official page exists |
 | `pricing/openai-daybreak.yaml` | derived, owner-asserted | Codex CLI Daybreak preview id (Sol rates until OpenAI publishes a page) |
-| `pricing/cursor.yaml` | derived | Cursor included-capacity attribution |
+| `pricing/cursor.yaml` | derived | Cursor model rates, kept only so an older backup can still be read; Cursor usage is no longer collected or counted |
 | `pricing/google.yaml` | derived | Antigravity Gemini API-equivalent; not an Antigravity bill |
 | `pricing/xai.yaml` | derived | SuperGrok / Grok Build at published xAI API rates |
 | `pricing/zai.yaml` | derived | OpenCode / ZCode Coding Plan attribution (credits ≠ invoice USD) |

@@ -10,7 +10,6 @@ from itertools import pairwise
 TOOLS = (
     "codex",
     "claude-code",
-    "cursor",
     "grok",
     "opencode",
     "zcode",
@@ -58,7 +57,9 @@ def validate_term(values):
         raise PlanError("Plan name must contain 1–80 printable characters")
     if values["cadence"] not in CADENCES:
         raise PlanError("unsupported subscription cadence")
-    if values["tool_key"] not in TOOLS:
+    # Cursor is no longer offered; a saved Cursor plan joins SuperGrok, whose pool it shared.
+    tool_key = "grok" if values["tool_key"] == "cursor" else values["tool_key"]
+    if tool_key not in TOOLS:
         raise PlanError("Unsupported tool association")
     raw = values["amount_usd"]
     try:
@@ -81,11 +82,7 @@ def validate_term(values):
     return {
         **values,
         "name": name.strip(),
-        "tool_key": (
-            "opencode"
-            if values["tool_key"] == "zcode"
-            else ("grok" if values["tool_key"] == "cursor" else values["tool_key"])
-        ),
+        "tool_key": "opencode" if tool_key == "zcode" else tool_key,
         "amount_usd": float(amount),
     }
 

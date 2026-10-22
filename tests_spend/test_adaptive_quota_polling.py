@@ -133,7 +133,7 @@ def test_lane_activity_comes_from_recent_usage_events_or_live_agent_runs(tmp_pat
         upsert_usage_event(
             connection,
             UsageEvent(
-                source="cursor_local", tool_key="cursor", model_key="cursor:grok-4.6",
+                source="grok_local", tool_key="grok", model_key="supergrok:grok-4.6",
                 occurred_at=(now - timedelta(minutes=1)).isoformat().replace("+00:00", "Z"),
                 session_id="s2", project="p", input_tokens=10, cached_input_tokens=0,
                 cache_write_tokens=0, cache_write_1h_tokens=0, output_tokens=1, reasoning_tokens=None,

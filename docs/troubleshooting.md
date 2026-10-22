@@ -2,6 +2,10 @@
 
 ## Connect a harness
 
+These dialogs belong to the full dashboard, which is off by default; set
+`BURNRATE_ENABLE_DASHBOARD=1` and restart to use them. Without it, the setup
+wizard (`/setup`) scans and imports local harnesses.
+
 Open the harness count in the navbar, **Connect harness** in Capacity, or the
 same button in Setup help. The dialog shows source states, home-relative known
 location hints, last-success freshness and experimental labels. These hints do
@@ -47,7 +51,7 @@ Typical checks:
 
 Treat doctor output as support data. Redact any remaining absolute paths before pasting it into a public issue.
 
-## Empty dashboard after install
+## Empty HUD after install
 
 Expected. Local ingest needs harness history (Codex sessions, Claude transcripts, and so on). Until those files exist, KPIs stay `—` and activity is idle. That is not a failed install.
 
@@ -63,15 +67,15 @@ Generate some completed-turn usage in a supported harness, wait about 15 seconds
 | `partial` | Some events priced, some not | Look at unpriced models; add a dated price card or wait for telemetry |
 | `success` | Events written or quota stored | — |
 
-Admin keys are optional. An empty `OPENAI_ADMIN_KEY` / `ANTHROPIC_ADMIN_KEY` / `CURSOR_API_KEY` / `OPENROUTER_MANAGEMENT_KEY` is a skip, not a misconfiguration.
+Admin keys are optional. An empty `OPENAI_ADMIN_KEY` / `ANTHROPIC_ADMIN_KEY` / `OPENROUTER_MANAGEMENT_KEY` is a skip, not a misconfiguration.
 
 ## Advanced backfill
 
 `burnrate backfill <source>` is an advanced CLI. It is not required for the five-minute install. Sources:
 
-`codex-local`, `claude-local`, `traycer-local`, `cursor-local`, `cursor-csv`, `opencode-local`, `openai-admin`, `anthropic-admin`, `cursor-admin`.
+`codex-local`, `claude-local`, `traycer-local`, `opencode-local`, `openai-admin`, `anthropic-admin`.
 
-`cursor-csv` is CLI-only (not scheduled). A source that errors writes a redacted reason and uses exit `2` on `failed`. `partial` writes a reason and exits `0`. Empty keys `skip` and exit `0`. Missing keys are skips, not failures.
+A source that errors writes a redacted reason and uses exit `2` on `failed`. `partial` writes a reason and exits `0`. Empty keys `skip` and exit `0`. Missing keys are skips, not failures.
 
 ## Port 17331 already in use
 
@@ -91,7 +95,13 @@ Confirm liveness with:
 Invoke-RestMethod http://127.0.0.1:17331/healthz
 ```
 
-You should see `status: ok`. The dashboard itself is [http://127.0.0.1:17331](http://127.0.0.1:17331).
+You should see `status: ok`. The HUD is [http://127.0.0.1:17331/hud](http://127.0.0.1:17331/hud) (`/` opens it too; with `BURNRATE_ENABLE_DASHBOARD=1`, `/` is the full dashboard).
+
+## A HUD meter is dimmed, or the HUD seems slow
+
+A dimmed meter is holding its last reading: the newest poll for that window returned no value (a slow provider, a hub hiccup, or a lane between samples). Its tooltip says when that reading was taken. It updates at the next real reading and shows `—` once the window resets. A plan missing from one response stays on screen for up to 15 minutes, and today's spend figures hold until the date changes.
+
+On a paired spoke the HUD shows the last hub copy at once (up to five minutes old) and renews it in the background, so a slow or unreachable hub does not stall a refresh. The status pill reports hub sync problems.
 
 ## Python is not 3.12
 
@@ -105,19 +115,21 @@ Unpriced models stay in diagnostics. They do not become `$0`.
 
 ## Experimental provider missing files
 
-Cursor DashboardService, Antigravity localhost RPC, Traycer CLI, Grok Build log scrape, and Claude OAuth usage are **experimental**. If the editor is not installed, the log is absent, or `traycer.exe` is missing, that lane reports unavailable and the rest of BURNRATE keeps running.
+Antigravity localhost RPC, Traycer CLI, Grok Build log scrape, and Claude OAuth usage are **experimental**. If the editor is not installed, the log is absent, or `traycer.exe` is missing, that lane reports unavailable and the rest of BURNRATE keeps running.
 
 Claude OAuth refresh is off unless `BURNRATE_CLAUDE_OAUTH_REFRESH=1`. Prefer Claude Desktop `plan-usage-history.json` or local transcripts.
 
-## Nothing from OpenRouter / Cursor admin / OpenAI / Anthropic
+## Nothing from OpenRouter / OpenAI / Anthropic
 
-Those paths need keys. Local Traycer OpenRouter usage still ingests from `chat.db` without `OPENROUTER_MANAGEMENT_KEY`; the key is only the credits balance. Cursor CSV is a drop-folder import, not the Admin API.
+Those paths need keys. Local Traycer OpenRouter usage still ingests from `chat.db` without `OPENROUTER_MANAGEMENT_KEY`; the key is only the credits balance.
+
+Cursor is no longer collected or counted (usage, quota or live sessions): it duplicates SuperGrok usage. Recorded Cursor usage is removed once, after a backup in `backups/pre-cursor-removal-*.db`.
 
 Direct xAI and Requesty are not connected. There is nothing to repair there.
 
-## `/api/spend/limits` looks different from the dashboard
+## `/api/spend/limits` looks different from the HUD
 
-The dashboard reads SQLite via `/api/spend/summary` and `/api/spend/health`. `/api/spend/limits` is a live probe of quota collectors. Do not call it casually; it can hit experimental endpoints and, if you opted in, Claude OAuth.
+The HUD reads SQLite via `/api/spend/hud` and `/api/spend/hud/usage`; the dashboard, when enabled, via `/api/spend/summary` and `/api/spend/health`. `/api/spend/limits` is a live probe of quota collectors. Do not call it casually; it can hit experimental endpoints and, if you opted in, Claude OAuth.
 
 ## Backup and restore
 
@@ -133,5 +145,5 @@ Uninstall without `-PurgeData` leaves the database in place.
 
 - Do not curl Grafana, Prometheus, an OpenTelemetry Collector, or a tailnet hostname as a BURNRATE health check.
 - Do not paste `.env`, provider JSON, or prompt text into issues.
-- Do not set Funnel on the dashboard (see [tailscale.md](tailscale.md)).
+- Do not set Funnel on BURNRATE (see [tailscale.md](tailscale.md)).
 - Do not treat `≈` published-rate value as an invoice, or `—` as zero.

@@ -12,7 +12,7 @@ from spend_app.config import (
     Settings,
 )
 from spend_app.pricing import PricingEngine
-from spend_app.providers import PROVIDERS, ProviderSpec, iter_admin_ingest, iter_local_ingest
+from spend_app.providers import PROVIDERS, ProviderSpec, iter_local_ingest
 from spend_app.quotas import poll_activity, poll_quotas
 from spend_app.scheduler import create_scheduler
 
@@ -39,7 +39,7 @@ def isolated_scheduler_sources(monkeypatch, tmp_path):
 
     monkeypatch.setattr("apscheduler.schedulers.background.BackgroundScheduler.start", no_background_start)
 
-LOCAL_INGEST_JOB_IDS = ("local-ingest", "network-ingest")
+LOCAL_INGEST_JOB_IDS = ("local-ingest",)
 INGEST_JOB_IDS = (*LOCAL_INGEST_JOB_IDS, "provider-admin")
 QUOTA_JOB_ID = "quota-poll"
 ACTIVITY_JOB_ID = "activity"
@@ -47,7 +47,6 @@ SCHEDULER_JOB_IDS = (
     "attention",
     "capacity-forecast",
     "local-ingest",
-    "network-ingest",
     "provider-admin",
     "subscriptions",
     "quota-poll",
@@ -57,7 +56,6 @@ LOCAL_INGEST_ALIASES = (
     "codex",
     "claude",
     "traycer",
-    "cursor",
     "opencode",
     "zcode",
     "grok",
@@ -70,10 +68,8 @@ def make_settings(tmp_path: Path) -> Settings:
     return Settings(
         database_path=tmp_path / "spend.db",
         pricing_path=ROOT / "pricing",
-        cursor_import_path=tmp_path / "imports",
         anthropic_admin_key=None,
         openai_admin_key=None,
-        cursor_api_key=None,
         timezone="America/New_York",
         cache_hit_threshold=0.75,
         over_routing_token_ceiling=40_000,
@@ -84,22 +80,9 @@ def make_scheduler(tmp_path: Path):
     return create_scheduler(make_settings(tmp_path), PricingEngine.load(ROOT / "pricing"))
 
 
-def test_cursor_usage_service_is_skipped_when_admin_key_is_set(tmp_path: Path) -> None:
-    from dataclasses import replace
-    from datetime import UTC, datetime
-
+def test_traycer_local_kwargs_read_the_source_home(tmp_path: Path) -> None:
     pricing = PricingEngine.load(ROOT / "pricing")
-    without_key = make_settings(tmp_path)
-    with_key = replace(without_key, cursor_api_key="fixture-admin-key")
-    local_without = [spec.key for spec, _kwargs in iter_local_ingest(without_key, pricing)]
-    local_with = [spec.key for spec, _kwargs in iter_local_ingest(with_key, pricing)]
-    assert "cursor_usage_service" in local_without
-    assert "cursor_usage_service" not in local_with
-    start = datetime(2026, 8, 1, tzinfo=UTC)
-    end = datetime(2026, 8, 31, tzinfo=UTC)
-    admin_with = [spec.key for spec, _kwargs in iter_admin_ingest(with_key, pricing, start=start, end=end)]
-    assert "cursor_admin" in admin_with
-    jobs = dict((spec.key, kwargs) for spec, kwargs in iter_local_ingest(without_key, pricing))
+    jobs = dict((spec.key, kwargs) for spec, kwargs in iter_local_ingest(make_settings(tmp_path), pricing))
     assert jobs["traycer_local"]["grok_covered_from"] is None
     assert str(tmp_path / "source-home") in jobs["traycer_local"]["database_glob"]
 
@@ -180,40 +163,12 @@ def test_local_ingest_job_runs_readers_serially(tmp_path: Path, monkeypatch) -> 
             f"spend_app.scheduler.ingest_{name}_local",
             recorder(name),
         )
-    monkeypatch.setattr("spend_app.scheduler.ingest_cursor_usage", recorder("cursor-usage"))
     scheduler = make_scheduler(tmp_path)
     jobs = {job.id: job for job in scheduler.get_jobs()}
     jobs["local-ingest"].func()
     assert calls == [
-        "codex", "claude", "claude", "traycer", "cursor", "opencode", "zcode", "grok", "antigravity", "muse"
+        "codex", "claude", "claude", "traycer", "opencode", "zcode", "grok", "antigravity", "muse"
     ]
-
-
-def test_network_backed_source_runs_on_its_own_job(tmp_path: Path, monkeypatch) -> None:
-    # Regression: Cursor's usage service re-downloaded its whole history inside
-    # the serial local pass, so every local source waited minutes behind it and
-    # went stale. Network-backed readers now have their own job.
-    _previously_monitored_sources(monkeypatch)
-    calls = []
-
-    def recorder(name):
-        def run(**_kwargs):
-            calls.append(name)
-            return {"status": "success"}
-
-        return run
-
-    for name in LOCAL_INGEST_ALIASES:
-        monkeypatch.setattr(f"spend_app.scheduler.ingest_{name}_local", recorder(name))
-    monkeypatch.setattr("spend_app.scheduler.ingest_cursor_usage", recorder("cursor-usage"))
-    scheduler = make_scheduler(tmp_path)
-    jobs = {job.id: job for job in scheduler.get_jobs()}
-    jobs["local-ingest"].func()
-    assert "cursor-usage" not in calls
-    calls.clear()
-    jobs["network-ingest"].func()
-    assert calls == ["cursor-usage"]
-    assert jobs["network-ingest"].max_instances == 1
 
 
 def test_experimental_provider_failure_is_isolated(tmp_path: Path, monkeypatch) -> None:
@@ -233,7 +188,6 @@ def test_experimental_provider_failure_is_isolated(tmp_path: Path, monkeypatch) 
             f"spend_app.scheduler.ingest_{name}_local",
             recorder(name, fail=(name == "grok")),
         )
-    monkeypatch.setattr("spend_app.scheduler.ingest_cursor_usage", recorder("cursor-usage"))
 
     def boom(**_kwargs):
         calls.append("injected")
@@ -265,7 +219,6 @@ def test_experimental_provider_failure_is_isolated(tmp_path: Path, monkeypatch) 
         "claude",
         "traycer",
         "injected",
-        "cursor",
         "opencode",
         "zcode",
         "grok",
@@ -292,7 +245,6 @@ def test_official_provider_failure_still_runs_remaining(tmp_path: Path, monkeypa
             f"spend_app.scheduler.ingest_{name}_local",
             recorder(name, fail=(name == "claude")),
         )
-    monkeypatch.setattr("spend_app.scheduler.ingest_cursor_usage", recorder("cursor-usage"))
     scheduler = make_scheduler(tmp_path)
     jobs = {job.id: job for job in scheduler.get_jobs()}
     with pytest.raises(RuntimeError, match="local ingest job"):
@@ -302,7 +254,6 @@ def test_official_provider_failure_still_runs_remaining(tmp_path: Path, monkeypa
         "claude",
         "claude",
         "traycer",
-        "cursor",
         "opencode",
         "zcode",
         "grok",
@@ -320,8 +271,6 @@ def test_local_ingest_follows_registry_and_keeps_adapter_signatures() -> None:
         "claude_local",
         "claude_local_alt",
         "traycer_local",
-        "cursor_local",
-        "cursor_usage_service",
         "opencode_local",
         "zcode_local",
         "grok_local",
@@ -331,10 +280,10 @@ def test_local_ingest_follows_registry_and_keeps_adapter_signatures() -> None:
     assert [spec.key for spec in REGISTRY.admin_ingest()] == [
         "openai_admin",
         "anthropic_admin",
-        "cursor_admin",
     ]
-    assert REGISTRY.get("cursor_csv") is not None
-    assert REGISTRY.get("cursor_csv").kind == "manual"
+    # Cursor is no longer collected.
+    for key in ("cursor_local", "cursor_usage_service", "cursor_admin", "cursor_csv"):
+        assert REGISTRY.get(key) is None
     assert CAPABILITIES == frozenset({"usage", "quota", "activity", "admin"})
     assert STABILITIES == frozenset({"official", "experimental"})
     assert EXACTNESS == frozenset({"exact", "derived", "partial", "unavailable"})

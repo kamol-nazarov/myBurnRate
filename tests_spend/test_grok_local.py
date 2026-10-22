@@ -454,3 +454,88 @@ def test_session_updates_reuse_the_parse_of_unchanged_files(tmp_path, monkeypatc
     grown, _issues, _found = grok_local._session_updates(root)
     assert len(grown) == 3 and len(opened) == 2  # only the changed file was re-read
     grok_local.reset_state()
+
+
+def test_native_pass_reconciles_only_changed_sessions_with_full_pass_results(tmp_path, monkeypatch) -> None:
+    # Regression: an active session appends on every turn, so every pass re-read
+    # and re-reconciled every session ever recorded (~15s with ~500 sessions).
+    from spend_app.adapters import grok_native
+
+    def update(session: str, ms: int, event: str, tokens: int = 10) -> str:
+        return json.dumps({"params": {"sessionId": session, "_meta": {"agentTimestampMs": ms, "eventId": event},
+                                      "update": {"usage": {"inputTokens": tokens, "outputTokens": 2,
+                                                           "cachedReadTokens": 0, "cachedWriteTokens": 0}}}}) + "\n"
+
+    root = tmp_path / ".grok"
+    for sid in ("s1", "s2", "s3"):
+        (root / "sessions" / "project" / sid).mkdir(parents=True)
+        (root / "sessions" / "project" / sid / "updates.jsonl").write_text(
+            update(sid, 1_790_000_000_000, sid + "-e1"), encoding="utf-8")
+    # s2 carries a coarse total; its later decrease is reported on every pass.
+    (root / "sessions" / "project" / "s2" / "signals.json").write_text(json.dumps({"totalTokens": 500}), encoding="utf-8")
+    pricing = PricingEngine.load(ROOT / "pricing")
+    incremental, full = tmp_path / "incremental.db", tmp_path / "full.db"
+    initialize(incremental)
+    initialize(full)
+    grok_local.reset_state()
+    grok_local.ingest(database_path=incremental, pricing=pricing, log_path=root)
+    (root / "sessions" / "project" / "s2" / "signals.json").write_text(json.dumps({"totalTokens": 400}), encoding="utf-8")
+    grok_local.ingest(database_path=incremental, pricing=pricing, log_path=root)
+
+    reconciled, opened = [], []
+    original_session = grok_native._reconcile_session
+    monkeypatch.setattr(grok_native, "_reconcile_session",
+                        lambda connection, sid, rows, issues: reconciled.append(sid) or original_session(connection, sid, rows, issues))
+    original_loads = grok_native.json.loads
+    monkeypatch.setattr(grok_native.json, "loads", lambda text, *a, **k: opened.append(1) or original_loads(text, *a, **k))
+    with (root / "sessions" / "project" / "s1" / "updates.jsonl").open("a", encoding="utf-8") as stream:
+        stream.write(update("s1", 1_790_000_100_000, "s1-e2", 30))
+    result = grok_local.ingest(database_path=incremental, pricing=pricing, log_path=root)
+    assert reconciled == ["s1"]  # s2 and s3 reuse their previous reconciliation
+    assert len(opened) == 2  # only the changed file was re-read
+    assert "grok_signal_decrease_without_revision_evidence" in result["issues"]  # unchanged s2 still reports it
+
+    # A cold pass over the same files and history stores exactly the same rows.
+    monkeypatch.undo()
+    grok_local.reset_state()
+    with connect(incremental) as source, connect(full) as target:
+        meta = source.execute("SELECT key, value FROM app_meta WHERE key LIKE 'grok.native%'").fetchall()
+        target.executemany("INSERT INTO app_meta(key, value) VALUES(?, ?)", [tuple(row) for row in meta])
+    cold = grok_local.ingest(database_path=full, pricing=pricing, log_path=root)
+    def stored(database: Path, table: str) -> list[dict]:
+        with connect(database) as connection:
+            rows = connection.execute(f"SELECT * FROM {table} WHERE source='grok_local' ORDER BY raw_id").fetchall()
+        return [{k: row[k] for k in row.keys() if k not in {"id", "ingested_at"}} for row in rows]
+
+    for table in ("usage_events", "unpriced_usage_events"):
+        assert stored(incremental, table) == stored(full, table)
+    assert stored(full, "usage_events") + stored(full, "unpriced_usage_events")
+    assert {key: cold[key] for key in ("status", "eventsSeen", "eventsAccepted")} == {key: result[key] for key in ("status", "eventsSeen", "eventsAccepted")}
+    grok_local.reset_state()
+
+
+def test_signal_total_is_saved_when_the_session_also_has_unified_rows(tmp_path: Path) -> None:
+    from spend_app.adapters.common import stable_id
+    from spend_app.adapters.grok_native import _reconcile_session
+    from spend_app.adapters.usage_repair import read_meta
+
+    database = tmp_path / "spend.db"
+    initialize(database)
+    when = datetime(2026, 10, 22, 12, tzinfo=UTC)
+
+    def row(raw_id: str, **tokens) -> UsageRow:
+        return UsageRow(source="grok_local", tool_key="grok", model_key="supergrok:grok-4.6", occurred_at=when,
+                        session_id="s1", project=None, input_tokens=tokens.get("input", 0), cached_input_tokens=0,
+                        cache_write_tokens=0, cache_write_1h_tokens=0, output_tokens=tokens.get("output", 0),
+                        reasoning_tokens=None, cost_usd=None, raw_id=raw_id,
+                        unclassified_tokens=tokens.get("unclassified", 0))
+
+    incoming = [row("grok-local:1", input=100, output=20),
+                row(stable_id("grok-native-total", "s1"), unclassified=500)]
+    issues: list[str] = []
+    with connect(database) as connection:
+        rows = list(_reconcile_session(connection, "s1", incoming, issues))
+        state = read_meta(connection, "grok.native.v1:" + stable_id("s1"), {})
+    assert state["total"] == 500
+    assert {r.raw_id: r.unclassified_tokens for r in rows}[stable_id("grok-native-total", "s1")] == 380
+    assert not issues

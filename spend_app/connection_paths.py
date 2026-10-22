@@ -1,5 +1,4 @@
 """Bounded source inspection. Never returns source content or discovers credentials."""
-import csv
 import fnmatch
 import json
 import hashlib
@@ -78,7 +77,7 @@ def normalize(raw, meta):
     if identity(path) in {identity(Path(path.anchor)), identity(Path.home())}:
         raise LocationError("Select the harness folder, not a whole drive or user home.")
     if path.is_file():
-        allowed = {"sqlite": {".db", ".sqlite"}, "grok": {".jsonl", ".json"}, "zcode": {".db", ".sqlite", ".jsonl"}, "opencode": {".db", ".sqlite", ".json"}, "csv": {".csv", ".json"}, "jsonl": {".jsonl"}}[meta.shape]
+        allowed = {"sqlite": {".db", ".sqlite"}, "grok": {".jsonl", ".json"}, "zcode": {".db", ".sqlite", ".jsonl"}, "opencode": {".db", ".sqlite", ".json"}, "jsonl": {".jsonl"}}[meta.shape]
         if path.suffix.lower() not in allowed:
             raise LocationError("Choose the expected database, usage log or CSV file for this source.")
     if not meta.suffix and meta.shape not in {"opencode", "zcode", "grok"} and not path.is_file():
@@ -414,8 +413,6 @@ class Inspector:
                         predicate = ""
                         if source == "opencode_local":
                             predicate = " WHERE COALESCE(tokens_input,0)+COALESCE(tokens_output,0)>0"
-                        elif source == "cursor_local":
-                            predicate = " WHERE usage_json IS NOT NULL"
                         elif source == "zcode_local":
                             predicate = " WHERE status='completed' AND COALESCE(input_tokens,0)+COALESCE(output_tokens,0)>0"
                         usable |= db.execute(f'SELECT "{column}" FROM "{meta.table}"{predicate} LIMIT 1').fetchone() is not None
@@ -431,63 +428,44 @@ class Inspector:
                             raise LocationError("Incompatible Grok signal metadata.") from None
                         usable |= bool(signal and signal.unclassified_tokens > 0)
                         continue
-                    if meta.shape == "csv" and file.suffix.lower() == ".json":
-                        from spend_app.adapters.cursor_export import parse_export
-                        if file.stat().st_size > len(sample):
-                            return {"state": "readable", "usableSample": None, "detail": "Export exceeds the bounded verification sample. Full schema and usage remain unverified until collection."}
+                    recognized = not sample.strip()
+                    for line in sample.splitlines()[:64]:
                         try:
-                            rows, errors = parse_export(json.loads(sample))
+                            row = json.loads(line)
                         except ValueError:
-                            raise LocationError("Expected a supported Cursor account export.") from None
-                        usable |= bool(rows)
-                        continue
-                    if meta.shape == "csv":
-                        header = next(csv.reader(sample.decode("utf-8-sig").splitlines()), [])
-                        if not header:
                             continue
-                        from spend_app.adapters.cursor_csv import resolve_columns
-                        if not {"timestamp", "model"} <= resolve_columns(header).keys():
-                            raise LocationError("Expected a Cursor usage CSV export.")
-                        usable |= len(sample.splitlines()) > 1
-                    else:
-                        recognized = not sample.strip()
-                        for line in sample.splitlines()[:64]:
-                            try:
-                                row = json.loads(line)
-                            except ValueError:
-                                continue
-                            if not isinstance(row, dict):
-                                continue
-                            kind = row.get("type")
-                            if source == "codex_local":
-                                recognized |= kind in {"session_meta", "event_msg", "response_item", "turn_context"}
-                                usable |= kind == "event_msg" and isinstance(row.get("payload"), dict) and row["payload"].get("type") == "token_count"
-                            elif source in {"claude_local", "claude_local_alt"}:
-                                recognized |= kind in {"user", "assistant", "summary", "system", "progress", "file-history-snapshot"}
-                                usable |= kind == "assistant" and isinstance(row.get("message"), dict) and bool(row["message"].get("usage"))
-                            elif source == "muse_local":
-                                from spend_app.adapters.muse_records import reduce_records
-                                recognized |= any(key in row for key in ("kind", "type", "role", "record_type", "payload_type", "schema_version"))
-                                usable |= bool(reduce_records([row])[0])
-                            elif source == "zcode_local":
-                                from spend_app.adapters.zcode_transcript import reduce_records
-                                recognized |= row.get("role") in {"user", "assistant", "system"}
-                                usable |= bool(reduce_records([row])[0])
-                            elif source == "grok_local":
-                                from spend_app.adapters.grok_native import reduce_updates, signal_row
-                                from spend_app.adapters.grok_records import reduce_records
-                                recognized |= "msg" in row and "sid" in row or isinstance(row.get("params"), dict)
-                                usable |= bool(reduce_updates([row])[0] or reduce_records([row])[0])
-                                if file.name == "signals.json":
-                                    from datetime import datetime, UTC
-                                    recognized = "totalTokens" in row
-                                    if recognized:
-                                        try:
-                                            usable |= signal_row(row, file.parent.name, datetime.now(UTC)).unclassified_tokens > 0
-                                        except ValueError:
-                                            raise LocationError("Incompatible Grok signal metadata.") from None
-                        if not recognized:
-                            raise LocationError("The sample is not a supported usage log.")
+                        if not isinstance(row, dict):
+                            continue
+                        kind = row.get("type")
+                        if source == "codex_local":
+                            recognized |= kind in {"session_meta", "event_msg", "response_item", "turn_context"}
+                            usable |= kind == "event_msg" and isinstance(row.get("payload"), dict) and row["payload"].get("type") == "token_count"
+                        elif source in {"claude_local", "claude_local_alt"}:
+                            recognized |= kind in {"user", "assistant", "summary", "system", "progress", "file-history-snapshot"}
+                            usable |= kind == "assistant" and isinstance(row.get("message"), dict) and bool(row["message"].get("usage"))
+                        elif source == "muse_local":
+                            from spend_app.adapters.muse_records import reduce_records
+                            recognized |= any(key in row for key in ("kind", "type", "role", "record_type", "payload_type", "schema_version"))
+                            usable |= bool(reduce_records([row])[0])
+                        elif source == "zcode_local":
+                            from spend_app.adapters.zcode_transcript import reduce_records
+                            recognized |= row.get("role") in {"user", "assistant", "system"}
+                            usable |= bool(reduce_records([row])[0])
+                        elif source == "grok_local":
+                            from spend_app.adapters.grok_native import reduce_updates, signal_row
+                            from spend_app.adapters.grok_records import reduce_records
+                            recognized |= "msg" in row and "sid" in row or isinstance(row.get("params"), dict)
+                            usable |= bool(reduce_updates([row])[0] or reduce_records([row])[0])
+                            if file.name == "signals.json":
+                                from datetime import datetime, UTC
+                                recognized = "totalTokens" in row
+                                if recognized:
+                                    try:
+                                        usable |= signal_row(row, file.parent.name, datetime.now(UTC)).unclassified_tokens > 0
+                                    except ValueError:
+                                        raise LocationError("Incompatible Grok signal metadata.") from None
+                    if not recognized:
+                        raise LocationError("The sample is not a supported usage log.")
                 if found >= 3:
                     break
             return {"state": "readable", "usableSample": bool(usable), "patterns": patterns, "detail": ("Verified readable." if usable else "Verified readable; no usable history in the bounded sample. You can connect and wait for activity.") + (" Approved subroots: " + ", ".join(p.split("/")[0] for p in patterns) if len(patterns) > 1 else "")}

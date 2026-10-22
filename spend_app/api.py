@@ -20,6 +20,8 @@ ASSET_IMMUTABLE_CACHE = "public, max-age=31536000, immutable"
 ASSET_REVALIDATE_CACHE = "no-cache"
 GZIP_MINIMUM_SIZE = 1024
 ASSET_SETTLE_SECONDS = 5
+# How long a paired Spoke's HUD may show its last Hub copy while renewing it.
+HUD_HUB_STALE_SECONDS = 300
 CONTENT_SECURITY_POLICY = (
     "default-src 'self'; script-src 'self' 'unsafe-inline'; "
     "style-src 'self' 'unsafe-inline'; "
@@ -73,7 +75,7 @@ from spend_app.aggregate import (
     data_clock,
     record_summary_request,
 )
-from spend_app.config import Settings, load_settings
+from spend_app.config import Settings, dashboard_enabled, load_settings
 from spend_app.db import initialize
 from spend_app.pricing import PricingEngine
 from spend_app.limits import snapshot_limits
@@ -104,7 +106,24 @@ def _live_hud_html() -> str:
     import spend_app.hud as hud
 
     importlib.reload(hud)
-    return hud.render_hud()
+    return hud.render_hud(dashboard=dashboard_enabled())
+
+
+# With the dashboard off, "/" belongs to the HUD: inside the desktop app it
+# hides the main window (also on desktop builds that still open "/?app=1" at
+# launch); in a browser it opens the HUD.
+HUD_LAUNCHER_HTML = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>BURNRATE</title>
+<script>
+(async () => {
+  const tauri = window.__TAURI_INTERNALS__;
+  if (tauri && typeof tauri.invoke === "function") {
+    try { await tauri.invoke("hide_main"); return; } catch {}
+  }
+  location.replace("/hud");
+})();
+</script></head><body></body></html>
+"""
 
 
 def create_app(
@@ -119,14 +138,19 @@ def create_app(
     history_demand = HistoryDemand()
     scheduler = create_scheduler(settings, pricing, history_active=history_demand.active) if enable_scheduler else None
 
-    def request_history(request: Request):
-        # Only the visible dashboard opts in. API readers and older HUD
-        # windows must never start a cold transcript scan implicitly.
-        if request.headers.get("x-burnrate-view") != "dashboard":
-            return
+    def request_collection():
         if history_demand.touch() and scheduler:
-            for job_id in ("local-ingest", "network-ingest", "provider-admin"):
+            from spend_app.freshness import collection_resumed
+
+            collection_resumed()
+            for job_id in ("local-ingest", "provider-admin"):
                 scheduler.modify_job(job_id, next_run_time=datetime.now(UTC))
+
+    def request_history(request: Request):
+        # Dashboard views opt in explicitly. The HUD's separate usage read
+        # also keeps collection active, without building dashboard summaries.
+        if request.headers.get("x-burnrate-view") == "dashboard":
+            request_collection()
     from spend_app.diagnostics import detect_local_sources, source_reports
     from spend_app.db import connect
 
@@ -227,7 +251,7 @@ def create_app(
     ) -> dict:
         resolved = _window_or_400(window)
         # An already-open HUD may still run the previous embedded script
-        # after a backend upgrade. It must not activate a historical scan.
+        # after a backend upgrade. Keep its collection and lightweight reads.
         referrer = urlsplit(request.headers.get("referer", ""))
         if referrer.path == "/hud" or parse_qs(referrer.query).get("hud") == ["1"]:
             return {**spend_hud_usage(machine), **spend_hud_live(machine)}
@@ -314,15 +338,19 @@ def create_app(
         # on a spoke the hub cannot see that a local source or meter stalled.
         from spend_app.freshness import report
 
-        return report(settings, history_active=history_demand.active() if scheduler else True,
-                      include_history=view != "hud")
+        collecting = history_demand.active()
+        return report(settings, history_active=collecting if scheduler else True,
+                      include_history=view != "hud" or collecting)
 
     @app.get("/api/spend/hud")
     def spend_hud_live(machine: str = Query(default="all")) -> dict:
         from spend_app.hud_data import live_snapshot
         from spend_app.sync import fetch_from_configured_hub
 
-        hub = fetch_from_configured_hub(settings, "/api/spend/hud", {"machine": machine})
+        # The HUD polls every few seconds: serve the last Hub copy at once
+        # and renew it in the background rather than wait on the network.
+        hub = fetch_from_configured_hub(settings, "/api/spend/hud", {"machine": machine},
+                                        stale_seconds=HUD_HUB_STALE_SECONDS)
         if hub is not None:
             return hub
         return live_snapshot(settings, now=current_now(), machine=machine)
@@ -332,7 +360,11 @@ def create_app(
         from spend_app.hud_data import recorded_usage
         from spend_app.sync import fetch_from_configured_hub
 
-        hub = fetch_from_configured_hub(settings, "/api/spend/hud/usage", {"machine": machine})
+        # Renew on every poll, including on paired spokes before the hub
+        # read. The collector runs asynchronously; return recorded data now.
+        request_collection()
+        hub = fetch_from_configured_hub(settings, "/api/spend/hud/usage", {"machine": machine},
+                                        stale_seconds=HUD_HUB_STALE_SECONDS)
         if hub is not None:
             return hub
         return recorded_usage(settings, pricing, now=current_now(), machine=machine)
@@ -367,7 +399,7 @@ def create_app(
     def refresh_quotas() -> dict:
         from spend_app.quotas import nudge_quota_lanes, poll_quotas
         from spend_app.setup_wizard import maybe_run_configured_spoke_sync
-        from spend_app.sync import STREAM_BROKER, clear_hub_proxy_cache
+        from spend_app.sync import STREAM_BROKER, expire_hub_proxy_cache
 
         now_val = current_now()
         stamp = now_val.astimezone(UTC).isoformat().replace("+00:00", "Z")
@@ -380,7 +412,7 @@ def create_app(
         except Exception:
             outcomes = {}
         sync_res = maybe_run_configured_spoke_sync(settings, pricing)
-        clear_hub_proxy_cache()
+        expire_hub_proxy_cache()
         from spend_app import aggregate as _agg
         _agg.reset_memo()
         polled_list = outcomes.get("polledProviders", []) if isinstance(outcomes, dict) else []
@@ -442,6 +474,8 @@ def create_app(
                 completed = False
             if not completed:
                 return HTMLResponse(render_setup_wizard(), headers={"Cache-Control": ASSET_REVALIDATE_CACHE})
+        if not dashboard_enabled():
+            return HTMLResponse(HUD_LAUNCHER_HTML, headers={"Cache-Control": "no-store"})
         return HTMLResponse(
             render_index(web_root),
             headers={"Cache-Control": ASSET_REVALIDATE_CACHE},

@@ -14,9 +14,6 @@ from spend_app import __version__
 from spend_app.adapters.anthropic_admin import ingest as ingest_anthropic_admin
 from spend_app.adapters.codex_local import ingest as ingest_codex_local
 from spend_app.adapters.claude_local import ingest as ingest_claude_local
-from spend_app.adapters.cursor_admin import ingest as ingest_cursor_admin
-from spend_app.adapters.cursor_csv import ingest as ingest_cursor_csv
-from spend_app.adapters.cursor_local import ingest as ingest_cursor_local
 from spend_app.adapters.opencode_local import ingest as ingest_opencode_local
 from spend_app.adapters.openai_admin import ingest as ingest_openai_admin
 from spend_app.adapters.traycer_local import ingest as ingest_traycer_local
@@ -31,12 +28,9 @@ BACKFILL_SOURCES = (
     "codex-local",
     "claude-local",
     "traycer-local",
-    "cursor-local",
-    "cursor-csv",
     "opencode-local",
     "openai-admin",
     "anthropic-admin",
-    "cursor-admin",
 )
 
 DEFAULT_SERVE_HOST = "127.0.0.1"
@@ -82,11 +76,7 @@ def default_source_path(source: str, settings: Settings) -> str:
         "codex-local": str(home / ".codex" / "sessions" / "**" / "*.jsonl"),
         "claude-local": str(home / ".claude" / "projects" / "**" / "*.jsonl"),
         "traycer-local": str(home / ".traycer" / "host" / "epic-state" / "**" / "chat" / "chat.db"),
-        "cursor-local": str(
-            home / ".cursor" / "projects" / "**" / "sdk-agent-store" / "*" / "index.db"
-        ),
         "opencode-local": str(home / ".local" / "share" / "opencode" / "opencode.db"),
-        "cursor-csv": str(settings.cursor_import_path),
     }[source]
 
 
@@ -276,11 +266,11 @@ def _main() -> int:
     )
     backfill.add_argument(
         "--start",
-        help="UTC start bound for openai-admin, anthropic-admin, and cursor-admin backfill",
+        help="UTC start bound for openai-admin and anthropic-admin backfill",
     )
     backfill.add_argument(
         "--end",
-        help="UTC end bound for openai-admin, anthropic-admin, and cursor-admin backfill",
+        help="UTC end bound for openai-admin and anthropic-admin backfill",
     )
     subscriptions = subparsers.add_parser("subscription")
     subscription_commands = subscriptions.add_subparsers(dest="subscription_command", required=True)
@@ -464,39 +454,11 @@ def _main() -> int:
         )
         print(json.dumps(result, indent=2))
         return 2 if result["status"] == "failed" else 0
-    if args.command == "backfill" and args.source == "cursor-local":
-        result = ingest_cursor_local(
-            database_path=settings.database_path,
-            pricing=PricingEngine.load(settings.pricing_path),
-            database_glob=_local_path(args.source, args.session_glob, settings),
-        )
-        print(json.dumps(result, indent=2))
-        return 2 if result["status"] == "failed" else 0
     if args.command == "backfill" and args.source == "opencode-local":
         result = ingest_opencode_local(
             database_path=settings.database_path,
             pricing=PricingEngine.load(settings.pricing_path),
             source_database=Path(_local_path(args.source, args.session_glob, settings)),
-        )
-        print(json.dumps(result, indent=2))
-        return 2 if result["status"] == "failed" else 0
-    if args.command == "backfill" and args.source == "cursor-csv":
-        result = ingest_cursor_csv(
-            database_path=settings.database_path,
-            pricing=PricingEngine.load(settings.pricing_path),
-            import_path=Path(_local_path(args.source, args.session_glob, settings)),
-        )
-        print(json.dumps(result, indent=2))
-        return 2 if result["status"] == "failed" else 0
-    if args.command == "backfill" and args.source == "cursor-admin":
-        end = _parse_utc(args.end, datetime.now(UTC))
-        start = _parse_utc(args.start, end - timedelta(hours=2))
-        result = ingest_cursor_admin(
-            database_path=settings.database_path,
-            pricing=PricingEngine.load(settings.pricing_path),
-            api_key=settings.cursor_api_key,
-            start=start,
-            end=end,
         )
         print(json.dumps(result, indent=2))
         return 2 if result["status"] == "failed" else 0

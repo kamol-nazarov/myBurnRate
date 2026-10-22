@@ -531,7 +531,7 @@ def test_this_cycle_uses_a_weekly_reset_and_marks_a_group_without_one(
     _mutate(
         db_with_plan,
         "add",
-        values=_plan_values(name="Cursor Pro", tool_key="cursor", amount_usd="100.00"),
+        values=_plan_values(name="SuperGrok", tool_key="grok", amount_usd="100.00"),
     )
     weekly_reset = AS_OF + timedelta(days=3)
     before_cycle = datetime(2026, 9, 2, 15, 0, tzinfo=UTC)
@@ -545,12 +545,12 @@ def test_this_cycle_uses_a_weekly_reset_and_marks_a_group_without_one(
         )
         _add_priced(
             connection,
-            raw_id="cursor-inside",
+            raw_id="grok-inside",
             occurred=inside_cycle,
-            tool_key="cursor",
-            source="cursor_local",
+            tool_key="grok",
+            source="grok_local",
             computed=50.0,
-            model_key="cursor:grok-4.6",
+            model_key="supergrok:grok-4.6",
         )
         upsert_quota(
             connection,
@@ -574,17 +574,6 @@ def test_this_cycle_uses_a_weekly_reset_and_marks_a_group_without_one(
             pct=10,
             resets_at=_stamp(weekly_reset),
         )
-        upsert_quota(
-            connection,
-            provider_key="cursor",
-            limit_key="cursor_models",
-            label="Cursor Models",
-            unit="pct",
-            source="test",
-            polled_at=_stamp(AS_OF),
-            pct=20,
-            resets_at=_stamp(AS_OF + timedelta(days=20)),
-        )
         report = store.fetch_plans_value_report(
             connection, settings, pricing, "this_cycle", as_of=AS_OF
         )
@@ -592,17 +581,17 @@ def test_this_cycle_uses_a_weekly_reset_and_marks_a_group_without_one(
     assert report["periodLabel"] == "Each plan's current quota window"
     by_id = {group["groupId"]: group for group in report["groups"]}
     codex = by_id["tool:codex"]
-    cursor = by_id["tool:grok"]
+    grok = by_id["tool:grok"]
     assert codex["cycleAvailable"] is True
     assert codex["cycleLimitKey"] == "weekly"
     assert codex["cycleFromUtc"].startswith("2026-09-05")
     assert Decimal(codex["configuredCostUsd"]) == Decimal("40")
     assert Decimal(codex["usageValueUsd"]) == Decimal("2400")
     assert codex["multipleBasis"] == "lower_bound"
-    assert cursor["cycleAvailable"] is False
-    assert cursor["configuredCostUsd"] is None
-    assert cursor["usageValueUsd"] is None
-    assert "unavailable" in cursor["cycleReason"].lower()
+    assert grok["cycleAvailable"] is False
+    assert grok["configuredCostUsd"] is None
+    assert grok["usageValueUsd"] is None
+    assert "unavailable" in grok["cycleReason"].lower()
     assert report["unassigned"]["usageValueStatus"] == "no_records"
 
 

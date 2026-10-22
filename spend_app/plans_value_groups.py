@@ -16,8 +16,9 @@ from zoneinfo import ZoneInfo
 UTC = timezone.utc
 ZERO = Decimal(0)
 
-# Tool keys accepted on plan terms. OpenCode and ZCode share Z.AI telemetry;
-# SuperGrok and Cursor share the Grok usage pool.
+# Tool keys accepted on plan terms. OpenCode and ZCode share Z.AI telemetry.
+# A plan saved for Cursor, which shares SuperGrok's pool, groups with SuperGrok;
+# Cursor usage itself is not counted.
 SUPPORTED_TOOLS = (
     "codex",
     "claude-code",
@@ -35,15 +36,13 @@ SUPPORTED_TOOLS = (
 # Canonical association -> event tool_keys that share inseparable telemetry.
 TOOL_ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
     "opencode": ("opencode", "zcode"),
-    "grok": ("grok", "cursor"),
 }
 
 GROUP_DISPLAY_NAMES: dict[str, str] = {
     "opencode": "Z.AI (OpenCode / ZCode)",
     "codex": "Codex",
     "claude-code": "Claude Code",
-    "cursor": "Cursor",
-    "grok": "Grok (SuperGrok / Cursor)",
+    "grok": "Grok (SuperGrok)",
     "openrouter": "OpenRouter",
     "xai": "xAI",
     "antigravity": "Antigravity",

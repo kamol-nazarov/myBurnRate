@@ -26,10 +26,8 @@ def _client(tmp_path: Path) -> TestClient:
     settings = Settings(
         database_path=tmp_path / "spend.db",
         pricing_path=ROOT / "pricing",
-        cursor_import_path=tmp_path / "imports",
         anthropic_admin_key=None,
         openai_admin_key=None,
-        cursor_api_key=None,
         timezone="America/New_York",
         cache_hit_threshold=0.75,
         over_routing_token_ceiling=40000,
@@ -54,7 +52,8 @@ def test_assets_and_json_are_gzip_compressed(tmp_path: Path) -> None:
     assert compressed.content == raw.content
 
 
-def test_html_references_hash_versioned_assets_and_revalidates(tmp_path: Path) -> None:
+def test_html_references_hash_versioned_assets_and_revalidates(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BURNRATE_ENABLE_DASHBOARD", "1")
     client = _client(tmp_path)
     page = client.get("/")
     assert page.status_code == 200
@@ -140,8 +139,9 @@ def test_head_prefetch_starts_data_requests_before_the_script() -> None:
     assert 'headers: document.hidden ? {} : {"X-Burnrate-View": "dashboard"}' in JS
 
 
-def test_provider_logo_sprite_is_versioned_cached_and_complete(tmp_path: Path) -> None:
+def test_provider_logo_sprite_is_versioned_cached_and_complete(tmp_path: Path, monkeypatch) -> None:
     # Provider marks ship as one sprite so spend.js stays inside its size budget.
+    monkeypatch.setenv("BURNRATE_ENABLE_DASHBOARD", "1")
     client = _client(tmp_path)
     version = asset_version(WEB / "logos.svg")
     assert f'name="burnrate-logos" content="/logos.svg?v={version}"' in client.get("/").text

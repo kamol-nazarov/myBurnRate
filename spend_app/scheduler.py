@@ -20,10 +20,6 @@ from spend_app.providers import (
     ingest_antigravity_local,
     ingest_claude_local,
     ingest_codex_local,
-    ingest_cursor_admin,
-    ingest_cursor_csv,
-    ingest_cursor_local,
-    ingest_cursor_usage,
     ingest_grok_local,
     ingest_opencode_local,
     ingest_openai_admin,
@@ -42,10 +38,6 @@ _ = (
     ingest_antigravity_local,
     ingest_claude_local,
     ingest_codex_local,
-    ingest_cursor_admin,
-    ingest_cursor_csv,
-    ingest_cursor_local,
-    ingest_cursor_usage,
     ingest_grok_local,
     ingest_opencode_local,
     ingest_openai_admin,
@@ -56,18 +48,12 @@ _ = (
 
 _ = (ingest_muse_local,)
 
-# Local sources that read a remote service rather than files on this computer.
-# They run on their own job, so a slow or unreachable provider never holds the
-# local transcript sources (and every figure derived from them) behind it.
-NETWORK_LOCAL_SOURCES = frozenset({"cursor_usage_service"})
-
 _SOURCE_TO_QUOTA_PROVIDER: dict[str, str] = {
     "codex_local": "codex",
     "claude_local": "claude-code",
     "antigravity_local": "antigravity",
     "grok_local": "grok",
     "opencode_local": "opencode",
-    "cursor_local": "grok",
     "muse_local": "muse",
 }
 
@@ -118,9 +104,9 @@ def _run_ingest_specs(jobs: list[tuple[ProviderSpec, dict]], settings=None, pric
                         if quota_provider:
                             nudge_quota_lanes(settings.database_path, quota_provider)
                         from spend_app.setup_wizard import maybe_run_configured_spoke_sync
-                        from spend_app.sync import STREAM_BROKER, clear_hub_proxy_cache
+                        from spend_app.sync import STREAM_BROKER, expire_hub_proxy_cache
                         maybe_run_configured_spoke_sync(settings, pricing)
-                        clear_hub_proxy_cache()
+                        expire_hub_proxy_cache()
                         STREAM_BROKER.publish({"type": "ingest", "source": spec.key})
                     except Exception:
                         pass
@@ -140,7 +126,7 @@ def _run_ingest_specs(jobs: list[tuple[ProviderSpec, dict]], settings=None, pric
 
 
 class HistoryDemand:
-    """Keep historical collection active while a dashboard is being used."""
+    """Keep usage collection active while a dashboard or HUD is being used."""
 
     def __init__(self, *, clock=time.monotonic, ttl_seconds=120):
         self._clock = clock
@@ -177,8 +163,8 @@ def create_scheduler(settings: Settings, pricing: PricingEngine, *, history_acti
         from spend_app.setup_wizard import maybe_run_configured_spoke_sync
 
         if not collect_history():
-            # The HUD still syncs quota/activity snapshots, without opening
-            # transcript stores or rebuilding historical summaries.
+            # With no usage viewers, continue syncing quota/activity
+            # snapshots without opening transcript stores.
             if not is_central:
                 maybe_run_configured_spoke_sync(settings, pricing)
             return
@@ -192,7 +178,7 @@ def create_scheduler(settings: Settings, pricing: PricingEngine, *, history_acti
                     [
                         (spec, {})
                         for spec in REGISTRY
-                        if spec.kind in {"local", "manual"} and spec.key not in NETWORK_LOCAL_SOURCES
+                        if spec.kind in {"local", "manual"}
                     ],
                     settings,
                     pricing,
@@ -245,26 +231,6 @@ def create_scheduler(settings: Settings, pricing: PricingEngine, *, history_acti
         **local_ingest_interval,
         id="local-ingest",
         next_run_time=datetime.now(UTC) + timedelta(seconds=1),
-    )
-
-    def network_ingest_jobs() -> None:
-        if not collect_history():
-            return
-        if os.getenv("BURNRATE_CENTRAL_SERVER", "").strip().lower() in {"1", "true", "yes"}:
-            return
-        # Each adapter keeps its own adaptive cadence; this tick only offers it a turn.
-        _run_ingest_specs(
-            [(spec, {}) for spec in REGISTRY if spec.kind == "local" and spec.key in NETWORK_LOCAL_SOURCES],
-            settings,
-            pricing,
-        )
-
-    scheduler.add_job(
-        network_ingest_jobs,
-        "interval",
-        **local_ingest_interval,
-        id="network-ingest",
-        next_run_time=datetime.now(UTC) + timedelta(seconds=2),
     )
 
     def admin_jobs() -> None:

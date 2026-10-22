@@ -121,7 +121,7 @@ def test_snooze_uses_elapsed_time_across_daylight_saving_transition():
     from datetime import datetime
     from spend_app.attention_store import fact
     now=datetime(2026,11,1,0,30,tzinfo=NEW_YORK)
-    f=fact('source','cursor_local','legacy',now,rules.iso(now),eligibility='eligible',condition='breach',reasonCode='source_failed')
+    f=fact('source','grok_local','legacy',now,rules.iso(now),eligibility='eligible',condition='breach',reasonCode='source_failed')
     state=rules.reduce(rules.initial(),[f],now)
     item=state['current'][f['key']]
     changed=rules.mutate(state,{'operation':'snooze','id':item['id'],'hours':24},now)
@@ -134,7 +134,7 @@ def test_reset_correction_does_not_mint_duplicate():
 
 def test_sources_failure_zero_row_recovery_and_recurrence():
     repo,clock,_,service=world();repo.attempts=[attempt(),attempt("codex_local","success",reason=None)]
-    service.evaluate();first=only(service,"source");assert first["evidence"]["source"]=="cursor_local"
+    service.evaluate();first=only(service,"source");assert first["evidence"]["source"]=="grok_local"
     clock[0]+=timedelta(seconds=10);repo.attempts=[attempt(status="success",when=clock[0],reason=None)]
     service.evaluate();assert not service.read()["current"] and service.read()["history"][0]["reasonCode"]=="recovered"
     clock[0]+=timedelta(seconds=10);repo.attempts=[attempt(when=clock[0])];service.evaluate()
@@ -168,24 +168,24 @@ def test_one_failed_rule_does_not_suppress_independently_usable_evidence():
 def test_binding_revision_and_disabled_are_not_recovery():
     repo,clock,_,service=world()
     b={"enabled":True,"revision":1,"state":"needs_attention","lastVerification":"2026-09-10T11:00:00Z"}
-    repo.meta["connections.v1"]["bindings"]["cursor_local"]=b;repo.attempts=[attempt()];service.evaluate();first=only(service,"source")
-    b=repo.meta["connections.v1"]["bindings"]["cursor_local"]
+    repo.meta["connections.v1"]["bindings"]["grok_local"]=b;repo.attempts=[attempt()];service.evaluate();first=only(service,"source")
+    b=repo.meta["connections.v1"]["bindings"]["grok_local"]
     b.update(revision=2,state="waiting_activity",importRevision=1,lastImport=rules.iso(NOW+timedelta(seconds=3)))
     clock[0]+=timedelta(seconds=3);service.evaluate()
     assert not service.read()["current"] and service.read()["history"][0]["reasonCode"]=="source_rebound"
 
 def test_managed_partial_import_has_same_revision_and_zero_new_rows():
     repo,clock,_,service=world()
-    repo.meta['connections.v1']['bindings']['cursor_local']={'enabled':True,'revision':4,'state':'needs_attention','lastVerification':'2026-09-10T11:00:00Z'}
+    repo.meta['connections.v1']['bindings']['grok_local']={'enabled':True,'revision':4,'state':'needs_attention','lastVerification':'2026-09-10T11:00:00Z'}
     repo.attempts=[attempt()];service.evaluate();assert only(service,'source')['severity']==1
     clock[0]+=timedelta(seconds=1)
-    repo.meta['connections.v1']['bindings']['cursor_local'].update(importRevision=4,lastImport=rules.iso(clock[0]),state='waiting_activity')
+    repo.meta['connections.v1']['bindings']['grok_local'].update(importRevision=4,lastImport=rules.iso(clock[0]),state='waiting_activity')
     repo.attempts=[attempt(status='partial',when=clock[0],reason='missing model pricing')];service.evaluate()
     assert not service.read()['current'] and service.read()['history'][0]['reasonCode']=='recovered'
 
 def test_disable_closes_applicability_even_with_old_attempt():
     repo,clock,_,service=world();repo.attempts=[attempt()];service.evaluate()
-    repo.meta['connections.v1']['bindings']['cursor_local']={'enabled':False,'revision':2}
+    repo.meta['connections.v1']['bindings']['grok_local']={'enabled':False,'revision':2}
     repo.attempts=[attempt(when=NOW-timedelta(hours=1))];service.evaluate()
     assert service.read()['history'][0]['reasonCode']=='source_disabled'
 
@@ -248,10 +248,10 @@ def test_changing_ingest_during_pricing_sweep_cannot_prove_recovery():
     assert not service.read()['history'] and not service.read()['evaluation']['pricingComplete']
 
 def test_pricing_groups_sources_but_not_distinct_domains_and_excludes_identity():
-    repo,_,_,service=world();repo.gaps=[gap(),gap(2,source='cursor_local'),gap(3,'other:missing'),gap(4,coverage_issue='identity_conflict'),gap(5,source='openai_admin')];service.evaluate()
+    repo,_,_,service=world();repo.gaps=[gap(),gap(2,source='grok_local'),gap(3,'other:missing'),gap(4,coverage_issue='identity_conflict'),gap(5,source='openai_admin')];service.evaluate()
     items=service.read()['current'];assert len(items)==2
     common=next(i for i in items if i['evidence']['model']=='vendor:missing')
-    assert common['evidence']['records']==2 and common['evidence']['sources']==['codex_local','cursor_local']
+    assert common['evidence']['records']==2 and common['evidence']['sources']==['codex_local','grok_local']
 
 def test_partial_rate_domain_counts_only_affected_events():
     repo,_,prices,service=world();prices.restored_from=NOW-timedelta(days=2)
@@ -348,7 +348,7 @@ def test_existing_scheduler_uses_fake_registration_only(monkeypatch):
     assert namespace['create_scheduler'](settings,Prices()) is fake
     attention=[job for job in jobs if job[1]['id']=='attention']
     forecast=[job for job in jobs if job[1]['id']=='capacity-forecast']
-    assert len(attention)==1 and len(forecast)==1 and len(jobs)==8
+    assert len(attention)==1 and len(forecast)==1 and len(jobs)==7
     assert attention[0][1]['coalesce'] and attention[0][1]['max_instances']==1
 
 def drive(coroutine):

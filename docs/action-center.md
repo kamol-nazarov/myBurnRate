@@ -1,5 +1,8 @@
 # Action Center v1
 
+The Action Center is part of the full dashboard, which is off by default; set
+`BURNRATE_ENABLE_DASHBOARD=1` and restart to use it.
+
 **Attention** opens a reopenable in-app panel. Current includes unresolved,
 acknowledged, snoozed, below-threshold quota windows, and awaiting-evidence items.
 History contains the newest 100 closed episodes with their actual closure reasons.

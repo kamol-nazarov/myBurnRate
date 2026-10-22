@@ -1,6 +1,6 @@
 # Contributing to BURNRATE
 
-Thanks for helping improve a local-first dashboard for AI coding-agent usage.
+Thanks for helping improve a local-first HUD for AI coding-agent usage.
 Please read this file and the [Code of Conduct](CODE_OF_CONDUCT.md) before
 opening a pull request.
 
@@ -25,8 +25,9 @@ your contribution is licensed under Apache-2.0.
 - Default listener is `127.0.0.1:17331`. Do not bind `0.0.0.0` in tests or
   examples.
 
-Application code lives in `spend_app/`, the dashboard in `spend_web/`, tests in
-`tests_spend/`, and effective-dated price cards in `pricing/`.
+Application code lives in `spend_app/` (the HUD is `spend_app/hud.py`), the
+optional dashboard (off unless `BURNRATE_ENABLE_DASHBOARD=1`) in `spend_web/`,
+tests in `tests_spend/`, and effective-dated price cards in `pricing/`.
 
 ## Privacy
 
@@ -89,7 +90,6 @@ the provider matrix until there is a documented, stable contract.
 
 Treat at least these as experimental unless that contract exists:
 
-- Cursor `api2.cursor.sh` usage service
 - Anthropic OAuth usage snapshots
 - Antigravity localhost RPC
 - Traycer CLI / chat-database readers that are not a documented public API

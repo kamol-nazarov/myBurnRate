@@ -35,10 +35,8 @@ def _settings(tmp_path: Path, database: Path | None = None) -> Settings:
     return Settings(
         database_path=database or tmp_path / "spend.db",
         pricing_path=ROOT / "pricing",
-        cursor_import_path=tmp_path / "imports",
         anthropic_admin_key=None,
         openai_admin_key=None,
-        cursor_api_key=None,
         timezone=TZ,
         cache_hit_threshold=0.75,
         over_routing_token_ceiling=40000,
@@ -160,7 +158,7 @@ def test_ingest_cycle_prewarms_only_recently_requested_windows(tmp_path: Path, m
     database, _pricing = fixture_database(tmp_path)
     settings = _settings(tmp_path, database)
     monkeypatch.setattr("spend_app.connections.execute", lambda *args, **kwargs: {"status":"skipped", "eventsSeen":0})
-    for name in ("codex", "claude", "traycer", "cursor", "opencode"):
+    for name in ("codex", "claude", "traycer", "opencode"):
         monkeypatch.setattr(f"spend_app.scheduler.ingest_{name}_local", lambda **_kwargs: {"status": "success"})
     warmed: list[tuple[str, str]] = []
     real = aggregate.aggregate_summary_cached

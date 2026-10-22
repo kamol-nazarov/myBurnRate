@@ -17,15 +17,12 @@ def _settings(
     tmp_path: Path,
     openai_admin_key: str | None = None,
     anthropic_admin_key: str | None = None,
-    cursor_api_key: str | None = None,
 ) -> Settings:
     return Settings(
         database_path=tmp_path / "spend.db",
         pricing_path=ROOT / "pricing",
-        cursor_import_path=tmp_path / "imports",
         anthropic_admin_key=anthropic_admin_key,
         openai_admin_key=openai_admin_key,
-        cursor_api_key=cursor_api_key,
         timezone="America/New_York",
         cache_hit_threshold=0.75,
         over_routing_token_ceiling=40_000,
@@ -131,27 +128,6 @@ def test_anthropic_admin_cli_forwards_bounds_to_ingest(monkeypatch, tmp_path: Pa
     assert json.loads(output)["status"] == "success"
 
 
-def test_cli_backfill_choices_include_cursor_csv_and_cursor_admin(
-    monkeypatch, tmp_path: Path, capsys
-) -> None:
-    monkeypatch.setattr(cli, "load_settings", lambda: _settings(tmp_path))
-    monkeypatch.setattr("sys.argv", ["burnrate", "backfill", "cursor-admin"])
-    assert cli.main() == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["status"] == "skipped"
-    assert "not configured" in payload["reason"]
-    dumped = json.dumps(payload)
-    assert "Authorization" not in dumped
-    assert "Basic" not in dumped
-
-    import_path = tmp_path / "imports"
-    import_path.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr("sys.argv", ["burnrate", "backfill", "cursor-csv"])
-    assert cli.main() == 0
-    csv_payload = json.loads(capsys.readouterr().out)
-    assert csv_payload["status"] == "skipped"
-
-
 def test_cli_subscription_add_accepts_quarterly(monkeypatch, tmp_path: Path, capsys) -> None:
     monkeypatch.setattr(cli, "load_settings", lambda: _settings(tmp_path))
     monkeypatch.setattr(
@@ -181,40 +157,6 @@ def test_cli_subscription_add_accepts_quarterly(monkeypatch, tmp_path: Path, cap
             (created["id"],),
         ).fetchone()
     assert tuple(row) == ("custom", "Quarterly Plan", 90.0, "quarterly")
-
-
-def test_cursor_admin_cli_forwards_bounds_to_ingest(monkeypatch, tmp_path: Path, capsys) -> None:
-    captured: dict = {}
-
-    def fake_ingest(**kwargs):
-        captured.update(kwargs)
-        return {"source": "cursor_admin", "status": "success", "eventsWritten": 0}
-
-    monkeypatch.setattr(
-        cli,
-        "load_settings",
-        lambda: _settings(tmp_path, cursor_api_key="configured-cursor"),
-    )
-    monkeypatch.setattr(cli, "ingest_cursor_admin", fake_ingest)
-    monkeypatch.setattr(
-        "sys.argv",
-        [
-            "burnrate",
-            "backfill",
-            "cursor-admin",
-            "--start",
-            "2026-08-30T00:00:00Z",
-            "--end",
-            "2026-08-31T00:00:00Z",
-        ],
-    )
-    assert cli.main() == 0
-    assert captured["start"] == datetime(2026, 8, 30, tzinfo=UTC)
-    assert captured["end"] == datetime(2026, 8, 31, tzinfo=UTC)
-    assert captured["api_key"] == "configured-cursor"
-    output = capsys.readouterr().out
-    assert "configured-cursor" not in output
-    assert json.loads(output)["status"] == "success"
 
 
 def test_cli_omitted_session_glob_uses_per_source_default(monkeypatch, tmp_path: Path) -> None:

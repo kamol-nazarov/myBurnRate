@@ -1,5 +1,6 @@
 """Observed Grok session updates/signals, reduced without conversation content."""
 import json
+import os
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -80,40 +81,114 @@ def signal_row(payload, sid, observed_at):
                     0, 0, 0, 0, 0, None, None, stable_id("grok-native-total", sid), value, False)
 
 
-def read_source(root):
+def _read_file(file, parse_log, issues):
+    """Rows for one source file, a pure function of its path and content.
+
+    Issues are appended to ``issues`` as they are found, so a read that fails
+    part-way still reports what it saw, as the uncached reader always did.
+    """
+    if file.name == "unified.jsonl":
+        parsed, state = parse_log(file)
+        issues.extend(state.get("issues", []))
+        return parsed
+    if file.name == "signals.json":
+        with confined(file).open("r", encoding="utf-8") as stream:
+            payload = json.load(stream)
+        row = signal_row(payload, file.parent.name, datetime.fromtimestamp(file.stat().st_mtime, UTC))
+        return [row] if row is not None else []
+    records = []
+    with confined(file).open("r", encoding="utf-8") as stream:
+        for line in stream:
+            try:
+                records.append(json.loads(line))
+            except ValueError:
+                issues.append("malformed_grok_native_metadata")
+    parsed, errors = reduce_updates(records)
+    issues.extend(errors)
+    return parsed
+
+
+def read_source(root, listed=None):
+    """Rows and issues from every source file, in listing order.
+
+    An active session appends to its updates.jsonl and the shared unified log
+    on every turn, so some file changes on almost every pass. Each file's parse
+    is cached against its signature, taken before the read, so a pass re-reads
+    only the files that changed instead of every session ever recorded.
+    """
     from spend_app.adapters.grok_local import parse_log
+    from spend_app.connection_paths import file_signature
     rows, issues, found = [], [], 0
-    for file in files(root):
+    seen = set()
+    for file in (files(root) if listed is None else listed):
         found += 1
+        key = str(file)
+        seen.add(key)
         try:
-            if file.name == "unified.jsonl":
-                parsed, state = parse_log(file)
-                rows.extend(parsed)
-                issues.extend(state.get("issues", []))
-            elif file.name == "signals.json":
-                with confined(file).open("r", encoding="utf-8") as stream:
-                    payload = json.load(stream)
-                row = signal_row(payload, file.parent.name, datetime.fromtimestamp(file.stat().st_mtime, UTC))
-                if row is not None:
-                    rows.append(row)
-            else:
-                records = []
-                with confined(file).open("r", encoding="utf-8") as stream:
-                    for line in stream:
-                        try:
-                            records.append(json.loads(line))
-                        except ValueError:
-                            issues.append("malformed_grok_native_metadata")
-                parsed, errors = reduce_updates(records)
-                rows.extend(parsed)
-                issues.extend(errors)
+            signature = file_signature(file)
         except (OSError, ValueError):
+            signature = None
+        cached = _FILES.get(key)
+        if signature is not None and cached is not None and cached[0] == signature:
+            rows.extend(cached[1])
+            issues.extend(cached[2])
+            continue
+        file_issues = []
+        try:
+            parsed = _read_file(file, parse_log, file_issues)
+        except (OSError, ValueError):
+            _FILES.pop(key, None)
+            issues.extend(file_issues)
             issues.append("grok_native_source_unavailable")
+            continue
+        rows.extend(parsed)
+        issues.extend(file_issues)
+        if signature is not None:
+            _FILES[key] = (signature, tuple(parsed), tuple(file_issues))
+    prefix = os.path.join(str(root), "")
+    for key in [key for key in _FILES if key.startswith(prefix) and key not in seen]:
+        _FILES.pop(key, None)
     return rows, issues, found
 
 
-def reconcile(connection, incoming, issues):
-    from spend_app.adapters.opencode_granular import row_from_record
+# path -> (file signature, parsed rows, issues) for read_source.
+_FILES: dict[str, tuple] = {}
+# reconcile cache key -> {"sessions": {sid: (incoming, output, issues)},
+#                         "traycer": bool | None, "full_at": monotonic seconds}
+_RECONCILED: dict[tuple, dict] = {}
+
+
+def reset_state() -> None:
+    _FILES.clear()
+    _RECONCILED.clear()
+
+
+def session_memo(key):
+    """Working reconcile memo for one pass.
+
+    A session whose incoming rows equal those of the last committed pass, with
+    the same Traycer scope, reconciles to the same rows, so its previous output
+    is reused instead of re-reading its stored events. Like the unchanged-pass
+    guard, every session is fully re-reconciled at least every FORCE_SECONDS,
+    so a stored-row change the inputs cannot show is picked up within minutes.
+    """
+    import time
+    from spend_app.adapters.unchanged import FORCE_SECONDS
+    now = time.monotonic()
+    cached = _RECONCILED.get(key) if key is not None else None
+    if cached is None or now - cached["full_at"] >= FORCE_SECONDS:
+        return {"sessions": {}, "traycer": None, "full_at": now}
+    return {"sessions": dict(cached["sessions"]), "traycer": cached["traycer"], "full_at": cached["full_at"]}
+
+
+def remember_sessions(key, memo) -> None:
+    """Commit a pass's memo once its transaction committed."""
+    if key is None or memo is None or "next" not in memo:
+        return
+    _RECONCILED[key] = {"sessions": memo["next"], "traycer": memo["traycer"], "full_at": memo["full_at"]}
+
+
+def reconcile(connection, incoming, issues, memo=None):
     # A Traycer chat ID is not a Grok session ID. A native cumulative signal
     # has no start boundary with which to prove its otherwise-uncovered share.
     # Disabling Traycer preserves that history; it must not make a new signal
@@ -124,52 +199,76 @@ def reconcile(connection, incoming, issues):
     if traycer_history and any(row.raw_id.startswith("grok-native-total:") for row in incoming):
         issues.append("grok_native_total_traycer_history_scope_unproven")
         incoming = [row for row in incoming if not row.raw_id.startswith("grok-native-total:")]
-    output = []
-    for sid in {row.session_id for row in incoming}:
-        key = "grok.native.v1:" + stable_id(sid)
-        state = read_meta(connection, key, {})
-        existing = {}
-        for table in ("usage_events", "unpriced_usage_events"):
-            for record in connection.execute(f"SELECT * FROM {table} WHERE source=? AND session_id=?", ("grok_local", sid)):
-                row = row_from_record(dict(record))
-                existing[row.raw_id] = row
-        rows = dict(existing)
-        for row in incoming:
-            if row.session_id == sid:
-                rows[row.raw_id] = row
-        unified = [row for row in rows.values() if row.raw_id.startswith("grok-local:")]
-        if unified:
-            # updates.jsonl is a per-turn ledger. A unified line only replaces
-            # the native row when session, time, and token counts are the same turn.
-            fingerprints = {
-                (row.session_id, row.occurred_at.replace(microsecond=0), row.input_tokens, row.output_tokens)
-                for row in unified
-            }
-            for raw_id, row in list(rows.items()):
-                key = (row.session_id, row.occurred_at.replace(microsecond=0), row.input_tokens, row.output_tokens)
-                if raw_id.startswith("grok-native-usage:") and key in fingerprints:
-                    if raw_id in existing:
-                        delete_event(connection, raw_id)
-                    del rows[raw_id]
-        coarse_id = stable_id("grok-native-total", sid)
-        coarse = next((r for r in incoming if r.raw_id == coarse_id), None)
-        if coarse and state and coarse.unclassified_tokens < state["total"]:
-            issues.append("grok_signal_decrease_without_revision_evidence")
-            coarse = None
-        if coarse and (not state or coarse.unclassified_tokens > state["total"] and coarse.occurred_at.timestamp() >= state["observed"]):
-            state = {"total": coarse.unclassified_tokens, "observed": coarse.occurred_at.timestamp()}
-        if state:
-            stamp = datetime.fromtimestamp(state["observed"], UTC)
-            covered = sum(r.input_tokens + r.output_tokens + r.cache_write_tokens + r.unclassified_tokens
-                          for r in rows.values() if r.raw_id != coarse_id and r.occurred_at <= stamp)
-            remainder = max(0, state["total"] - covered)
-            template = coarse or rows.get(coarse_id)
-            if template and remainder:
-                rows[coarse_id] = replace(template, unclassified_tokens=remainder, occurred_at=stamp)
-            elif coarse_id in rows:
-                if coarse_id in existing:
-                    delete_event(connection, coarse_id)
-                del rows[coarse_id]
-            write_meta(connection, key, state)
-        output.extend(rows.values())
+    if memo is not None:
+        if memo["traycer"] is not None and memo["traycer"] != traycer_history:
+            memo["sessions"] = {}
+        memo["traycer"] = traycer_history
+    by_session: dict = {}
+    for row in incoming:
+        by_session.setdefault(row.session_id, []).append(row)
+    output, reconciled = [], {}
+    for sid, session_rows in by_session.items():
+        session_rows = tuple(session_rows)
+        previous = memo["sessions"].get(sid) if memo is not None else None
+        if previous is not None and previous[0] == session_rows:
+            rows, notes = previous[1], previous[2]
+        else:
+            notes = []
+            rows = tuple(_reconcile_session(connection, sid, session_rows, notes))
+            notes = tuple(notes)
+        issues.extend(notes)
+        output.extend(rows)
+        reconciled[sid] = (session_rows, rows, notes)
+    if memo is not None:
+        memo["next"] = reconciled
     return output
+
+
+def _reconcile_session(connection, sid, incoming, issues):
+    from spend_app.adapters.opencode_granular import row_from_record
+    key = "grok.native.v1:" + stable_id(sid)
+    state = read_meta(connection, key, {})
+    existing = {}
+    for table in ("usage_events", "unpriced_usage_events"):
+        for record in connection.execute(f"SELECT * FROM {table} WHERE source=? AND session_id=?", ("grok_local", sid)):
+            row = row_from_record(dict(record))
+            existing[row.raw_id] = row
+    rows = dict(existing)
+    for row in incoming:
+        if row.session_id == sid:
+            rows[row.raw_id] = row
+    unified = [row for row in rows.values() if row.raw_id.startswith("grok-local:")]
+    if unified:
+        # updates.jsonl is a per-turn ledger. A unified line only replaces
+        # the native row when session, time, and token counts are the same turn.
+        fingerprints = {
+            (row.session_id, row.occurred_at.replace(microsecond=0), row.input_tokens, row.output_tokens)
+            for row in unified
+        }
+        for raw_id, row in list(rows.items()):
+            turn = (row.session_id, row.occurred_at.replace(microsecond=0), row.input_tokens, row.output_tokens)
+            if raw_id.startswith("grok-native-usage:") and turn in fingerprints:
+                if raw_id in existing:
+                    delete_event(connection, raw_id)
+                del rows[raw_id]
+    coarse_id = stable_id("grok-native-total", sid)
+    coarse = next((r for r in incoming if r.raw_id == coarse_id), None)
+    if coarse and state and coarse.unclassified_tokens < state["total"]:
+        issues.append("grok_signal_decrease_without_revision_evidence")
+        coarse = None
+    if coarse and (not state or coarse.unclassified_tokens > state["total"] and coarse.occurred_at.timestamp() >= state["observed"]):
+        state = {"total": coarse.unclassified_tokens, "observed": coarse.occurred_at.timestamp()}
+    if state:
+        stamp = datetime.fromtimestamp(state["observed"], UTC)
+        covered = sum(r.input_tokens + r.output_tokens + r.cache_write_tokens + r.unclassified_tokens
+                      for r in rows.values() if r.raw_id != coarse_id and r.occurred_at <= stamp)
+        remainder = max(0, state["total"] - covered)
+        template = coarse or rows.get(coarse_id)
+        if template and remainder:
+            rows[coarse_id] = replace(template, unclassified_tokens=remainder, occurred_at=stamp)
+        elif coarse_id in rows:
+            if coarse_id in existing:
+                delete_event(connection, coarse_id)
+            del rows[coarse_id]
+        write_meta(connection, key, state)
+    return rows.values()

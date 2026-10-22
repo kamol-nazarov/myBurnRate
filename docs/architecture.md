@@ -1,13 +1,13 @@
 # Architecture
 
-BURNRATE is one Windows process: a FastAPI app, a SQLite WAL database, an in-process scheduler, and a static dashboard. It is not an inference proxy, not a hosted service, and not a Grafana stack.
+BURNRATE is one Windows process: a FastAPI app, a SQLite WAL database, an in-process scheduler, and the Sidecar HUD. The full static dashboard is optional and off by default (`BURNRATE_ENABLE_DASHBOARD=1` turns it on). It is not an inference proxy, not a hosted service, and not a Grafana stack.
 
 Internal Python packages in this tree remain `spend_app` (application) and `spend_web` (static assets). The public command is `burnrate`.
 
 ## Runtime
 
 ```text
-  Codex / Claude Code / Cursor / OpenCode / ZCode /
+  Codex / Claude Code / OpenCode / ZCode / Muse Code /
   Grok Build / Antigravity / Traycer
         │  inference path unchanged
         ▼
@@ -27,7 +27,8 @@ Internal Python packages in this tree remain `spend_app` (application) and `spen
   FastAPI  127.0.0.1:17331
         │
         ▼
-  Browser  spend_web/{index.html, spend.css, spend.js, favicon.svg}
+  Sidecar HUD  /hud (Tauri window or browser)
+  Optional dashboard  spend_web/{index.html, spend.css, spend.js, favicon.svg}
 ```
 
 `burnrate serve` launches only this process. It does not start OpenTelemetry Collector, Prometheus, Grafana, a Traycer Prometheus exporter, or any legacy token UI.
@@ -41,13 +42,17 @@ Internal Python packages in this tree remain `spend_app` (application) and `spen
 | Dev checkout | repo-relative only when `BURNRATE_DEV=1` (a `.git` directory is not enough) |
 | Timezone | `UTC` unless `SPEND_TIMEZONE` is set to an IANA zone |
 
-Override `SPEND_DATABASE_PATH`, `SPEND_PRICING_PATH`, and `CURSOR_IMPORT_PATH` in `.env` if needed. `backup_database()` uses `sqlite3.Connection.backup()` and is available for operators; `initialize` does not call it automatically. See [troubleshooting](troubleshooting.md) for the stop-then-copy procedure.
+Override `SPEND_DATABASE_PATH` and `SPEND_PRICING_PATH` in `.env` if needed. `backup_database()` uses `sqlite3.Connection.backup()` and is available for operators; `initialize` does not call it automatically. See [troubleshooting](troubleshooting.md) for the stop-then-copy procedure.
 
 ## HTTP surface
 
 | Path | Role |
 | --- | --- |
-| `GET /` | Dashboard HTML |
+| `GET /` | Opens the HUD (in the desktop app it hides the main window). Serves the dashboard HTML only with `BURNRATE_ENABLE_DASHBOARD=1`; shows the setup wizard on `/?app=1` until setup is complete |
+| `GET /hud` | Sidecar HUD HTML |
+| `GET /api/spend/hud` | HUD live meters and activity, without loading usage history |
+| `GET /api/spend/hud/usage` | HUD spend statistics from recorded usage; each read keeps usage collection active |
+| `GET /api/spend/freshness` | This computer's collection, quota and sync freshness (never proxied to a hub) |
 | `GET /spend.css`, `/spend.js`, `/favicon.svg` | Static assets (content-hash cache busting) |
 | `GET /healthz` | Liveness `{"status": "ok"}` |
 | `GET /api/spend/summary` | Windowed aggregation (what the UI polls; navbar burn/today come from this payload) |
@@ -57,6 +62,8 @@ Override `SPEND_DATABASE_PATH`, `SPEND_PRICING_PATH`, and `CURSOR_IMPORT_PATH` i
 | `GET /api/spend/limits` | **Live compatibility probe.** Not used by the dashboard. Can reach authenticated quota collectors, including experimental ones. Do not expose it on a public surface. |
 
 Responses never include credentials or raw provider documents. API JSON is `Cache-Control: no-store`. Security headers include `X-Content-Type-Options`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, and a Content-Security-Policy.
+
+The HUD reads `/api/spend/hud` every 5 seconds and `/api/spend/hud/usage` every 20 seconds. A meter whose newest poll returns no value keeps its last reading (dimmed) until that window resets, a plan missing from one response stays for up to 15 minutes, and spend figures hold until the local date changes. On a paired spoke both reads serve the last hub copy at once and renew it in the background (`HUD_HUB_STALE_SECONDS`, 300 s), so a slow or unreachable hub never stalls a refresh.
 
 Windows: `15m`, `30m`, `1h`, `3h`, `6h`, `12h`, `1d`, `1w`, `1mo`, `mtd`, `ytd`, `all` (plus legacy aliases `7d`, `30d`, `MTD`, `YTD`, `All`).
 
@@ -80,9 +87,9 @@ Credentials never enter these tables. Project fields store directory **names**, 
 
 ## Scheduler
 
-Local ingest runs serially every 15 seconds (`max_instances=1`): Codex, Claude Code, Traycer (Grok/OpenRouter projections), Cursor local history, Cursor usage service, OpenCode, ZCode, Grok Build, Antigravity. A failed experimental adapter does not skip the rest of the cycle.
+Local ingest runs serially every 15 seconds (`max_instances=1`): Codex, Claude Code, Traycer (Grok/OpenRouter projections), OpenCode, ZCode, Grok Build, Antigravity, Muse Code. A failed experimental adapter does not skip the rest of the cycle. Usage collection runs while the HUD (or the dashboard, when enabled) requests usage; after two minutes without such requests it finishes the current source and defers further scans, while quota and activity polling continue.
 
-Admin ingest (OpenAI, Anthropic, Cursor-if-keyed) runs every 15 minutes over the last two hours.
+Admin ingest (OpenAI, Anthropic) runs every 15 minutes over the last two hours.
 
 Quota collectors tick every 15 seconds; each lane decides whether it is due:
 
@@ -93,10 +100,11 @@ Quota collectors tick every 15 seconds; each lane decides whether it is due:
 | Claude Code | 90 / 300 |
 | OpenCode / Z.AI | 30 / 300 |
 | Grok Build | 30 / 300 |
-| Cursor usage service | 900 / 3600 |
 | Antigravity | 90 / 300 |
 
-Activity (live cards) polls every 4 seconds. Cursor CSV is CLI-only (`backfill cursor-csv`); it is not a scheduler job.
+Activity (live cards) polls every 4 seconds.
+
+Cursor is no longer collected or counted. Cursor usage duplicates SuperGrok usage, so it is not counted: on first start each database (this computer's and the Hub's) removes its recorded Cursor rows after saving a verified backup to `backups/pre-cursor-removal-*.db`, and a Hub drops Cursor rows pushed by computers still on an older version.
 
 Direct xAI and Requesty have no collector.
 

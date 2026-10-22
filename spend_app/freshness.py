@@ -38,10 +38,6 @@ HUB_VERSION_TTL_SECONDS = 600
 SOURCE_NAMES = {
     "codex_local": "Codex",
     "claude_local": "Claude Code",
-    "cursor_local": "Cursor",
-    "cursor_usage_service": "Cursor usage",
-    "cursor_admin": "Cursor admin",
-    "cursor_csv": "Cursor CSV",
     "opencode_local": "OpenCode",
     "zcode_local": "ZCode",
     "grok_local": "Grok",
@@ -62,19 +58,20 @@ LANE_NAMES = {
     "muse": "Muse",
     "opencode": "Z.ai",
     "openrouter": "OpenRouter",
-    "cursor": "Cursor",
 }
 
 _STARTED_MONO = time.monotonic()
+_COLLECTION_RESUMED_MONO: float | None = None
 _LOCK = threading.Lock()
 _HEARTBEAT: dict = {"startedAt": None, "finishedAt": None, "seconds": None, "slowest": [], "failed": [], "passes": 0}
 _HUB_VERSION: dict = {"checkedMono": None, "version": None, "refreshing": False}
 
 
 def reset_state() -> None:
-    global _STARTED_MONO
+    global _STARTED_MONO, _COLLECTION_RESUMED_MONO
     with _LOCK:
         _STARTED_MONO = time.monotonic()
+        _COLLECTION_RESUMED_MONO = None
         _HEARTBEAT.update(startedAt=None, finishedAt=None, seconds=None, slowest=[], failed=[], passes=0)
         _HUB_VERSION.update(checkedMono=None, version=None, refreshing=False)
 
@@ -98,6 +95,18 @@ def pass_started(now: datetime | None = None) -> None:
         _HEARTBEAT["startedAt"] = _iso(now or datetime.now(UTC))
 
 
+def collection_resumed() -> None:
+    """Start the watchdog grace period when a viewer resumes idle collection."""
+    global _COLLECTION_RESUMED_MONO
+    with _LOCK:
+        started = _parse(_HEARTBEAT["startedAt"])
+        finished = _parse(_HEARTBEAT["finishedAt"])
+        # Renewed demand must never excuse a pass that is already stuck.
+        if started and (finished is None or started > finished):
+            return
+        _COLLECTION_RESUMED_MONO = time.monotonic()
+
+
 def pass_finished(timings: dict[str, float], failed: list[str], seconds: float, now: datetime | None = None) -> None:
     """Record a finished local ingest pass and log one compact timing line."""
     slowest = sorted(((key, round(value, 1)) for key, value in timings.items() if value >= 0.5), key=lambda item: -item[1])[:4]
@@ -116,13 +125,16 @@ def heartbeat(now: datetime | None = None) -> dict:
     with _LOCK:
         beat = dict(_HEARTBEAT)
         uptime = time.monotonic() - _STARTED_MONO
+        resumed = _COLLECTION_RESUMED_MONO
     started, finished = _parse(beat["startedAt"]), _parse(beat["finishedAt"])
     running = bool(started and (finished is None or started > finished))
     reference = finished or None
     age = (now - reference).total_seconds() if reference else None
-    # Stalled: the loop has not finished a pass recently, measured from the
-    # last finish, or from process start when no pass has finished yet.
+    # Measure from the last finish or process start, allowing a new grace
+    # period when a viewer resumes collection after it was deferred.
     quiet_for = age if age is not None else uptime
+    if resumed is not None:
+        quiet_for = min(quiet_for, max(0, time.monotonic() - resumed))
     limit = INGEST_STALLED_AFTER_SECONDS if beat["passes"] else FIRST_PASS_STALLED_AFTER_SECONDS
     return {
         "lastPassAt": beat["finishedAt"],
@@ -142,8 +154,10 @@ def _source_issues(connection, now: datetime) -> list[dict]:
     from spend_app.diagnostics import collection_stale_after, safe_reason
 
     issues = []
+    from spend_app.providers import RETIRED_SOURCES
+
     sources = [row[0] for row in connection.execute(
-        "SELECT DISTINCT source FROM ingest_runs WHERE source NOT LIKE 'sync:%'")]
+        "SELECT DISTINCT source FROM ingest_runs WHERE source NOT LIKE 'sync:%'") if row[0] not in RETIRED_SOURCES]
     for source in sorted(sources):
         latest = connection.execute(
             "SELECT status, finished_at, started_at, error FROM ingest_runs WHERE source=? ORDER BY id DESC LIMIT 1",
@@ -180,7 +194,8 @@ def _lane_issues(connection, now: datetime) -> list[dict]:
     ).fetchall()
     seen = set()
     for provider, limit, label, unit, resets_at, polled_at in rows:
-        if (provider, limit) in seen or unit == "unavailable":
+        # Cursor is no longer polled; an old reading is not a held lane.
+        if (provider, limit) in seen or unit == "unavailable" or provider == "cursor":
             continue
         seen.add((provider, limit))
         polled = _parse(polled_at)
@@ -299,7 +314,7 @@ def report(settings, now: datetime | None = None, *, background: bool = True,
     if include_history and beat["deferred"]:
         issues.append({"kind": "ingest", "key": "local-ingest", "name": "History", "short": "History",
                        "state": "deferred", "severity": "info", "ageSeconds": None,
-                       "detail": "Open the full dashboard to refresh usage history. Live limits continue polling."})
+                       "detail": "Open the dashboard or HUD to refresh usage. Live limits continue polling."})
     elif include_history and beat["passes"] < 2 and not beat["stalled"]:
         # The first pass after a start re-reads every store and can take
         # minutes, so sources it reached early, or has not reached yet, look

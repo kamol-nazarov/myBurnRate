@@ -1,5 +1,9 @@
 # Configured subscriptions
 
+The plan dialogs below are part of the full dashboard, which is off by default
+(`BURNRATE_ENABLE_DASHBOARD=1` turns it on). Without it, pick plans in the setup
+wizard (`/setup`) or use `burnrate subscription add`.
+
 Open **/mo plans** in the navbar or **Manage** beside Fixed costs. The Fixed
 costs panel stays expanded. The dialog opens to a list of every plan, with an
 active-term monthly-equivalent total, prices, dates and proportional term bars.

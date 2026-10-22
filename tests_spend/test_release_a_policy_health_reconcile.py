@@ -21,7 +21,7 @@ from spend_app.source_reconcile import canonical_event_id, reconcile_events
 # ---------------------------------------------------------------------------
 
 def test_native_lanes_denied_by_default_with_actionable_reason():
-    for lane in ("claude_oauth_usage", "cursor_usage_service", "zai_quota_endpoint"):
+    for lane in ("claude_oauth_usage", "zai_quota_endpoint"):
         allowed, reason = policy.authorize(lane, environ={})
         assert allowed is False
         assert reason and "disabled by default" in reason
@@ -29,8 +29,8 @@ def test_native_lanes_denied_by_default_with_actionable_reason():
 
 
 def test_native_lanes_activate_only_with_explicit_consent():
-    env = {"BURNRATE_ENABLE_CURSOR_USAGE_SERVICE": "1"}
-    allowed, _ = policy.authorize("cursor_usage_service", environ=env)
+    env = {"BURNRATE_ENABLE_ZAI_QUOTA": "1"}
+    allowed, _ = policy.authorize("zai_quota_endpoint", environ=env)
     assert allowed is True
     # An unrelated consent flag must not unlock another lane.
     allowed_other, _ = policy.authorize("claude_oauth_usage", environ=env)
@@ -53,7 +53,7 @@ def test_host_allowlist_blocks_other_destinations():
     with pytest.raises(policy.PolicyDenied):
         policy.assert_allowed_host("openai_admin", "evil.example.com")
     with pytest.raises(policy.PolicyDenied):
-        policy.assert_allowed_host("cursor_usage_service", "api.cursor.com")
+        policy.assert_allowed_host("zai_quota_endpoint", "api.openai.com")
 
 
 def test_identity_headers_are_burnrate_not_native():
@@ -65,10 +65,9 @@ def test_disabled_lane_cannot_activate_via_legacy_flag_names():
     # Old refresh flags must not smuggle a lane back into shipped paths.
     legacy = {
         "BURNRATE_REFRESH_CLAUDE": "1",
-        "SPEND_ENABLE_CURSOR_QUOTA": "1",
         "CLAUDE_REFRESH": "1",
     }
-    for lane in ("claude_oauth_usage", "cursor_usage_service"):
+    for lane in ("claude_oauth_usage", "zai_quota_endpoint"):
         assert policy.authorize(lane, environ=legacy)[0] is False
 
 

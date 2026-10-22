@@ -11,10 +11,10 @@ a non-positive rate, or a stale window produces no run-dry time. A flat fresh
 window is `pace → comfortable`.
 
 Stale means the newest sample for that reset is older than five minutes, or
-older than twice the lane's current cadence when that is longer. Cursor's
-active poll is therefore stale at 30 minutes. Windows with no reset (OpenRouter
-funds, Cursor's model bars, and Claude when only the desktop history file is
-available) are left out.
+older than twice the lane's current cadence when that is longer. An idle lane
+polled every five minutes is therefore stale at ten. Windows with no reset
+(OpenRouter funds, and Claude when only the desktop history file is available)
+are left out.
 
 `hours remaining = (100 − percent used) / percent per hour`. Compared with the
 reset:

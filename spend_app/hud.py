@@ -264,6 +264,10 @@ HUD_HTML = r"""<!doctype html>
       .win b.payg { color: var(--dim); font: 600 9.5px/1 var(--fd); letter-spacing: 0.12em; }
       .win.warn b { color: var(--accent); }
       .win.crit b { color: var(--danger); }
+      .win.held b, .win.held .meter { opacity: 0.7; }
+      html[data-dashboard="off"] #hud-expand-btn { display: none; }
+      html[data-dashboard="off"] .plan, html[data-dashboard="off"] .hud-agent { cursor: default; }
+      html[data-dashboard="off"].is-mini .plan { cursor: pointer; }
       .win .win-reset { color: var(--dim); font: 500 11px/1 var(--fd); font-style: normal; text-align: right; }
       .win.warn .win-reset, .win.crit .win-reset { color: var(--secondary); }
       .hud-empty { padding: 12px 0 4px; color: var(--muted); font-size: 12px; }
@@ -292,6 +296,7 @@ HUD_HTML = r"""<!doctype html>
       html.is-mini .mark svg { width: 13px; height: 13px; }
       html.is-mini .plan-head b { flex: 1 1 auto; min-width: 0; overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
       html.is-mini .win:not(.is-peak) { display: none; }
+      html.is-mini .plan.open .win:not(.is-peak) { display: grid; }
       html.is-mini .win { grid-template-columns: 34px minmax(0, 1fr) 36px 26px; gap: 6px; }
       html.is-mini .win b { font-size: 14px; }
       html.is-mini .win b.payg { font-size: 9.5px; }
@@ -424,6 +429,8 @@ HUD_HTML = r"""<!doctype html>
       (() => {
         const $ = id => document.getElementById(id);
         const root = document.documentElement;
+        // The full dashboard is optional (BURNRATE_ENABLE_DASHBOARD=1).
+        const dashboardOn = root.dataset.dashboard !== "off";
         let selectedMachine = new URLSearchParams(location.search).get("machine") || "all";
         let pinned = true;
         try {
@@ -605,6 +612,7 @@ HUD_HTML = r"""<!doctype html>
         });
 
         async function openToolInDashboard(toolKey) {
+          if (!dashboardOn) return;
           const clean = String(toolKey || "").trim();
           try {
             if (clean) {
@@ -712,7 +720,10 @@ HUD_HTML = r"""<!doctype html>
           btn.classList.add("spinning");
           try {
             await fetch("/api/spend/quotas/refresh", { method: "POST", cache: "no-store" });
-            await refresh();
+            await refresh(true);
+            // A paired spoke answers from its last Hub copy while renewing
+            // it; read once more so the Hub's side of the poll shows promptly.
+            setTimeout(() => refresh(true), 1500);
           } catch {} finally {
             btn.disabled = false;
             btn.classList.remove("spinning");
@@ -869,7 +880,6 @@ HUD_HTML = r"""<!doctype html>
 
         const shortNames = {
           codex: "Codex",
-          cursor: "Cursor",
           "claude-code": "Claude",
           antigravity: "Antigravity",
           grok: "Grok",
@@ -879,7 +889,7 @@ HUD_HTML = r"""<!doctype html>
         };
         // Provider marks come from the shared sprite served at /logos.svg.
         const PLAN_LOGOS = {
-          codex: "codex", "claude-code": "claude", cursor: "cursor", grok: "grok", opencode: "zai",
+          codex: "codex", "claude-code": "claude", grok: "grok", opencode: "zai",
           antigravity: "antigravity", muse: "meta", openrouter: "openrouter", traycer: "traycer"
         };
         const MODEL_LOGOS = [
@@ -900,7 +910,6 @@ HUD_HTML = r"""<!doctype html>
           const groups = [];
           for (const provider of (data.capacity || [])) {
             const key = provider.providerKey || "";
-            if (key === "cursor") continue;
             const name = shortNames[key] || provider.shortName || provider.providerName || key || "Plan";
             const sourceRows = Array.isArray(provider.rows) && provider.rows.length ? provider.rows : [provider];
             const rows = sourceRows.map(row => {
@@ -924,6 +933,39 @@ HUD_HTML = r"""<!doctype html>
             // An extra Claude account lane opens Claude Code's tool view.
             const toolKey = provider.toolKey || key;
             if (rows.length) groups.push({ key, toolKey, name, accountLabel: provider.accountLabel || "", plan: provider.plan || "", rows, providerName: provider.providerName || name, polledAt });
+          }
+          return groups;
+        }
+        // The last real reading of every window, per computer filter. A poll
+        // that comes back without a value (a slow provider, a Hub hiccup, a
+        // lane between samples) keeps the number on screen until the window
+        // resets, and a card missing from one response stays for a while.
+        const heldReadings = new Map();
+        const HELD_CARD_MS = 15 * 60 * 1000;
+        const windowOpen = q => {
+          const reset = Date.parse(q.resetsAt || "");
+          return !Number.isFinite(reset) || reset > Date.now();
+        };
+        function holdReadings(groups) {
+          const now = Date.now();
+          const scope = selectedMachine + "|";
+          const seen = new Set();
+          for (const group of groups) {
+            const key = scope + group.key;
+            seen.add(key);
+            const prior = heldReadings.get(key);
+            group.rows = group.rows.map(q => {
+              if (q.pct != null || q.payg) return q;
+              const last = prior && prior.group.rows.find(row => row.limitKey === q.limitKey);
+              return last && last.pct != null && windowOpen(last) ? {...last, held: true} : q;
+            });
+            heldReadings.set(key, {group, seenAt: now});
+          }
+          for (const [key, entry] of heldReadings) {
+            if (seen.has(key) || !key.startsWith(scope)) continue;
+            if (now - entry.seenAt > HELD_CARD_MS) { heldReadings.delete(key); continue; }
+            const rows = entry.group.rows.filter(q => q.pct != null && windowOpen(q)).map(q => ({...q, held: true}));
+            if (rows.length) groups.push({...entry.group, rows});
           }
           return groups;
         }
@@ -969,7 +1011,8 @@ HUD_HTML = r"""<!doctype html>
             resetRows.push(tipRow("Pace unknown — the newest quota sample is stale."));
           }
           const rowAge = relTime(q.polledAt);
-          if (rowAge) resetRows.push(tipRow(esc("Polled " + rowAge + " · click to inspect tool")));
+          if (q.held) resetRows.push(tipRow(esc("Holding the last reading" + (rowAge ? " from " + rowAge : "") + ". The newest poll returned no value."), "tight"));
+          else if (rowAge) resetRows.push(tipRow(esc("Polled " + rowAge)));
           if (q.pct == null && !q.payg && q.source) resetRows.push(tipRow(esc(q.source)));
           return '<b class="tip-title">' + esc(q.title) + "</b>" +
             usageRows.join("") +
@@ -978,7 +1021,7 @@ HUD_HTML = r"""<!doctype html>
 
         function windowRow(group, q, isPeak) {
           const cell = document.createElement("div");
-          cell.className = "win" + (isPeak ? " is-peak" : "");
+          cell.className = "win" + (isPeak ? " is-peak" : "") + (q.held ? " held" : "");
           const f = q.forecast || {};
           const fstate = f.state || "";
           const label = document.createElement("span");
@@ -1019,6 +1062,7 @@ HUD_HTML = r"""<!doctype html>
           return cell;
         }
 
+        const openPlans = new Set();
         function renderPlans(groups) {
           const badge = $("hud-quota-badge");
           badge.textContent = groups.length ? String(groups.length) : "—";
@@ -1035,7 +1079,16 @@ HUD_HTML = r"""<!doctype html>
             card.className = "plan";
             card.setAttribute("aria-label", group.name);
             card.dataset.providerKey = group.key;
-            card.addEventListener("click", () => openToolInDashboard(group.toolKey || group.key));
+            // Without the dashboard, a click in mini mode lists every window of the plan.
+            card.classList.toggle("open", openPlans.has(group.key));
+            card.addEventListener("click", () => {
+              if (dashboardOn) { openToolInDashboard(group.toolKey || group.key); return; }
+              if (!isMini) return;
+              if (!openPlans.delete(group.key)) openPlans.add(group.key);
+              card.classList.toggle("open", openPlans.has(group.key));
+              hideTip();
+              syncHudWindowSize();
+            });
             const head = document.createElement("header");
             head.className = "plan-head";
             const mark = document.createElement("span");
@@ -1061,7 +1114,8 @@ HUD_HTML = r"""<!doctype html>
             head.append(mark, name, em);
             head.dataset.tip =
               '<b class="tip-title">' + esc(group.providerName) + "</b>" +
-              tipRow(esc((group.plan ? group.plan + " · " : "") + (ageLabel ? "polled " + ageLabel + " · " : "") + "click to open tool detail."));
+              tipRow(esc([group.plan, ageLabel ? "polled " + ageLabel : "",
+                dashboardOn ? "click to open tool detail" : isMini ? "click to show every window" : ""].filter(Boolean).join(" · ")));
             const windows = document.createElement("div");
             windows.className = "windows";
             const peak = group.rows.reduce((best, row) => (row.pct != null && (best == null || row.pct > best.pct) ? row : best), null) || group.rows[0];
@@ -1107,12 +1161,14 @@ HUD_HTML = r"""<!doctype html>
             const modelLower = String(agent.modelKey || "").toLowerCase();
             const inferredTool = modelLower.includes("claude") ? "claude-code" : modelLower.includes("gpt") || modelLower.includes("codex") ? "codex" : modelLower.includes("grok") ? "grok" : modelLower.includes("muse") ? "muse" : "";
             const whereLabel = [agent.modelKey || "live", agent.machineName || ""].filter(Boolean).join(" · ");
-            row.dataset.tip = '<b class="tip-title">' + esc(shortName) + '</b>' + tipRow(esc(whereLabel), "accent") + tipRow("Click to inspect tool in dashboard");
-            row.addEventListener("click", () => openToolInDashboard(inferredTool));
+            row.dataset.tip = '<b class="tip-title">' + esc(shortName) + '</b>' + tipRow(esc(whereLabel), "accent") +
+              (dashboardOn ? tipRow("Click to inspect tool in dashboard") : "");
+            if (dashboardOn) row.addEventListener("click", () => openToolInDashboard(inferredTool));
             return row;
           }));
         }
 
+        let heldStats = {day: "", values: {}};
         function renderUsage(data) {
           const nav = data.navigation || {};
           const totals = data.totals || {};
@@ -1120,19 +1176,26 @@ HUD_HTML = r"""<!doctype html>
             weekday: "short", month: "short", day: "numeric"
           });
 
-          setStat("hud-burn-rate", nav.burnRatePerDay != null ? usd(nav.burnRatePerDay) : "—");
-          setStat("hud-today", usd2(nav.todayUsd));
-          setStat("hud-mini-today", usd2(nav.todayUsd));
-          setStat("hud-cache", totals.cacheReusePct == null || totals.cacheReusePct === ""
-            ? "—"
-            : Math.round(Number(totals.cacheReusePct)) + "%");
+          // A read without a value keeps today's figure until the date changes.
+          const day = new Date().toDateString();
+          if (heldStats.day !== day) heldStats = {day, values: {}};
+          const keep = (name, value) => value == null || value === ""
+            ? heldStats.values[name]
+            : (heldStats.values[name] = value);
+          const today = keep("today", nav.todayUsd);
+          const burn = keep("burn", nav.burnRatePerDay);
+          const cache = keep("cache", totals.cacheReusePct);
+          setStat("hud-burn-rate", burn != null ? usd(burn) : "—");
+          setStat("hud-today", usd2(today));
+          setStat("hud-mini-today", usd2(today));
+          setStat("hud-cache", cache == null ? "—" : Math.round(Number(cache)) + "%");
           setStat("hud-tokens", tok(nav.todayTokens ?? 0));
           statTips(nav, totals);
           const imported = relTime(data.historyUpdatedAt);
           for (const id of ["hud-stat-today", "hud-stat-cache", "hud-stat-tokens", "hud-stat-burn"]) {
             const node = $(id);
             if (node) node.dataset.tip += '<span class="sep"></span>' +
-              tipRow(esc("Recorded usage" + (imported ? " · imported " + imported : "") + ". Open the full dashboard to refresh history."));
+              tipRow(esc("Recorded usage" + (imported ? " · imported " + imported : "") + ". Usage refreshes in the background while the HUD is open."));
           }
         }
 
@@ -1143,7 +1206,7 @@ HUD_HTML = r"""<!doctype html>
           paintStatus();
           renderAgents(data);
 
-          const groups = planGroups(data);
+          const groups = holdReadings(planGroups(data));
           groups.sort((a, b) => shownPeak(b) - shownPeak(a));
           const topGroup = groups.find(g => shownPeak(g) >= 0) || groups[0] || null;
           const miniBar = $("hud-mini-bar");
@@ -1163,22 +1226,31 @@ HUD_HTML = r"""<!doctype html>
           syncHudWindowSize();
         }
 
-        let livePending = false, usagePending = false, machinesPending = false;
-        async function refresh() {
-          if (livePending) return;
-          livePending = true;
-          const machine = selectedMachine;
-          try {
-            const res = await fetch("/api/spend/hud?machine=" + encodeURIComponent(machine || "all"), {cache: "no-store"});
-            if (!res.ok) throw new Error(String(res.status));
-            const data = await res.json();
-            if (machine === selectedMachine) renderSummary(data);
-          } catch {
-            statusView.offline = true;
-            paintStatus();
-          } finally {
-            livePending = false;
+        let livePending = null, liveAgain = false, usagePending = false, machinesPending = false;
+        // One read at a time. A queued request (a manual poll, a stream
+        // update) runs again once the current read finishes; timer ticks
+        // never stack up behind a slow read.
+        function refresh(queue = false) {
+          if (livePending) {
+            if (queue) liveAgain = true;
+            return livePending;
           }
+          livePending = (async () => {
+            do {
+              liveAgain = false;
+              const machine = selectedMachine;
+              try {
+                const res = await fetch("/api/spend/hud?machine=" + encodeURIComponent(machine || "all"), {cache: "no-store"});
+                if (!res.ok) throw new Error(String(res.status));
+                const data = await res.json();
+                if (machine === selectedMachine) renderSummary(data);
+              } catch {
+                statusView.offline = true;
+                paintStatus();
+              }
+            } while (liveAgain);
+          })().finally(() => { livePending = null; });
+          return livePending;
         }
 
         async function refreshUsage() {
@@ -1274,7 +1346,7 @@ HUD_HTML = r"""<!doctype html>
         refreshUsage();
         refreshMachines();
         refreshFreshness();
-        setInterval(refresh, 5000);
+        setInterval(() => refresh(), 5000);
         setInterval(refreshUsage, 20000);
         setInterval(refreshMachines, 20000);
         setInterval(refreshFreshness, 20000);
@@ -1288,7 +1360,7 @@ HUD_HTML = r"""<!doctype html>
             const es = new EventSource("/api/spend/stream");
             es.addEventListener("update", () => {
               if (debounce) clearTimeout(debounce);
-              debounce = setTimeout(() => { debounce = null; refresh(); }, 100);
+              debounce = setTimeout(() => { debounce = null; refresh(true); }, 100);
             });
           } catch {}
         }
@@ -1299,5 +1371,7 @@ HUD_HTML = r"""<!doctype html>
 """
 
 
-def render_hud() -> str:
-    return HUD_HTML
+def render_hud(*, dashboard: bool = False) -> str:
+    if dashboard:
+        return HUD_HTML
+    return HUD_HTML.replace('<html lang="en">', '<html lang="en" data-dashboard="off">', 1)

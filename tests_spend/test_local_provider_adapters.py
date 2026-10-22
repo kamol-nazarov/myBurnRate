@@ -5,7 +5,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from spend_app.adapters.common import UsageRow, persist_rows, public_error
-from spend_app.adapters.cursor_local import parse_database as parse_cursor
 from spend_app.adapters.local_common import (
     classify_traycer_usage,
     open_text_read_only,
@@ -65,58 +64,6 @@ def test_open_text_read_only_does_not_truncate(tmp_path: Path) -> None:
     with open_text_read_only(path) as handle:
         assert handle.read() == "keep-me\n"
     assert path.read_text(encoding="utf-8") == "keep-me\n"
-
-
-def test_cursor_local_preserves_additive_cache_semantics(tmp_path: Path) -> None:
-    database = tmp_path / "cursor.db"
-    connection = sqlite3.connect(database)
-    connection.execute(
-        """
-        CREATE TABLE runs(
-            run_id TEXT,agent_id TEXT,model TEXT,usage_json TEXT,
-            finished_at TEXT,updated_at TEXT,created_at TEXT
-        )
-        """
-    )
-    connection.execute(
-        "INSERT INTO runs VALUES(?,?,?,?,?,?,?)",
-        (
-            "run-1",
-            "agent-1",
-            "grok-4.6",
-            json.dumps(
-                {
-                    "inputTokens": 100,
-                    "cacheReadTokens": 900,
-                    "cacheWriteTokens": 25,
-                    "outputTokens": 50,
-                }
-            ),
-            "2026-08-30T12:00:00Z",
-            None,
-            None,
-        ),
-    )
-    connection.commit()
-    connection.close()
-
-    rows = parse_cursor(database)
-    assert len(rows) == 1
-    assert rows[0].model_key == "cursor:grok-4.6"
-    assert rows[0].input_tokens == 1_000
-    assert rows[0].cached_input_tokens == 900
-    assert rows[0].cache_write_tokens == 25
-
-
-def test_cursor_local_tolerates_missing_runs_table(tmp_path: Path) -> None:
-    database = tmp_path / "cursor.db"
-    connection = sqlite3.connect(database)
-    connection.execute("CREATE TABLE other(x)")
-    connection.commit()
-    connection.close()
-
-    with pytest.raises(sqlite3.OperationalError, match="no such table"):
-        parse_cursor(database)
 
 
 def test_opencode_excludes_traycer_openrouter_mirror(tmp_path: Path) -> None:

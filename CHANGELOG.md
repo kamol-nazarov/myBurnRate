@@ -9,6 +9,43 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+- Keep usage collection active while the HUD is open, including on paired
+  spokes and hubs, so spend and tokens continue updating after midnight.
+  Quota meters still load independently of collection and dashboard summaries.
+- Give resumed collection its own watchdog grace period after idle time, and
+  show collection failures in the active HUD's freshness report.
+- Make the HUD the product. The full dashboard is off by default and returns
+  with `BURNRATE_ENABLE_DASHBOARD=1`; otherwise `/` opens the HUD, the desktop
+  app starts with its main window hidden (shown only for setup), and the tray
+  menu no longer offers the dashboard. In Mini mode, clicking a plan lists all
+  of its windows.
+- Keep HUD numbers on screen while polling. A meter whose newest poll returns
+  no value holds its last reading (dimmed, explained in its tooltip) until
+  that window resets, a plan missing from one response stays for up to 15
+  minutes, and spend figures hold until the date changes. A manual poll's
+  result shows as soon as it lands.
+- On a paired spoke, serve the HUD's last hub copy at once and renew it in the
+  background, so a slow or unreachable hub no longer stalls each refresh. New
+  local quota data marks the copy stale instead of discarding it, and a failed
+  hub read falls back to that copy rather than a local-only view.
+- Cut the Grok Build collection pass from about 15 seconds to about 3 while
+  a session is active: unchanged `updates.jsonl` files reuse their parse,
+  only sessions whose rows changed are reconciled again (every session is
+  fully reconciled at least every five minutes), and the session files are
+  listed once per pass. Stored rows are identical to a full pass.
+- Fix a Grok reconcile crash when a session had both unified-log rows and a
+  recorded signal total.
+- Remove Cursor: its local, usage-service, Admin API and CSV collectors, the
+  Cursor quota and activity readers, the `network-ingest` job, the
+  `cursor-local`/`cursor-csv`/`cursor-admin` backfill commands, and the
+  `CURSOR_API_KEY`, `CURSOR_IMPORT_PATH` and
+  `BURNRATE_ENABLE_CURSOR_USAGE_SERVICE` settings. Traycer runs launched in
+  Cursor are skipped. Cursor usage duplicates SuperGrok usage, so it is no
+  longer counted: each database (local and Hub) removes its recorded Cursor
+  rows once, after a verified backup in `backups/pre-cursor-removal-*.db`,
+  without changing the schema version, and a Hub drops Cursor rows pushed by
+  computers on an older version. A saved Cursor plan groups with SuperGrok.
+
 ## [0.3.0-beta.15] - 2026-10-20
 
 - Start HUD quota and activity polling without importing transcript history or

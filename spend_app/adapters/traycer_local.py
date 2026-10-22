@@ -66,7 +66,6 @@ def projection_index(connection: sqlite3.Connection) -> list[tuple[str, object]]
 HARNESS_TOOLS = {
     "claude": "claude-code",
     "codex": "codex",
-    "cursor": "cursor",
     "grok": "grok",
     "opencode": "opencode",
     "openrouter": "openrouter",
@@ -77,7 +76,6 @@ HARNESS_TOOLS = {
 NATIVE_SOURCES = {
     "claude-code": ("claude_local",),
     "codex": ("codex_local",),
-    "cursor": ("cursor_local", "cursor_usage_service", "cursor_admin", "cursor_csv"),
     "grok": ("grok_local",),
 }
 
@@ -90,8 +88,6 @@ def fact_model(harness: str, model: str) -> str:
         return canonical_model("openrouter", model or "unknown")
     if harness == "opencode":
         return "opencode:" + lowered.split(":")[-1]
-    if harness == "cursor":
-        return "cursor:" + lowered.removeprefix("cursor:")
     if harness in {"claude", "codex", "antigravity"}:
         return lowered
     return f"{harness}:{lowered}"
@@ -435,9 +431,6 @@ def ingest(
     except Exception:
         pass
     opencode_present = opencode_db.is_file()
-    # Cursor agents launched by Traycer write to Cursor's own local store, which
-    # cursor_local reads; where that store exists it is the authority.
-    cursor_present = (Path.home() / ".cursor" / "projects").is_dir()
     for path in iter_databases(database_glob):
         if not path.is_file():
             continue
@@ -458,8 +451,8 @@ def ingest(
             if row.tool_key == "opencode" and opencode_present:
                 mirrored += 1
                 continue
-            if row.tool_key == "cursor" and cursor_present:
-                mirrored += 1
+            # BURNRATE no longer tracks Cursor, including runs Traycer launches.
+            if row.tool_key == "cursor":
                 continue
             if row.session_id and (row.tool_key, row.session_id) in already:
                 mirrored += 1

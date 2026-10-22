@@ -21,6 +21,11 @@ QUOTA_POLL_SECONDS = 15
 ACTIVITY_POLL_SECONDS = 4
 
 
+def dashboard_enabled() -> bool:
+    """The HUD is the product; the full dashboard returns with BURNRATE_ENABLE_DASHBOARD=1."""
+    return os.getenv("BURNRATE_ENABLE_DASHBOARD", "").strip().lower() in {"1", "true", "yes"}
+
+
 def local_app_data() -> Path:
     configured = os.getenv("LOCALAPPDATA")
     if configured:
@@ -56,10 +61,8 @@ def default_logs_path() -> Path:
 class Settings:
     database_path: Path
     pricing_path: Path
-    cursor_import_path: Path
     anthropic_admin_key: str | None
     openai_admin_key: str | None
-    cursor_api_key: str | None
     timezone: str
     cache_hit_threshold: float
     over_routing_token_ceiling: int
@@ -79,7 +82,6 @@ def load_user_env() -> None:
         try:
             env_file.parent.mkdir(parents=True, exist_ok=True)
             env_file.write_text(
-                "BURNRATE_ENABLE_CURSOR_USAGE_SERVICE=1\n"
                 "BURNRATE_ENABLE_ZAI_QUOTA=1\n"
                 "BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE=1\n"
                 "BURNRATE_CLAUDE_OAUTH_REFRESH=1\n",
@@ -89,7 +91,6 @@ def load_user_env() -> None:
             pass
     load_dotenv(env_file, override=False)
     for key in (
-        "BURNRATE_ENABLE_CURSOR_USAGE_SERVICE",
         "BURNRATE_ENABLE_ZAI_QUOTA",
         "BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE",
         "BURNRATE_CLAUDE_OAUTH_REFRESH",
@@ -102,12 +103,8 @@ def load_settings(env_path: Path | None = None) -> Settings:
     return Settings(
         database_path=default_database_path(),
         pricing_path=Path(os.getenv("SPEND_PRICING_PATH", ROOT / "pricing")),
-        cursor_import_path=Path(
-            os.getenv("CURSOR_IMPORT_PATH", ROOT / "data" / "imports" / "cursor")
-        ),
         anthropic_admin_key=os.getenv("ANTHROPIC_ADMIN_KEY") or None,
         openai_admin_key=os.getenv("OPENAI_ADMIN_KEY") or None,
-        cursor_api_key=os.getenv("CURSOR_API_KEY") or None,
         timezone=os.getenv("SPEND_TIMEZONE", "UTC"),
         cache_hit_threshold=float(os.getenv("CACHE_HIT_THRESHOLD", "0.75")),
         over_routing_token_ceiling=int(os.getenv("OVER_ROUTING_TOKEN_CEILING", "40000")),

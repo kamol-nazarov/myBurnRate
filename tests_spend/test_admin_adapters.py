@@ -12,10 +12,6 @@ from spend_app.adapters.anthropic_admin import ingest as ingest_anthropic_admin
 from spend_app.adapters.anthropic_admin import make_client as make_anthropic_client
 from spend_app.adapters.anthropic_admin import parse_costs as parse_anthropic_costs
 from spend_app.adapters.anthropic_admin import parse_usage as parse_anthropic_usage
-from spend_app.adapters.cursor_admin import fetch_event_pages
-from spend_app.adapters.cursor_admin import ingest as ingest_cursor_admin
-from spend_app.adapters.cursor_admin import make_client as make_cursor_client
-from spend_app.adapters.cursor_admin import parse_events as parse_cursor_events
 from spend_app.adapters.openai_admin import fetch_pages
 from spend_app.adapters.openai_admin import ingest as ingest_openai_admin
 from spend_app.adapters.openai_admin import make_client as make_openai_client
@@ -31,14 +27,6 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def fixture(name: str) -> dict:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
-
-
-def page_transport(pages: list[dict]) -> httpx.MockTransport:
-    def handler(request: httpx.Request) -> httpx.Response:
-        page = json.loads(request.content)["page"]
-        return httpx.Response(200, json=pages[page - 1])
-
-    return httpx.MockTransport(handler)
 
 
 def test_openai_official_usage_shape_and_cost_bucket() -> None:
@@ -115,18 +103,6 @@ def test_anthropic_official_usage_shape_preserves_cache_ttls() -> None:
         }
     )
     assert singular_usage == usage
-
-
-def test_cursor_official_event_shape_uses_charged_cents_authority() -> None:
-    rows = parse_cursor_events(fixture("cursor_events.json"))
-    assert len(rows) == 1
-    row = rows[0]
-    assert row.model_key == "cursor:grok-4.6"
-    assert row.input_tokens == 1400
-    assert row.cached_input_tokens == 400
-    assert row.cache_write_tokens == 100
-    assert row.cost_usd == 0.125
-    assert row.raw_id == "cursor-reported:5b07f100af3ae3e2bb05fb0d14122fca2e350da40447e6e538516fa79b505a2f"
 
 
 def test_openai_pagination_stops_when_has_more_lacks_cursor() -> None:
@@ -233,56 +209,6 @@ def test_openai_admin_mock_ingest_is_exact_and_reingest_writes_zero(tmp_path: Pa
     assert tuple(event) == (50, 1, "openai_admin")
     assert buckets == 1
     assert event_count == 1
-
-
-def test_cursor_current_documented_event_shape() -> None:
-    rows = parse_cursor_events(fixture("cursor_events_current_p1.json"))
-    assert len(rows) == 2
-    row = rows[0]
-    assert row.model_key == "cursor:grok-4.6"
-    assert row.occurred_at == datetime(2026, 8, 30, 12, tzinfo=UTC)
-    assert row.session_id == "agent_fixture_1"
-    assert row.input_tokens == 1400
-    assert row.cached_input_tokens == 400
-    assert row.cache_write_tokens == 100
-    assert row.output_tokens == 200
-    assert row.cost_usd == 0.125
-    assert row.raw_id == "cursor-reported:d8ad1fdb77f755d8a5f06c6c8a46d95aa450e19850741d18e127d560bb952d83"
-
-
-def test_cursor_pagination_honors_num_pages_and_has_next_page() -> None:
-    pages = [
-        fixture("cursor_events_current_p1.json"),
-        fixture("cursor_events_current_p2.json"),
-    ]
-    with httpx.Client(transport=page_transport(pages)) as client:
-        fetched = fetch_event_pages(client, {"pageSize": 2})
-    assert fetched == pages
-    rows = [row for payload in fetched for row in parse_cursor_events(payload)]
-    assert [row.raw_id for row in rows] == [
-        "cursor-reported:d8ad1fdb77f755d8a5f06c6c8a46d95aa450e19850741d18e127d560bb952d83",
-        "cursor-reported:71ae9f87e6e35989e5de3fc80a57d466bd26c7568b291714355aff418f00667a",
-        "cursor-reported:17f3ca204252bbf2dbbb3fa0a21d1b423d30d0e64e083e8842ac0ce2d5617790",
-    ]
-
-
-def test_cursor_pagination_honors_legacy_total_pages() -> None:
-    pages = [
-        fixture("cursor_events_legacy_p1.json"),
-        fixture("cursor_events_legacy_p2.json"),
-    ]
-    with httpx.Client(transport=page_transport(pages)) as client:
-        fetched = fetch_event_pages(client, {"pageSize": 25})
-    assert fetched == pages
-    rows = [row for payload in fetched for row in parse_cursor_events(payload)]
-    assert [row.raw_id for row in rows] == [
-        "cursor-reported:eb546e920a290ff075b01a6b3fbfdd539c47d8edbfcba98765da344768342cfc",
-        "cursor-reported:1ec140fcfed2268d5fb51ac84819c105a3806b3b0cc2d14e9081445f06067cca",
-    ]
-    # Legacy billed cost authority: chargedCents, not tokenUsage.totalCents.
-    assert rows[0].cost_usd == 0.1
-    assert rows[0].input_tokens == 1200
-    assert rows[0].cached_input_tokens == 300
 
 
 def test_anthropic_pagination_stops_when_has_more_lacks_cursor() -> None:
@@ -440,17 +366,14 @@ def _status_client(status: int, body: dict) -> httpx.Client:
 def test_admin_clients_disable_proxy_env_and_identify_as_burnrate() -> None:
     anthropic = make_anthropic_client("sk-ant-secret")
     openai = make_openai_client("sk-test-openai-secret")
-    cursor = make_cursor_client("cursor-secret-key")
     try:
         from spend_app import __version__
         assert anthropic.headers["user-agent"] == f"BURNRATE/{__version__}"
         assert anthropic.trust_env is False
         assert openai.trust_env is False
-        assert cursor.trust_env is False
     finally:
         anthropic.close()
         openai.close()
-        cursor.close()
 
 
 def test_openai_admin_http_error_records_failed_run_without_key(tmp_path: Path) -> None:
@@ -494,24 +417,4 @@ def test_anthropic_admin_http_error_records_failed_run_without_key(tmp_path: Pat
             "SELECT error FROM ingest_runs WHERE source='anthropic_admin'"
         ).fetchone()[0]
     assert "sk-ant-secret" not in (error or "")
-
-
-def test_cursor_admin_http_error_records_failed_run_without_key(tmp_path: Path) -> None:
-    result = ingest_cursor_admin(
-        database_path=tmp_path / "spend.db",
-        pricing=PricingEngine.load(ROOT / "pricing"),
-        api_key="cursor-secret-key",
-        start=datetime(2026, 8, 30, tzinfo=UTC),
-        end=datetime(2026, 8, 31, tzinfo=UTC),
-        client=_status_client(401, {"message": "Unauthorized"}),
-    )
-    assert result["status"] == "failed"
-    assert result["reason"]
-    assert "cursor-secret-key" not in json.dumps(result)
-    with connect(tmp_path / "spend.db") as connection:
-        row = connection.execute(
-            "SELECT status, error FROM ingest_runs WHERE source='cursor_admin'"
-        ).fetchone()
-    assert row[0] == "failed"
-    assert "cursor-secret-key" not in (row[1] or "")
 

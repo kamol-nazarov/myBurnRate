@@ -25,10 +25,8 @@ def _settings(tmp_path: Path) -> Settings:
     return Settings(
         database_path=tmp_path / "spend.db",
         pricing_path=ROOT / "pricing",
-        cursor_import_path=tmp_path / "imports",
         anthropic_admin_key=None,
         openai_admin_key=None,
-        cursor_api_key=None,
         timezone="America/New_York",
         cache_hit_threshold=0.75,
         over_routing_token_ceiling=40000,
@@ -62,6 +60,35 @@ def test_quiet_computer_reports_ok(tmp_path: Path) -> None:
     assert report["status"] == "ok"
     assert report["issues"] == []
     assert report["sync"] is None and report["hub"] is None
+
+
+def test_collection_resuming_after_long_idle_gets_watchdog_grace(monkeypatch):
+    clock = [10000.0]
+    monkeypatch.setattr(freshness.time, "monotonic", lambda: clock[0])
+    freshness.reset_state()
+    clock[0] += 7200
+    assert freshness.heartbeat(NOW)["stalled"]
+    freshness.collection_resumed()
+    freshness.pass_started(NOW)
+    assert not freshness.heartbeat(NOW)["stalled"]
+    clock[0] += freshness.FIRST_PASS_STALLED_AFTER_SECONDS + 1
+    assert freshness.heartbeat(NOW)["stalled"]
+    # A new viewer cannot hide a pass that was already stuck.
+    freshness.collection_resumed()
+    assert freshness.heartbeat(NOW)["stalled"]
+
+
+def test_collection_resuming_after_completed_pass_gets_watchdog_grace(monkeypatch):
+    clock = [10000.0]
+    monkeypatch.setattr(freshness.time, "monotonic", lambda: clock[0])
+    freshness.reset_state()
+    freshness.pass_finished({}, [], 1, NOW - timedelta(hours=2))
+    clock[0] += 7200
+    assert freshness.heartbeat(NOW)["stalled"]
+    freshness.collection_resumed()
+    assert not freshness.heartbeat(NOW)["stalled"]
+    clock[0] += freshness.INGEST_STALLED_AFTER_SECONDS + 1
+    assert freshness.heartbeat(NOW)["stalled"]
 
 
 def test_failed_and_stale_sources_are_named_and_retired_ones_ignored(tmp_path: Path) -> None:

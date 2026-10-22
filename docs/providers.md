@@ -13,16 +13,13 @@ Format evidence is pinned to [Tokscale a3209ff](https://github.com/junhoyeo/toks
 | Claude Code | `CLAUDE_CONFIG_DIR`, projects/transcripts and approved subagents | Message/request/provider identity, later increases/decreases and partial-to-complete updates. Omitted optional fields do not erase known components. No quota inferred from transcripts. |
 | Grok / Traycer | Unified log, selected updates/signals, Traycer projections | Historical model is session/process-generation scoped, not global. Native usage within the persisted unified interval is suppressed; signal remainder stays unsplit. Native totals are refused when unmapped Traycer Grok history already exists, even if Traycer is disabled. Traycer uses logical chat/event IDs and old path aliases. Custom profiles, including `GROK_HOME`, retain overlap conflicts. |
 | ZCode | Legacy/modern `model_usage`; selected `.zcode/projects` transcripts | Computed totals select evidenced component conventions. No text estimates or current-model guesses. Shared usage IDs reconcile copies; cross-format overlaps without shared IDs are refused in either import order. Missing billing scope is reported. |
-| Cursor local | Existing SDK-agent store | Stable agent/run identity with old aliases; incompatible stores fail visibly. The existing pre-2026-09-02 authority restriction remains. This is not complete IDE/CLI coverage. |
-| Cursor CSV / JSON | Native CSV cache-write columns and selected `usageEventsDisplay` JSON | Actual request ID plus matching explicit user/team scope reconciles Admin/export/CSV copies and preserves old IDs. Other observations remain source-local. `Cost`/`totalCents` are reference values; only charged fields become reported charges. Unknown cache fields stay incomplete. |
 | Antigravity | Manual populated Tokscale sync artifacts, or existing experimental RPC | The inspected producer writes persisted usage metadata; caches are not self-populating or guaranteed complete. Response IDs reconcile cache/RPC copies. Missing producer/cache/runtime is a prerequisite issue. Rows without response identity are reported and skipped. No producer execution, new authentication flow or TLS exception. |
 | OpenAI / Anthropic Admin | Existing official usage/cost APIs and vault bindings | Bounded pages, cursor/schema/deadline failures. Seven-day revisit of completed UTC hours; closed-day charge buckets remain separate. Delays/corrections beyond that window remain possible. |
-| Cursor Admin | Existing documented team API; numeric-string/ISO timestamps; pagination | Fresh reporting observations update stable identities. Repeated/mismatched/exhausted pages fail visibly. Team admin key remains required; reference cost is not an extra charge. |
 | OpenRouter | Existing management credits endpoint | Balance-only. Deposits, top-ups and credits never become token events. Usage still comes from supported harness evidence. |
 
 All managed local bindings remain **usage-only**, including new paths. Existing narrow bindings are not widened by discovery. Unknown models remain usage evidence; missing pricing does not imply a disconnected source. Unsupported schemas, source failures and ambiguous copies are reported rather than converted to zero-use success.
 
-Official contracts checked for reporting changes: [OpenAI Usage](https://platform.openai.com/docs/api-reference/usage), [Anthropic Usage and Cost](https://platform.claude.com/docs/en/manage-claude/usage-cost-api), and [Cursor Admin](https://prod.cursor.com/docs/account/teams/admin-api). Each reporting loop has a 100-page and 20-second deadline, with requests limited to the remaining budget up to ten seconds. No immediate retry is made for authentication, throttling or bad pages. Quota backoff does not shorten a longer provider Retry-After. An access test is not evidence of complete billing history.
+Official contracts checked for reporting changes: [OpenAI Usage](https://platform.openai.com/docs/api-reference/usage) and [Anthropic Usage and Cost](https://platform.claude.com/docs/en/manage-claude/usage-cost-api). Each reporting loop has a 100-page and 20-second deadline, with requests limited to the remaining budget up to ten seconds. No immediate retry is made for authentication, throttling or bad pages. Quota backoff does not shorten a longer provider Retry-After. An access test is not evidence of complete billing history.
 
 ### Optional Claude status-line snapshot
 
@@ -111,12 +108,6 @@ Paths below use Windows conventions. `%USERPROFILE%` is `~`. `%APPDATA%` is typi
 | Claude quota (Traycer) | Traycer `chat.db` + `%USERPROFILE%\.traycer\cli\bin\traycer.exe` | none (local process) | Traycer epic/agent env from newest chat | **Experimental** `traycer.exe agent profile-rate-limits claude --profile ambient` | `quotas` `source=traycer_profile` | Exact % + reset if CLI returns `available` | Spawns CLI (`CREATE_NO_WINDOW`, 20 s, 15 min breaker). No Traycer file writes. |
 | Claude quota (OAuth) | `%USERPROFILE%\.claude\.credentials.json` | `platform.claude.com` (refresh); `api.anthropic.com` (`/api/oauth/usage`) | Claude Code OAuth access + refresh | **Experimental / undocumented.** **Off unless** `BURNRATE_CLAUDE_OAUTH_REFRESH=1` | `quotas` `source=claude_oauth_usage` | Exact utilization + `resets_at` | **Writes provider credentials** on refresh (atomic replace) |
 | Claude live | tail of project JSONL (~1 MiB) | none | none | Inferred from event envelopes | `agent_runs` `id=claude:<session>` | Live only while last assistant event is non-terminal. Idle editor is not live. Message text is not stored. | Read-only |
-| Cursor local history | `%USERPROFILE%\.cursor\projects\**\sdk-agent-store\*\index.db` | none | none | Observed local agent-store | `usage_events` `source=cursor_local` only if `occurred_at < 2026-09-02T00:00:00Z` | Tokens exact; spend derived | SQLite `mode=ro` |
-| Cursor usage service | `%APPDATA%\Cursor\User\globalStorage\state.vscdb` (`cursorAuth/accessToken`) | `api2.cursor.sh` `POST …/DashboardService/GetFilteredUsageEvents` | Local Cursor bearer | **Experimental / undocumented** DashboardService | `usage_events` `source=cursor_usage_service` from 2026-09-02 on | Tokens exact; `cost_usd` from charged cents; computed spend derived | Token sent only to Cursor. Does not write `state.vscdb`. |
-| Cursor quota | same `state.vscdb` | `api2.cursor.sh` POSTs: `GetCurrentPeriodUsage`, `GetPlanInfo`, `GetHardLimit` | same bearer | **Experimental / undocumented** | `quotas` Cursor Models + Other Models `source=cursor_usage_service` unit `pct`. Included-value dollars are **read but not persisted**. | Exact % from service; 15 min active / 1 h idle | Read token; no file write |
-| Cursor live | same `state.vscdb` `composerHeaders` + `cursorDiskKV` | none | none | Observed local Composer state | `agent_runs` `id=cursor:<composerId>` | Live only if status is `generating` / `running` / `in_progress` and not archived | SQLite `mode=ro` |
-| Cursor CSV | checkout `data/imports/cursor/*.csv`, or `CURSOR_IMPORT_PATH` | none | none | Official export drop (CLI `backfill cursor-csv`) | `usage_events` `source=cursor_csv` | Tokens as exported; spend derived | Read-only CSVs. Not scheduled. Installed runs should set `CURSOR_IMPORT_PATH` (for example `%LOCALAPPDATA%\BURNRATE\imports\cursor`). |
-| Cursor admin | none | `api.cursor.com` `POST /teams/filtered-usage-events` | `CURSOR_API_KEY` Basic `key:` | Official Admin API | `usage_events` `source=cursor_admin` | Tokens exact; `cost_usd` from `chargedCents`; computed derived | No local file write. Skipped unless key set. |
 | OpenCode usage | `%USERPROFILE%\.local\share\opencode\opencode.db` | none | none | Observed local session aggregates | `usage_events` `source=opencode_local` `tool_key=opencode`; skips `providerID=traycer-openrouter` | **Session-level** tokens (not per-turn); spend derived | SQLite `mode=ro` |
 | Z.AI quota (OpenCode + ZCode) | OpenCode `auth.json` `zai-coding-plan.key`, else ZCode `%USERPROFILE%\.zcode\v2\config.json` | `api.z.ai` `GET /api/monitor/usage/quota/limit` | Coding Plan API key (`Authorization` header, no `Bearer` prefix) | Documented as official Z.AI Coding Plan quota | `quotas` `provider_key=opencode` 5h + weekly unit `credits` `source=zai_quota_endpoint` | Exact used/limit/%/reset. One card for both harnesses. | Key not persisted. Files read-only. |
 | ZCode usage | `%USERPROFILE%\.zcode\cli\db\db.sqlite` `model_usage` ⨝ `session` | none | none | Official ZCode metrics DB | `usage_events` `source=zcode_local` `tool_key=zcode`; only `builtin:zai-coding-plan` / `builtin:bigmodel-coding-plan`, `status=completed` | Per-request tokens exact; spend derived. Message/part/I/O tables never queried. | SQLite `mode=ro` |
@@ -131,7 +122,7 @@ Paths below use Windows conventions. `%USERPROFILE%` is `~`. `%APPDATA%` is typi
 | Antigravity live | none extra | localhost trajectory summaries | CSRF | **Experimental** | `agent_runs` `id=antigravity:<cascade>` | Live only for `CASCADE_RUN_STATUS_BUSY` / `RUNNING` | Same RPC |
 | OpenRouter usage | Traycer `chat.db` projections with `harnessId=openrouter` | none | none | Observed Traycer structured usage | `usage_events` `source=traycer_local` `tool_key=openrouter` `model_key=openrouter:…` | Tokens classified (subset vs additive); incomplete → coverage gap, not `$0`. Computed derived; promo YAML rows close on `effective_to`. | SQLite `mode=ro` |
 | OpenRouter quota | none | `openrouter.ai` `GET /api/v1/credits` | `OPENROUTER_MANAGEMENT_KEY` (dedicated; inference key not reused) | Official credits API | `quotas` `limit_key=balance` unit `usd` `is_payg=1` `source=openrouter_credits_api`; remaining USD in `used` | Exact remaining = total_credits − total_usage. Unavailable without key. | Key not persisted. No file write. |
-| Traycer usage | `%USERPROFILE%\.traycer\host\epic-state\**\chat\chat.db` | none | none | Observed chat projections | `usage_events` `source=traycer_local` only harnesses `grok` and `openrouter`. Grok rows skipped when `occurred_at >= grok_local.coverage_start` | See OpenRouter / historical Grok. Claude/Codex/Cursor via Traycer are **not** ingested here. | SQLite `mode=ro` |
+| Traycer usage | `%USERPROFILE%\.traycer\host\epic-state\**\chat\chat.db` | none | none | Observed chat projections | `usage_events` `source=traycer_local` only harnesses `grok` and `openrouter`. Grok rows skipped when `occurred_at >= grok_local.coverage_start` | See OpenRouter / historical Grok. Claude/Codex via Traycer are **not** ingested here; Traycer runs launched in Cursor are always skipped. | SQLite `mode=ro` |
 | Traycer activity | same `chat.db` + `traycer.exe agent list` | none | Traycer epic/agent env | **Experimental** CLI, only while a turn looks live | `agent_runs` `id=traycer:<chatId>` `live` or `no_data` | Live = `turn.started` and CLI `active=true` (15 s cache). If CLI missing, fallback `lifecycle.state=active` within 90 s. `turn.stopped` without usage → `no_data`, not live. | Spawns CLI (12 s) only on potential activity. No Traycer file writes. |
 | Requesty | none | none | none | **Not connected; forbidden** | none | Must not appear in `pricing/*.yaml` | None |
 | OpenAI admin | none | `api.openai.com` `GET /v1/organization/usage/completions` and `/organization/costs` | `OPENAI_ADMIN_KEY` Bearer | Official Usage + Costs APIs | `usage_events` `source=openai_admin` `tool_key=codex`; `provider_cost_buckets` | Tokens exact; cost buckets exact USD; computed spend exact if YAML exact | Skip with no key. Errors redacted. |
@@ -146,9 +137,6 @@ HTTPS timeouts are 15–30 seconds depending on the client. Credential-bearing `
 | Codex Desktop vs Traycer Codex | Local ingest keeps `originator = "Codex Desktop"` only. Traycer-launched Codex is not in `traycer_local.INGESTED_HARNESSES`. |
 | OpenCode vs Traycer OpenRouter | OpenCode skips `providerID=traycer-openrouter`. Per-turn authority is Traycer. |
 | Grok Build vs Traycer Grok | Native `unified.jsonl` wins from the earlier of the current log-head timestamp and any already-persisted `grok_local` `occurred_at`. Traycer Grok rows on/after that instant are skipped, so CLI log rotation cannot reopen history grok_local already stored. |
-| Cursor Admin vs DashboardService ingest | If `CURSOR_API_KEY` is set, experimental `cursor_usage_service` ingest is skipped. Cursor **quota** still uses DashboardService independently of the admin key. |
-| Cursor SDK-agent vs usage service | Cutover `2026-09-02T00:00:00Z`: `cursor_local` is historical only; `cursor_usage_service` owns current events. |
-| Cursor CSV vs other Cursor sources | Operator import; same `raw_id` upsert is idempotent, but CSV is not a substitute for the usage service. |
 | OpenCode vs ZCode quota | One Z.AI Coding Plan card (`provider_key=opencode`). Two harnesses, one quota. |
 | Reasoning ⊂ output | OpenCode (and any schema that says so) displays reasoning as detail; it is not added to processed total again. |
 | Direct xAI vs Grok Build | Direct xAI is not ingested. SuperGrok uses `supergrok:` model keys and derived xAI list rates. |
@@ -160,8 +148,6 @@ HTTPS timeouts are 15–30 seconds depending on the client. Credential-bearing `
 | `https://api.openai.com` | `/v1/organization/usage/completions`, `/v1/organization/costs` | OpenAI admin |
 | `https://api.anthropic.com` | `/v1/organizations/usage_report/messages`, `/v1/organizations/cost_report`; experimental `/api/oauth/usage` | Anthropic admin; Claude OAuth |
 | `https://platform.claude.com` | `/v1/oauth/token` | Claude OAuth refresh (opt-in) |
-| `https://api.cursor.com` | `/teams/filtered-usage-events` | Cursor admin |
-| `https://api2.cursor.sh` | `/aiserver.v1.DashboardService/{GetFilteredUsageEvents,GetCurrentPeriodUsage,GetPlanInfo,GetHardLimit}` | Cursor usage/quota **experimental** |
 | `https://openrouter.ai` | `/api/v1/credits` | OpenRouter management key |
 | `https://api.z.ai` | `/api/monitor/usage/quota/limit` | Z.AI Coding Plan |
 | `https://127.0.0.1:<port>` | `/exa.language_server_pb.LanguageServerService/{GetAllCascadeTrajectories,GetCascadeTrajectory,RetrieveUserQuotaSummary}` | Antigravity **experimental** |
@@ -216,24 +202,9 @@ OAuth is the only path that can mutate a provider file. Refresh uses `POST https
 
 Live-session rule: a trailing `user` event without a terminal `assistant` `stop_reason` in `{end_turn, stop_sequence, max_tokens, refusal}`. An open editor with no in-flight turn does not qualify.
 
-### Cursor — mixed
+### Cursor — no longer collected
 
-Four ingest paths, one quota path, one activity path. `api.cursor.com` is official. `api2.cursor.sh` DashboardService is undocumented → **experimental**. If `CURSOR_API_KEY` is set, the experimental DashboardService ingest is skipped so official admin events are not double-counted with `cursor_usage_service`.
-
-Included plan dollars (`usedUsd`/`limitUsd`) are parsed and **dropped** by the quota product contract; they are not persisted as a capacity card.
-
-CSV mapping (headers matched tolerantly):
-
-| Normalized CSV column | Usage field |
-| --- | --- |
-| date / timestamp | `occurred_at` |
-| model | `cursor:<model>` |
-| input without cache write tokens | fresh input (stored input = fresh + cache read) |
-| cache read tokens | `cached_input_tokens` |
-| cache write tokens | `cache_write_tokens` |
-| output tokens | `output_tokens` |
-| cost usd / charged cents | `cost_usd` |
-| event id | `raw_id` `cursor-csv:<id>` |
+BURNRATE no longer reads Cursor usage, quota or live sessions (local SDK-agent store, `api2.cursor.sh` DashboardService, `api.cursor.com` Admin API, CSV/JSON exports). Cursor usage duplicates SuperGrok usage, so it is not counted: on first start each database (this computer's and the Hub's) removes its recorded Cursor rows after saving a verified backup to `backups/pre-cursor-removal-*.db`, and a Hub drops Cursor rows pushed by computers still on an older version. Old Cursor collection runs (`RETIRED_SOURCES` in `spend_app/db.py`) are removed with them.
 
 ### OpenCode and ZCode — supported local
 
@@ -274,9 +245,9 @@ traycer.exe --json --quiet --no-progress --no-bootstrap agent list
 
 ### Admin APIs — opt-in official
 
-Empty keys skip and record `ingest_runs.status=skipped` with a named reason. Scheduler still *calls* the OpenAI and Anthropic ingest functions (they return skipped); Cursor admin is not invoked unless `CURSOR_API_KEY` is set.
+Empty keys skip and record `ingest_runs.status=skipped` with a named reason. Scheduler still *calls* the OpenAI and Anthropic ingest functions (they return skipped).
 
-Window: last 2 hours, 15-minute job. Cursor documents an hourly Admin API; overlap is the mitigation.
+Window: last 2 hours, 15-minute job.
 
 `public_error()` redacts `bearer`, `basic`, `sk-…`, and `x-api-key` shapes before persistence.
 
@@ -286,7 +257,6 @@ Opening an editor or idle shell is never enough:
 
 - Codex: completed or archived threads ignored
 - Grok: dead pid or session files older than 5 minutes ignored
-- Cursor: non-generating Composer ignored
 - Claude: terminal `stop_reason` clears live
 - Traycer: `turn.completed` is not live; `no_data` is diagnostics-only
 - ZCode: only `turn_usage.status=running`
@@ -296,4 +266,4 @@ Opening an editor or idle shell is never enough:
 
 Persisted identity is opaque ids, model keys, project directory names, token counts, and optional reported USD. See [privacy.md](privacy.md) for the column list.
 
-Content that may enter process memory and is not stored: Claude JSONL lines, Traycer `projection_json`, Antigravity `GetCascadeTrajectory` PROD_UI payload, Cursor Composer JSON in `state.vscdb`.
+Content that may enter process memory and is not stored: Claude JSONL lines, Traycer `projection_json`, Antigravity `GetCascadeTrajectory` PROD_UI payload.

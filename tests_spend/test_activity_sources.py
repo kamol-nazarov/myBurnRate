@@ -12,7 +12,6 @@ from spend_app.limits import (
     _antigravity_active_sessions,
     _codex_active_sessions,
     _claude_active_sessions,
-    _cursor_active_sessions,
     _zcode_active_sessions,
 )
 from spend_app.providers import (
@@ -110,49 +109,6 @@ def test_zcode_activity_uses_running_turn_status(tmp_path) -> None:
     ]
 
 
-def test_cursor_activity_requires_generating_status(tmp_path) -> None:
-    path = tmp_path / "cursor.sqlite"
-    now = datetime(2026, 9, 4, 12, tzinfo=UTC)
-    current_ms = int(now.timestamp() * 1000)
-    with sqlite3.connect(path) as connection:
-        connection.executescript(
-            """
-            CREATE TABLE composerHeaders(
-                composerId TEXT PRIMARY KEY,createdAt INTEGER,lastUpdatedAt INTEGER,
-                isArchived INTEGER,value TEXT
-            );
-            CREATE TABLE cursorDiskKV(key TEXT PRIMARY KEY,value BLOB);
-            """
-        )
-        for session_id, status, model in (
-            ("live", "generating", "gemini-3.8-flash"),
-            ("done", "completed", "grok-4.6"),
-        ):
-            connection.execute(
-                "INSERT INTO composerHeaders VALUES(?,?,?,?,?)",
-                (session_id, current_ms - 60_000, current_ms - 1_000, 0, "{}"),
-            )
-            connection.execute(
-                "INSERT INTO cursorDiskKV VALUES(?,?)",
-                (
-                    f"composerData:{session_id}",
-                    json.dumps(
-                        {"status": status, "name": "Cursor task", "modelConfig": {"modelName": model}}
-                    ),
-                ),
-            )
-
-    assert _cursor_active_sessions(path, now=now) == [
-        {
-            "sessionId": "live",
-            "title": "Cursor task",
-            "model": "cursor:gemini-3.8-flash",
-            "startedAt": "2026-09-04T11:59:00Z",
-            "lastSeenAt": "2026-09-04T11:59:59Z",
-        }
-    ]
-
-
 def test_antigravity_activity_requires_busy_status_and_reads_model(monkeypatch) -> None:
     now = datetime(2026, 9, 4, 12, tzinfo=UTC)
 
@@ -203,14 +159,12 @@ def test_local_provider_sessions_become_live_agent_records() -> None:
     records = agent_run_records(
         {
             "claudeSessions": [{**base, "model": "claude-fable-5-1"}],
-            "cursorSessions": [{**base, "model": "cursor:grok-4.6"}],
             "zcodeSessions": [{**base, "model": "zcode:glm-5.3-flash"}],
             "antigravitySessions": [{**base, "model": "antigravity:gemini-3.8-flash"}],
         }
     )
     assert {(row.id, row.model_key, row.state) for row in records} == {
         ("claude:session", "claude-fable-5-1", "live"),
-        ("cursor:session", "cursor:grok-4.6", "live"),
         ("zcode:session", "zcode:glm-5.3-flash", "live"),
         ("antigravity:session", "antigravity:gemini-3.8-flash", "live"),
     }
@@ -312,7 +266,6 @@ def test_activity_capable_providers_are_registered() -> None:
     assert activity >= {
         "codex_local",
         "claude_local",
-        "cursor_local",
         "zcode_local",
         "grok_local",
         "antigravity_local",

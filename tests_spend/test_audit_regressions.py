@@ -18,7 +18,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from spend_app import aggregate, limits
-from spend_app.adapters import claude_local, codex_local, cursor_local, opencode_local, traycer_local
+from spend_app.adapters import claude_local, codex_local, opencode_local, traycer_local
 from spend_app.adapters.common import UsageRow, persist_rows
 from spend_app.aggregate import _bucket_plan, aggregate_entity, aggregate_health, resolve_window
 from spend_app.db import (
@@ -482,26 +482,6 @@ def test_reasoning_detail_absent_from_source_is_stored_as_null(tmp_path: Path) -
     )
     _session, events = claude_local.parse_file(transcript)
     assert [event.reasoning_tokens for event in events] == [None, 0]
-
-    cursor_db = tmp_path / "projects" / "demo" / "sdk-agent-store" / "x" / "index.db"
-    cursor_db.parent.mkdir(parents=True)
-    connection = sqlite3.connect(cursor_db)
-    connection.execute(
-        "CREATE TABLE runs(run_id TEXT, agent_id TEXT, model TEXT, usage_json TEXT, finished_at TEXT, updated_at TEXT, created_at TEXT)"
-    )
-    connection.execute(
-        "INSERT INTO runs VALUES('r1','a1','grok-4.6',?, '2026-09-01T10:00:00Z', NULL, NULL)",
-        (json.dumps({"inputTokens": 10, "cacheReadTokens": 5, "cacheWriteTokens": 0, "outputTokens": 2}),),
-    )
-    connection.execute(
-        "INSERT INTO runs VALUES('r2','a1','grok-4.6',?, '2026-09-01T10:01:00Z', NULL, NULL)",
-        (json.dumps({"inputTokens": 10, "cacheReadTokens": 5, "cacheWriteTokens": 0, "outputTokens": 2, "reasoningTokens": 0}),),
-    )
-    connection.commit()
-    connection.close()
-    rows = {row.raw_id: row for row in cursor_local.parse_database(cursor_db)}
-    assert sorted(row.reasoning_tokens for row in rows.values() if row.reasoning_tokens is not None) == [0]
-    assert any(row.reasoning_tokens is None for row in rows.values())
 
     opencode_db = tmp_path / "opencode.db"
     connection = sqlite3.connect(opencode_db)

@@ -534,10 +534,8 @@ def test_preferences_endpoint_is_on_the_summary(tmp_path: Path):
     settings = Settings(
         database_path=database,
         pricing_path=ROOT / "pricing",
-        cursor_import_path=tmp_path / "cursor",
         anthropic_admin_key=None,
         openai_admin_key=None,
-        cursor_api_key=None,
         timezone="UTC",
         cache_hit_threshold=0.75,
         over_routing_token_ceiling=40000,

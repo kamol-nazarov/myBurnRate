@@ -23,10 +23,8 @@ def _make_settings(tmp_path: Path, name: str = "hub.db") -> Settings:
     return Settings(
         database_path=db_path,
         pricing_path=PRICING_PATH,
-        cursor_import_path=tmp_path / "imports",
         anthropic_admin_key=None,
         openai_admin_key=None,
-        cursor_api_key=None,
         timezone="UTC",
         cache_hit_threshold=0.75,
         over_routing_token_ceiling=40000,

@@ -1,12 +1,12 @@
 # Optional Tailscale Serve
 
-Tailscale is **not** installed, started, or configured by BURNRATE. The dashboard binds `127.0.0.1:17331` and is meant to stay there.
+Tailscale is **not** installed, started, or configured by BURNRATE. BURNRATE binds `127.0.0.1:17331` and is meant to stay there.
 
 If you already run Tailscale and want HTTPS access from other devices on **your** tailnet, use **Serve**, not Funnel.
 
 ## Serve to localhost
 
-Point Serve at the local dashboard only:
+Point Serve at the local BURNRATE listener only (its `/` opens the HUD, or the full dashboard with `BURNRATE_ENABLE_DASHBOARD=1`):
 
 ```powershell
 tailscale serve --bg --https=443 http://127.0.0.1:17331

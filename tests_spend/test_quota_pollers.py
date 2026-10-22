@@ -13,7 +13,6 @@ from spend_app.quotas import (
     agent_run_records,
     claude_quota_samples,
     codex_quota_samples,
-    cursor_quota_samples,
     default_quota_collectors,
     derived_used,
     grok_quota_samples,
@@ -104,20 +103,6 @@ CODEX_PAYLOAD = {
         },
     ],
     "detail": "Native Codex rate-limit telemetry.",
-}
-
-CURSOR_PAYLOAD = {
-    "key": "cursor",
-    "name": "Cursor",
-    "plan": "Cursor Pro",
-    "status": "exact",
-    "observedAt": "2026-08-31T12:00:00Z",
-    "windows": [
-        {"key": "included", "label": "Included value", "usedPct": 22.0},
-        {"key": "cursor_models", "label": "Cursor Models", "usedPct": 55.0},
-        {"key": "other_models", "label": "Other Models", "usedPct": 4.0},
-    ],
-    "detail": "Cursor authenticated read-only usage service.",
 }
 
 ZAI_PAYLOAD = {
@@ -281,7 +266,6 @@ def test_poll_quotas_persists_real_rows_with_undocumented_sources_and_resets(
     assert payg["allowance"] is None
     assert payg["unit"] == "usd"
     assert payg["label"] == "OpenRouter funds remaining"
-    assert ("cursor", "included") not in rows
 
 
 def test_openrouter_credits_expose_exact_remaining_funds() -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import hmac
 import json
@@ -27,6 +28,7 @@ from starlette.concurrency import run_in_threadpool
 from spend_app.connection_api import payload as read_trusted_json, trusted
 from spend_app.db import (
     EXACT_USAGE_SOURCES,
+    RETIRED_SOURCES,
     UnpricedUsageEvent,
     UsageEvent,
     connect,
@@ -410,6 +412,10 @@ def _price_pushed_event(pricing: PricingEngine, item: dict) -> tuple[float, bool
     return float(cost), is_exact
 
 
+def _retired_item(item) -> bool:
+    return isinstance(item, dict) and (item.get("tool_key") == "cursor" or item.get("source") in RETIRED_SOURCES)
+
+
 def apply_sync_push(
     database_path: Path,
     pricing: PricingEngine,
@@ -436,6 +442,15 @@ def apply_sync_push(
         for seq in (usage_items, unpriced_items, session_items, quota_items)
     ) or (agent_items is not None and not isinstance(agent_items, list)):
         raise ValueError("Sync collections must be JSON arrays.")
+
+    # A computer still on an older BURNRATE may push Cursor usage, which
+    # duplicates SuperGrok usage and is not counted.
+    usage_items = [item for item in usage_items if not _retired_item(item)]
+    unpriced_items = [item for item in unpriced_items if not _retired_item(item)]
+    session_items = [item for item in session_items if not _retired_item(item)]
+    if agent_items is not None:
+        agent_items = [item for item in agent_items if not (
+            isinstance(item, dict) and str(item.get("model_key") or item.get("modelKey") or "").startswith("cursor:"))]
 
     written = 0
     agents_changed = False
@@ -924,7 +939,10 @@ def sync_once(
 
 
 _HUB_PROXY_LOCK = threading.Lock()
-_HUB_PROXY_CACHE: dict[tuple, tuple[float, dict]] = {}
+# (hub, path, params) -> (monotonic read time, Hub payload, fresh). A payload
+# marked stale is read again on next use but still serves while that read runs.
+_HUB_PROXY_CACHE: dict[tuple, tuple[float, dict, bool]] = {}
+_HUB_PROXY_RENEWING: set[tuple] = set()
 _HUB_TEST_CLIENTS: dict[str, object] = {}
 
 
@@ -934,8 +952,16 @@ def register_hub_test_client(hub_url: str, client: object) -> None:
 
 
 def clear_hub_proxy_cache() -> None:
+    """Forget every Hub copy, e.g. after pairing changes."""
     with _HUB_PROXY_LOCK:
         _HUB_PROXY_CACHE.clear()
+
+
+def expire_hub_proxy_cache() -> None:
+    """Read the Hub again on next use, keeping the last copy as a fallback."""
+    with _HUB_PROXY_LOCK:
+        for key, (fetched_at, data, _fresh) in list(_HUB_PROXY_CACHE.items()):
+            _HUB_PROXY_CACHE[key] = (fetched_at, data, False)
 
 
 def post_to_configured_hub(
@@ -1191,8 +1217,15 @@ def fetch_from_configured_hub(
     params: dict | None = None,
     *,
     ttl_seconds: float = 1.0,
+    stale_seconds: float = 0.0,
 ) -> dict | None:
-    """When this instance is a paired Spoke, read unified dashboard data from the Hub."""
+    """When this instance is a paired Spoke, read unified dashboard data from the Hub.
+
+    A copy younger than ``ttl_seconds`` is served as is. With ``stale_seconds``
+    an older copy is still served at once while one background read renews
+    it, so a slow or unreachable Hub never holds up the caller. A failed read
+    falls back to the last copy of any age.
+    """
     try:
         from spend_app.setup_wizard import read_setup_state
 
@@ -1212,46 +1245,83 @@ def fetch_from_configured_hub(
 
     clean_params = {k: str(v) for k, v in (params or {}).items() if v is not None}
     cache_key = (hub_url, path, tuple(sorted(clean_params.items())))
-    now_mono = time.monotonic()
+
+    def read() -> dict | None:
+        return _read_hub_copy(cache_key, hub_url, token, path, clean_params)
+
     with _HUB_PROXY_LOCK:
         cached = _HUB_PROXY_CACHE.get(cache_key)
-        if cached and (now_mono - cached[0]) < ttl_seconds:
-            return _mask_expired_hub_quotas(cached[1], datetime.now(UTC))
+    if cached:
+        fetched_at, payload, fresh = cached
+        age = time.monotonic() - fetched_at
+        if fresh and age < ttl_seconds:
+            return _hub_copy_for_display(settings, payload)
+        if age < stale_seconds:
+            _renew_hub_copy_in_background(cache_key, read)
+            return _hub_copy_for_display(settings, payload)
+    data = read()
+    if data is None:
+        return _hub_copy_for_display(settings, cached[1]) if cached else None
+    return _hub_copy_for_display(settings, data)
 
+
+def _read_hub_copy(cache_key: tuple, hub_url: str, token: str, path: str, params: dict) -> dict | None:
     headers = {"Authorization": f"Bearer {token}"}
     test_client = _HUB_TEST_CLIENTS.get(hub_url)
     try:
         if test_client is not None:
-            response = test_client.get(path, params=clean_params, headers=headers)
+            response = test_client.get(path, params=params, headers=headers)
         else:
             import httpx
 
             with httpx.Client(timeout=8.0) as http:
-                response = http.get(f"{hub_url}{path}", params=clean_params, headers=headers)
+                response = http.get(f"{hub_url}{path}", params=params, headers=headers)
         if response.status_code != 200:
-            return _mask_expired_hub_quotas(cached[1], datetime.now(UTC)) if cached else None
+            return None
         data = response.json()
-        if not isinstance(data, dict):
-            return _mask_expired_hub_quotas(cached[1], datetime.now(UTC)) if cached else None
-        if isinstance(data.get("capacity"), list):
-            data["capacity"] = [
-                item for item in data["capacity"]
-                if isinstance(item, dict) and item.get("providerKey") != "cursor"
-            ]
-        if isinstance(data.get("providers"), list):
-            data["providers"] = [
-                item for item in data["providers"]
-                if isinstance(item, dict) and item.get("key") != "cursor" and item.get("providerKey") != "cursor"
-            ]
-        # Mask before the overlay so a fresher local reading still wins.
-        data = _mask_expired_hub_quotas(data, datetime.now(UTC))
-        if isinstance(data.get("capacity"), list):
-            data["capacity"] = _overlay_fresher_local_quotas(settings.database_path, data["capacity"])
-        with _HUB_PROXY_LOCK:
-            _HUB_PROXY_CACHE[cache_key] = (now_mono, data)
-        return data
     except Exception:
-        return _mask_expired_hub_quotas(cached[1], datetime.now(UTC)) if cached else None
+        return None
+    if not isinstance(data, dict):
+        return None
+    # An older Hub may still report Cursor, which BURNRATE no longer tracks.
+    if isinstance(data.get("capacity"), list):
+        data["capacity"] = [
+            item for item in data["capacity"]
+            if isinstance(item, dict) and item.get("providerKey") != "cursor"
+        ]
+    if isinstance(data.get("providers"), list):
+        data["providers"] = [
+            item for item in data["providers"]
+            if isinstance(item, dict) and item.get("key") != "cursor" and item.get("providerKey") != "cursor"
+        ]
+    with _HUB_PROXY_LOCK:
+        _HUB_PROXY_CACHE[cache_key] = (time.monotonic(), data, True)
+    return data
+
+
+def _renew_hub_copy_in_background(cache_key: tuple, read) -> None:
+    with _HUB_PROXY_LOCK:
+        if cache_key in _HUB_PROXY_RENEWING:
+            return
+        _HUB_PROXY_RENEWING.add(cache_key)
+
+    def run() -> None:
+        try:
+            read()
+        finally:
+            with _HUB_PROXY_LOCK:
+                _HUB_PROXY_RENEWING.discard(cache_key)
+
+    threading.Thread(target=run, name="burnrate-hub-read", daemon=True).start()
+
+
+def _hub_copy_for_display(settings, data: dict) -> dict:
+    # Mask before the overlay so a fresher local reading still wins. Both run
+    # on every read, so a new local reading shows without a new Hub read.
+    data = _mask_expired_hub_quotas(data, datetime.now(UTC))
+    if isinstance(data.get("capacity"), list):
+        data["capacity"] = _overlay_fresher_local_quotas(settings.database_path, copy.deepcopy(data["capacity"]))
+    return data
 
 
 def _resolve_stream_machines(settings) -> list[dict]:
@@ -1335,7 +1405,7 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
             except Exception:
                 pass
             sync_res = maybe_run_configured_spoke_sync(settings, pricing)
-            clear_hub_proxy_cache()
+            expire_hub_proxy_cache()
             aggregate.reset_memo()
             STREAM_BROKER.publish({"type": "sync_trigger", "at": utc_now()})
             with connect(settings.database_path) as connection:
@@ -1430,7 +1500,7 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
                         last_rev = cur_rev
                         last_sig = cur_sig
                         last_machines_sig = cur_machines_sig
-                        clear_hub_proxy_cache()
+                        expire_hub_proxy_cache()
                         payload = json.dumps(
                             {
                                 "type": "update",

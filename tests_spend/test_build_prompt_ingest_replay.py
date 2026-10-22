@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -14,7 +13,6 @@ from spend_app.adapters.claude_local import ingest as ingest_claude
 from spend_app.adapters.claude_local import reset_file_cache as reset_claude_cache
 from spend_app.adapters.codex_local import ingest as ingest_codex
 from spend_app.adapters.codex_local import reset_file_cache as reset_codex_cache
-from spend_app.adapters.cursor_csv import ingest as ingest_cursor_csv
 from spend_app.adapters.openai_admin import ingest as ingest_openai_admin
 from spend_app.db import connect
 from spend_app.pricing import PricingEngine
@@ -59,25 +57,6 @@ def test_claude_local_replay_writes_zero_new_rows(tmp_path: Path) -> None:
     assert first["eventsWritten"] >= 1
     assert second["eventsWritten"] == 0
     assert _count(database, "usage_events") == first["eventsWritten"]
-
-
-def test_cursor_csv_replay_writes_zero_new_rows(tmp_path: Path) -> None:
-    database = tmp_path / "spend.db"
-    import_path = tmp_path / "imports" / "cursor"
-    import_path.mkdir(parents=True)
-    shutil.copy(FIXTURES / "build_prompt_cursor.csv", import_path / "usage.csv")
-    pricing = PricingEngine.load(ROOT / "pricing")
-    first = ingest_cursor_csv(database_path=database, pricing=pricing, import_path=import_path)
-    second = ingest_cursor_csv(database_path=database, pricing=pricing, import_path=import_path)
-    shutil.copy(FIXTURES / "build_prompt_cursor.csv", import_path / "usage-redrop.csv")
-    third = ingest_cursor_csv(database_path=database, pricing=pricing, import_path=import_path)
-    assert first["eventsWritten"] == 3
-    assert second["eventsWritten"] == 0
-    assert third["eventsWritten"] == 0
-    assert _count(database, "usage_events") == 3
-    with connect(database) as connection:
-        exact = connection.execute("SELECT MAX(is_exact) FROM usage_events").fetchone()[0]
-    assert exact == 0
 
 
 def _openai_client() -> httpx.Client:

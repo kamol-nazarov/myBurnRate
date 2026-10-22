@@ -57,8 +57,6 @@ def default_central_server_url() -> str:
 HARNESS_CATALOG = {
     "codex_local": {"name": "OpenAI Codex CLI", "tool": "codex", "desc": "Local ~/.codex/sessions transcripts"},
     "claude_local": {"name": "Claude Code", "tool": "claude-code", "desc": "Local ~/.claude/projects JSONL logs"},
-    "cursor_local": {"name": "Cursor IDE", "tool": "cursor", "desc": "Local Cursor project & agent transcripts"},
-    "cursor_usage_service": {"name": "Cursor Usage Service", "tool": "cursor", "desc": "Local Cursor SQLite state.vscdb token meter"},
     "opencode_local": {"name": "OpenCode", "tool": "opencode", "desc": "Local OpenCode SQLite session database"},
     "zcode_local": {"name": "ZCode", "tool": "zcode", "desc": "Local ZCode agent database"},
     "grok_local": {"name": "Grok CLI", "tool": "grok", "desc": "Local ~/.grok session logs"},
@@ -1558,7 +1556,7 @@ SETUP_WIZARD_HTML = """<!doctype html>
           <button type="button" class="icon-btn" id="wiz-theme-toggle" aria-label="Switch color theme" title="Switch color theme">
             <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.75a6.25 6.25 0 0 1 0 12.5z" fill="currentColor"/></svg>
           </button>
-          <a href="/" class="btn" id="wizard-skip-link"><span><span class="skip-lead">Skip to </span>Dashboard →</span></a>
+          <a href="/" class="btn" id="wizard-skip-link"><span><span class="skip-lead">Skip to </span>__SKIP_TARGET__ →</span></a>
         </div>
       </header>
 
@@ -1612,7 +1610,7 @@ SETUP_WIZARD_HTML = """<!doctype html>
               <select id="wiz-custom-tool" class="text-input select-sm">
                 <option value="claude-code">Claude Code</option>
                 <option value="codex">Codex / OpenAI</option>
-                <option value="grok">SuperGrok / Cursor (xAI)</option>
+                <option value="grok">SuperGrok (xAI)</option>
                 <option value="opencode">Z.AI / OpenCode</option>
                 <option value="openrouter">OpenRouter</option>
                 <option value="custom">Custom</option>
@@ -1673,6 +1671,8 @@ SETUP_WIZARD_HTML = """<!doctype html>
     <script>
       (() => {
         const $ = id => document.getElementById(id);
+        // The desktop app starts with this window hidden; show it for setup.
+        try { window.__TAURI_INTERNALS__?.invoke?.("show_dashboard")?.catch?.(() => {}); } catch {}
         let step = 1;
         let authMode = "login";
         let stateData = null;
@@ -1728,7 +1728,7 @@ SETUP_WIZARD_HTML = """<!doctype html>
 
         // Provider marks come from the shared sprite served at /logos.svg.
         const TOOL_LOGOS = {
-          codex: "codex", "claude-code": "claude", cursor: "cursor", opencode: "opencode", zcode: "zai",
+          codex: "codex", "claude-code": "claude", opencode: "opencode", zcode: "zai",
           grok: "grok", antigravity: "antigravity", muse: "meta", openrouter: "openrouter", traycer: "traycer"
         };
         const logoFor = (key, name) => /z[.]?ai|glm/i.test(String(name || "")) ? "zai" : (TOOL_LOGOS[key] || "custom");
@@ -1968,4 +1968,6 @@ SETUP_WIZARD_HTML = """<!doctype html>
 
 
 def render_setup_wizard() -> str:
-    return SETUP_WIZARD_HTML
+    from spend_app.config import dashboard_enabled
+
+    return SETUP_WIZARD_HTML.replace("__SKIP_TARGET__", "Dashboard" if dashboard_enabled() else "HUD", 1)

@@ -9,9 +9,8 @@ is read or any request is transmitted:
   for this application (admin keys in the BURNRATE environment). Permitted
   when the credential exists; documented interface only.
 - ``opt-in-native`` — reuse of another application's native credentials or
-  undocumented/private endpoints (Claude OAuth usage endpoint, Cursor
-  DashboardService with Cursor's own bearer token, Z.AI quota endpoint with
-  OpenCode's stored key). These are DISABLED unless the user sets an explicit
+  undocumented/private endpoints (Claude OAuth usage endpoint, Z.AI quota
+  endpoint with OpenCode's stored key). These are DISABLED unless the user sets an explicit
   consent variable, because user consent with BURNRATE is not provider
   permission. Enabling never impersonates a native client: requests identify
   as BURNRATE.
@@ -100,25 +99,12 @@ LANES: dict[str, LanePolicy] = {
         "Official Anthropic usage/cost APIs with the configured ANTHROPIC_ADMIN_KEY.",
         allowed_hosts=("api.anthropic.com",),
     ),
-    "cursor_admin": LanePolicy(
-        "cursor_admin",
-        Lane.CONFIGURED,
-        "Official Cursor Admin API with the configured CURSOR_API_KEY.",
-        allowed_hosts=("api.cursor.com",),
-    ),
     "claude_oauth_usage": LanePolicy(
         "claude_oauth_usage",
         Lane.OPT_IN_NATIVE,
         "Claude OAuth usage endpoint reusing Claude Code credentials (the OAuth credential belongs to Claude Code).",
         allowed_hosts=("api.anthropic.com",),
         consent_env="BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE",
-    ),
-    "cursor_usage_service": LanePolicy(
-        "cursor_usage_service",
-        Lane.OPT_IN_NATIVE,
-        "Cursor DashboardService reusing Cursor's own session token (prefer CURSOR_API_KEY via cursor_admin or CSV imports).",
-        allowed_hosts=("api2.cursor.sh",),
-        consent_env="BURNRATE_ENABLE_CURSOR_USAGE_SERVICE",
     ),
     "zai_quota_endpoint": LanePolicy(
         "zai_quota_endpoint",

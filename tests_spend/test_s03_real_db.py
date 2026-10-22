@@ -52,10 +52,8 @@ def _client(database: Path) -> TestClient:
     settings = Settings(
         database_path=database,
         pricing_path=ROOT / "pricing",
-        cursor_import_path=database.parent / "imports",
         anthropic_admin_key=None,
         openai_admin_key=None,
-        cursor_api_key=None,
         timezone=TZ,
         cache_hit_threshold=0.75,
         over_routing_token_ceiling=40000,

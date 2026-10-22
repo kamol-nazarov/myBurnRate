@@ -19,10 +19,6 @@ from spend_app.adapters.anthropic_admin import ingest as ingest_anthropic_admin
 from spend_app.adapters.antigravity_local import ingest as ingest_antigravity_local
 from spend_app.adapters.claude_local import ingest as ingest_claude_local
 from spend_app.adapters.codex_local import ingest as ingest_codex_local
-from spend_app.adapters.cursor_admin import ingest as ingest_cursor_admin
-from spend_app.adapters.cursor_csv import ingest as ingest_cursor_csv
-from spend_app.adapters.cursor_local import ingest as ingest_cursor_local
-from spend_app.adapters.cursor_usage import ingest as ingest_cursor_usage
 from spend_app.adapters.grok_local import coverage_start as grok_coverage_start
 from spend_app.adapters.grok_local import ingest as ingest_grok_local
 from spend_app.adapters.opencode_local import ingest as ingest_opencode_local
@@ -31,6 +27,7 @@ from spend_app.adapters.traycer_local import ingest as ingest_traycer_local
 from spend_app.adapters.zcode_local import ingest as ingest_zcode_local
 from spend_app.adapters.muse_local import ingest as ingest_muse_local
 from spend_app.config import Settings
+from spend_app.db import RETIRED_SOURCES
 from spend_app.pricing import PricingEngine
 
 Capability = Literal["usage", "quota", "activity", "admin"]
@@ -72,10 +69,6 @@ def default_muse_glob() -> str:
 def default_traycer_glob() -> str:
     # Host 1.4+ stores per-CLI turns in app-assets.db. Older hosts still use chat.db.
     return str(_home() / ".traycer" / "app-assets" / "app-assets.db")
-
-
-def default_cursor_glob() -> str:
-    return str(_home() / ".cursor" / "projects" / "**" / "sdk-agent-store" / "*" / "index.db")
 
 
 def default_opencode_database() -> Path:
@@ -124,10 +117,6 @@ def _traycer_kwargs(settings: Settings, pricing: PricingEngine, **_: object) -> 
     }
 
 
-def _cursor_local_kwargs(settings: Settings, pricing: PricingEngine, **_: object) -> dict:
-    return {**_base_kwargs(settings, pricing), "database_glob": default_cursor_glob()}
-
-
 def _pricing_only_kwargs(settings: Settings, pricing: PricingEngine, **_: object) -> dict:
     return _base_kwargs(settings, pricing)
 
@@ -166,29 +155,6 @@ def _anthropic_admin_kwargs(
     }
 
 
-def _cursor_admin_kwargs(
-    settings: Settings, pricing: PricingEngine, *, start, end, **_: object
-) -> dict:
-    return {
-        **_base_kwargs(settings, pricing),
-        "api_key": settings.cursor_api_key,
-        "start": start,
-        "end": end,
-    }
-
-
-def _cursor_csv_kwargs(settings: Settings, pricing: PricingEngine, **_: object) -> dict:
-    return {**_base_kwargs(settings, pricing), "import_path": settings.cursor_import_path}
-
-
-def _skip_without_cursor_key(settings: Settings) -> bool:
-    return not settings.cursor_api_key
-
-
-def _skip_cursor_usage_when_admin_enabled(settings: Settings) -> bool:
-    return bool(settings.cursor_api_key)
-
-
 @dataclass(frozen=True)
 class ConnectionSpec:
     name: str
@@ -212,16 +178,13 @@ CONNECTION_SPECS = {
     "claude_local": ConnectionSpec("Claude Code", "session_glob", default_claude_glob, "**/*.jsonl", home_name=".claude", child="", location_env="CLAUDE_CONFIG_DIR"),
     "claude_local_alt": ConnectionSpec("Claude Code (second instance)", "session_glob", default_claude_alt_glob, "**/*.jsonl", home_name=".claude", child=""),
     "traycer_local": ConnectionSpec("Traycer", "database_glob", default_traycer_glob, "app-assets/app-assets.db", "sqlite", ".traycer", "", "usage_analytics_facts", ("fact_id", "harness_id", "occurred_at", "uncached_input_tokens", "output_tokens")),
-    "cursor_local": ConnectionSpec("Cursor local", "database_glob", default_cursor_glob, "**/sdk-agent-store/*/index.db", "sqlite", ".cursor", "projects", "runs", ("run_id", "agent_id", "usage_json", "model", "finished_at", "updated_at", "created_at")),
     "opencode_local": ConnectionSpec("OpenCode", "source_database", default_opencode_database, shape="opencode", home_name="opencode", child="", table="session", columns=("id", "project_id", "directory", "path", "model", "cost", "tokens_input", "tokens_output", "tokens_reasoning", "tokens_cache_read", "tokens_cache_write", "time_updated"), location_env="XDG_DATA_HOME"),
     "zcode_local": ConnectionSpec("ZCode", "source_database", default_zcode_database, shape="zcode", home_name=".zcode", child="", table="model_usage", columns=("id", "session_id", "provider_id", "model_id", "completed_at", "input_tokens", "output_tokens", "reasoning_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "raw_usage_json", "status")),
     "grok_local": ConnectionSpec("Grok Build", "log_path", default_grok_root, shape="grok", home_name=".grok", child="", location_env="GROK_HOME"),
     "muse_local": ConnectionSpec("Muse Code", "session_glob", default_muse_glob, "**/*.jsonl", home_name="muse", child=""),
-    "cursor_csv": ConnectionSpec("Cursor CSV", "import_path", lambda: _home() / "BURNRATE-imports", "*.csv", "csv"),
     "antigravity_local": ConnectionSpec("Antigravity populated cache", "import_path", lambda: _home() / "BURNRATE-imports" / "antigravity", "*.jsonl", manual_only=True),
     "openai_admin": ConnectionSpec("OpenAI Admin", "admin_key", lambda: "", shape="api", credential_env="OPENAI_ADMIN_KEY", credential_help="Organization Admin API key created by an organization owner, with organization usage and cost read access. Not a ChatGPT subscription login."),
     "anthropic_admin": ConnectionSpec("Anthropic Admin", "admin_key", lambda: "", shape="api", credential_env="ANTHROPIC_ADMIN_KEY", credential_help="Claude Console organization Admin API key with usage and cost report access (admin role required to create it). Not a Claude subscription login."),
-    "cursor_admin": ConnectionSpec("Cursor Admin", "api_key", lambda: "", shape="api", credential_env="CURSOR_API_KEY", credential_help="Team Admin API key from Cursor team dashboard settings, created by a team admin. Reads team usage; not a Cursor session token."),
     "openrouter": ConnectionSpec("OpenRouter balance", "api_key", lambda: "", shape="api", credential_env="OPENROUTER_MANAGEMENT_KEY", credential_help="OpenRouter management key with credits access. Provides account balance only, not usage events or subscription quota."),
 }
 
@@ -375,38 +338,11 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         stability="experimental",
         exactness="partial",
         enabled_by_default=True,
-        tool_keys=("claude-code", "codex", "cursor", "grok", "opencode", "openrouter", "antigravity"),
+        tool_keys=("claude-code", "codex", "grok", "opencode", "openrouter", "antigravity"),
         ingest=ingest_traycer_local,
         kind="local",
         scheduler_alias="ingest_traycer_local",
         ingest_kwargs=_traycer_kwargs,
-    ),
-    _spec(
-        "cursor_local",
-        "spend_app.adapters.cursor_local:ingest",
-        ("usage", "activity"),
-        stability="experimental",
-        exactness="derived",
-        enabled_by_default=True,
-        tool_keys=("cursor",),
-        ingest=ingest_cursor_local,
-        kind="local",
-        scheduler_alias="ingest_cursor_local",
-        ingest_kwargs=_cursor_local_kwargs,
-    ),
-    _spec(
-        "cursor_usage_service",
-        "spend_app.adapters.cursor_usage:ingest",
-        ("usage",),
-        stability="experimental",
-        exactness="derived",
-        enabled_by_default=True,
-        tool_keys=("cursor",),
-        ingest=ingest_cursor_usage,
-        kind="local",
-        scheduler_alias="ingest_cursor_usage",
-        ingest_kwargs=_pricing_only_kwargs,
-        skip_if=_skip_cursor_usage_when_admin_enabled,
     ),
     _spec(
         "opencode_local",
@@ -505,33 +441,6 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         ingest_kwargs=_anthropic_admin_kwargs,
     ),
     _spec(
-        "cursor_admin",
-        "spend_app.adapters.cursor_admin:ingest",
-        ("usage", "admin"),
-        stability="official",
-        exactness="derived",
-        enabled_by_default=True,
-        tool_keys=("cursor",),
-        ingest=ingest_cursor_admin,
-        kind="admin",
-        scheduler_alias="ingest_cursor_admin",
-        ingest_kwargs=_cursor_admin_kwargs,
-        skip_if=_skip_without_cursor_key,
-    ),
-    _spec(
-        "cursor_csv",
-        "spend_app.adapters.cursor_csv:ingest",
-        ("usage",),
-        stability="official",
-        exactness="derived",
-        enabled_by_default=False,
-        tool_keys=("cursor",),
-        ingest=ingest_cursor_csv,
-        kind="manual",
-        scheduler_alias="ingest_cursor_csv",
-        ingest_kwargs=_cursor_csv_kwargs,
-    ),
-    _spec(
         "openrouter",
         "",
         ("quota",),
@@ -616,6 +525,7 @@ __all__ = (
     "EXACTNESS",
     "PROVIDERS",
     "REGISTRY",
+    "RETIRED_SOURCES",
     "STABILITIES",
     "Capability",
     "Exactness",
@@ -629,10 +539,6 @@ __all__ = (
     "ingest_antigravity_local",
     "ingest_claude_local",
     "ingest_codex_local",
-    "ingest_cursor_admin",
-    "ingest_cursor_csv",
-    "ingest_cursor_local",
-    "ingest_cursor_usage",
     "ingest_grok_local",
     "ingest_muse_local",
     "ingest_opencode_local",

@@ -1,9 +1,10 @@
 # Plans & Value
 
-Plans & Value is a read-only comparison report. It places **configured plan
-expense** next to **API-equivalent reference usage** over the same calendar
-interval so you can see how measured consumption at published rates compares to
-the fixed prices you configured.
+Plans & Value is a read-only comparison report in the full dashboard, which is
+off by default (`BURNRATE_ENABLE_DASHBOARD=1` turns it on). It places
+**configured plan expense** next to **API-equivalent reference usage** over the
+same calendar interval so you can see how measured consumption at published
+rates compares to the fixed prices you configured.
 
 It is not an invoice, payment ledger, ROI calculator, or profit report. It does
 not cancel, downgrade, or re-route subscriptions. Configured terms still live in
@@ -63,8 +64,11 @@ September 9 accrues eight complete days → \(8 × (300 / 30) = \$80\), not $300
 Comparison rows are **groups**, not always one row per logical plan.
 
 - Tool associations follow the same keys as plan management (`codex`,
-  `claude-code`, `cursor`, `grok`, `opencode`, `zcode`, `openrouter`, `xai`,
-  `antigravity`, `custom`).
+  `claude-code`, `grok`, `opencode`, `zcode`, `openrouter`, `xai`,
+  `antigravity`, `muse`, `custom`).
+- **Cursor** is no longer a plan association. A saved plan that still names
+  `cursor` groups with SuperGrok (`grok`) and becomes `grok` when it is next
+  saved. Cursor usage is not counted: it duplicates SuperGrok usage.
 - **OpenCode and ZCode** share the canonical Z.AI association (`opencode`). One
   configured Coding Plan is not counted twice because two harnesses recorded
   usage.

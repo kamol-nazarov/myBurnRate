@@ -37,8 +37,10 @@ _UPDATES: dict[str, tuple] = {}
 
 
 def reset_state() -> None:
+    from spend_app.adapters import grok_native
     _STATE.clear()
     _UPDATES.clear()
+    grok_native.reset_state()
 
 
 def canonical_model(model: str | None) -> str:
@@ -136,14 +138,23 @@ def ingest(*, database_path: Path, pricing: PricingEngine, log_path: Path) -> di
     from spend_app.adapters.grok_native import read_source, reconcile
     if log_path.is_dir() or log_path.name in {"updates.jsonl", "signals.json"}:
         from spend_app.adapters import unchanged
-        from spend_app.adapters.grok_native import files as native_files
+        from spend_app.adapters.grok_native import files as native_files, remember_sessions, session_memo
+        # Listing ~1k session files is the costliest step of an idle pass; list once.
+        try:
+            listed = list(native_files(log_path))
+        except Exception:
+            listed = None
         cache_key, current, replayed = unchanged.check(
-            database_path, SOURCE, log_path, lambda: list(native_files(log_path)), pricing)
+            database_path, SOURCE, log_path,
+            (lambda: listed) if listed is not None else (lambda: list(native_files(log_path))), pricing)
         if replayed is not None:
             return replayed
-        rows, issues, files = read_source(log_path)
+        rows, issues, files = read_source(log_path, listed)
+        memo_key = cache_identity(database_path, log_path, "grok-native-reconcile-v1")
+        memo = session_memo(memo_key)
         result = persist_rows(database_path=database_path, pricing=pricing, source=SOURCE, usage_rows=rows,
-                              prepare=lambda connection, _: reconcile(connection, rows, issues), issues=issues)
+                              prepare=lambda connection, _: reconcile(connection, rows, issues, memo), issues=issues)
+        remember_sessions(memo_key, memo)
         result = {**result, "files": files, "issues": sorted(set(issues))}
         unchanged.remember(database_path, SOURCE, cache_key, current, result)
         return result

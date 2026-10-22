@@ -1,5 +1,4 @@
 """BURNRATE-owned Windows vault references and explicit, bounded API tests."""
-import base64
 import hashlib
 import os
 import uuid
@@ -81,11 +80,6 @@ def test_provider(source, key):
         url = "https://api.anthropic.com/v1/organizations/usage_report/messages"
         params = {"starting_at": start.isoformat(), "ending_at": end.isoformat(), "limit": 1}
         headers.update({"x-api-key": key, "anthropic-version": "2023-06-01"})
-    elif source == "cursor_admin":
-        url = "https://api.cursor.com/teams/filtered-usage-events"
-        method = "POST"
-        body = {"startDate": int(start.timestamp() * 1000), "endDate": int(end.timestamp() * 1000), "page": 1, "pageSize": 1}
-        headers["Authorization"] = "Basic " + base64.b64encode((key + ":").encode()).decode()
     elif source == "openrouter":
         url = "https://openrouter.ai/api/v1/credits"
         headers["Authorization"] = "Bearer " + key

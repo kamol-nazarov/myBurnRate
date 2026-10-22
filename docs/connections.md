@@ -1,7 +1,8 @@
 # Connect harness
 
-Open **Connect harness** from the dashboard. Setup is optional and can be
-closed and reopened. **Manage subscriptions** remains a separate screen.
+Open **Connect harness** from the dashboard. The dashboard is off by default;
+set `BURNRATE_ENABLE_DASHBOARD=1` and restart BURNRATE to use it. Setup is
+optional and can be closed and reopened. **Manage subscriptions** remains a separate screen.
 
 1. Choose **Auto-detect (recommended)** or **Choose manually**.
 2. Review the source, location, capabilities and bounded verification result.
@@ -26,12 +27,10 @@ linked children outside the approved source are not followed.
 | --- | --- | --- |
 | Codex | `~/.codex`, its `sessions` or `archived_sessions` folder, or a session `.jsonl` | Usage |
 | Claude Code | `~/.claude`, its `projects` or `transcripts` folder, or a transcript `.jsonl` | Usage |
-| Cursor local (experimental) | `~/.cursor`, its `projects` folder, or an `index.db` run store | Usage |
 | Traycer (experimental) | `~/.traycer`, its `host/epic-state` folder, or a `chat.db` | Usage |
 | OpenCode | `~/.local/share/opencode`, `opencode*.db`, or `storage/message` JSON | Usage |
 | ZCode | `~/.zcode`, `cli/db/db.sqlite`, or `projects` transcripts | Usage |
 | Grok Build (experimental) | `~/.grok`, unified log, or session `updates.jsonl` / `signals.json` | Usage |
-| Cursor export | A CSV folder, `.csv` file, or selected `usage*.json` account export | Usage |
 
 The existing activity/quota readers do not have a custom-file contract.
 Managed local bindings therefore grant **usage only** and suppress those
@@ -80,8 +79,7 @@ finishes before a save is accepted. Old revisions cannot report a new binding
 as receiving. Disconnect preserves measured history and does not uninstall a
 harness, cancel a plan, revoke external keys or remove source files.
 
-Explicit environment credentials and `CURSOR_IMPORT_PATH` remain externally
-managed. The wizard does not rewrite `.env`. Resolve an external override in
+Explicit environment credentials remain externally managed. The wizard does not rewrite `.env`. Resolve an external override in
 its original configuration before managing that source here.
 
 ## Documented provider APIs
@@ -93,12 +91,10 @@ integrations, not consumer subscription logins.
 | --- | --- | --- |
 | OpenAI Admin | Organization Admin API key with organization usage and cost access | API usage and reported charges |
 | Anthropic Admin | Claude Console organization Admin API key with usage/cost reporting access | API usage and reported charges |
-| Cursor Admin | Team Admin API key created by a team admin in dashboard settings | Team usage and reported cost fields |
 | OpenRouter | Management key with credits access | Account balance only; no usage-event coverage |
 
 See the official [OpenAI administration reference](https://platform.openai.com/docs/api-reference/admin-api-keys),
-[Anthropic usage/cost requirements](https://platform.claude.com/docs/en/manage-claude/usage-cost-api),
-[Cursor Admin API](https://prod.cursor.com/docs/account/teams/admin-api), and
+[Anthropic usage/cost requirements](https://platform.claude.com/docs/en/manage-claude/usage-cost-api), and
 [OpenRouter credits requirements](https://openrouter.ai/docs/api/api-reference/credits/get-remaining-credits).
 
 **Test and connect** explicitly makes at most two bounded requests to the fixed
@@ -117,7 +113,7 @@ cleanup is recorded for retry without enabling a broken binding.
 
 If secure storage is unavailable, API persistence is unavailable and the UI
 explains why. Local connections continue to work. The wizard never borrows
-Claude/Cursor sessions, refreshes another app's token or enables experimental
+Claude sessions, refreshes another app's token or enables experimental
 native-credential consent flags.
 
 ## Access and development notes
@@ -153,13 +149,9 @@ unpriced model stays connected. Parser issues and ambiguous copies appear in
 source health; a cycle that accepted no valid evidence cannot establish health
 for a new binding. Historical data is preserved when a connection is disabled.
 
-Cursor local keeps the existing pre-2026-09-02 SDK authority restriction; it
-is not complete IDE/CLI coverage. Use a supported account export or Admin feed
-for later coverage. Plain CSV `Cost` and JSON `totalCents` are reference values;
-only explicit charged fields become reported charges. Exports without proven
-shared request/account identities cannot establish cross-feed deduplication.
-Do not combine overlapping account exports and Admin history without matching
-provider event IDs and scope; no numeric-only matching is performed.
+Cursor is no longer a connectable source: BURNRATE does not collect Cursor
+usage or quota, and Cursor usage recorded by earlier versions is removed
+(after a backup) because it duplicates SuperGrok usage.
 
 Admin polling revisits seven days of completed UTC hours. Daily charge requests
 cover closed UTC days, separately from token events. This permits bounded late

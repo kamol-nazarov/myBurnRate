@@ -201,16 +201,16 @@ def test_case_5_overlapping_plans_union_without_multiplying_events():
     plans = [
         {
             "id": "A",
-            "name": "Cursor A",
-            "tool_key": "cursor",
+            "name": "SuperGrok A",
+            "tool_key": "grok",
             "start_date": "2026-09-01",
             "end_date": "2026-09-05",
             "accrued_cost": Decimal("25"),
         },
         {
             "id": "B",
-            "name": "Cursor B",
-            "tool_key": "cursor",
+            "name": "SuperGrok B",
+            "tool_key": "grok",
             "start_date": "2026-09-04",
             "end_date": "2026-09-10",
             "accrued_cost": Decimal("35"),
@@ -225,22 +225,22 @@ def test_case_5_overlapping_plans_union_without_multiplying_events():
 
     overlap_event = {
         "raw_id": "overlap",
-        "tool_key": "cursor",
+        "tool_key": "grok",
         "occurred_at": local_day(date(2026, 9, 4), NY).start + timedelta(hours=12),
     }
     early = {
         "raw_id": "early",
-        "tool_key": "cursor",
+        "tool_key": "grok",
         "occurred_at": local_day(date(2026, 9, 2), NY).start + timedelta(hours=1),
     }
     late = {
         "raw_id": "late",
-        "tool_key": "cursor",
+        "tool_key": "grok",
         "occurred_at": local_day(date(2026, 9, 10), NY).start + timedelta(hours=1),
     }
     after = {
         "raw_id": "after",
-        "tool_key": "cursor",
+        "tool_key": "grok",
         "occurred_at": _sep_day_end_exclusive(10),
     }
     by_group, unassigned = assign_events_to_groups(

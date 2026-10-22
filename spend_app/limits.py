@@ -2,7 +2,6 @@
 
 Experimental / undocumented interfaces (may change without notice):
 
-- Cursor ``api2.cursor.sh`` DashboardService (usage events and quota)
 - Anthropic ``/api/oauth/usage`` (Claude Code OAuth usage)
 - Antigravity localhost gRPC-Web language-server RPC
 - Traycer CLI ``agent profile-rate-limits`` and ``agent list``
@@ -34,7 +33,7 @@ import httpx
 from spend_app.adapters.local_common import sqlite_read_only
 from spend_app.adapters.traycer_local import projection_index, settings_candidates
 from spend_app.db import connect
-from spend_app.integration_policy import authorize, identity_headers, require as require_lane
+from spend_app.integration_policy import authorize, identity_headers
 
 
 _CACHE: dict[str, tuple[float, dict]] = {}
@@ -50,9 +49,6 @@ CODEX_ACTIVITY_MAX_AGE_SECONDS = 6 * 60 * 60
 CODEX_STATE_DB = Path.home() / ".codex" / "state_5.sqlite"
 CODEX_HISTORY_DB = Path.home() / ".codex" / "thread_history_1.sqlite"
 ZCODE_ACTIVITY_DB = Path.home() / ".zcode" / "cli" / "db" / "db.sqlite"
-CURSOR_ACTIVITY_DB = (
-    Path.home() / "AppData" / "Roaming" / "Cursor" / "User" / "globalStorage" / "state.vscdb"
-)
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 CLAUDE_ACTIVITY_MAX_AGE_SECONDS = 10 * 60
 LOCAL_ACTIVITY_MAX_AGE_SECONDS = 6 * 60 * 60
@@ -78,7 +74,6 @@ CLAUDE_DESKTOP_HISTORY_MAX_AGE_SECONDS = 45 * 60
 # older cache means the profile is idle and the OAuth endpoint is asked instead.
 CLAUDE_CACHED_USAGE_MAX_AGE_SECONDS = 20 * 60
 OPENROUTER_ALLOWED_HOSTS = frozenset({"openrouter.ai"})
-CURSOR_DASHBOARD_ALLOWED_HOSTS = frozenset({"api2.cursor.sh"})
 CLAUDE_OAUTH_TOKEN_ALLOWED_HOSTS = frozenset({"platform.claude.com"})
 CLAUDE_OAUTH_USAGE_ALLOWED_HOSTS = frozenset({"api.anthropic.com"})
 ZAI_QUOTA_ALLOWED_HOSTS = frozenset({"api.z.ai"})
@@ -455,105 +450,6 @@ def _codex_limits() -> dict:
                          "usedPct": window["used_percent"], "remainingPct": 100 - window["used_percent"],
                          "label": "Weekly", "resetAt": reset_at}],
             "detail": "Main Codex pool from local telemetry; other pools excluded."}
-
-
-def _cursor_access_token() -> str | None:
-    """Cursor's own session token, read ONLY through the opt-in-native lane.
-
-    The token belongs to the Cursor application. Reading it is denied by
-    default (user consent with BURNRATE is not provider permission); the
-    policy check happens BEFORE the credential store is touched.
-    """
-    require_lane("cursor_usage_service")
-    database = Path.home() / "AppData" / "Roaming" / "Cursor" / "User" / "globalStorage" / "state.vscdb"
-    if not database.is_file():
-        return None
-    connection = sqlite_read_only(database)
-    try:
-        row = connection.execute("SELECT value FROM ItemTable WHERE key='cursorAuth/accessToken'").fetchone()
-    finally:
-        connection.close()
-    return row[0] if row else None
-
-
-def _cursor_limits_uncached() -> dict:
-    allowed, reason = authorize("cursor_usage_service")
-    if not allowed:
-        return {"key": "cursor", "name": "Cursor", "status": "unavailable", "windows": [], "detail": reason}
-    token = _cursor_access_token()
-    if not token:
-        return {"key": "cursor", "name": "Cursor", "status": "unavailable", "windows": [], "detail": "Experimental Cursor DashboardService: Cursor is not signed in locally or its account database is unavailable."}
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-        "Connect-Protocol-Version": "1",
-        **identity_headers(),
-    }
-    base = "https://api2.cursor.sh/aiserver.v1.DashboardService/"
-    try:
-        _assert_allowed_https_host(base, CURSOR_DASHBOARD_ALLOWED_HOSTS)
-        with httpx.Client(timeout=15, trust_env=False, follow_redirects=False) as client:
-            usage_response = client.post(base + "GetCurrentPeriodUsage", headers=headers, json={})
-            plan_response = client.post(base + "GetPlanInfo", headers=headers, json={})
-            hard_limit_response = client.post(base + "GetHardLimit", headers=headers, json={})
-        usage_response.raise_for_status()
-        plan_response.raise_for_status()
-        hard_limit_response.raise_for_status()
-        usage = usage_response.json()
-        plan = plan_response.json().get("planInfo") or {}
-        hard_limit = hard_limit_response.json()
-    except Exception as exc:
-        return {"key": "cursor", "name": "Cursor", "status": "error", "windows": [], "detail": f"Experimental Cursor DashboardService lookup failed ({type(exc).__name__}).", **_throttle_fields(exc)}
-    pool = usage.get("planUsage") or {}
-    limit_cents = int(pool.get("limit") or plan.get("includedAmountCents") or 0)
-    has_spend = pool.get("totalSpend") is not None
-    used_cents = int(pool["totalSpend"]) if has_spend else None
-    remaining_cents = None
-    if pool.get("remaining") is not None:
-        remaining_cents = int(pool["remaining"])
-    elif has_spend and limit_cents:
-        remaining_cents = max(0, limit_cents - used_cents)
-    included_pct = None
-    if has_spend and limit_cents:
-        included_pct = used_cents / limit_cents * 100
-    # The two capacity bars share the billing-cycle end the payload already
-    # sent. No period length is invented when that timestamp is absent.
-    cycle_reset = _iso_from_millis(usage.get("billingCycleEnd") or plan.get("billingCycleEnd"))
-    return {
-        "key": "cursor",
-        "name": "Cursor",
-        "plan": plan.get("planName") or "Cursor",
-        "status": "exact",
-        "observedAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-        "windows": [
-            {
-                "key": "included",
-                "label": "Included value",
-                "usedPct": included_pct,
-                "usedUsd": None if used_cents is None else used_cents / 100,
-                "limitUsd": limit_cents / 100 if limit_cents else None,
-                "remainingUsd": None if remaining_cents is None else remaining_cents / 100,
-                "resetAt": cycle_reset,
-            },
-            {
-                "key": "cursor_models",
-                "label": "Cursor Models",
-                "usedPct": pool.get("autoPercentUsed"),
-                "resetAt": cycle_reset,
-            },
-            {
-                "key": "other_models",
-                "label": "Other Models",
-                "usedPct": pool.get("apiPercentUsed"),
-                "resetAt": cycle_reset,
-            },
-        ],
-        "onDemand": {
-            "enabled": not bool(hard_limit.get("noUsageBasedAllowed")),
-            "limitUsd": hard_limit.get("hardLimit"),
-        },
-        "detail": "Experimental undocumented Cursor DashboardService (api2.cursor.sh); authenticated read-only usage.",
-    }
 
 
 def _claude_desktop_usage_path() -> Path | None:
@@ -1736,64 +1632,6 @@ def _zcode_active_sessions(
             connection.close()
 
 
-def _cursor_active_sessions(
-    path: Path = CURSOR_ACTIVITY_DB,
-    *,
-    now: datetime | None = None,
-) -> list[dict]:
-    """Actively generating Cursor Composer sessions from read-only local state."""
-    if not path.is_file():
-        return []
-    current = (now or datetime.now(UTC)).astimezone(UTC)
-    cutoff_ms = int(current.timestamp() * 1000) - LOCAL_ACTIVITY_MAX_AGE_SECONDS * 1000
-    connection = None
-    try:
-        connection = sqlite_read_only(path)
-        rows = connection.execute(
-            """
-            SELECT h.composerId,h.createdAt,h.lastUpdatedAt,h.value,d.value
-            FROM composerHeaders h
-            LEFT JOIN cursorDiskKV d ON d.key='composerData:' || h.composerId
-            WHERE h.isArchived=0 AND h.lastUpdatedAt>=?
-            """,
-            (cutoff_ms,),
-        ).fetchall()
-        sessions = []
-        for composer_id, created_at, updated_at, header_raw, data_raw in rows:
-            try:
-                data = json.loads(data_raw) if data_raw else {}
-            except (TypeError, json.JSONDecodeError):
-                data = {}
-            status = str(data.get("status") or "").strip().lower()
-            if status not in {"generating", "running", "inprogress", "in_progress"}:
-                continue
-            try:
-                header = json.loads(header_raw) if header_raw else {}
-            except (TypeError, json.JSONDecodeError):
-                header = {}
-            model_config = data.get("modelConfig") if isinstance(data.get("modelConfig"), dict) else {}
-            model = str(model_config.get("modelName") or "unknown").strip().lower() or "unknown"
-            started = _iso_from_millis(created_at)
-            last_seen = _iso_from_millis(updated_at)
-            if not started or not last_seen:
-                continue
-            sessions.append(
-                {
-                    "sessionId": str(composer_id),
-                    "title": str(data.get("name") or header.get("name") or "Cursor session"),
-                    "model": f"cursor:{model}",
-                    "startedAt": started,
-                    "lastSeenAt": last_seen,
-                }
-            )
-        return sorted(sessions, key=lambda row: row["lastSeenAt"], reverse=True)
-    except (OSError, ValueError, sqlite3.Error):
-        return []
-    finally:
-        if connection is not None:
-            connection.close()
-
-
 def _antigravity_active_sessions(*, now: datetime | None = None) -> list[dict]:
     """Busy Antigravity trajectories from its read-only localhost RPC."""
     current = (now or datetime.now(UTC)).astimezone(UTC)
@@ -2253,6 +2091,7 @@ def snapshot_limits(database_path: Path | None = None, *, now: datetime | None =
         rows = sorted(read_rows(connection, now=now), key=lambda row: (row["polled_at"], row["id"]))
     latest = {}
     for row in rows:
+        # Cursor is no longer tracked; older databases may still hold its rows.
         if row["provider_key"] == "cursor":
             continue
         latest[(row["provider_key"], row["limit_key"])] = row

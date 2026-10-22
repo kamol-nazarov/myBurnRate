@@ -27,8 +27,6 @@ from spend_app.limits import (
     _claude_limits_uncached,
     _codex_active_sessions,
     _codex_limits,
-    _cursor_active_sessions,
-    _cursor_limits_uncached,
     _grok_active_sessions,
     _grok_limits_uncached,
     _muse_limits_uncached,
@@ -239,12 +237,12 @@ def lane_is_active(database_path: Path | str, provider_key: str, *, now: datetim
             modified = None
         return modified is not None and moment.timestamp() - modified <= QUOTA_ACTIVITY_WINDOW_SECONDS
     since = (moment - timedelta(seconds=QUOTA_ACTIVITY_WINDOW_SECONDS)).isoformat().replace("+00:00", "Z")
-    tool_keys = ("grok", "cursor") if provider_key == "grok" else (("opencode", "zcode") if provider_key == "opencode" else (provider_key,))
+    tool_keys = ("opencode", "zcode") if provider_key == "opencode" else (provider_key,)
     placeholders = ",".join("?" for _ in tool_keys)
     run_prefixes = {
         "codex": ("codex:%",),
         "claude-code": ("claude:%",),
-        "grok": ("grok:%", "cursor:%"),
+        "grok": ("grok:%",),
         "opencode": ("zcode:%", "opencode:%"),
         "antigravity": ("antigravity:%",),
     }.get(provider_key, ())
@@ -512,39 +510,6 @@ def codex_quota_samples(payload: dict, *, source: str, now: datetime | None = No
             scope=payload["scope"],
         )
     ]
-
-
-def cursor_quota_samples(payload: dict, *, source: str) -> list[QuotaSample]:
-    exact = payload.get("status") == "exact"
-    detail = str(payload.get("detail") or "Cursor usage is unavailable.")
-    windows = _windows_by_key(payload)
-    samples: list[QuotaSample] = []
-    for limit_key, label in REQUIRED_LIMITS.get("cursor", (("cursor_models", "Cursor Models"), ("other_models", "Other Models"))):
-        window = windows.get(limit_key) if exact else None
-        used_pct = _number(window.get("usedPct")) if isinstance(window, dict) else None
-        if used_pct is None:
-            samples.append(
-                _unavailable(
-                    "cursor",
-                    limit_key,
-                    label,
-                    source,
-                    detail if not exact else f"Experimental Cursor DashboardService omitted the {label} percentage.",
-                )
-            )
-            continue
-        samples.append(
-            QuotaSample(
-                provider_key="cursor",
-                limit_key=limit_key,
-                label=label,
-                unit="pct",
-                source=source,
-                pct=max(0.0, used_pct),
-                resets_at=_window_reset(window),
-            )
-        )
-    return samples
 
 
 def muse_quota_samples(payload: dict, *, source: str) -> list[QuotaSample]:
@@ -981,8 +946,8 @@ def poll_quotas(
             except Exception:
                 pass
         try:
-            from spend_app.sync import STREAM_BROKER, clear_hub_proxy_cache
-            clear_hub_proxy_cache()
+            from spend_app.sync import STREAM_BROKER, expire_hub_proxy_cache
+            expire_hub_proxy_cache()
             STREAM_BROKER.publish({"type": "quotas", "written": written, "at": polled_at})
         except Exception:
             pass
@@ -1016,7 +981,6 @@ def agent_run_records(activity: dict) -> list[AgentRunRecord]:
             records.append(record)
     for key, prefix in (
         ("claudeSessions", "claude"),
-        ("cursorSessions", "cursor"),
         ("zcodeSessions", "zcode"),
         ("antigravitySessions", "antigravity"),
     ):
@@ -1129,7 +1093,6 @@ def default_activity_collector(database_path=None) -> dict:
     readers = {
         "grokSessions": ("grok_local", _grok_active_sessions),
         "codexSessions": ("codex_local", _codex_active_sessions),
-        "cursorSessions": ("cursor_local", _cursor_active_sessions),
         "zcodeSessions": ("zcode_local", _zcode_active_sessions),
         "antigravitySessions": ("antigravity_local", _antigravity_active_sessions),
         "claudeSessions": ("claude_local", _claude_active_sessions),

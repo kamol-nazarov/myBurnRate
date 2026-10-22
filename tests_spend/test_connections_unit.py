@@ -78,7 +78,7 @@ class FakeVault:
 def service(monkeypatch):
     for name in ("OPENAI_ADMIN_KEY", "ANTHROPIC_ADMIN_KEY", "CURSOR_API_KEY", "CURSOR_IMPORT_PATH", "OPENROUTER_MANAGEMENT_KEY"):
         monkeypatch.delenv(name, raising=False)
-    settings = SimpleNamespace(database_path=Path("C:/fake/burnrate.db"), cursor_import_path=Path("C:/fake/imports"), openai_admin_key=None, anthropic_admin_key=None, cursor_api_key=None)
+    settings = SimpleNamespace(database_path=Path("C:/fake/burnrate.db"), openai_admin_key=None, anthropic_admin_key=None)
     return c.Service(settings, MemoryStore(), FakeInspector(), FakeVault(), Mock())
 
 
@@ -139,7 +139,7 @@ def test_discovery_bounded_catalog_ambiguity_and_no_secret_reads(service):
     codex = next(row for row in result["connections"] if row["source"] == "codex_local")
     assert len(codex["candidates"]) == 2
     assert all(row["kind"] != "api" for row in result["connections"])
-    assert len(result["connections"]) == 10
+    assert len(result["connections"]) == 8
     service.probe.assert_not_called()
     service.inspector.fail = True
     assert all(candidate["state"] == "needs_attention" for row in service.discover()["connections"] for candidate in row["candidates"])
@@ -164,7 +164,7 @@ def test_api_reference_and_cleanup_and_no_auto_borrowing(service):
     assert service.mutate(request) == result
     service.mutate(body("openai_admin", revision=1, operation="disable"))
     assert not service.vault.values
-    for source in ("cursor_usage_service", "claude_oauth_usage", "zai_quota_endpoint"):
+    for source in ("claude_oauth_usage", "zai_quota_endpoint"):
         with pytest.raises(LocationError):
             service.mutate(body(source))
 
@@ -195,9 +195,9 @@ def test_dispatch_root_change_disable_and_unrelated_source(service, monkeypatch)
 
 
 def test_experimental_gate_legacy_and_managed(service):
-    default_on = REGISTRY.get("cursor_local")
+    default_on = REGISTRY.get("grok_local")
     assert c.eligible(default_on, service.store.read())
-    spec = REGISTRY.get("cursor_csv")
+    spec = REGISTRY.get("claude_local_alt")
     assert not c.eligible(spec, service.store.read())
     with service.store.transaction() as state:
         state["legacy"].append(spec.key)
@@ -422,7 +422,7 @@ def test_managed_activity_never_calls_default_profile(service, monkeypatch):
     from spend_app import quotas
     service.mutate(body())
     monkeypatch.setattr(c, "Store", lambda path: service.store)
-    for name in ("_traycer_activity", "_grok_active_sessions", "_cursor_active_sessions", "_zcode_active_sessions", "_antigravity_active_sessions", "_claude_active_sessions"):
+    for name in ("_traycer_activity", "_grok_active_sessions", "_zcode_active_sessions", "_antigravity_active_sessions", "_claude_active_sessions"):
         monkeypatch.setattr(quotas, name, lambda: {})
     reader = Mock(side_effect=AssertionError("wrong default profile"))
     monkeypatch.setattr(quotas, "_codex_active_sessions", reader)
@@ -554,7 +554,7 @@ def test_managed_import_errors_do_not_publish_paths_or_keys():
     assert "plain-secret" not in result
 
 
-@pytest.mark.parametrize("source,expected", [("openai_admin", 2), ("anthropic_admin", 2), ("cursor_admin", 1), ("openrouter", 1)])
+@pytest.mark.parametrize("source,expected", [("openai_admin", 2), ("anthropic_admin", 2), ("openrouter", 1)])
 def test_explicit_provider_tests_use_only_bounded_fixed_reads(source, expected, monkeypatch):
     response = Mock(status_code=200)
     response.__enter__ = Mock(return_value=response)
@@ -579,20 +579,6 @@ def test_recheck_does_not_reenable_disabled_binding(service):
     record = service.store.read()["bindings"]["codex_local"]
     assert record["enabled"] is False
     assert record["state"] == "disabled"
-
-
-def test_existing_external_native_consent_is_preserved_not_created(service, monkeypatch):
-    monkeypatch.delenv("BURNRATE_ENABLE_CURSOR_USAGE_SERVICE", raising=False)
-    spec = REGISTRY.get("cursor_usage_service")
-    with service.store.transaction() as state:
-        state["bindings"][spec.key] = {"enabled": False, "revision": 0}
-    assert not c.eligible(spec, service.store.read())
-    with service.store.transaction() as state:
-        state["bindings"].pop(spec.key, None)
-    monkeypatch.setenv("BURNRATE_ENABLE_CURSOR_USAGE_SERVICE", "1")
-    assert c.eligible(spec, service.store.read())
-    with pytest.raises(LocationError):
-        service.mutate(body("cursor_usage_service"))
 
 
 def test_missing_metadata_database_is_not_created():

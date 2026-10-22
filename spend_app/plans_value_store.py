@@ -471,7 +471,7 @@ def load_source_health(connection, as_of: datetime | None = None) -> list[dict]:
             reason = "This source is not configured for collection."
         # Admin/charge-only lanes are visible at report scope but cannot prove
         # subscription collection for a plan group.
-        comparable = source not in {"openai_admin", "anthropic_admin", "cursor_admin", "openrouter"}
+        comparable = source not in {"openai_admin", "anthropic_admin", "openrouter"}
         freshness = _freshness(source, last_success, captured)
         capability_note = _usage_capability_note(source)
         coverage = (

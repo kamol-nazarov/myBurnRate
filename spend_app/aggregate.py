@@ -322,12 +322,6 @@ PROVIDER_META = {
         "plan": "ChatGPT Pro",
         "isPayg": False,
     },
-    "cursor": {
-        "providerKey": "cursor",
-        "providerName": "Cursor",
-        "plan": "Ultra",
-        "isPayg": False,
-    },
     "opencode": {
         "providerKey": "opencode",
         "providerName": "Z.AI Coding Plan",
@@ -732,6 +726,7 @@ def _subscription_cost(
 def _subscription_tool_key(tool: str) -> str:
     if tool == "zcode":
         return "opencode"
+    # A plan saved for Cursor, which shares SuperGrok's pool, is SuperGrok's.
     if tool == "cursor":
         return "grok"
     return tool
@@ -2393,9 +2388,6 @@ def aggregate_summary(
         month_usage["opencode"] = month_usage.get("opencode", Decimal(0)) + month_usage.get(
             "zcode", Decimal(0)
         )
-        month_usage["grok"] = month_usage.get("grok", Decimal(0)) + month_usage.get(
-            "cursor", Decimal(0)
-        )
         monthly_plans: dict[str, tuple[str, Decimal]] = {}
         subscription_rows = []
         for row in effective_terms(connection):
@@ -2619,7 +2611,6 @@ def aggregate_summary(
             "coverage": {
                 "exactProviders": ["Codex / OpenAI", "Claude Code / Anthropic"],
                 "derivedProviders": [
-                    "Cursor",
                     "Z.AI Coding Plan / OpenCode / ZCode",
                     "SuperGrok / Grok Build",
                     "OpenRouter",
@@ -2994,7 +2985,7 @@ def aggregate_health(
                 }
             )
         for provider_key, meta in PROVIDER_META.items():
-            if provider_key in seen_providers or provider_key == "cursor":
+            if provider_key in seen_providers:
                 continue
             quotas.append(
                 {

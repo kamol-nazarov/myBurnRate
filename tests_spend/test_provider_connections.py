@@ -9,7 +9,6 @@ spawned on every poll while Traycer is unavailable.
 from __future__ import annotations
 
 import json
-import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,28 +17,7 @@ import httpx
 import spend_app.limits as limits
 from spend_app.config import ACTIVITY_POLL_SECONDS, QUOTA_POLL_SECONDS
 from spend_app.db import initialize
-from spend_app.quotas import REQUIRED_LIMITS, cursor_quota_samples, default_quota_collectors
-
-
-def test_cursor_included_value_is_read_but_not_persisted_by_contract() -> None:
-    """The build-prompt limit inventory lists only the Cursor model pools.
-
-    The usage service also reports the included plan value (dollars used
-    against the plan's included amount). It is read by the compatibility
-    /limits reader but deliberately not persisted; enabling it is a product
-    decision recorded in docs/PROVIDER_CONNECTIONS.md.
-    """
-    assert "cursor" not in REQUIRED_LIMITS
-    payload = {
-        "status": "exact",
-        "windows": [
-            {"key": "included", "label": "Included value", "usedPct": 87.3, "usedUsd": 349.27, "limitUsd": 400.0},
-            {"key": "cursor_models", "label": "Cursor Models", "usedPct": 8.7},
-            {"key": "other_models", "label": "Other Models", "usedPct": 17.5},
-        ],
-    }
-    keys = [sample.limit_key for sample in cursor_quota_samples(payload, source="cursor_usage_service")]
-    assert keys == ["cursor_models", "other_models"]
+from spend_app.quotas import default_quota_collectors
 
 
 def test_traycer_profile_breaker_skips_the_cli_after_a_failure(tmp_path: Path, monkeypatch) -> None:
@@ -121,7 +99,6 @@ def test_external_quota_endpoints_are_called_at_most_once_per_cache_window(tmp_p
     monkeypatch.setattr("spend_app.quotas._traycer_profile_rate_limits", lambda _h: (_ for _ in ()).throw(RuntimeError("paused")))
     monkeypatch.setattr("spend_app.quotas._zai_limits_uncached", counting("zai", exact))
     monkeypatch.setattr("spend_app.quotas._muse_limits_uncached", lambda: exact)
-    monkeypatch.setattr("spend_app.quotas._cursor_limits_uncached", counting("cursor", exact))
     monkeypatch.setattr("spend_app.quotas._codex_limits", counting("codex", {"status": "unavailable", "detail": "none", "windows": []}))
     database = tmp_path / "spend.db"
     initialize(database)
@@ -262,10 +239,8 @@ def test_claude_oauth_refresh_writes_credentials_only_when_opted_in(
 
 
 def test_undocumented_interfaces_are_labeled_experimental() -> None:
-    from spend_app.adapters import antigravity_local, cursor_usage, traycer_local
+    from spend_app.adapters import antigravity_local, traycer_local
 
-    assert "experimental" in (cursor_usage.__doc__ or "").lower()
-    assert "api2.cursor.sh" in (cursor_usage.__doc__ or "")
     assert "experimental" in (antigravity_local.__doc__ or "").lower()
     assert "grpc-web" in (antigravity_local.__doc__ or "").lower()
     assert "experimental" in (traycer_local.__doc__ or "").lower()
@@ -274,53 +249,6 @@ def test_undocumented_interfaces_are_labeled_experimental() -> None:
     assert "experimental" in (limits.__doc__ or "").lower()
     assert "/api/oauth/usage" in (limits.__doc__ or "")
     assert "BURNRATE_CLAUDE_OAUTH_REFRESH" in (limits.__doc__ or "")
-
-
-def test_cursor_quota_client_disables_proxy_env(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("BURNRATE_ENABLE_CURSOR_USAGE_SERVICE", "1")
-    database = (
-        tmp_path
-        / "AppData"
-        / "Roaming"
-        / "Cursor"
-        / "User"
-        / "globalStorage"
-        / "state.vscdb"
-    )
-    database.parent.mkdir(parents=True)
-    with sqlite3.connect(database) as connection:
-        connection.execute("CREATE TABLE ItemTable (key TEXT, value TEXT)")
-        connection.execute(
-            "INSERT INTO ItemTable(key, value) VALUES('cursorAuth/accessToken', 'fixture-token')"
-        )
-    monkeypatch.setattr("spend_app.limits.Path.home", lambda: tmp_path)
-    observed: dict = {}
-
-    class FakeClient:
-        def __init__(self, *args, **kwargs):
-            observed.update(kwargs)
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def post(self, url, headers=None, json=None):
-            request = httpx.Request("POST", url)
-            if url.endswith("GetCurrentPeriodUsage"):
-                payload = {"planUsage": {"autoPercentUsed": 1.0, "apiPercentUsed": 2.0}}
-            elif url.endswith("GetPlanInfo"):
-                payload = {"planInfo": {"planName": "Pro"}}
-            else:
-                payload = {"noUsageBasedAllowed": True}
-            return httpx.Response(200, request=request, json=payload)
-
-    monkeypatch.setattr("spend_app.limits.httpx.Client", FakeClient)
-    result = limits._cursor_limits_uncached()
-    assert observed.get("trust_env") is False
-    assert "experimental" in result["detail"].lower()
-    assert "api2.cursor.sh" in result["detail"]
 
 
 def test_claude_oauth_401_does_not_refresh_when_opt_in_is_unset(

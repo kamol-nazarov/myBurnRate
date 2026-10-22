@@ -8,7 +8,6 @@ from pathlib import Path
 LOCAL_PATHS = {
     "codex_local": (".codex", "sessions"),
     "claude_local": (".claude", "projects"),
-    "cursor_local": (".cursor", "projects"),
     "opencode_local": (".local", "share", "opencode", "opencode.db"),
     "zcode_local": (".zcode", "cli", "db", "db.sqlite"),
     "grok_local": (".grok", "logs"),
@@ -19,12 +18,9 @@ LOCAL_PATHS = {
 SETTINGS = {
     "openai_admin": "OPENAI_ADMIN_KEY",
     "anthropic_admin": "ANTHROPIC_ADMIN_KEY",
-    "cursor_admin": "CURSOR_API_KEY",
     "openrouter": "OPENROUTER_MANAGEMENT_KEY",
 }
 EXPERIMENTAL = {
-    "cursor_local",
-    "cursor_usage_service",
     "grok_local",
     "traycer_local",
     "antigravity_local",
@@ -61,7 +57,7 @@ def integration_reports(settings, *, environ=None, bindings=None):
                 "external": external,
             }
         )
-    for key in ("claude_oauth_usage", "cursor_usage_service", "zai_quota_endpoint"):
+    for key in ("claude_oauth_usage", "zai_quota_endpoint"):
         lane = LANES[key]
         reports.append(
             {
@@ -121,9 +117,12 @@ def source_reports(connection, now, detected=None, settings=None):
         from spend_app.connections import Store
 
         bindings = Store(settings.database_path).read()["bindings"]
-    sources = set(LOCAL_PATHS) | set(SETTINGS) | {"cursor_usage_service", "cursor_csv"}
+    from spend_app.providers import RETIRED_SOURCES
+
+    sources = set(LOCAL_PATHS) | set(SETTINGS)
     sources.update(
         row[0] for row in connection.execute("SELECT DISTINCT source FROM ingest_runs")
+        if row[0] not in RETIRED_SOURCES
     )
     reports = []
     for source in sorted(sources):

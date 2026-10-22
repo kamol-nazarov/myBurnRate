@@ -237,7 +237,6 @@ def test_c11_reingest_gate_is_owned_by_the_replay_module() -> None:
 
     assert hasattr(replay, "test_codex_local_replay_writes_zero_new_rows")
     assert hasattr(replay, "test_claude_local_replay_writes_zero_new_rows")
-    assert hasattr(replay, "test_cursor_csv_replay_writes_zero_new_rows")
     assert hasattr(replay, "test_openai_admin_fixture_replay_writes_zero_new_rows")
 
 

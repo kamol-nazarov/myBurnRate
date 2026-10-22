@@ -224,7 +224,8 @@ def test_v7_database_migrates_with_is_exact_backfill_and_quarterly(tmp_path: Pat
             row[0]: row[1]
             for row in connection.execute("SELECT raw_id, is_exact FROM usage_events")
         }
-        assert flags["legacy:cursor"] == 0
+        # Recorded Cursor usage duplicates SuperGrok usage and is retired on upgrade.
+        assert "legacy:cursor" not in flags
         assert flags["legacy:codex"] == 1
         cadences = {
             row[0]: row[1] for row in connection.execute("SELECT tool_key, cadence FROM subscriptions")
@@ -246,7 +247,7 @@ def test_v7_database_migrates_with_is_exact_backfill_and_quarterly(tmp_path: Pat
     initialize(database)
     with connect(database) as connection:
         assert connection.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
-        assert connection.execute("SELECT COUNT(*) FROM usage_events").fetchone()[0] == 2
+        assert connection.execute("SELECT COUNT(*) FROM usage_events").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM subscriptions").fetchone()[0] == 1
 
 
@@ -597,7 +598,6 @@ def test_installed_defaults_use_localappdata_and_utc(monkeypatch, tmp_path: Path
     assert settings.timezone == "UTC"
     assert settings.anthropic_admin_key is None
     assert settings.openai_admin_key is None
-    assert settings.cursor_api_key is None
 
 
 def test_dev_and_override_database_paths(monkeypatch, tmp_path: Path) -> None:
@@ -623,4 +623,3 @@ def test_env_example_has_no_personal_machine_paths() -> None:
     assert "SPEND_TIMEZONE=UTC" in text
     assert "ANTHROPIC_ADMIN_KEY=" in text
     assert "OPENAI_ADMIN_KEY=" in text
-    assert "CURSOR_API_KEY=" in text

@@ -32,9 +32,9 @@ Version: `0.3.0-beta.15` · Current release notes: [RELEASE-0.3.0-beta.15.md](RE
 
 BURNRATE is a private, local-first application for tracking AI coding-agent token usage, cache efficiency, subscription capacity, run-dry pace forecasts, and API-equivalent cost across all your coding tools and computers.
 
-It reads harness-local files and, if you opt in, a small set of read-only provider admin or quota APIs. It **never** sits on the inference path: **Codex**, **Claude Code**, **Cursor**, **OpenCode**, **ZCode**, **Grok Build**, **Google Antigravity**, and **Traycer** keep talking to their providers directly. There is no hosted BURNRATE cloud account, no telemetry phone-home, and no inference proxy.
+It reads harness-local files and, if you opt in, a small set of read-only provider admin or quota APIs. It **never** sits on the inference path: **Codex**, **Claude Code**, **OpenCode**, **ZCode**, **Grok Build**, **Google Antigravity**, and **Traycer** keep talking to their providers directly. There is no hosted BURNRATE cloud account, no telemetry phone-home, and no inference proxy.
 
-The default runtime is a single lightweight process: **FastAPI + SQLite + Dashboard & HUD** bound to `127.0.0.1:17331`, with an optional **Tauri v2 native desktop shell** providing a Windows system tray icon and frameless Always-on-Top Sidecar HUD.
+The default runtime is a single lightweight process: **FastAPI + SQLite + Sidecar HUD** bound to `127.0.0.1:17331`, with an optional **Tauri v2 native desktop shell** providing a Windows system tray icon and the frameless Always-on-Top HUD. The HUD is the product; the full dashboard is off by default and returns with `BURNRATE_ENABLE_DASHBOARD=1`.
 
 - **Windows-first**, CPython 3.12.
 - **Localhost-only** by default (`127.0.0.1:17331`).
@@ -46,14 +46,14 @@ The default runtime is a single lightweight process: **FastAPI + SQLite + Dashbo
 ## Key Application Features
 
 - **Interactive 5-Step Setup Wizard (`/setup`)**: Configure your computer's name, pick a multi-computer role (**Primary Hub**, **Connected Spoke**, or **Standalone**), auto-scan & import local AI coding harnesses on the spot, select active monthly subscriptions with 1-click presets, and configure the Sidecar HUD.
-- **Unified Spend & Capacity Dashboard (`/`)**:
+- **Unified Spend & Capacity Dashboard (optional)**: Off by default. With `BURNRATE_ENABLE_DASHBOARD=1` it is served at `/`; otherwise `/` opens the HUD.
   - **Live Capacity & Run-Dry Forecasting**: Per-provider quota gauges sorted by *what runs out first*, projecting when a 5-hour or weekly window will exhaust based on your recent burn pace, with configurable in-app and browser alerts.
   - **Plans & Value**: Compare `This month` or `Last month` subscription expense against recorded API-equivalent usage, shared tool associations, and value multiples.
   - **Action Center**: Tracks quota thresholds, monitored-source issues, and unpriced models with snooze/acknowledge workflows.
   - **Token & Unit Economics**: Breakdown of fresh input, cached input, cache writes, output, and reasoning tokens by tool, model, project, and session, plus counterfactual cache-savings calculations.
-- **Always-on-Top Sidecar HUD (`/hud`)**: Frameless floating window (`380` wide, sized to its content) in the same graphite or paper theme as the dashboard. It leads with today’s API-rate spend, then burn rate, cache reuse, and tokens, then every subscription window as a segmented meter row: percentage, an even-pace tick, and the time until that window resets. **Mini** collapses it to a `296`-wide glance strip with one line per plan (its tightest window). Drag it from any empty surface; Mini, Theme, Pin, Open, and Hide stay clickable, and a double-click does not maximize it.
+- **Always-on-Top Sidecar HUD (`/hud`)**: Frameless floating window (`380` wide, sized to its content) in a graphite or paper theme. It leads with today’s API-rate spend, then burn rate, cache reuse, and tokens, then every subscription window as a segmented meter row: percentage, an even-pace tick, and the time until that window resets. **Mini** collapses it to a `296`-wide glance strip with one line per plan (its tightest window); click a plan to list all of its windows. A poll that returns no value never blanks a meter: it keeps its last reading (dimmed) until that window resets. Drag it from any empty surface; Mini, Theme, Pin, and Hide stay clickable, and a double-click does not maximize it.
 - **Single-Account Multi-Computer Sync**: Pair laptops and secondary desktops to your primary Hub using a 1-click `brpair_...` pairing code. Spokes automatically push incremental token usage, sessions, and live agent state into your Hub database.
-- **Native Desktop App (`src-tauri/`)**: Tauri v2 desktop wrapper with system tray menu (`Toggle Sidecar HUD`, `Toggle HUD Always on Top`, `Open Full Dashboard`, `Run Setup Wizard…`, `Quit BURNRATE`) and automatic background process supervision.
+- **Native Desktop App (`src-tauri/`)**: Tauri v2 desktop wrapper with system tray menu (`Toggle Sidecar HUD`, `Toggle HUD Always on Top`, `Run Setup Wizard…`, `Quit BURNRATE`); its main window opens only for setup and automatic background process supervision.
 
 ---
 
@@ -111,10 +111,10 @@ burnrate serve
 
 Then open:
 - **First-Run Setup Wizard:** [http://127.0.0.1:17331/setup](http://127.0.0.1:17331/setup)
-- **Main Dashboard:** [http://127.0.0.1:17331](http://127.0.0.1:17331)
-- **Sidecar HUD:** [http://127.0.0.1:17331/hud](http://127.0.0.1:17331/hud)
+- **Sidecar HUD:** [http://127.0.0.1:17331/hud](http://127.0.0.1:17331/hud) (also [http://127.0.0.1:17331](http://127.0.0.1:17331))
+- **Full Dashboard (optional):** set `BURNRATE_ENABLE_DASHBOARD=1`, restart, and open [http://127.0.0.1:17331](http://127.0.0.1:17331)
 
-The HUD starts live quota and activity polling without importing transcript history or building dashboard summaries. Its spend statistics use recorded usage and load separately from the live meters. Opening and using the full dashboard requests historical collection; after two minutes without dashboard requests, collection finishes its current source and defers further scans. Live polling and spoke sync continue.
+The HUD starts live quota and activity polling immediately. Its spend statistics load separately and keep usage collection running in the background, without building dashboard summaries. HUD usage requests (and dashboard requests, when it is enabled) renew collection on this computer and, for HUD usage, on the paired hub. After two minutes without usage requests, collection finishes its current source and defers further scans. Live polling and spoke sync continue. On a paired spoke, the HUD shows the last hub copy at once and renews it in the background, so a slow or unreachable hub never stalls it.
 
 ### Option B: Windowless Windows Background Service (Auto-Start at Sign-In)
 
@@ -157,8 +157,8 @@ When you open [http://127.0.0.1:17331/setup](http://127.0.0.1:17331/setup) (or c
    - **Primary Hub (`hub`):** Stores the master SQLite database and generates 1-click `brpair_...` pairing codes for your other computers.
    - **Connected Spoke (`spoke`):** Connects to your Primary Hub using a `brpair_...` pairing code and automatically streams local usage in the background.
    - **Standalone (`standalone`):** Tracks only this computer locally.
-3. **Step 3 — AI Harnesses Auto-Scan & Import:** Automatically detects local installations of **Claude Code**, **OpenAI Codex CLI**, **Cursor IDE**, **Cursor Usage Service**, **OpenCode**, **ZCode**, **Grok CLI**, **Antigravity**, and **Traycer**, and imports historical usage and active agents with one click.
-4. **Step 4 — Active Subscriptions:** Select from 1-click monthly plan presets (`Claude Max`, `Claude Pro`, `ChatGPT Pro`, `ChatGPT Plus`, `Cursor Pro`, `Cursor Ultra`, `SuperGrok`, `Z.AI Coding Plan`) or add custom plans so Plans & Value and daily burn proration work immediately.
+3. **Step 3 — AI Harnesses Auto-Scan & Import:** Automatically detects local installations of **Claude Code**, **OpenAI Codex CLI**, **OpenCode**, **ZCode**, **Grok CLI**, **Antigravity**, and **Traycer**, and imports historical usage and active agents with one click.
+4. **Step 4 — Active Subscriptions:** Select from 1-click monthly plan presets (`Claude Max`, `Claude Pro`, `ChatGPT Pro`, `ChatGPT Plus`, `SuperGrok`, `Z.AI Coding Plan`) or add custom plans so Plans & Value and daily burn proration work immediately.
 5. **Step 5 — Sidecar HUD Configuration:** Choose whether the frameless Sidecar HUD opens automatically on launch and stays pinned Always-on-Top.
 
 ---
@@ -209,7 +209,7 @@ burnrate backfill <source>
 
 ## What the Dashboard Looks Like
 
-The dashboard is a single-page app titled **BURNRATE · AI Cost Intelligence**, styled like an instrument panel: a graphite (dark) or paper (light) ground that follows your OS until you pick one with the theme button, DIN-style Bahnschrift numerals, hairline grids instead of cards, and a single ember accent reserved for what needs your eye. Quota meters are segmented gauges; sections are numbered `01`, `02`, … After `burnrate serve`, open [http://127.0.0.1:17331](http://127.0.0.1:17331).
+The dashboard is off by default (`BURNRATE_ENABLE_DASHBOARD=1` turns it back on). It is a single-page app titled **BURNRATE · AI Cost Intelligence**, styled like an instrument panel: a graphite (dark) or paper (light) ground that follows your OS until you pick one with the theme button, DIN-style Bahnschrift numerals, hairline grids instead of cards, and a single ember accent reserved for what needs your eye. Quota meters are segmented gauges; sections are numbered `01`, `02`, … After `burnrate serve`, open [http://127.0.0.1:17331](http://127.0.0.1:17331).
 
 A typical overview (synthetic demo data — not a real account):
 
@@ -268,10 +268,6 @@ Official vs experimental is about the *interface BURNRATE uses*, not about wheth
 | Claude Code | local JSONL transcripts | supported | yes | none for usage | tokens exact; spend exact when the price card is `exact` |
 | OpenCode | local session SQLite | supported | yes | Z.AI quota HTTPS if a Coding Plan key is on disk | session-level tokens; spend derived |
 | ZCode | local `model_usage` SQLite | supported | yes | shares the Z.AI quota card | per-request tokens exact; spend derived |
-| Cursor signed-in usage | `api2.cursor.sh` DashboardService | **experimental**, on by default | bearer from `state.vscdb` | HTTPS to Cursor | tokens exact; spend derived |
-| Cursor SDK-agent history | local `index.db` | **experimental**, on by default | yes | none | historical cutover only; spend derived |
-| Cursor Admin API | `api.cursor.com` | opt-in official | none | HTTPS if `CURSOR_API_KEY` is set | tokens exact; spend derived |
-| Cursor CSV export | drop folder | opt-in import | yes | none | as exported; spend derived |
 | Grok Build CLI | local `unified.jsonl` and session `updates.jsonl` | **experimental**, on by default | yes | none | tokens exact; spend derived |
 | Direct xAI API | — | **not connected** | none | none | unavailable |
 | Google Antigravity | localhost language-server RPC | **experimental**, on by default | log for port/CSRF | `https://127.0.0.1:<port>/` | tokens exact; spend derived |
@@ -338,18 +334,16 @@ Optional keys in `.env` (all empty by default — copy `.env.example` to `.env` 
 | --- | --- |
 | `OPENAI_ADMIN_KEY` | OpenAI organization usage + cost |
 | `ANTHROPIC_ADMIN_KEY` | Anthropic organization usage + cost |
-| `CURSOR_API_KEY` | Cursor Admin API |
 | `OPENROUTER_MANAGEMENT_KEY` | OpenRouter credits (dedicated; not the inference key) |
 | `BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE` | Set to `1` to consent to native Claude OAuth usage reads |
 | `BURNRATE_CLAUDE_OAUTH_REFRESH` | With usage consent enabled, set to `1` to additionally allow token refresh |
-| `BURNRATE_ENABLE_CURSOR_USAGE_SERVICE` | Set to `1` to consent to native Cursor session-token usage |
 | `BURNRATE_ENABLE_ZAI_QUOTA` | Set to `1` to consent to quota reads using a stored Z.AI key |
 | `SPEND_DATABASE_PATH` | SQLite path (default `%LOCALAPPDATA%\BURNRATE`) |
 | `SPEND_PRICING_PATH` | YAML cards (packaged default) |
-| `CURSOR_IMPORT_PATH` | Cursor CSV drop folder |
 | `SPEND_TIMEZONE` | IANA zone for midnight and windows (default `UTC`) |
+| `BURNRATE_ENABLE_DASHBOARD` | Set to `1` to serve the full dashboard at `/` (off by default; the HUD is the product) |
 
-Fresh `burnrate init` does **not** seed plan prices automatically. You can pick plans interactively in the **Setup Wizard (`/setup`)**, in the dashboard's **Plans & Value** dialog, or via the CLI:
+Fresh `burnrate init` does **not** seed plan prices automatically. You can pick plans interactively in the **Setup Wizard (`/setup`)**, in the dashboard's **Plans & Value** dialog (when the dashboard is enabled), or via the CLI:
 
 ```powershell
 burnrate subscription add --tool-key codex --name "Codex" --amount-usd 20 --cadence monthly --start-date 2026-09-01
@@ -358,7 +352,7 @@ burnrate subscription list
 
 `--cadence` is `monthly`, `quarterly`, or `annual`. Daily cost is `amount / days in the period`. That proration is not provider billing and is excluded from API-equivalent fields.
 
-Cursor CSV files dropped into `CURSOR_IMPORT_PATH` are imported on demand (`burnrate backfill cursor-csv` is an advanced command). They are not a live session source.
+BURNRATE no longer collects Cursor usage or polls Cursor quota. Cursor usage duplicates SuperGrok usage, so it is not counted: on first start each database (this computer's and the Hub's) removes its recorded Cursor rows after saving a verified backup to `backups/pre-cursor-removal-*.db`, and a Hub drops Cursor rows pushed by computers still on an older version.
 
 ---
 
@@ -426,7 +420,7 @@ See also [CONTRIBUTING.md](CONTRIBUTING.md).
 
 The project license is **Apache-2.0**. See [LICENSE](LICENSE).
 
-BURNRATE is not affiliated with OpenAI, Anthropic, Cursor, xAI, Google, Z.AI, OpenRouter, Requesty, Traycer, or their related products. Trademarks belong to their owners.
+BURNRATE is not affiliated with OpenAI, Anthropic, xAI, Google, Z.AI, OpenRouter, Requesty, Traycer, or their related products. Trademarks belong to their owners.
 
 ---
 

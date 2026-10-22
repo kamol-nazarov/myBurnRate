@@ -28,7 +28,7 @@ Column-level, in the BURNRATE database only:
 - Raw admin API bodies, trajectory JSON, Composer documents
 - Credential-shaped strings in logs (`bearer`, `basic`, `sk-…`, `x-api-key`, `Authorization`, `zai_…`, `xai-…`, `or-v1-…`, and JWT-shaped tokens are stripped before `ingest_runs.error` is written)
 
-Some adapters parse a larger record in memory (a Claude JSONL line, a Traycer projection, an Antigravity PROD_UI trajectory, a Cursor Composer blob) and then keep only the metadata above. The extra content is discarded.
+Some adapters parse a larger record in memory (a Claude JSONL line, a Traycer projection, an Antigravity PROD_UI trajectory) and then keep only the metadata above. The extra content is discarded.
 
 ## Local file access
 
@@ -36,7 +36,7 @@ Harness stores are read-only:
 
 - SQLite: `file:<path>?mode=ro` plus `PRAGMA query_only=ON`
 - JSONL / logs / CSV: open for read (`r` / `rb`)
-- No writes to Codex, Claude transcripts, Cursor `state.vscdb`, OpenCode, ZCode, Grok logs, Traycer `chat.db`, or Antigravity logs
+- No writes to Codex, Claude transcripts, OpenCode, ZCode, Grok logs, Traycer `chat.db`, or Antigravity logs
 
 **Exception (opt-in):** if `BURNRATE_CLAUDE_OAUTH_REFRESH=1`, the Claude OAuth fallback may atomically replace `%USERPROFILE%\.claude\.credentials.json` when the access token is missing, expired, or the usage endpoint returns 401. Default is off. Unrelated JSON keys are preserved. A lock plus compare-before-replace tries not to clobber a newer Claude writer. This still rotates the refresh token when Anthropic issues a new one.
 
@@ -52,8 +52,6 @@ Opt-in destinations are HTTPS only, host-allowlisted, timed out, and not inferen
 | --- | --- | --- |
 | `OPENAI_ADMIN_KEY` set | `api.openai.com` | Bearer admin key |
 | `ANTHROPIC_ADMIN_KEY` set | `api.anthropic.com` | `x-api-key` |
-| `CURSOR_API_KEY` set | `api.cursor.com` | Basic `key:` |
-| Cursor usage / quota (experimental) | `api2.cursor.sh` | local Cursor bearer from `state.vscdb` |
 | `OPENROUTER_MANAGEMENT_KEY` set | `openrouter.ai` | dedicated management key |
 | Z.AI Coding Plan key found on disk | `api.z.ai` | Coding Plan API key |
 | `BURNRATE_CLAUDE_OAUTH_REFRESH=1` | `platform.claude.com`, `api.anthropic.com` | Claude Code OAuth tokens |
@@ -67,7 +65,7 @@ BURNRATE does not post prompts or chat completions to a model endpoint.
 
 - Default listener: `127.0.0.1:17331`. Not `0.0.0.0`.
 - No third-party analytics, no Google Fonts CDN, no browser calls to provider APIs.
-- CSP and the usual security headers are on. The dashboard reads `/api/spend/summary`, `/api/spend/health`, and `/api/spend/entity` (on drill-in) — persisted SQLite, not live provider probes. `/api/spend/nav` exists but is unused by the UI.
+- CSP and the usual security headers are on. The HUD reads `/api/spend/hud`, `/api/spend/hud/usage`, `/api/spend/freshness`, and `/api/machines`; the dashboard, when enabled with `BURNRATE_ENABLE_DASHBOARD=1`, reads `/api/spend/summary`, `/api/spend/health`, and `/api/spend/entity` (on drill-in). These are persisted SQLite (or, on a paired spoke, the hub's copy), not live provider probes; only the HUD's **Poll** button asks the quota collectors to poll now. `/api/spend/nav` exists but is unused by the UI.
 
 Optional Tailscale Serve is an operator choice and is never enabled by BURNRATE. Funnel is not a product feature. See [tailscale.md](tailscale.md).
 
@@ -80,14 +78,13 @@ Optional Tailscale Serve is an operator choice and is never enabled by BURNRATE.
 | Never in API JSON | Including `/api/spend/limits` error strings (redacted) |
 | Never in doctor output | Paths may be generic; secrets are not echoed |
 | OpenRouter | Inference key ≠ `OPENROUTER_MANAGEMENT_KEY` |
-| Cursor | Admin key ≠ the signed-in DashboardService bearer |
 | Claude | Desktop history and Traycer quota are preferred; OAuth refresh is opt-in |
 
 `GET /api/spend/limits` can fire every quota collector, including experimental Claude refresh and Traycer CLI. Keep it off any public reverse proxy.
 
 ## How to wipe
 
-1. Stop the dashboard (`burnrate` process, or `scripts/stop-burnrate.ps1` / `scripts/uninstall-burnrate.ps1`).
+1. Stop BURNRATE (`burnrate` process, or `scripts/stop-burnrate.ps1` / `scripts/uninstall-burnrate.ps1`).
 2. Delete the data directory (`%LOCALAPPDATA%\BURNRATE`, or the repo-relative DB in a checkout).
 3. Uninstall does **not** delete `*.db` unless you pass `-PurgeData`.
 

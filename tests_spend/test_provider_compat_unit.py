@@ -68,20 +68,6 @@ def test_antigravity_cache_preserves_rpc_id_and_disjoint_tokens():
     assert reduce_records([record])[1] == ["antigravity_response_identity_or_time_unavailable"]
 
 
-def test_cursor_export_included_reference_value_is_not_charge():
-    from spend_app.adapters.cursor_export import parse_export
-    event = dict(timestamp="1760000000000", conversationId="c", model="m",
-                 tokenUsage=dict(inputTokens=10, outputTokens=4, cacheReadTokens=2, totalCents=99))
-    rows, issues = parse_export(dict(accountId="a", usageEventsDisplay=[event, copy.deepcopy(event)]))
-    assert len(rows) == 2
-    assert rows[0].raw_id != rows[1].raw_id
-    assert sum(row.input_tokens for row in rows) == 24
-    assert all(row.cost_usd is None and not row.telemetry_complete for row in rows)
-    assert not issues
-    other = parse_export(dict(accountId="b", usageEventsDisplay=[event]))[0][0]
-    assert other.raw_id != rows[0].raw_id
-
-
 def test_reporting_cursor_failure_is_not_success_and_no_retry():
     from spend_app.adapters.report_pages import fetch, IncompleteReport
     client = Mock()
@@ -270,42 +256,6 @@ def test_new_claude_partial_fragment_does_not_erase_stored_complete_components()
     assert result[0].output_tokens == 3 and result[0].telemetry_complete
 
 
-def test_cursor_real_id_and_scope_reconcile_exports_and_preserve_old_id():
-    from spend_app.adapters.cursor_admin import parse_events
-    from spend_app.adapters.cursor_export import parse_export
-    from spend_app.adapters.event_identity import reconcile
-    event = dict(id="request", timestamp="1760000000000", userEmail="one@example.test", model="m", conversationId="c", chargedCents=20,
-                 tokenUsage=dict(inputTokens=10, outputTokens=4, cacheReadTokens=2, cacheWriteTokens=0))
-    admin = parse_events({"usageEvents": [event]}, observations=True, revision=2000000000)[0]
-    export = parse_export({"usageEventsDisplay": [event]}, observations=True)[0][0]
-    assert admin.row.raw_id == export.row.raw_id
-    other = parse_events({"usageEvents": [{**event, "userEmail": "two@example.test"}]})[0]
-    assert other.raw_id != admin.row.raw_id
-    db = FakeEventDB([replace(admin.row, raw_id="cursor-admin:request")])
-    saved = reconcile(db, [admin])
-    assert saved[0].raw_id == "cursor-admin:request"
-    db.events = FakeEventDB(saved).events
-    copied = reconcile(db, [export])
-    assert len(copied) == 1 and copied[0].raw_id == saved[0].raw_id
-    assert copied[0].source == "cursor_admin" and copied[0].cost_usd == 0.2
-
-
-def test_cursor_native_csv_columns_and_legacy_identity_mapping(monkeypatch):
-    import io
-    from pathlib import Path
-    from spend_app.adapters.cursor_csv import parse_csv
-    from spend_app.adapters.common import stable_id
-    text = "Date,Model,Input (w/ Cache Write),Input (w/o Cache Write),Cache Read,Output Tokens,Cost,Cost to you\n2026-09-01T00:00:00Z,m,3,10,2,4,99,0.20\n"
-    monkeypatch.setattr("spend_app.connection_paths.confined", lambda path: path)
-    monkeypatch.setattr(Path, "open", lambda *args, **kwargs: io.StringIO(text))
-    rows = parse_csv(Path("C:/fake/usage.csv"), observations=True)
-    row = rows[0].row
-    assert (row.input_tokens, row.cache_write_tokens, row.output_tokens, row.cost_usd) == (12, 3, 4, 0.2)
-    assert row.telemetry_complete
-    expected_old = stable_id("cursor-csv", row.occurred_at.isoformat(), "", "cursor:m", "", 0, 2, 0, 4, 99.0)
-    assert rows[0].aliases == (expected_old,)
-
-
 def test_granular_before_cumulative_does_not_layer_another_baseline():
     import json
     from spend_app.adapters.common import stable_id
@@ -361,13 +311,10 @@ def test_snapshot_atomic_replacement_failure_cleans_only_owned_temp(monkeypatch)
     assert "existing.json" not in unlink.call_args.args[0]
 
 
-def test_malformed_large_timestamp_isolated_from_usage_neighbors():
+def test_malformed_large_timestamp_is_rejected_not_raised():
     from spend_app.adapters.local_common import parse_millis
-    from spend_app.adapters.cursor_admin import parse_events
     assert parse_millis(10**40) is None
-    base = dict(model="m", tokenUsage=dict(inputTokens=1, outputTokens=2, cacheReadTokens=0, cacheWriteTokens=0))
-    rows = parse_events({"usageEvents": [{**base, "timestamp": 10**40}, {**base, "timestamp": "1760000000000"}]})
-    assert len(rows) == 1 and rows[0].input_tokens == 1 and rows[0].output_tokens == 2
+    assert parse_millis(1760000000000) is not None
 
 
 def test_copied_unchanged_grok_signal_does_not_move_history_forward():
@@ -385,12 +332,6 @@ def test_copied_unchanged_grok_signal_does_not_move_history_forward():
     result = reconcile(db, [copied, later], [])
     assert sum(row.input_tokens + row.output_tokens + row.unclassified_tokens for row in result) == 120
     assert next(row for row in result if row.raw_id == coarse.raw_id).occurred_at == stamp
-
-
-def test_cursor_pagination_contradiction_is_visible():
-    from spend_app.adapters.cursor_admin import _has_next_page
-    with pytest.raises(ValueError, match="disagree"):
-        _has_next_page({"pagination": {"hasNextPage": True, "numPages": 1}}, 1)
 
 
 def test_native_grok_total_does_not_layer_over_unmapped_traycer_history():

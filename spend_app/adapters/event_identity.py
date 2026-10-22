@@ -60,9 +60,8 @@ def reconcile(connection, observations, issues=None):
     rows = []
     for canonical, observation in grouped.items():
         source = observation.row.source
-        shared_cursor = dict(observation.components).get("cursor_shared", False)
-        namespace = "cursor-shared" if shared_cursor else source
-        allowed_sources = {"cursor_admin", "cursor_csv"} if shared_cursor else {source}
+        namespace = source
+        allowed_sources = {source}
         key = "usage.identity.v1:" + stable_id(namespace, canonical)
         record = read_meta(connection, key, None)
         if source == "claude_local":
@@ -70,12 +69,6 @@ def reconcile(connection, observations, issues=None):
                 existing=stored_event(connection, record["raw_id"] if record else canonical), issues=issues)
         rank = [observation.revision, int(observation.row.telemetry_complete), observation.authority]
         if record and rank < record["rank"]:
-            if shared_cursor:
-                existing = stored_event(connection, record["raw_id"])
-                if existing:
-                    from spend_app.adapters.opencode_granular import row_from_record
-                    rows.append(row_from_record(existing))
-                    continue
             issues.append("older_usage_revision_ignored")
             continue
         target = record["raw_id"] if record else canonical
@@ -106,10 +99,6 @@ def reconcile(connection, observations, issues=None):
             if alias != target:
                 delete_event(connection, alias)
         row = replace(observation.row, raw_id=target)
-        existing = stored_event(connection, target)
-        if shared_cursor and existing and existing["source"] == "cursor_admin" and source == "cursor_csv":
-            from spend_app.adapters.opencode_granular import row_from_record
-            row = row_from_record(existing)
         rows.append(row)
         components = dict(record.get("components", {})) if record else {}
         components.update(dict(observation.components))
@@ -118,13 +107,6 @@ def reconcile(connection, observations, issues=None):
         write_meta(connection, key, {"raw_id": target, "rank": rank, **({"components": components} if components else {}),
             **({"field_ranks": dict(observation.field_ranks), "field_conflicts": dict(observation.field_conflicts)} if source == "claude_local" else {})})
     return rows
-
-
-def cursor_identity(event_id, user=None, team=None):
-    """Shared only with an actual request ID and explicit matching scope."""
-    if not event_id or not (user or team):
-        return None
-    return stable_id("cursor-reported", str(team or ""), str(user or ""), str(event_id))
 
 
 def guard_counter_fragments(connection, observations, issues):

@@ -56,7 +56,7 @@ class Prices:
 
 class MemoryRepository:
     def __init__(self):
-        self.meta = {"connections.v1": {"legacy":["codex_local", "cursor_local"], "bindings":{}}}
+        self.meta = {"connections.v1": {"legacy":["codex_local", "grok_local"], "bindings":{}}}
         self.quotas, self.attempts, self.successes, self.gaps = [], [], [], []
         self.lock = threading.RLock()
         self.statements = []
@@ -111,7 +111,7 @@ def set_quota(repo, pct, when=NOW, reset="2026-09-17T12:00:00Z", **proof):
     repo.quotas = [{"provider_key":"codex", "limit_key":"weekly", "source":"codex_local_telemetry", "pct":pct, "unit":"pct", "used":None, "allowance":None, "resets_at":reset, "polled_at":observed}]
     repo.meta["codex.quota-observation.v1"] = {"poolId":"codex", "scope":SCOPE, "pct":pct, "resetsAt":reset, "observedAt":observed, "polledAt":observed, **proof}
 
-def attempt(source="cursor_local", status="failed", when=NOW, reason="redacted cursor failure"):
+def attempt(source="grok_local", status="failed", when=NOW, reason="redacted source failure"):
     t = when.isoformat().replace("+00:00", "Z")
     return {"source":source, "status":status, "started_at":t, "finished_at":t, "events_written":0, "error":reason}
 

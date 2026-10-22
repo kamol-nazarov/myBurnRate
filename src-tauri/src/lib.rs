@@ -782,13 +782,6 @@ pub fn run() {
                 true,
                 None::<&str>,
             )?;
-            let show_main_item = MenuItem::with_id(
-                app,
-                "show_dashboard",
-                "Open Full Dashboard",
-                true,
-                None::<&str>,
-            )?;
             let setup_wizard_item = MenuItem::with_id(
                 app,
                 "setup_wizard",
@@ -804,7 +797,6 @@ pub fn run() {
                 &[
                     &toggle_hud_item,
                     &pin_hud_item,
-                    &show_main_item,
                     &setup_wizard_item,
                     &sep,
                     &quit_item,
@@ -822,9 +814,6 @@ pub fn run() {
                     "pin_hud" => {
                         let state = app.state::<HudPinState>();
                         let _ = toggle_hud_pin(app.clone(), state);
-                    }
-                    "show_dashboard" => {
-                        let _ = show_dashboard(app.clone());
                     }
                     "setup_wizard" => {
                         let _ = open_setup_wizard(app.clone());
