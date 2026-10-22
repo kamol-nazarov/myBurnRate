@@ -189,7 +189,10 @@ def test_integration_metadata_preserves_vault_connections_without_secret_read():
         environ={},
         bindings={
             "openai_admin": {"enabled": True, "credentialRef": "opaque-reference"},
-            "anthropic_admin": {"enabled": False, "credentialRef": "disabled-reference"},
+            "anthropic_admin": {
+                "enabled": False,
+                "credentialRef": "disabled-reference",
+            },
         },
     )
     by_setting = {row["setting"]: row for row in reports}

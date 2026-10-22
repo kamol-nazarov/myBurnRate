@@ -121,7 +121,8 @@ def source_reports(connection, now, detected=None, settings=None):
 
     sources = set(LOCAL_PATHS) | set(SETTINGS)
     sources.update(
-        row[0] for row in connection.execute("SELECT DISTINCT source FROM ingest_runs")
+        row[0]
+        for row in connection.execute("SELECT DISTINCT source FROM ingest_runs")
         if row[0] not in RETIRED_SOURCES
     )
     reports = []
