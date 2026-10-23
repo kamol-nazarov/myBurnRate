@@ -40,7 +40,7 @@ Internal Python packages in this tree remain `spend_app` (application) and `spen
 | Listen | `127.0.0.1:17331` only |
 | Installed data | `%LOCALAPPDATA%\BURNRATE` |
 | Dev checkout | repo-relative only when `BURNRATE_DEV=1` (a `.git` directory is not enough) |
-| Timezone | `UTC` unless `SPEND_TIMEZONE` is set to an IANA zone |
+| Timezone | this computer's IANA zone; `SPEND_TIMEZONE` overrides it, `UTC` when undetectable |
 
 Override `SPEND_DATABASE_PATH` and `SPEND_PRICING_PATH` in `.env` if needed. `backup_database()` uses `sqlite3.Connection.backup()` and is available for operators; `initialize` does not call it automatically. See [troubleshooting](troubleshooting.md) for the stop-then-copy procedure.
 

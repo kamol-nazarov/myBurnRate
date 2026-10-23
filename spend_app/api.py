@@ -22,6 +22,8 @@ GZIP_MINIMUM_SIZE = 1024
 ASSET_SETTLE_SECONDS = 5
 # How long a paired Spoke's HUD may show its last Hub copy while renewing it.
 HUD_HUB_STALE_SECONDS = 300
+# The usage aggregate on the Hub can take much longer than a live meter read.
+HUD_USAGE_HUB_READ_TIMEOUT = 60.0
 CONTENT_SECURITY_POLICY = (
     "default-src 'self'; script-src 'self' 'unsafe-inline'; "
     "style-src 'self' 'unsafe-inline'; "
@@ -357,17 +359,19 @@ def create_app(
 
     @app.get("/api/spend/hud/usage")
     def spend_hud_usage(machine: str = Query(default="all")) -> dict:
-        from spend_app.hud_data import recorded_usage
+        from spend_app.hud_data import local_usage_machine, recorded_usage
         from spend_app.sync import fetch_from_configured_hub
 
         # Renew on every poll, including on paired spokes before the hub
         # read. The collector runs asynchronously; return recorded data now.
         request_collection()
         hub = fetch_from_configured_hub(settings, "/api/spend/hud/usage", {"machine": machine},
-                                        stale_seconds=HUD_HUB_STALE_SECONDS)
+                                        stale_seconds=HUD_HUB_STALE_SECONDS,
+                                        read_timeout=HUD_USAGE_HUB_READ_TIMEOUT)
         if hub is not None:
             return hub
-        return recorded_usage(settings, pricing, now=current_now(), machine=machine)
+        return recorded_usage(settings, pricing, now=current_now(),
+                              machine=local_usage_machine(settings, machine))
 
     @app.get("/api/onboarding")
     def onboarding():

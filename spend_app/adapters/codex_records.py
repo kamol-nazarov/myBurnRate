@@ -12,8 +12,8 @@ from spend_app.adapters.opencode_schema import count
 from spend_app.source_health import quarantine
 from spend_app.timeutil import parse_utc
 
-PARSER_VERSION = "codex-rollout-3"
-ORIGINATORS = frozenset({"Codex Desktop", "codex_cli_rs", "codex_exec", "T3 Code", "codex_sdk_ts"})
+PARSER_VERSION = "codex-rollout-4"
+ORIGINATORS = frozenset({"Codex Desktop", "codex_cli_rs", "codex-tui", "codex_exec", "T3 Code", "codex_sdk_ts"})
 KINDS = frozenset({"cli", "exec", "vscode"})
 
 

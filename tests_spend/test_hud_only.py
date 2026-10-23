@@ -96,6 +96,12 @@ class FakeResponse:
         return json.loads(json.dumps(self._body))
 
 
+def _wait_for_hub_renewal(deadline_s: float = 5) -> None:
+    deadline = time.monotonic() + deadline_s
+    while sync_module._HUB_PROXY_RENEWING and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+
 def test_spoke_hud_serves_the_last_hub_copy_while_renewing_it(tmp_path, monkeypatch):
     calls = []
     release = threading.Event()
@@ -109,6 +115,11 @@ def test_spoke_hud_serves_the_last_hub_copy_while_renewing_it(tmp_path, monkeypa
 
     settings = _spoke(tmp_path, monkeypatch, SlowHub())
     fetch = sync_module.fetch_from_configured_hub
+    # A cold HUD read does not wait on the Hub. The copy fills in the background.
+    started = time.monotonic()
+    assert fetch(settings, "/api/spend/hud", stale_seconds=300) is None
+    assert time.monotonic() - started < 1
+    _wait_for_hub_renewal()
     assert fetch(settings, "/api/spend/hud", stale_seconds=300)["read"] == 1
     started = time.monotonic()
     # The copy is past its TTL: it is served at once while the Hub is slow.
@@ -116,11 +127,62 @@ def test_spoke_hud_serves_the_last_hub_copy_while_renewing_it(tmp_path, monkeypa
     assert fetch(settings, "/api/spend/hud", ttl_seconds=0, stale_seconds=300)["read"] == 1
     assert time.monotonic() - started < 1
     release.set()
-    deadline = time.monotonic() + 5
-    while sync_module._HUB_PROXY_RENEWING and time.monotonic() < deadline:
-        time.sleep(0.01)
+    _wait_for_hub_renewal()
     assert len(calls) == 2, "one background read renews the copy"
     assert fetch(settings, "/api/spend/hud", ttl_seconds=60, stale_seconds=300)["read"] == 2
+
+
+def test_a_hung_hub_does_not_block_a_hud_fetch(tmp_path, monkeypatch):
+    started_read = threading.Event()
+    release = threading.Event()
+
+    class HungHub:
+        def get(self, path, params=None, headers=None):
+            started_read.set()
+            release.wait(5)
+            return FakeResponse({"capacity": [], "read": 1})
+
+    settings = _spoke(tmp_path, monkeypatch, HungHub())
+    fetch = sync_module.fetch_from_configured_hub
+    started = time.monotonic()
+    assert fetch(settings, "/api/spend/hud/usage", stale_seconds=300) is None
+    assert time.monotonic() - started < 1
+    assert started_read.wait(5)
+    release.set()
+    _wait_for_hub_renewal()
+    assert fetch(settings, "/api/spend/hud/usage", stale_seconds=300)["read"] == 1
+
+
+def test_spoke_sync_keeps_the_last_hub_copy(tmp_path, monkeypatch):
+    release = threading.Event()
+    primed = False
+
+    class Hub:
+        def get(self, path, params=None, headers=None):
+            nonlocal primed
+            if primed:
+                release.wait(5)
+                return FakeResponse({}, status_code=503)
+            primed = True
+            return FakeResponse({"capacity": [], "read": 1})
+
+        def post(self, path, json=None, headers=None):
+            return FakeResponse({"ok": True, "eventsWritten": 0})
+
+    settings = _spoke(tmp_path, monkeypatch, Hub())
+    fetch = sync_module.fetch_from_configured_hub
+    assert fetch(settings, "/api/spend/hud/usage")["read"] == 1
+    from spend_app.pricing import PricingEngine
+    from spend_app.setup_wizard import maybe_run_configured_spoke_sync
+
+    result = maybe_run_configured_spoke_sync(settings, PricingEngine.load(settings.pricing_path))
+    assert result is not None and result.get("ok") is True
+    started = time.monotonic()
+    body = fetch(settings, "/api/spend/hud/usage", stale_seconds=300)
+    assert time.monotonic() - started < 1
+    assert body["read"] == 1
+    release.set()
+    _wait_for_hub_renewal()
 
 
 def test_expired_hub_copy_still_covers_a_failed_hub_read(tmp_path, monkeypatch):
@@ -138,6 +200,49 @@ def test_expired_hub_copy_still_covers_a_failed_hub_read(tmp_path, monkeypatch):
     sync_module.expire_hub_proxy_cache()
     assert fetch(settings, "/api/spend/hud")["read"] == 1
     assert not responses
+
+
+def _usage_hold_source() -> str:
+    html = render_hud()
+    return html.split("        let heldStats", 1)[1].split("        function renderSummary", 1)[0]
+
+
+def test_usage_figures_are_held_per_computer():
+    harness = """
+let selectedMachine = "all";
+let windowTokens = {};
+let usageView = null;
+const stats = {};
+const $ = () => ({textContent: ""});
+const setStat = (id, value) => { stats[id] = value; };
+const usd = v => v == null || v === "" ? "—" : "$" + Math.round(Number(v));
+const usd2 = v => v == null || v === "" ? "—" : "$" + Number(v).toFixed(2);
+const tok = v => v == null || v === "" ? "—" : String(v);
+const refreshTip = () => {};
+let heldStats%s
+const snap = () => ({today: stats["hud-today"], burn: stats["hud-burn-rate"], tokens: stats["hud-tokens"]});
+const payload = (usd, tokens, burn) => ({navigation: {todayUsd: usd, todayTokens: tokens, burnRatePerDay: burn}, totals: {cacheReusePct: 90}});
+renderUsage(payload(343.45, 100, 542));
+const all = snap();
+selectedMachine = "desktop";
+renderUsage(payload(null, 0, null));
+const desktopEmpty = snap();
+renderUsage(payload(12.5, 40, 8));
+renderUsage(payload(null, 0, null));
+const desktopHeld = snap();
+selectedMachine = "all";
+renderUsage(payload(null, 100, null));
+const allHeld = snap();
+console.log(JSON.stringify({all, desktopEmpty, desktopHeld, allHeld}));
+""" % _usage_hold_source()
+    result = subprocess.run(["node", "-e", harness], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout.strip())
+    assert report["all"]["today"] == "$343.45"
+    assert report["desktopEmpty"]["today"] == "—"
+    assert report["desktopEmpty"]["burn"] == "—"
+    assert report["desktopHeld"]["today"] == "$12.50"
+    assert report["allHeld"]["today"] == "$343.45", "a missing read keeps this computer's figure, not the other one's"
 
 
 def _hold_source() -> str:

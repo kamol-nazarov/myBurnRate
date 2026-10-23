@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
@@ -19,6 +20,35 @@ INGEST_INTERVAL_MINUTES = ADMIN_INGEST_INTERVAL_MINUTES
 # every tick.
 QUOTA_POLL_SECONDS = 15
 ACTIVITY_POLL_SECONDS = 4
+
+
+def local_timezone_name() -> str:
+    """IANA name of this computer's timezone, or "UTC" when undetectable.
+
+    Every "today" surface counts since local midnight, so an unset
+    SPEND_TIMEZONE must resolve to the machine's own zone. Defaulting to
+    UTC instead shifted the day boundary by the user's offset: an evening
+    in New York showed only the usage after 00:00Z (20:00 local).
+    """
+    try:
+        from tzlocal import get_localzone_name
+
+        name = get_localzone_name()
+    except (ImportError, KeyError, OSError, RuntimeError, ValueError):
+        return "UTC"
+    if not isinstance(name, str) or not name:
+        return "UTC"
+    try:
+        ZoneInfo(name)
+    except (KeyError, ValueError):
+        return "UTC"
+    return name
+
+
+def default_timezone() -> str:
+    """Configured IANA timezone: SPEND_TIMEZONE when set, else this machine's."""
+    configured = os.getenv("SPEND_TIMEZONE", "").strip()
+    return configured if configured else local_timezone_name()
 
 
 def dashboard_enabled() -> bool:
@@ -107,7 +137,7 @@ def load_settings(env_path: Path | None = None) -> Settings:
         pricing_path=Path(os.getenv("SPEND_PRICING_PATH", ROOT / "pricing")),
         anthropic_admin_key=os.getenv("ANTHROPIC_ADMIN_KEY") or None,
         openai_admin_key=os.getenv("OPENAI_ADMIN_KEY") or None,
-        timezone=os.getenv("SPEND_TIMEZONE", "UTC"),
+        timezone=default_timezone(),
         cache_hit_threshold=float(os.getenv("CACHE_HIT_THRESHOLD", "0.75")),
         over_routing_token_ceiling=int(os.getenv("OVER_ROUTING_TOKEN_CEILING", "40000")),
         local_ingest_interval_seconds=int(

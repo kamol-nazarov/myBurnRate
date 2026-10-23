@@ -520,6 +520,16 @@ def test_codex_unknown_originators_and_traycer_remain_excluded():
         assert events == []
 
 
+def test_codex_tui_originator_is_ingested():
+    # Current Codex CLI builds write originator "codex-tui"; excluding it
+    # silently dropped every interactive CLI session from the ledger.
+    session, events, _ = reduce_codex([codex_meta(originator="codex-tui", source="cli"),
+                                       {"type": "turn_context", "payload": {"model": "gpt-test"}},
+                                       codex_usage(1, last=usage(10))])
+    assert session["supported_origin"]
+    assert len(events) == 1
+
+
 def test_codex_total_only_does_not_invent_input_components():
     _, events, _ = reduce_codex([codex_meta(), codex_usage(1, total={"total_tokens": 17})])
     assert len(events) == 1

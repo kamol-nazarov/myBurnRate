@@ -30,6 +30,7 @@ from spend_app.sync import (
     _HUB_TEST_CLIENTS,
     authenticate_machine_token,
     clear_hub_proxy_cache,
+    expire_hub_proxy_cache,
     list_machines,
     post_to_configured_hub,
     register_machine,
@@ -445,7 +446,9 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
             collect_local=False,
             client=resolved_client,
         )
-        clear_hub_proxy_cache()
+        # A push does not make the last Hub copy wrong. Dropping it forces the
+        # next HUD poll to wait on the Hub and then fall back to this computer.
+        expire_hub_proxy_cache()
         with connect(settings.database_path) as connection:
             latest = read_setup_state(connection)
             latest["spokeConfig"]["lastSyncAt"] = utc_now()

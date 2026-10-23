@@ -1218,13 +1218,15 @@ def fetch_from_configured_hub(
     *,
     ttl_seconds: float = 1.0,
     stale_seconds: float = 0.0,
+    read_timeout: float = 8.0,
 ) -> dict | None:
     """When this instance is a paired Spoke, read unified dashboard data from the Hub.
 
     A copy younger than ``ttl_seconds`` is served as is. With ``stale_seconds``
-    an older copy is still served at once while one background read renews
-    it, so a slow or unreachable Hub never holds up the caller. A failed read
-    falls back to the last copy of any age.
+    any copy, of any age, is served at once while one background read renews
+    it, and a cold cache returns immediately so the caller can paint local
+    data. A slow or unreachable Hub therefore never holds up the HUD. A failed
+    blocking read (``stale_seconds`` of 0) falls back to the last copy of any age.
     """
     try:
         from spend_app.setup_wizard import read_setup_state
@@ -1247,7 +1249,7 @@ def fetch_from_configured_hub(
     cache_key = (hub_url, path, tuple(sorted(clean_params.items())))
 
     def read() -> dict | None:
-        return _read_hub_copy(cache_key, hub_url, token, path, clean_params)
+        return _read_hub_copy(cache_key, hub_url, token, path, clean_params, timeout=read_timeout)
 
     with _HUB_PROXY_LOCK:
         cached = _HUB_PROXY_CACHE.get(cache_key)
@@ -1256,16 +1258,20 @@ def fetch_from_configured_hub(
         age = time.monotonic() - fetched_at
         if fresh and age < ttl_seconds:
             return _hub_copy_for_display(settings, payload)
-        if age < stale_seconds:
+        if stale_seconds > 0:
             _renew_hub_copy_in_background(cache_key, read)
             return _hub_copy_for_display(settings, payload)
+    elif stale_seconds > 0:
+        _renew_hub_copy_in_background(cache_key, read)
+        return None
     data = read()
     if data is None:
         return _hub_copy_for_display(settings, cached[1]) if cached else None
     return _hub_copy_for_display(settings, data)
 
 
-def _read_hub_copy(cache_key: tuple, hub_url: str, token: str, path: str, params: dict) -> dict | None:
+def _read_hub_copy(cache_key: tuple, hub_url: str, token: str, path: str, params: dict,
+                   timeout: float = 8.0) -> dict | None:
     headers = {"Authorization": f"Bearer {token}"}
     test_client = _HUB_TEST_CLIENTS.get(hub_url)
     try:
@@ -1274,7 +1280,7 @@ def _read_hub_copy(cache_key: tuple, hub_url: str, token: str, path: str, params
         else:
             import httpx
 
-            with httpx.Client(timeout=8.0) as http:
+            with httpx.Client(timeout=timeout) as http:
                 response = http.get(f"{hub_url}{path}", params=params, headers=headers)
         if response.status_code != 200:
             return None

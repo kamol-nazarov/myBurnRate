@@ -12,7 +12,8 @@ from spend_app.db import (
     upsert_unpriced_event,
     upsert_usage_event,
 )
-from spend_app.hud_data import _model_name, _window_start, recorded_usage
+from spend_app.hud_data import _model_name, _window_start, local_usage_machine, recorded_usage
+from spend_app.setup_wizard import write_setup_state
 from spend_app.pricing import PricingEngine
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,12 +40,13 @@ def quota(connection, provider_key: str, limit_key: str, resets_at: datetime) ->
 
 
 def event(connection, raw_id: str, tool_key: str, model_key: str, when: datetime, *,
-          fresh: int = 0, cached: int = 0, writes: int = 0, output: int = 0) -> None:
+          fresh: int = 0, cached: int = 0, writes: int = 0, output: int = 0,
+          ingested_at: datetime | None = None) -> None:
     upsert_usage_event(connection, UsageEvent(
         source="test", tool_key=tool_key, model_key=model_key, occurred_at=iso(when), session_id="s",
         project=None, input_tokens=fresh + cached, cached_input_tokens=cached, cache_write_tokens=writes,
         cache_write_1h_tokens=0, output_tokens=output, reasoning_tokens=None, cost_usd=None,
-        computed_cost_usd=0, raw_id=raw_id, ingested_at=iso(NOW)))
+        computed_cost_usd=0, raw_id=raw_id, ingested_at=iso(ingested_at or NOW)))
 
 
 def test_meter_windows_carry_their_burned_tokens_and_todays_models(tmp_path):
@@ -97,6 +99,54 @@ def test_meter_windows_carry_their_burned_tokens_and_todays_models(tmp_path):
     assert tokens["antigravity"]["3p-weekly"]["today"]["models"] == [{"name": "Claude 4.6", "tokens": 60}]
     assert tokens["grok"]["weekly"]["tokens"] == 75
     assert "muse" not in tokens
+
+
+def test_revising_a_settled_row_changes_the_window_burn(tmp_path):
+    # Both rows sit before the settled cutoff. The later ingest stamp stays
+    # put, so a fingerprint of count / max id / max ingested_at would not move.
+    aggregate.reset_memo()
+    settings = settings_for(tmp_path)
+    now = datetime(2026, 10, 20, 18, 30, tzinfo=UTC)
+    settled = datetime(2026, 10, 20, 16, tzinfo=UTC)
+    with connect(settings.database_path) as connection:
+        quota(connection, "claude-code", "5h", now + timedelta(hours=2))
+        event(connection, "old", "claude-code", "claude-opus-5-5", settled,
+              fresh=100, ingested_at=settled)
+        event(connection, "keep", "claude-code", "claude-opus-5-5", settled + timedelta(minutes=30),
+              fresh=10, ingested_at=now)
+    pricing = PricingEngine.load(settings.pricing_path)
+    before = recorded_usage(settings, pricing, now=now)["windowTokens"]["claude-code"]["5h"]["tokens"]
+    with connect(settings.database_path) as connection:
+        connection.execute("UPDATE usage_events SET input_tokens = 500 WHERE raw_id = ?", ("old",))
+    after = recorded_usage(settings, pricing, now=now)["windowTokens"]["claude-code"]["5h"]["tokens"]
+    assert before == 110
+    assert after == 510
+
+
+def test_a_spoke_counts_its_own_rows_under_the_hub_machine_id(tmp_path):
+    aggregate.reset_memo()
+    settings = settings_for(tmp_path)
+    with connect(settings.database_path) as connection:
+        write_setup_state(connection, {
+            "role": "spoke",
+            "account": {"machineId": "mydesktop-ed05"},
+            "spokeConfig": {"enabled": True, "hubUrl": "https://hub.test", "token": "x"},
+        })
+        event(connection, "mine", "claude-code", "claude-opus-5-5", NOW - timedelta(hours=1), fresh=100)
+        event(connection, "m:shop-computer-3cd4:theirs", "claude-code", "claude-opus-5-5",
+              NOW - timedelta(hours=1), fresh=900)
+    pricing = PricingEngine.load(settings.pricing_path)
+    assert local_usage_machine(settings, "mydesktop-ed05") == "local"
+    assert local_usage_machine(settings, "shop-computer-3cd4") == "shop-computer-3cd4"
+    assert local_usage_machine(settings, "all") == "all"
+    own = recorded_usage(settings, pricing, now=NOW, machine=local_usage_machine(settings, "mydesktop-ed05"))
+    other = recorded_usage(settings, pricing, now=NOW, machine="shop-computer-3cd4")
+    assert own["navigation"]["todayTokens"] == 100
+    assert other["navigation"]["todayTokens"] == 900
+    with connect(settings.database_path) as connection:
+        state = {"role": "hub", "account": {"machineId": "mydesktop-ed05"}}
+        write_setup_state(connection, state)
+    assert local_usage_machine(settings, "mydesktop-ed05") == "mydesktop-ed05"
 
 
 def test_window_starts_follow_each_window_length():

@@ -584,21 +584,31 @@ def test_backup_database_round_trips_schema_and_row(tmp_path: Path) -> None:
     assert subscriptions == 0
 
 
-def test_installed_defaults_use_localappdata_and_utc(monkeypatch, tmp_path: Path) -> None:
+def test_installed_defaults_use_localappdata_and_local_timezone(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.delenv("SPEND_DATABASE_PATH", raising=False)
     monkeypatch.delenv("BURNRATE_DEV", raising=False)
     monkeypatch.delenv("SPEND_TIMEZONE", raising=False)
     monkeypatch.delenv("ANTHROPIC_ADMIN_KEY", raising=False)
     monkeypatch.delenv("OPENAI_ADMIN_KEY", raising=False)
     monkeypatch.delenv("CURSOR_API_KEY", raising=False)
+    monkeypatch.setattr("spend_app.config.local_timezone_name", lambda: "America/New_York")
     local = tmp_path / "AppData" / "Local"
     monkeypatch.setenv("LOCALAPPDATA", str(local))
     settings = load_settings(env_path=tmp_path / "missing.env")
     assert settings.database_path == local / "BURNRATE" / "spend.db"
     assert settings.logs_path == local / "BURNRATE" / "logs"
-    assert settings.timezone == "UTC"
+    # Unset SPEND_TIMEZONE means this computer's zone, never a silent UTC:
+    # every "today" total is labelled since local midnight.
+    assert settings.timezone == "America/New_York"
     assert settings.anthropic_admin_key is None
     assert settings.openai_admin_key is None
+
+
+def test_spend_timezone_env_wins_over_local_detection(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("spend_app.config.local_timezone_name", lambda: "America/New_York")
+    monkeypatch.setenv("SPEND_TIMEZONE", "UTC")
+    settings = load_settings(env_path=tmp_path / "missing.env")
+    assert settings.timezone == "UTC"
 
 
 def test_dev_and_override_database_paths(monkeypatch, tmp_path: Path) -> None:

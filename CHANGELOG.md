@@ -9,6 +9,24 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+## [0.3.0-beta.17] - 2026-10-22
+
+- Fix "today" counting from UTC midnight when `SPEND_TIMEZONE` is unset.
+  The default timezone is now this computer's own IANA zone, so every
+  since-local-midnight total covers the local calendar day; an evening in
+  New York previously showed only the usage after 00:00Z (20:00 local).
+  `SPEND_TIMEZONE` still overrides, and UTC remains the fallback when the
+  system zone cannot be detected.
+- Count interactive Codex CLI sessions again. Current CLI builds write
+  originator `codex-tui`, which the rollout reader rejected as unsupported,
+  silently dropping those sessions from the ledger.
+
+- Stop the HUD's recorded usage flipping between this computer and the hub.
+  A spoke keeps the last hub copy across a sync and answers a HUD poll at
+  once while that copy renews, and a window-token total follows a row whose
+  tokens were revised in place. The computer filter keeps each computer's
+  own spend, and this computer's filter still counts the usage collected
+  here when the hub has not answered.
 - Show tokens burned inside each quota window when hovering a HUD meter, split
   into fresh input, output and cache reads, from the usage already collected for
   that plan (`windowTokens` on `/api/spend/hud/usage`). Weekly meters also list

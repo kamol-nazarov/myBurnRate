@@ -663,6 +663,44 @@ def test_nav_uses_local_midnight_and_excludes_today_from_burn_rate(tmp_path: Pat
     assert result["status"] == "live"
 
 
+def test_nav_today_with_default_settings_counts_the_local_calendar_day(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # 21:30 in New York on Oct 22 is already Oct 23 01:30 UTC. Usage from
+    # that morning (08:00 local) belongs to today; a UTC-midnight default
+    # would drop it and report only the last ninety minutes.
+    from spend_app.config import load_settings
+
+    monkeypatch.delenv("SPEND_TIMEZONE", raising=False)
+    monkeypatch.setattr("spend_app.config.local_timezone_name", lambda: TZ)
+    settings = load_settings(env_path=tmp_path / "missing.env")
+
+    database = tmp_path / "nav-evening.db"
+    initialize(database)
+    pricing = PricingEngine.load(ROOT / "pricing")
+    add_event(
+        database,
+        pricing,
+        raw_id="morning-event",
+        tool="codex",
+        model="gpt-5.6-sol",
+        session="evening-session",
+        occurred=datetime(2026, 10, 22, 12, tzinfo=UTC),
+        input_tokens=1_000,
+        cached=400,
+        writes=0,
+        output=100,
+    )
+    result = aggregate_nav(
+        database_path=database,
+        pricing=pricing,
+        timezone=settings.timezone,
+        now=datetime(2026, 10, 23, 1, 30, tzinfo=UTC),
+    )
+    assert result["todayUsd"] is not None and result["todayUsd"] > 0
+    assert result["todayTokens"] == 1_100
+
+
 def test_nav_error_names_latest_failing_source(tmp_path: Path) -> None:
     database, pricing = fixture_database(tmp_path)
     with connect(database) as connection:

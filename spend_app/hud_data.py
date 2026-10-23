@@ -53,6 +53,28 @@ def live_snapshot(settings, *, now: datetime, machine: str = "all") -> dict:
             "activity": activity, "selectedMachine": machine}
 
 
+def local_usage_machine(settings, machine: str) -> str:
+    """Machine id to use when a spoke has to answer usage from its own database.
+
+    Rows collected here are unprefixed, so they belong to ``local``. The hub
+    knows this computer by its paired id. Asking this database for that id
+    would match nothing and the HUD would show an empty day.
+    """
+    if machine in {"", "all", "local"}:
+        return machine or "all"
+    try:
+        from spend_app.setup_wizard import read_setup_state
+
+        with connect(settings.database_path) as connection:
+            state = read_setup_state(connection)
+    except Exception:
+        return machine
+    if state.get("role") != "spoke":
+        return machine
+    own = str((state.get("account") or {}).get("machineId") or "")
+    return "local" if own and machine == own else machine
+
+
 def recorded_usage(settings, pricing, *, now: datetime, machine: str = "all") -> dict:
     zone = ZoneInfo(settings.timezone)
     local_now = now.astimezone(zone)
@@ -167,14 +189,28 @@ def window_burn(connection, capacity: list[dict], *, now: datetime, today_start:
 
 
 def _usage_fingerprint(connection, start: datetime, end: datetime) -> tuple:
-    return tuple(
-        tuple(connection.execute(
-            f"SELECT COUNT(*), MAX(id), MAX(ingested_at) FROM {table} "
-            "WHERE occurred_epoch_us IS NOT NULL AND occurred_epoch_us >= ? AND occurred_epoch_us < ?",
-            (epoch_micros(start), epoch_micros(end)),
-        ).fetchone())
-        for table in ("usage_events", "unpriced_usage_events")
-    )
+    """Identity of the rows in ``[start, end)``.
+
+    Token sums are part of the key. A revision of an existing row does not
+    move the count, the max id, or the ingest stamp, and the settled burn
+    would otherwise keep the old tokens.
+    """
+    bounds = (epoch_micros(start), epoch_micros(end))
+    usage = connection.execute(
+        "SELECT COUNT(*), MAX(id), MAX(ingested_at), SUM(input_tokens), "
+        "SUM(cached_input_tokens), SUM(cache_write_tokens), SUM(output_tokens) "
+        "FROM usage_events "
+        "WHERE occurred_epoch_us IS NOT NULL AND occurred_epoch_us >= ? AND occurred_epoch_us < ?",
+        bounds,
+    ).fetchone()
+    unpriced = connection.execute(
+        "SELECT COUNT(*), MAX(id), MAX(ingested_at), SUM(input_tokens), "
+        "SUM(cached_input_tokens), SUM(cache_write_tokens), SUM(output_tokens) "
+        "FROM unpriced_usage_events "
+        "WHERE occurred_epoch_us IS NOT NULL AND occurred_epoch_us >= ? AND occurred_epoch_us < ?",
+        bounds,
+    ).fetchone()
+    return tuple(usage), tuple(unpriced)
 
 
 def _burn_rows(connection, tools, start: datetime, end: datetime, machine: str) -> dict[str, list[tuple]]:

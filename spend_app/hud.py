@@ -1026,7 +1026,7 @@ HUD_HTML = r"""<!doctype html>
               selectedMachine = item.id;
               windowTokens = {};
               refresh();
-              refreshUsage();
+              refreshUsage(true);
               refreshMachines();
             });
             return btn;
@@ -1441,7 +1441,7 @@ HUD_HTML = r"""<!doctype html>
           }));
         }
 
-        let heldStats = {day: "", values: {}};
+        let heldStats = {day: "", byMachine: {}};
         function renderUsage(data) {
           const nav = data.navigation || {};
           const totals = data.totals || {};
@@ -1449,12 +1449,14 @@ HUD_HTML = r"""<!doctype html>
             weekday: "short", month: "short", day: "numeric"
           });
 
-          // A read without a value keeps today's figure until the date changes.
+          // A read without a value keeps this computer's figure until the date
+          // changes. Another computer's spend is a different figure.
           const day = new Date().toDateString();
-          if (heldStats.day !== day) heldStats = {day, values: {}};
+          if (heldStats.day !== day) heldStats = {day, byMachine: {}};
+          const slot = heldStats.byMachine[selectedMachine] || (heldStats.byMachine[selectedMachine] = {});
           const keep = (name, value) => value == null || value === ""
-            ? heldStats.values[name]
-            : (heldStats.values[name] = value);
+            ? slot[name]
+            : (slot[name] = value);
           const today = keep("today", nav.todayUsd);
           const burn = keep("burn", nav.burnRatePerDay);
           const cache = keep("cache", totals.cacheReusePct);
@@ -1497,7 +1499,7 @@ HUD_HTML = r"""<!doctype html>
           refreshTip();
         }
 
-        let livePending = null, liveAgain = false, usagePending = false, machinesPending = false;
+        let livePending = null, liveAgain = false, usagePending = false, usageAgain = false, machinesPending = false;
         // One read at a time. A queued request (a manual poll, a stream
         // update) runs again once the current read finishes; timer ticks
         // never stack up behind a slow read.
@@ -1524,16 +1526,24 @@ HUD_HTML = r"""<!doctype html>
           return livePending;
         }
 
-        async function refreshUsage() {
-          if (usagePending) return;
+        async function refreshUsage(queue = false) {
+          if (usagePending) {
+            if (queue) usageAgain = true;
+            return;
+          }
           usagePending = true;
-          const machine = selectedMachine;
           try {
-            const res = await fetch("/api/spend/hud/usage?machine=" + encodeURIComponent(machine || "all"), {cache: "no-store"});
-            if (!res.ok) return;
-            const data = await res.json();
-            if (machine === selectedMachine) renderUsage(data);
-          } catch {} finally { usagePending = false; }
+            do {
+              usageAgain = false;
+              const machine = selectedMachine;
+              try {
+                const res = await fetch("/api/spend/hud/usage?machine=" + encodeURIComponent(machine || "all"), {cache: "no-store"});
+                if (!res.ok) continue;
+                const data = await res.json();
+                if (machine === selectedMachine) renderUsage(data);
+              } catch {}
+            } while (usageAgain);
+          } finally { usagePending = false; }
         }
 
         async function refreshMachines() {
