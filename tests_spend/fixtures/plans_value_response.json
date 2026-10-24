@@ -36,7 +36,7 @@
       "configuredCostUsd": "80",
       "usageValueUsd": "2400",
       "usageValueStatus": "lower_bound",
-      "usageValueLabel": "\u2265 2400",
+      "usageValueLabel": "≥ 2400",
       "usageValueBasis": "known-subtotal",
       "multiple": 30.0,
       "multipleBasis": "lower_bound",
@@ -129,7 +129,7 @@
             }
           ],
           "formula": "Coding plan=80 = 80",
-          "note": "Configured cost is calendar-prorated plan expense over the same interval as usage \u2014 not verified cash."
+          "note": "Configured cost is calendar-prorated plan expense over the same interval as usage — not verified cash."
         },
         "tools": {
           "toolKeys": [
@@ -193,12 +193,12 @@
         },
         "multiple": {
           "label": "Reference-value multiple",
-          "formula": "\u2265 2400 / 80 = \u2265 30\u00d7 (qualified lower bound)",
+          "formula": "≥ 2400 / 80 = ≥ 30× (qualified lower bound)",
           "value": 30.0,
           "basis": "lower_bound",
           "reasonCode": null,
           "reason": "Qualified lower-bound Reference-value multiple: known priced subtotal over complete positive configured group cost",
-          "note": "Compares reference consumption at API rates with configured cost \u2014 not ROI, money saved, productivity, or a cancellation verdict."
+          "note": "Compares reference consumption at API rates with configured cost — not ROI, money saved, productivity, or a cancellation verdict."
         },
         "limits": {
           "pricingVsCollection": "Pricing coverage is about recorded rows; collection evidence is about whether history was captured. Healthy polls do not prove historical completeness.",
@@ -287,7 +287,7 @@
       ],
       "associationKey": "antigravity",
       "relevant": true,
-      "configuredState": "unknown",
+      "configuredState": "configured",
       "status": "never",
       "lastAttemptAt": null,
       "lastSuccessAt": null,
@@ -322,6 +322,27 @@
       "reason": null
     },
     {
+      "source": "claude_local_alt",
+      "sourceLabel": "Claude Code (second instance)",
+      "toolKeys": [
+        "claude-code"
+      ],
+      "associationKey": "claude-code",
+      "relevant": true,
+      "configuredState": "unknown",
+      "status": "never",
+      "lastAttemptAt": null,
+      "lastSuccessAt": null,
+      "freshness": {
+        "state": "unknown",
+        "ageSeconds": null,
+        "asOf": "2026-09-09T04:00:00Z"
+      },
+      "coverage": "No collection attempt observed; historical capture is unverified.",
+      "eventsWritten": 0,
+      "reason": null
+    },
+    {
       "source": "codex_local",
       "sourceLabel": "Codex",
       "toolKeys": [
@@ -343,13 +364,13 @@
       "reason": "redacted provider failure"
     },
     {
-      "source": "cursor_admin",
-      "sourceLabel": "Cursor Admin",
+      "source": "grok_local",
+      "sourceLabel": "Grok Build",
       "toolKeys": [
-        "cursor"
+        "grok"
       ],
-      "associationKey": "cursor",
-      "relevant": false,
+      "associationKey": "grok",
+      "relevant": true,
       "configuredState": "configured",
       "status": "never",
       "lastAttemptAt": null,
@@ -364,14 +385,14 @@
       "reason": null
     },
     {
-      "source": "cursor_csv",
-      "sourceLabel": "Cursor CSV",
+      "source": "muse_local",
+      "sourceLabel": "Muse Code",
       "toolKeys": [
-        "cursor"
+        "muse"
       ],
-      "associationKey": "cursor",
+      "associationKey": "muse",
       "relevant": true,
-      "configuredState": "unknown",
+      "configuredState": "configured",
       "status": "never",
       "lastAttemptAt": null,
       "lastSuccessAt": null,
@@ -380,70 +401,7 @@
         "ageSeconds": null,
         "asOf": "2026-09-09T04:00:00Z"
       },
-      "coverage": "No collection attempt observed; historical capture is unverified. Source usage capability is derived; pricing limitations are separate from collection failure.",
-      "eventsWritten": 0,
-      "reason": null
-    },
-    {
-      "source": "cursor_local",
-      "sourceLabel": "Cursor local",
-      "toolKeys": [
-        "cursor"
-      ],
-      "associationKey": "cursor",
-      "relevant": true,
-      "configuredState": "unknown",
-      "status": "never",
-      "lastAttemptAt": null,
-      "lastSuccessAt": null,
-      "freshness": {
-        "state": "unknown",
-        "ageSeconds": null,
-        "asOf": "2026-09-09T04:00:00Z"
-      },
-      "coverage": "No collection attempt observed; historical capture is unverified. Source usage capability is derived; pricing limitations are separate from collection failure.",
-      "eventsWritten": 0,
-      "reason": null
-    },
-    {
-      "source": "cursor_usage_service",
-      "sourceLabel": "Cursor Usage Service",
-      "toolKeys": [
-        "cursor"
-      ],
-      "associationKey": "cursor",
-      "relevant": true,
-      "configuredState": "unknown",
-      "status": "never",
-      "lastAttemptAt": null,
-      "lastSuccessAt": null,
-      "freshness": {
-        "state": "unknown",
-        "ageSeconds": null,
-        "asOf": "2026-09-09T04:00:00Z"
-      },
-      "coverage": "No collection attempt observed; historical capture is unverified. Source usage capability is derived; pricing limitations are separate from collection failure.",
-      "eventsWritten": 0,
-      "reason": null
-    },
-    {
-      "source": "grok_local",
-      "sourceLabel": "Grok Build",
-      "toolKeys": [
-        "grok"
-      ],
-      "associationKey": "grok",
-      "relevant": true,
-      "configuredState": "unknown",
-      "status": "never",
-      "lastAttemptAt": null,
-      "lastSuccessAt": null,
-      "freshness": {
-        "state": "unknown",
-        "ageSeconds": null,
-        "asOf": "2026-09-09T04:00:00Z"
-      },
-      "coverage": "No collection attempt observed; historical capture is unverified. Source usage capability is derived; pricing limitations are separate from collection failure.",
+      "coverage": "No collection attempt observed; historical capture is unverified. Source usage capability is partial; pricing limitations are separate from collection failure.",
       "eventsWritten": 0,
       "reason": null
     },
@@ -513,12 +471,17 @@
       "source": "traycer_local",
       "sourceLabel": "Traycer",
       "toolKeys": [
+        "claude-code",
+        "codex",
         "grok",
-        "openrouter"
+        "opencode",
+        "zcode",
+        "openrouter",
+        "antigravity"
       ],
       "associationKey": null,
       "relevant": true,
-      "configuredState": "unknown",
+      "configuredState": "configured",
       "status": "never",
       "lastAttemptAt": null,
       "lastSuccessAt": null,

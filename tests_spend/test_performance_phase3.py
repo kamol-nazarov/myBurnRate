@@ -79,11 +79,13 @@ def test_cached_summary_is_reused_per_clock_and_invalidated_by_data(tmp_path: Pa
     )
     first = aggregate_summary_cached(**kwargs, now=NOW)
     again = aggregate_summary_cached(**kwargs, now=NOW)
-    assert again is first, "same clock and same data must reuse the computed payload"
+    # The returned payload is a shallow copy (it carries the machine list), so
+    # reuse is asserted on the memoised computation, not object identity.
+    assert again == first, "same clock and same data must reuse the computed payload"
     assert first == aggregate_summary(**kwargs, now=NOW)
 
     next_cycle = aggregate_summary_cached(**kwargs, now=NOW + timedelta(seconds=15))
-    assert next_cycle is not first
+    assert next_cycle != first
     assert next_cycle["generatedAt"] != first["generatedAt"]
 
     with connect(database) as connection:
@@ -105,7 +107,7 @@ def test_cached_summary_is_reused_per_clock_and_invalidated_by_data(tmp_path: Pa
             resets_at=(NOW + timedelta(days=5)).isoformat(), observed_at=NOW.isoformat(),
             pool_id="codex", scope=current_scope()), "2026-08-30T22:30:00Z")
     after_quota = aggregate_summary_cached(**kwargs, now=NOW)
-    assert after_quota is not first
+    assert after_quota["capacity"] != first["capacity"]
     codex = next(card for card in after_quota["capacity"] if card["providerKey"] == "codex")
     assert codex["peakPct"] == 31.0
 

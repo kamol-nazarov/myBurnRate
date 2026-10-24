@@ -36,13 +36,16 @@ def test_unavailable_quota_is_not_a_fake_zero_percent(tmp_path: Path, monkeypatc
     database, _pricing = complete_world(tmp_path)
     client = client_for(database, monkeypatch)
     body = client.get("/api/spend/summary", params={"window": "1d"}).json()
-    cursor = next(card for card in body["capacity"] if card["providerKey"] == "cursor")
-    other = next(row for row in cursor["rows"] if "other" in row["limitKey"] or "Other" in row["label"])
+    # Cursor is intentionally not collected; OpenRouter is the remaining
+    # provider with no exhaustible quota and must never render as a zero bar.
+    assert not any(card["providerKey"] == "cursor" for card in body["capacity"])
+    openrouter = next(card for card in body["capacity"] if card["providerKey"] == "openrouter")
+    other = openrouter["rows"][0]
     assert other["pct"] is None
-    assert other["used"] is None
+    assert other["used"] != 0 or other["allowance"] is None
     assert other["allowance"] is None
     assert other["pct"] != 0
-    assert "unavailable" in (other["unit"] or "").lower() or "omitted" in (other["label"] or "").lower()
+    assert openrouter["isPayg"] is True
     _html, _css, js = sources()
     assert "finite(provider.peakPct) || 0" not in js
     assert "eased == null ? unknown" in js or 'eased == null ? unknown' in js.replace("\n", "")
@@ -103,7 +106,7 @@ def test_factual_zero_quota_stays_zero_and_is_distinct_from_unavailable(
     assert five["pct"] == 0 or five["pct"] == 0.0
     assert five["used"] == 0 or five["used"] == 0.0
     assert five["allowance"] == 30000
-    cursor = next(card for card in body["capacity"] if card["providerKey"] == "cursor")
-    other = next(row for row in cursor["rows"] if row["pct"] is None)
+    openrouter = next(card for card in body["capacity"] if card["providerKey"] == "openrouter")
+    other = openrouter["rows"][0]
     assert other["pct"] is None
     assert five["pct"] != other["pct"]

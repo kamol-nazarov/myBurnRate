@@ -211,7 +211,43 @@ def _sort_key(card: dict) -> tuple:
     return (payg, 1, "", -(peak if peak is not None else -1))
 
 
-def apply_forecasts(cards: list[dict], samples, *, now: datetime, active: set[str]) -> None:
+def usage_forecast(*, tokens: int, tokens_per_hour: float, pct, allowance, unit, resets_at, now: datetime) -> dict | None:
+    """Project run-dry from measured token burn when quota-poll pace cannot.
+
+    The remaining allowance comes from the row's token allowance when the
+    provider reports one, else from the window's measured tokens against the
+    polled percentage. Burn velocity is measured tokens per hour from local
+    usage records (Claude-Code-Usage-Monitor's model), so this keeps working
+    while a quota lane is held or failing. The result is labelled with
+    ``basis: "usage"`` so the display can name its provenance.
+    """
+    if tokens_per_hour <= 0:
+        return None
+    reset = parse_utc(resets_at)
+    if reset is None or reset <= now:
+        return None
+    limit = None
+    try:
+        if str(unit or "").lower().startswith("token") and allowance:
+            limit = float(allowance)
+        elif pct is not None and float(pct) > 0 and tokens > 0:
+            limit = tokens / (float(pct) / 100.0)
+    except (TypeError, ValueError):
+        limit = None
+    if limit is None or limit <= 0:
+        return None
+    remaining = max(0.0, limit - tokens)
+    hours_remaining = remaining / tokens_per_hour
+    forecast = _compared(
+        now + timedelta(hours=hours_remaining), reset,
+        hours_remaining=hours_remaining, burn=tokens_per_hour / limit * 100,
+    )
+    forecast["basis"] = "usage"
+    forecast["tokensPerHour"] = tokens_per_hour
+    return forecast
+
+
+def apply_forecasts(cards: list[dict], samples, *, now: datetime, active: set[str], usage_pace: dict | None = None) -> None:
     grouped: dict[tuple[str, str], list] = {}
     for sample in samples:
         grouped.setdefault((sample.get("provider_key"), sample.get("limit_key")), []).append(sample)
@@ -231,6 +267,16 @@ def apply_forecasts(cards: list[dict], samples, *, now: datetime, active: set[st
                 pct=row.get("pct"),
                 stale_after=stale_after,
             )
+            if (forecast is None or forecast.get("state") == "stale") and usage_pace:
+                entry = usage_pace.get((provider_key, row.get("limitKey"))) or {}
+                measured = usage_forecast(
+                    tokens=int(entry.get("tokens") or 0),
+                    tokens_per_hour=float(entry.get("tokensPerHour") or 0.0),
+                    pct=row.get("pct"), allowance=row.get("allowance"), unit=row.get("unit"),
+                    resets_at=row.get("resetsAt"), now=now,
+                )
+                if measured is not None:
+                    forecast = measured
             row["forecast"] = forecast
             if not forecast:
                 continue
@@ -671,6 +717,8 @@ def _capacity_cards(connection, now: datetime) -> list[dict]:
 
 
 def evaluate_alerts(database_path, *, timezone: str, now: datetime | None = None) -> dict:
+    from spend_app.hud_data import lane_usage_pace
+
     moment = (now or datetime.now(UTC)).astimezone(UTC)
     initialize(database_path)
     with connect(database_path) as connection:
@@ -681,6 +729,7 @@ def evaluate_alerts(database_path, *, timezone: str, now: datetime | None = None
             load_pace_samples(connection, moment),
             now=moment,
             active=active_provider_keys(connection, moment),
+            usage_pace=lane_usage_pace(connection, cards, now=moment),
         )
         models = majority_model_names(connection, moment)
         preferences = state["preferences"]

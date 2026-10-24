@@ -2,7 +2,7 @@
 
 **Private, local-first AI coding-agent spend, quota & multi-computer telemetry application.**
 
-Version: `0.3.0-beta.15` · Current release notes: [RELEASE-0.3.0-beta.15.md](RELEASE-0.3.0-beta.15.md) · [Changelog](CHANGELOG.md)
+Version: `0.3.0-beta.18` · Current release notes: [RELEASE-0.3.0-beta.18.md](RELEASE-0.3.0-beta.18.md) · [Changelog](CHANGELOG.md)
 
 ---
 
@@ -114,7 +114,7 @@ Then open:
 - **Sidecar HUD:** [http://127.0.0.1:17331/hud](http://127.0.0.1:17331/hud) (also [http://127.0.0.1:17331](http://127.0.0.1:17331))
 - **Full Dashboard (optional):** set `BURNRATE_ENABLE_DASHBOARD=1`, restart, and open [http://127.0.0.1:17331](http://127.0.0.1:17331)
 
-The HUD starts live quota and activity polling immediately. Its spend statistics load separately and keep usage collection running in the background, without building dashboard summaries. HUD usage requests (and dashboard requests, when it is enabled) renew collection on this computer and, for HUD usage, on the paired hub. After two minutes without usage requests, collection finishes its current source and defers further scans. Live polling and spoke sync continue. On a paired spoke, the HUD shows the last hub copy at once and renews it in the background, so a slow or unreachable hub never stalls it.
+The HUD starts live quota and activity polling immediately. Its spend statistics load separately and keep usage collection running in the background, without building dashboard summaries. Local collection is unconditional: a pass runs whether or not a viewer is open, and adapters skip unchanged inputs cheaply. A HUD read only pulls the next pass forward. The HUD shows the data's age (`Updated 12s ago`) and alarms when the data or any of its polls goes quiet. On a paired spoke, the HUD shows the last hub copy at once and renews it in the background, so a slow or unreachable hub never stalls it.
 
 ### Option B: Windowless Windows Background Service (Auto-Start at Sign-In)
 

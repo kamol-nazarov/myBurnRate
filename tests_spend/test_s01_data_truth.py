@@ -584,7 +584,6 @@ def test_s01_16_legacy_identity_converges(tmp_path: Path) -> None:
             ("codex", "Codex - $200 per month", 200.0, "monthly"),
             ("claude-code", "Claude - $200 per month", 200.0, "monthly"),
             ("grok", "SuperGrok - $300 per month", 300.0, "monthly"),
-            ("cursor", "Cursor - free", 0.0, "monthly"),
             ("opencode", "Z.AI - $400 for 3 months", 400.0, "quarterly"),
             ("custom-tool", "Custom Plan", 31.0, "monthly"),
         )
@@ -617,7 +616,7 @@ def test_s01_16_legacy_identity_converges(tmp_path: Path) -> None:
     assert identities["codex"] == ("Codex", 200.0, "monthly")
     assert identities["claude-code"] == ("Claude Code", 200.0, "monthly")
     assert identities["grok"] == ("SuperGrok", 300.0, "monthly")
-    assert identities["cursor"] == ("Cursor", 0.0, "monthly")
+    assert "cursor" not in identities
     assert identities["opencode"] == ("Z.AI Coding Plan", 400.0, "quarterly")
     assert custom == ("Custom Plan", 31.0, "monthly")
 

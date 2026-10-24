@@ -38,19 +38,96 @@ MODEL_WORDS = {"glm": "GLM", "gpt": "GPT", "oss": "OSS", "deepseek": "DeepSeek",
 WINDOW_LENGTHS = {"5h": timedelta(hours=5), "weekly": timedelta(days=7)}
 
 
+def lane_usage_pace(connection, capacity: list[dict], *, now: datetime, machine: str = "all") -> dict[tuple[str, str], dict]:
+    """Measured token burn inside each open 5h/weekly window, from local usage records.
+
+    This is the Claude-Code-Usage-Monitor data model: burn velocity comes
+    from the usage the harnesses actually wrote — never from the quota
+    poller — so a held or failing quota lane cannot silence the forecast.
+    Settled hours are memoized behind the same row fingerprint window_burn
+    uses; only the latest hour is read on each poll.
+    """
+    lanes = []
+    for card in capacity:
+        provider_key = card.get("providerKey") or ""
+        if provider_key not in BURN_TOOL_KEYS or card.get("isPayg"):
+            continue
+        for row in card.get("rows") or []:
+            limit_key = row.get("limitKey") or ""
+            if limit_key.rsplit("-", 1)[-1] not in WINDOW_LENGTHS:
+                continue
+            start = _window_start(limit_key, row.get("resetsAt"))
+            if start is not None and start <= now < aggregate._parse(row["resetsAt"]):
+                lanes.append((provider_key, limit_key, start))
+    if not lanes:
+        return {}
+    since = min(start for *_, start in lanes)
+    tools = tuple(sorted({tool for provider_key, *_ in lanes for tool in BURN_TOOL_KEYS[provider_key]}))
+    cutoff = max(since, now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1))
+    key = (aggregate._connection_identity(connection), "pace", machine, tools, since, cutoff,
+           _usage_fingerprint(connection, since, cutoff))
+    settled = aggregate._memo("hud_burn_rows", key, lambda: _burn_rows(connection, tools, since, cutoff, machine))
+    recent = _burn_rows(connection, tools, cutoff, now, machine)
+    rows_by_tool = {tool: settled[tool] + recent[tool] for tool in tools}
+    hour_ago_us = epoch_micros(now - timedelta(hours=1))
+    pace: dict[tuple[str, str], dict] = {}
+    for provider_key, limit_key, start in lanes:
+        takes = _lane_takes(provider_key, limit_key)
+        start_us = epoch_micros(start)
+        tokens = recent_tokens = 0
+        for tool in BURN_TOOL_KEYS[provider_key]:
+            for when, model, cache_read, new_input, out in rows_by_tool[tool]:
+                if not takes(model) or when < start_us:
+                    continue
+                total = cache_read + new_input + out
+                tokens += total
+                if when >= hour_ago_us:
+                    recent_tokens += total
+        elapsed_hours = (now - start).total_seconds() / 3600
+        # Last-hour velocity; a younger window falls back to its own average.
+        # An idle last hour is zero burn, not the window's historical average,
+        # so a quiet window cannot forecast a run-dry it is not heading for.
+        if elapsed_hours >= 1:
+            rate = float(recent_tokens)
+        else:
+            rate = tokens / elapsed_hours if elapsed_hours > 0 else 0.0
+        pace[(provider_key, limit_key)] = {
+            "tokens": tokens, "tokensPerHour": rate, "since": aggregate._iso(start),
+        }
+    return pace
+
+
+# A HUD read whose newest successful ingest is older than this is labelled
+# stale so the page can alarm instead of trusting held numbers.
+DATA_STALE_AFTER_SECONDS = 600
+
+
+def _last_success_stamp(connection) -> str | None:
+    return connection.execute(
+        "SELECT MAX(finished_at) FROM ingest_runs WHERE status IN ('success','partial')"
+    ).fetchone()[0]
+
+
 def live_snapshot(settings, *, now: datetime, machine: str = "all") -> dict:
     with connect(settings.database_path) as connection:
         machines = list_machines(connection, now=now)
         capacity = aggregate._capacity_from_rows(
             aggregate._load_quota_rows(connection, now=now), now=now, month_to_date={}
         )
+        usage_pace = lane_usage_pace(connection, capacity, now=now, machine=machine)
         apply_forecasts(capacity, load_pace_samples(connection, now), now=now,
-                        active=active_provider_keys(connection, now))
+                        active=active_provider_keys(connection, now), usage_pace=usage_pace)
+        last_ingest = _last_success_stamp(connection)
         activity = aggregate._activity_from_rows(
             aggregate._load_activity_rows(connection, machine), {m["id"]: m["name"] for m in machines}
         )
+    last_ingest_age = None if last_ingest is None else max(
+        0, int((now - aggregate._parse(last_ingest)).total_seconds()))
     return {"generatedAt": aggregate._iso(now), "status": "live", "capacity": capacity,
-            "activity": activity, "selectedMachine": machine}
+            "activity": activity, "selectedMachine": machine,
+            "lastIngestAt": last_ingest, "lastIngestAgeSeconds": last_ingest_age,
+            "stale": last_ingest_age is not None and last_ingest_age > DATA_STALE_AFTER_SECONDS}
+
 
 
 def local_usage_machine(settings, machine: str) -> str:
@@ -94,7 +171,11 @@ def recorded_usage(settings, pricing, *, now: datetime, machine: str = "all") ->
             aggregate._load_quota_rows(connection, now=now), now=now, month_to_date={}
         )
         window_tokens = window_burn(connection, capacity, now=now, today_start=today_start, machine=machine)
+    last_import_age = None if last_import is None else max(
+        0, int((now - aggregate._parse(last_import)).total_seconds()))
     return {"generatedAt": aggregate._iso(now), "historyUpdatedAt": last_import,
+            "lastIngestAt": last_import, "lastIngestAgeSeconds": last_import_age,
+            "stale": last_import_age is not None and last_import_age > DATA_STALE_AFTER_SECONDS,
             "navigation": {"burnRatePerDay": float(burn) if burn is not None else None,
                            "todayUsd": float(today.usage_value) if today.records and today.usage_value is not None else None,
                            "todayTokens": int(today.tokens) if today.records else 0,

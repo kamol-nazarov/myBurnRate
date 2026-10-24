@@ -33,18 +33,19 @@ def test_hud_reads_live_meters_without_loading_history(tmp_path, monkeypatch):
         upsert_agent_run(connection, id="grok:1", name="Live agent", model_key="grok",
                          state="live", started_at=NOW.isoformat(), last_seen_at=NOW.isoformat())
 
-    def no_history(*args, **kwargs):
-        raise AssertionError("Live HUD meters must not load historical usage")
+    def no_dashboard_history(*args, **kwargs):
+        raise AssertionError("Live HUD meters must not build dashboard-scale history")
 
-    monkeypatch.setattr("spend_app.api.aggregate_summary_cached", no_history)
-    monkeypatch.setattr("spend_app.hud_data.recorded_usage", no_history)
-    monkeypatch.setattr(aggregate, "_load_events", no_history)
-    monkeypatch.setattr(aggregate, "_load_unpriced_events", no_history)
+    monkeypatch.setattr("spend_app.api.aggregate_summary_cached", no_dashboard_history)
+    monkeypatch.setattr("spend_app.hud_data.recorded_usage", no_dashboard_history)
+    # Window-burn pace reads a bounded slice of usage rows by design (the
+    # forecast derives from measured usage); only dashboard-scale history
+    # aggregation is forbidden on the live endpoint.
     app = create_app(settings, enable_scheduler=False, now=NOW)
     client = TestClient(app)
     for route in ("/hud", "/?hud=1"):
         html = client.get(route).text
-        assert 'fetch("/api/spend/hud?machine=' in html
+        assert 'hudFetch("/api/spend/hud?machine=' in html
         assert "/api/spend/summary" not in html
     payload = client.get("/api/spend/hud").json()
     grok = next(card for card in payload["capacity"] if card["providerKey"] == "grok")
@@ -67,7 +68,7 @@ def test_dashboard_demand_expires_without_further_dashboard_use():
     assert not demand.active()
 
 
-def test_hud_only_scheduler_skips_history_but_keeps_live_polling(tmp_path, monkeypatch):
+def test_hud_only_scheduler_collects_history_even_without_viewers(tmp_path, monkeypatch):
     settings = settings_for(tmp_path)
     active = [False]
     reads, polls, syncs = [], [], []
@@ -78,21 +79,20 @@ def test_hud_only_scheduler_skips_history_but_keeps_live_polling(tmp_path, monke
     monkeypatch.setattr("spend_app.scheduler.recently_requested_summaries", list)
     scheduler = create_scheduler(settings, PricingEngine.load(settings.pricing_path), history_active=lambda: active[0])
     jobs = {job.id: job for job in scheduler.get_jobs()}
-    for key in ("local-ingest", "provider-admin", "quota-poll", "activity"):
-        jobs[key].func(**jobs[key].kwargs)
-    assert reads == [] and polls == ["quota", "activity"] and syncs == [1]
-    active[0] = True
     try:
+        for key in ("local-ingest", "provider-admin", "quota-poll", "activity"):
+            jobs[key].func(**jobs[key].kwargs)
+        # With no viewer anywhere, the local pass and the admin pass still
+        # collect, and the quota/activity pollers still run.
+        assert len(reads) == 2 and "codex_local" in reads[0]
+        assert polls == ["quota", "activity"] and syncs == [1]
         jobs["local-ingest"].func()
-        assert len(reads) == 1 and "codex_local" in reads[0]
-        active[0] = False
-        jobs["local-ingest"].func()
-        assert len(reads) == 1
+        assert len(reads) == 3
     finally:
         freshness.reset_state()
 
 
-def test_history_scan_stops_between_sources_when_dashboard_demand_expires(monkeypatch):
+def test_history_scan_finishes_every_source_when_dashboard_demand_expires(monkeypatch):
     from spend_app.scheduler import _run_ingest_specs
 
     active, calls = [True], []
@@ -107,8 +107,8 @@ def test_history_scan_stops_between_sources_when_dashboard_demand_expires(monkey
 
     monkeypatch.setattr("spend_app.scheduler._ingest_callable", reader)
     specs = [SimpleNamespace(key=key, stability="official") for key in ("first", "second")]
-    _run_ingest_specs([(spec, {}) for spec in specs], should_continue=lambda: active[0])
-    assert calls == ["first"]
+    _run_ingest_specs([(spec, {}) for spec in specs])
+    assert calls == ["first", "second"], "a pass must not stop because the viewer went away"
 
 
 def test_startup_does_not_warm_history_and_dashboard_requests_activate_it(tmp_path, monkeypatch):
@@ -146,15 +146,15 @@ def test_startup_does_not_warm_history_and_dashboard_requests_activate_it(tmp_pa
     assert calls[-1] == "stop"
 
 
-def test_deferred_history_is_not_a_watchdog_stall(tmp_path, monkeypatch):
+def test_a_dead_collection_loop_is_a_watchdog_stall_even_without_viewers(tmp_path, monkeypatch):
     settings = settings_for(tmp_path)
     freshness.reset_state()
     monkeypatch.setattr(freshness, "_STARTED_MONO", freshness.time.monotonic() - 7200)
     try:
         report = freshness.report(settings, NOW, history_active=False)
-        assert report["ingest"]["deferred"] and not report["ingest"]["stalled"]
-        assert report["status"] == "ok"
-        assert report["issues"][0]["state"] == "deferred"
+        assert report["ingest"]["stalled"] is True
+        assert report["status"] == "alarm"
+        assert report["issues"][0]["state"] == "stalled"
         hud = freshness.report(settings, NOW, include_history=False)
         assert hud["issues"] == []
     finally:
@@ -236,14 +236,17 @@ def test_hud_only_collects_new_usage_across_midnight_and_renews_demand(tmp_path,
         job = schedulers[0].get_job("local-ingest")
         assert client.get("/api/spend/hud").status_code == 200
         assert not demand.active()
+        # Collection no longer waits for a viewer: the first pass already
+        # brings the event in.
         job.func()
-        assert client.get("/api/spend/hud/usage").json()["navigation"]["todayTokens"] == 0
+        first = client.get("/api/spend/hud/usage").json()["navigation"]
+        assert first["todayTokens"] == 1100 and first["todayUsd"] > 0
         job.func()
         before = client.get("/api/spend/hud/usage").json()["navigation"]
-        assert before["todayTokens"] == 1100 and before["todayUsd"] > 0
+        assert before["todayTokens"] == 1100 and before["todayUsd"] == first["todayUsd"]
 
-        # Only HUD polls keep the collector alive, including past the original
-        # two-minute lease and a local calendar-day rollover.
+        # HUD polls keep renewing the demand lease, including past the
+        # original two-minute lease and a local calendar-day rollover.
         clock[0] = 100
         current[0] = datetime(2026, 10, 21, 4, 1, 30, tzinfo=UTC)
         assert client.get("/api/spend/hud/usage").json()["navigation"]["todayTokens"] == 0
@@ -310,15 +313,17 @@ def test_hud_usage_schedules_collection_once_and_renews_on_each_poll(tmp_path, m
     assert calls == expected * 2
 
 
-def test_active_hud_reports_stalled_collection(tmp_path, monkeypatch):
+def test_hud_freshness_reports_a_stalled_loop_without_any_polling(tmp_path, monkeypatch):
     settings = settings_for(tmp_path)
     app = create_app(settings, enable_scheduler=False, now=NOW)
     client = TestClient(app)
     freshness.reset_state()
     monkeypatch.setattr(freshness, "_STARTED_MONO", freshness.time.monotonic() - 7200)
     try:
+        # The HUD view no longer hides collection issues behind viewer
+        # demand: a stalled loop is visible before any poll happens.
         before = client.get("/api/spend/freshness?view=hud").json()
-        assert not any(issue["kind"] == "ingest" for issue in before["issues"])
+        assert any(issue["kind"] == "ingest" and issue["state"] == "stalled" for issue in before["issues"])
         assert client.get("/api/spend/hud/usage").status_code == 200
         after = client.get("/api/spend/freshness?view=hud").json()
         assert any(issue["kind"] == "ingest" and issue["state"] == "stalled" for issue in after["issues"])

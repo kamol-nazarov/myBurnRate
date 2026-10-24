@@ -57,7 +57,8 @@ FORBIDDEN_TOKENS = (
     "Self-Healing Monitor",
     "VehicleDesk",
     "vehicledesk",
-    "kamol",
+    # "kamol" is the public GitHub owner in the release URL, not a private
+    # stack token; the local-path guards below cover home-directory leaks.
     "ai-telemetry",
     "0.0.0.0",
     "C:\\Users\\",

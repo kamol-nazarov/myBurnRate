@@ -219,6 +219,8 @@ const usd = v => v == null || v === "" ? "—" : "$" + Math.round(Number(v));
 const usd2 = v => v == null || v === "" ? "—" : "$" + Number(v).toFixed(2);
 const tok = v => v == null || v === "" ? "—" : String(v);
 const refreshTip = () => {};
+const feedHealth = {live: 0, usage: 0, machines: 0, freshness: 0, dataAt: null};
+const noteDataAge = () => {};
 let heldStats%s
 const snap = () => ({today: stats["hud-today"], burn: stats["hud-burn-rate"], tokens: stats["hud-tokens"]});
 const payload = (usd, tokens, burn) => ({navigation: {todayUsd: usd, todayTokens: tokens, burnRatePerDay: burn}, totals: {cacheReusePct: 90}});
@@ -235,7 +237,8 @@ renderUsage(payload(null, 100, null));
 const allHeld = snap();
 console.log(JSON.stringify({all, desktopEmpty, desktopHeld, allHeld}));
 """ % _usage_hold_source()
-    result = subprocess.run(["node", "-e", harness], capture_output=True, text=True, check=False)
+    result = subprocess.run(["node", "-e", harness], capture_output=True, text=True,
+                            encoding="utf-8", check=False)
     assert result.returncode == 0, result.stderr
     report = json.loads(result.stdout.strip())
     assert report["all"]["today"] == "$343.45"
@@ -282,7 +285,8 @@ console.log(JSON.stringify({
   otherComputer: otherComputer[0].rows[0],
 }));
 """ % _hold_source()
-    result = subprocess.run(["node", "-e", harness], capture_output=True, text=True, check=False)
+    result = subprocess.run(["node", "-e", harness], capture_output=True, text=True,
+                            encoding="utf-8", check=False)
     assert result.returncode == 0, result.stderr
     report = json.loads(result.stdout.strip())
     assert report["claude"][0] == {"limitKey": "5h", "pct": 6, "resetsAt": "2026-10-22T15:00:00Z", "payg": False, "held": True}

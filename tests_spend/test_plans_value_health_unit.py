@@ -67,7 +67,7 @@ def _health_rows(connection):
     return load_source_health(connection, as_of=AS_OF)
 
 
-def test_loader_payload_scopes_codex_and_preserves_unrelated_cursor_failure():
+def test_loader_payload_scopes_codex_and_preserves_unrelated_failure():
     connection = _HealthConnection(
         [
             {
@@ -79,30 +79,30 @@ def test_loader_payload_scopes_codex_and_preserves_unrelated_cursor_failure():
                 "error": None,
             },
             {
-                "source": "cursor_local",
+                "source": "muse_local",
                 "started_at": "2026-09-09T03:58:00Z",
                 "finished_at": "2026-09-09T03:58:01Z",
                 "status": "failed",
                 "events_written": 0,
-                "error": "redacted cursor failure",
+                "error": "redacted provider failure",
             },
         ],
         successes=[
             {"source": "codex_local", "last_success_at": "2026-09-09T04:00:00Z"},
-            {"source": "cursor_local", "last_success_at": None},
+            {"source": "muse_local", "last_success_at": None},
         ],
     )
 
     rows = _health_rows(connection)
     codex = next(row for row in rows if row["source"] == "codex_local")
-    cursor = next(row for row in rows if row["source"] == "cursor_local")
+    unrelated = next(row for row in rows if row["source"] == "muse_local")
 
     assert codex["toolKeys"] == ["codex"]
     assert codex["lastAttemptAt"] == "2026-09-09T04:00:00Z"
     assert codex["lastSuccessAt"] == "2026-09-09T04:00:00Z"
     assert codex["freshness"]["state"] == "recent"
-    assert cursor["toolKeys"] == ["grok", "cursor"]
-    assert cursor["status"] == "failed"
+    assert unrelated["toolKeys"] == ["muse"]
+    assert unrelated["status"] == "failed"
 
     evidence = _collection_evidence(rows, tool_keys=("codex",))
     assert evidence["status"] == "healthy"
@@ -320,7 +320,7 @@ def test_unconfigured_same_tool_lane_does_not_contaminate_configured_lane():
         _HealthConnection(
             [
                 {
-                    "source": "cursor_local",
+                    "source": "claude_local",
                     "started_at": "2026-09-09T03:59:00Z",
                     "finished_at": "2026-09-09T04:00:00Z",
                     "status": "success",
@@ -328,7 +328,7 @@ def test_unconfigured_same_tool_lane_does_not_contaminate_configured_lane():
                     "error": None,
                 },
                 {
-                    "source": "cursor_usage_service",
+                    "source": "claude_local_alt",
                     "started_at": "2026-09-09T03:58:00Z",
                     "finished_at": "2026-09-09T03:58:01Z",
                     "status": "skipped",
@@ -337,25 +337,25 @@ def test_unconfigured_same_tool_lane_does_not_contaminate_configured_lane():
                 },
             ],
             successes=[
-                {"source": "cursor_local", "last_success_at": "2026-09-09T04:00:00Z"}
+                {"source": "claude_local", "last_success_at": "2026-09-09T04:00:00Z"}
             ],
         )
     )
-    evidence = _collection_evidence(rows, tool_keys=("cursor",))
+    evidence = _collection_evidence(rows, tool_keys=("claude-code",))
     assert evidence["status"] == "healthy"
-    assert [row["source"] for row in evidence["sources"]] == ["cursor_local"]
+    assert [row["source"] for row in evidence["sources"]] == ["claude_local"]
 
 
 def test_cadence_skip_retains_recent_success_without_claiming_missing_configuration():
     rows = _health_rows(_HealthConnection(
-        [{"source": "cursor_usage_service", "status": "skipped", "error": "adaptive cadence", "finished_at": "2026-09-09T04:00:00Z"}],
-        successes=[{"source": "cursor_usage_service", "last_success_at": "2026-09-09T03:59:00Z"}],
+        [{"source": "muse_local", "status": "skipped", "error": "adaptive cadence", "finished_at": "2026-09-09T04:00:00Z"}],
+        successes=[{"source": "muse_local", "last_success_at": "2026-09-09T03:59:00Z"}],
     ))
-    source = next(row for row in rows if row["source"] == "cursor_usage_service")
+    source = next(row for row in rows if row["source"] == "muse_local")
     assert source["configuredState"] == "configured"
     assert source["status"] == "skipped"
     assert source["freshness"]["state"] == "recent"
-    assert _collection_evidence(rows, tool_keys=("cursor",))["status"] == "healthy"
+    assert _collection_evidence(rows, tool_keys=("muse",))["status"] == "healthy"
 
 
 def test_redacted_prefix_does_not_allow_arbitrary_response_text():

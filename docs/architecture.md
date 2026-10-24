@@ -63,7 +63,7 @@ Override `SPEND_DATABASE_PATH` and `SPEND_PRICING_PATH` in `.env` if needed. `ba
 
 Responses never include credentials or raw provider documents. API JSON is `Cache-Control: no-store`. Security headers include `X-Content-Type-Options`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, and a Content-Security-Policy.
 
-The HUD reads `/api/spend/hud` every 5 seconds and `/api/spend/hud/usage` every 20 seconds. A meter whose newest poll returns no value keeps its last reading (dimmed) until that window resets, a plan missing from one response stays for up to 15 minutes, and spend figures hold until the local date changes. On a paired spoke both reads serve the last hub copy at once and renew it in the background (`HUD_HUB_STALE_SECONDS`, 300 s), so a slow or unreachable hub never stalls a refresh.
+The HUD reads `/api/spend/hud` every 5 seconds and `/api/spend/hud/usage` every 20 seconds, each with a 12-second abort. A meter whose newest poll returns no value keeps its last reading (dimmed) until that window resets, a plan missing from one response stays for up to 15 minutes, and spend figures hold until the local date changes. Both payloads carry `lastIngestAt`, `lastIngestAgeSeconds` and `stale`; the HUD footer shows the data's age and alarms when the data is older than 10 minutes or either poll misses its cadence. On a paired spoke both reads serve the last hub copy at once and renew it in the background (`HUD_HUB_STALE_SECONDS`, 300 s), so a slow or unreachable hub never stalls a refresh.
 
 Windows: `15m`, `30m`, `1h`, `3h`, `6h`, `12h`, `1d`, `1w`, `1mo`, `mtd`, `ytd`, `all` (plus legacy aliases `7d`, `30d`, `MTD`, `YTD`, `All`).
 
@@ -87,7 +87,7 @@ Credentials never enter these tables. Project fields store directory **names**, 
 
 ## Scheduler
 
-Local ingest runs serially every 15 seconds (`max_instances=1`): Codex, Claude Code, Traycer (Grok/OpenRouter projections), OpenCode, ZCode, Grok Build, Antigravity, Muse Code. A failed experimental adapter does not skip the rest of the cycle. Usage collection runs while the HUD (or the dashboard, when enabled) requests usage; after two minutes without such requests it finishes the current source and defers further scans, while quota and activity polling continue.
+Local ingest runs serially every 15 seconds (`max_instances=1`): Codex, Claude Code, Traycer (Grok/OpenRouter projections), OpenCode, ZCode, Grok Build, Antigravity, Muse Code. A failed experimental adapter does not skip the rest of the cycle. Collection is unconditional: a pass runs whether or not a viewer is open, and adapters skip unchanged inputs cheaply. A HUD or dashboard request only pulls the next pass forward, so a dead viewer cannot freeze ingestion. A stalled loop is always reported by freshness and restarted by the watchdog.
 
 Admin ingest (OpenAI, Anthropic) runs every 15 minutes over the last two hours.
 

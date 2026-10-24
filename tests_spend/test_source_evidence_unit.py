@@ -45,21 +45,21 @@ AS_OF = datetime(2026, 9, 9, 4, tzinfo=UTC)
 ROWS = [
     {"source": "codex_local", "started_at": "2026-09-09T03:59:00Z",
      "finished_at": "2026-09-09T04:00:00Z", "status": "success", "events_written": 2, "error": None},
-    {"source": "cursor_local", "started_at": "2026-09-09T03:59:00Z",
+    {"source": "muse_local", "started_at": "2026-09-09T03:59:00Z",
      "finished_at": "2026-09-09T04:00:00Z", "status": "failed", "events_written": 0,
      "error": "permission denied at C:\\Users\\synthetic\\secret.txt"},
     {"source": "grok_local", "started_at": "2026-09-09T03:59:00Z",
      "finished_at": "2026-09-09T04:00:00Z", "status": "partial", "events_written": 1,
      "error": "Unpriced models: synthetic-model"},
-    {"source": "cursor_usage_service", "started_at": "2026-09-09T03:59:00Z",
+    {"source": "claude_local_alt", "started_at": "2026-09-09T03:59:00Z",
      "finished_at": "2026-09-09T04:00:00Z", "status": "skipped", "events_written": 0,
      "error": "adaptive cadence"},
 ]
 SUCCESSES = [
     {"source": "codex_local", "last_success_at": "2026-09-09T04:00:00Z"},
-    {"source": "cursor_local", "last_success_at": "2026-09-08T04:00:00Z"},
+    {"source": "muse_local", "last_success_at": "2026-09-08T04:00:00Z"},
     {"source": "grok_local", "last_success_at": "2026-09-09T04:00:00Z"},
-    {"source": "cursor_usage_service", "last_success_at": "2026-09-09T03:59:00Z"},
+    {"source": "claude_local_alt", "last_success_at": "2026-09-09T03:59:00Z"},
 ]
 
 
@@ -93,7 +93,7 @@ def characterization():
         reports = diagnostics.source_reports(diagnostic_connection, AS_OF)
         return {"health": health, "diagnostics": reports,
                 "codex": plans_value._collection_evidence(health, tool_keys=("codex",)),
-                "cursor": plans_value._collection_evidence(health, tool_keys=("cursor",)),
+                "muse": plans_value._collection_evidence(health, tool_keys=("muse",)),
                 "queryCounts": [len(connection.sql), len(diagnostic_connection.queries)]}
 
 
@@ -107,14 +107,14 @@ def test_independent_scope_prior_success_and_pricing_policy():
     health = {row["source"]: row for row in result["health"]}
     reports = {row["source"]: row for row in result["diagnostics"]}
     assert result["codex"]["status"] == "healthy"
-    assert result["cursor"]["status"] == "failed"
-    assert health["cursor_local"]["lastSuccessAt"] == "2026-09-08T04:00:00Z"
-    assert reports["cursor_local"]["lastSuccess"] == "2026-09-08T04:00:00Z"
-    assert health["cursor_local"]["freshness"]["ageSeconds"] == 86400
+    assert result["muse"]["status"] == "failed"
+    assert health["muse_local"]["lastSuccessAt"] == "2026-09-08T04:00:00Z"
+    assert reports["muse_local"]["lastSuccess"] == "2026-09-08T04:00:00Z"
+    assert health["muse_local"]["freshness"]["ageSeconds"] == 86400
     assert health["grok_local"]["status"] == reports["grok_local"]["state"] == "partial"
-    assert health["cursor_usage_service"]["configuredState"] == "configured"
-    assert reports["cursor_usage_service"]["state"] == "configuration_missing"
-    assert result["queryCounts"] == [3, 57]
+    assert health["claude_local_alt"]["configuredState"] == "configured"
+    assert reports["claude_local_alt"]["state"] == "configuration_missing"
+    assert result["queryCounts"] == [3, 49]
     assert "secret.txt" not in json.dumps(result)
 
 

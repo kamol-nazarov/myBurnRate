@@ -16,6 +16,14 @@ polled every five minutes is therefore stale at ten. Windows with no reset
 (OpenRouter funds, and Claude when only the desktop history file is available)
 are left out.
 
+When the quota pace is missing or stale, the forecast falls back to measured
+token burn inside the same open window (`basis: "usage"`). The implied limit is
+the measured tokens divided by the polled percentage, or the provider's
+reported token allowance. Burn velocity is the last hour of measured tokens;
+when the window is younger than an hour, its own average is used. A quiet last
+hour is zero burn, so an idle window never forecasts a run-dry it is not
+heading for. This keeps a warning alive while a quota lane is held or failing.
+
 `hours remaining = (100 − percent used) / percent per hour`. Compared with the
 reset:
 

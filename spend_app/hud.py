@@ -395,6 +395,7 @@ HUD_HTML = r"""<!doctype html>
       @media (prefers-reduced-motion: reduce) {
         *, *::before, *::after { animation: none !important; transition: none !important; }
       }
+      #hud-updated-foot.stale { color: #ff5f56; font-weight: 700; }
     </style>
   </head>
   <body>
@@ -1074,6 +1075,54 @@ HUD_HTML = r"""<!doctype html>
           return date.toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"});
         }
 
+        // Feed health: the newest instant each poll delivered data, plus the
+        // age the server reports for the data itself. A wedged request, a dead
+        // HUD poller and a stalled collector are all visible; none of them can
+        // silently leave a number on screen pretending to be current.
+        const FEED_LATE_MS = 30000;
+        const USAGE_LATE_MS = 45000;
+        const DATA_STALE_SECONDS = 600;
+        const feedHealth = {live: 0, usage: 0, machines: 0, freshness: 0, dataAt: null};
+        const lastGood = () => feedHealth.live;
+        // The payload's age is measured when it was generated; keep the
+        // newest data instant across the live and usage reads so neither can
+        // rewind the indicator.
+        function noteDataAge(data) {
+          const age = Number(data.lastIngestAgeSeconds);
+          if (!Number.isFinite(age)) return;
+          const generated = Date.parse(data.generatedAt || "") || Date.now();
+          const at = generated - age * 1000;
+          if (feedHealth.dataAt == null || at > feedHealth.dataAt) feedHealth.dataAt = at;
+        }
+        const dataAgeSeconds = () => (
+          feedHealth.dataAt == null ? null : Math.max(0, (Date.now() - feedHealth.dataAt) / 1000)
+        );
+        const feedLate = () => (
+          (feedHealth.live > 0 && Date.now() - feedHealth.live > FEED_LATE_MS)
+          || (feedHealth.usage > 0 && Date.now() - feedHealth.usage > USAGE_LATE_MS)
+          || (dataAgeSeconds() != null && dataAgeSeconds() > DATA_STALE_SECONDS)
+        );
+        function paintUpdated() {
+          const foot = $("hud-updated-foot");
+          if (!feedHealth.live) { foot.textContent = "Updating…"; foot.classList.remove("stale"); return; }
+          const ageS = dataAgeSeconds();
+          if (ageS != null) {
+            foot.textContent = ageS < 2 ? "Updated now" : "Updated " + ago(Math.round(ageS)) + " ago";
+          } else {
+            foot.textContent = "Waiting for collection";
+          }
+          foot.classList.toggle("stale", feedLate());
+          if (feedLate()) {
+            const pill = $("hud-status-pill");
+            pill.dataset.state = "stale";
+            $("hud-status-text").textContent = "STALE";
+            const miniAlert = $("hud-mini-alert");
+            miniAlert.hidden = false;
+            miniAlert.dataset.state = "stale";
+            miniAlert.textContent = "! DATA STALE";
+          }
+        }
+
         // Stat tips read the latest usage response when shown.
         let usageView = {nav: {}, totals: {}, importedAt: null};
         const importedFoot = () => {
@@ -1269,7 +1318,8 @@ HUD_HTML = r"""<!doctype html>
           if (fstate === "tight" || fstate === "dry") {
             const [when, before] = String(f.line || "").replace(/^pace\s*→\s*/, "").replace(/\)$/, "").split(" (");
             const lately = f.burnPctPerHour != null ? "+" + (Math.round(f.burnPctPerHour * 10) / 10).toFixed(1) + "%/h lately" : "";
-            rows.push(["Pace", when || "running dry", fstate, [before, lately].filter(Boolean).join(" · ")]);
+            const measured = f.basis === "usage" && f.tokensPerHour ? " · " + tok1(f.tokensPerHour) + " tok/h measured" : "";
+            rows.push(["Pace", when || "running dry", fstate, [before, lately + measured].filter(Boolean).join(" · ")]);
           } else if (elapsed != null && q.pct != null && !q.payg) {
             const delta = Math.round(q.pct - elapsed);
             rows.push(["Pace",
@@ -1466,6 +1516,7 @@ HUD_HTML = r"""<!doctype html>
           setStat("hud-cache", cache == null ? "—" : Math.round(Number(cache)) + "%");
           setStat("hud-tokens", tok(nav.todayTokens ?? 0));
           usageView = {nav: {...nav, todayUsd: today, burnRatePerDay: burn}, totals: {cacheReusePct: cache}, importedAt: data.historyUpdatedAt};
+          noteDataAge(data);
           // An older hub sends no window tokens; meter tips then omit them.
           if (data.windowTokens && typeof data.windowTokens === "object") windowTokens = data.windowTokens;
           refreshTip();
@@ -1494,11 +1545,22 @@ HUD_HTML = r"""<!doctype html>
             miniBar.dataset.providerKey = "";
           }
           renderPlans(groups);
-          $("hud-updated-foot").textContent = "Updated " + new Date().toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
+          feedHealth.live = Date.now();
+          noteDataAge(data);
+          paintUpdated();
           syncHudWindowSize();
           refreshTip();
         }
 
+        // Every poll is bounded: a hung request aborts and reports offline
+        // instead of wedging the one-in-flight guard forever.
+        const FETCH_TIMEOUT_MS = 12000;
+        const hudFetch = (url, options = {}) => {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+          return fetch(url, {...options, cache: "no-store", signal: controller.signal})
+            .finally(() => clearTimeout(timer));
+        };
         let livePending = null, liveAgain = false, usagePending = false, usageAgain = false, machinesPending = false;
         // One read at a time. A queued request (a manual poll, a stream
         // update) runs again once the current read finishes; timer ticks
@@ -1513,7 +1575,7 @@ HUD_HTML = r"""<!doctype html>
               liveAgain = false;
               const machine = selectedMachine;
               try {
-                const res = await fetch("/api/spend/hud?machine=" + encodeURIComponent(machine || "all"), {cache: "no-store"});
+                const res = await hudFetch("/api/spend/hud?machine=" + encodeURIComponent(machine || "all"));
                 if (!res.ok) throw new Error(String(res.status));
                 const data = await res.json();
                 if (machine === selectedMachine) renderSummary(data);
@@ -1537,9 +1599,10 @@ HUD_HTML = r"""<!doctype html>
               usageAgain = false;
               const machine = selectedMachine;
               try {
-                const res = await fetch("/api/spend/hud/usage?machine=" + encodeURIComponent(machine || "all"), {cache: "no-store"});
+                const res = await hudFetch("/api/spend/hud/usage?machine=" + encodeURIComponent(machine || "all"));
                 if (!res.ok) continue;
                 const data = await res.json();
+                feedHealth.usage = Date.now();
                 if (machine === selectedMachine) renderUsage(data);
               } catch {}
             } while (usageAgain);
@@ -1550,8 +1613,8 @@ HUD_HTML = r"""<!doctype html>
           if (machinesPending) return;
           machinesPending = true;
           try {
-            const res = await fetch("/api/machines", {cache: "no-store"});
-            if (res.ok) { renderMachines((await res.json()).machines || []); refreshTip(); }
+            const res = await hudFetch("/api/machines");
+            if (res.ok) { feedHealth.machines = Date.now(); renderMachines((await res.json()).machines || []); refreshTip(); }
           } catch {} finally { machinesPending = false; }
         }
 
@@ -1617,9 +1680,10 @@ HUD_HTML = r"""<!doctype html>
         setTip($("hud-mini-alert"), () => statusTip);
         async function refreshFreshness() {
           try {
-            const res = await fetch("/api/spend/freshness?view=hud", {cache: "no-store"});
+            const res = await hudFetch("/api/spend/freshness?view=hud");
             if (!res.ok) throw new Error(String(res.status));
             statusView.freshness = await res.json();
+            feedHealth.freshness = Date.now();
           } catch {
             statusView.freshness = null;
           }
@@ -1630,6 +1694,7 @@ HUD_HTML = r"""<!doctype html>
         refreshUsage();
         refreshMachines();
         refreshFreshness();
+        setInterval(paintUpdated, 1000);
         setInterval(() => refresh(), 5000);
         setInterval(refreshUsage, 20000);
         setInterval(refreshMachines, 20000);

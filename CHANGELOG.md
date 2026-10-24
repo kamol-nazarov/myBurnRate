@@ -9,6 +9,25 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+## [0.3.0-beta.18] - 2026-10-24
+
+- Kill HUD staleness at the root: local collection no longer waits for a
+  viewer, so a hidden window, a sleeping laptop or a wedged poll can never
+  stop ingestion. A stalled collection loop is always reported as an alarm
+  instead of being masked as "deferred".
+- Show the data's age in the HUD (`Updated 12s ago`) and alarm when the data,
+  the live-meter poll or the recorded-usage poll goes quiet. Every HUD fetch
+  now has a 12-second abort, so one hung request cannot freeze later polls.
+- Forecast run-dry from measured token burn when quota pace is stale or
+  missing (`basis: usage`), including 5-hour and weekly windows. A quiet last
+  hour is zero burn, not the window's historical average.
+- Refresh HUD payloads with `lastIngestAt`, `lastIngestAgeSeconds` and
+  `stale`, computed from the newest successful ingest pass.
+- Keep provider data read-only; provider schema selection is unchanged.
+- Update the stale test fixtures that still expected Cursor collection, and
+  drop configured-but-never-attempted lanes from a group whose other sources
+  have real evidence.
+
 ## [0.3.0-beta.17] - 2026-10-22
 
 - Fix "today" counting from UTC midnight when `SPEND_TIMEZONE` is unset.

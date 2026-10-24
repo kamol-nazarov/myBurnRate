@@ -340,7 +340,9 @@ def create_app(
         # on a spoke the hub cannot see that a local source or meter stalled.
         from spend_app.freshness import report
 
-        collecting = history_demand.active()
+        # Collection is unconditional; the heartbeat is never masked, so the
+        # freshness report and the watchdog always see collection as it is.
+        collecting = True
         return report(settings, history_active=collecting if scheduler else True,
                       include_history=view != "hud" or collecting)
 

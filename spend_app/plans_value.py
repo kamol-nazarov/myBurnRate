@@ -377,6 +377,20 @@ def _collection_evidence(
     # healthy configured lane look failed.  Keep them visible when they are
     # the only evidence for a group so "missing" and "disabled" remain
     # distinct states.
+    #
+    # A configured lane that has never been attempted (Traycer on a machine
+    # that does not run it, for example) must not turn a group with real
+    # collection evidence into "never". It stays visible only when it is the
+    # whole story for that group.
+    if any(
+        row["status"] != "never" or row["configuredState"] in {"disabled", "missing"}
+        for row in sources
+    ):
+        sources = [
+            row
+            for row in sources
+            if row["status"] != "never" or row["configuredState"] in {"disabled", "missing"}
+        ]
     if any(row["configuredState"] == "configured" for row in sources):
         sources = [
             row

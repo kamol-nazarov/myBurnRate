@@ -76,9 +76,9 @@ def test_unpriced_and_unavailable_quota_fixtures_are_honest() -> None:
     payload = _load("frontend_summary_unpriced.json")
     unpriced = next(model for model in payload["models"] if model["value"] is None)
     assert unpriced["tokens"] > 0
-    cursor = next(item for item in payload["capacity"] if item["providerKey"] == "cursor")
-    assert cursor["peakPct"] is None
-    assert cursor["rows"][0]["pct"] is None
+    unavailable = next(item for item in payload["capacity"] if item["providerKey"] == "grok")
+    assert unavailable["peakPct"] is None
+    assert unavailable["rows"][0]["pct"] is None
     payg = next(item for item in payload["capacity"] if item["isPayg"])
     assert payg["peakPct"] is None
     assert payload["totals"]["trackedValue"] is None

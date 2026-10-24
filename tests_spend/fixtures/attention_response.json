@@ -19,7 +19,7 @@
       "source": {
         "enabled": true,
         "eligible": 1,
-        "observedSubjects": 10
+        "observedSubjects": 9
       },
       "pricing": {
         "enabled": true,
@@ -76,7 +76,7 @@
       "snoozed": true,
       "needsAttention": false,
       "reason": "Recorded usage has no applicable event-time rate.",
-      "summary": "vendor:missing \u00b7 1 records \u00b7 1100 measured tokens",
+      "summary": "vendor:missing · 1 records · 1100 measured tokens",
       "timestamps": [
         {
           "label": "Evidence",
@@ -99,7 +99,7 @@
           "at": "2026-09-01T12:00:00Z"
         }
       ],
-      "stateLabel": "active \u00b7 Warning",
+      "stateLabel": "active · Warning",
       "controls": [
         {
           "operation": "acknowledge",
@@ -152,7 +152,7 @@
       "snoozed": false,
       "needsAttention": false,
       "reason": "Currently at or above the configured quota threshold.",
-      "summary": "82% used \u00b7 codex \u00b7 weekly",
+      "summary": "82% used · codex · weekly",
       "timestamps": [
         {
           "label": "Evidence",
@@ -171,7 +171,7 @@
           "at": "2026-09-10T12:00:00Z"
         }
       ],
-      "stateLabel": "active \u00b7 Warning",
+      "stateLabel": "active · Warning",
       "controls": [
         {
           "operation": "snooze",
@@ -187,8 +187,8 @@
       "actionLabel": "View capacity"
     },
     {
-      "id": "ef81ae58a7700978d7dd719aa7479069",
-      "key": "b6b7604734a1291f6d17f04b38107c18",
+      "id": "8d6546e261281b17da46a6c33e2aab59",
+      "key": "8c0ccd6a4c83101ecc9267a9d78f4d6a",
       "family": "source",
       "scope": "legacy",
       "firstDetectedAt": "2026-09-10T12:00:20Z",
@@ -196,13 +196,13 @@
       "acknowledgedTier": 0,
       "snoozedUntil": null,
       "reachedTier": 1,
-      "title": "Cursor local collection",
+      "title": "Grok Build collection",
       "observedAt": "2026-09-10T12:00:20Z",
       "usableUntil": "2026-09-10T12:03:20Z",
       "evidence": {
-        "source": "cursor_local",
+        "source": "grok_local",
         "lastSuccessAt": null,
-        "detail": "redacted cursor failure"
+        "detail": "redacted source failure"
       },
       "actionType": "connections",
       "status": "active",
@@ -215,7 +215,7 @@
       "snoozed": false,
       "needsAttention": true,
       "reason": "A monitored usage source reported a terminal failure.",
-      "summary": "redacted cursor failure",
+      "summary": "redacted source failure",
       "timestamps": [
         {
           "label": "Evidence",
@@ -226,7 +226,7 @@
           "at": "2026-09-10T12:00:20Z"
         }
       ],
-      "stateLabel": "active \u00b7 Warning",
+      "stateLabel": "active · Warning",
       "controls": [
         {
           "operation": "acknowledge",
@@ -248,8 +248,8 @@
   ],
   "history": [
     {
-      "id": "576e2a9c997ac60b1639eb9492a34327",
-      "key": "b6b7604734a1291f6d17f04b38107c18",
+      "id": "a78e3f55b72202433230f554bc9ecf39",
+      "key": "8c0ccd6a4c83101ecc9267a9d78f4d6a",
       "family": "source",
       "scope": "legacy",
       "firstDetectedAt": "2026-09-10T12:00:00Z",
@@ -257,13 +257,13 @@
       "acknowledgedTier": 0,
       "snoozedUntil": null,
       "reachedTier": 1,
-      "title": "Cursor local collection",
+      "title": "Grok Build collection",
       "observedAt": "2026-09-10T12:00:00Z",
       "usableUntil": "2026-09-10T12:03:00Z",
       "evidence": {
-        "source": "cursor_local",
+        "source": "grok_local",
         "lastSuccessAt": null,
-        "detail": "redacted cursor failure"
+        "detail": "redacted source failure"
       },
       "actionType": "connections",
       "status": "closed",
@@ -273,7 +273,7 @@
       "reasonCode": "recovered",
       "expiresAt": null,
       "resolutionObservedAt": "2026-09-10T12:00:10Z",
-      "summary": "redacted cursor failure",
+      "summary": "redacted source failure",
       "timestamps": [
         {
           "label": "Evidence",
@@ -292,7 +292,7 @@
           "at": "2026-09-10T12:00:10Z"
         }
       ],
-      "stateLabel": "closed \u00b7 Warning",
+      "stateLabel": "closed · Warning",
       "controls": [],
       "actionLabel": "View diagnostics",
       "reason": "A later usable import established recovery for the same binding."
