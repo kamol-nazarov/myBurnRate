@@ -32,6 +32,46 @@ CONTENT_SECURITY_POLICY = (
 _ASSET_VERSIONS: dict[str, tuple[tuple[int, int], str]] = {}
 
 
+def _stamp_hub_age(payload: dict, *, now, stamp: str | None = None) -> dict:
+    """Add a data-age stamp to a Hub payload that predates the fields.
+
+    A spoke can be upgraded before its Hub. The HUD must not silently trust
+    that older payload: derive the age from the payload's own timestamps so
+    the footer and the stale alarm keep working during the rollout.
+    """
+    if not isinstance(payload, dict) or "lastIngestAgeSeconds" in payload:
+        return payload
+    from spend_app.hud_data import DATA_STALE_AFTER_SECONDS
+    from spend_app.aggregate import _parse
+
+    if not stamp:
+        stamps = [
+            row.get("polledAt")
+            for card in payload.get("capacity") or ()
+            for row in card.get("rows") or ()
+            if isinstance(row, dict) and row.get("polledAt")
+        ]
+        if stamps:
+            try:
+                stamp = min(stamps, key=_parse)
+            except (TypeError, ValueError):
+                stamp = None
+        if not stamp:
+            stamp = payload.get("generatedAt")
+    if not stamp:
+        return payload
+    try:
+        age = max(0, int((now - _parse(stamp)).total_seconds()))
+    except (TypeError, ValueError):
+        return payload
+    stamped = {**payload}
+    stamped["lastIngestAt"] = stamp
+    stamped["lastIngestAgeSeconds"] = age
+    stamped["stale"] = age > DATA_STALE_AFTER_SECONDS
+    stamped["dataSource"] = "hub"
+    return stamped
+
+
 def asset_version(path: Path) -> str:
     """Content hash of a static asset, cached by file mtime and size.
 
@@ -356,7 +396,7 @@ def create_app(
         hub = fetch_from_configured_hub(settings, "/api/spend/hud", {"machine": machine},
                                         stale_seconds=HUD_HUB_STALE_SECONDS)
         if hub is not None:
-            return hub
+            return _stamp_hub_age(hub, now=current_now())
         return live_snapshot(settings, now=current_now(), machine=machine)
 
     @app.get("/api/spend/hud/usage")
@@ -371,7 +411,7 @@ def create_app(
                                         stale_seconds=HUD_HUB_STALE_SECONDS,
                                         read_timeout=HUD_USAGE_HUB_READ_TIMEOUT)
         if hub is not None:
-            return hub
+            return _stamp_hub_age(hub, now=current_now(), stamp=hub.get("historyUpdatedAt"))
         return recorded_usage(settings, pricing, now=current_now(),
                               machine=local_usage_machine(settings, machine))
 

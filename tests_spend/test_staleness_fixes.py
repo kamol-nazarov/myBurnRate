@@ -175,6 +175,30 @@ def test_hud_polls_are_bounded_and_their_age_is_visible() -> None:
     assert "USAGE_LATE_MS" in html and "DATA_STALE_SECONDS" in html
 
 
+def test_old_hub_payloads_get_a_truthful_age_stamp() -> None:
+    """A b17 Hub predates the data-age fields; the spoke must not hide it."""
+    from spend_app.api import _stamp_hub_age
+
+    old = _iso(NOW - timedelta(minutes=12))
+    live = _stamp_hub_age(
+        {"generatedAt": _iso(NOW), "capacity": [{"rows": [{"polledAt": old}]}]},
+        now=NOW,
+    )
+    assert live["lastIngestAt"] == old
+    assert live["lastIngestAgeSeconds"] == 720
+    assert live["stale"] is True and live["dataSource"] == "hub"
+
+    usage = _stamp_hub_age(
+        {"generatedAt": _iso(NOW), "historyUpdatedAt": _iso(NOW - timedelta(seconds=5))},
+        now=NOW,
+        stamp=_iso(NOW - timedelta(seconds=5)),
+    )
+    assert usage["lastIngestAgeSeconds"] == 5 and usage["stale"] is False
+
+    already = {"lastIngestAgeSeconds": 1, "stale": False}
+    assert _stamp_hub_age(already, now=NOW) is already
+
+
 def test_hud_indicator_alarms_on_stale_data_not_only_on_a_live_poll() -> None:
     html = render_hud()
     block = (
