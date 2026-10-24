@@ -188,6 +188,15 @@ def test_old_hub_payloads_get_a_truthful_age_stamp() -> None:
     assert live["lastIngestAgeSeconds"] == 720
     assert live["stale"] is True and live["dataSource"] == "hub"
 
+    # A disconnected optional lane must not age the whole live feed.
+    newest = _iso(NOW - timedelta(seconds=4))
+    mixed = _stamp_hub_age(
+        {"generatedAt": _iso(NOW), "capacity": [{"rows": [{"polledAt": old}, {"polledAt": newest}]}]},
+        now=NOW,
+    )
+    assert mixed["lastIngestAt"] == newest
+    assert mixed["lastIngestAgeSeconds"] == 4 and mixed["stale"] is False
+
     usage = _stamp_hub_age(
         {"generatedAt": _iso(NOW), "historyUpdatedAt": _iso(NOW - timedelta(seconds=5))},
         now=NOW,

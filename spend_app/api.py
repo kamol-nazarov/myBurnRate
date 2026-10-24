@@ -52,8 +52,12 @@ def _stamp_hub_age(payload: dict, *, now, stamp: str | None = None) -> dict:
             if isinstance(row, dict) and row.get("polledAt")
         ]
         if stamps:
+            # Use the newest meter: one deliberately stale optional lane
+            # (for example a disconnected Antigravity host) must not make the
+            # whole live feed look days old. Per-lane held state is shown on
+            # the row itself and in the freshness report.
             try:
-                stamp = min(stamps, key=_parse)
+                stamp = max(stamps, key=_parse)
             except (TypeError, ValueError):
                 stamp = None
         if not stamp:
