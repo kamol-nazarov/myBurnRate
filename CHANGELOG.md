@@ -9,6 +9,13 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+## [0.4.0-beta.1] - 2026-10-26
+
+- Start the 0.4 line. The code is 0.3.0-beta.19's; the version moves because
+  the HUD-first desktop app, hub and spoke sync, native shell and rebuilt setup
+  are a different application from the dashboard the 0.3.0 betas began as.
+  Production (the hub) now tracks the `release/0.4.0-beta.1` branch.
+
 ## [0.3.0-beta.19] - 2026-10-26
 
 - Give each extra OpenCode profile (`~/.opencode-<name>`, or a directory in
