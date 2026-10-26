@@ -117,10 +117,11 @@ def test_s02_10_unavailable_quota_is_not_zero_percent(tmp_path: Path) -> None:
         assert "Claude quota source is unavailable." in label
 
 
-def test_s02_16_readme_lists_backfill_choices_and_partial_exit() -> None:
-    docs = (ROOT / "docs" / "troubleshooting.md").read_text(encoding="utf-8")
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    surface = docs + "\n" + readme
+def test_s02_16_docs_list_backfill_choices_and_partial_exit() -> None:
+    surface = "\n".join(
+        (ROOT / name).read_text(encoding="utf-8")
+        for name in ("docs/troubleshooting.md", "docs/configuration.md", "README.md")
+    )
     for choice in (
         "codex-local",
         "claude-local",

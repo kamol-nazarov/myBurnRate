@@ -2,6 +2,30 @@
 
 This matrix describes the shipped sources, with the Unreleased compatibility changes below taking precedence over older format details. Every source distinguishes usage, quota, reported charges, credentials and mutation risk.
 
+## At a glance
+
+Official vs experimental is about the *interface BURNRATE uses*, not about whether the product itself is well known. Undocumented endpoints are labeled **experimental** and can fail independently.
+
+| Provider / harness | Interface | Stability | Local files | Network | Tokens / spend |
+| --- | --- | --- | --- | --- | --- |
+| Codex Desktop | local JSONL + projection SQLite | supported | yes | none | tokens exact; spend exact when the price card is `exact` |
+| Claude Code | local JSONL transcripts | supported | yes | none for usage | tokens exact; spend exact when the price card is `exact` |
+| OpenCode | local session SQLite | supported | yes | Z.AI quota HTTPS if a Coding Plan key is on disk | session-level tokens; spend derived |
+| ZCode | local `model_usage` SQLite | supported | yes | shares the Z.AI quota card | per-request tokens exact; spend derived |
+| OpenCode Go | OpenCode messages with `providerID=opencode-go` + `opencode.ai/zen/go/v1/usage` | **experimental** usage endpoint, on by default | OpenCode's own credential store (read-only) | HTTPS to `opencode.ai` | per-message tokens; spend derived from the Go price card; 5-hour, weekly and monthly limits exact |
+| Grok Build CLI | local `unified.jsonl` and session `updates.jsonl` | **experimental**, on by default | yes | none | tokens exact; spend derived |
+| Direct xAI API | — | **not connected** | none | none | unavailable |
+| Google Antigravity | localhost language-server RPC | **experimental**, on by default | log for port/CSRF | `https://127.0.0.1:<port>/` | tokens exact; spend derived |
+| OpenRouter (via Traycer) | Traycer usage facts + optional credits API | Traycer path **experimental**, on by default | yes | `openrouter.ai` only with a management key | tokens classified; spend derived |
+| Traycer per-CLI usage | `app-assets.db` `usage_analytics_facts` (older hosts: `chat.db`) | **experimental**, on by default | yes | none | per-CLI tokens; provider-reported cost only when Traycer marks it as such |
+| OpenAI admin usage/cost | official Usage + Costs APIs | opt-in official | none | `api.openai.com` if `OPENAI_ADMIN_KEY` is set | exact |
+| Anthropic admin usage/cost | official org usage/cost | opt-in official | none | `api.anthropic.com` if `ANTHROPIC_ADMIN_KEY` is set | exact |
+| Claude plan usage | the plan usage Claude Code caches in `~/.claude.json`, Claude Desktop's usage history, or Traycer | **experimental**, on by default | yes | none — Claude's sign-in is never read or reused | quota only |
+| Additional Claude accounts | each profile's cached plan usage | **experimental**, on when a second profile is signed in | `~/.claude-<name>/.claude.json` | none | quota only, one lane per account |
+| Additional OpenCode profiles | each profile's Console key + `opencode.ai/zen/go/v1/usage` | **experimental**, on when a second profile is signed in to another account | `~/.opencode-<name>/opencode/opencode.db` (read-only) | HTTPS to `opencode.ai`, under the OpenCode Go switch | quota plus the profile's own session tokens |
+| DeepSeek balance | official `/user/balance` | opt-in official | none | `api.deepseek.com` only with a key connected for it | account balance only |
+| Requesty | — | **not connected** | none | none | not a rate authority |
+
 ## Unreleased provider compatibility repairs
 
 Format evidence is pinned to [Tokscale a3209ff](https://github.com/junhoyeo/tokscale/tree/a3209ff03da1b71262a4dd97bff854c07ca548b3) and [Token Monitor e07aeb4](https://github.com/Javis603/token-monitor/tree/e07aeb449353a6f9f0260292beacc27b643550c0). The latter manifest identifies Tokscale base 4.15.1. MIT notices are retained in `NOTICE`. No reference binaries, personal caches, providers or cache producers were executed during implementation. The CLI originator also appears in [official Codex extraction fixtures](https://github.com/openai/codex/blob/6924ce636b2186948f2332ac9460b5871b50aa2f/codex-rs/state/src/extract.rs).

@@ -23,6 +23,29 @@ This project is licensed under Apache-2.0.
   GitHub Releases for signed updates; the HUD and tray offer to install one.
 - `BURNRATE_DATA_ROOT` moves the database, settings and logs together, and a
   service on another data root gets its own process lock.
+- macOS and Linux. The service runs there (file lock instead of a Windows
+  mutex, notifications through `osascript` or `notify-send`, keys in the
+  Keychain or the Secret Service), and releases include a `.dmg` for Apple
+  Silicon plus a Linux AppImage and `.deb`. Tests run on all three systems.
+- Releases are built on GitHub Actions from a version tag, with build
+  provenance attestations, a `SHA256SUMS` file and a signed `latest.json` for
+  in-app updates. The Windows installer is signed through SignPath once the
+  project is approved (see `docs/code-signing.md`); the release stays a draft
+  until it is published by hand.
+- Scoop and winget manifests with every release.
+- A Docker image and Compose file (with Caddy for HTTPS) to run a hub on a
+  server; see `docs/self-hosting.md`.
+- Cost per repository: the HUD lists today's value by the repository each
+  session ran in. T3, Claude Code and Orca worktrees count toward their
+  repository.
+- A share button in the HUD copies the last seven days as an image: value at
+  API rates against the plans, tokens, cache hit, sessions and top tools. It
+  never names a repository.
+- `burnrate demo` serves a month of made-up usage on `127.0.0.1:17377` without
+  reading anything from the computer it runs on.
+- A weekly workflow lists price cards that need a person's attention (a price
+  window ending soon, or an OpenRouter price that moved) in one open issue. It
+  never edits a card.
 
 ### Changed
 
@@ -34,6 +57,9 @@ This project is licensed under Apache-2.0.
   history, or Traycer, whichever is newest.
 - Release notes moved to `docs/releases/`.
 - Code and tests no longer name a private hub host or checkout path.
+- A shorter README with screenshots, downloads and first-open steps; the
+  detail moved to `docs/user-guide.md`, `docs/configuration.md` and
+  `docs/development.md`.
 
 ## [0.4.0-beta.1] - 2026-10-26
 
