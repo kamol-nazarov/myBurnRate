@@ -24,6 +24,7 @@ from spend_app.config import dashboard_enabled
 from spend_app.db import connect, initialize, utc_now
 from spend_app.diagnostics import detect_local_sources
 from spend_app.plan_service import PlanConflict, PlanError, apply_mutation, effective_terms, list_plans
+from spend_app.platform_paths import NO_WINDOW
 from spend_app.pricing import PricingEngine
 from spend_app.setup_checks import collection_progress, consent_state, lane_rows, plan_issues, plan_suggestions, write_consent
 from spend_app.subscriptions import add_subscription, materialize_subscription_days
@@ -379,6 +380,7 @@ def ensure_tailscale_hub_proxy(port: int = 17331) -> bool:
             text=True,
             timeout=5,
             check=False,
+            creationflags=NO_WINDOW,
         )
         return proc.returncode == 0
     except Exception:
@@ -402,6 +404,9 @@ def detect_network_addresses(port: int = 17331) -> list[dict]:
                 text=True,
                 timeout=2,
                 check=False,
+                # The installed service has no console: without this, every
+                # setup-state read flashed a terminal window on Windows.
+                creationflags=NO_WINDOW,
             )
             if proc.returncode == 0 and proc.stdout.strip():
                 serve_data = json.loads(proc.stdout)
