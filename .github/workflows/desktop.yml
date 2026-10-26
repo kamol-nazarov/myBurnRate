@@ -98,7 +98,7 @@ jobs:
           "$app/Contents/MacOS/burnrate-desktop" &
           for i in $(seq 1 180); do curl -sf http://127.0.0.1:17331/healthz && break; sleep 0.5; done
           curl -sf http://127.0.0.1:17331/healthz
-          curl -sf http://127.0.0.1:17331/hud | grep -q "Sidecar HUD"
+          curl -sf -o hud.html http://127.0.0.1:17331/hud && grep -q "Sidecar HUD" hud.html
           kill %1 || true
 
       - name: Smoke-test the desktop app (Linux)
@@ -111,7 +111,7 @@ jobs:
           xvfb-run -a "$appimage" &
           for i in $(seq 1 180); do curl -sf http://127.0.0.1:17331/healthz && break; sleep 0.5; done
           curl -sf http://127.0.0.1:17331/healthz || { tail -n 60 "$BURNRATE_DATA_ROOT"/logs/*.log 2>/dev/null; exit 1; }
-          curl -sf http://127.0.0.1:17331/hud | grep -q "Sidecar HUD"
+          curl -sf -o hud.html http://127.0.0.1:17331/hud && grep -q "Sidecar HUD" hud.html
           kill %1 || true
 
       - name: Upload the bundle

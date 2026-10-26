@@ -88,8 +88,13 @@ MIN_PASSWORD_LENGTH = 8
 
 
 def _default_computer_name() -> str:
+    """This computer's host name, short enough to be a machine name.
+
+    macOS host names often carry a ``.local`` suffix and can run past the
+    64-character limit, which made finishing setup fail on those Macs.
+    """
     try:
-        host = socket.gethostname().strip()
+        host = socket.gethostname().strip().split(".", 1)[0].strip()[:64].strip()
         if host:
             return host
     except Exception:

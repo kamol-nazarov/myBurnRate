@@ -343,3 +343,14 @@ def test_setup_switches_desktop_notifications_per_kind(client: TestClient, monke
     monkeypatch.setattr("spend_app.notify.show_toast", lambda title, body, tag: sent.append(title))
     assert client.post("/api/setup/notifications/test", headers=SETUP).json() == {"ok": True}
     assert sent == ["BURNRATE notifications are on"]
+
+
+def test_a_long_mac_host_name_still_finishes_setup(client: TestClient, monkeypatch) -> None:
+    import socket
+
+    host = "sjc20-cw714-61d7b2f3-58e6-4a03-9fb2-5c5a7ea8a8c1-B5A8B2E0D10E-long.local"
+    monkeypatch.setattr(socket, "gethostname", lambda: host)
+    finished = client.post("/api/setup/complete", json={"role": "standalone"}, headers=SETUP)
+    assert finished.status_code == 200, finished.text
+    name = finished.json()["setup"]["computerName"]
+    assert len(host) > 64 and name == host.split(".")[0][:64] and len(name) == 64
