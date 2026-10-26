@@ -25,6 +25,16 @@ maintainer's computer, so every download traces back to a tagged commit.
 6. Check the draft and publish it as the latest release. Installed apps find
    the update within about six hours, or at once from the tray's **Check for
    updates**.
+7. Command-line installs:
+   - **Scoop** needs nothing more. The release carries `myburnrate.json`, so
+     `scoop install https://github.com/kamol-nazarov/myBurnRate/releases/latest/download/myburnrate.json`
+     installs the latest release.
+   - **winget:** unzip the release's `winget-manifests-<version>.zip` into
+     `manifests/k/KamolNazarov/myBurnRate/<version>/` of a fork of
+     [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs), check
+     it with `winget validate`, and open a pull request; `wingetcreate submit`
+     does the same in one step. The winget maintainers review new packages,
+     and the installer should be code-signed first.
 
 ## The update-signing key
 

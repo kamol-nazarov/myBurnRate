@@ -224,6 +224,7 @@ jobs:
           cp bundles/bundle-macos/* bundles/bundle-linux/* release/
           cp src-tauri/icons/icon.ico release/
           python packaging/make_latest_json.py --tag "$TAG" --repo "$GITHUB_REPOSITORY" --dir release
+          python packaging/render_manifests.py --tag "$TAG" --repo "$GITHUB_REPOSITORY" --dir release
           (cd release && sha256sum * > SHA256SUMS)
           ls -la release
       - uses: actions/attest-build-provenance@v2

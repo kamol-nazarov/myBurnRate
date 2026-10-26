@@ -62,3 +62,35 @@ def test_the_update_feed_points_each_platform_at_its_signed_bundle(tmp_path: Pat
     (tmp_path / "BURNRATE_0.5.0_amd64.AppImage.sig").unlink()
     with pytest.raises(SystemExit, match="no update signature"):
         module.build_feed(tmp_path, tag="v0.5.0", repo="owner/repo")
+
+
+def test_scoop_and_winget_manifests_name_the_installer_and_its_hash(tmp_path: Path) -> None:
+    import hashlib
+    import importlib.util
+    import json
+    import sys
+    import zipfile
+
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location("render_manifests", root / "packaging" / "render_manifests.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    setup = tmp_path / "BURNRATE_0.5.0_x64-setup.exe"
+    setup.write_bytes(b"installer bytes")
+    digest = hashlib.sha256(b"installer bytes").hexdigest()
+    argv = sys.argv
+    sys.argv = ["render_manifests", "--tag", "v0.5.0", "--repo", "owner/repo", "--dir", str(tmp_path)]
+    try:
+        assert module.main() == 0
+    finally:
+        sys.argv = argv
+    scoop = json.loads((tmp_path / "myburnrate.json").read_text(encoding="utf-8"))
+    url = "https://github.com/owner/repo/releases/download/v0.5.0/BURNRATE_0.5.0_x64-setup.exe"
+    assert scoop["version"] == "0.5.0" and scoop["architecture"]["64bit"] == {"url": url + "#/setup.exe", "hash": digest}
+    assert scoop["installer"]["args"] == ["/S", "/D=$dir"] and scoop["uninstaller"]["file"] == "uninstall.exe"
+    with zipfile.ZipFile(tmp_path / "winget-manifests-0.5.0.zip") as bundle:
+        installer = bundle.read("KamolNazarov.myBurnRate.installer.yaml").decode()
+        assert set(bundle.namelist()) == {"KamolNazarov.myBurnRate.yaml", "KamolNazarov.myBurnRate.installer.yaml",
+                                          "KamolNazarov.myBurnRate.locale.en-US.yaml"}
+    assert f"InstallerUrl: {url}" in installer and f"InstallerSha256: {digest.upper()}" in installer
+    assert "InstallerType: nullsoft" in installer and "Scope: user" in installer
