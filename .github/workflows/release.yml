@@ -124,7 +124,7 @@ jobs:
             Copy-Item $archive.FullName (Join-Path $out $name)
           }
           Get-ChildItem $out | Format-Table Name, Length
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         id: upload
         with:
           name: bundle-${{ matrix.name }}
@@ -149,7 +149,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force to-sign | Out-Null
           Copy-Item unsigned/*-setup.exe to-sign/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         id: unsigned
         with:
           name: windows-unsigned-installer
@@ -181,7 +181,7 @@ jobs:
           npx -y @tauri-apps/cli@2 signer sign $installer.FullName
           Copy-Item signed/* unsigned/ -Force
           Get-ChildItem unsigned | Format-Table Name, Length
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: bundle-windows-signed
           path: unsigned/*
