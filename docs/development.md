@@ -99,7 +99,11 @@ burnrate demo
 `burnrate demo` fills a new database in a temporary folder with a month of made-up usage, plans and
 meters, and opens the HUD on [http://127.0.0.1:17377/hud](http://127.0.0.1:17377/hud). Collection,
 quota polling and HUD window control are off, so nothing is collected from your tools or accounts. Pass
-`--data-root DIR` to keep the demo between runs. The screenshots in the README come from it.
+`--data-root DIR` to keep the demo between runs.
+
+The screenshots in the README come from it. To take them again, start `burnrate demo --no-browser`
+and run `node scripts/readme-screenshots.mjs` (Node 22 or later, with Edge or Chrome installed). It
+writes `hud.png`, `week-card.png` and `dashboard.png` to `docs/images/`.
 
 ## Tests and front-end assets
 
