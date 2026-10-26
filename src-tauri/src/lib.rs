@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent, Wry};
-use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
+use auto_launch::{AutoLaunch, AutoLaunchBuilder, MacOSLaunchMode, WindowsEnableMode};
 use tauri_plugin_updater::UpdaterExt;
 
 const DEFAULT_PORT: u16 = 17331;
@@ -421,14 +421,42 @@ async fn install_update(app: AppHandle) -> Result<(), String> {
     app.restart();
 }
 
+/// Start at sign-in for this user only: never the machine-wide Run key, even
+/// when the app runs elevated (the autostart plugin tries that first).
+fn launcher(app: &AppHandle) -> Option<AutoLaunch> {
+    let exe = env::current_exe().ok()?.display().to_string();
+    #[cfg(target_os = "linux")]
+    let exe = app
+        .env()
+        .appimage
+        .and_then(|path| path.to_str().map(String::from))
+        .unwrap_or(exe);
+    AutoLaunchBuilder::new()
+        .set_app_name(&app.package_info().name)
+        .set_app_path(&exe)
+        .set_macos_launch_mode(MacOSLaunchMode::LaunchAgent)
+        .set_windows_enable_mode(WindowsEnableMode::CurrentUser)
+        .build()
+        .ok()
+}
+
+fn starts_at_sign_in(app: &AppHandle) -> bool {
+    launcher(app).and_then(|launcher| launcher.is_enabled().ok()).unwrap_or(false)
+}
+
+fn set_start_at_sign_in(app: &AppHandle, enabled: bool) -> bool {
+    launcher(app)
+        .map(|launcher| if enabled { launcher.enable().is_ok() } else { launcher.disable().is_ok() })
+        .unwrap_or(false)
+}
+
 /// An installed app starts at sign-in unless the person turned that off; this applies the default once.
 fn apply_autostart_default(app: &AppHandle) {
     let Ok(dir) = app.path().app_config_dir() else { return };
     let marker = dir.join("autostart-default-applied");
-    if marker.exists() {
-        return;
+    if marker.exists() || !set_start_at_sign_in(app, true) {
+        return; // a failed attempt is tried again next launch
     }
-    let _ = app.autolaunch().enable();
     let _ = std::fs::create_dir_all(&dir);
     let _ = std::fs::write(&marker, b"1");
 }
@@ -1055,7 +1083,6 @@ pub fn run() {
     release_webview_lock_if_needed();
 
     let app = tauri::Builder::default()
-        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(HudPinState {
             pinned: AtomicBool::new(true),
@@ -1134,7 +1161,7 @@ pub fn run() {
             // Start-at-sign-in and updates belong to an installed app, not a checkout.
             let autostart_item = if installed {
                 apply_autostart_default(app.handle());
-                let enabled = app.autolaunch().is_enabled().unwrap_or(false);
+                let enabled = starts_at_sign_in(app.handle());
                 Some(CheckMenuItem::with_id(app, "autostart", "Start BURNRATE at sign-in", true, enabled, None::<&str>)?)
             } else {
                 None
@@ -1180,11 +1207,10 @@ pub fn run() {
                         let _ = open_setup_wizard(app.clone());
                     }
                     "autostart" => {
-                        let launcher = app.autolaunch();
-                        let enable = !launcher.is_enabled().unwrap_or(false);
-                        let _ = if enable { launcher.enable() } else { launcher.disable() };
+                        let enable = !starts_at_sign_in(app);
+                        set_start_at_sign_in(app, enable);
                         if let Some(item) = autostart_toggle.as_ref() {
-                            let _ = item.set_checked(launcher.is_enabled().unwrap_or(enable));
+                            let _ = item.set_checked(starts_at_sign_in(app));
                         }
                     }
                     "update" => {
