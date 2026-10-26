@@ -56,6 +56,11 @@ def dashboard_enabled() -> bool:
     return os.getenv("BURNRATE_ENABLE_DASHBOARD", "").strip().lower() in {"1", "true", "yes"}
 
 
+def demo_mode() -> bool:
+    """``burnrate demo``: made-up data, and nothing on this computer is read or moved."""
+    return os.getenv("BURNRATE_DEMO") == "1"
+
+
 def local_app_data() -> Path:
     configured = os.getenv("LOCALAPPDATA")
     if configured:

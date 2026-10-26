@@ -122,7 +122,7 @@ from spend_app.aggregate import (
     data_clock,
     record_summary_request,
 )
-from spend_app.config import Settings, dashboard_enabled, load_settings
+from spend_app.config import Settings, dashboard_enabled, demo_mode, load_settings
 from spend_app.db import initialize
 from spend_app.pricing import PricingEngine
 from spend_app.limits import snapshot_limits
@@ -479,6 +479,9 @@ def create_app(
 
         now_val = current_now()
         stamp = now_val.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        if demo_mode():
+            # The demo's meters are made up; polling would read this computer's accounts.
+            return {"ok": True, "refreshedAt": stamp, "providersPolled": 0, "polledProviders": [], "syncResult": None}
         try:
             nudge_quota_lanes(database_path=settings.database_path)
         except Exception:
@@ -571,6 +574,9 @@ def create_app(
 
         if os.getenv("BURNRATE_CENTRAL_SERVER", "").strip().lower() in {"1", "true", "yes"}:
             return {"ok": False, "reason": "central_server"}
+        # A demo in a browser must not move or resize the real desktop HUD.
+        if demo_mode():
+            return {"ok": False, "reason": "demo"}
         try:
             body = await request.json()
         except Exception:

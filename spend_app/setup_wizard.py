@@ -386,6 +386,11 @@ def ensure_tailscale_hub_proxy(port: int = 17331) -> bool:
 
 
 def detect_network_addresses(port: int = 17331) -> list[dict]:
+    from spend_app.config import demo_mode
+
+    if demo_mode():
+        # A demo, often screenshotted, never shows this computer's real addresses.
+        return [{"label": "Localhost (this computer)", "url": f"http://127.0.0.1:{port}", "kind": "local"}]
     urls: list[dict] = []
     seen: set[str] = set()
     ts_bin = shutil.which("tailscale")

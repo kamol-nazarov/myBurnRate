@@ -330,10 +330,22 @@ def _main() -> int:
     desktop_parser.add_argument("--hub", help="Optional remote hub URL to sync local telemetry to")
     desktop_parser.add_argument("--token", help="Optional machine bearer token for remote hub sync")
     desktop_parser.add_argument("--check-only", action="store_true", help="Verify Tauri manifest and exit")
+    demo_parser = subparsers.add_parser(
+        "demo",
+        help="Serve a demo with made-up usage on 127.0.0.1; nothing on this computer is read",
+    )
+    demo_parser.add_argument("--port", type=int, default=17377)
+    demo_parser.add_argument("--data-root", help="Folder for the demo database (default: a new temporary folder)")
+    demo_parser.add_argument("--no-browser", action="store_true", help="Do not open the HUD in a browser")
     args = parser.parse_args()
 
     if args.command == "serve":
         return _cmd_serve(args.host, args.port)
+    if args.command == "demo":
+        from spend_app.demo import run as run_demo
+
+        return run_demo(port=args.port, data_root=Path(args.data_root) if args.data_root else None,
+                        open_browser=not args.no_browser)
 
     settings = load_settings()
     if args.command == "pricing-refresh":
