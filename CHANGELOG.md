@@ -25,6 +25,12 @@ This project is licensed under Apache-2.0.
   then retries.
 - The HUD card is all but opaque. At 80% opacity, text in the window behind
   read through it.
+- On Windows, the service no longer starts a program to list processes. It
+  found Antigravity's language server by running PowerShell on every
+  collection pass, about every six seconds; it now reads the process list
+  and command lines through the Windows API, in about 12 ms. The
+  no-console-window test also covers helpers handed `run=subprocess.run`, and
+  a new test fails if process discovery starts any program.
 
 ## [0.5.1] - 2026-10-26
 

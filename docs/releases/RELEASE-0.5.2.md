@@ -7,6 +7,7 @@ A hotfix for updating from the HUD.
 - **Installing an update from the HUD works.** 0.5.0 and 0.5.1 showed the update bar, but the app refused every click on it. The app now allows the HUD to install updates, and a test fails if that permission is ever missing again.
 - **A failed update can be retried.** Before, the first failed attempt removed the update and every retry failed. The HUD and the tray menu now also say why an update failed.
 - **Text no longer shows through the HUD.** The card was 80% opaque, so text in the window behind it was readable through it. It is now all but opaque.
+- **No more background PowerShell on Windows.** To find Antigravity, the service started a hidden PowerShell about every six seconds. It now reads the process list directly, which takes milliseconds and starts nothing.
 
 Nothing else changes from [0.5.1](https://github.com/kamol-nazarov/myBurnRate/releases/tag/v0.5.1).
 
