@@ -197,6 +197,7 @@ def test_powershell_scripts_parse() -> None:
         assert completed.returncode == 0, f"{name}: {completed.stdout}{completed.stderr}"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="the PowerShell install scripts are for Windows")
 def test_install_dry_run_does_not_register_live_task(tmp_path: Path) -> None:
     shell = _powershell()
     install = SCRIPTS / "install-burnrate.ps1"

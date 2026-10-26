@@ -62,7 +62,7 @@ def test_antigravity_local_rpc_reads_grouped_quota_without_exposing_token(
         "Local: https://127.0.0.1:64566/\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setattr("spend_app.limits.app_support_dir", lambda: tmp_path)
     encoded = json.dumps(PAYLOAD).encode()
     framed = b"\x00" + struct.pack(">I", len(encoded)) + encoded
 
@@ -105,7 +105,7 @@ def test_antigravity_uses_the_live_process_token_when_the_current_startup_omits_
         "Local: https://127.0.0.1:62491/\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setattr("spend_app.limits.app_support_dir", lambda: tmp_path)
     monkeypatch.setattr(
         "spend_app.limits._antigravity_process_csrf_tokens",
         lambda: ["live-process-secret"],

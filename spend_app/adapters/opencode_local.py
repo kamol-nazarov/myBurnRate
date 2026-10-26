@@ -30,6 +30,7 @@ from pathlib import Path
 
 from spend_app.adapters.common import UsageRow, persist_rows, stable_id
 from spend_app.adapters.local_common import (
+    folder_name,
     number,
     optional_number,
     parse_millis,
@@ -135,7 +136,7 @@ def read_session_snapshots(path: Path) -> list[SessionSnapshot]:
                     session_id=str(session_id),
                     provider_id=provider_id,
                     model_id=str(model_info.get("id") or "unknown"),
-                    project=Path(project_source).name if isinstance(project_source, str) else None,
+                    project=folder_name(project_source) if isinstance(project_source, str) else None,
                     input_tokens=number(input_value),
                     cached_input_tokens=number(cache_read_value),
                     cache_write_tokens=number(cache_write_value),

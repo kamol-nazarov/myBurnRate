@@ -1,6 +1,7 @@
 """Desktop notifications: once per episode, quiet hours, switches, and a toast that carries no script input."""
 
 from __future__ import annotations
+import os
 
 import base64
 from datetime import UTC, datetime, timedelta
@@ -139,6 +140,29 @@ def test_notifications_are_off_outside_the_desktop_service(monkeypatch) -> None:
     assert not notify.enabled()
 
 
+def test_macos_and_linux_notifications_pass_the_text_as_arguments(monkeypatch) -> None:
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    title = 'Claude Code: weekly at 91%" & do shell script "rm -rf ~"'
+    monkeypatch.setattr(notify.os, "name", "posix")
+    monkeypatch.setattr(notify.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(notify.sys, "platform", "darwin")
+    notify.show_toast(title, "Resets soon", run=fake_run)
+    monkeypatch.setattr(notify.sys, "platform", "linux")
+    notify.show_toast(title, "Resets soon", run=fake_run)
+    macos, linux = calls
+    # The script is fixed; the text is only ever an argument.
+    assert macos[:7] == ["osascript", "-e", "on run argv", "-e",
+                         "display notification (item 2 of argv) with title (item 1 of argv)", "-e", "end run"]
+    assert macos[7:] == [title, "Resets soon"]
+    assert linux == ["/usr/bin/notify-send", "--app-name=BURNRATE", title, "Resets soon"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows toasts")
 def test_the_toast_text_travels_outside_the_script(monkeypatch) -> None:
     monkeypatch.setattr(notify.os, "name", "nt")
     calls = []

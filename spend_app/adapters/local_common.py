@@ -49,6 +49,18 @@ def positive_cost(value: object) -> float | None:
     return None
 
 
+def folder_name(value: object) -> str | None:
+    """The last folder of a path written on any OS.
+
+    A session's working folder can come from another computer through the hub,
+    so ``C:\\Dev\\app`` and ``/home/me/app`` both name ``app`` on every platform.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    name = value.strip().replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    return None if not name or name.endswith(":") else name
+
+
 def sqlite_read_only(path: Path) -> sqlite3.Connection:
     from spend_app.connection_paths import confined
     return _read_only_connection(confined(path))

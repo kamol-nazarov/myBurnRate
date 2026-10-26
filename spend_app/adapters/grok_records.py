@@ -1,8 +1,7 @@
 """Observed Grok unified-log metadata, with process-generation model scope."""
-from pathlib import Path
 
 from spend_app.adapters.common import UsageRow, stable_id
-from spend_app.adapters.local_common import parse_iso_time
+from spend_app.adapters.local_common import parse_iso_time, folder_name
 from spend_app.adapters.opencode_schema import count
 
 
@@ -52,7 +51,7 @@ def reduce_records(records, state=None):
             issues.append("invalid_reasoning_detail")
         rows.append(UsageRow(
             source="grok_local", tool_key="grok", model_key="supergrok:" + (model or "unknown").lower(),
-            occurred_at=stamp, session_id=sid, project=Path(cwds[scope]).name if scope in cwds else None,
+            occurred_at=stamp, session_id=sid, project=folder_name(cwds[scope]) if scope in cwds else None,
             input_tokens=prompt, cached_input_tokens=cached, cache_write_tokens=0,
             cache_write_1h_tokens=0, output_tokens=output, reasoning_tokens=reasoning, cost_usd=None,
             raw_id=stable_id("grok-local", sid, record.get("ts"), ctx.get("loop_index"))))

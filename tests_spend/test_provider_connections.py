@@ -7,6 +7,7 @@ spawned on every poll while Traycer is unavailable.
 """
 
 from __future__ import annotations
+import os
 
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,7 +21,7 @@ from spend_app.quotas import default_quota_collectors
 
 def test_traycer_profile_breaker_skips_the_cli_after_a_failure(tmp_path: Path, monkeypatch) -> None:
     limits.reset_traycer_profile_breaker()
-    executable = tmp_path / ".traycer" / "cli" / "bin" / "traycer.exe"
+    executable = tmp_path / ".traycer" / "cli" / "bin" / ("traycer.exe" if os.name == "nt" else "traycer")
     executable.parent.mkdir(parents=True)
     executable.write_bytes(b"fixture")
     monkeypatch.setattr("spend_app.limits.Path.home", lambda: tmp_path)

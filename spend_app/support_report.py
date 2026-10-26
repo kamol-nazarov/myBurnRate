@@ -34,7 +34,7 @@ _UNIX_HOME = re.compile(r"(/(?:home|Users)/)[^/\s\"']+")
 
 def redact(text: str, home: Path | None = None) -> str:
     home_text = str(home or Path.home())
-    for form in {home_text, home_text.replace("\\", "/"), home_text.replace("\\", "\\\\")}:
+    for form in {home_text, home_text.replace("\\", "/"), home_text.replace("/", "\\"), home_text.replace("\\", "\\\\")}:
         if len(form) > 3:
             text = re.sub(re.escape(form), "~", text, flags=re.IGNORECASE)
     text = _CREDENTIAL_SHAPED.sub("[redacted]", text)

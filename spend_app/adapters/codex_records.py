@@ -6,6 +6,7 @@ at 6924ce636b2186948f2332ac9460b5871b50aa2f. See NOTICE.
 import re
 from dataclasses import dataclass, replace
 
+from spend_app.adapters.local_common import folder_name
 from spend_app.adapters.common import UsageRow, stable_id
 from spend_app.adapters.event_identity import Observation
 from spend_app.adapters.opencode_schema import count
@@ -105,8 +106,7 @@ def reduce_records(records, health, fallback_session):
                 session = {"id": sid, "started_at": when, "project": None, "originator": payload.get("originator"), "supported_origin": known_source(payload), "forked_from_id": parent_id(payload), "thread_source": payload.get("thread_source")}
                 cwd = payload.get("cwd")
                 if isinstance(cwd, str):
-                    from pathlib import Path
-                    session["project"] = Path(cwd).name
+                    session["project"] = folder_name(cwd)
                 replaying = bool(session["forked_from_id"])
                 current_model = model_from(payload)
             replay_session = sid

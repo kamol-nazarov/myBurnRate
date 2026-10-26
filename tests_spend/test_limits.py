@@ -1,3 +1,4 @@
+import os
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -167,7 +168,7 @@ def test_grok_empty_new_week_is_exact_zero_not_missing(tmp_path: Path) -> None:
 
 
 def test_traycer_agent_list_is_authoritative_for_live_activity(tmp_path: Path, monkeypatch) -> None:
-    executable = tmp_path / ".traycer" / "cli" / "bin" / "traycer.exe"
+    executable = tmp_path / ".traycer" / "cli" / "bin" / ("traycer.exe" if os.name == "nt" else "traycer")
     executable.parent.mkdir(parents=True)
     executable.write_bytes(b"fixture")
     monkeypatch.setattr("spend_app.limits.Path.home", lambda: tmp_path)

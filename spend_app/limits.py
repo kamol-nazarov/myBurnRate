@@ -28,7 +28,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from spend_app.adapters.local_common import sqlite_read_only
+from spend_app.adapters.local_common import sqlite_read_only, folder_name
 from spend_app.adapters.traycer_local import projection_index, settings_candidates
 from spend_app.db import connect
 from spend_app.integration_policy import authorize, identity_headers
@@ -1530,7 +1530,7 @@ def _grok_active_sessions(
         sessions.append(
             {
                 "sessionId": session_id,
-                "title": str(title or f"Grok Build · {Path(cwd).name or 'session'}"),
+                "title": str(title or f"Grok Build · {folder_name(cwd) or 'session'}"),
                 "model": f"supergrok:{model.strip().lower()}" if model else None,
                 "startedAt": str(opened_at),
             }

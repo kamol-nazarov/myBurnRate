@@ -28,7 +28,7 @@ import sqlite3
 from pathlib import Path
 
 from spend_app.adapters.common import UsageRow, persist_rows, stable_id
-from spend_app.adapters.local_common import optional_number, parse_millis, sqlite_read_only
+from spend_app.adapters.local_common import optional_number, parse_millis, sqlite_read_only, folder_name
 from spend_app.pricing import PricingEngine
 
 
@@ -43,7 +43,7 @@ def canonical_model(model: object) -> str:
 def _project_name(value: object) -> str | None:
     if not isinstance(value, str) or not value.strip():
         return None
-    return Path(value).name or None
+    return folder_name(value)
 
 
 def _reasoning_tokens(value: object, raw_usage: object) -> int | None:

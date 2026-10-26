@@ -1,4 +1,5 @@
 """Compatibility/CI-gap units; storage, filesystem and HTTP are fake boundaries."""
+import os
 import copy
 import io
 import json
@@ -71,7 +72,7 @@ def test_default_errors_are_not_absence(execution,error):
 def test_normalizer_classifies_only_enoent_as_missing(monkeypatch,error,missing):
     monkeypatch.setattr(Path,'resolve',Mock(side_effect=error))
     with pytest.raises(LocationError) as caught:
-        normalize('C:/simulated/sessions',REGISTRY.get('codex_local').connection)
+        normalize('C:/simulated/sessions' if os.name=='nt' else '/simulated/sessions',REGISTRY.get('codex_local').connection)
     assert isinstance(caught.value,MissingLocation)==missing
 
 

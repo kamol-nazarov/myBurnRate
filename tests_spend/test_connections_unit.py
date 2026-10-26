@@ -215,6 +215,7 @@ def test_invalid_paths_without_filesystem_access(path):
             normalize(path, REGISTRY.get("codex_local").connection)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows path semantics")
 def test_home_normalization_unicode_spaces_and_identity():
     with patch.object(Path, "resolve", lambda self, **kw: self), patch.object(Path, "is_dir", return_value=True), patch.object(Path, "is_file", return_value=False):
         path = normalize("C:/Users/名前 With Space/.codex", REGISTRY.get("codex_local").connection)
@@ -222,6 +223,7 @@ def test_home_normalization_unicode_spaces_and_identity():
         assert identity("C:/Users/NAME") == identity("c:/users/name")
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows path semantics")
 def test_permission_failure_is_friendly():
     with patch.object(Path, "resolve", side_effect=PermissionError("private path")):
         with pytest.raises(LocationError, match="Permission denied"):
@@ -305,6 +307,7 @@ def test_malformed_metadata_is_not_verified(monkeypatch):
         Inspector().inspect("codex_local", "C:/fake", REGISTRY.get("codex_local").connection)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows path semantics")
 def test_schema_validation_uses_readonly_metadata_query(monkeypatch):
     from spend_app import connection_paths as paths
     meta = REGISTRY.get("opencode_local").connection
@@ -345,6 +348,7 @@ def test_discovery_walk_is_bounded_and_skips_links(monkeypatch):
     assert scanner.call_count == 1
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows path semantics")
 def test_source_walk_retries_a_windows_path_at_the_max_path_limit(monkeypatch, tmp_path):
     from spend_app import connection_paths as paths
 
@@ -522,6 +526,25 @@ def test_moved_opencode_session_uses_accounted_delta_not_second_baseline(monkeyp
     assert rows[0].input_tokens == 5
 
 
+def test_secure_storage_on_macos_and_linux_uses_only_the_named_os_store(monkeypatch):
+    import sys
+    from spend_app import connection_secrets
+
+    for platform, module in (("darwin", "keyring.backends.macOS"), ("linux", "keyring.backends.SecretService")):
+        fake = Mock()
+        backend_type = Mock(return_value=fake)
+        backend_type.priority = 5
+        monkeypatch.setitem(sys.modules, module, SimpleNamespace(Keyring=backend_type))
+        monkeypatch.setattr(connection_secrets, "os", SimpleNamespace(name="posix", path=os.path))
+        monkeypatch.setattr(connection_secrets, "sys", SimpleNamespace(platform=platform))
+        assert Vault("/fake/app.db").backend() is fake
+        # A store that is not running is refused; there is no plaintext fallback.
+        backend_type.priority = 0
+        with pytest.raises(LocationError, match="unavailable"):
+            Vault("/fake/app.db").backend()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows path semantics")
 def test_secure_storage_uses_only_explicit_windows_backend(monkeypatch):
     import sys
     fake = Mock()
