@@ -32,10 +32,19 @@ Write-Host "Setup state answered (timezone $($state.timezone))"
 
 $services = @(Get-CimInstance Win32_Process -Filter "Name='burnrate-service.exe'")
 if ($services.Count -lt 1) { throw "No burnrate-service.exe process" }
-$run = Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-if (-not ($run.PSObject.Properties | Where-Object { "$($_.Value)" -like "*burnrate-desktop*" })) {
+$autostart = $null
+for ($i = 0; $i -lt 40 -and -not $autostart; $i++) {
+    $run = Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+    $autostart = $run.PSObject.Properties | Where-Object { "$($_.Value)" -like "*burnrate-desktop*" }
+    if (-not $autostart) { Start-Sleep -Milliseconds 500 }
+}
+if (-not $autostart) {
+    Write-Host "Run key:"; $run | Format-List | Out-String | Write-Host
+    Write-Host "App config folder:"; Get-ChildItem (Join-Path $env:APPDATA "dev.burnrate.desktop") -Force -ErrorAction SilentlyContinue | Format-Table Name | Out-String | Write-Host
+    Write-Host "App still running: $(-not $app.HasExited)"
     throw "An installed app should start at sign-in by default"
 }
+Write-Host "Starts at sign-in: $($autostart.Name) = $($autostart.Value)"
 
 # A crash of the app must not leave the service behind (kill-on-close job).
 Stop-Process -Id $app.Id -Force
