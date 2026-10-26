@@ -130,7 +130,7 @@ def main():
                 assert 'location.replace("/hud")' in response.read().decode()
             with urlopen(base + "/hud") as response:
                 html = response.read().decode()
-            assert 'fetch("/api/spend/hud?machine=' in html
+            assert '"/api/spend/hud?machine="' in html
             assets = re.findall(r'(?:src|href)="(/[^"#]+)', html)
             assert "/favicon.svg" in assets
             for asset in assets:

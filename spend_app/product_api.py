@@ -128,7 +128,9 @@ def product_router(settings, pricing=None):
                 result = apply_mutation(connection, body, today())
             from spend_app.sync import post_to_configured_hub
 
-            hub_res = post_to_configured_hub(settings, "/api/account/subscriptions", body)
+            hub_res = post_to_configured_hub(
+                settings, "/api/account/subscriptions", body
+            )
             if isinstance(hub_res, dict) and isinstance(hub_res.get("plans"), list):
                 return hub_res
             return result

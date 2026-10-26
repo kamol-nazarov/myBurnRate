@@ -47,7 +47,9 @@ def upgrade_database(path: Path, initialize_base):
                 }
                 mutation_columns = {
                     row[1]
-                    for row in source.execute("PRAGMA table_info(subscription_mutations)")
+                    for row in source.execute(
+                        "PRAGMA table_info(subscription_mutations)"
+                    )
                 }
                 daily_columns = {
                     row[1]

@@ -418,4 +418,3 @@ def test_subscription_plans_missing_end_date_column_is_repaired(tmp_path):
         }
         assert "end_date" in plan_columns
         assert effective_terms(c) == []
-

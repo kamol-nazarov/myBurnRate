@@ -12,7 +12,17 @@ paths = [
 ]
 
 [[allowlists]]
-description = "Public Claude Code OAuth client id assignment (not an access token)"
+description = "Settings-store key name in capacity_forecast.py (not a credential)"
+paths = [
+    '''(^|/)spend_app/capacity_forecast\.py$''',
+]
+regexTarget = "line"
+regexes = [
+    '''^KEY = "capacity_forecast\.v1"$''',
+]
+
+[[allowlists]]
+description = "Public Claude Code OAuth client id assignment in history (not an access token)"
 paths = [
     '''(^|/)spend_app/limits\.py$''',
 ]
