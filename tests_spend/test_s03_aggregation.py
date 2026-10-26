@@ -827,29 +827,33 @@ def test_s03_14_capacity_order_and_heatmap_fallback(tmp_path: Path) -> None:
         assert 0 <= point["weekday"] <= 6
         assert 0 <= point["hour"] <= 23
     by_key = {card["providerKey"]: card for card in cards}
-    for provider in ("claude-code", "grok", "codex", "opencode", "openrouter"):
-        assert provider in by_key
+    # The tools with usage here get a card; OpenRouter has no usage, plan or
+    # balance reading, so it gets none.
+    assert set(by_key) == {"claude-code", "codex", "grok", "opencode"}
     assert "cursor" not in by_key
-    assert cards[-1]["providerKey"] == "openrouter"
-    openrouter = by_key["openrouter"]
-    assert openrouter["rows"][0]["etaLabel"] == "available"
-    assert openrouter["rows"][0]["pct"] is None
 
 
-def test_s03_capacity_emits_six_providers_when_quotas_empty(tmp_path: Path) -> None:
+def test_s03_capacity_cards_only_for_tools_in_use(tmp_path: Path) -> None:
     database = tmp_path / "empty-quotas.db"
     initialize(database)
+    # Nothing used and no meter reading: no card for a tool that may not be installed.
+    assert client_for(database).get("/api/spend/summary").json()["capacity"] == []
+
+    # Codex usage with no meter reading yet: its card shows the missing meter blank.
+    _persist(database, [_usage(occurred_at=NOW - timedelta(hours=2))])
+    # An OpenRouter balance reading is in use even without usage here.
+    with connect(database) as connection:
+        upsert_quota(connection, provider_key="openrouter", limit_key="balance", label="OpenRouter funds remaining",
+                     unit="usd", used=12.5, source="openrouter_credits_api", polled_at="2026-08-30T22:00:00Z",
+                     is_payg=True)
     summary = client_for(database).get("/api/spend/summary").json()
     by_key = {card["providerKey"]: card for card in summary["capacity"]}
-    assert "cursor" not in by_key
-    for provider in ("claude-code", "grok", "codex", "opencode", "openrouter"):
-        assert provider in by_key, provider
-        for row in by_key[provider]["rows"]:
-            assert row["pct"] is None
-            assert row["pct"] not in {0, 0.0}
+    assert set(by_key) == {"codex", "openrouter"}
+    for row in by_key["codex"]["rows"]:
+        assert row["pct"] is None and row["pct"] not in {0, 0.0}
+    assert "no persisted quota snapshot" in (by_key["codex"]["rows"][0]["source"] or "")
     assert summary["capacity"][-1]["providerKey"] == "openrouter"
     assert summary["capacity"][-1]["isPayg"] is True
-    assert "no persisted quota snapshot" in (by_key["codex"]["rows"][0]["source"] or "")
     assert by_key["openrouter"]["rows"][0]["etaLabel"] == "available"
 
 

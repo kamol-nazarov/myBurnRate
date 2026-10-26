@@ -227,7 +227,8 @@ def test_fast_burn_sorts_ahead_of_a_slower_higher_percent(tmp_path: Path):
     ]
     assert forecasted[0] == "grok"
     assert forecasted.index("grok") < forecasted.index("claude-code")
-    assert summary["capacity"][-1]["providerKey"] == "openrouter"
+    # No OpenRouter usage, plan or balance here, so no OpenRouter card.
+    assert "openrouter" not in {card["providerKey"] for card in summary["capacity"]}
     grok = next(card for card in summary["capacity"] if card["providerKey"] == "grok")
     assert grok["forecast"]["state"] == "dry"
     assert "capacityForecast" in summary

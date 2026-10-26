@@ -125,7 +125,8 @@ def live_snapshot(settings, *, now: datetime, machine: str = "all") -> dict:
     with connect(settings.database_path) as connection:
         machines = list_machines(connection, now=now)
         capacity = aggregate._capacity_from_rows(
-            aggregate._load_quota_rows(connection, now=now), now=now, month_to_date={}
+            aggregate._load_quota_rows(connection, now=now), now=now, month_to_date={},
+            in_use=aggregate.providers_in_use(connection, now),
         )
         usage_pace = lane_usage_pace(connection, capacity, now=now, machine=machine)
         apply_forecasts(capacity, load_pace_samples(connection, now), now=now,

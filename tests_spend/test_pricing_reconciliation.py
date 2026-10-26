@@ -79,6 +79,14 @@ def test_gpt_6_sol_is_priced_with_its_long_context_tier() -> None:
     assert _price(engine, "gpt-6-sol", when, 300_000, 290_000, 1_000) == Decimal("0.171")
 
 
+def test_gpt_61_terra_is_priced_from_its_model_page() -> None:
+    engine = _engine()
+    when = MONDAY.replace(hour=20)
+    # $1 input, $0.05 cached, $1.25 cache write, $5 output; over 272K input 2x / 1.5x.
+    assert _price(engine, "gpt-6.1-terra", when, 200_000, 190_000, 2_000, writes=1_000) == Decimal("0.03075")
+    assert _price(engine, "gpt-6.1-terra", when, 300_000, 290_000, 2_000) == Decimal("0.064")
+
+
 def test_grok_47_cards_reproduce_grok_builds_own_charges() -> None:
     engine = _engine()
     when = MONDAY.replace(hour=4, minute=59)

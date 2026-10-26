@@ -1588,15 +1588,66 @@ def _capacity_limit_rank(provider_key: str, limit_key: str) -> int:
         return len(order) + 100
 
 
+# A tool with no real meter reading ever, no usage in this many days and no
+# active plan gets no capacity card: it is almost certainly not installed.
+IN_USE_DAYS = 30
+
+
+def providers_in_use(connection, now: datetime) -> set[str]:
+    """Capacity providers this person uses (see IN_USE_DAYS).
+
+    A used tool whose meter has never worked still counts through its usage or
+    plan, so its card shows with the missing meter blank; a tool that is not
+    installed shows no card at all.
+    """
+    keys = {row[0] for row in connection.execute(
+        "SELECT provider_key FROM quotas WHERE unit != 'unavailable' GROUP BY provider_key")}
+    candidates = set(SUMMARY_CAPACITY_PROVIDERS) | {
+        row[0] for row in connection.execute("SELECT provider_key FROM quotas GROUP BY provider_key")}
+    plans = set()
+    today = now.date().isoformat()
+    from spend_app.plan_service import effective_terms
+
+    for term in effective_terms(connection):
+        end = term.get("plan_end") or term.get("end_date")
+        if not end or str(end) >= today:
+            plans.add(_subscription_tool_key(str(term["tool_key"])))
+    since = int((now - timedelta(days=IN_USE_DAYS)).timestamp() * 1_000_000)
+    for provider in sorted(candidates - keys):
+        if provider in plans:
+            keys.add(provider)
+            continue
+        tools = [provider, *(tool for tool in ("zcode", "cursor") if _subscription_tool_key(tool) == provider)]
+        for table in ("usage_events", "unpriced_usage_events"):
+            if any(connection.execute(
+                f"SELECT 1 FROM {table} WHERE tool_key=? AND occurred_epoch_us >= ? LIMIT 1", (tool, since)
+            ).fetchone() for tool in tools):
+                keys.add(provider)
+                break
+            # Grok used through OpenCode keeps the Grok Build card for its
+            # route note (_attach_observed_grok_routes).
+            if provider == "grok" and connection.execute(
+                f"SELECT 1 FROM {table} WHERE source='opencode_local' AND tool_key='opencode' "
+                "AND lower(model_key) LIKE 'opencode:grok%' AND occurred_epoch_us >= ? LIMIT 1", (since,)
+            ).fetchone():
+                keys.add(provider)
+                break
+    return keys
+
+
 def _capacity_from_rows(
     rows: list[dict],
     *,
     now: datetime,
     month_to_date: dict[str, Decimal],
+    in_use: set[str] | None = None,
 ) -> list[dict]:
+    """Capacity cards from quota rows; ``in_use`` (providers_in_use) hides the rest."""
     latest: dict[tuple[str, str], dict] = {}
     for row in rows:
         if row["provider_key"] == "cursor":
+            continue
+        if in_use is not None and row["provider_key"] not in in_use:
             continue
         key = (row["provider_key"], row["limit_key"])
         previous = latest.get(key)
@@ -1613,6 +1664,8 @@ def _capacity_from_rows(
         if row["is_payg"]:
             payg[provider_key] = True
     for provider_key in SUMMARY_CAPACITY_PROVIDERS:
+        if in_use is not None and provider_key not in in_use:
+            continue
         required = REQUIRED_LIMITS.get(provider_key, ())
         have = {row["limitKey"] for row in grouped[provider_key]}
         for limit_key, label in required:
@@ -2484,7 +2537,8 @@ def aggregate_summary(
         machines_by_id = {m["id"]: m["name"] for m in machines_list}
         quota_rows = quotas if quotas is not None else _load_quota_rows(connection, now=now)
         activity_rows = activity if activity is not None else _load_activity_rows(connection, machine)
-        capacity = _capacity_from_rows(quota_rows, now=now, month_to_date=month_usage)
+        capacity = _capacity_from_rows(quota_rows, now=now, month_to_date=month_usage,
+                                       in_use=providers_in_use(connection, now))
         _attach_observed_grok_routes(capacity, connection)
         apply_forecasts(
             capacity,
