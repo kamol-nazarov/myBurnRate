@@ -25,8 +25,12 @@ defaults:
 
 jobs:
   pytest:
-    name: pytest
-    runs-on: windows-latest
+    name: pytest (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
       - name: Checkout
