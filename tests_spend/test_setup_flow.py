@@ -92,20 +92,22 @@ def test_registering_from_the_wizard_checks_the_password_before_calling_the_hub(
 def test_consent_switches_apply_now_and_are_saved(client: TestClient, tmp_path: Path, monkeypatch) -> None:
     import os
 
-    for name in ("BURNRATE_ENABLE_ZAI_QUOTA", "BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE", "BURNRATE_CLAUDE_OAUTH_REFRESH"):
+    for name in ("BURNRATE_ENABLE_ZAI_QUOTA", "BURNRATE_ENABLE_OPENCODE_GO_QUOTA"):
         monkeypatch.setenv(name, "1")
     monkeypatch.setattr("spend_app.config.default_app_dir", lambda: tmp_path / "app")
     state = client.get("/api/setup/state").json()
     assert {item["key"]: item["enabled"] for item in state["consent"]}["zai"] is True
-    response = client.post("/api/setup/consent", headers=SETUP, json={"switches": {"zai": False, "claude": False}})
+    response = client.post("/api/setup/consent", headers=SETUP, json={"switches": {"zai": False, "opencode_go": False}})
     assert response.status_code == 200
     assert {item["key"]: item["enabled"] for item in response.json()["consent"]} == {
-        "claude": False, "zai": False, "opencode_go": False}
-    assert os.environ["BURNRATE_ENABLE_ZAI_QUOTA"] == "0" and os.environ["BURNRATE_CLAUDE_OAUTH_REFRESH"] == "0"
+        "zai": False, "opencode_go": False}
+    assert os.environ["BURNRATE_ENABLE_ZAI_QUOTA"] == "0" and os.environ["BURNRATE_ENABLE_OPENCODE_GO_QUOTA"] == "0"
     saved = (tmp_path / "app" / ".env").read_text(encoding="utf-8")
-    assert "BURNRATE_ENABLE_ZAI_QUOTA=0" in saved and "BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE=0" in saved
-    bad = client.post("/api/setup/consent", headers=SETUP, json={"switches": {"everything": True}})
-    assert bad.status_code == 422
+    assert "BURNRATE_ENABLE_ZAI_QUOTA=0" in saved and "BURNRATE_ENABLE_OPENCODE_GO_QUOTA=0" in saved
+    # There is no Claude switch: Claude's sign-in is never reused.
+    for bad_switches in ({"everything": True}, {"claude": True}):
+        bad = client.post("/api/setup/consent", headers=SETUP, json={"switches": bad_switches})
+        assert bad.status_code == 422
 
 
 def _quota(connection, provider: str, limit: str, *, pct=None, unit="pct", label=None, polled: datetime,

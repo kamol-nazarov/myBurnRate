@@ -59,7 +59,7 @@ def integration_reports(settings, *, environ=None, bindings=None):
                 "external": external,
             }
         )
-    for key in ("claude_oauth_usage", "zai_quota_endpoint"):
+    for key in ("zai_quota_endpoint",):
         lane = LANES[key]
         reports.append(
             {

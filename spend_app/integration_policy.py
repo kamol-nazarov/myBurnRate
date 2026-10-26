@@ -9,9 +9,10 @@ is read or any request is transmitted:
   for this application (admin keys in the BURNRATE environment). Permitted
   when the credential exists; documented interface only.
 - ``opt-in-native`` — reuse of another application's native credentials or
-  undocumented/private endpoints (Claude OAuth usage endpoint, Z.AI quota
-  endpoint with OpenCode's stored key). Each is gated on its consent
-  variable. The desktop service turns these on at first start
+  undocumented/private endpoints (Z.AI quota endpoint with OpenCode's stored
+  key, OpenCode Go usage with OpenCode's sign-in). Claude's sign-in is never
+  reused. Each is gated on its consent variable. The desktop service turns
+  these on at first start
   (``config.load_user_env``) and setup's "What we found" step shows each as a
   switch that writes ``1``/``0`` to the per-user ``.env``; the CLI and tests
   leave them unset, so they stay off there. Enabling never impersonates a
@@ -107,13 +108,6 @@ LANES: dict[str, LanePolicy] = {
         Lane.CONFIGURED,
         "Official Anthropic usage/cost APIs with the configured ANTHROPIC_ADMIN_KEY.",
         allowed_hosts=("api.anthropic.com",),
-    ),
-    "claude_oauth_usage": LanePolicy(
-        "claude_oauth_usage",
-        Lane.OPT_IN_NATIVE,
-        "Claude OAuth usage endpoint reusing Claude Code credentials (the OAuth credential belongs to Claude Code).",
-        allowed_hosts=("api.anthropic.com",),
-        consent_env="BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE",
     ),
     "zai_quota_endpoint": LanePolicy(
         "zai_quota_endpoint",

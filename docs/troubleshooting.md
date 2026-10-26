@@ -117,9 +117,9 @@ Unpriced models stay in diagnostics. They do not become `$0`.
 
 ## Experimental provider missing files
 
-Antigravity localhost RPC, Traycer CLI, Grok Build log scrape, and Claude OAuth usage are **experimental**. If the editor is not installed, the log is absent, or `traycer.exe` is missing, that lane reports unavailable and the rest of BURNRATE keeps running.
+Antigravity localhost RPC, Traycer CLI, Grok Build log scrape, and Claude Code's cached plan usage are **experimental**. If the editor is not installed, the log is absent, or `traycer.exe` is missing, that lane reports unavailable and the rest of BURNRATE keeps running.
 
-Claude OAuth refresh is off unless `BURNRATE_CLAUDE_OAUTH_REFRESH=1`. Prefer Claude Desktop `plan-usage-history.json` or local transcripts.
+A Claude card with no reading fills in after Claude Code (or Claude Desktop) fetches plan usage, which happens while you use it. BURNRATE never uses Claude's sign-in to ask for it.
 
 ## Nothing from OpenRouter / OpenAI / Anthropic
 
@@ -131,7 +131,7 @@ Direct xAI and Requesty are not connected. There is nothing to repair there.
 
 ## `/api/spend/limits` looks different from the HUD
 
-The HUD reads SQLite via `/api/spend/hud` and `/api/spend/hud/usage`; the dashboard, when enabled, via `/api/spend/summary` and `/api/spend/health`. `/api/spend/limits` is a live probe of quota collectors. Do not call it casually; it can hit experimental endpoints and, if you opted in, Claude OAuth.
+The HUD reads SQLite via `/api/spend/hud` and `/api/spend/hud/usage`; the dashboard, when enabled, via `/api/spend/summary` and `/api/spend/health`. `/api/spend/limits` is a live probe of quota collectors. Do not call it casually; it can hit experimental endpoints.
 
 ## Backup and restore
 

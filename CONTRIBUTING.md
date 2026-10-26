@@ -42,8 +42,8 @@ Tailscale names, or personal filesystem paths.
 - Never log credentials, never return them from the API, and never copy them
   into SQLite.
 - Local adapters stay read-only (`mode=ro` for SQLite, no writes to harness
-  files). Do not refresh third-party OAuth tokens unless the operator sets an
-  explicit opt-in environment variable; the public default is off.
+  files). Never read, reuse or refresh Claude's sign-in, and never write
+  another tool's credential files.
 - Opening an editor or shell is not a live session. Active-session signals
   need an explicit running state or a documented recent-activity field.
 
@@ -90,7 +90,7 @@ the provider matrix until there is a documented, stable contract.
 
 Treat at least these as experimental unless that contract exists:
 
-- Anthropic OAuth usage snapshots
+- Claude Code's cached plan usage (`cachedUsageUtilization`)
 - Antigravity localhost RPC
 - Traycer CLI / chat-database readers that are not a documented public API
 - Grok Build log scrape

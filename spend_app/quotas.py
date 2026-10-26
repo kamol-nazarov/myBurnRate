@@ -758,10 +758,10 @@ def _copy_quota_resets(primary: dict, donor: dict | None) -> dict:
 
 
 def _claude_reset_donor() -> dict | None:
-    """Traycer, then OAuth \u2014 the same fallback order as a desktop miss.
+    """Traycer, then Claude Code's cached usage.
 
     Used only to borrow resets. A successful Traycer payload is not replaced
-    by OAuth, even when Traycer's resets are empty.
+    by the cache, even when Traycer's resets are empty.
     """
     try:
         return _claude_from_traycer_result(_traycer_profile_rate_limits("claude"))
@@ -780,11 +780,18 @@ def _claude_quota_collector() -> list[QuotaSample]:
             desktop = _claude_desktop_limits_uncached()
         except Exception:
             desktop = None
+        # Claude Code's own cached reading (no network, no sign-in) wins when
+        # it is newer than Claude Desktop's history, which has no resets.
+        cached = _claude_limits_uncached()
+        cached_at = str(cached.get("observedAt") or "")
+        if cached.get("status") == "exact" and cached_at and (
+                desktop is None or cached_at >= str(desktop.get("observedAt") or "")):
+            return cached, "claude_code_cache"
         if desktop is None:
             try:
                 return _claude_from_traycer_result(_traycer_profile_rate_limits("claude")), "traycer_profile"
             except Exception:
-                return _claude_limits_uncached(), "claude_oauth_usage"
+                return cached, "claude_code_cache"
         return _copy_quota_resets(desktop, _claude_reset_donor()), "claude_desktop_history"
 
     # The lane scheduler owns the cadence; the short cache only coalesces a
@@ -794,7 +801,7 @@ def _claude_quota_collector() -> list[QuotaSample]:
 
 
 def _claude_account_collector(account) -> Callable[[], list[QuotaSample]]:
-    """Quota for one extra Claude Code account: its own cache or credentials, its own lane."""
+    """Quota for one extra Claude Code account: its own cached usage, its own lane."""
     from spend_app.limits import claude_account_limits
 
     def collect() -> list[QuotaSample]:

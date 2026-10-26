@@ -8,11 +8,9 @@ spawned on every poll while Traycer is unavailable.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
-import httpx
 
 import spend_app.limits as limits
 from spend_app.config import ACTIVITY_POLL_SECONDS, QUOTA_POLL_SECONDS
@@ -135,111 +133,6 @@ def test_poll_cadences_match_the_documented_rate_table() -> None:
         assert 3600 / idle <= 12, provider
 
 
-def _write_expired_claude_credentials(tmp_path: Path) -> Path:
-    credentials = tmp_path / ".claude" / ".credentials.json"
-    credentials.parent.mkdir(parents=True)
-    credentials.write_text(
-        json.dumps(
-            {
-                "unrelated": {"keep": True},
-                "claudeAiOauth": {
-                    "accessToken": "expired-access",
-                    "refreshToken": "valid-refresh",
-                    "expiresAt": 1,
-                    "refreshTokenExpiresAt": 4_000_000_000_000,
-                    "scopes": ["user:inference"],
-                    "subscriptionType": "max",
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-    return credentials
-
-
-def test_claude_oauth_refresh_is_off_by_default_and_does_not_write_credentials(
-    tmp_path: Path, monkeypatch
-) -> None:
-    monkeypatch.setenv("BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE", "1")
-    monkeypatch.delenv("BURNRATE_CLAUDE_OAUTH_REFRESH", raising=False)
-    credentials = _write_expired_claude_credentials(tmp_path)
-    original = credentials.read_text(encoding="utf-8")
-    monkeypatch.setattr("spend_app.limits.Path.home", lambda: tmp_path)
-    posts: list[str] = []
-
-    def fake_post(url, **_kwargs):
-        posts.append(url)
-        raise AssertionError("default public build must not refresh Claude OAuth")
-
-    def fake_get(url, **kwargs):
-        assert kwargs.get("trust_env") is False
-        assert kwargs["headers"]["Authorization"] == "Bearer expired-access"
-        request = httpx.Request("GET", url)
-        return httpx.Response(
-            200,
-            request=request,
-            json={
-                "five_hour": {"utilization": 7, "resets_at": "2026-09-02T23:00:00Z"},
-                "seven_day": {"utilization": 42, "resets_at": "2026-09-09T20:00:00Z"},
-            },
-        )
-
-    monkeypatch.setattr("spend_app.limits.httpx.post", fake_post)
-    monkeypatch.setattr("spend_app.limits.httpx.get", fake_get)
-    result = limits._claude_limits_uncached()
-    assert posts == []
-    assert credentials.read_text(encoding="utf-8") == original
-    assert result["status"] == "exact"
-    assert [window["usedPct"] for window in result["windows"]] == [7, 42]
-    assert "experimental" in result["detail"].lower()
-
-
-def test_claude_oauth_refresh_writes_credentials_only_when_opted_in(
-    tmp_path: Path, monkeypatch
-) -> None:
-    monkeypatch.setenv("BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE", "1")
-    monkeypatch.setenv("BURNRATE_CLAUDE_OAUTH_REFRESH", "1")
-    credentials = _write_expired_claude_credentials(tmp_path)
-    monkeypatch.setattr("spend_app.limits.Path.home", lambda: tmp_path)
-
-    def fake_post(url, **kwargs):
-        assert url == limits.CLAUDE_OAUTH_TOKEN_URL
-        assert kwargs.get("trust_env") is False
-        assert kwargs["json"]["refresh_token"] == "valid-refresh"
-        request = httpx.Request("POST", url)
-        return httpx.Response(
-            200,
-            request=request,
-            json={
-                "access_token": "fresh-access",
-                "refresh_token": "rotated-refresh",
-                "expires_in": 28_800,
-            },
-        )
-
-    def fake_get(url, **kwargs):
-        assert kwargs.get("trust_env") is False
-        assert kwargs["headers"]["Authorization"] == "Bearer fresh-access"
-        request = httpx.Request("GET", url)
-        return httpx.Response(
-            200,
-            request=request,
-            json={
-                "five_hour": {"utilization": 7, "resets_at": "2026-09-02T23:00:00Z"},
-                "seven_day": {"utilization": 42, "resets_at": "2026-09-09T20:00:00Z"},
-            },
-        )
-
-    monkeypatch.setattr("spend_app.limits.httpx.post", fake_post)
-    monkeypatch.setattr("spend_app.limits.httpx.get", fake_get)
-    result = limits._claude_limits_uncached()
-    saved = json.loads(credentials.read_text(encoding="utf-8"))
-    assert result["status"] == "exact"
-    assert saved["unrelated"] == {"keep": True}
-    assert saved["claudeAiOauth"]["accessToken"] == "fresh-access"
-    assert saved["claudeAiOauth"]["refreshToken"] == "rotated-refresh"
-
-
 def test_undocumented_interfaces_are_labeled_experimental() -> None:
     from spend_app.adapters import antigravity_local, traycer_local
 
@@ -249,33 +142,6 @@ def test_undocumented_interfaces_are_labeled_experimental() -> None:
     assert "profile-rate-limits" in (traycer_local.__doc__ or "")
     assert "agent list" in (traycer_local.__doc__ or "")
     assert "experimental" in (limits.__doc__ or "").lower()
-    assert "/api/oauth/usage" in (limits.__doc__ or "")
-    assert "BURNRATE_CLAUDE_OAUTH_REFRESH" in (limits.__doc__ or "")
+    assert "never fetched with Claude's sign-in" in " ".join((limits.__doc__ or "").split())
 
 
-def test_claude_oauth_401_does_not_refresh_when_opt_in_is_unset(
-    tmp_path: Path, monkeypatch
-) -> None:
-    monkeypatch.setenv("BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE", "1")
-    monkeypatch.setenv("BURNRATE_CLAUDE_OAUTH_REFRESH", "0")
-    credentials = _write_expired_claude_credentials(tmp_path)
-    original = credentials.read_text(encoding="utf-8")
-    monkeypatch.setattr("spend_app.limits.Path.home", lambda: tmp_path)
-    posts: list[str] = []
-
-    def fake_post(url, **_kwargs):
-        posts.append(url)
-        raise AssertionError("BURNRATE_CLAUDE_OAUTH_REFRESH=0 must not write credentials")
-
-    def fake_get(url, **kwargs):
-        request = httpx.Request("GET", url)
-        return httpx.Response(401, request=request, json={"error": "unauthorized"})
-
-    monkeypatch.setattr("spend_app.limits.httpx.post", fake_post)
-    monkeypatch.setattr("spend_app.limits.httpx.get", fake_get)
-    result = limits._claude_limits_uncached()
-    assert posts == []
-    assert credentials.read_text(encoding="utf-8") == original
-    assert result["status"] == "error"
-    assert result.get("httpStatus") == 401
-    assert "BURNRATE_CLAUDE_OAUTH_REFRESH=1" in result["detail"]

@@ -172,7 +172,7 @@ def test_extra_profile_usage_is_recorded_under_its_own_card(tmp_path: Path, monk
     transcript.parent.mkdir(parents=True)
     transcript.write_text(claude_line("work-1", "2026-10-26T02:00:00Z").replace('"s1"', '"w1"') + "\n", encoding="utf-8")
     account = claude_accounts.ClaudeAccount(key="claude-code-work", label="Work", config_dir=work,
-                                            state_path=work / ".claude.json", credentials_path=work / ".credentials.json",
+                                            state_path=work / ".claude.json",
                                             account_uuid="work-uuid", plan="Claude Max")
     monkeypatch.setattr(claude_accounts, "extra_accounts", lambda: (account,))
     monkeypatch.setattr(opencode_profiles, "extra_profiles", lambda: ())

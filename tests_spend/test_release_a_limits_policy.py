@@ -125,11 +125,11 @@ def test_consent_unlocks_only_the_named_lane(poisoned, tmp_path, monkeypatch):
     # reports unavailable without inventing values)...
     samples = collectors["opencode"]()
     assert samples
-    # ...while the other native lanes stay denied with actionable copy.
-    for provider in ("claude-code",):
-        for sample in collectors[provider]():
-            assert sample.pct is None
-            assert "BURNRATE_ENABLE" in (sample.reason or "")
+    # ...while Claude, which never reuses its sign-in, reports no reading
+    # until Claude Code caches one.
+    for sample in collectors["claude-code"]():
+        assert sample.pct is None
+        assert "Claude Code" in (sample.reason or "")
     assert poisoned == []  # no network, no native token access
 
 

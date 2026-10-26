@@ -2,12 +2,11 @@
 
 Experimental / undocumented interfaces (may change without notice):
 
-- Anthropic ``/api/oauth/usage`` (Claude Code OAuth usage)
 - Antigravity localhost gRPC-Web language-server RPC
 - Traycer CLI ``agent profile-rate-limits`` and ``agent list``
 
-Claude OAuth token refresh writes ``~/.claude/.credentials.json`` and is off
-unless ``BURNRATE_CLAUDE_OAUTH_REFRESH=1``.
+Claude plan usage is never fetched with Claude's sign-in: it comes from what
+Claude Desktop and Claude Code cache on disk, or from Traycer.
 """
 
 from __future__ import annotations
@@ -19,7 +18,6 @@ import re
 import sqlite3
 import struct
 import subprocess
-import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -62,22 +60,17 @@ _TRAYCER_ACTIVITY_LOCK = threading.Lock()
 # position (through_seq) advances; that column precedes the JSON so listing it
 # is cheap, whereas reading updated_at walks every overflow page.
 _LIFECYCLE_CACHE: dict[tuple[str, str], tuple[object, int, dict | None]] = {}
-_CLAUDE_CREDENTIAL_LOCK = threading.Lock()
-CLAUDE_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-CLAUDE_OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
-CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits"
 DEEPSEEK_BALANCE_URL = "https://api.deepseek.com/user/balance"
-CLAUDE_OAUTH_REFRESH_ENV = "BURNRATE_CLAUDE_OAUTH_REFRESH"
-CLAUDE_TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000
 CLAUDE_DESKTOP_HISTORY_MAX_AGE_SECONDS = 45 * 60
-# Claude Code refreshes its cached plan usage while that profile is in use; an
-# older cache means the profile is idle and the OAuth endpoint is asked instead.
-CLAUDE_CACHED_USAGE_MAX_AGE_SECONDS = 20 * 60
+# Claude Code refreshes its cached plan usage while that profile is in use. An
+# older cache is still the latest reading (the card shows its age); a window
+# whose reset has passed reads as reset. A week-old cache is dropped.
+CLAUDE_CACHED_USAGE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+CLAUDE_NO_READING_DETAIL = ("Claude plan usage appears after Claude Code or Claude Desktop fetches it. "
+                            "Use Claude Code once and the meter fills in.")
 OPENROUTER_ALLOWED_HOSTS = frozenset({"openrouter.ai"})
 DEEPSEEK_ALLOWED_HOSTS = frozenset({"api.deepseek.com"})
-CLAUDE_OAUTH_TOKEN_ALLOWED_HOSTS = frozenset({"platform.claude.com"})
-CLAUDE_OAUTH_USAGE_ALLOWED_HOSTS = frozenset({"api.anthropic.com"})
 ZAI_QUOTA_ALLOWED_HOSTS = frozenset({"api.z.ai"})
 OPENCODE_GO_ALLOWED_HOSTS = frozenset({"opencode.ai"})
 MUSE_QUOTA_ALLOWED_HOSTS = frozenset({"api.meta.ai"})
@@ -91,11 +84,6 @@ OPENCODE_CONSOLE_SERVER = "https://opencode.ai/console"
 
 def reset_activity_cache() -> None:
     _LIFECYCLE_CACHE.clear()
-
-
-def claude_oauth_refresh_enabled() -> bool:
-    """True only when the operator opted into writing Claude credentials."""
-    return os.environ.get(CLAUDE_OAUTH_REFRESH_ENV, "").strip() == "1"
 
 
 def _assert_allowed_https_host(url: str, allowed_hosts: frozenset[str]) -> None:
@@ -637,140 +625,8 @@ def _claude_desktop_limits_uncached(
     }
 
 
-def _claude_credentials(credentials_path: Path) -> tuple[dict, dict]:
-    try:
-        document = json.loads(credentials_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise RuntimeError("Claude OAuth credentials are unavailable") from exc
-    oauth = document.get("claudeAiOauth")
-    if not isinstance(oauth, dict):
-        raise RuntimeError("Claude OAuth credentials are unavailable")
-    return document, oauth
-
-
-def _refresh_claude_access_token(credentials_path: Path, *, force: bool = False) -> tuple[str | None, str]:
-    """Return a live Claude token, refreshing and rotating it when required.
-
-    Claude Code access tokens expire after a few hours while the refresh token
-    remains valid. The refresh response rotates both tokens. A process lock and
-    compare-before-replace prevent two BURNRATE polls—or a concurrent Claude
-    writer—from overwriting a newer credential file with stale data.
-
-    Refresh and the credential-file write are off unless
-    ``BURNRATE_CLAUDE_OAUTH_REFRESH=1``. A still-valid access token is used
-    read-only in every build.
-    """
-    with _CLAUDE_CREDENTIAL_LOCK:
-        document, oauth = _claude_credentials(credentials_path)
-        subscription = str(oauth.get("subscriptionType") or "Max").title()
-        access_token = oauth.get("accessToken")
-        expires_at = _finite_number(oauth.get("expiresAt"))
-        now_ms = time.time() * 1000
-        if (
-            not force
-            and isinstance(access_token, str)
-            and access_token
-            and (expires_at is None or expires_at > now_ms + CLAUDE_TOKEN_REFRESH_MARGIN_MS)
-        ):
-            return access_token, subscription
-
-        if not claude_oauth_refresh_enabled():
-            return (
-                access_token if isinstance(access_token, str) and access_token else None,
-                subscription,
-            )
-
-        refresh_token = oauth.get("refreshToken")
-        refresh_expires_at = _finite_number(oauth.get("refreshTokenExpiresAt"))
-        if (
-            not isinstance(refresh_token, str)
-            or not refresh_token
-            or (refresh_expires_at is not None and refresh_expires_at <= now_ms)
-        ):
-            return access_token if isinstance(access_token, str) else None, subscription
-
-        _assert_allowed_https_host(CLAUDE_OAUTH_TOKEN_URL, CLAUDE_OAUTH_TOKEN_ALLOWED_HOSTS)
-        response = httpx.post(
-            CLAUDE_OAUTH_TOKEN_URL,
-            json={
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_token,
-                "client_id": CLAUDE_OAUTH_CLIENT_ID,
-            },
-            headers={"Content-Type": "application/json", **identity_headers()},
-            timeout=15,
-            trust_env=False,
-            follow_redirects=False,
-        )
-        response.raise_for_status()
-        refreshed = response.json()
-        new_access = refreshed.get("access_token")
-        new_refresh = refreshed.get("refresh_token")
-        expires_in = _finite_number(refreshed.get("expires_in"))
-        if not isinstance(new_access, str) or not new_access or expires_in is None or expires_in <= 0:
-            raise RuntimeError("Claude OAuth refresh response was incomplete")
-        if not isinstance(new_refresh, str) or not new_refresh:
-            new_refresh = refresh_token
-
-        # If another Claude process rotated the token while the request was in
-        # flight, keep its newer file and use that winner instead of clobbering it.
-        latest_document, latest_oauth = _claude_credentials(credentials_path)
-        if latest_oauth.get("refreshToken") != refresh_token:
-            latest_access = latest_oauth.get("accessToken")
-            return (
-                latest_access if isinstance(latest_access, str) else None,
-                str(latest_oauth.get("subscriptionType") or subscription).title(),
-            )
-
-        refreshed_at = time.time() * 1000
-        merged = dict(latest_oauth)
-        merged.update(
-            {
-                "accessToken": new_access,
-                "refreshToken": new_refresh,
-                "expiresAt": int(refreshed_at + expires_in * 1000),
-            }
-        )
-        refresh_expires_in = _finite_number(refreshed.get("refresh_token_expires_in"))
-        if refresh_expires_in is not None and refresh_expires_in > 0:
-            merged["refreshTokenExpiresAt"] = int(refreshed_at + refresh_expires_in * 1000)
-        scope = refreshed.get("scope")
-        if isinstance(scope, str) and scope.strip():
-            merged["scopes"] = scope.split()
-        latest_document["claudeAiOauth"] = merged
-
-        temporary_name = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                dir=credentials_path.parent,
-                prefix=credentials_path.name + ".burnrate-",
-                suffix=".tmp",
-                delete=False,
-            ) as handle:
-                temporary_name = handle.name
-                json.dump(latest_document, handle, indent=2)
-                handle.write("\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary_name, credentials_path)
-        finally:
-            if temporary_name:
-                try:
-                    Path(temporary_name).unlink(missing_ok=True)
-                except OSError:
-                    pass
-        return new_access, subscription
-
-
-def _claude_limits_uncached(credentials_path: Path | None = None, *, key: str = "claude-code") -> dict:
-    payload = _claude_oauth_usage(credentials_path or Path.home() / ".claude" / ".credentials.json")
-    return {**payload, "key": key}
-
-
 def _claude_usage_windows(usage: dict) -> list[dict]:
-    """5-hour and weekly windows from an /api/oauth/usage document (or Claude Code's cached copy)."""
+    """5-hour and weekly windows from Claude Code's cached plan-usage document."""
     windows = []
     for key, label in (("five_hour", "5-hour window"), ("seven_day", "Weekly window")):
         window = usage.get(key)
@@ -791,13 +647,35 @@ def _claude_usage_windows(usage: dict) -> list[dict]:
     return windows
 
 
+def _past_reset(window: dict, moment: datetime) -> dict:
+    """A cached window whose reset has passed: nothing used since.
+
+    The weekly window resets on a fixed cadence, so its next reset is known.
+    A 5-hour window starts with the next message, so it has no reset yet.
+    """
+    raw = window.get("resetAt")
+    try:
+        reset = datetime.fromisoformat(str(raw).replace("Z", "+00:00")) if raw else None
+    except ValueError:
+        return window
+    if reset is None or reset.tzinfo is None or reset > moment:
+        return window
+    next_reset = None
+    if window["key"] == "weekly":
+        next_reset = reset
+        while next_reset <= moment:
+            next_reset += timedelta(days=7)
+    return {**window, "usedPct": 0.0, "remainingPct": 100.0,
+            "resetAt": next_reset.isoformat().replace("+00:00", "Z") if next_reset else None}
+
+
 def claude_cached_usage(state_path: Path, *, key: str, plan: str | None = None, now: datetime | None = None) -> dict:
     """Plan usage Claude Code cached for its signed-in account (no network).
 
-    Claude Code stores the /api/oauth/usage response it last fetched in the
-    profile's ``.claude.json`` as ``cachedUsageUtilization``, stamped with the
-    fetch time and the account it belongs to. It is used only while it is
-    recent and still belongs to the profile's signed-in account.
+    Claude Code stores the plan usage it last fetched in the profile's
+    ``.claude.json`` as ``cachedUsageUtilization``, stamped with the fetch
+    time and the account it belongs to. It is used while it still belongs to
+    the profile's signed-in account and is less than a week old.
     """
     from spend_app.claude_accounts import account_uuid, read_state
 
@@ -815,7 +693,7 @@ def claude_cached_usage(state_path: Path, *, key: str, plan: str | None = None, 
     moment = (now or datetime.now(UTC)).astimezone(UTC)
     if moment - observed > timedelta(seconds=CLAUDE_CACHED_USAGE_MAX_AGE_SECONDS):
         raise RuntimeError("Claude Code's cached usage is stale")
-    windows = _claude_usage_windows(cached["utilization"])
+    windows = [_past_reset(window, moment) for window in _claude_usage_windows(cached["utilization"])]
     if not windows:
         raise RuntimeError("Claude Code's cached usage omitted utilization")
     return {
@@ -829,99 +707,28 @@ def claude_cached_usage(state_path: Path, *, key: str, plan: str | None = None, 
     }
 
 
+def _claude_no_reading(key: str, plan: str | None = None) -> dict:
+    return {"key": key, "name": "Claude Code", "plan": plan or "Claude", "status": "unavailable",
+            "windows": [], "detail": CLAUDE_NO_READING_DETAIL}
+
+
+def _claude_limits_uncached(*, key: str = "claude-code", now: datetime | None = None) -> dict:
+    """The default Claude Code profile's cached plan usage, else no reading."""
+    from spend_app.claude_accounts import plan_name, primary_state_path, read_state
+
+    state_path = primary_state_path(Path.home(), os.environ)
+    try:
+        return claude_cached_usage(state_path, key=key, plan=plan_name(read_state(state_path)), now=now)
+    except Exception:
+        return _claude_no_reading(key)
+
+
 def claude_account_limits(account, *, now: datetime | None = None) -> tuple[dict, str]:
-    """An extra Claude account's quota: its fresh local cache, else the OAuth usage endpoint."""
+    """An extra Claude account's quota from its own profile's cached usage."""
     try:
         return claude_cached_usage(account.state_path, key=account.key, plan=account.plan, now=now), "claude_code_cache"
     except Exception:
-        return _claude_limits_uncached(account.credentials_path, key=account.key), "claude_oauth_usage"
-
-
-def _claude_oauth_usage(credentials_path: Path) -> dict:
-    allowed, reason = authorize("claude_oauth_usage")
-    if not allowed:
-        return {"key": "claude-code", "name": "Claude Code", "status": "unavailable", "windows": [], "detail": reason}
-    try:
-        token, subscription = _refresh_claude_access_token(credentials_path)
-    except Exception as exc:
-        return {
-            "key": "claude-code",
-            "name": "Claude Code",
-            "plan": "Claude Max",
-            "status": "error",
-            "windows": [],
-            "detail": f"Experimental Claude OAuth refresh failed ({type(exc).__name__}).",
-            **_throttle_fields(exc),
-        }
-    if not token:
-        return {"key": "claude-code", "name": "Claude Code", "plan": f"Claude {subscription}", "status": "unavailable", "windows": [], "detail": "Experimental Anthropic /api/oauth/usage credentials are unavailable."}
-    try:
-        _assert_allowed_https_host(CLAUDE_USAGE_URL, CLAUDE_OAUTH_USAGE_ALLOWED_HOSTS)
-        usage_headers = {
-            "Authorization": f"Bearer {token}",
-            "anthropic-beta": "oauth-2025-04-20",
-            **identity_headers(),
-            "Accept": "application/json",
-        }
-        response = httpx.get(
-            CLAUDE_USAGE_URL,
-            headers=usage_headers,
-            timeout=15,
-            trust_env=False,
-            follow_redirects=False,
-        )
-        if response.status_code == 401:
-            if not claude_oauth_refresh_enabled():
-                return {
-                    "key": "claude-code",
-                    "name": "Claude Code",
-                    "plan": f"Claude {subscription}",
-                    "status": "error",
-                    "windows": [],
-                    "detail": (
-                        "Experimental Anthropic /api/oauth/usage rejected the access token. "
-                        "Credential refresh is off unless BURNRATE_CLAUDE_OAUTH_REFRESH=1."
-                    ),
-                    "httpStatus": 401,
-                }
-            token, subscription = _refresh_claude_access_token(credentials_path, force=True)
-            if token:
-                usage_headers["Authorization"] = f"Bearer {token}"
-                response = httpx.get(
-                    CLAUDE_USAGE_URL,
-                    headers=usage_headers,
-                    timeout=15,
-                    trust_env=False,
-                    follow_redirects=False,
-                )
-        response.raise_for_status()
-        usage = response.json()
-    except Exception as exc:
-        return {
-            "key": "claude-code",
-            "name": "Claude Code",
-            "plan": f"Claude {subscription}",
-            "status": "error",
-            "windows": [],
-            "detail": f"Experimental Anthropic /api/oauth/usage lookup failed ({type(exc).__name__}).",
-            **_throttle_fields(exc),
-        }
-    windows = _claude_usage_windows(usage)
-    extra = usage.get("extra_usage") or {}
-    return {
-        "key": "claude-code",
-        "name": "Claude Code",
-        "plan": f"Claude {subscription}",
-        "status": "exact",
-        "observedAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-        "windows": windows,
-        "extraUsage": {
-            "enabled": bool(extra.get("is_enabled")),
-            "monthlyLimit": extra.get("monthly_limit"),
-            "usedCredits": extra.get("used_credits"),
-        },
-        "detail": "Experimental undocumented Anthropic /api/oauth/usage snapshot; polled adaptively (90 s while Claude is in use, 5 min idle).",
-    }
+        return _claude_no_reading(account.key, account.plan), "claude_code_cache"
 
 
 MUSE_IDLE_DETAIL = ("Muse Code reports usage only for a few hours after you use it, and it has not been used "

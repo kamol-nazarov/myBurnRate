@@ -38,7 +38,7 @@ Harness stores are read-only:
 - JSONL / logs / CSV: open for read (`r` / `rb`)
 - No writes to Codex, Claude transcripts, OpenCode, ZCode, Grok logs, Traycer `chat.db`, or Antigravity logs
 
-**Exception:** if `BURNRATE_CLAUDE_OAUTH_REFRESH=1`, the Claude OAuth fallback may atomically replace `%USERPROFILE%\.claude\.credentials.json` when the access token is missing, expired, or the usage endpoint returns 401. The desktop service turns this on at first start together with the Claude switch in setup's **What we found** step; turning that switch off stops it. The CLI leaves it off. Unrelated JSON keys are preserved. A lock plus compare-before-replace tries not to clobber a newer Claude writer. This still rotates the refresh token when Anthropic issues a new one.
+There are no exceptions: BURNRATE never writes another tool's files. It also never reads, reuses or refreshes Claude's sign-in (`%USERPROFILE%\.claude\.credentials.json`). Claude meters come from the plan usage Claude Code and Claude Desktop cache on disk themselves, or from Traycer.
 
 Traycer CLI (`profile-rate-limits`, `agent list`) is a local process spawn, not a file write. BURNRATE captures stdout JSON and does not feed prompts. Side effects inside `traycer.exe` are outside BURNRATE’s control; the spawn is **experimental**.
 
@@ -54,7 +54,6 @@ Opt-in destinations are HTTPS only, host-allowlisted, timed out, and not inferen
 | `ANTHROPIC_ADMIN_KEY` set | `api.anthropic.com` | `x-api-key` |
 | `OPENROUTER_MANAGEMENT_KEY` set | `openrouter.ai` | dedicated management key |
 | Z.AI Coding Plan key found on disk | `api.z.ai` | Coding Plan API key |
-| `BURNRATE_CLAUDE_OAUTH_REFRESH=1` | `platform.claude.com`, `api.anthropic.com` | Claude Code OAuth tokens |
 | Antigravity running (experimental) | `https://127.0.0.1:<port>/` | ephemeral localhost CSRF |
 
 Empty admin keys skip with a named reason, exit 0, and never log the key. Credential-bearing HTTP clients set `trust_env=False` so `HTTP_PROXY` cannot redirect secrets.
@@ -78,9 +77,9 @@ Optional Tailscale Serve is an operator choice and is never enabled by BURNRATE.
 | Never in API JSON | Including `/api/spend/limits` error strings (redacted) |
 | Never in doctor output | Paths may be generic; secrets are not echoed |
 | OpenRouter | Inference key ≠ `OPENROUTER_MANAGEMENT_KEY` |
-| Claude | Desktop history and Traycer quota are preferred; OAuth refresh follows the Claude switch in setup |
+| Claude | Claude Code's cached plan usage, Claude Desktop history and Traycer; Claude's sign-in is never read |
 
-`GET /api/spend/limits` can fire every quota collector, including experimental Claude refresh and Traycer CLI. Keep it off any public reverse proxy.
+`GET /api/spend/limits` can fire every quota collector, including the experimental Traycer CLI. Keep it off any public reverse proxy.
 
 ## How to wipe
 

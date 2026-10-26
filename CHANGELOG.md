@@ -9,6 +9,17 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+### Changed
+
+- BURNRATE no longer reuses Claude's sign-in. It never reads or refreshes
+  `~/.claude/.credentials.json` and never calls Anthropic's plan-usage
+  endpoint; setup's Claude switch is gone. Claude meters come from the plan
+  usage Claude Code caches in `.claude.json` (now kept for up to a week and
+  shown with its age, with a passed reset read as reset), Claude Desktop's
+  history, or Traycer, whichever is newest.
+- Release notes moved to `docs/releases/`.
+- Code and tests no longer name a private hub host or checkout path.
+
 ## [0.4.0-beta.1] - 2026-10-26
 
 - Start the 0.4 line. The code is 0.3.0-beta.19's; the version moves because

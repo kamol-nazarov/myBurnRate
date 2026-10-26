@@ -467,8 +467,7 @@ def test_default_collectors_cover_required_providers_without_invoking(monkeypatc
     }
     # Each extra signed-in Claude Code profile adds exactly its own lane.
     work = claude_accounts.ClaudeAccount(key="claude-code-work", label="Work", config_dir=Path("w"),
-                                         state_path=Path("w/.claude.json"), credentials_path=Path("w/.credentials.json"),
-                                         account_uuid="work-uuid", plan="Claude Max")
+                                         state_path=Path("w/.claude.json"), account_uuid="work-uuid", plan="Claude Max")
     monkeypatch.setattr(claude_accounts, "extra_accounts", lambda: (work,))
     assert set(default_quota_collectors(Path("unused.db"))) - set(REQUIRED_LIMITS) == {"claude-code-work", "opencode-go", "deepseek"}
     # So does each extra OpenCode profile signed in to another Console account.
@@ -937,11 +936,11 @@ def test_claude_desktop_does_not_invent_a_reset_when_it_is_the_only_source(monke
 
 def test_claude_desktop_keeps_a_traycer_reset_for_the_same_window(monkeypatch) -> None:
     limits._CACHE.pop("claude_quota_poll", None)
-    oauth_calls = {"n": 0}
+    cache_calls = {"n": 0}
 
-    def oauth():
-        oauth_calls["n"] += 1
-        raise AssertionError("OAuth should not run when Traycer already has resets")
+    def no_cached_reading():
+        cache_calls["n"] += 1
+        return {"status": "unavailable", "windows": []}
 
     monkeypatch.setattr(
         "spend_app.quotas._claude_desktop_limits_uncached",
@@ -952,18 +951,32 @@ def test_claude_desktop_keeps_a_traycer_reset_for_the_same_window(monkeypatch) -
         "spend_app.quotas._claude_from_traycer_result",
         lambda _data: _claude_with_resets("2026-10-06T01:00:00Z", "2026-10-10T01:00:00Z"),
     )
-    monkeypatch.setattr("spend_app.quotas._claude_limits_uncached", oauth)
+    monkeypatch.setattr("spend_app.quotas._claude_limits_uncached", no_cached_reading)
     samples = {sample.limit_key: sample for sample in _claude_quota_collector()}
     assert samples["5h"].pct == 9
     assert samples["weekly"].pct == 3
     assert samples["5h"].resets_at == "2026-10-06T01:00:00Z"
     assert samples["weekly"].resets_at == "2026-10-10T01:00:00Z"
     assert samples["weekly"].source == "claude_desktop_history"
-    assert oauth_calls["n"] == 0
+    # Read once for the reading itself; Traycer's resets need no second look.
+    assert cache_calls["n"] == 1
     limits._CACHE.pop("claude_quota_poll", None)
 
 
-def test_claude_desktop_keeps_an_oauth_reset_when_traycer_is_missing(monkeypatch) -> None:
+def test_a_newer_claude_code_reading_wins_over_claude_desktop(monkeypatch) -> None:
+    limits._CACHE.pop("claude_quota_poll", None)
+    monkeypatch.setattr("spend_app.quotas._claude_desktop_limits_uncached",
+                        lambda: {**_desktop_claude(9, 3), "observedAt": "2026-10-06T00:00:00Z"})
+    monkeypatch.setattr("spend_app.quotas._claude_limits_uncached", lambda: {
+        **_claude_with_resets("2026-10-06T02:00:00Z", "2026-10-11T02:00:00Z", five_pct=40, weekly_pct=50),
+        "observedAt": "2026-10-06T00:10:00Z"})
+    samples = {sample.limit_key: sample for sample in _claude_quota_collector()}
+    assert (samples["5h"].pct, samples["weekly"].pct) == (40, 50)
+    assert samples["5h"].source == "claude_code_cache"
+    limits._CACHE.pop("claude_quota_poll", None)
+
+
+def test_claude_desktop_keeps_a_cached_reset_when_traycer_is_missing(monkeypatch) -> None:
     limits._CACHE.pop("claude_quota_poll", None)
     monkeypatch.setattr(
         "spend_app.quotas._claude_desktop_limits_uncached",

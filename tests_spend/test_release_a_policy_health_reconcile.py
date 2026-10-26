@@ -21,11 +21,13 @@ from spend_app.source_reconcile import canonical_event_id, reconcile_events
 # ---------------------------------------------------------------------------
 
 def test_native_lanes_denied_by_default_with_actionable_reason():
-    for lane in ("claude_oauth_usage", "zai_quota_endpoint"):
-        allowed, reason = policy.authorize(lane, environ={})
-        assert allowed is False
-        assert reason and "disabled by default" in reason
-        assert "BURNRATE_ENABLE" in reason
+    allowed, reason = policy.authorize("zai_quota_endpoint", environ={})
+    assert allowed is False
+    assert reason and "disabled by default" in reason
+    assert "BURNRATE_ENABLE" in reason
+    # Claude's sign-in is never reused: there is no lane to consent to.
+    assert "claude_oauth_usage" not in policy.LANES
+    assert policy.authorize("claude_oauth_usage", environ={"BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE": "1"})[0] is False
 
 
 def test_native_lanes_activate_only_with_explicit_consent():

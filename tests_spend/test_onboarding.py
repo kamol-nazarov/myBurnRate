@@ -169,11 +169,12 @@ def test_integration_metadata_exposes_booleans_not_values():
             "OPENROUTER_MANAGEMENT_KEY": "another-private-key",
         },
     )
-    assert len(reports) == 6
+    assert len(reports) == 5
     by_setting = {row["setting"]: row for row in reports}
     assert by_setting["OPENAI_ADMIN_KEY"]["configured"] is True
     assert by_setting["OPENAI_ADMIN_KEY"]["host"] == "api.openai.com"
-    assert by_setting["BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE"]["configured"] is True
+    # Claude's sign-in is never reused, so its old consent variable is not an integration.
+    assert "BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE" not in by_setting
     assert by_setting["BURNRATE_ENABLE_ZAI_QUOTA"]["configured"] is False
     assert all(type(row["configured"]) is bool for row in reports)
     assert "private-key" not in json.dumps(reports)

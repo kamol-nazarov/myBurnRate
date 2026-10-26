@@ -350,101 +350,51 @@ def test_codex_limits_omit_windows_without_percent(tmp_path: Path, monkeypatch) 
     assert result["windows"][0]["usedPct"] == 33.5
 
 
-def test_claude_oauth_omits_windows_without_utilization(tmp_path: Path, monkeypatch) -> None:
-    credentials = tmp_path / ".claude" / ".credentials.json"
-    credentials.parent.mkdir(parents=True)
-    credentials.write_text(
-        json.dumps({"claudeAiOauth": {"accessToken": "fixture-token", "subscriptionType": "max"}}),
-        encoding="utf-8",
-    )
-    # Release A A01: the OAuth lane is consent-gated; the fixture opts in to
-    # keep exercising the window parsing invariants.
-    monkeypatch.setenv("BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE", "1")
+def _no_network(monkeypatch) -> None:
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("Claude plan usage must not touch the network")
+
+    monkeypatch.setattr("spend_app.limits.httpx.get", refuse)
+    monkeypatch.setattr("spend_app.limits.httpx.post", refuse)
+
+
+def test_claude_reads_claude_codes_cache_and_omits_windows_without_utilization(tmp_path: Path, monkeypatch) -> None:
+    from datetime import UTC, datetime
+
+    fetched = datetime(2026, 8, 31, 12, 0, tzinfo=UTC)
+    (tmp_path / ".claude.json").write_text(json.dumps({
+        "oauthAccount": {"accountUuid": "account-1", "organizationRateLimitTier": "default_claude_max_20x"},
+        "cachedUsageUtilization": {
+            "fetchedAtMs": int(fetched.timestamp() * 1000), "accountUuid": "account-1",
+            "utilization": {"five_hour": {"resets_at": "2026-08-31T17:00:00Z"},
+                            "seven_day": {"utilization": 41, "resets_at": "2026-09-04T23:59:59Z"}},
+        },
+    }), encoding="utf-8")
     monkeypatch.setattr("spend_app.limits.Path.home", lambda: tmp_path)
-
-    def fake_get(*_args, **_kwargs):
-        request = httpx.Request("GET", "https://api.anthropic.com/api/oauth/usage")
-        return httpx.Response(
-            200,
-            request=request,
-            json={
-                "five_hour": {"resets_at": "2026-08-31T17:00:00Z"},
-                "seven_day": {"utilization": 41, "resets_at": "2026-09-04T23:59:59Z"},
-            },
-        )
-
-    monkeypatch.setattr("spend_app.limits.httpx.get", fake_get)
-    result = _claude_limits_uncached()
-    assert result["status"] == "exact"
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    _no_network(monkeypatch)
+    result = _claude_limits_uncached(now=datetime(2026, 8, 31, 12, 5, tzinfo=UTC))
+    assert result["status"] == "exact" and result["plan"] == "Claude Max"
     assert [window["key"] for window in result["windows"]] == ["weekly"]
     assert result["windows"][0]["usedPct"] == 41
 
 
-def test_claude_oauth_refreshes_expired_access_token_and_preserves_metadata(
-    tmp_path: Path, monkeypatch
-) -> None:
-    monkeypatch.setenv("BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE", "1")
-    monkeypatch.setenv("BURNRATE_CLAUDE_OAUTH_REFRESH", "1")
+def test_claude_never_reads_or_refreshes_its_sign_in(tmp_path: Path, monkeypatch) -> None:
     credentials = tmp_path / ".claude" / ".credentials.json"
     credentials.parent.mkdir(parents=True)
-    credentials.write_text(
-        json.dumps(
-            {
-                "unrelated": {"keep": True},
-                "claudeAiOauth": {
-                    "accessToken": "expired-access",
-                    "refreshToken": "valid-refresh",
-                    "expiresAt": 1,
-                    "refreshTokenExpiresAt": 4_000_000_000_000,
-                    "scopes": ["user:inference", "user:profile"],
-                    "subscriptionType": "max",
-                    "rateLimitTier": "default_claude_max_20x",
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
+    original = json.dumps({"claudeAiOauth": {"accessToken": "expired-access", "refreshToken": "valid-refresh",
+                                             "expiresAt": 1, "subscriptionType": "max"}})
+    credentials.write_text(original, encoding="utf-8")
+    # Even with the old consent variables set, nothing reuses the sign-in.
+    monkeypatch.setenv("BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE", "1")
+    monkeypatch.setenv("BURNRATE_CLAUDE_OAUTH_REFRESH", "1")
     monkeypatch.setattr("spend_app.limits.Path.home", lambda: tmp_path)
-
-    def fake_post(url, **kwargs):
-        assert url == "https://platform.claude.com/v1/oauth/token"
-        assert kwargs["json"]["refresh_token"] == "valid-refresh"
-        request = httpx.Request("POST", url)
-        return httpx.Response(
-            200,
-            request=request,
-            json={
-                "access_token": "fresh-access",
-                "refresh_token": "rotated-refresh",
-                "expires_in": 28_800,
-            },
-        )
-
-    def fake_get(url, **kwargs):
-        assert kwargs["headers"]["Authorization"] == "Bearer fresh-access"
-        request = httpx.Request("GET", url)
-        return httpx.Response(
-            200,
-            request=request,
-            json={
-                "five_hour": {"utilization": 7, "resets_at": "2026-09-02T23:00:00Z"},
-                "seven_day": {"utilization": 42, "resets_at": "2026-09-09T20:00:00Z"},
-            },
-        )
-
-    monkeypatch.setattr("spend_app.limits.httpx.post", fake_post)
-    monkeypatch.setattr("spend_app.limits.httpx.get", fake_get)
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    _no_network(monkeypatch)
     result = _claude_limits_uncached()
-    saved = json.loads(credentials.read_text(encoding="utf-8"))
-
-    assert result["status"] == "exact"
-    assert [window["usedPct"] for window in result["windows"]] == [7, 42]
-    assert saved["unrelated"] == {"keep": True}
-    assert saved["claudeAiOauth"]["accessToken"] == "fresh-access"
-    assert saved["claudeAiOauth"]["refreshToken"] == "rotated-refresh"
-    assert saved["claudeAiOauth"]["scopes"] == ["user:inference", "user:profile"]
-    assert saved["claudeAiOauth"]["rateLimitTier"] == "default_claude_max_20x"
-    assert saved["claudeAiOauth"]["expiresAt"] > 1
+    assert result["status"] == "unavailable" and result["windows"] == []
+    assert "Claude Code" in result["detail"]
+    assert credentials.read_text(encoding="utf-8") == original
 
 
 def test_zai_limits_do_not_invent_zero_percent(tmp_path: Path, monkeypatch) -> None:

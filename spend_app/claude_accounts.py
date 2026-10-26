@@ -38,7 +38,6 @@ class ClaudeAccount:
     label: str
     config_dir: Path
     state_path: Path
-    credentials_path: Path
     account_uuid: str
     plan: str | None
 
@@ -136,7 +135,7 @@ def discover(home: Path | None = None, environ=None) -> tuple[ClaudeAccount, ...
         seen_uuids.add(uuid)
         seen_keys.add(key)
         accounts.append(ClaudeAccount(key=key, label=label_for(slug), config_dir=directory, state_path=state_path,
-                                      credentials_path=directory / ".credentials.json", account_uuid=uuid,
+                                      account_uuid=uuid,
                                       plan=plan_name(state)))
     return tuple(accounts)
 

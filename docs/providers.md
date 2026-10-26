@@ -83,7 +83,7 @@ BURNRATE is not affiliated with these vendors. Interfaces change; experimental l
 
 **Requesty is not connected** and is not a rate authority. Direct xAI API usage is not ingested.
 
-Claude OAuth credential refresh (`BURNRATE_CLAUDE_OAUTH_REFRESH=1`) is on by default in the desktop service and follows the Claude switch in setup; the CLI leaves it off. All other local readers are read-only.
+Every local reader is read-only. BURNRATE never reads, reuses or refreshes Claude's sign-in.
 
 Paths below use Windows conventions. `%USERPROFILE%` is `~`. `%APPDATA%` is typically `%USERPROFILE%\AppData\Roaming`. `%LOCALAPPDATA%` is typically `%USERPROFILE%\AppData\Local`.
 
@@ -107,7 +107,7 @@ Paths below use Windows conventions. `%USERPROFILE%` is `~`. `%APPDATA%` is typi
 | Claude Code usage | `%USERPROFILE%\.claude\projects\**\*.jsonl` | none | none | Official local Claude Code transcripts | `usage_events` `source=claude_local` `tool_key=claude-code`; `sessions` | Tokens exact (incl. 5m/1h cache writes); spend exact | Read-only. Full JSONL lines are parsed; **prompts are not persisted**. |
 | Claude quota (Desktop) | `%APPDATA%\Claude\plan-usage-history.json` or `%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\plan-usage-history.json` | none | none | Observed Claude Desktop cache (compact % only) | `quotas` `source=claude_desktop_history` 5h + weekly unit `pct` | Exact % if sample ≤45 min old; **resets unavailable** (not invented) | Read-only |
 | Claude quota (Traycer) | Traycer `chat.db` + `%USERPROFILE%\.traycer\cli\bin\traycer.exe` | none (local process) | Traycer epic/agent env from newest chat | **Experimental** `traycer.exe agent profile-rate-limits claude --profile ambient` | `quotas` `source=traycer_profile` | Exact % + reset if CLI returns `available` | Spawns CLI (`CREATE_NO_WINDOW`, 20 s, 15 min breaker). No Traycer file writes. |
-| Claude quota (OAuth) | `%USERPROFILE%\.claude\.credentials.json` | `platform.claude.com` (refresh); `api.anthropic.com` (`/api/oauth/usage`) | Claude Code OAuth access + refresh | **Experimental / undocumented.** **Off unless** `BURNRATE_CLAUDE_OAUTH_REFRESH=1` | `quotas` `source=claude_oauth_usage` | Exact utilization + `resets_at` | **Writes provider credentials** on refresh (atomic replace) |
+| Claude quota (Claude Code cache) | `%USERPROFILE%\.claude.json` (or `<CLAUDE_CONFIG_DIR>\.claude.json`) `cachedUsageUtilization` | none | none | **Experimental / undocumented.** The plan usage Claude Code last fetched for its signed-in account | `quotas` `source=claude_code_cache` | Exact utilization + `resets_at` as of Claude Code's fetch (shown with its age; a passed reset reads as reset; dropped after 7 days) | Read-only |
 | Claude live | tail of project JSONL (~1 MiB) | none | none | Inferred from event envelopes | `agent_runs` `id=claude:<session>` | Live only while last assistant event is non-terminal. Idle editor is not live. Message text is not stored. | Read-only |
 | OpenCode usage | `%USERPROFILE%\.local\share\opencode\opencode.db` | none | none | Observed local session aggregates | `usage_events` `source=opencode_local` `tool_key=opencode`; skips `providerID=traycer-openrouter` | **Session-level** tokens (not per-turn); spend derived | SQLite `mode=ro` |
 | Z.AI quota (OpenCode + ZCode) | OpenCode `auth.json` `zai-coding-plan.key`, else ZCode `%USERPROFILE%\.zcode\v2\config.json` | `api.z.ai` `GET /api/monitor/usage/quota/limit` | Coding Plan API key (`Authorization` header, no `Bearer` prefix) | Documented as official Z.AI Coding Plan quota | `quotas` `provider_key=opencode` 5h + weekly unit `credits` `source=zai_quota_endpoint` | Exact used/limit/%/reset. One card for both harnesses. | Key not persisted. Files read-only. |
@@ -149,8 +149,7 @@ HTTPS timeouts are 15–30 seconds depending on the client. Credential-bearing `
 | Host | Paths | Who |
 | --- | --- | --- |
 | `https://api.openai.com` | `/v1/organization/usage/completions`, `/v1/organization/costs` | OpenAI admin |
-| `https://api.anthropic.com` | `/v1/organizations/usage_report/messages`, `/v1/organizations/cost_report`; experimental `/api/oauth/usage` | Anthropic admin; Claude OAuth |
-| `https://platform.claude.com` | `/v1/oauth/token` | Claude OAuth refresh (Claude switch in setup) |
+| `https://api.anthropic.com` | `/v1/organizations/usage_report/messages`, `/v1/organizations/cost_report` | Anthropic admin |
 | `https://openrouter.ai` | `/api/v1/credits` | OpenRouter management key |
 | `https://api.z.ai` | `/api/monitor/usage/quota/limit` | Z.AI Coding Plan |
 | `https://127.0.0.1:<port>` | `/exa.language_server_pb.LanguageServerService/{GetAllCascadeTrajectories,GetCascadeTrajectory,RetrieveUserQuotaSummary}` | Antigravity **experimental** |
@@ -197,11 +196,11 @@ bindings suppress quota, including old persisted readings, without falling back
 to another profile. Local quota permission for managed bindings is not offered
 in this version. Missing telemetry does not require a paid turn to finish setup.
 
-### Claude Code — supported local (OAuth quota experimental)
+### Claude Code — supported local (quota experimental)
 
-Three quota collectors, in order: Desktop history, Traycer ambient profile, OAuth usage (setup's Claude switch; on by default in the desktop service).
+Quota comes from what is already on disk, with no network call and no sign-in. The newer of Claude Code's cached plan usage and Claude Desktop's history wins. Without either, Traycer's ambient profile is asked. Desktop history has no resets, so it borrows them from Traycer or the cache.
 
-OAuth is the only path that can mutate a provider file. Refresh uses `POST https://platform.claude.com/v1/oauth/token` with `grant_type=refresh_token`, then `os.replace` of a temp file next to `.credentials.json`. The refresh client presents as Claude Code’s public OAuth client (not a BURNRATE-issued client id). It refreshes only when `BURNRATE_CLAUDE_OAUTH_REFRESH=1`: the desktop service sets that at first start, setup's Claude switch turns it off, and the CLI leaves it unset.
+BURNRATE never reads `.credentials.json`, never calls Anthropic's plan-usage endpoint, and never refreshes Claude's tokens. With no cached reading yet, the card says to use Claude Code once.
 
 Live-session rule: a trailing `user` event without a terminal `assistant` `stop_reason` in `{end_turn, stop_sequence, max_tokens, refusal}`. An open editor with no in-flight turn does not qualify.
 

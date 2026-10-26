@@ -2,7 +2,7 @@
 
 Each row says whether the tool's usage is being read and whether its plan
 meter has a current reading, and what to do when it does not. The module also
-owns the three switches for meters that reuse another app's sign-in, the plan
+owns the two switches for meters that reuse another app's sign-in, the plan
 suggestions taken from what the meters already report, and the per-source
 progress of the first collection. Everything here reads local state; only
 ``write_consent`` changes anything (the per-user ``.env`` and the process
@@ -22,14 +22,6 @@ from spend_app.db import connect
 # a new install (see config.load_user_env); the wizard shows them so the
 # choice is visible and can be turned off.
 CONSENT_SWITCHES = (
-    {
-        "key": "claude",
-        "env": ("BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE", "BURNRATE_CLAUDE_OAUTH_REFRESH"),
-        "label": "Read Claude's plan usage with Claude Code's sign-in",
-        "detail": "When Claude Code has no fresh reading of its own, BURNRATE asks Anthropic for your plan usage "
-                  "with Claude Code's credentials, and renews them when they expire.",
-        "lanes": ("claude-code", "claude-code-*"),
-    },
     {
         "key": "zai",
         "env": ("BURNRATE_ENABLE_ZAI_QUOTA",),

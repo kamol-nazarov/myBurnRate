@@ -278,8 +278,8 @@ Official vs experimental is about the *interface BURNRATE uses*, not about wheth
 | Traycer per-CLI usage | `app-assets.db` `usage_analytics_facts` (older hosts: `chat.db`) | **experimental**, on by default | yes | none | per-CLI tokens; provider-reported cost only when Traycer marks it as such |
 | OpenAI admin usage/cost | official Usage + Costs APIs | opt-in official | none | `api.openai.com` if `OPENAI_ADMIN_KEY` is set | exact |
 | Anthropic admin usage/cost | official org usage/cost | opt-in official | none | `api.anthropic.com` if `ANTHROPIC_ADMIN_KEY` is set | exact |
-| Claude OAuth usage | undocumented `/api/oauth/usage` | **experimental**, on by default in the desktop service (setup switch) | `~/.claude/.credentials.json` | Anthropic + Claude platform | quota only; `BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE` |
-| Additional Claude accounts | each profile's cached plan usage, else its `/api/oauth/usage` | **experimental**, on when a second profile is signed in | `~/.claude-<name>/.claude.json` (and `.credentials.json` for the fallback) | none while the profile is in use; Anthropic + Claude platform when idle, under the same Claude switch | quota only, one lane per account |
+| Claude plan usage | the plan usage Claude Code caches in `~/.claude.json`, Claude Desktop's usage history, or Traycer | **experimental**, on by default | yes | none — Claude's sign-in is never read or reused | quota only |
+| Additional Claude accounts | each profile's cached plan usage | **experimental**, on when a second profile is signed in | `~/.claude-<name>/.claude.json` | none | quota only, one lane per account |
 | Additional OpenCode profiles | each profile's Console key + `opencode.ai/zen/go/v1/usage` | **experimental**, on when a second profile is signed in to another account | `~/.opencode-<name>/opencode/opencode.db` (read-only) | HTTPS to `opencode.ai`, under the OpenCode Go switch | quota plus the profile's own session tokens |
 | DeepSeek balance | official `/user/balance` | opt-in official | none | `api.deepseek.com` only with a key connected for it | account balance only |
 | Requesty | — | **not connected** | none | none | not a rate authority |
@@ -292,7 +292,7 @@ Claude Code keeps one signed-in account per config directory. Run a second accou
 
 - Profiles are found automatically in `~/.claude-*`. Put other directories in `BURNRATE_CLAUDE_ACCOUNT_DIRS` (separated by `;` on Windows).
 - A profile signed in to the same account as the default lane is ignored, so nothing is shown twice.
-- While a profile is in use, its lane reads the plan usage Claude Code itself cached, which needs no network call. When that cache is more than 20 minutes old, the lane asks Anthropic's usage endpoint with that profile's own credentials, on the same throttled cadence as the default Claude lane.
+- Each lane reads the plan usage Claude Code itself cached for that profile, which needs no network call and no sign-in. An idle profile shows its last reading with its age, and a window whose reset has passed reads as reset.
 - Lanes are named after the directory. The account's email address is never shown.
 
 ### More than one OpenCode profile
@@ -320,7 +320,7 @@ Default: **no provider network calls** until you enable an admin key or an exper
 
 SQLite stores usage metadata: timestamps, model and provider keys, opaque ids, numeric token classes, priced/unpriced flags, and quota numbers. It does not store prompts, responses, tool arguments, file contents, env vars, or credentials.
 
-Local harness databases are opened `mode=ro` with `PRAGMA query_only=ON`. JSONL and logs are opened for read. The only provider-file write in the product is Claude OAuth token refresh, and that path is **off unless** `BURNRATE_CLAUDE_OAUTH_REFRESH=1`.
+Local harness databases are opened `mode=ro` with `PRAGMA query_only=ON`. JSONL and logs are opened for read. BURNRATE never writes another tool's files, and never reads or reuses Claude's sign-in.
 
 Credentials are held in memory, sent only to the matching allowlisted host, never logged, never returned by the API, and never copied into SQLite. OpenRouter inference keys are not reused; balance polling requires `OPENROUTER_MANAGEMENT_KEY`.
 
@@ -357,8 +357,6 @@ Optional keys in `.env` (all empty by default — copy `.env.example` to `.env` 
 | `OPENAI_ADMIN_KEY` | OpenAI organization usage + cost |
 | `ANTHROPIC_ADMIN_KEY` | Anthropic organization usage + cost |
 | `OPENROUTER_MANAGEMENT_KEY` | OpenRouter credits (dedicated; not the inference key) |
-| `BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE` | Claude OAuth usage reads with Claude Code's credentials. On by default in the desktop service, which sets it to `1` on first start; setup's **What we found** step shows it as a switch that writes `1`/`0` to the per-user `.env`. Unset (off) for the CLI |
-| `BURNRATE_CLAUDE_OAUTH_REFRESH` | Lets those reads renew Claude Code's expired token. Follows the Claude switch in setup |
 | `BURNRATE_ENABLE_ZAI_QUOTA` | Z.AI credit reads using a stored Coding Plan key. On by default in the desktop service, which sets it to `1` on first start; setup's **What we found** step shows it as a switch that writes `1`/`0` to the per-user `.env`. Unset (off) for the CLI |
 | `BURNRATE_ENABLE_OPENCODE_GO_QUOTA` | OpenCode Go usage reads using OpenCode's stored Console key. On by default in the desktop service, which sets it to `1` on first start; setup's **What we found** step shows it as a switch that writes `1`/`0` to the per-user `.env`. Unset (off) for the CLI |
 | `DEEPSEEK_BALANCE_KEY` | DeepSeek key for the balance card (prefer connecting it in setup's **Plans & balances**) |

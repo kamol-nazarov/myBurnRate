@@ -52,7 +52,7 @@ def test_discovers_signed_in_profiles_other_than_the_default_account(tmp_path: P
     (home / ".claude-notes.txt").write_text("not a profile", encoding="utf-8")
     accounts = discover(home=home, environ={})
     assert [(a.key, a.label, a.plan) for a in accounts] == [("claude-code-work", "Work", "Claude Max")]
-    assert accounts[0].credentials_path == home / ".claude-work" / ".credentials.json"
+    assert accounts[0].state_path == home / ".claude-work" / ".claude.json"
 
 
 def test_extra_directories_can_be_named_explicitly(tmp_path: Path) -> None:
@@ -70,7 +70,7 @@ def test_card_metadata_never_exposes_the_account_email(tmp_path: Path, monkeypat
     assert provider_meta("claude-code") is None and provider_meta("codex") is None
 
 
-def test_cached_usage_is_read_only_while_fresh_and_owned_by_the_account(tmp_path: Path) -> None:
+def test_cached_usage_is_read_while_it_belongs_to_the_account(tmp_path: Path) -> None:
     from spend_app.limits import claude_cached_usage
 
     path = _state(tmp_path / ".claude-work", "work-uuid", usage=USAGE, fetched=NOW - timedelta(minutes=3))
@@ -78,27 +78,42 @@ def test_cached_usage_is_read_only_while_fresh_and_owned_by_the_account(tmp_path
     assert payload["status"] == "exact" and payload["key"] == "claude-code-work"
     assert [(w["key"], w["usedPct"], w["resetAt"]) for w in payload["windows"]] == [
         ("5h", 12.0, "2026-10-19T15:00:00+00:00"), ("weekly", 40.0, "2026-10-23T08:00:00+00:00")]
+    # An idle profile's older reading is still its latest one.
+    later = claude_cached_usage(path, key="claude-code-work", now=NOW + timedelta(hours=1))
+    assert later["observedAt"] == payload["observedAt"] and later["windows"][0]["usedPct"] == 12.0
     with pytest.raises(RuntimeError, match="stale"):
-        claude_cached_usage(path, key="claude-code-work", now=NOW + timedelta(hours=1))
+        claude_cached_usage(path, key="claude-code-work", now=NOW + timedelta(days=8))
     other = _state(tmp_path / ".claude-other", "work-uuid", usage=USAGE, cached_uuid="someone-else")
     with pytest.raises(RuntimeError, match="different account"):
         claude_cached_usage(other, key="claude-code-other", now=NOW)
 
 
-def test_idle_profile_falls_back_to_its_own_credentials(tmp_path: Path, monkeypatch) -> None:
+def test_a_window_whose_reset_has_passed_reads_as_reset(tmp_path: Path) -> None:
+    from spend_app.limits import claude_cached_usage
+
+    path = _state(tmp_path / ".claude-work", "work-uuid", usage=USAGE, fetched=NOW)
+    windows = {w["key"]: w for w in claude_cached_usage(path, key="claude-code-work", now=NOW + timedelta(days=5))["windows"]}
+    # The 5-hour window starts with the next message, so it has no reset yet.
+    assert (windows["5h"]["usedPct"], windows["5h"]["remainingPct"], windows["5h"]["resetAt"]) == (0.0, 100.0, None)
+    # The weekly window keeps its cadence.
+    assert (windows["weekly"]["usedPct"], windows["weekly"]["resetAt"]) == (0.0, "2026-10-30T08:00:00Z")
+
+
+def test_a_profile_without_a_cached_reading_has_no_meter_and_no_credential_read(tmp_path: Path, monkeypatch) -> None:
     from spend_app import limits
 
-    path = _state(tmp_path / ".claude-work", "work-uuid", usage=USAGE, fetched=NOW - timedelta(hours=2))
+    path = _state(tmp_path / ".claude-work", "work-uuid")
+    (path.parent / ".credentials.json").write_text('{"claudeAiOauth": {"accessToken": "secret"}}', encoding="utf-8")
     account = ClaudeAccount(key="claude-code-work", label="Work", config_dir=path.parent, state_path=path,
-                            credentials_path=path.parent / ".credentials.json", account_uuid="work-uuid", plan="Claude Max")
-    asked = []
-    monkeypatch.setattr(limits, "_claude_limits_uncached",
-                        lambda credentials_path=None, *, key="claude-code": asked.append((credentials_path, key)) or
-                        {"key": key, "status": "exact", "windows": [{"key": "5h", "usedPct": 5}]})
+                            account_uuid="work-uuid", plan="Claude Max")
+    real_read_text = Path.read_text
+    opened = []
+    monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: opened.append(self.name) or real_read_text(self, *a, **k))
     payload, source = limits.claude_account_limits(account, now=NOW)
-    assert source == "claude_oauth_usage"
-    assert asked == [(account.credentials_path, "claude-code-work")]
-    assert payload["key"] == "claude-code-work"
+    assert source == "claude_code_cache"
+    assert payload["status"] == "unavailable" and payload["windows"] == []
+    assert payload["detail"] == limits.CLAUDE_NO_READING_DETAIL
+    assert ".credentials.json" not in opened
 
 
 def test_account_lane_is_polled_stored_and_shown_as_its_own_card(tmp_path: Path, monkeypatch) -> None:
@@ -106,9 +121,12 @@ def test_account_lane_is_polled_stored_and_shown_as_its_own_card(tmp_path: Path,
     from spend_app.db import connect, initialize
     from spend_app.quotas import QuotaLaneScheduler, _claude_account_collector, poll_quotas
 
-    path = _state(tmp_path / ".claude-work", "work-uuid", usage=USAGE, fetched=datetime.now(UTC))
+    current = datetime.now(UTC)
+    usage = {"five_hour": {"utilization": 12, "resets_at": _iso(current + timedelta(hours=3))},
+             "seven_day": {"utilization": 40, "resets_at": _iso(current + timedelta(days=4))}}
+    path = _state(tmp_path / ".claude-work", "work-uuid", usage=usage, fetched=current)
     account = ClaudeAccount(key="claude-code-work", label="Work", config_dir=path.parent, state_path=path,
-                            credentials_path=path.parent / ".credentials.json", account_uuid="work-uuid", plan="Claude Max")
+                            account_uuid="work-uuid", plan="Claude Max")
     monkeypatch.setattr(claude_accounts, "extra_accounts", lambda: (account,))
     database = tmp_path / "spend.db"
     initialize(database)
