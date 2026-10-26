@@ -186,6 +186,8 @@ HUD_HTML = r"""<!doctype html>
         cursor: pointer;
       }
       .hud-update[hidden] { display: none; }
+      .hud-notice { margin: 0 0 8px; color: var(--secondary); font: 600 11px/1.3 var(--fd); letter-spacing: 0.04em; }
+      .hud-notice[hidden] { display: none; }
       .hud-update:disabled { cursor: default; opacity: 0.7; }
       @keyframes hudPing {
         0% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 55%, transparent); }
@@ -341,7 +343,7 @@ HUD_HTML = r"""<!doctype html>
       html.is-mini .page { padding: 6px 10px 8px; }
       html.is-mini .brand, html.is-mini .date-row, html.is-mini .hero, html.is-mini .stats,
       html.is-mini #hud-machines, html.is-mini .live-list, html.is-mini .plans-head, html.is-mini .foot,
-      html.is-mini #hud-theme-btn, html.is-mini #hud-setup-btn, html.is-mini #hud-expand-btn { display: none !important; }
+      html.is-mini #hud-theme-btn, html.is-mini #hud-setup-btn, html.is-mini #hud-share-btn, html.is-mini #hud-expand-btn { display: none !important; }
       html.is-mini .mini-head { display: flex !important; align-items: baseline; gap: 7px; min-width: 0; }
       .mini-head strong { font: 400 21px/1 var(--fd); letter-spacing: -0.01em; }
       .mini-head span { color: var(--dim); font-size: 10.5px; white-space: nowrap; }
@@ -442,6 +444,9 @@ HUD_HTML = r"""<!doctype html>
           <button type="button" class="hud-btn" id="hud-theme-btn" aria-label="Switch theme" aria-pressed="false" data-tip>
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none"/></svg>
           </button>
+          <button type="button" class="hud-btn" id="hud-share-btn" aria-label="Copy this week's card" data-tip>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V3M7 8l5-5 5 5M5 13v7h14v-7"/></svg>
+          </button>
           <button type="button" class="hud-btn" id="hud-setup-btn" aria-label="Setup and connections" data-tip>
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.2 2.2M16.2 16.2l2.2 2.2M5.6 18.4l2.2-2.2M16.2 7.8l2.2-2.2"/></svg>
           </button>
@@ -462,6 +467,7 @@ HUD_HTML = r"""<!doctype html>
         <span class="hud-status-pill" id="hud-status-pill" data-state="live"><i></i><span id="hud-status-text">LIVE</span></span>
       </p>
       <button type="button" class="hud-update" id="hud-update" hidden></button>
+      <p class="hud-notice" id="hud-notice" role="status" hidden></p>
 
       <section class="hero" id="hud-stat-today" aria-label="API-rate spend today">
         <strong id="hud-today">—</strong>
@@ -796,6 +802,8 @@ HUD_HTML = r"""<!doctype html>
         labelTip($("hud-theme-btn"), () => root.dataset.theme === "dark" ? "Light theme" : "Dark theme");
         labelTip($("hud-expand-btn"), "Open dashboard");
         labelTip($("hud-setup-btn"), "Setup & connections");
+        labelTip($("hud-share-btn"), "Copy this week's card to share");
+        $("hud-share-btn").addEventListener("click", () => shareWeek());
         // Setup is reachable from the HUD even with the dashboard off: the
         // desktop app opens it in its main window, a browser in a new tab.
         $("hud-setup-btn").addEventListener("click", async () => {
@@ -1622,6 +1630,148 @@ HUD_HTML = r"""<!doctype html>
           if (data.windowTokens && typeof data.windowTokens === "object") windowTokens = data.windowTokens;
           renderRepos(data.repos);
           refreshTip();
+        }
+
+        let noticeTimer = 0;
+        function notice(text) {
+          const line = $("hud-notice");
+          line.textContent = text;
+          line.hidden = false;
+          clearTimeout(noticeTimer);
+          noticeTimer = setTimeout(() => { line.hidden = true; }, 4000);
+        }
+
+        // The weekly card: a 1200 x 630 image of the last seven days, copied
+        // to the clipboard. Totals and tool names only, never repositories.
+        const CARD_GAUGE = ["M19.9 42L13 46M18 35H10M19.9 28L13 24M25 22.9L21 16M32 21V13M39 22.9L43 16",
+                            "M44.1 28L51 24M46 35H54M44.1 42L51 46", "M32 35L44.5 22.5"];
+        function drawWeekCard(week) {
+          const canvas = document.createElement("canvas");
+          canvas.width = 1200;
+          canvas.height = 630;
+          const ctx = canvas.getContext("2d");
+          const display = "Bahnschrift, 'DIN Alternate', 'Segoe UI', system-ui, sans-serif";
+          const body = "'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, sans-serif";
+          const ink = "#f2f0eb", muted = "#9a968f", ember = "#ff6b22", line = "rgba(255,255,255,0.12)";
+          ctx.fillStyle = "#0a0a0c";
+          ctx.fillRect(0, 0, 1200, 630);
+          ctx.fillStyle = "#121215";
+          ctx.fillRect(40, 40, 1120, 550);
+          ctx.strokeStyle = line;
+          ctx.strokeRect(40.5, 40.5, 1119, 549);
+          // Gauge mark and wordmark.
+          ctx.save();
+          ctx.translate(80, 76);
+          ctx.scale(0.75, 0.75);
+          ctx.lineCap = "round";
+          ctx.lineWidth = 4.2;
+          ctx.strokeStyle = ink;
+          ctx.stroke(new Path2D(CARD_GAUGE[0]));
+          ctx.strokeStyle = ember;
+          ctx.stroke(new Path2D(CARD_GAUGE[1]));
+          ctx.lineWidth = 3;
+          ctx.stroke(new Path2D(CARD_GAUGE[2]));
+          ctx.fillStyle = ink;
+          ctx.beginPath();
+          ctx.arc(32, 35, 4.4, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+          ctx.fillStyle = ink;
+          ctx.font = "600 22px " + display;
+          if ("letterSpacing" in ctx) ctx.letterSpacing = "5px";
+          ctx.fillText("BURNRATE", 140, 113);
+          if ("letterSpacing" in ctx) ctx.letterSpacing = "0px";
+          const from = new Date(week.from), to = new Date(week.to);
+          const range = from.toLocaleDateString("en-US", {month: "short", day: "numeric"}) + " – " +
+            to.toLocaleDateString("en-US", {month: "short", day: "numeric", year: "numeric"});
+          ctx.fillStyle = muted;
+          ctx.font = "20px " + body;
+          ctx.textAlign = "right";
+          ctx.fillText("Last 7 days · " + range, 1120, 110);
+          ctx.textAlign = "left";
+          // Headline: the week's value at API rates.
+          ctx.fillStyle = ink;
+          ctx.font = "400 120px " + display;
+          ctx.fillText(usd(week.usd), 80, 270);
+          ctx.fillStyle = muted;
+          ctx.font = "26px " + body;
+          ctx.fillText("of AI coding at published API rates", 84, 316);
+          if (week.planUsd) {
+            ctx.fillStyle = ember;
+            ctx.font = "600 26px " + body;
+            const times = week.usd / week.planUsd;
+            ctx.fillText("on " + usd(week.planUsd) + " of plans" + (times >= 1.5 ? " · " + times.toFixed(1) + "× the plan cost" : ""), 84, 356);
+          }
+          // Stats row.
+          const stats = [["Tokens", tok(week.tokens)], ["Cache hit", week.cacheReusePct == null ? "—" : Math.round(week.cacheReusePct) + "%"],
+                         ["Sessions", String(week.sessions || 0)]];
+          stats.forEach(([label, value], index) => {
+            const x = 84 + index * 190;
+            ctx.fillStyle = muted;
+            ctx.font = "600 15px " + display;
+            if ("letterSpacing" in ctx) ctx.letterSpacing = "2px";
+            ctx.fillText(label.toUpperCase(), x, 446);
+            if ("letterSpacing" in ctx) ctx.letterSpacing = "0px";
+            ctx.fillStyle = ink;
+            ctx.font = "400 44px " + display;
+            ctx.fillText(value, x, 496);
+          });
+          // Top tools with share bars.
+          const tools = (week.tools || []).slice(0, 4);
+          const top = Math.max(...tools.map(tool => tool.usd), 0);
+          ctx.fillStyle = muted;
+          ctx.font = "600 15px " + display;
+          if ("letterSpacing" in ctx) ctx.letterSpacing = "2px";
+          ctx.fillText("TOP TOOLS", 760, 196);
+          if ("letterSpacing" in ctx) ctx.letterSpacing = "0px";
+          tools.forEach((tool, index) => {
+            const y = 240 + index * 70;
+            ctx.fillStyle = ink;
+            ctx.font = "600 22px " + body;
+            ctx.fillText(tool.name, 760, y);
+            ctx.fillStyle = muted;
+            ctx.font = "20px " + body;
+            ctx.textAlign = "right";
+            ctx.fillText(usd(tool.usd), 1120, y);
+            ctx.textAlign = "left";
+            ctx.fillStyle = "rgba(255,255,255,0.08)";
+            ctx.fillRect(760, y + 14, 360, 6);
+            ctx.fillStyle = ember;
+            ctx.fillRect(760, y + 14, top ? Math.max(4, 360 * tool.usd / top) : 0, 6);
+          });
+          // Footer.
+          ctx.strokeStyle = line;
+          ctx.beginPath();
+          ctx.moveTo(80, 540.5);
+          ctx.lineTo(1120, 540.5);
+          ctx.stroke();
+          ctx.fillStyle = muted;
+          ctx.font = "18px " + body;
+          ctx.fillText("Measured locally with BURNRATE · nothing left my computer", 80, 572);
+          ctx.textAlign = "right";
+          ctx.fillText("github.com/kamol-nazarov/myBurnRate", 1120, 572);
+          ctx.textAlign = "left";
+          return canvas;
+        }
+
+        async function shareWeek() {
+          let week;
+          try {
+            const res = await hudFetch("/api/spend/share/week?machine=" + encodeURIComponent(selectedMachine || "all"));
+            if (!res.ok) throw new Error(String(res.status));
+            week = await res.json();
+          } catch {
+            notice("This week's card could not be made");
+            return;
+          }
+          const blob = await new Promise(resolve => drawWeekCard(week).toBlob(resolve, "image/png"));
+          try {
+            await navigator.clipboard.write([new ClipboardItem({"image/png": blob})]);
+            notice("This week's card is on the clipboard · paste it anywhere");
+          } catch {
+            window.open(URL.createObjectURL(blob), "_blank");
+            notice("This week's card opened in a new window");
+          }
         }
 
         // Today's value by repository; an older hub sends none and the section stays hidden.

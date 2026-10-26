@@ -435,6 +435,16 @@ def create_app(
         return recorded_usage(settings, pricing, now=current_now(),
                               machine=local_usage_machine(settings, machine))
 
+    @app.get("/api/spend/share/week")
+    def spend_share_week(machine: str = Query(default="all")) -> dict:
+        from spend_app.hud_data import local_usage_machine, week_card
+        from spend_app.sync import fetch_from_configured_hub
+
+        hub = fetch_from_configured_hub(settings, "/api/spend/share/week", {"machine": machine})
+        if hub is not None and "usd" in hub:
+            return hub
+        return week_card(settings, pricing, now=current_now(), machine=local_usage_machine(settings, machine))
+
     @app.get("/api/onboarding")
     def onboarding():
         from spend_app.diagnostics import integration_reports, HELP_URL

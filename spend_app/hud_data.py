@@ -202,6 +202,35 @@ def recorded_usage(settings, pricing, *, now: datetime, machine: str = "all") ->
             "repos": repos}
 
 
+def week_card(settings, pricing, *, now: datetime, machine: str = "all") -> dict:
+    """The last seven days, for the shareable card: value, plans, tokens and top tools.
+
+    Totals and tool names only; repository names stay off a card meant for sharing.
+    """
+    start = now - timedelta(days=7)
+    with connect(settings.database_path) as connection:
+        parts = aggregate._tracked_value(connection, pricing, start, now, "all", settings.timezone, machine=machine)
+        events = aggregate._load_events(connection, start, now, "all", machine)
+    mix = aggregate.TokenMix()
+    for event in events:
+        mix.add_event(event)
+    by_tool: dict[str, Decimal] = defaultdict(Decimal)
+    for event in aggregate._enrich(events, pricing):
+        if event.get("spend") is not None:
+            by_tool[event["tool_key"]] += event["spend"]
+    total = sum(by_tool.values(), Decimal(0))
+    tools = sorted(by_tool.items(), key=lambda item: item[1], reverse=True)[:4]
+    return {
+        "from": aggregate._iso(start), "to": aggregate._iso(now), "days": 7,
+        "usd": float(parts.usage_value) if parts.records else 0.0,
+        "planUsd": float(parts.subscriptions) if parts.subscriptions else None,
+        "tokens": int(parts.tokens), "sessions": parts.sessions,
+        "cacheReusePct": aggregate._cache_reuse(mix),
+        "tools": [{"name": aggregate.tool_name(key), "usd": float(value),
+                   "sharePct": float(value / total * 100) if total else None} for key, value in tools if value > 0],
+    }
+
+
 REPO_TOKEN_FIELDS = ("input_tokens", "cached_input_tokens", "cache_write_tokens", "cache_write_1h_tokens", "output_tokens")
 
 
