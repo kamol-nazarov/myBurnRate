@@ -2,7 +2,7 @@
 
 **Private, local-first AI coding-agent spend, quota & multi-computer telemetry application.**
 
-Version: `0.3.0-beta.18` · Current release notes: [RELEASE-0.3.0-beta.18.md](RELEASE-0.3.0-beta.18.md) · [Changelog](CHANGELOG.md)
+Version: `0.3.0-beta.19` · Current release notes: [RELEASE-0.3.0-beta.19.md](RELEASE-0.3.0-beta.19.md) · [Changelog](CHANGELOG.md)
 
 ---
 

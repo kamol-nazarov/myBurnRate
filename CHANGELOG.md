@@ -9,6 +9,8 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+## [0.3.0-beta.19] - 2026-10-26
+
 - Give each extra OpenCode profile (`~/.opencode-<name>`, or a directory in
   `BURNRATE_OPENCODE_PROFILE_DIRS`) its own OpenCode Go quota lane, such as
   **OpenCode Go · Profile 2**, read with that profile's own Console key. A
