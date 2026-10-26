@@ -2,7 +2,7 @@
 
 **Private, local-first AI coding-agent spend, quota & multi-computer telemetry application.**
 
-Version: `0.4.0-beta.1` · Current release notes: [RELEASE-0.4.0-beta.1.md](RELEASE-0.4.0-beta.1.md) · [Changelog](CHANGELOG.md)
+Version: `0.4.0-beta.1` · Current release notes: [0.4.0-beta.1](docs/releases/RELEASE-0.4.0-beta.1.md) · [Changelog](CHANGELOG.md)
 
 ---
 
@@ -233,7 +233,7 @@ A fresh install with no harness history shows an empty state, not an error.
 
 Use **Connect harness** for guided local discovery, manual locations, persistent connection status and optional documented provider API setup. See the [connection guide](docs/connections.md) for capabilities, credential requirements and development verification limits.
 
-See [subscription management](docs/subscriptions.md) for effective-dated plans, and [earlier release notes](RELEASE-0.2.0-beta.2.md) for accounting, schema migration, source resilience, and credential consent details.
+See [subscription management](docs/subscriptions.md) for effective-dated plans, and [earlier release notes](docs/releases/RELEASE-0.2.0-beta.2.md) for accounting, schema migration, source resilience, and credential consent details.
 
 ---
 

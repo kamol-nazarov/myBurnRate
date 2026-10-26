@@ -60,6 +60,6 @@ its separate producer. Reporting delays can exceed the recent revisit window.
 
 Beta acceptance and independent CI do not establish live provider scopes, every
 credential-vault failure mode or all concurrency interleavings. See the current
-[provider matrix](docs/providers.md) and [connection guide](docs/connections.md).
+[provider matrix](../providers.md) and [connection guide](../connections.md).
 Upstream attribution is retained in `NOTICE`. No PyPI publication is part of this
 GitHub beta release.

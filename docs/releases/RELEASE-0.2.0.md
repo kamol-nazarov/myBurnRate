@@ -47,7 +47,7 @@ Configured cost is not a verified payment/refund calculation. Monthly equivalent
 are references, and API-equivalent usage value is not cash saved.
 
 Include all packaged frontend assets when upgrading and reload existing tabs.
-See [subscription semantics and configuration](docs/subscriptions.md).
+See [subscription semantics and configuration](../subscriptions.md).
 
 ## Privacy / security
 

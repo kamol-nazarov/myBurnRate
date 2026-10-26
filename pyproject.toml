@@ -55,7 +55,6 @@ include = [
   "pricing/**",
   "tests_spend/**",
   "README.md",
-  "RELEASE-*.md",
   "NOTICE",
   "LICENSE",
   "docs/**",

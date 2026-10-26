@@ -24,4 +24,4 @@ collection permission. Acknowledgment does not resolve an underlying condition.
 
 This beta also shares source-reason handling, removes obsolete period-helper
 fallbacks, and makes dashboard startup independent of the compatibility bootstrap.
-See [Action Center behavior and limits](docs/action-center.md).
+See [Action Center behavior and limits](../action-center.md).

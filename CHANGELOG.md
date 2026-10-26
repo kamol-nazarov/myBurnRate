@@ -425,7 +425,7 @@ This project is licensed under Apache-2.0.
 - Preserve UTC ordering through schema 11 and improve malformed-record isolation.
 - Require explicit consent for native credential usage and serve persisted limits on GET.
 - Correct heatmap units, partial-value labels, and keyboard interactions.
-- See [release notes and upgrade guidance](RELEASE-0.2.0-beta.2.md).
+- See [release notes and upgrade guidance](docs/releases/RELEASE-0.2.0-beta.2.md).
 
 ## [0.2.0-beta.1] - 2026-09-06
 
@@ -435,7 +435,7 @@ This project is licensed under Apache-2.0.
 - Required browser/race execution, isolated wheel smoke and deterministic LF assets.
 - Preserved request ownership, provider isolation and read-only doctor.
 
-See [complete release notes](RELEASE-0.2.0.md).
+See [complete release notes](docs/releases/RELEASE-0.2.0.md).
 
 ## [0.1.2-beta.1] - 2026-09-06
 
@@ -446,7 +446,7 @@ See [complete release notes](RELEASE-0.2.0.md).
 - Keep health requests independent of summary rendering and retain startup prefetch.
 - Add deterministic browser regressions and helper-asset integrity checks.
 
-See [hotfix patch notes](HOTFIX-0.1.2.md).
+See [hotfix patch notes](docs/releases/HOTFIX-0.1.2.md).
 
 ## [0.1.1-beta.1] - 2026-09-06
 
