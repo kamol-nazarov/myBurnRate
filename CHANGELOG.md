@@ -9,6 +9,15 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-26
+
+### Fixed
+
+- On Windows, a terminal window no longer flashes each time setup loads. The
+  installed service has no console, and the two `tailscale serve` calls in
+  setup started a console program without hiding it. A test now fails on any
+  background command started without `creationflags` or `startupinfo`.
+
 ## [0.5.0] - 2026-10-26
 
 ### Added
