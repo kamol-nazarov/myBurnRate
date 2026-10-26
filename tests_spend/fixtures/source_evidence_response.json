@@ -312,7 +312,7 @@
       "nextAction": "Complete a supported turn and recheck.",
       "pricingMissing": [],
       "experimental": false,
-      "documentation": "https://github.com/kamol-nazarov/burnrate/blob/main/docs/providers.md"
+      "documentation": "https://github.com/kamol-nazarov/myBurnRate/blob/main/docs/providers.md"
     },
     {
       "source": "antigravity_local",
@@ -326,7 +326,7 @@
       "nextAction": "Complete a supported turn and recheck.",
       "pricingMissing": [],
       "experimental": true,
-      "documentation": "https://github.com/kamol-nazarov/burnrate/blob/main/docs/providers.md"
+      "documentation": "https://github.com/kamol-nazarov/myBurnRate/blob/main/docs/providers.md"
     },
     {
       "source": "claude_local",
@@ -340,7 +340,7 @@
       "nextAction": "Complete a supported turn and recheck.",
       "pricingMissing": [],
       "experimental": false,
-      "documentation": "https://github.com/kamol-nazarov/burnrate/blob/main/docs/providers.md"
+      "documentation": "https://github.com/kamol-nazarov/myBurnRate/blob/main/docs/providers.md"
     },
     {
       "source": "claude_local_alt",
@@ -354,7 +354,7 @@
       "nextAction": "If you want this optional integration, configure its documented opt-in setting. No credential is required for the dashboard.",
       "pricingMissing": [],
       "experimental": false,
-      "documentation": "https://github.com/kamol-nazarov/burnrate/blob/main/docs/providers.md"
+      "documentation": "https://github.com/kamol-nazarov/myBurnRate/blob/main/docs/providers.md"
     },
     {
       "source": "codex_local",
@@ -371,7 +371,7 @@
       "nextAction": "No action needed for usage. Quota availability and pricing are reported separately.",
       "pricingMissing": [],
       "experimental": false,
-      "documentation": "https://github.com/kamol-nazarov/burnrate/blob/main/docs/providers.md"
+      "documentation": "https://github.com/kamol-nazarov/myBurnRate/blob/main/docs/providers.md"
     },
     {
       "source": "deepseek",
@@ -385,7 +385,7 @@
       "nextAction": "Complete a supported turn and recheck.",
       "pricingMissing": [],
       "experimental": false,
-      "documentation": "https://github.com/kamol-nazarov/burnrate/blob/main/docs/providers.md"
+      "documentation": "https://github.com/kamol-nazarov/myBurnRate/blob/main/docs/providers.md"
     },
     {
       "source": "grok_local",
@@ -403,7 +403,7 @@
         "synthetic-model"
       ],
       "experimental": true,
-      "documentation": "https://github.com/kamol-nazarov/burnrate/blob/main/docs/providers.md"
+      "documentation": "https://github.com/kamol-nazarov/myBurnRate/blob/main/docs/providers.md"
     },
     {
       "source": "muse_local",
@@ -417,7 +417,7 @@
       "nextAction": "Run BURNRATE as the user who owns the usage store and grant that user read access.",
       "pricingMissing": [],
       "experimental": true,
-      "documentation": "https://github.com/kamol-nazarov/burnrate/blob/main/docs/providers.md"
+      "documentation": "https://github.com/kamol-nazarov/myBurnRate/blob/main/docs/providers.md"
     },
     {
       "source": "openai_admin",
@@ -431,7 +431,7 @@
       "nextAction": "Complete a supported turn and recheck.",
       "pricingMissing": [],
       "experimental": false,
-      "documentation": "https://github.com/kamol-nazarov/burnrate/blob/main/docs/providers.md"
+      "documentation": "https://github.com/kamol-nazarov/myBurnRate/blob/main/docs/providers.md"
     },
     {
       "source": "opencode_local",
@@ -445,7 +445,7 @@
       "nextAction": "Complete a supported turn and recheck.",
       "pricingMissing": [],
       "experimental": false,
-      "documentation": "https://github.com/kamol-nazarov/burnrate/blob/main/docs/providers.md"
+      "documentation": "https://github.com/kamol-nazarov/myBurnRate/blob/main/docs/providers.md"
     },
     {
       "source": "openrouter",
@@ -459,7 +459,7 @@
       "nextAction": "Complete a supported turn and recheck.",
       "pricingMissing": [],
       "experimental": false,
-      "documentation": "https://github.com/kamol-nazarov/burnrate/blob/main/docs/providers.md"
+      "documentation": "https://github.com/kamol-nazarov/myBurnRate/blob/main/docs/providers.md"
     },
     {
       "source": "traycer_local",
@@ -473,7 +473,7 @@
       "nextAction": "Complete a supported turn and recheck.",
       "pricingMissing": [],
       "experimental": true,
-      "documentation": "https://github.com/kamol-nazarov/burnrate/blob/main/docs/providers.md"
+      "documentation": "https://github.com/kamol-nazarov/myBurnRate/blob/main/docs/providers.md"
     },
     {
       "source": "zcode_local",
@@ -487,7 +487,7 @@
       "nextAction": "Complete a supported turn and recheck.",
       "pricingMissing": [],
       "experimental": false,
-      "documentation": "https://github.com/kamol-nazarov/burnrate/blob/main/docs/providers.md"
+      "documentation": "https://github.com/kamol-nazarov/myBurnRate/blob/main/docs/providers.md"
     }
   ],
   "codex": {

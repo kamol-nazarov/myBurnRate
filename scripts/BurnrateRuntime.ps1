@@ -813,7 +813,7 @@ function Resolve-BurnrateDesktopBinary {
     $repoBase = if ($originUrl -match '^https://github\.com/[^/]+/[^/.]+') {
         $Matches[0]
     } else {
-        'https://github.com/kamol-nazarov/myBurnRateOfficial'
+        'https://github.com/kamol-nazarov/myBurnRate'
     }
     $releaseUrl = "$repoBase/releases/latest/download/burnrate-desktop.exe"
     $tmpExe = "$installedExe.download"

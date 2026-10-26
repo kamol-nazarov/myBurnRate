@@ -27,7 +27,7 @@ EXPERIMENTAL = {
     "antigravity_local",
     "muse_local",
 }
-HELP_URL = "https://github.com/kamol-nazarov/burnrate/blob/main/docs/providers.md"
+HELP_URL = "https://github.com/kamol-nazarov/myBurnRate/blob/main/docs/providers.md"
 
 
 def source_path_hint(source):

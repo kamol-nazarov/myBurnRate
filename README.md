@@ -68,8 +68,8 @@ The default runtime is a single lightweight process: **FastAPI + SQLite + Sideca
 ### One-Command Clone & Install
 
 ```powershell
-git clone https://github.com/kamol-nazarov/myBurnRateOfficial.git
-cd myBurnRateOfficial
+git clone https://github.com/kamol-nazarov/myBurnRate.git
+cd myBurnRate
 .\install.ps1
 ```
 
