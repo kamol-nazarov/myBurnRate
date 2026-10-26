@@ -35,7 +35,7 @@ dependencies = [
   "httpx>=0.28,<1",
   "tzdata>=2024.1",
   "tzlocal>=3.0",
-  "keyring>=25,<26",
+  "keyring>=25.7.0,<26",
 ]
 
 [project.optional-dependencies]
