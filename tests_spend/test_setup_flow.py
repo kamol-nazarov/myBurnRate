@@ -74,18 +74,18 @@ def test_set_up_later_stops_the_wizard_opening_on_every_launch(client: TestClien
 
 
 def test_signing_in_never_creates_an_account(client: TestClient) -> None:
-    unknown = client.post("/api/account/login", json={"username": "kamol", "password": "long-enough-1"})
-    assert unknown.status_code == 401 and "no account named kamol" in unknown.json()["error"].lower()
-    short = client.post("/api/account/register", json={"username": "kamol", "password": "short"})
+    unknown = client.post("/api/account/login", json={"username": "alex", "password": "long-enough-1"})
+    assert unknown.status_code == 401 and "no account named alex" in unknown.json()["error"].lower()
+    short = client.post("/api/account/register", json={"username": "alex", "password": "short"})
     assert short.status_code == 422 and "8 characters" in short.json()["error"]
-    assert client.post("/api/account/register", json={"username": "kamol", "password": "long-enough-1"}).status_code == 200
-    assert client.post("/api/account/login", json={"username": "kamol", "password": "long-enough-1"}).status_code == 200
-    assert client.post("/api/account/login", json={"username": "kamol", "password": "wrong-password"}).status_code == 401
+    assert client.post("/api/account/register", json={"username": "alex", "password": "long-enough-1"}).status_code == 200
+    assert client.post("/api/account/login", json={"username": "alex", "password": "long-enough-1"}).status_code == 200
+    assert client.post("/api/account/login", json={"username": "alex", "password": "wrong-password"}).status_code == 401
 
 
 def test_registering_from_the_wizard_checks_the_password_before_calling_the_hub(client: TestClient) -> None:
     response = client.post("/api/setup/account", headers=SETUP, json={
-        "mode": "register", "username": "kamol", "password": "short", "serverUrl": "https://unreachable.invalid"})
+        "mode": "register", "username": "alex", "password": "short", "serverUrl": "https://unreachable.invalid"})
     assert response.status_code == 422 and "8 characters" in response.json()["error"]
 
 
@@ -254,7 +254,7 @@ def test_there_is_no_built_in_hub_address(client: TestClient, monkeypatch) -> No
     monkeypatch.delenv("BURNRATE_CENTRAL_SERVER_URL", raising=False)
     assert client.get("/api/setup/state").json()["centralServerUrl"] == ""
     response = client.post("/api/setup/account", headers=SETUP,
-                           json={"mode": "login", "username": "kamol", "password": "long-enough-1"})
+                           json={"mode": "login", "username": "alex", "password": "long-enough-1"})
     assert response.status_code == 422 and "hub's address" in response.json()["error"]
 
 
@@ -268,13 +268,13 @@ def test_hub_update_runs_the_deploy_steps_and_refuses_odd_arguments() -> None:
         stdout = '{"service": "BURNRATE", "version": "0.3.0-beta.18", "build": "0.3.0-beta.18+abc123"}\n'
         stderr = ""
 
-    assert update_hub(ssh="tk-server", path="/opt/burnrate", service="burnrate-hub", branch="main",
+    assert update_hub(ssh="my-hub", path="/opt/burnrate", service="burnrate-hub", branch="main",
                       run=lambda step, **kwargs: calls.append(step) or Done(), echo=lines.append) == 0
-    assert calls == [["ssh", "tk-server", "cd /opt/burnrate && git fetch origin && git checkout main && git merge --ff-only "
+    assert calls == [["ssh", "my-hub", "cd /opt/burnrate && git fetch origin && git checkout main && git merge --ff-only "
                       "origin/main && sudo systemctl restart burnrate-hub && sleep 4 && curl -s http://127.0.0.1:17331/api/spend"]]
     assert lines[-1] == "Hub now runs 0.3.0-beta.18+abc123."
     calls.clear()
-    assert update_hub(ssh="tk-server; rm -rf /", path="/opt/burnrate", service="burnrate-hub", branch="main",
+    assert update_hub(ssh="my-hub; rm -rf /", path="/opt/burnrate", service="burnrate-hub", branch="main",
                       run=lambda step, **kwargs: calls.append(step), echo=lines.append) == 2
     assert calls == []
     assert update_hub(ssh="", path="/opt/burnrate", service="s", branch="main", echo=lines.append) == 2

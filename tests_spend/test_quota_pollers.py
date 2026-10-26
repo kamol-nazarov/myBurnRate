@@ -1039,7 +1039,7 @@ def test_muse_records_microsecond_timestamp_and_nested_cwd() -> None:
             "stream": {"id": "sess-1"},
             "payload": {
                 "type": "session_created",
-                "event": {"cwd": "C:/Dev/myBurnRateOfficial"},
+                "event": {"cwd": "C:/Dev/ExampleProject"},
             },
         },
         {
@@ -1062,10 +1062,10 @@ def test_muse_records_microsecond_timestamp_and_nested_cwd() -> None:
     ]
     events, session = reduce_records(records, file_key="sess-1")
     assert len(events) == 1
-    assert events[0].project == "myBurnRateOfficial"
+    assert events[0].project == "ExampleProject"
     assert events[0].model_key == "muse:muse-spark-1.3"
     assert events[0].occurred_at.isoformat().startswith("2026-10-19T05:54:05")
-    assert session["project"] == "myBurnRateOfficial"
+    assert session["project"] == "ExampleProject"
 
 
 def test_muse_limits_without_subs_usage_is_unavailable_not_zero(tmp_path: Path, monkeypatch) -> None:

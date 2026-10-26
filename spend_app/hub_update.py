@@ -21,7 +21,7 @@ _SAFE = re.compile(r"[A-Za-z0-9_.@:/+-]+")
 def update_hub(*, ssh: str, path: str, service: str, branch: str, push_local: bool = False,
                dry_run: bool = False, port: int = 17331, run=subprocess.run, echo=print) -> int:
     if not ssh:
-        echo("Name the hub's ssh host with --ssh or BURNRATE_HUB_SSH (for example: --ssh tk-server).")
+        echo("Name the hub's ssh host with --ssh or BURNRATE_HUB_SSH (for example: --ssh my-hub).")
         return 2
     for label, value in (("ssh host", ssh), ("path", path), ("service", service), ("branch", branch)):
         if not _SAFE.fullmatch(value or ""):

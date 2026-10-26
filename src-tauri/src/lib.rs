@@ -75,13 +75,6 @@ fn resolve_python_and_root() -> (PathBuf, PathBuf) {
         }
     }
     candidate_roots.push(cwd.clone());
-    #[cfg(target_os = "windows")]
-    {
-        let dev_repo = PathBuf::from(r"C:\Dev\myBurnRateOfficial");
-        if dev_repo.is_dir() {
-            candidate_roots.push(dev_repo);
-        }
-    }
 
     for root in &candidate_roots {
         #[cfg(target_os = "windows")]

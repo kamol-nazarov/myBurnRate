@@ -2261,7 +2261,7 @@ function renderMachineSettings(data) {
   const machines = (data && data.machines) || (state.summary && state.summary.machines) || [];
   let section = $("machine-settings-section");
   if (!section) {
-    section = nodeFrom(`<section class="harness-section" id="machine-settings-section"><header><p class="eyebrow">Connected computers (Account)</p><div class="harness-actions"><button id="open-setup-wizard-button" class="harness-action" type="button">Account &amp; Setup</button><button id="open-hud-button" class="harness-action" type="button">Sidecar HUD</button></div></header><p id="machine-pair-note" class="settings-helper mono">Log in to your account via the Setup Wizard on any computer to sync usage automatically through tk-server.</p><div id="machine-rows"></div></section>`);
+    section = nodeFrom(`<section class="harness-section" id="machine-settings-section"><header><p class="eyebrow">Connected computers (Account)</p><div class="harness-actions"><button id="open-setup-wizard-button" class="harness-action" type="button">Account &amp; Setup</button><button id="open-hud-button" class="harness-action" type="button">Sidecar HUD</button></div></header><p id="machine-pair-note" class="settings-helper mono">Log in to your account via the Setup Wizard on any computer to sync usage automatically through your hub.</p><div id="machine-rows"></div></section>`);
     host.appendChild(section);
     section.querySelector("#open-setup-wizard-button").addEventListener("click", () => window.openSetupWizard());
     section.querySelector("#open-hud-button").addEventListener("click", () => window.openSidecarHud());

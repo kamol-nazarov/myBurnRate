@@ -522,7 +522,7 @@ def test_central_server_account_login_subscriptions_and_multi_computer_sync(
     aggregate.reset_memo()
     monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
 
-    central_settings = _make_settings(tmp_path / "tk-server")
+    central_settings = _make_settings(tmp_path / "hub")
     desktop_settings = _make_settings(tmp_path / "mydesktop")
     laptop_settings = _make_settings(tmp_path / "macbook")
     pricing = PricingEngine.load(central_settings.pricing_path)
@@ -531,7 +531,7 @@ def test_central_server_account_login_subscriptions_and_multi_computer_sync(
     desktop_client = TestClient(create_app(desktop_settings, enable_scheduler=False))
     laptop_client = TestClient(create_app(laptop_settings, enable_scheduler=False))
 
-    central_url = "https://tk-server.test"
+    central_url = "https://hub.test"
     register_hub_test_client(central_url, central_client)
 
     # Seed local usage and quota on MyDesktop
@@ -579,7 +579,7 @@ def test_central_server_account_login_subscriptions_and_multi_computer_sync(
         headers=SETUP_HEADERS,
         json={
             "mode": "register",
-            "username": "kamol",
+            "username": "alex",
             "password": "secret-password",
             "computerName": "MyDesktop",
             "serverUrl": central_url,
@@ -593,7 +593,7 @@ def test_central_server_account_login_subscriptions_and_multi_computer_sync(
     assert reg_res.status_code == 200
     reg_data = reg_res.json()
     assert reg_data["ok"] is True
-    assert reg_data["account"]["username"] == "kamol"
+    assert reg_data["account"]["username"] == "alex"
     assert len(reg_data["subscriptions"]) == 3
 
     # 2. Seed local usage on MacBook and just sign in (no need to re-enter subscriptions)
@@ -626,7 +626,7 @@ def test_central_server_account_login_subscriptions_and_multi_computer_sync(
         headers=SETUP_HEADERS,
         json={
             "mode": "login",
-            "username": "kamol",
+            "username": "alex",
             "password": "secret-password",
             "computerName": "MacBook Pro",
             "serverUrl": central_url,
@@ -638,7 +638,7 @@ def test_central_server_account_login_subscriptions_and_multi_computer_sync(
     assert login_data["ok"] is True
     assert len(login_data["subscriptions"]) == 3
 
-    # 3. Both computers see unified usage, quotas, subscriptions, and connected computer list from tk-server
+    # 3. Both computers see unified usage, quotas, subscriptions, and connected computer list from the hub
     laptop_summary = laptop_client.get("/api/spend/summary?window=1d").json()
     assert laptop_summary["totals"]["records"] == 2
     assert laptop_summary["totals"]["tokens"] == 30_000

@@ -49,8 +49,6 @@ FORBIDDEN_TOKENS = (
     "3445",
     "tailscale",
     "Tailscale",
-    "tail982d0e",
-    "mydesktop",
     ".ts.net",
     "AiTelemetry",
     "Watch-AiTelemetry",

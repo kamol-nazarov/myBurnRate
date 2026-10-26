@@ -627,8 +627,8 @@ def test_dev_and_override_database_paths(monkeypatch, tmp_path: Path) -> None:
 def test_env_example_has_no_personal_machine_paths() -> None:
     text = (Path(__file__).resolve().parents[1] / ".env.example").read_text(encoding="utf-8")
     lowered = text.lower()
-    assert "users\\kamol" not in lowered
-    assert "users/kamol" not in lowered
+    assert "c:\\users\\" not in lowered
+    assert "/users/" not in lowered and "/home/" not in lowered
     assert "ai-telemetry" not in lowered
     assert "america/new_york" not in lowered
     assert "SPEND_TIMEZONE=UTC" in text

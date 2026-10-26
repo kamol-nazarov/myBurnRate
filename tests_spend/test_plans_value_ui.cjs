@@ -530,7 +530,7 @@ const match = (actual, pattern, message) => {
         explanation: {
           ...case1Payload().groups[0].explanation,
           contributingPlans: ['<script>evil()</script>'],
-          configuredCost: {formula: 'path C:\\Users\\kamol\\secret.env and user@example.com'}
+          configuredCost: {formula: 'path C:\\Users\\alex\\secret.env and user@example.com'}
         }
       }]
     });
