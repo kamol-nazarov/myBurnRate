@@ -1,49 +1,237 @@
 name: Release
 
-# Manual approval only. This workflow MUST NOT run on push and MUST NOT
-# publish artifacts to GitHub Releases. The "publish" environment is the
-# protection gate; steps stop before `gh release create`.
+# Builds a release from a version tag entirely on GitHub, so every download is
+# traceable to this workflow and the tagged commit:
+#   1. bundles for Windows, macOS (Apple silicon) and Linux, update-signed;
+#   2. Windows code signing through SignPath, when it is configured;
+#   3. latest.json (the in-app update feed), wheel, sdist, SHA256SUMS and
+#      build provenance; then a DRAFT GitHub Release. Publishing the draft is
+#      a person's decision.
+#
+# Tag with `git tag -a v0.4.0-beta.2 -m "BURNRATE v0.4.0-beta.2"` and push it.
+
 "on":
+  push:
+    tags: ["v*"]
   workflow_dispatch:
     inputs:
-      version:
-        description: Version to prepare (does not publish a GitHub Release)
+      tag:
+        description: Existing version tag to build (for example v0.4.0-beta.2)
         required: true
         type: string
-        default: "0.2.0-beta.1"
 
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  PYTHONUTF8: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
 jobs:
-  prepare:
-    name: Prepare (stop before publish)
-    runs-on: windows-latest
-    environment: publish
-    timeout-minutes: 15
+  check:
+    name: check the tag matches the version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v5
         with:
+          ref: ${{ env.TAG }}
           persist-credentials: false
-
-      - name: Confirm dispatch-only gate
-        shell: pwsh
+      - id: version
+        shell: python
         run: |
-          Write-Host "Release workflow is workflow_dispatch only."
-          Write-Host "Environment: publish"
-          Write-Host "Requested version: ${{ inputs.version }}"
-          Write-Host "This job does not run on push, does not change repository visibility, and does not use provider secrets."
+          import json, os, re, tomllib
+          tag = os.environ["TAG"]
+          version = tag.removeprefix("v")
+          tauri = json.load(open("src-tauri/tauri.conf.json", encoding="utf-8"))["version"]
+          package = re.search(r'__version__ = "([^"]+)"', open("spend_app/__init__.py", encoding="utf-8").read()).group(1)
+          assert tauri == version == package, f"tag {tag}, tauri {tauri}, spend_app {package}"
+          assert os.path.isfile(f"docs/releases/RELEASE-{version}.md"), f"missing docs/releases/RELEASE-{version}.md"
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"version={version}\n")
 
-      - name: Stop before GitHub Release
+  bundle:
+    name: bundle (${{ matrix.name }})
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows
+            os: windows-latest
+            bundles: nsis
+          - name: macos
+            os: macos-latest
+            bundles: app,dmg
+          - name: linux
+            os: ubuntu-22.04
+            bundles: appimage,deb
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    defaults:
+      run:
         shell: pwsh
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        shell: bash
         run: |
-          Write-Host "waiting for PUBLISH"
-          Write-Host "Stopped before gh release create. No GitHub Release is published by this workflow."
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libssl-dev
+      - name: Build the frozen service
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install . pyinstaller
+          python packaging/build_service.py
+      - name: Smoke-test the frozen service
+        run: ./.github/scripts/smoke-service.ps1
+      - name: Build the update-signed desktop bundle
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npx -y @tauri-apps/cli@2 build --bundles ${{ matrix.bundles }}
+      - name: Collect release files
+        run: |
+          $out = New-Item -ItemType Directory -Force dist
+          $bundle = "src-tauri/target/release/bundle"
+          $patterns = @("nsis/*-setup.exe", "nsis/*-setup.exe.sig", "dmg/*.dmg", "appimage/*.AppImage",
+                        "appimage/*.AppImage.sig", "deb/*.deb")
+          foreach ($pattern in $patterns) {
+            Get-ChildItem (Join-Path $bundle $pattern) -ErrorAction SilentlyContinue | Copy-Item -Destination $out
+          }
+          # macOS's update bundle is named after the app alone; give it the version and architecture.
+          foreach ($archive in Get-ChildItem "$bundle/macos/*.app.tar.gz*" -ErrorAction SilentlyContinue) {
+            $name = $archive.Name -replace '^BURNRATE\.app\.tar\.gz', "BURNRATE_${env:VERSION}_aarch64.app.tar.gz"
+            Copy-Item $archive.FullName (Join-Path $out $name)
+          }
+          Get-ChildItem $out | Format-Table Name, Length
+      - uses: actions/upload-artifact@v4
+        id: upload
+        with:
+          name: bundle-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
 
-      # Intentionally omitted (do not enable on this workflow):
-      #   gh release create
-      #   actions/create-release
-      #   softprops/action-gh-release
-      #   any step that uploads assets to GitHub Releases
-      #   any step that changes repository visibility
+  sign-windows:
+    name: code-sign Windows (SignPath)
+    needs: [check, bundle]
+    if: vars.SIGNPATH_ORGANIZATION_ID != ''
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: bundle-windows
+          path: unsigned
+      - name: Keep only the installer for signing
+        run: |
+          New-Item -ItemType Directory -Force to-sign | Out-Null
+          Copy-Item unsigned/*-setup.exe to-sign/
+      - uses: actions/upload-artifact@v4
+        id: unsigned
+        with:
+          name: windows-unsigned-installer
+          path: to-sign/*
+          if-no-files-found: error
+      # Each signing request waits for an approver in SignPath (SignPath
+      # Foundation's rules), then the signed installer comes back here.
+      - uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3000
+          output-artifact-directory: signed
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      # The update signature covers the installer's bytes, so it is made again for the signed file.
+      - name: Re-sign the signed installer for updates
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $installer = Get-ChildItem signed/*-setup.exe | Select-Object -First 1
+          if ((Get-AuthenticodeSignature $installer.FullName).Status -ne 'Valid') { throw "SignPath returned an unsigned installer" }
+          npx -y @tauri-apps/cli@2 signer sign $installer.FullName
+          Copy-Item signed/* unsigned/ -Force
+          Get-ChildItem unsigned | Format-Table Name, Length
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle-windows-signed
+          path: unsigned/*
+          if-no-files-found: error
+
+  publish:
+    name: draft the GitHub release
+    needs: [check, bundle, sign-windows]
+    if: always() && needs.bundle.result == 'success' && (needs.sign-windows.result == 'success' || needs.sign-windows.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Wheel and sdist
+        run: |
+          python -m pip install build
+          python -m build --outdir release
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bundle-*
+          path: bundles
+      - name: Gather files (signed Windows installer when there is one)
+        run: |
+          windows=bundles/bundle-windows
+          if [ -d bundles/bundle-windows-signed ]; then windows=bundles/bundle-windows-signed; fi
+          cp "$windows"/* release/
+          cp bundles/bundle-macos/* bundles/bundle-linux/* release/
+          cp src-tauri/icons/icon.ico release/
+          python packaging/make_latest_json.py --tag "$TAG" --repo "$GITHUB_REPOSITORY" --dir release
+          (cd release && sha256sum * > SHA256SUMS)
+          ls -la release
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: release/*
+      - name: Create the draft release
+        run: |
+          gh release create "$TAG" release/* \
+            --draft --verify-tag \
+            --title "BURNRATE v$VERSION" \
+            --notes-file "docs/releases/RELEASE-$VERSION.md"

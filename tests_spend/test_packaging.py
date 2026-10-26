@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from spend_app import build, service
 
 
@@ -37,3 +39,26 @@ def test_the_spec_ships_what_the_service_reads() -> None:
         assert needed in spec
     entry = (root / "packaging" / "burnrate_service.py").read_text(encoding="utf-8")
     assert "multiprocessing.freeze_support()" in entry
+
+
+def test_the_update_feed_points_each_platform_at_its_signed_bundle(tmp_path: Path) -> None:
+    import importlib.util
+    from datetime import UTC, datetime
+
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location("make_latest_json", root / "packaging" / "make_latest_json.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    for name in ("BURNRATE_0.5.0_x64-setup.exe", "BURNRATE_0.5.0_aarch64.app.tar.gz", "BURNRATE_0.5.0_amd64.AppImage"):
+        (tmp_path / name).write_bytes(b"bundle")
+        (tmp_path / (name + ".sig")).write_text(f"sig-of-{name}\n", encoding="utf-8")
+    (tmp_path / "BURNRATE_0.5.0_aarch64.dmg").write_bytes(b"not an update bundle")
+    feed = module.build_feed(tmp_path, tag="v0.5.0", repo="owner/repo", now=datetime(2026, 11, 1, tzinfo=UTC))
+    assert feed["version"] == "0.5.0" and feed["pub_date"] == "2026-11-01T00:00:00Z"
+    assert set(feed["platforms"]) == {"windows-x86_64", "darwin-aarch64", "linux-x86_64"}
+    windows = feed["platforms"]["windows-x86_64"]
+    assert windows["url"] == "https://github.com/owner/repo/releases/download/v0.5.0/BURNRATE_0.5.0_x64-setup.exe"
+    assert windows["signature"] == "sig-of-BURNRATE_0.5.0_x64-setup.exe"
+    (tmp_path / "BURNRATE_0.5.0_amd64.AppImage.sig").unlink()
+    with pytest.raises(SystemExit, match="no update signature"):
+        module.build_feed(tmp_path, tag="v0.5.0", repo="owner/repo")
