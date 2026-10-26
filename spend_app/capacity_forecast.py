@@ -202,7 +202,7 @@ def project_pace(
 
 
 def _sort_key(card: dict) -> tuple:
-    payg = 2 if card.get("providerKey") == "openrouter" else 1 if card.get("isPayg") else 0
+    payg = 2 if card.get("providerKey") in ("openrouter", "deepseek") else 1 if card.get("isPayg") else 0
     forecast = card.get("forecast") or {}
     projected = forecast.get("projectedRunDry")
     if projected:
@@ -287,6 +287,138 @@ def apply_forecasts(cards: list[dict], samples, *, now: datetime, active: set[st
                 comfortable = forecast
         card["forecast"] = soonest or comfortable
     cards.sort(key=_sort_key)
+
+
+RUNWAY_LOOKBACK = timedelta(days=14)
+RUNWAY_MIN_SPAN = timedelta(hours=24)
+# Balances keep an hourly sample because the quotas table stores only
+# change-points: a balance that never moves would otherwise show no history.
+BALANCE_SAMPLE_INTERVAL = HOUR
+BALANCE_SAMPLE_RETENTION = timedelta(days=30)
+
+
+def record_balance_sample(connection, *, provider_key: str, source: str, usd, sampled_at: str) -> bool:
+    moment = parse_utc(sampled_at)
+    if moment is None or usd is None or not _table_exists(connection, "balance_samples"):
+        return False
+    latest = connection.execute(
+        "SELECT sampled_at FROM balance_samples WHERE provider_key=? AND source=? ORDER BY sampled_at DESC, id DESC LIMIT 1",
+        (provider_key, source),
+    ).fetchone()
+    previous = parse_utc(latest[0]) if latest is not None else None
+    if previous is not None and moment - previous < BALANCE_SAMPLE_INTERVAL:
+        return False
+    connection.execute(
+        "DELETE FROM balance_samples WHERE provider_key=? AND sampled_at<?",
+        (provider_key, _iso(moment - BALANCE_SAMPLE_RETENTION)),
+    )
+    connection.execute(
+        "INSERT INTO balance_samples(provider_key, source, usd, sampled_at) VALUES (?, ?, ?, ?)",
+        (provider_key, source, float(usd), _iso(moment)),
+    )
+    return True
+
+
+def _usd(value: float) -> str:
+    return f"${value:,.0f}" if value >= 100 else f"${value:,.2f}"
+
+
+def _days_text(days: float) -> str:
+    if days < 1:
+        hours = max(1, int(round(days * 24)))
+        return "about 1 hour" if hours == 1 else f"about {hours} hours"
+    if days >= 365:
+        return "over a year"
+    whole = int(round(days))
+    return "about 1 day" if whole == 1 else f"about {whole} days"
+
+
+def balance_runway(points: list[tuple[datetime, float]], *, remaining: float) -> dict:
+    """How long a balance lasts at its recent spend.
+
+    ``points`` are the balance's change-points, oldest first. Only falls are
+    spend; a rise is a top-up. The span runs to the newest confirmation, so a
+    quiet stretch after the last purchase lowers the daily figure.
+    """
+    span = points[-1][0] - points[0][0] if points else timedelta(0)
+    if span < RUNWAY_MIN_SPAN:
+        return {"state": "learning", "days": None, "dailyUsd": None, "basisDays": None, "runsOutAt": None,
+                "line": "Runway shows after a day of balance readings."}
+    basis_days = span / DAY
+    spent = sum(max(0.0, before - after) for (_, before), (_, after) in zip(points, points[1:]))
+    if spent < 0.01:
+        whole = max(1, int(round(basis_days)))
+        return {"state": "idle", "days": None, "dailyUsd": 0.0, "basisDays": round(basis_days, 1), "runsOutAt": None,
+                "line": f"No spend in the last {whole} day{'s' if whole != 1 else ''}."}
+    daily = spent / basis_days
+    days = max(0.0, remaining) / daily
+    return {
+        "state": "estimate",
+        "days": round(days, 1),
+        "dailyUsd": round(daily, 2),
+        "basisDays": round(basis_days, 1),
+        "runsOutAt": _iso(points[-1][0] + timedelta(days=min(days, 3650))),
+        "line": f"{_days_text(days)} at your current spend ({_usd(daily)}/day)",
+    }
+
+
+def balance_points(connection, provider_key: str, *, now: datetime, local_only: bool = False) -> list[tuple[datetime, float]]:
+    """Recent dollar balances from one collector, oldest first.
+
+    Merges the quotas change-points with the hourly samples; both are real
+    readings at their times. One source only: two computers reading the same
+    account interleave readings whose confirmations move, which would read as
+    spend.
+    """
+    if not _table_exists(connection, "quotas"):
+        return []
+    where = "provider_key=? AND limit_key='balance' AND unit='usd' AND used IS NOT NULL"
+    if local_only:
+        where += " AND source NOT LIKE 'sync:%'"
+    latest = connection.execute(
+        f"SELECT source FROM quotas WHERE {where} ORDER BY polled_at DESC, id DESC LIMIT 1", (provider_key,)
+    ).fetchone()
+    if latest is None:
+        return []
+    cutoff = now - RUNWAY_LOOKBACK
+    params = (provider_key, latest[0], _iso(cutoff))
+    # The balance on entering the window, then every change inside it.
+    baseline = connection.execute(
+        f"SELECT polled_at, used FROM quotas WHERE {where} AND source=? AND polled_at<? "
+        "ORDER BY polled_at DESC, id DESC LIMIT 1", params
+    ).fetchone()
+    rows = connection.execute(
+        f"SELECT polled_at, used FROM quotas WHERE {where} AND source=? AND polled_at>=? ORDER BY polled_at, id", params
+    ).fetchall()
+    if _table_exists(connection, "balance_samples"):
+        rows = [*rows, *connection.execute(
+            "SELECT sampled_at, usd FROM balance_samples WHERE provider_key=? AND source=? AND sampled_at>=?", params
+        ).fetchall()]
+    points = sorted(
+        (moment, float(used)) for moment, used in ((parse_utc(at), used) for at, used in rows) if moment is not None
+    )
+    if baseline is not None and (not points or points[0][0] > cutoff):
+        points.insert(0, (cutoff, float(baseline[1])))
+    return points
+
+
+def apply_balance_runway(cards: list[dict], connection, *, now: datetime, providers: set[str] | None = None,
+                         local_only: bool = False) -> None:
+    """Attach ``runway`` to each dollar balance row (and ``fundsRunway`` to its card)."""
+    for card in cards:
+        provider_key = str(card.get("providerKey") or "")
+        if providers is not None and provider_key not in providers:
+            continue
+        for row in card.get("rows") or []:
+            if row.get("limitKey") != "balance" or row.get("unit") != "usd" or row.get("used") is None:
+                continue
+            try:
+                points = balance_points(connection, provider_key, now=now, local_only=local_only)
+            except sqlite3.Error:
+                continue
+            runway = balance_runway(points, remaining=float(row["used"]))
+            row["runway"] = runway
+            card["fundsRunway"] = runway
 
 
 def active_provider_keys(connection, now: datetime) -> set[str]:

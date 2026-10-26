@@ -47,7 +47,8 @@ def test_root_opens_the_hud_when_the_dashboard_is_off(tmp_path, monkeypatch):
         assert 'invoke("hide_main")' in page.text
         assert "spend.js" not in page.text
     assert '<html lang="en" data-dashboard="off">' in client.get("/hud").text
-    assert "Skip to </span>HUD →" in client.get("/setup").text
+    setup_page = client.get("/setup").text
+    assert "Set up later" in setup_page and "Go to the HUD now." in setup_page
 
 
 def test_unfinished_setup_still_opens_the_wizard(tmp_path, monkeypatch):
@@ -66,7 +67,8 @@ def test_dashboard_returns_with_its_flag(tmp_path, monkeypatch):
     client = TestClient(create_app(settings, enable_scheduler=False, now=NOW))
     assert "/spend.js?v=" in client.get("/").text
     assert 'data-dashboard="off"' not in client.get("/hud").text.split(">", 2)[1]
-    assert "Skip to </span>Dashboard →" in client.get("/setup").text
+    setup_page = client.get("/setup").text
+    assert "Set up later" in setup_page and "Go to the Dashboard now." in setup_page
 
 
 def test_hud_hides_dashboard_entry_points_when_off():

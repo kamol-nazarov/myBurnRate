@@ -186,6 +186,7 @@ CONNECTION_SPECS = {
     "openai_admin": ConnectionSpec("OpenAI Admin", "admin_key", lambda: "", shape="api", credential_env="OPENAI_ADMIN_KEY", credential_help="Organization Admin API key created by an organization owner, with organization usage and cost read access. Not a ChatGPT subscription login."),
     "anthropic_admin": ConnectionSpec("Anthropic Admin", "admin_key", lambda: "", shape="api", credential_env="ANTHROPIC_ADMIN_KEY", credential_help="Claude Console organization Admin API key with usage and cost report access (admin role required to create it). Not a Claude subscription login."),
     "openrouter": ConnectionSpec("OpenRouter balance", "api_key", lambda: "", shape="api", credential_env="OPENROUTER_MANAGEMENT_KEY", credential_help="OpenRouter management key with credits access. Provides account balance only, not usage events or subscription quota."),
+    "deepseek": ConnectionSpec("DeepSeek balance", "api_key", lambda: "", shape="api", credential_env="DEEPSEEK_BALANCE_KEY", credential_help="DeepSeek API key from platform.deepseek.com. Read only for the account balance; never used to run models."),
 }
 
 
@@ -447,6 +448,15 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         stability="official",
         exactness="exact",
         enabled_by_default=True,
+        tool_keys=(),
+    ),
+    _spec(
+        "deepseek",
+        "",
+        ("quota",),
+        stability="official",
+        exactness="exact",
+        enabled_by_default=False,
         tool_keys=(),
     ),
     _spec(

@@ -19,6 +19,7 @@ SETTINGS = {
     "openai_admin": "OPENAI_ADMIN_KEY",
     "anthropic_admin": "ANTHROPIC_ADMIN_KEY",
     "openrouter": "OPENROUTER_MANAGEMENT_KEY",
+    "deepseek": "DEEPSEEK_BALANCE_KEY",
 }
 EXPERIMENTAL = {
     "grok_local",
@@ -37,13 +38,14 @@ def source_path_hint(source):
 
 def integration_reports(settings, *, environ=None, bindings=None):
     """Configuration presence only. No credential reads, probes or writes."""
+    from spend_app.connection_secrets import POLICY_LANES
     from spend_app.integration_policy import LANES
 
     env = os.environ if environ is None else environ
     bindings = bindings or {}
     reports = []
     for source, setting in SETTINGS.items():
-        lane = LANES["openrouter_credits" if source == "openrouter" else source]
+        lane = LANES[POLICY_LANES.get(source, source)]
         binding = bindings.get(source, {})
         managed = bool(binding.get("enabled") and binding.get("credentialRef"))
         external = bool(env.get(setting) or getattr(settings, setting.lower(), None))

@@ -48,8 +48,11 @@ _FILE_SIGNATURES: dict[str, tuple[int, int]] = {}
 
 
 def reset_file_cache() -> None:
+    from spend_app.adapters import file_cache
+
     _FILE_SIGNATURES.clear()
     _FILE_COUNTS.clear()
+    file_cache.forget(SOURCE)
 
 
 def _parse_time(value: str) -> datetime | None:
@@ -115,35 +118,69 @@ def ingest(
 
 
 def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -> dict:
+    from spend_app.adapters import file_cache
+    from spend_app.adapters.event_identity import reconcile
+    from spend_app.connection_paths import cache_identity, file_signature, stat_path
+
     initialize(database_path)
+    file_cache.warm(database_path, SOURCE, _FILE_SIGNATURES, _FILE_COUNTS)
     parsed_files = 0
     parsed_events = 0
     confirmed_events = 0
-    observations = []
     issues = []
     skipped_files = 0
     skipped_originator = 0
     quarantined = 0
     originator_files: dict[str, int] = {}
-    usage_rows: list[UsageRow] = []
-    session_rows: list[dict] = []
-    pending_signatures: list[tuple[str, tuple[int, int]]] = []
+    batch: dict[str, list] = {"usage_rows": [], "observations": [], "session_rows": [], "pending": [], "empty": []}
+    results: list[dict] = []
+
+    def flush() -> None:
+        usage_rows, observations, session_rows = batch["usage_rows"], batch["observations"], batch["session_rows"]
+        pending, empty = batch["pending"], batch["empty"]
+        for name in batch:
+            batch[name] = []
+
+        def cacheable():
+            # A file with unusable records is cached only when the pass had no
+            # issue at all; reconcile's issues are known by the time this runs.
+            return [(key, signature, count, 0) for key, signature, count, file_clean in pending if not issues or file_clean]
+
+        def finalize(connection):
+            for session in session_rows:
+                upsert_session(
+                    connection,
+                    session_id=session["session_id"],
+                    tool_key="codex",
+                    project=session["project"],
+                    started_at=session["started_at"],
+                    ended_at=session["ended_at"],
+                    model_key=session["model_key"],
+                )
+            file_cache.save(connection, SOURCE, [*cacheable(), *((key, signature, 0, 0) for key, signature in empty)])
+
+        results.append(persist_rows(
+            database_path=database_path, pricing=pricing, source=SOURCE, usage_rows=usage_rows,
+            prepare=(lambda connection, rows: reconcile(connection, observations, issues)) if observations else None,
+            finalize=finalize, issues=issues))
+        for cache_key, signature, count, _unusable in cacheable():
+            _FILE_SIGNATURES[cache_key] = signature
+            _FILE_COUNTS[cache_key] = count
+
     for file_name in sorted(adapter_files(session_glob)):
         path = Path(file_name)
         try:
-            from spend_app.connection_paths import stat_path
-
             stat = stat_path(path)
         except OSError:
             continue
-        from spend_app.connection_paths import cache_identity, file_signature
         cache_key = cache_identity(database_path, path, PARSER_VERSION)
+        cached = _FILE_SIGNATURES.get(cache_key)
         try:
-            signature = file_signature(path, stat)
+            signature = cached if file_cache.unchanged(cached, stat) else file_signature(path, stat)
         except OSError:
             issues.append("codex_file_unavailable")
             continue
-        if _FILE_SIGNATURES.get(cache_key) == signature:
+        if cached == signature:
             skipped_files += 1
             confirmed_events += _FILE_COUNTS.get(cache_key, 0)
             continue
@@ -158,6 +195,7 @@ def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -
         if not session:
             issues.append("codex_session_metadata_missing")
             _FILE_SIGNATURES[cache_key] = signature
+            batch["empty"].append((cache_key, signature))
             continue
         if not session.get("supported_origin", session.get("originator") in SUPPORTED_ORIGINATORS):
             skipped_originator += 1
@@ -165,6 +203,7 @@ def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -
             key = "unsupported_originator"
             originator_files[key] = originator_files.get(key, 0) + 1
             _FILE_SIGNATURES[cache_key] = signature
+            batch["empty"].append((cache_key, signature))
             continue
         parsed_files += 1
         parsed_events += len(events)
@@ -172,8 +211,8 @@ def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -
         latest_model: str | None = None
         for parsed in events:
             if parsed.observation is not None:
-                observations.append(parsed.observation)
-            usage_rows.append(
+                batch["observations"].append(parsed.observation)
+            batch["usage_rows"].append(
                 UsageRow(
                     source=SOURCE,
                     tool_key="codex",
@@ -196,7 +235,7 @@ def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -
             latest_time = parsed.occurred_at
             latest_model = parsed.model_key
         if latest_time and latest_model:
-            session_rows.append(
+            batch["session_rows"].append(
                 {
                     "session_id": session["id"],
                     "project": session.get("project"),
@@ -205,26 +244,12 @@ def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -
                     "model_key": latest_model,
                 }
             )
-        pending_signatures.append((cache_key, signature, len(events), not (health.partial or health.quarantined or health.skipped)))
-    def finalize(connection):
-        for session in session_rows:
-            upsert_session(
-                connection,
-                session_id=session["session_id"],
-                tool_key="codex",
-                project=session["project"],
-                started_at=session["started_at"],
-                ended_at=session["ended_at"],
-                model_key=session["model_key"],
-            )
-    from spend_app.adapters.event_identity import reconcile
-    result = persist_rows(database_path=database_path, pricing=pricing, source=SOURCE, usage_rows=usage_rows,
-                          prepare=(lambda connection, rows: reconcile(connection, observations, issues)) if observations else None,
-                          finalize=finalize, issues=issues)
-    for cache_key, signature, count, file_clean in pending_signatures:
-        if not issues or file_clean:
-            _FILE_SIGNATURES[cache_key] = signature
-            _FILE_COUNTS[cache_key] = count
+        batch["pending"].append((cache_key, signature, len(events), not (health.partial or health.quarantined or health.skipped)))
+        if len(batch["usage_rows"]) >= file_cache.BATCH_EVENTS:
+            flush()
+    # Always once more: records this pass's run, sessions and remaining files.
+    flush()
+    result = file_cache.merge_results(results)
     result["files"] = parsed_files
     result["filesSkippedUnchanged"] = skipped_files
     result["filesSkippedOriginator"] = skipped_originator

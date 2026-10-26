@@ -297,6 +297,7 @@ HUD_HTML = r"""<!doctype html>
       .win-pace-tick { position: absolute; top: -3px; bottom: -3px; z-index: 2; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--text); opacity: 0.85; pointer-events: none; }
       .win b { font: 400 16px/1 var(--fd); text-align: right; }
       .win b.payg { color: var(--dim); font: 600 9.5px/1 var(--fd); letter-spacing: 0.12em; }
+      .win b.bal { font-size: 13px; }
       .win.warn b { color: var(--accent); }
       .win.crit b { color: var(--danger); }
       .win.held b, .win.held .meter { opacity: 0.7; }
@@ -313,7 +314,7 @@ HUD_HTML = r"""<!doctype html>
       html.is-mini .page { padding: 6px 10px 8px; }
       html.is-mini .brand, html.is-mini .date-row, html.is-mini .hero, html.is-mini .stats,
       html.is-mini #hud-machines, html.is-mini .live-list, html.is-mini .plans-head, html.is-mini .foot,
-      html.is-mini #hud-theme-btn, html.is-mini #hud-expand-btn { display: none !important; }
+      html.is-mini #hud-theme-btn, html.is-mini #hud-setup-btn, html.is-mini #hud-expand-btn { display: none !important; }
       html.is-mini .mini-head { display: flex !important; align-items: baseline; gap: 7px; min-width: 0; }
       .mini-head strong { font: 400 21px/1 var(--fd); letter-spacing: -0.01em; }
       .mini-head span { color: var(--dim); font-size: 10.5px; white-space: nowrap; }
@@ -335,6 +336,7 @@ HUD_HTML = r"""<!doctype html>
       html.is-mini .win { grid-template-columns: 34px minmax(0, 1fr) 36px 26px; gap: 6px; }
       html.is-mini .win b { font-size: 14px; }
       html.is-mini .win b.payg { font-size: 9.5px; }
+      html.is-mini .win b.bal { font-size: 12px; }
       html.is-mini .meter { height: 7px; }
 
       /* Tooltips: one solid card, a title row, an optional big figure,
@@ -412,6 +414,9 @@ HUD_HTML = r"""<!doctype html>
           </button>
           <button type="button" class="hud-btn" id="hud-theme-btn" aria-label="Switch theme" aria-pressed="false" data-tip>
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none"/></svg>
+          </button>
+          <button type="button" class="hud-btn" id="hud-setup-btn" aria-label="Setup and connections" data-tip>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.2 2.2M16.2 16.2l2.2 2.2M5.6 18.4l2.2-2.2M16.2 7.8l2.2-2.2"/></svg>
           </button>
           <button type="button" class="hud-btn active" id="hud-pin-btn" aria-label="Pin always on top" aria-pressed="true" data-tip>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16v5"/><path class="pin-head" d="M9 4h6l-1 5 3 3v3H7v-3l3-3z"/></svg>
@@ -508,6 +513,14 @@ HUD_HTML = r"""<!doctype html>
           const n = v == null || v === "" ? NaN : Number(v);
           if (!Number.isFinite(n)) return "—";
           return "$" + n.toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        };
+        // A balance short enough for the meter's value column; the tip shows cents.
+        const usdShort = v => {
+          const n = v == null || v === "" ? NaN : Number(v);
+          if (!Number.isFinite(n)) return "—";
+          if (n >= 1000) return "$" + (n / 1000).toFixed(1) + "K";
+          if (n >= 10) return "$" + Math.round(n);
+          return "$" + n.toFixed(2);
         };
         const tok = v => {
           const n = v == null || v === "" ? NaN : Number(v);
@@ -730,6 +743,16 @@ HUD_HTML = r"""<!doctype html>
         labelTip($("hud-mini-btn"), () => isMini ? "Expand" : "Collapse");
         labelTip($("hud-theme-btn"), () => root.dataset.theme === "dark" ? "Light theme" : "Dark theme");
         labelTip($("hud-expand-btn"), "Open dashboard");
+        labelTip($("hud-setup-btn"), "Setup & connections");
+        // Setup is reachable from the HUD even with the dashboard off: the
+        // desktop app opens it in its main window, a browser in a new tab.
+        $("hud-setup-btn").addEventListener("click", async () => {
+          const internals = window.__TAURI_INTERNALS__;
+          if (internals && typeof internals.invoke === "function") {
+            try { await internals.invoke("open_setup_wizard"); return; } catch {}
+          }
+          window.open("/setup", "burnrate-setup");
+        });
         labelTip($("hud-hide-btn"), "Hide · reopen from the tray");
         labelTip($("hud-poll-btn"), "Poll every plan now");
 
@@ -1069,6 +1092,16 @@ HUD_HTML = r"""<!doctype html>
           return Math.round(hours / 24) + "d";
         }
 
+        // Days a balance lasts at the recent spend, short enough for the reset column.
+        const runwayDays = q => q.payg && q.runway && q.runway.days != null && Number.isFinite(Number(q.runway.days))
+          ? Number(q.runway.days) : null;
+        function runwayShort(days) {
+          if (days < 1) return Math.max(1, Math.round(days * 24)) + "h";
+          if (days < 100) return Math.round(days) + "d";
+          return days < 365 ? Math.round(days / 30) + "mo" : "1y+";
+        }
+        const runwayState = days => days < 3 ? "dry" : days < 7 ? "tight" : "safe";
+
         function resetWhen(iso) {
           const date = new Date(iso || "");
           if (Number.isNaN(date.getTime())) return "";
@@ -1167,7 +1200,8 @@ HUD_HTML = r"""<!doctype html>
           opencode: "Z.AI",
           "opencode-go": "OpenCode Go",
           muse: "Muse",
-          openrouter: "OpenRouter"
+          openrouter: "OpenRouter",
+          deepseek: "DeepSeek"
         };
         // Provider marks come from the shared sprite served at /logos.svg.
         const PLAN_LOGOS = {
@@ -1208,7 +1242,8 @@ HUD_HTML = r"""<!doctype html>
                 source: row.source || "",
                 resetsAt: row.resetsAt || "",
                 polledAt: row.polledAt || row.observedAt || provider.polledAt || "",
-                forecast: row.forecast && typeof row.forecast === "object" ? row.forecast : {}
+                forecast: row.forecast && typeof row.forecast === "object" ? row.forecast : {},
+                runway: row.runway && typeof row.runway === "object" ? row.runway : null
               };
             });
             const polledAt = provider.polledAt || (rows.find(r => r.polledAt)?.polledAt) || "";
@@ -1303,6 +1338,14 @@ HUD_HTML = r"""<!doctype html>
           }
 
           const rows = [];
+          const runway = q.payg ? q.runway : null;
+          const days = runwayDays(q);
+          if (days != null) {
+            const spend = usd2(runway.dailyUsd) + "/day over the last " + Math.max(1, Math.round(Number(runway.basisDays) || 0)) + " days";
+            rows.push(["Runway", String(runway.line || "").split(" at ")[0] || runwayShort(days), runwayState(days), spend]);
+          } else if (runway && runway.line) {
+            rows.push(["Runway", runway.state === "idle" ? "no recent spend" : "learning", runway.state === "idle" ? "safe" : "", runway.line]);
+          }
           if (!q.payg && q.allowance != null && q.allowance > 0 && q.used != null) {
             rows.push(["Used", qtyText(q.used, q.unit) + " of " + qtyText(q.allowance, q.unit)]);
           }
@@ -1374,11 +1417,16 @@ HUD_HTML = r"""<!doctype html>
             meter.append(tick);
           }
           const value = document.createElement("b");
-          value.textContent = q.pct == null ? (q.payg ? "PAYG" : "—") : pctText(q.pct);
-          if (q.pct == null && q.payg) value.className = "payg";
+          // A pay-as-you-go lane with a known balance shows the money left, not just "PAYG".
+          const balance = q.pct == null && q.payg && q.unit === "usd" && q.used != null ? usdShort(q.used) : "";
+          value.textContent = q.pct == null ? (balance || (q.payg ? "PAYG" : "—")) : pctText(q.pct);
+          if (q.pct == null && q.payg) value.className = balance ? "bal" : "payg";
           const eta = document.createElement("i");
           eta.className = "win-reset";
-          eta.textContent = resetIn(q.resetsAt);
+          const days = runwayDays(q);
+          eta.textContent = days != null ? runwayShort(days) : resetIn(q.resetsAt);
+          if (days != null && days < 3) cell.classList.add("crit");
+          else if (days != null && days < 7) cell.classList.add("warn");
           cell.append(label, meter, value, eta);
           setTip(cell, () => windowTip(group, q));
           return cell;
@@ -1413,7 +1461,8 @@ HUD_HTML = r"""<!doctype html>
             head.className = "plan-head";
             const mark = document.createElement("span");
             mark.className = "mark";
-            mark.append(iconFor(PLAN_LOGOS[group.key] || (String(group.key).startsWith("claude") ? "claude" : "custom")));
+            const extraLogo = String(group.key).startsWith("claude") ? "claude" : String(group.key).startsWith("opencode-go-") ? "opencode" : "custom";
+            mark.append(iconFor(PLAN_LOGOS[group.key] || extraLogo));
             const name = document.createElement("b");
             if (group.accountLabel) {
               // Mini mode keeps only the account ("Work"); the Claude mark says the rest.

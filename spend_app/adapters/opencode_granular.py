@@ -9,6 +9,7 @@ from spend_app.adapters.local_common import parse_iso_time, sqlite_read_only
 from spend_app.adapters.opencode_schema import merge_messages, parse_message, read_messages, recognize, schema_columns
 from spend_app.adapters.usage_repair import COUNTS, coarse_remainder, delete_event, read_meta, write_meta
 from spend_app.connection_paths import confined, opencode_files
+from spend_app.db import connect
 
 
 def row_from_record(record):
@@ -165,6 +166,68 @@ def combine_results(results, *, issues=(), formats=()):
     return result
 
 
+# Each session's messages are fingerprinted; a pass reconciles and saves only
+# the sessions whose messages changed (OpenCode rewrites its database on every
+# turn, so the whole-store shortcut rarely applies and a pass used to redo all
+# ~40,000 messages in one long transaction). Fingerprints and the issues each
+# session produced persist with the collector's file record, so a restart does
+# not redo them either.
+SESSION_RECORD = "opencode_local:sessions:v1"
+_PRICING_DIGESTS: dict[int, str] = {}
+
+
+def _pricing_digest(pricing) -> str:
+    import hashlib
+
+    digest = _PRICING_DIGESTS.get(id(pricing))
+    if digest is None:
+        digest = hashlib.blake2b(repr(getattr(pricing, "prices", ())).encode("utf-8"), digest_size=8).hexdigest()
+        _PRICING_DIGESTS.clear()
+        _PRICING_DIGESTS[id(pricing)] = digest
+    return digest
+
+
+def _session_fingerprints(messages, pricing, snapshots: dict | None = None) -> dict:
+    """Per session: its messages, the prices, and its cumulative totals.
+
+    A session's messages reconcile against the coarse rows the cumulative
+    step writes from its totals, so a change in those totals changes its
+    fingerprint and only that session is read again.
+    """
+    import hashlib
+
+    grouped = {}
+    for message in messages:
+        grouped.setdefault(message.row.session_id, []).append(message)
+    prices = _pricing_digest(pricing)
+    fingerprints = {}
+    for session, group in grouped.items():
+        digest = hashlib.blake2b(prices.encode("utf-8"), digest_size=16)
+        for message in sorted(group, key=lambda item: item.row.raw_id):
+            digest.update(repr(message).encode("utf-8"))
+        for snapshot in sorted((snapshots or {}).get(session, ()), key=lambda item: (item.provider_id, item.model_id)):
+            digest.update(repr(snapshot).encode("utf-8"))
+        fingerprints[session] = (digest.hexdigest(), len(group))
+    return fingerprints
+
+
+def _load_session_records(database_path) -> dict:
+    from spend_app.adapters import file_cache
+
+    with connect(Path(database_path)) as connection:
+        connection.executescript(file_cache.TABLE_SQL)
+        rows = connection.execute(
+            "SELECT cache_key, signature FROM ingest_file_cache WHERE source=?", (SESSION_RECORD,)).fetchall()
+    records = {}
+    for row in rows:
+        try:
+            fingerprint, issues = json.loads(row["signature"])
+        except (ValueError, TypeError):
+            continue
+        records[row["cache_key"]] = (fingerprint, list(issues))
+    return records
+
+
 def ingest(*, database_path, pricing, source_database):
     from spend_app.adapters import unchanged
     path = Path(source_database)
@@ -181,11 +244,23 @@ def ingest(*, database_path, pricing, source_database):
 
 def _collect(*, database_path, pricing, path):
     messages, cumulative, issues, formats = read_source(path)
-    from spend_app.adapters.opencode_local import _ingest_cumulative
+    from spend_app.adapters.opencode_local import _ingest_cumulative, read_session_snapshots
     legacy_results = []
+    # One read of the cumulative totals serves both the cumulative step and
+    # the session fingerprints, so the two never see different totals.
+    snapshots: dict | None = {}
     for legacy in cumulative:
         try:
-            result = _ingest_cumulative(database_path=database_path, pricing=pricing, source_database=legacy)
+            legacy_snapshots = read_session_snapshots(legacy) if legacy.is_file() else []
+        except (OSError, ValueError, sqlite3.Error):
+            legacy_snapshots = None
+            snapshots = None
+        if snapshots is not None:
+            for snapshot in legacy_snapshots:
+                snapshots.setdefault(snapshot.session_id, []).append(snapshot)
+        try:
+            result = _ingest_cumulative(database_path=database_path, pricing=pricing, source_database=legacy,
+                                        snapshots=legacy_snapshots)
             legacy_results.append(result)
             issues.extend(result.get("issues", []))
         except (OSError, ValueError, sqlite3.Error):
@@ -196,6 +271,43 @@ def _collect(*, database_path, pricing, path):
         raise ValueError("OpenCode cumulative source could not be read.")
     if not messages and cumulative:
         return combine_results(legacy_results, issues=issues, formats=formats)
-    result = persist_rows(database_path=database_path, pricing=pricing, source="opencode_local", usage_rows=[m.row for m in messages],
-                          prepare=lambda connection, rows: reconcile_messages(connection, messages, issues), issues=issues)
+    fingerprints = _session_fingerprints(messages, pricing, snapshots)
+    records = _load_session_records(database_path)
+    # Without the totals a fingerprint cannot see a cumulative change, so a
+    # cumulative step that wrote rows keeps every session in.
+    legacy_wrote = any((result.get("eventsWritten") or 0) + (result.get("unpricedEventsWritten") or 0)
+                       for result in legacy_results)
+    if snapshots is None and legacy_wrote:
+        records = {}
+    unchanged = {session for session, (fingerprint, _count) in fingerprints.items()
+                 if records.get(session, (None,))[0] == fingerprint}
+    skipped_messages = sum(fingerprints[session][1] for session in unchanged)
+    for session in unchanged:
+        issues.extend(records[session][1])
+    changed = [message for message in messages if message.row.session_id not in unchanged]
+    session_issues: dict = {}
+
+    def prepare(connection, rows):
+        outputs = []
+        by_session = {}
+        for message in changed:
+            by_session.setdefault(message.row.session_id, []).append(message)
+        for session, group in by_session.items():
+            found = session_issues.setdefault(session, [])
+            outputs.extend(reconcile_messages(connection, group, found))
+            issues.extend(found)
+        return outputs
+
+    def finalize(connection):
+        connection.executemany(
+            "INSERT OR REPLACE INTO ingest_file_cache(source, cache_key, signature, events, quarantined) VALUES(?,?,?,?,0)",
+            [(SESSION_RECORD, session, json.dumps([fingerprints[session][0], sorted(set(session_issues.get(session, [])))]),
+              fingerprints[session][1]) for session in {message.row.session_id for message in changed}])
+
+    result = persist_rows(database_path=database_path, pricing=pricing, source="opencode_local", usage_rows=[m.row for m in changed],
+                          prepare=prepare, finalize=finalize, issues=issues)
+    if skipped_messages:
+        result = {**result, "eventsSeen": result.get("eventsSeen", 0) + skipped_messages,
+                  "eventsAccepted": result.get("eventsAccepted", 0) + skipped_messages,
+                  "sessionsSkippedUnchanged": len(unchanged)}
     return combine_results([*legacy_results, result], issues=issues, formats=formats)

@@ -38,7 +38,7 @@ Harness stores are read-only:
 - JSONL / logs / CSV: open for read (`r` / `rb`)
 - No writes to Codex, Claude transcripts, OpenCode, ZCode, Grok logs, Traycer `chat.db`, or Antigravity logs
 
-**Exception (opt-in):** if `BURNRATE_CLAUDE_OAUTH_REFRESH=1`, the Claude OAuth fallback may atomically replace `%USERPROFILE%\.claude\.credentials.json` when the access token is missing, expired, or the usage endpoint returns 401. Default is off. Unrelated JSON keys are preserved. A lock plus compare-before-replace tries not to clobber a newer Claude writer. This still rotates the refresh token when Anthropic issues a new one.
+**Exception:** if `BURNRATE_CLAUDE_OAUTH_REFRESH=1`, the Claude OAuth fallback may atomically replace `%USERPROFILE%\.claude\.credentials.json` when the access token is missing, expired, or the usage endpoint returns 401. The desktop service turns this on at first start together with the Claude switch in setup's **What we found** step; turning that switch off stops it. The CLI leaves it off. Unrelated JSON keys are preserved. A lock plus compare-before-replace tries not to clobber a newer Claude writer. This still rotates the refresh token when Anthropic issues a new one.
 
 Traycer CLI (`profile-rate-limits`, `agent list`) is a local process spawn, not a file write. BURNRATE captures stdout JSON and does not feed prompts. Side effects inside `traycer.exe` are outside BURNRATE’s control; the spawn is **experimental**.
 
@@ -78,7 +78,7 @@ Optional Tailscale Serve is an operator choice and is never enabled by BURNRATE.
 | Never in API JSON | Including `/api/spend/limits` error strings (redacted) |
 | Never in doctor output | Paths may be generic; secrets are not echoed |
 | OpenRouter | Inference key ≠ `OPENROUTER_MANAGEMENT_KEY` |
-| Claude | Desktop history and Traycer quota are preferred; OAuth refresh is opt-in |
+| Claude | Desktop history and Traycer quota are preferred; OAuth refresh follows the Claude switch in setup |
 
 `GET /api/spend/limits` can fire every quota collector, including experimental Claude refresh and Traycer CLI. Keep it off any public reverse proxy.
 

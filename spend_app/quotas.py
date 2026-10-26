@@ -27,6 +27,7 @@ from spend_app.limits import (
     _claude_limits_uncached,
     _codex_active_sessions,
     _codex_limits,
+    _deepseek_balance_uncached,
     _grok_active_sessions,
     _grok_limits_uncached,
     _muse_limits_uncached,
@@ -56,9 +57,11 @@ QUOTA_LIMIT_ORDER = {
 
 
 def _limit_order(provider_key: str) -> tuple[str, ...]:
-    # Extra Claude account lanes order their windows like the default lane.
-    if provider_key not in QUOTA_LIMIT_ORDER and str(provider_key).startswith("claude-code-"):
-        return QUOTA_LIMIT_ORDER["claude-code"]
+    # Extra Claude account and OpenCode profile lanes order their windows like the default lane.
+    if provider_key not in QUOTA_LIMIT_ORDER:
+        for prefix, default in (("claude-code-", "claude-code"), ("opencode-go-", "opencode-go")):
+            if str(provider_key).startswith(prefix):
+                return QUOTA_LIMIT_ORDER[default]
     return QUOTA_LIMIT_ORDER.get(provider_key, ())
 
 
@@ -75,8 +78,11 @@ PROVIDER_SOURCES = {
     "muse": "muse_quota_endpoint",
     "opencode-go": "opencode_go_usage_endpoint",
     "openrouter": "openrouter_credits_api",
+    "deepseek": "deepseek_balance_api",
     "antigravity": "antigravity_local_rpc",
 }
+# Lanes that report an account balance from a key connected in BURNRATE.
+BALANCE_SOURCES = ("openrouter", "deepseek")
 
 REQUIRED_LIMITS: dict[str, tuple[tuple[str, str], ...]] = {
     "codex": (("weekly", "Codex weekly window"),),
@@ -123,6 +129,7 @@ class QuotaSample:
 LANE_CADENCE: dict[str, tuple[int, int]] = {
     "codex": (15, 15),
     "openrouter": (60, 300),
+    "deepseek": (60, 300),
     "claude-code": (90, 300),  # 40/h: the OAuth usage endpoint 429s near 120/h with a ~1 h lockout (2026-09-02)
     "opencode": (30, 300),
     "muse": (30, 300),
@@ -134,6 +141,9 @@ QUOTA_ACTIVITY_WINDOW_SECONDS = 300
 THROTTLE_BACKOFF_MIN_SECONDS = 60
 THROTTLE_BACKOFF_MAX_SECONDS = 3600  # long enough to honour a full-hour Retry-After
 THROTTLED_STATUS = 429
+# A poll whose readings could not be saved (database locked) is retried this
+# soon instead of waiting out the lane's whole interval.
+RETRY_AFTER_FAILED_SAVE_SECONDS = 60
 
 
 class QuotaLaneScheduler:
@@ -148,10 +158,13 @@ class QuotaLaneScheduler:
         self._lock = threading.Lock()
 
     def lane_cadence(self, provider_key: str) -> tuple[int, int]:
-        from spend_app.claude_accounts import PRIMARY_KEY, is_account_key
+        from spend_app import claude_accounts, opencode_profiles
 
-        if provider_key not in self.cadence and is_account_key(provider_key):
-            return self.cadence.get(PRIMARY_KEY, (90, 300))
+        if provider_key not in self.cadence:
+            if claude_accounts.is_account_key(provider_key):
+                return self.cadence.get(claude_accounts.PRIMARY_KEY, (90, 300))
+            if opencode_profiles.is_profile_key(provider_key):
+                return self.cadence.get(opencode_profiles.PRIMARY_KEY, (30, 300))
         return self.cadence.get(provider_key, (15, 15))
 
     def due(self, provider_key: str, *, active: bool = False) -> bool:
@@ -183,6 +196,13 @@ class QuotaLaneScheduler:
             else:
                 self._backoff.pop(provider_key, None)
                 self._next_due[provider_key] = now + interval
+
+    def retry_soon(self, provider_key: str, seconds: float = RETRY_AFTER_FAILED_SAVE_SECONDS) -> None:
+        """Make a lane due again shortly; used when its readings were not saved."""
+        with self._lock:
+            now = self._clock()
+            self._last_polled[provider_key] = now
+            self._next_due[provider_key] = now + float(seconds)
 
     def nudge(self, provider_key: str | None = None) -> None:
         targets = [provider_key] if provider_key else list(self.cadence)
@@ -232,7 +252,19 @@ def lane_is_active(database_path: Path | str, provider_key: str, *, now: datetim
     """True when the lane's tool produced usage or has a live agent within the activity window."""
     moment = now or datetime.now(UTC)
     from spend_app.claude_accounts import account_for_key, is_account_key
+    from spend_app.opencode_profiles import is_profile_key, profile_for_key
 
+    if is_profile_key(provider_key):
+        # OpenCode writes the profile's own database while that profile is in use.
+        profile = profile_for_key(provider_key)
+        stamps = []
+        for path in ((profile.database, profile.database.with_name(profile.database.name + "-wal")) if profile else ()):
+            try:
+                stamps.append(path.stat().st_mtime)
+            except OSError:
+                pass
+        modified = max(stamps, default=None)
+        return modified is not None and moment.timestamp() - modified <= QUOTA_ACTIVITY_WINDOW_SECONDS
     if is_account_key(provider_key):
         # Usage is not attributed per account; Claude Code rewrites the
         # profile's state file while that account is in use.
@@ -559,7 +591,7 @@ OPENCODE_GO_WINDOWS = (
 )
 
 
-def opencode_go_quota_samples(payload: dict, *, source: str) -> list[QuotaSample]:
+def opencode_go_quota_samples(payload: dict, *, source: str, provider_key: str = "opencode-go") -> list[QuotaSample]:
     status = payload.get("status")
     # No consent, no Go subscription, or nothing reported: no card at all.
     if status in {"absent", "unavailable"}:
@@ -572,12 +604,12 @@ def opencode_go_quota_samples(payload: dict, *, source: str) -> list[QuotaSample
         window = windows.get(limit_key) if exact else None
         used_pct = _number(window.get("usedPct")) if isinstance(window, dict) else None
         if used_pct is None:
-            samples.append(_unavailable("opencode-go", limit_key, label, source,
+            samples.append(_unavailable(provider_key, limit_key, label, source,
                                         detail if not exact else f"OpenCode Go omitted the {label}."))
             continue
         samples.append(
             QuotaSample(
-                provider_key="opencode-go",
+                provider_key=provider_key,
                 limit_key=limit_key,
                 label=label,
                 unit="pct",
@@ -651,6 +683,41 @@ def openrouter_quota_samples(
             label="OpenRouter funds remaining",
             unit="usd",
             source="openrouter_credits_api",
+            used=remaining,
+            is_payg=True,
+        )
+    ]
+
+
+DEEPSEEK_BALANCE_LABEL = "DeepSeek funds remaining"
+
+
+def deepseek_quota_samples(payload: dict, *, source: str = "deepseek_balance_api") -> list[QuotaSample]:
+    # No connected key: no card at all, as for a computer without DeepSeek.
+    if payload.get("status") == "absent":
+        return []
+    windows = _windows_by_key(payload)
+    balance = windows.get("balance") if payload.get("status") == "exact" else None
+    remaining = _number(balance.get("remainingUsd")) if balance else None
+    if remaining is None:
+        return [
+            QuotaSample(
+                provider_key="deepseek",
+                limit_key="balance",
+                label=DEEPSEEK_BALANCE_LABEL,
+                unit=UNAVAILABLE_UNIT,
+                source=source,
+                is_payg=True,
+                reason=str(payload.get("detail") or "DeepSeek account balance is unavailable."),
+            )
+        ]
+    return [
+        QuotaSample(
+            provider_key="deepseek",
+            limit_key="balance",
+            label=DEEPSEEK_BALANCE_LABEL,
+            unit="usd",
+            source=source,
             used=remaining,
             is_payg=True,
         )
@@ -751,6 +818,22 @@ def _collect(name: str, ttl: int, loader: Callable[[], dict], builder, source: s
     return _apply_throttle(builder(payload, source=source), payload)
 
 
+def _opencode_profile_collector(profile) -> Callable[[], list[QuotaSample]]:
+    """Go quota for one extra OpenCode profile: its own stored key, its own lane."""
+
+    def collect() -> list[QuotaSample]:
+        # Window labels match the default lane; the card names the profile.
+        return _collect(
+            f"opencode_go_profile_poll:{profile.key}",
+            10,
+            lambda: _opencode_go_limits_uncached(profile.database, provider_key=profile.key),
+            lambda payload, *, source: opencode_go_quota_samples(payload, source=source, provider_key=profile.key),
+            "opencode_go_usage_endpoint",
+        )
+
+    return collect
+
+
 def _codex_quota_collector(database_path):
     from spend_app.codex_quota import current_scope
     key = f"codex_quota_poll:{Path(database_path).resolve()}:{current_scope()}"
@@ -776,10 +859,15 @@ def default_quota_collectors(
         "opencode-go": lambda: _collect("opencode_go_quota_poll", 10, _opencode_go_limits_uncached,
                                         opencode_go_quota_samples, "opencode_go_usage_endpoint"),
         "openrouter": openrouter_quota_samples,
+        "deepseek": lambda: _collect("deepseek_balance_poll", 10, _deepseek_balance_uncached,
+                                     deepseek_quota_samples, "deepseek_balance_api"),
     }
     from spend_app.claude_accounts import extra_accounts
     for account in extra_accounts():
         result[account.key] = _claude_account_collector(account)
+    from spend_app.opencode_profiles import extra_profiles
+    for profile in extra_profiles():
+        result[profile.key] = _opencode_profile_collector(profile)
     from spend_app.integration_policy import authorize
     if authorize("claude_statusline_snapshot")[0]:
         from spend_app.claude_statusline import read_snapshot
@@ -790,22 +878,29 @@ def default_quota_collectors(
     from spend_app.providers import REGISTRY
     from dataclasses import replace
     settings = replace(load_settings(), database_path=Path(database_path))
-    sources = {"codex": "codex_local", "claude-code": "claude_local", "grok": "grok_local", "opencode": "opencode_local", "opencode-go": "opencode_local", "muse": "muse_local", "antigravity": "antigravity_local", "openrouter": "openrouter"}
+    sources = {"codex": "codex_local", "claude-code": "claude_local", "grok": "grok_local", "opencode": "opencode_local", "opencode-go": "opencode_local", "muse": "muse_local", "antigravity": "antigravity_local", "openrouter": "openrouter", "deepseek": "deepseek"}
     def guarded(provider, reader):
         def collect():
             key = None
             with lock_for(database_path):
                 state = Store(database_path).read()
                 binding = state["bindings"].get(sources.get(provider))
-                if binding and provider != "openrouter":
-                    return unavailable_samples(provider, "Managed location grants usage only. Activity/quota at custom locations are not supported; no default profile was read.")
-                if binding and provider == "openrouter":
+                if binding and provider not in BALANCE_SOURCES:
+                    if suppresses_default_profile(sources.get(provider), binding):
+                        return unavailable_samples(provider, "Managed location grants usage only. Activity/quota at custom locations are not supported; no default profile was read.")
+                    binding = None  # the default location: read the default profile as usual
+                if binding:
                     if not binding["enabled"]:
+                        if provider == "deepseek":
+                            return deepseek_quota_samples({"status": "error", "detail": "Balance connection is disconnected."})
                         return unavailable_samples(provider, "Balance connection is disconnected.")
                     service = Service(settings)
-                    key = external_key(REGISTRY.get("openrouter"), settings) or service.vault.get(binding["credentialRef"])
+                    key = external_key(REGISTRY.get(provider), settings) or service.vault.get(binding["credentialRef"])
             if binding and provider == "openrouter":
                 return openrouter_quota_samples(collector=lambda: _openrouter_credits_uncached(key))
+            if binding and provider == "deepseek":
+                payload = _deepseek_balance_uncached(key)
+                return _apply_throttle(deepseek_quota_samples(payload), payload)
             return reader()
         return collect
     return {provider: guarded(provider, reader) for provider, reader in result.items()}
@@ -828,7 +923,8 @@ def _persist_fields(sample: QuotaSample) -> tuple:
     )
 
 
-from spend_app.connections import lock_for, serialize_collection
+from spend_app.connections import lock_for, serialize_collection, suppresses_default_profile
+from spend_app.capacity_forecast import record_balance_sample, record_pace_samples
 
 
 def poll_quotas(
@@ -862,18 +958,19 @@ def poll_quotas(
     resolved = collectors if collectors is not None else default_quota_collectors(path)
     scheduler = lanes if lanes is not None else (_DATABASE_LANES.setdefault(str(path.resolve()), QuotaLaneScheduler()) if collectors is None else None)
     is_active = activity or (lambda provider: lane_is_active(path, provider))
-    managed_completion = None
+    managed_completion: dict[str, dict] = {}
     if collectors is None:
         from spend_app.connections import Store
         with lock_for(path):
-            managed_completion = Store(path).read()["bindings"].get("openrouter")
-    balance_ok = False
+            bindings = Store(path).read()["bindings"]
+            managed_completion = {source: bindings[source] for source in BALANCE_SOURCES if bindings.get(source)}
+    balance_ok: dict[str, bool] = {}
     written = 0
     skipped = 0
     polled: list[str] = []
     deferred: list[str] = []
     paced = []
-    polled_samples: list[tuple[str, list[QuotaSample]]] = []
+    polled_samples: list[tuple[str, list[QuotaSample], bool, bool]] = []
     for provider_key in sorted(resolved):
         lane_active = bool(is_active(provider_key)) if scheduler is not None else False
         if scheduler is not None and not scheduler.due(provider_key, active=lane_active):
@@ -890,9 +987,11 @@ def poll_quotas(
                 provider_key,
                 "Quota collection failed for this lane; it will retry on the next tick.",
             )
-        if provider_key == "openrouter":
-            balance_ok = any(sample.used is not None for sample in samples)
-        if scheduler is not None:
+        if provider_key in BALANCE_SOURCES:
+            balance_ok[provider_key] = any(sample.used is not None for sample in samples)
+        throttled = any(sample.throttle_seconds is not None for sample in samples)
+        if scheduler is not None and throttled:
+            # A provider back-off holds even if saving fails below.
             scheduler.record(provider_key, samples, active=lane_active)
         present = {sample.limit_key for sample in samples}
         for limit_key, label in REQUIRED_LIMITS.get(provider_key, ()):
@@ -906,80 +1005,100 @@ def poll_quotas(
                         "No sample was produced for this limit during the poll.",
                     )
                 )
-        polled_samples.append((provider_key, samples))
+        polled_samples.append((provider_key, samples, lane_active, throttled))
 
     sources_by_provider = {"codex": "codex_local", "claude-code": "claude_local", "grok": "grok_local", "opencode": "opencode_local", "opencode-go": "opencode_local", "antigravity": "antigravity_local", "openrouter": "openrouter"}
-    with lock_for(path):
-        current_bindings = {}
-        if collectors is None:
-            from spend_app.connections import Store
-            current_bindings = Store(path).read()["bindings"]
-        with connect(path) as connection:
-            for provider_key, samples in polled_samples:
-                if collectors is None and provider_key != "openrouter" and sources_by_provider.get(provider_key) in current_bindings:
-                    samples = unavailable_samples(
-                        provider_key,
-                        "Managed location grants usage only. Activity/quota at custom locations are not supported; no default profile was read.",
-                    )
-                for sample in samples:
-                    from spend_app.codex_quota import save_metadata
-                    save_metadata(connection, sample, polled_at)
-                    fields = _persist_fields(sample)
-                    latest = connection.execute(
-                        "SELECT id, label, used, allowance, unit, pct, resets_at, source, is_payg "
-                        "FROM quotas WHERE provider_key=? AND limit_key=? "
-                        "ORDER BY polled_at DESC, id DESC LIMIT 1",
-                        (sample.provider_key, sample.limit_key),
-                    ).fetchone()
-                    if sample.pct is not None and not sample.is_payg:
-                        paced.append(sample)
-                    if (
-                        sample.unit == "unavailable"
-                        and latest is not None
-                        and latest["unit"] != "unavailable"
-                        and (
-                            str(latest["source"] or "").startswith("sync:")
-                            or (
-                                collectors is None
-                                and latest["resets_at"]
-                                and str(latest["resets_at"]) > polled_at
+    try:
+        with lock_for(path):
+            current_bindings = {}
+            if collectors is None:
+                from spend_app.connections import Store
+                current_bindings = Store(path).read()["bindings"]
+            with connect(path) as connection:
+                for provider_key, samples, _active, _throttled in polled_samples:
+                    source_key = sources_by_provider.get(provider_key)
+                    if (collectors is None and provider_key not in BALANCE_SOURCES
+                            and suppresses_default_profile(source_key, current_bindings.get(source_key))):
+                        samples = unavailable_samples(
+                            provider_key,
+                            "Managed location grants usage only. Activity/quota at custom locations are not supported; no default profile was read.",
+                        )
+                    for sample in samples:
+                        from spend_app.codex_quota import save_metadata
+                        save_metadata(connection, sample, polled_at)
+                        fields = _persist_fields(sample)
+                        if sample.limit_key == "balance" and sample.unit == "usd" and sample.used is not None:
+                            record_balance_sample(connection, provider_key=sample.provider_key, source=sample.source,
+                                                  usd=sample.used, sampled_at=polled_at)
+                        latest = connection.execute(
+                            "SELECT id, label, used, allowance, unit, pct, resets_at, source, is_payg "
+                            "FROM quotas WHERE provider_key=? AND limit_key=? "
+                            "ORDER BY polled_at DESC, id DESC LIMIT 1",
+                            (sample.provider_key, sample.limit_key),
+                        ).fetchone()
+                        if sample.pct is not None and not sample.is_payg:
+                            paced.append(sample)
+                        if (
+                            sample.unit == "unavailable"
+                            and latest is not None
+                            and latest["unit"] != "unavailable"
+                            and (
+                                str(latest["source"] or "").startswith("sync:")
+                                or (
+                                    collectors is None
+                                    and latest["resets_at"]
+                                    and str(latest["resets_at"]) > polled_at
+                                )
                             )
+                        ):
+                            skipped += 1
+                            continue
+                        if latest is not None and tuple(latest)[1:] == fields:
+                            # Same observation: no new history row, but the row now
+                            # states the most recent poll that confirmed the value so
+                            # "last poll" stays truthful.
+                            connection.execute(
+                                "UPDATE quotas SET polled_at=? WHERE id=? AND polled_at<?",
+                                (polled_at, latest["id"], polled_at),
+                            )
+                            skipped += 1
+                            continue
+                        upsert_quota(
+                            connection,
+                            provider_key=sample.provider_key,
+                            limit_key=sample.limit_key,
+                            label=fields[0],
+                            used=sample.used,
+                            allowance=sample.allowance,
+                            unit=sample.unit,
+                            pct=sample.pct,
+                            resets_at=sample.resets_at,
+                            source=sample.source,
+                            polled_at=polled_at,
+                            is_payg=sample.is_payg,
                         )
-                    ):
-                        skipped += 1
-                        continue
-                    if latest is not None and tuple(latest)[1:] == fields:
-                        # Same observation: no new history row, but the row now
-                        # states the most recent poll that confirmed the value so
-                        # "last poll" stays truthful.
-                        connection.execute(
-                            "UPDATE quotas SET polled_at=? WHERE id=? AND polled_at<?",
-                            (polled_at, latest["id"], polled_at),
-                        )
-                        skipped += 1
-                        continue
-                    upsert_quota(
-                        connection,
-                        provider_key=sample.provider_key,
-                        limit_key=sample.limit_key,
-                        label=fields[0],
-                        used=sample.used,
-                        allowance=sample.allowance,
-                        unit=sample.unit,
-                        pct=sample.pct,
-                        resets_at=sample.resets_at,
-                        source=sample.source,
-                        polled_at=polled_at,
-                        is_payg=sample.is_payg,
-                    )
-                    written += 1
-            from spend_app.capacity_forecast import record_pace_samples
-            record_pace_samples(connection, paced, polled_at)
-        if managed_completion and "openrouter" in polled:
-            from spend_app.connections import Service
-            from spend_app.config import load_settings
-            from dataclasses import replace
-            Service(replace(load_settings(), database_path=path)).completion("openrouter", managed_completion["revision"], {"status": "success" if balance_ok else "failed", "eventsSeen": 0})
+                        written += 1
+                record_pace_samples(connection, paced, polled_at)
+            completed = [source for source in managed_completion if source in polled]
+            if completed:
+                from spend_app.connections import Service
+                from spend_app.config import load_settings
+                from dataclasses import replace
+                service = Service(replace(load_settings(), database_path=path))
+                for source in completed:
+                    service.completion(source, managed_completion[source]["revision"],
+                                       {"status": "success" if balance_ok.get(source) else "failed", "eventsSeen": 0})
+    except Exception:
+        if scheduler is not None:
+            for provider_key, _samples, _active, throttled in polled_samples:
+                if not throttled:
+                    scheduler.retry_soon(provider_key)
+        raise
+    # Only saved readings move a lane to its next interval; see retry_soon above.
+    if scheduler is not None:
+        for provider_key, samples, lane_active, throttled in polled_samples:
+            if not throttled:
+                scheduler.record(provider_key, samples, active=lane_active)
     if written > 0:
         if collectors is None:
             try:
@@ -1134,8 +1253,9 @@ def default_activity_collector(database_path=None) -> dict:
         with lock_for(database_path):
             bindings = Store(database_path).read()["bindings"]
     # Existing readers have no custom-root contract. Do not read another
-    # default profile for a managed usage binding (including disabled ones).
-    activity = {} if "traycer_local" in bindings else _traycer_activity()
+    # default profile for a custom or disabled usage binding; a binding of the
+    # default location reads that same profile anyway.
+    activity = {} if suppresses_default_profile("traycer_local", bindings.get("traycer_local")) else _traycer_activity()
     readers = {
         "grokSessions": ("grok_local", _grok_active_sessions),
         "codexSessions": ("codex_local", _codex_active_sessions),
@@ -1143,7 +1263,8 @@ def default_activity_collector(database_path=None) -> dict:
         "antigravitySessions": ("antigravity_local", _antigravity_active_sessions),
         "claudeSessions": ("claude_local", _claude_active_sessions),
     }
-    return {**activity, **{field: [] if source in bindings else reader() for field, (source, reader) in readers.items()}}
+    return {**activity, **{field: [] if suppresses_default_profile(source, bindings.get(source)) else reader()
+                           for field, (source, reader) in readers.items()}}
 
 
 def poll_activity(
@@ -1235,7 +1356,7 @@ def order_capacity_rows(rows: Sequence[QuotaSample]) -> list[QuotaSample]:
         primary_values[provider_key] = primary.pct if primary.pct is not None else float("-inf")
 
     def provider_rank(provider_key: str) -> tuple[int, float]:
-        if provider_key == "openrouter":
+        if provider_key in BALANCE_SOURCES:
             return (1, 0.0)
         return (0, -primary_values.get(provider_key, float("-inf")))
 

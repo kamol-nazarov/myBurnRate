@@ -114,7 +114,7 @@ def test_independent_scope_prior_success_and_pricing_policy():
     assert health["grok_local"]["status"] == reports["grok_local"]["state"] == "partial"
     assert health["claude_local_alt"]["configuredState"] == "configured"
     assert reports["claude_local_alt"]["state"] == "configuration_missing"
-    assert result["queryCounts"] == [3, 49]
+    assert result["queryCounts"] == [3, 53]
     assert "secret.txt" not in json.dumps(result)
 
 

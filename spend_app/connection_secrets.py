@@ -9,6 +9,9 @@ import httpx
 from spend_app.connection_paths import LocationError
 from spend_app.integration_policy import assert_allowed_host, identity_headers
 
+# Balance sources are checked against their own policy lane.
+POLICY_LANES = {"openrouter": "openrouter_credits", "deepseek": "deepseek_balance"}
+
 
 class Vault:
     def __init__(self, database):
@@ -83,10 +86,14 @@ def test_provider(source, key):
     elif source == "openrouter":
         url = "https://openrouter.ai/api/v1/credits"
         headers["Authorization"] = "Bearer " + key
+    elif source == "deepseek":
+        url = "https://api.deepseek.com/user/balance"
+        headers["Authorization"] = "Bearer " + key
     else:
         raise LocationError("Unsupported documented provider.")
     from urllib.parse import urlsplit
-    assert_allowed_host("openrouter_credits" if source == "openrouter" else source, urlsplit(url).hostname)
+    lane = POLICY_LANES.get(source, source)
+    assert_allowed_host(lane, urlsplit(url).hostname)
     try:
         with httpx.Client(timeout=10, trust_env=False, follow_redirects=False) as client:
             # At most two fixed read endpoints (usage and cost), no pagination,
@@ -97,7 +104,7 @@ def test_provider(source, key):
             elif source == "anthropic_admin":
                 urls.append("https://api.anthropic.com/v1/organizations/cost_report")
             for endpoint in urls:
-                assert_allowed_host("openrouter_credits" if source == "openrouter" else source, urlsplit(endpoint).hostname)
+                assert_allowed_host(lane, urlsplit(endpoint).hostname)
                 with client.stream(method, endpoint, headers=headers, params=params, json=body) as response:
                     status = response.status_code
                     if status in {401, 403}:

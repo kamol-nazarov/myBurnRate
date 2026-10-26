@@ -86,7 +86,7 @@ def test_scheduled_quota_polling_denies_native_lanes(poisoned, tmp_path, monkeyp
     from spend_app.quotas import QuotaLaneScheduler
 
     result = poll_quotas(database, lanes=QuotaLaneScheduler(), now=lambda: NOW)
-    assert set(result["polledProviders"]) == {"antigravity", "claude-code", "codex", "grok", "muse", "openrouter", "opencode", "opencode-go"}
+    assert set(result["polledProviders"]) == {"antigravity", "claude-code", "codex", "deepseek", "grok", "muse", "openrouter", "opencode", "opencode-go"}
     assert poisoned == []
     import sqlite3
 

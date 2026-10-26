@@ -45,7 +45,7 @@ The default runtime is a single lightweight process: **FastAPI + SQLite + Sideca
 
 ## Key Application Features
 
-- **Interactive 5-Step Setup Wizard (`/setup`)**: Configure your computer's name, pick a multi-computer role (**Primary Hub**, **Connected Spoke**, or **Standalone**), auto-scan & import local AI coding harnesses on the spot, select active monthly subscriptions with 1-click presets, and configure the Sidecar HUD.
+- **Setup Wizard (`/setup`)**: Choose how this computer works (on its own, joined to your hub, or as the hub), see every HUD card's real state with the fix for anything missing, add plans suggested from your meters, connect pay-as-you-go balances, and check the live HUD before finishing.
 - **Unified Spend & Capacity Dashboard (optional)**: Off by default. With `BURNRATE_ENABLE_DASHBOARD=1` it is served at `/`; otherwise `/` opens the HUD.
   - **Live Capacity & Run-Dry Forecasting**: Per-provider quota gauges sorted by *what runs out first*, projecting when a 5-hour or weekly window will exhaust based on your recent burn pace, with configurable in-app and browser alerts.
   - **Plans & Value**: Compare `This month` or `Last month` subscription expense against recorded API-equivalent usage, shared tool associations, and value multiples.
@@ -150,16 +150,21 @@ burnrate desktop
 
 ## First-Run Application Setup Wizard
 
-When you open [http://127.0.0.1:17331/setup](http://127.0.0.1:17331/setup) (or click **Setup Wizard** in **Settings → Connected computers** / the system tray menu), the 5-step wizard walks you through:
+The desktop app opens setup on first launch. Open it again any time with the gear button on the HUD, **Run Setup Wizard…** in the tray menu, or [http://127.0.0.1:17331/setup](http://127.0.0.1:17331/setup). **Set up later** closes it until you open it yourself.
 
-1. **Step 1 — Computer Identity:** Name this machine (e.g., `Main Workstation`, `Studio Laptop`) and verify your detected OS and timezone.
-2. **Step 2 — Multi-Computer Topology:**
-   - **Primary Hub (`hub`):** Stores the master SQLite database and generates 1-click `brpair_...` pairing codes for your other computers.
-   - **Connected Spoke (`spoke`):** Connects to your Primary Hub using a `brpair_...` pairing code and automatically streams local usage in the background.
-   - **Standalone (`standalone`):** Tracks only this computer locally.
-3. **Step 3 — AI Harnesses Auto-Scan & Import:** Automatically detects local installations of **Claude Code**, **OpenAI Codex CLI**, **OpenCode**, **ZCode**, **Grok CLI**, **Antigravity**, and **Traycer**, and imports historical usage and active agents with one click.
-4. **Step 4 — Active Subscriptions:** Select from 1-click monthly plan presets (`Claude Max`, `Claude Pro`, `ChatGPT Pro`, `ChatGPT Plus`, `SuperGrok`, `Z.AI Coding Plan`, `OpenCode Go`, `OpenCode Go Plus`) or add custom plans so Plans & Value and daily burn proration work immediately.
-5. **Step 5 — Sidecar HUD Configuration:** Choose whether the frameless Sidecar HUD opens automatically on launch and stays pinned Always-on-Top.
+1. **This computer** — name it, then choose how it works:
+   - **Just this computer:** usage stays here; no account.
+   - **Join my hub:** paste a pairing code from your hub (or sign in to a hub account) and this computer's usage syncs in the background.
+   - **Make this the hub:** pick the address other computers use to reach it and create a pairing code for each one.
+2. **What we found** — one row per HUD card: whether the tool's usage is being read, whether its plan meter has a current reading, and what to do when it does not ("Open Antigravity…"). Extra Claude accounts and OpenCode profiles appear on their own rows. The three meters that reuse another app's sign-in (Claude, Z.AI, OpenCode Go) show their switch right there.
+3. **Plans & balances** — plans are suggested from what the meters report (for example **Claude Max 20x** from Claude Code's account tier); check each price before adding it. Connect OpenRouter and DeepSeek keys here; they are tested, then stored in Windows Credential Manager. [http://127.0.0.1:17331/connections](http://127.0.0.1:17331/connections) opens this step directly.
+4. **Check** — a live preview of your HUD cards and a list of anything that still needs you, switches for desktop notifications (with **Send a test**), **Copy diagnostics**, then **Finish setup**.
+
+**Desktop notifications.** The desktop service sends a Windows notification when a plan passes its alert level (90% unless set otherwise), when a plan will run out before it resets, when a meter has not updated for over an hour, or when hub sync keeps failing. Each is sent once per window or stretch, and quiet hours (22:00–07:00 by default) hold them back unless a run-out is under two hours away. A closed Antigravity or an idle Muse Code does not count as a stuck meter. Turn each kind off in the Check step, or all of them with `BURNRATE_DESKTOP_NOTIFICATIONS=0` in `%LOCALAPPDATA%\BURNRATE\.env`.
+
+**Copy diagnostics** puts a plain-text report on the clipboard: versions and builds, freshness, each meter's newest reading, recent failed runs and the last lines of the service logs. Keys, e-mail addresses and your home folder are removed, and nothing is sent anywhere.
+
+The first collection runs in the background while you go through the steps; the wizard shows its progress per tool and never waits on it.
 
 ---
 
@@ -167,18 +172,14 @@ When you open [http://127.0.0.1:17331/setup](http://127.0.0.1:17331/setup) (or c
 
 BURNRATE supports single-account, self-hosted multi-computer synchronization without any external cloud service:
 
-1. **On your Primary Hub computer:**
-   - Open `/setup` (Step 2) or **Settings → Connected computers → Add computer**.
-   - Select your reachable Hub address (Tailscale `100.x.y.z` or LAN IP) and generate a **Pairing Code** (`brpair_...`).
-2. **On your secondary Spoke computer:**
-   - Install BURNRATE, open `/setup` (Step 2), choose **Connected Spoke**, and paste the `brpair_...` code.
-   - Once connected, the Spoke's background scheduler automatically pushes incremental usage events, sessions, and live agent runs to the Hub every ingest cycle.
-   - Alternatively, you can run the lightweight CLI sync agent directly:
+1. **On your hub computer:** open setup, choose **Make this the hub**, pick the address your other computers can reach (Tailscale or LAN), name the other computer and click **Create pairing code**. The code contains a key for this hub; share it only with your own computers.
+2. **On the other computer:** install BURNRATE, open setup, choose **Join my hub** and paste the code. Its background scheduler then pushes usage, sessions and live agents to the hub every ingest cycle.
+   - A hub account works too: choose **Account** under **Join my hub**. Signing in never creates an account; use **Create an account instead** (at least 8 characters).
+   - Or run the lightweight CLI sync agent directly:
      ```powershell
      burnrate sync --hub http://<hub-ip>:17331 --token br_m_<id>_<secret>
      ```
-3. **Filtering by Computer:**
-   - Once two or more computers are registered, a computer switcher (`All computers` + each machine name) appears in the top bar of both the main dashboard and the Sidecar HUD.
+3. **Filtering by computer:** once two or more computers are registered, a computer switcher (`All computers` + each machine name) appears in the dashboard and the Sidecar HUD.
 
 ---
 
@@ -196,6 +197,7 @@ burnrate machines list
 burnrate machines register --name "MacBook Pro"
 burnrate machines revoke --id <machine_id>
 burnrate sync --hub http://<hub>:17331 --token <br_m_token> [--once]
+burnrate hub update --ssh <host> [--push-local] [--dry-run]  # Fast-forward a self-hosted hub, restart it, print its build
 
 # Subscription management
 burnrate subscription list
@@ -276,8 +278,10 @@ Official vs experimental is about the *interface BURNRATE uses*, not about wheth
 | Traycer per-CLI usage | `app-assets.db` `usage_analytics_facts` (older hosts: `chat.db`) | **experimental**, on by default | yes | none | per-CLI tokens; provider-reported cost only when Traycer marks it as such |
 | OpenAI admin usage/cost | official Usage + Costs APIs | opt-in official | none | `api.openai.com` if `OPENAI_ADMIN_KEY` is set | exact |
 | Anthropic admin usage/cost | official org usage/cost | opt-in official | none | `api.anthropic.com` if `ANTHROPIC_ADMIN_KEY` is set | exact |
-| Claude OAuth usage | undocumented `/api/oauth/usage` | **experimental, opt-in** | `~/.claude/.credentials.json` | Anthropic + Claude platform | quota only; requires `BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE=1` |
-| Additional Claude accounts | each profile's cached plan usage, else its `/api/oauth/usage` | **experimental**, on when a second profile is signed in | `~/.claude-<name>/.claude.json` (and `.credentials.json` for the fallback) | none while the profile is in use; Anthropic + Claude platform when idle, under the same opt-in | quota only, one lane per account |
+| Claude OAuth usage | undocumented `/api/oauth/usage` | **experimental**, on by default in the desktop service (setup switch) | `~/.claude/.credentials.json` | Anthropic + Claude platform | quota only; `BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE` |
+| Additional Claude accounts | each profile's cached plan usage, else its `/api/oauth/usage` | **experimental**, on when a second profile is signed in | `~/.claude-<name>/.claude.json` (and `.credentials.json` for the fallback) | none while the profile is in use; Anthropic + Claude platform when idle, under the same Claude switch | quota only, one lane per account |
+| Additional OpenCode profiles | each profile's Console key + `opencode.ai/zen/go/v1/usage` | **experimental**, on when a second profile is signed in to another account | `~/.opencode-<name>/opencode/opencode.db` (read-only) | HTTPS to `opencode.ai`, under the OpenCode Go switch | quota plus the profile's own session tokens |
+| DeepSeek balance | official `/user/balance` | opt-in official | none | `api.deepseek.com` only with a key connected for it | account balance only |
 | Requesty | — | **not connected** | none | none | not a rate authority |
 
 Full file patterns, hosts, credentials, mutation risk, and double-count rules: [docs/providers.md](docs/providers.md).
@@ -290,6 +294,23 @@ Claude Code keeps one signed-in account per config directory. Run a second accou
 - A profile signed in to the same account as the default lane is ignored, so nothing is shown twice.
 - While a profile is in use, its lane reads the plan usage Claude Code itself cached, which needs no network call. When that cache is more than 20 minutes old, the lane asks Anthropic's usage endpoint with that profile's own credentials, on the same throttled cadence as the default Claude lane.
 - Lanes are named after the directory. The account's email address is never shown.
+
+### More than one OpenCode profile
+
+A second OpenCode profile is OpenCode started with `XDG_DATA_HOME` pointing at its own directory, such as `%USERPROFILE%\.opencode-go-2` or `%USERPROFILE%\.opencode-work`. When that profile is signed in to a different OpenCode Console account, BURNRATE shows its Go quota as its own lane, **OpenCode Go · Profile 2** or **OpenCode Go · Work**, beside the default OpenCode Go lane.
+
+- Profiles are found automatically in `~/.opencode-*`. Put other directories in `BURNRATE_OPENCODE_PROFILE_DIRS` (separated by `;` on Windows).
+- A profile signed in to the same account as the default profile is ignored.
+- The lane uses only that profile's own stored key, under the same `BURNRATE_ENABLE_OPENCODE_GO_QUOTA` switch and cadence as the default Go lane. The key is never shown or stored by BURNRATE.
+- The profile's own sessions are counted too, recorded under the card's key (`opencode-go-2`), so its card gets its own burn rate and run-out forecast. Extra Claude accounts work the same way from their `projects` folder.
+
+### Pay-as-you-go balances
+
+OpenRouter and DeepSeek show the money left on the account. Connect each one in **Connections → Add provider API**; the key is stored in Windows Credential Manager.
+
+- **OpenRouter** needs a *management* key from [openrouter.ai/settings/management-keys](https://openrouter.ai/settings/management-keys). An ordinary inference key is refused by the credits endpoint.
+- **DeepSeek** takes an ordinary API key from [platform.deepseek.com](https://platform.deepseek.com/api_keys). BURNRATE uses it only to read the balance, never to run a model, and never borrows a key another tool stores. A balance reported only in CNY is shown as unavailable.
+- **Runway.** After a day of readings each card says how long the balance lasts at the recent spend, for example *about 12 days at your current spend ($3.40/day)*. The figure comes from the last 14 days of balance readings (sampled hourly); a top-up is not counted as spend. The HUD shows the days left where plan rows show their reset time.
 
 ---
 
@@ -336,10 +357,15 @@ Optional keys in `.env` (all empty by default — copy `.env.example` to `.env` 
 | `OPENAI_ADMIN_KEY` | OpenAI organization usage + cost |
 | `ANTHROPIC_ADMIN_KEY` | Anthropic organization usage + cost |
 | `OPENROUTER_MANAGEMENT_KEY` | OpenRouter credits (dedicated; not the inference key) |
-| `BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE` | Set to `1` to consent to native Claude OAuth usage reads |
-| `BURNRATE_CLAUDE_OAUTH_REFRESH` | With usage consent enabled, set to `1` to additionally allow token refresh |
-| `BURNRATE_ENABLE_ZAI_QUOTA` | Set to `1` to consent to quota reads using a stored Z.AI key |
-| `BURNRATE_ENABLE_OPENCODE_GO_QUOTA` | Set to `1` to consent to OpenCode Go limit reads using OpenCode's stored Console key |
+| `BURNRATE_ENABLE_CLAUDE_OAUTH_USAGE` | Claude OAuth usage reads with Claude Code's credentials. On by default in the desktop service, which sets it to `1` on first start; setup's **What we found** step shows it as a switch that writes `1`/`0` to the per-user `.env`. Unset (off) for the CLI |
+| `BURNRATE_CLAUDE_OAUTH_REFRESH` | Lets those reads renew Claude Code's expired token. Follows the Claude switch in setup |
+| `BURNRATE_ENABLE_ZAI_QUOTA` | Z.AI credit reads using a stored Coding Plan key. On by default in the desktop service, which sets it to `1` on first start; setup's **What we found** step shows it as a switch that writes `1`/`0` to the per-user `.env`. Unset (off) for the CLI |
+| `BURNRATE_ENABLE_OPENCODE_GO_QUOTA` | OpenCode Go usage reads using OpenCode's stored Console key. On by default in the desktop service, which sets it to `1` on first start; setup's **What we found** step shows it as a switch that writes `1`/`0` to the per-user `.env`. Unset (off) for the CLI |
+| `DEEPSEEK_BALANCE_KEY` | DeepSeek key for the balance card (prefer connecting it in setup's **Plans & balances**) |
+| `BURNRATE_ALLOW_REGISTRATION` | Set to `1` on a hub to accept new accounts after the first (off: computers join with pairing codes) |
+| `BURNRATE_CENTRAL_SERVER_URL` | Default hub address offered when signing in (no built-in hub) |
+| `BURNRATE_HUB_SSH` / `BURNRATE_HUB_PATH` / `BURNRATE_HUB_SERVICE` | Defaults for `burnrate hub update` |
+| `BURNRATE_DESKTOP_NOTIFICATIONS` | Windows notifications from the desktop service; `0` turns them off (the CLI never sends them) |
 | `SPEND_DATABASE_PATH` | SQLite path (default `%LOCALAPPDATA%\BURNRATE`) |
 | `SPEND_PRICING_PATH` | YAML cards (packaged default) |
 | `SPEND_TIMEZONE` | IANA zone for midnight and windows (default `UTC`) |
@@ -385,7 +411,8 @@ Common cases:
 - `unavailable` / `—` — missing telemetry or pricing; not zero.
 - Port `17331` already in use — another BURNRATE process is running (`.\scripts\status-burnrate.ps1`).
 - Amber status pill naming a source (for example `MUSE WEEKLY HELD` or `TRAYCER FAILED`) — that source or meter on *this* computer stopped refreshing. Hover the pill (or open **Diagnostics → Freshness**) for the reason and its age; `GET /api/spend/freshness` returns the same report and is never proxied to the hub.
-- Service logs live in `%LOCALAPPDATA%\BURNRATE\logs\dashboard.log` and rotate at 5 MB (three backups kept). Each local collection pass logs one line with its duration and slowest sources.
+- Service logs live in `%LOCALAPPDATA%\BURNRATE\logs\dashboard.log` and rotate at 5 MB (three backups kept). Each local collection pass logs one line with its duration and slowest sources; the collection worker logs to `collector.log`.
+- Asking for help — **Copy diagnostics** in setup's Check step collects versions, freshness, meters and recent log lines with secrets removed.
 - Experimental provider down — that lane fails independently.
 
 Full legend: [docs/troubleshooting.md](docs/troubleshooting.md).

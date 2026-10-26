@@ -381,6 +381,10 @@ def test_sidecar_hud_and_tauri_native_scaffold(tmp_path: Path, monkeypatch) -> N
     assert cli_main() == 0
 
 
+# Setup changes must come from BURNRATE's own pages (see _setup_request_refused).
+SETUP_HEADERS = {"X-BURNRATE-Request": "1"}
+
+
 def test_setup_wizard_pairing_and_complete(tmp_path: Path) -> None:
     from decimal import Decimal
     from spend_app.setup_wizard import decode_pairing_code, maybe_run_configured_spoke_sync
@@ -415,6 +419,7 @@ def test_setup_wizard_pairing_and_complete(tmp_path: Path) -> None:
     # 3. Hub generates 1-click pairing code for Spoke
     pair_res = hub_client.post(
         "/api/setup/pair-hub",
+        headers=SETUP_HEADERS,
         json={"remoteName": "Studio Laptop", "hubHost": "http://testserver"},
     )
     assert pair_res.status_code == 200
@@ -453,6 +458,7 @@ def test_setup_wizard_pairing_and_complete(tmp_path: Path) -> None:
 
     connect_res = spoke_client.post(
         "/api/setup/connect-spoke",
+        headers=SETUP_HEADERS,
         json={
             "pairingCode": pair_data["pairingCode"],
             "computerName": "Studio Laptop",
@@ -471,6 +477,7 @@ def test_setup_wizard_pairing_and_complete(tmp_path: Path) -> None:
     # 5. Complete setup wizard on Hub with preset & custom subscriptions + computer name
     complete_res = hub_client.post(
         "/api/setup/complete",
+        headers=SETUP_HEADERS,
         json={
             "computerName": "Main Workstation",
             "role": "hub",
@@ -569,6 +576,7 @@ def test_central_server_account_login_subscriptions_and_multi_computer_sync(
     # 1. Create account from MyDesktop with subscriptions
     reg_res = desktop_client.post(
         "/api/setup/account",
+        headers=SETUP_HEADERS,
         json={
             "mode": "register",
             "username": "kamol",
@@ -615,6 +623,7 @@ def test_central_server_account_login_subscriptions_and_multi_computer_sync(
 
     login_res = laptop_client.post(
         "/api/setup/account",
+        headers=SETUP_HEADERS,
         json={
             "mode": "login",
             "username": "kamol",

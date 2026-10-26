@@ -67,6 +67,7 @@ CLAUDE_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 CLAUDE_OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits"
+DEEPSEEK_BALANCE_URL = "https://api.deepseek.com/user/balance"
 CLAUDE_OAUTH_REFRESH_ENV = "BURNRATE_CLAUDE_OAUTH_REFRESH"
 CLAUDE_TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000
 CLAUDE_DESKTOP_HISTORY_MAX_AGE_SECONDS = 45 * 60
@@ -74,6 +75,7 @@ CLAUDE_DESKTOP_HISTORY_MAX_AGE_SECONDS = 45 * 60
 # older cache means the profile is idle and the OAuth endpoint is asked instead.
 CLAUDE_CACHED_USAGE_MAX_AGE_SECONDS = 20 * 60
 OPENROUTER_ALLOWED_HOSTS = frozenset({"openrouter.ai"})
+DEEPSEEK_ALLOWED_HOSTS = frozenset({"api.deepseek.com"})
 CLAUDE_OAUTH_TOKEN_ALLOWED_HOSTS = frozenset({"platform.claude.com"})
 CLAUDE_OAUTH_USAGE_ALLOWED_HOSTS = frozenset({"api.anthropic.com"})
 ZAI_QUOTA_ALLOWED_HOSTS = frozenset({"api.z.ai"})
@@ -122,6 +124,16 @@ def _finite_number(value: object) -> float | None:
     if number != number or number in (float("inf"), float("-inf")):
         return None
     return number
+
+
+def _amount(value: object) -> float | None:
+    """A finite amount sent as a number or a decimal string ("110.00")."""
+    if isinstance(value, str):
+        try:
+            value = float(value.strip())
+        except ValueError:
+            return None
+    return _finite_number(value)
 
 
 def _antigravity_log_path() -> Path:
@@ -243,6 +255,22 @@ def _antigravity_from_quota_result(payload: dict) -> dict:
     }
 
 
+ANTIGRAVITY_CLOSED_DETAIL = "Antigravity isn't running. Its meter is read from the app while it is open."
+
+
+def _antigravity_running() -> bool:
+    """True when an Antigravity language server process exists (Windows tasklist; cheap)."""
+    try:
+        completed = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq language_server.exe", "/NH", "/FO", "CSV"],
+            capture_output=True, text=True, timeout=5, check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return True  # unknown: do not claim it is closed
+    return "language_server" in completed.stdout.lower()
+
+
 def _antigravity_limits_uncached() -> dict:
     try:
         base_url, csrf_token = _antigravity_local_connection()
@@ -266,13 +294,15 @@ def _antigravity_limits_uncached() -> dict:
         response.raise_for_status()
         return _antigravity_from_quota_result(_grpc_web_json_payload(response.content))
     except Exception as exc:
+        closed = not _antigravity_running()
         return {
             "key": "antigravity",
             "name": "Antigravity",
             "plan": "Google AI",
             "status": "error",
             "windows": [],
-            "detail": f"Experimental Antigravity localhost gRPC-Web quota lookup failed ({type(exc).__name__}).",
+            "detail": ANTIGRAVITY_CLOSED_DETAIL if closed
+            else f"Antigravity is running but its quota lookup failed ({type(exc).__name__}). It may still be starting.",
         }
 
 
@@ -345,14 +375,79 @@ def _openrouter_credits_uncached(api_key: str | None = None) -> dict:
             "detail": "OpenRouter account credits from the read-only management endpoint.",
         }
     except (httpx.HTTPError, KeyError, TypeError, ValueError, json.JSONDecodeError, RuntimeError) as exc:
+        detail = (
+            "OpenRouter rejected the key. The credits endpoint takes a management key "
+            "(openrouter.ai/settings/management-keys), not an inference key."
+            if _rejected(exc)
+            else f"OpenRouter credits lookup failed ({type(exc).__name__})."
+        )
         return {
             "key": "openrouter",
             "name": "OpenRouter",
             "plan": "PAYG",
             "status": "error",
             "windows": [],
-            "detail": f"OpenRouter credits lookup failed ({type(exc).__name__}).",
+            "detail": detail,
+            **_throttle_fields(exc),
         }
+
+
+def _rejected(exc: BaseException) -> bool:
+    """True when the provider refused the key itself (HTTP 401/403)."""
+    return isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in {401, 403}
+
+
+def _deepseek_balance_uncached(api_key: str | None = None) -> dict:
+    """Read the account balance with the DeepSeek key the user connected.
+
+    The official balance endpoint takes an ordinary API key, so BURNRATE uses
+    only the key connected for this purpose (or ``DEEPSEEK_BALANCE_KEY``),
+    never one another tool stores. One GET to an allowlisted host, no inference.
+    """
+    base = {"key": "deepseek", "name": "DeepSeek", "plan": "PAYG", "windows": []}
+    key = api_key or os.getenv("DEEPSEEK_BALANCE_KEY")
+    if not key:
+        return {**base, "status": "absent", "detail": "No DeepSeek key is connected."}
+    try:
+        _assert_allowed_https_host(DEEPSEEK_BALANCE_URL, DEEPSEEK_ALLOWED_HOSTS)
+        response = httpx.get(
+            DEEPSEEK_BALANCE_URL,
+            headers={"Authorization": f"Bearer {key}", "Accept": "application/json", **identity_headers()},
+            timeout=10,
+            trust_env=False,
+            follow_redirects=False,
+        )
+        response.raise_for_status()
+        infos = (response.json() or {}).get("balance_infos") or []
+        by_currency = {str(info.get("currency") or "").upper(): info for info in infos if isinstance(info, dict)}
+        info = by_currency.get("USD")
+        if info is None:
+            detail = ("DeepSeek reported a CNY balance only; BURNRATE shows USD balances."
+                      if "CNY" in by_currency else "DeepSeek returned no balance.")
+            return {**base, "status": "unavailable", "detail": detail}
+        total = _amount(info.get("total_balance"))
+        if total is None:
+            return {**base, "status": "unavailable", "detail": "DeepSeek returned no USD balance amount."}
+        granted = _amount(info.get("granted_balance"))
+        topped_up = _amount(info.get("topped_up_balance"))
+        return {
+            **base,
+            "status": "exact",
+            "observedAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "windows": [
+                {
+                    "key": "balance",
+                    "remainingUsd": max(0.0, total),
+                    "grantedUsd": granted,
+                    "toppedUpUsd": topped_up,
+                }
+            ],
+            "detail": "DeepSeek account balance from the official balance endpoint.",
+        }
+    except (httpx.HTTPError, KeyError, TypeError, ValueError, json.JSONDecodeError, RuntimeError) as exc:
+        detail = ("DeepSeek rejected the key. Replace it in Connections." if _rejected(exc)
+                  else f"DeepSeek balance lookup failed ({type(exc).__name__}).")
+        return {**base, "status": "error", "detail": detail, **_throttle_fields(exc)}
 
 
 def _throttle_fields(exc: BaseException) -> dict:
@@ -829,6 +924,10 @@ def _claude_oauth_usage(credentials_path: Path) -> dict:
     }
 
 
+MUSE_IDLE_DETAIL = ("Muse Code reports usage only for a few hours after you use it, and it has not been used "
+                    "recently. The meter fills in the next time you use Muse Code.")
+
+
 def _muse_limits_uncached() -> dict:
     allowed, reason = authorize("muse_quota_endpoint")
     if not allowed:
@@ -872,10 +971,12 @@ def _muse_limits_uncached() -> dict:
             "detail": f"Muse Code quota lookup failed ({type(exc).__name__}).",
             **_throttle_fields(exc),
         }
-    # The key mint answers account/subscription fields on every call but only
-    # sometimes carries subs_usage; the Muse CLI itself treats it as optional
-    # and also learns usage from response.subscription_usage stream frames.
-    # Absence is "no observation", never an inferred 0%.
+    # The key mint answers account/subscription fields on every call but
+    # carries subs_usage only while a 5-hour window is open, i.e. within a few
+    # hours of using Muse Code (observed 2026-10-23: the last reading came 3
+    # minutes before its 5-hour reset; nothing after, though the weekly window
+    # ran 3 more days). The CLI also learns usage from stream frames that are
+    # not stored. Absence is "no observation", never an inferred 0%.
     subs_usage = (payload.get("subs_usage") if isinstance(payload, dict) else None) or {}
     if not isinstance(subs_usage, dict):
         subs_usage = {}
@@ -909,7 +1010,7 @@ def _muse_limits_uncached() -> dict:
         "detail": (
             "Meta Muse Code quota endpoint; 5-hour and weekly subscription windows."
             if windows
-            else "Meta's Muse Code key endpoint answered without subscription usage (subs_usage); no usage window was reported for this account."
+            else MUSE_IDLE_DETAIL
         ),
     }
 
@@ -1034,16 +1135,16 @@ def _zai_limits_uncached() -> dict:
     }
 
 
-def _opencode_credential(integration_id: str) -> str | None:
+def _opencode_credential(integration_id: str, database: Path | None = None) -> str | None:
     """An API key OpenCode 2 stores for ``integration_id`` in its own database.
 
     Read-only, following OpenCode's own choice: the active (or not
     deactivated) credential, newest first. Console keys must belong to the
-    hosted OpenCode console.
+    hosted OpenCode console. ``database`` names an extra profile's store.
     """
     from spend_app.providers import default_opencode_database
 
-    path = Path(os.environ.get("OPENCODE_DB") or default_opencode_database())
+    path = Path(database) if database is not None else Path(os.environ.get("OPENCODE_DB") or default_opencode_database())
     if not path.is_file():
         return None
     try:
@@ -1068,28 +1169,33 @@ def _opencode_credential(integration_id: str) -> str | None:
     return key.strip() if isinstance(key, str) and key.strip() else None
 
 
-def _opencode_go_keys() -> list[str]:
-    """Keys that may read Go usage: the Console key first, then a Go-only key."""
-    keys = [_opencode_credential("opencode")]
+def _opencode_go_keys(database: Path | None = None) -> list[str]:
+    """Keys that may read Go usage: the Console key first, then a Go-only key.
+
+    ``database`` names an extra profile's store; only the default profile
+    also takes ``OPENCODE_API_KEY``.
+    """
+    keys = [_opencode_credential("opencode", database)]
     from spend_app.providers import default_opencode_database
 
-    auth_path = default_opencode_database().parent / "auth.json"
+    auth_path = (Path(database) if database is not None else default_opencode_database()).parent / "auth.json"
     try:
         entry = (json.loads(auth_path.read_text(encoding="utf-8")) or {}).get("opencode-go") or {}
         if isinstance(entry, dict) and entry.get("type") == "api":
             keys.append(str(entry.get("key") or "").strip() or None)
     except (OSError, ValueError, AttributeError):
         pass
-    keys.append(os.environ.get("OPENCODE_API_KEY", "").strip() or None)
+    if database is None:
+        keys.append(os.environ.get("OPENCODE_API_KEY", "").strip() or None)
     return list(dict.fromkeys(key for key in keys if key))
 
 
-def _opencode_go_limits_uncached() -> dict:
-    base = {"key": "opencode-go", "name": "OpenCode Go", "plan": "Go", "windows": []}
+def _opencode_go_limits_uncached(database: Path | None = None, *, provider_key: str = "opencode-go") -> dict:
+    base = {"key": provider_key, "name": "OpenCode Go", "plan": "Go", "windows": []}
     allowed, reason = authorize("opencode_go_quota")
     if not allowed:
         return {**base, "status": "unavailable", "detail": reason}
-    keys = _opencode_go_keys()
+    keys = _opencode_go_keys(database) if database is not None else _opencode_go_keys()
     if not keys:
         return {**base, "status": "absent", "detail": "No OpenCode Console or Go key was found."}
     try:

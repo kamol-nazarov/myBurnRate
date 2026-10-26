@@ -48,7 +48,7 @@ Override `SPEND_DATABASE_PATH` and `SPEND_PRICING_PATH` in `.env` if needed. `ba
 
 | Path | Role |
 | --- | --- |
-| `GET /` | Opens the HUD (in the desktop app it hides the main window). Serves the dashboard HTML only with `BURNRATE_ENABLE_DASHBOARD=1`; shows the setup wizard on `/?app=1` until setup is complete |
+| `GET /` | Opens the HUD (in the desktop app it hides the main window). Serves the dashboard HTML only with `BURNRATE_ENABLE_DASHBOARD=1`; shows the setup wizard on `/?app=1` until setup is complete or set up later |
 | `GET /hud` | Sidecar HUD HTML |
 | `GET /api/spend/hud` | HUD live meters and activity, without loading usage history |
 | `GET /api/spend/hud/usage` | HUD spend statistics from recorded usage; each read keeps usage collection active |
@@ -97,9 +97,10 @@ Quota collectors tick every 15 seconds; each lane decides whether it is due:
 | --- | --- |
 | Codex (local telemetry) | 15 / 15 |
 | OpenRouter credits | 60 / 300 |
+| DeepSeek balance | 60 / 300 |
 | Claude Code | 90 / 300 |
 | OpenCode / Z.AI | 30 / 300 |
-| OpenCode Go | 30 / 300 |
+| OpenCode Go (each profile) | 30 / 300 |
 | Muse Code | 30 / 300 |
 | Grok Build | 30 / 300 |
 | Antigravity | 90 / 300 |

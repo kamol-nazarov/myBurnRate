@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable, Iterable
@@ -320,6 +320,10 @@ def persist_rows(
         try:
             if prepare is not None:
                 usage_rows = tuple(prepare(connection, usage_rows))
+            from spend_app.db import TOOL_KEY_OVERRIDES
+            overrides = TOOL_KEY_OVERRIDES.get()
+            if overrides:
+                usage_rows = tuple(replace(row, tool_key=overrides.get(row.tool_key, row.tool_key)) for row in usage_rows)
             issues = tuple(issues)
             for row in usage_rows:
                 if not row.telemetry_complete:

@@ -35,6 +35,9 @@ _FILE_SIGNATURES: dict[str, tuple[int, int]] = {}
 
 
 def reset_file_cache() -> None:
+    from spend_app.adapters import file_cache
+
+    file_cache.forget(SOURCE)
     _FILE_SIGNATURES.clear()
     _FILE_COUNTS.clear()
 
@@ -70,7 +73,11 @@ def ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) ->
 
 
 def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -> dict:
+    from spend_app.adapters import file_cache
+
     initialize(database_path)
+    file_cache.warm(database_path, SOURCE, _FILE_SIGNATURES, _FILE_COUNTS)
+    empty_files: list = []
     parsed_files = 0
     parsed_events = 0
     confirmed_events = 0
@@ -92,8 +99,9 @@ def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -
         from spend_app.connection_paths import cache_identity, file_signature
 
         cache_key = cache_identity(database_path, path, PARSER_VERSION)
+        cached = _FILE_SIGNATURES.get(cache_key)
         try:
-            signature = file_signature(path, stat)
+            signature = cached if file_cache.unchanged(cached, stat) else file_signature(path, stat)
         except OSError:
             issues.append("muse_file_unavailable")
             continue
@@ -112,6 +120,7 @@ def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -
         quarantined += health.quarantined + health.skipped
         if not session:
             _FILE_SIGNATURES[cache_key] = signature
+            empty_files.append((cache_key, signature))
             continue
         parsed_files += 1
         duplicates_removed += max(0, raw_usage_lines - len(events))
@@ -134,6 +143,10 @@ def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -
             )
         pending_signatures.append((cache_key, signature, len(events), not (health.partial or health.quarantined or health.skipped)))
 
+    def cacheable():
+        return [(key, signature, count, 0) for key, signature, count, file_clean in pending_signatures
+                if not issues or file_clean]
+
     def finalize(connection):
         for session in session_rows:
             upsert_session(
@@ -145,6 +158,7 @@ def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -
                 ended_at=session["ended_at"],
                 model_key=session["model_key"],
             )
+        file_cache.save(connection, SOURCE, [*cacheable(), *((key, signature, 0, 0) for key, signature in empty_files)])
 
     result = persist_rows(
         database_path=database_path,
@@ -154,10 +168,9 @@ def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -
         finalize=finalize,
         issues=issues,
     )
-    for cache_key, signature, count, file_clean in pending_signatures:
-        if not issues or file_clean:
-            _FILE_SIGNATURES[cache_key] = signature
-            _FILE_COUNTS[cache_key] = count
+    for cache_key, signature, count, _unusable in cacheable():
+        _FILE_SIGNATURES[cache_key] = signature
+        _FILE_COUNTS[cache_key] = count
     result["files"] = parsed_files
     result["filesSkippedUnchanged"] = skipped_files
     result["eventsSeen"] = parsed_events + confirmed_events

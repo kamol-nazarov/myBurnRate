@@ -76,7 +76,7 @@ class FakeVault:
 
 @pytest.fixture
 def service(monkeypatch):
-    for name in ("OPENAI_ADMIN_KEY", "ANTHROPIC_ADMIN_KEY", "CURSOR_API_KEY", "CURSOR_IMPORT_PATH", "OPENROUTER_MANAGEMENT_KEY"):
+    for name in ("OPENAI_ADMIN_KEY", "ANTHROPIC_ADMIN_KEY", "CURSOR_API_KEY", "CURSOR_IMPORT_PATH", "OPENROUTER_MANAGEMENT_KEY", "DEEPSEEK_BALANCE_KEY"):
         monkeypatch.delenv(name, raising=False)
     settings = SimpleNamespace(database_path=Path("C:/fake/burnrate.db"), openai_admin_key=None, anthropic_admin_key=None)
     return c.Service(settings, MemoryStore(), FakeInspector(), FakeVault(), Mock())
@@ -554,7 +554,7 @@ def test_managed_import_errors_do_not_publish_paths_or_keys():
     assert "plain-secret" not in result
 
 
-@pytest.mark.parametrize("source,expected", [("openai_admin", 2), ("anthropic_admin", 2), ("openrouter", 1)])
+@pytest.mark.parametrize("source,expected", [("openai_admin", 2), ("anthropic_admin", 2), ("openrouter", 1), ("deepseek", 1)])
 def test_explicit_provider_tests_use_only_bounded_fixed_reads(source, expected, monkeypatch):
     response = Mock(status_code=200)
     response.__enter__ = Mock(return_value=response)

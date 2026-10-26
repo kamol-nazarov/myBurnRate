@@ -114,6 +114,18 @@ def _ignore_user_env(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_desktop_notifications(monkeypatch):
+    """Only the desktop service sends Windows toasts; a test never does."""
+    monkeypatch.delenv("BURNRATE_DESKTOP_NOTIFICATIONS", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_opencode_profiles(monkeypatch):
+    """Extra OpenCode profiles in the developer's home must not become quota lanes in tests."""
+    monkeypatch.setattr("spend_app.opencode_profiles.extra_profiles", lambda: ())
+
+
+@pytest.fixture(autouse=True)
 def _block_live_httpx(monkeypatch):
     """Fail httpx calls whose host is not loopback, unless the client is mocked.
 

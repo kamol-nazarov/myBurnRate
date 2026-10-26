@@ -55,11 +55,13 @@ def upgrade_database(path: Path, initialize_base):
                         "PRAGMA table_info(subscription_daily_costs)"
                     )
                 }
+                # Additive sample tables (PACE_SCHEMA_SQL): pace and balance history.
                 pace_ready = (
                     source.execute(
-                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='quota_pace_samples'"
-                    ).fetchone()
-                    is not None
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
+                        "AND name IN ('quota_pace_samples', 'balance_samples')"
+                    ).fetchone()[0]
+                    == 2
                 )
                 current = (
                     version == SCHEMA_VERSION

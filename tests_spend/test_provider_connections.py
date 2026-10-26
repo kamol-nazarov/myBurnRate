@@ -120,6 +120,7 @@ def test_poll_cadences_match_the_documented_rate_table() -> None:
     assert LANE_CADENCE == {
         "codex": (15, 15),
         "openrouter": (60, 300),
+        "deepseek": (60, 300),
         "claude-code": (90, 300),
         "opencode": (30, 300),
         "muse": (30, 300),

@@ -169,7 +169,7 @@ def test_integration_metadata_exposes_booleans_not_values():
             "OPENROUTER_MANAGEMENT_KEY": "another-private-key",
         },
     )
-    assert len(reports) == 5
+    assert len(reports) == 6
     by_setting = {row["setting"]: row for row in reports}
     assert by_setting["OPENAI_ADMIN_KEY"]["configured"] is True
     assert by_setting["OPENAI_ADMIN_KEY"]["host"] == "api.openai.com"

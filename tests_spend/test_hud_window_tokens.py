@@ -91,7 +91,8 @@ def test_meter_windows_carry_their_burned_tokens_and_todays_models(tmp_path):
     assert claude["weekly"]["tokens"] == 1150 + 220 + 1000
     assert claude["weekly"]["today"] == {"tokens": 1370, "models": [
         {"name": "Opus 5.5", "tokens": 1150}, {"name": "Haiku 5.5", "tokens": 220}]}
-    assert "claude-code-work" not in tokens, "extra accounts have no collected usage"
+    # An extra account burns only usage recorded under its own card key, never the default account's.
+    assert all(window["tokens"] == 0 for window in tokens.get("claude-code-work", {}).values())
 
     assert tokens["opencode"]["weekly"]["tokens"] == 300
     assert tokens["opencode"]["weekly"]["today"]["models"] == [{"name": "ZCode GLM 5.3", "tokens": 300}]

@@ -16,7 +16,7 @@ from spend_app.source_reconcile import reconcile_events
 from spend_app.sync import list_machines, machines_fingerprint, row_machine_id
 from spend_app.timeutil import epoch_micros, from_epoch_micros, next_month_start as _next_month_start_utc, parse_utc, previous_calendar_period
 from spend_app.pricing import PricingEngine, UnpricedModelError
-from spend_app.capacity_forecast import alert_fingerprint, apply_forecasts, load_pace_samples, pace_fingerprint, read_forecast_view, active_provider_keys
+from spend_app.capacity_forecast import alert_fingerprint, apply_balance_runway, apply_forecasts, load_pace_samples, pace_fingerprint, read_forecast_view, active_provider_keys
 from spend_app.quotas import REQUIRED_LIMITS, split_quota_label
 from spend_app.subscriptions import daily_cost
 from spend_app.plan_service import effective_terms
@@ -285,6 +285,7 @@ TOOL_NAMES = {
     "cursor": "Cursor",
     "grok": "SuperGrok",
     "openrouter": "OpenRouter",
+    "deepseek": "DeepSeek",
     "opencode": "OpenCode",
     "opencode-go": "OpenCode Go",
     "zcode": "ZCode",
@@ -301,6 +302,7 @@ TOOL_COLORS = {
     "opencode-go": "#3fb4a0",
     "zcode": "#f28c45",
     "openrouter": "#565d69",
+    "deepseek": "#4d6bfe",
     "xai": "#5cd6e8",
     "antigravity": "#4aa5ff",
     "muse": "#6c8cff",
@@ -333,6 +335,12 @@ PROVIDER_META = {
     "openrouter": {
         "providerKey": "openrouter",
         "providerName": "OpenRouter",
+        "plan": "Pay as you go",
+        "isPayg": True,
+    },
+    "deepseek": {
+        "providerKey": "deepseek",
+        "providerName": "DeepSeek",
         "plan": "Pay as you go",
         "isPayg": True,
     },
@@ -370,6 +378,8 @@ SUMMARY_CAPACITY_PROVIDERS = (
     "muse",
     "openrouter",
 )
+# Account-balance lanes: one "balance" row, no window and no percentage.
+BALANCE_PROVIDERS = ("openrouter", "deepseek")
 UNAVAILABLE_QUOTA_REASON = "no persisted quota snapshot"
 MODEL_NAMES = {
     "gpt-6-astra": "GPT-6 Astra",
@@ -432,6 +442,7 @@ CAPACITY_LIMIT_ORDER = {
     "muse": ("5h", "weekly"),
     "opencode-go": ("5h", "weekly", "monthly"),
     "openrouter": ("balance",),
+    "deepseek": ("balance",),
 }
 MIX_KEYS = (
     ("cached_input", "Cached input"),
@@ -1452,7 +1463,8 @@ def _quota_row(row: dict, now: datetime, *, month_to_date: Decimal | None = None
     pct = None if row["pct"] is None else float(row["pct"])
     if is_payg:
         pct = None
-        if used is None and month_to_date is not None:
+        # Month-to-date spend can stand in for a PAYG figure, never for a balance left.
+        if used is None and month_to_date is not None and row["limit_key"] != "balance":
             used = float(month_to_date)
         eta_label = "this month"
     else:
@@ -1523,16 +1535,31 @@ def _attach_observed_grok_routes(capacity: list[dict], connection) -> None:
             return
 
 
-def provider_meta(provider_key: str) -> dict | None:
-    """Card metadata: the fixed providers, then any extra Claude account lane."""
-    from spend_app.claude_accounts import provider_meta as claude_account_meta
+def tool_name(key: str) -> str:
+    """A tool's display name, including an extra profile's ("Claude Code · Work")."""
+    if key in TOOL_NAMES:
+        return TOOL_NAMES[key]
+    return (provider_meta(key) or {}).get("providerName") or key
 
-    return PROVIDER_META.get(provider_key) or claude_account_meta(provider_key)
+
+def tool_color(key: str) -> str:
+    base = next((name for name in ("claude-code", "opencode-go") if key.startswith(name + "-")), key)
+    return TOOL_COLORS.get(key) or TOOL_COLORS.get(base) or "#78a8f8"
+
+
+def provider_meta(provider_key: str) -> dict | None:
+    """Card metadata: the fixed providers, then any extra Claude account or OpenCode profile lane."""
+    from spend_app.claude_accounts import provider_meta as claude_account_meta
+    from spend_app.opencode_profiles import provider_meta as opencode_profile_meta
+
+    return PROVIDER_META.get(provider_key) or claude_account_meta(provider_key) or opencode_profile_meta(provider_key)
 
 
 def _capacity_limit_rank(provider_key: str, limit_key: str) -> int:
     order = CAPACITY_LIMIT_ORDER.get(provider_key) or (
-        CAPACITY_LIMIT_ORDER["claude-code"] if provider_key.startswith("claude-code-") else ()
+        CAPACITY_LIMIT_ORDER["claude-code"] if provider_key.startswith("claude-code-")
+        else CAPACITY_LIMIT_ORDER["opencode-go"] if provider_key.startswith("opencode-go-")
+        else ()
     )
     try:
         return order.index(limit_key)
@@ -1573,16 +1600,18 @@ def _capacity_from_rows(
                 public["order"] = _capacity_limit_rank(provider_key, limit_key)
                 public["isPrimary"] = public["order"] == 0
                 grouped[provider_key].append(public)
-        if provider_key == "openrouter":
-            payg[provider_key] = True
-            grouped[provider_key] = [
-                row for row in grouped[provider_key] if row["limitKey"] == "balance"
-            ]
-            for row in grouped[provider_key]:
-                row["etaLabel"] = "available"
-                row["pct"] = None
-                row["resetsAt"] = None
-                row["isPayg"] = True
+    for provider_key in BALANCE_PROVIDERS:
+        if provider_key not in grouped:
+            continue
+        payg[provider_key] = True
+        grouped[provider_key] = [
+            row for row in grouped[provider_key] if row["limitKey"] == "balance"
+        ]
+        for row in grouped[provider_key]:
+            row["etaLabel"] = "available"
+            row["pct"] = None
+            row["resetsAt"] = None
+            row["isPayg"] = True
     cards = []
     extra_keys = [key for key in grouped if key not in SUMMARY_CAPACITY_PROVIDERS]
     for provider_key in [*SUMMARY_CAPACITY_PROVIDERS, *extra_keys]:
@@ -1629,7 +1658,7 @@ def _capacity_from_rows(
         )
     cards.sort(
         key=lambda card: (
-            2 if card["providerKey"] == "openrouter" else 1 if card["isPayg"] else 0,
+            2 if card["providerKey"] in BALANCE_PROVIDERS else 1 if card["isPayg"] else 0,
             -(card["peakPct"] if card["peakPct"] is not None else -1),
         )
     )
@@ -2272,7 +2301,7 @@ def aggregate_summary(
                 tool_key,
                 {
                     "key": tool_key,
-                    "name": TOOL_NAMES.get(tool_key, tool_key),
+                    "name": tool_name(tool_key),
                     "value": Decimal(0),
                     "tokens": 0,
                     "cached": 0,
@@ -2446,6 +2475,7 @@ def aggregate_summary(
             now=now,
             active=active_provider_keys(connection, now),
         )
+        apply_balance_runway(capacity, connection, now=now)
         capacity_forecast = read_forecast_view(connection)
         activity_payload = _activity_from_rows(activity_rows, machines_by_id)
         status, failing_source, _last_refresh, _stale = _ingest_status(
@@ -2841,7 +2871,7 @@ def aggregate_entity(
             plan = provider_card["plan"]
             provider_name = provider_card["providerName"]
             is_payg = provider_card["isPayg"]
-        name = display_model(reporting_model_key(key)) if kind == "model" else TOOL_NAMES.get(key, key)
+        name = display_model(reporting_model_key(key)) if kind == "model" else tool_name(key)
         value_float = _money(entity_value)
         share_of_tracked = (
             float(entity_value / global_value * 100)
@@ -2868,7 +2898,7 @@ def aggregate_entity(
                 and all(_event_is_exact(event) for event in enriched),
                 value_float,
             ),
-            "color": TOOL_COLORS.get(provider_key, "#78a8f8"),
+            "color": tool_color(provider_key),
             "value": value_float,
             "shareOfTrackedValue": share_of_tracked,
             "tokens": parts.tokens,

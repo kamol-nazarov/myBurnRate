@@ -308,12 +308,14 @@ def progress_for_location(connection, source_database, scope, session_id, provid
     return accounted if accounted is not None else local
 
 
-def _ingest_cumulative(*, database_path: Path, pricing: PricingEngine, source_database: Path) -> dict:
+def _ingest_cumulative(*, database_path: Path, pricing: PricingEngine, source_database: Path,
+                       snapshots: list[SessionSnapshot] | None = None) -> dict:
     from spend_app.connection_paths import identity
     import hashlib
     scope = hashlib.sha256(identity(source_database.resolve()).encode()).hexdigest()[:24]
     files = int(source_database.is_file())
-    snapshots = read_session_snapshots(source_database) if files else []
+    if snapshots is None:
+        snapshots = read_session_snapshots(source_database) if files else []
     initialize(database_path)
     with connect(database_path) as connection:
         previous = {

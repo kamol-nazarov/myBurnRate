@@ -9,6 +9,78 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+- Give each extra OpenCode profile (`~/.opencode-<name>`, or a directory in
+  `BURNRATE_OPENCODE_PROFILE_DIRS`) its own OpenCode Go quota lane, such as
+  **OpenCode Go · Profile 2**, read with that profile's own Console key. A
+  profile on the same account as the default one is ignored.
+- Add a DeepSeek balance lane. Connect a DeepSeek API key in Connections; the
+  official `/user/balance` endpoint reports the USD balance left.
+- Show the money left on pay-as-you-go lanes (OpenRouter, DeepSeek) on the HUD
+  row itself instead of "PAYG", and carry a fresher local balance over the
+  Hub's on a Spoke.
+- Explain a rejected OpenRouter key: the credits endpoint needs a management
+  key, not an inference key.
+- Rebuild setup around the HUD in four steps: **This computer** (just this
+  computer, join my hub with a pairing code or account, or make this the hub
+  and create pairing codes), **What we found** (one honest row per HUD card:
+  usage, meter, the fix, and the three sign-in-reuse switches), **Plans &
+  balances** (plans suggested from the meters, OpenRouter/DeepSeek keys), and
+  **Check** (live HUD preview and anything still needing you).
+- **Set up later** stops the desktop app reopening setup on every launch; the
+  HUD's new gear button and the tray reopen it. `/connections` opens the keys
+  step, so keys work without the dashboard.
+- Signing in to a hub account never creates one; registration needs at least
+  8 characters. Setup changes require BURNRATE's own request header, so another
+  web page cannot repoint this computer at a different hub.
+- Connecting a tool's default location (Auto-detect) no longer switches off its
+  activity and plan meter; only custom or disabled locations do.
+- The wizard's first check answers in milliseconds: it reads the ingest log
+  instead of running full diagnostics, and its scan only asks the scheduler to
+  collect now instead of running a second import inside the request.
+- Remember which session files were already read across restarts
+  (`ingest_file_cache`), so the first pass after a restart skips unchanged
+  Claude, Codex and Muse files instead of re-reading every one (Claude: about
+  6 minutes down to under 2 seconds on a large history). OpenCode skips
+  sessions whose fingerprint has not changed.
+- Save long first reads in batches of 5,000 events, so a cold read no longer
+  holds the database write lock for minutes.
+- Move the usage de-duplication map out of `app_meta` into a compact
+  `usage_keys` table. Existing entries move over in small background steps;
+  reads fall back to the old rows until each step lands.
+- A quota poll whose save fails (for example "database is locked") retries in
+  a minute instead of waiting a whole interval with nothing recorded.
+- Collection runs in its own worker process in the desktop service, so a long
+  read never slows the HUD or the API. A stuck worker is replaced.
+- Count usage from extra profiles: an extra Claude account's `projects` folder
+  and an extra OpenCode profile's sessions are recorded under that card's key
+  (`claude-code-work`, `opencode-go-2`), so each card gets its own burn rate.
+- Setup lists plans that need a look (a plan for a retired tool, or a custom
+  plan that matches a known card) and fixes them in one click, on the hub when
+  this computer is a spoke.
+- Muse Code's meter says it is idle when Meta's endpoint stops reporting a few
+  hours after the last use, instead of looking broken. Antigravity's says the
+  app is closed when its language server is not running.
+- Hubs: a hub that has an account accepts no new ones unless
+  `BURNRATE_ALLOW_REGISTRATION=1` (computers join with pairing codes); there
+  is no built-in hub address; the hub check compares builds (version plus
+  commit), not just version numbers; and `burnrate hub update` updates a
+  self-hosted hub over ssh and reports the build it now runs.
+- The docs now match the defaults: the desktop service turns the sign-in-reuse
+  reads on at first start, and setup shows each as a switch.
+- Balance runway: OpenRouter and DeepSeek cards say how long the balance lasts
+  at the recent spend ("about 12 days at your current spend ($3.40/day)"),
+  from the last 14 days of readings. Top-ups are not spend. The HUD shows the
+  days left in the reset column, with the daily spend in its tooltip.
+- Desktop notifications from the service as Windows toasts: a plan passes its
+  alert level, a plan will run out before it resets, a meter has not updated
+  for over an hour, or hub sync keeps failing. Each is sent once per window or
+  stretch and waits out quiet hours unless a run-out is under two hours away.
+  Setup's Check step has a switch for each and a test button;
+  `BURNRATE_DESKTOP_NOTIFICATIONS=0` turns them all off.
+- **Copy diagnostics** in setup's Check step: versions, freshness, meters,
+  recent failed runs and the tail of the service logs, with keys, e-mail
+  addresses and the home folder removed. Nothing is sent anywhere.
+
 ## [0.3.0-beta.18] - 2026-10-24
 
 - Kill HUD staleness at the root: local collection no longer waits for a

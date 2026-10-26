@@ -117,8 +117,21 @@ class FakeEventDB:
         self.meta = {}
         self.events = {row.raw_id: {**asdict(row), "occurred_at": row.occurred_at.isoformat()} for row in records}
 
+    @staticmethod
+    def _usage_key(kind, source, digest):
+        # Identity records live in usage_keys; keep them under their app_meta key here.
+        prefix = {0: "usage.alias.v1:", 1: "usage.identity.v1:"}[kind]
+        return prefix + source + ":" + (digest.hex() if len(digest) == 32 else digest.decode("utf-8"))
+
     def execute(self, sql, params=()):
         import json
+        from spend_app.db import decode_usage_value
+        if sql.startswith("SELECT value FROM usage_keys"):
+            value = self.meta.get(self._usage_key(*params))
+            return SimpleNamespace(fetchone=lambda: (value,) if value is not None else None)
+        if sql.startswith("INSERT INTO usage_keys"):
+            self.meta[self._usage_key(*params[:3])] = json.dumps(decode_usage_value(params[3]), sort_keys=True)
+            return SimpleNamespace(fetchone=lambda: None)
         if sql.startswith("SELECT value FROM app_meta"):
             value = self.meta.get(params[0])
             return SimpleNamespace(fetchone=lambda: (value,) if value is not None else None)

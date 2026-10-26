@@ -1142,9 +1142,10 @@ function renderCapacity(data) {
     let text;
     if (provider.isPayg) {
       const remaining = finite(provider.fundsRemainingUsd);
+      const runway = provider.fundsRunway && provider.fundsRunway.state === "estimate" ? provider.fundsRunway.line : "";
       text = remaining == null
         ? `funds remaining · ${labelReason || "management key required"}`
-        : `funds remaining · ${usd(remaining)}`;
+        : `funds remaining · ${usd(remaining)}${runway ? ` · ${runway}` : ""}`;
     } else {
       text = provider.reason || rows.map(row => row.reason).find(Boolean) || labelReason || "quota unavailable";
     }

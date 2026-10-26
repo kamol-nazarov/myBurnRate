@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from spend_app import aggregate
 from spend_app.capacity_forecast import (
     active_provider_keys,
+    apply_balance_runway,
     apply_forecasts,
     load_pace_samples,
 )
@@ -15,8 +16,8 @@ from spend_app.db import connect
 from spend_app.sync import list_machines
 from spend_app.timeutil import epoch_micros
 
-# Telemetry that draws on each plan's quota windows. Extra Claude accounts
-# have none: only the default profile's sessions are collected.
+# Telemetry that draws on each plan's quota windows. An extra Claude account
+# or OpenCode profile records its sessions under its own card key.
 BURN_TOOL_KEYS = {
     "claude-code": ("claude-code",),
     "codex": ("codex",),
@@ -26,6 +27,17 @@ BURN_TOOL_KEYS = {
     "antigravity": ("antigravity",),
     "muse": ("muse",),
 }
+
+
+def _burn_tools(provider_key: str) -> tuple[str, ...] | None:
+    """Tool keys whose usage burns a plan card; an extra profile's card has its own."""
+    if provider_key in BURN_TOOL_KEYS:
+        return BURN_TOOL_KEYS[provider_key]
+    if provider_key.startswith(("claude-code-", "opencode-go-")):
+        return (provider_key,)
+    return None
+
+
 # The plan already names the provider; model rows drop the repeat.
 MODEL_PREFIXES = {
     "claude-code": "Claude ",
@@ -50,7 +62,7 @@ def lane_usage_pace(connection, capacity: list[dict], *, now: datetime, machine:
     lanes = []
     for card in capacity:
         provider_key = card.get("providerKey") or ""
-        if provider_key not in BURN_TOOL_KEYS or card.get("isPayg"):
+        if _burn_tools(provider_key) is None or card.get("isPayg"):
             continue
         for row in card.get("rows") or []:
             limit_key = row.get("limitKey") or ""
@@ -62,7 +74,7 @@ def lane_usage_pace(connection, capacity: list[dict], *, now: datetime, machine:
     if not lanes:
         return {}
     since = min(start for *_, start in lanes)
-    tools = tuple(sorted({tool for provider_key, *_ in lanes for tool in BURN_TOOL_KEYS[provider_key]}))
+    tools = tuple(sorted({tool for provider_key, *_ in lanes for tool in _burn_tools(provider_key)}))
     cutoff = max(since, now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1))
     key = (aggregate._connection_identity(connection), "pace", machine, tools, since, cutoff,
            _usage_fingerprint(connection, since, cutoff))
@@ -75,7 +87,7 @@ def lane_usage_pace(connection, capacity: list[dict], *, now: datetime, machine:
         takes = _lane_takes(provider_key, limit_key)
         start_us = epoch_micros(start)
         tokens = recent_tokens = 0
-        for tool in BURN_TOOL_KEYS[provider_key]:
+        for tool in _burn_tools(provider_key):
             for when, model, cache_read, new_input, out in rows_by_tool[tool]:
                 if not takes(model) or when < start_us:
                     continue
@@ -117,6 +129,7 @@ def live_snapshot(settings, *, now: datetime, machine: str = "all") -> dict:
         usage_pace = lane_usage_pace(connection, capacity, now=now, machine=machine)
         apply_forecasts(capacity, load_pace_samples(connection, now), now=now,
                         active=active_provider_keys(connection, now), usage_pace=usage_pace)
+        apply_balance_runway(capacity, connection, now=now)
         last_ingest = _last_success_stamp(connection)
         activity = aggregate._activity_from_rows(
             aggregate._load_activity_rows(connection, machine), {m["id"]: m["name"] for m in machines}
@@ -234,7 +247,8 @@ def _model_name(provider_key: str, model_key: str) -> str:
     if model_key not in aggregate.MODEL_NAMES and (name == model_key or generic):
         client = "" if name == model_key else name[: -len(generic)].strip()
         name = " ".join(filter(None, [client, _pretty_slug(slug)]))
-    prefix = MODEL_PREFIXES.get(provider_key)
+    base = next((key for key in ("claude-code", "opencode-go") if provider_key.startswith(key + "-")), provider_key)
+    prefix = MODEL_PREFIXES.get(provider_key) or MODEL_PREFIXES.get(base)
     return name[len(prefix):] if prefix and name.startswith(prefix) and len(name) > len(prefix) else name
 
 
@@ -247,7 +261,7 @@ def window_burn(connection, capacity: list[dict], *, now: datetime, today_start:
     lanes = []
     for card in capacity:
         provider_key = card.get("providerKey") or ""
-        if provider_key not in BURN_TOOL_KEYS:
+        if _burn_tools(provider_key) is None:
             continue
         for row in card.get("rows") or []:
             limit_key = row.get("limitKey") or ""
@@ -257,7 +271,7 @@ def window_burn(connection, capacity: list[dict], *, now: datetime, today_start:
     if not lanes:
         return {}
     since = min(min(start for *_, start in lanes), today_start)
-    tools = tuple(sorted({tool for provider_key, *_ in lanes for tool in BURN_TOOL_KEYS[provider_key]}))
+    tools = tuple(sorted({tool for provider_key, *_ in lanes for tool in _burn_tools(provider_key)}))
     # Usage before the last full hour rarely changes: reuse it until its own
     # fingerprint moves (a late spoke sync, a backfill) and read only the
     # latest hour or two on each poll.
@@ -318,7 +332,7 @@ def _burn_lanes(lanes, rows: dict[str, list[tuple]], today_start: datetime) -> d
         start_us = epoch_micros(start)
         cached = fresh = output = 0
         today_by_model: dict[str, int] = defaultdict(int)
-        for tool in BURN_TOOL_KEYS[provider_key]:
+        for tool in _burn_tools(provider_key):
             for when, model, cache_read, new_input, out in rows[tool]:
                 if not takes(model):
                     continue

@@ -41,6 +41,7 @@ from spend_app.db import (
     upsert_usage_event,
     utc_now,
 )
+from spend_app.capacity_forecast import apply_balance_runway, record_balance_sample
 from spend_app.ingest import IngestRun
 from spend_app.pricing import PricingEngine, UnpricedModelError
 
@@ -646,6 +647,9 @@ def apply_sync_push(
                     sync_source,
                     int(bool(payg_val)) if payg_val is not None else None,
                 )
+                if limit_key == "balance" and unit_val == "usd" and used_val is not None:
+                    record_balance_sample(connection, provider_key=provider_key, source=sync_source,
+                                          usd=used_val, sampled_at=polled_val)
                 if existing is not None and tuple(existing)[1:] == fields:
                     cursor_upd = connection.execute(
                         "UPDATE quotas SET polled_at=? WHERE id=? AND polled_at<?",
@@ -1135,9 +1139,15 @@ def _overlay_fresher_local_quotas(database_path: Path, capacity: list[dict]) -> 
         local_at = timestamp(local_polled)
         return hub_at is None or (local_at is not None and local_at >= hub_at)
 
-    from spend_app.aggregate import _capacity_from_rows, _capacity_limit_rank, _eta_label, provider_meta
+    def balance(limit_key: str, used, unit) -> bool:
+        # An account balance is a dollar amount with no percentage.
+        return limit_key == "balance" and used is not None and unit == "usd"
+
+    from spend_app.aggregate import _capacity_from_rows, _capacity_limit_rank, _eta_label, _money, provider_meta
 
     merged_cards: list[dict] = []
+    # Balances read on this computer get their runway from its own history.
+    local_balances: set[str] = set()
     for card in capacity:
         if not isinstance(card, dict) or not isinstance(card.get("rows"), list):
             if isinstance(card, dict):
@@ -1160,10 +1170,12 @@ def _overlay_fresher_local_quotas(database_path: Path, capacity: list[dict]) -> 
                 continue
             limit_key = str(row_item.get("limitKey") or "")
             local_row = local_by_key.get((provider_key, limit_key))
-            hub_has_reading = row_item.get("pct") is not None and row_item.get("unit") != "unavailable"
+            hub_has_reading = row_item.get("unit") != "unavailable" and (
+                row_item.get("pct") is not None or balance(limit_key, row_item.get("used"), row_item.get("unit")))
+            local_balance = local_row is not None and balance(limit_key, local_row.get("used"), local_row.get("unit"))
             if (
                 local_row is not None
-                and local_row.get("pct") is not None
+                and (local_row.get("pct") is not None or local_balance)
                 and (not hub_has_reading or not_older(local_row.get("polled_at"), row_item.get("polledAt")))
             ):
                 updated_row = dict(row_item)
@@ -1171,11 +1183,13 @@ def _overlay_fresher_local_quotas(database_path: Path, capacity: list[dict]) -> 
                 updated_row["used"] = float(local_row["used"]) if local_row.get("used") is not None else None
                 updated_row["allowance"] = float(local_row["allowance"]) if local_row.get("allowance") is not None else None
                 updated_row["unit"] = local_row.get("unit") or row_item.get("unit") or "pct"
-                updated_row["pct"] = float(local_row["pct"])
+                updated_row["pct"] = float(local_row["pct"]) if local_row.get("pct") is not None else None
                 updated_row["resetsAt"] = local_row.get("resets_at")
-                updated_row["etaLabel"] = _eta_label(local_row.get("resets_at"), now_utc)
+                updated_row["etaLabel"] = "available" if local_balance else _eta_label(local_row.get("resets_at"), now_utc)
                 updated_row["source"] = local_row.get("source") or row_item.get("source")
                 updated_row["polledAt"] = local_row.get("polled_at") or row_item.get("polledAt")
+                if local_balance:
+                    local_balances.add(provider_key)
                 new_rows.append(updated_row)
             else:
                 new_rows.append(row_item)
@@ -1195,6 +1209,10 @@ def _overlay_fresher_local_quotas(database_path: Path, capacity: list[dict]) -> 
             primary_pct = primary_row.get("pct")
             updated_card["primaryPct"] = primary_pct
             updated_card["peakPct"] = primary_pct
+        funds = next((r["used"] for r in new_rows if isinstance(r, dict) and r.get("limitKey") == "balance"
+                      and r.get("used") is not None and r.get("unit") == "usd"), None)
+        if funds is not None:
+            updated_card["fundsRemainingUsd"] = _money(Decimal(str(funds)))
         merged_cards.append(updated_card)
     hub_keys = {str(card.get("providerKey") or "") for card in merged_cards if isinstance(card, dict)}
     local_only = [
@@ -1208,6 +1226,13 @@ def _overlay_fresher_local_quotas(database_path: Path, capacity: list[dict]) -> 
             card for card in _capacity_from_rows(local_only, now=now_utc, month_to_date={})
             if card["providerKey"] in keys
         )
+        local_balances |= keys
+    if local_balances:
+        try:
+            with connect(database_path) as connection:
+                apply_balance_runway(merged_cards, connection, now=now_utc, providers=local_balances, local_only=True)
+        except Exception:
+            pass
     return merged_cards
 
 

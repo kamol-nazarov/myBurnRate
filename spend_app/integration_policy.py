@@ -10,10 +10,12 @@ is read or any request is transmitted:
   when the credential exists; documented interface only.
 - ``opt-in-native`` — reuse of another application's native credentials or
   undocumented/private endpoints (Claude OAuth usage endpoint, Z.AI quota
-  endpoint with OpenCode's stored key). These are DISABLED unless the user sets an explicit
-  consent variable, because user consent with BURNRATE is not provider
-  permission. Enabling never impersonates a native client: requests identify
-  as BURNRATE.
+  endpoint with OpenCode's stored key). Each is gated on its consent
+  variable. The desktop service turns these on at first start
+  (``config.load_user_env``) and setup's "What we found" step shows each as a
+  switch that writes ``1``/``0`` to the per-user ``.env``; the CLI and tests
+  leave them unset, so they stay off there. Enabling never impersonates a
+  native client: requests identify as BURNRATE.
 
 Policy is checked by :func:`authorize` before collectors touch credentials;
 a denied lane returns an actionable reason and never performs I/O.
@@ -86,6 +88,13 @@ LANES: dict[str, LanePolicy] = {
         "Official OpenRouter credits endpoint with the dedicated "
         "OPENROUTER_MANAGEMENT_KEY (never an inference key).",
         allowed_hosts=("openrouter.ai",),
+    ),
+    "deepseek_balance": LanePolicy(
+        "deepseek_balance",
+        Lane.CONFIGURED,
+        "Official DeepSeek balance endpoint with the key connected for it in "
+        "BURNRATE or DEEPSEEK_BALANCE_KEY (never a key another tool stores).",
+        allowed_hosts=("api.deepseek.com",),
     ),
     "openai_admin": LanePolicy(
         "openai_admin",

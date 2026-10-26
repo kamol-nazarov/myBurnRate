@@ -51,9 +51,12 @@ _FILE_QUARANTINED: dict = {}
 
 
 def reset_file_cache() -> None:
+    from spend_app.adapters import file_cache
+
     _FILE_SIGNATURES.clear()
     _FILE_COUNTS.clear()
     _FILE_QUARANTINED.clear()
+    file_cache.forget(SOURCE)
 
 
 def _iso(value: datetime) -> str:
@@ -131,34 +134,70 @@ def ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) ->
 
 
 def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -> dict:
+    from spend_app.adapters import file_cache
+    from spend_app.adapters.event_identity import reconcile
+    from spend_app.connection_paths import cache_identity, file_signature, stat_path
+
     initialize(database_path)
+    file_cache.warm(database_path, SOURCE, _FILE_SIGNATURES, _FILE_COUNTS, _FILE_QUARANTINED)
     parsed_files = 0
     parsed_events = 0
     confirmed_events = 0
-    observations = []
     issues = []
     duplicates_removed = 0
     skipped_files = 0
     quarantined = 0
-    usage_rows: list[UsageRow] = []
-    session_rows: list[dict] = []
-    pending_signatures: list[tuple[str, tuple[int, int]]] = []
+    batch: dict[str, list] = {"usage_rows": [], "observations": [], "session_rows": [], "pending": [], "empty": []}
+    results: list[dict] = []
+
+    def flush() -> None:
+        usage_rows, observations, session_rows = batch["usage_rows"], batch["observations"], batch["session_rows"]
+        pending, empty = batch["pending"], batch["empty"]
+        for name in batch:
+            batch[name] = []
+
+        def finalize(connection):
+            for session in session_rows:
+                upsert_session(
+                    connection,
+                    session_id=session["session_id"],
+                    tool_key="claude-code",
+                    project=session["project"],
+                    started_at=session["started_at"],
+                    ended_at=session["ended_at"],
+                    model_key=session["model_key"],
+                )
+            file_cache.save(connection, SOURCE, [*pending, *((key, signature, 0, 0) for key, signature in empty)])
+
+        results.append(persist_rows(
+            database_path=database_path, pricing=pricing, source=SOURCE, usage_rows=usage_rows,
+            prepare=(lambda connection, rows: reconcile(connection, observations, issues)) if observations else None,
+            finalize=finalize, issues=issues))
+        # The rows were persisted (a failure raises before this point), so every
+        # parsed file is cached: an unchanged signature means identical bytes and
+        # an identical parse, whatever records it had to quarantine.
+        for cache_key, signature, count, unusable in pending:
+            _FILE_SIGNATURES[cache_key] = signature
+            _FILE_COUNTS[cache_key] = count
+            if unusable:
+                _FILE_QUARANTINED[cache_key] = unusable
+            else:
+                _FILE_QUARANTINED.pop(cache_key, None)
+
     for file_name in sorted(adapter_files(session_glob)):
         path = Path(file_name)
         try:
-            from spend_app.connection_paths import stat_path
-
             stat = stat_path(path)
         except OSError:
             continue
-        from spend_app.connection_paths import cache_identity, file_signature
         cache_key = cache_identity(database_path, path, PARSER_VERSION)
+        cached = _FILE_SIGNATURES.get(cache_key)
         try:
-            signature = file_signature(path, stat)
+            signature = cached if file_cache.unchanged(cached, stat) else file_signature(path, stat)
         except OSError:
             issues.append("claude_file_unavailable")
             continue
-        if _FILE_SIGNATURES.get(cache_key) == signature:
+        if cached == signature:
             skipped_files += 1
             confirmed_events += _FILE_COUNTS.get(cache_key, 0)
             if _FILE_QUARANTINED.get(cache_key):
@@ -176,6 +215,7 @@ def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -
         quarantined += health.quarantined + health.skipped
         if not session:
             _FILE_SIGNATURES[cache_key] = signature
+            batch["empty"].append((cache_key, signature))
             continue
         parsed_files += 1
         duplicates_removed += max(0, raw_usage_lines - len(events))
@@ -184,8 +224,8 @@ def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -
         latest_model: str | None = None
         for parsed in events:
             if parsed.observation:
-                observations.append(parsed.observation)
-            usage_rows.append(
+                batch["observations"].append(parsed.observation)
+            batch["usage_rows"].append(
                 UsageRow(
                     source=SOURCE,
                     tool_key="claude-code",
@@ -208,7 +248,7 @@ def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -
             latest_time = parsed.occurred_at
             latest_model = parsed.model_key
         if latest_time and latest_model:
-            session_rows.append(
+            batch["session_rows"].append(
                 {
                     "session_id": session["id"],
                     "project": session["project"],
@@ -217,32 +257,12 @@ def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -
                     "model_key": latest_model,
                 }
             )
-        pending_signatures.append((cache_key, signature, len(events), health.quarantined + health.skipped))
-    def finalize(connection):
-        for session in session_rows:
-            upsert_session(
-                connection,
-                session_id=session["session_id"],
-                tool_key="claude-code",
-                project=session["project"],
-                started_at=session["started_at"],
-                ended_at=session["ended_at"],
-                model_key=session["model_key"],
-            )
-    from spend_app.adapters.event_identity import reconcile
-    result = persist_rows(database_path=database_path, pricing=pricing, source=SOURCE, usage_rows=usage_rows,
-                          prepare=(lambda connection, rows: reconcile(connection, observations, issues)) if observations else None,
-                          finalize=finalize, issues=issues)
-    # The rows were persisted (a failure raises before this point), so every
-    # parsed file is cached: an unchanged signature means identical bytes and
-    # an identical parse, whatever records it had to quarantine.
-    for cache_key, signature, count, unusable in pending_signatures:
-        _FILE_SIGNATURES[cache_key] = signature
-        _FILE_COUNTS[cache_key] = count
-        if unusable:
-            _FILE_QUARANTINED[cache_key] = unusable
-        else:
-            _FILE_QUARANTINED.pop(cache_key, None)
+        batch["pending"].append((cache_key, signature, len(events), health.quarantined + health.skipped))
+        if len(batch["usage_rows"]) >= file_cache.BATCH_EVENTS:
+            flush()
+    # Always once more: records this pass's run, sessions and remaining files.
+    flush()
+    result = file_cache.merge_results(results)
     result["files"] = parsed_files
     result["filesSkippedUnchanged"] = skipped_files
     result["eventsSeen"] = parsed_events + confirmed_events

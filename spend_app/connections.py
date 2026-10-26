@@ -19,6 +19,8 @@ from spend_app.db import connect
 from spend_app.providers import REGISTRY
 
 KEY = "connections.v1"
+# Provider APIs that report an account balance only, never usage events.
+BALANCE_SOURCES = frozenset({"openrouter", "deepseek"})
 _LOCKS = {}
 _SOURCE_LOCKS = {}
 _LOCK_GUARD = threading.Lock()
@@ -134,6 +136,24 @@ def location_conflict(spec, location):
     return not (chosen == base or chosen.is_relative_to(base))
 
 
+def suppresses_default_profile(source, binding):
+    """Whether a binding stops BURNRATE reading that tool's default profile for activity and quota.
+
+    Connecting the default location reads exactly what collection reads anyway,
+    so the tool keeps its activity and plan meter. A custom location, or a
+    connection the user disabled, still suppresses them.
+    """
+    if not binding:
+        return False
+    spec = REGISTRY.get(source)
+    if not binding.get("enabled") or spec is None or spec.connection is None or spec.connection.shape == "api":
+        return True
+    try:
+        return identity(binding.get("location") or "") != identity(default_location(spec, None))
+    except Exception:
+        return True
+
+
 def eligible(spec, state):
     binding = state["bindings"].get(spec.key)
     if binding:
@@ -165,8 +185,8 @@ class Service:
             row = {"source": spec.key, "name": meta.name, "kind": meta.shape,
                    "experimental": spec.stability == "experimental", "revision": 0,
                    "location": "" if meta.shape == "api" else default_location(spec, self.settings),
-                   "capabilities": ["balance"] if spec.key == "openrouter" else (["usage", "provider charges"] if meta.shape == "api" else ["usage"]),
-                   "capabilityNote": "Managed local connections collect usage only; activity and quota from other default profiles are suppressed. Pricing availability is separate.",
+                   "capabilities": ["balance"] if spec.key in BALANCE_SOURCES else (["usage", "provider charges"] if meta.shape == "api" else ["usage"]),
+                   "capabilityNote": "Connecting a tool's default location keeps its activity and plan meter. A custom location collects usage only. Pricing availability is separate.",
                    "credentialHelp": meta.credential_help,
                    "externallyManaged": external(spec, self.settings),
                    "state": "already_monitored" if monitored else "not_connected",
@@ -270,7 +290,7 @@ class Service:
                     self._cleanup_ref(new_ref)
                     raise
                 record = {"source": spec.key, "location": "", "mode": "api", "enabled": True,
-                          "credentialRef": new_ref, "state": "awaiting_ingest", "detail": "Credential verified; awaiting scheduled collection.", "lastVerification": now(), "capabilities": ["balance"] if spec.key == "openrouter" else ["usage", "provider charges"]}
+                          "credentialRef": new_ref, "state": "awaiting_ingest", "detail": "Credential verified; awaiting scheduled collection.", "lastVerification": now(), "capabilities": ["balance"] if spec.key in BALANCE_SOURCES else ["usage", "provider charges"]}
             else:
                 location = body.get("location") or (previous or {}).get("location")
                 if op == "recheck" and previous:
@@ -356,8 +376,8 @@ class Service:
                     return
                 seen = accepted > 0 or record["state"] == "receiving_usage"
                 record.update(lastImport=now(), importRevision=revision,
-                              state=("balance_available" if source == "openrouter" else "receiving_usage") if (seen or source == "openrouter") else "waiting_activity",
-                              detail=("Balance updated; usage events are a separate connection." if source == "openrouter" else "Import completed. Missing pricing and quota do not disconnect usage.") if (seen or source == "openrouter") else "Readable; waiting for usage. No paid turn is required to finish setup.")
+                              state=("balance_available" if source in BALANCE_SOURCES else "receiving_usage") if (seen or source in BALANCE_SOURCES) else "waiting_activity",
+                              detail=("Balance updated; usage events are a separate connection." if source in BALANCE_SOURCES else "Import completed. Missing pricing and quota do not disconnect usage.") if (seen or source in BALANCE_SOURCES) else "Readable; waiting for usage. No paid turn is required to finish setup.")
                 if result.get("issues"):
                     record["detail"] += " Some records need attention: " + "; ".join(str(issue).replace("_", " ") for issue in sorted(set(result["issues"]))[:3]) + ". Review the provider compatibility guidance before changing the source."
             else:

@@ -33,8 +33,11 @@ linked children outside the approved source are not followed.
 | Grok Build (experimental) | `~/.grok`, unified log, or session `updates.jsonl` / `signals.json` | Usage |
 
 The existing activity/quota readers do not have a custom-file contract.
-Managed local bindings therefore grant **usage only** and suppress those
-default-profile readers. A readable transcript never proves quota access.
+A binding of a **custom** location therefore grants **usage only** and
+suppresses those default-profile readers. Connecting a tool's **default**
+location (what Auto-detect offers) reads the same profile collection already
+reads, so its activity and plan meter keep working. A disabled connection
+still suppresses them. A readable transcript never proves quota access.
 Antigravity's experimental RPC remains externally configured. A separate manual
 location on that source can replace RPC with a populated Tokscale sync cache
 (`antigravity-cache/sessions` or one `.jsonl`). This path never runs the producer,
@@ -92,10 +95,12 @@ integrations, not consumer subscription logins.
 | OpenAI Admin | Organization Admin API key with organization usage and cost access | API usage and reported charges |
 | Anthropic Admin | Claude Console organization Admin API key with usage/cost reporting access | API usage and reported charges |
 | OpenRouter | Management key with credits access | Account balance only; no usage-event coverage |
+| DeepSeek | DeepSeek API key | Account balance only (USD); no usage-event coverage |
 
 See the official [OpenAI administration reference](https://platform.openai.com/docs/api-reference/admin-api-keys),
 [Anthropic usage/cost requirements](https://platform.claude.com/docs/en/manage-claude/usage-cost-api), and
-[OpenRouter credits requirements](https://openrouter.ai/docs/api/api-reference/credits/get-remaining-credits).
+[OpenRouter credits requirements](https://openrouter.ai/docs/api/api-reference/credits/get-remaining-credits), and
+the [DeepSeek balance endpoint](https://api-docs.deepseek.com/api/get-user-balance).
 
 **Test and connect** explicitly makes at most two bounded requests to the fixed
 documented reporting endpoints, testing usage and cost access separately where

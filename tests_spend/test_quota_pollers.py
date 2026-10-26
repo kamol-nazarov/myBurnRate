@@ -447,14 +447,16 @@ def test_unavailable_sources_persist_reasons_and_never_fake_zero(
 
 
 def test_default_collectors_cover_required_providers_without_invoking(monkeypatch) -> None:
-    from spend_app import claude_accounts
+    from spend_app import claude_accounts, opencode_profiles
 
     monkeypatch.setattr(claude_accounts, "extra_accounts", lambda: ())
+    monkeypatch.setattr(opencode_profiles, "extra_profiles", lambda: ())
     collectors = default_quota_collectors(Path("unused.db"))
-    # OpenCode Go is polled but not required: without Go there is no card.
-    assert set(collectors) == set(REQUIRED_LIMITS) | {"opencode-go"}
+    # OpenCode Go and DeepSeek are polled but not required: without them there is no card.
+    assert set(collectors) == set(REQUIRED_LIMITS) | {"opencode-go", "deepseek"}
     assert set(collectors) == {
         "opencode-go",
+        "deepseek",
         "antigravity",
         "claude-code",
         "codex",
@@ -468,7 +470,12 @@ def test_default_collectors_cover_required_providers_without_invoking(monkeypatc
                                          state_path=Path("w/.claude.json"), credentials_path=Path("w/.credentials.json"),
                                          account_uuid="work-uuid", plan="Claude Max")
     monkeypatch.setattr(claude_accounts, "extra_accounts", lambda: (work,))
-    assert set(default_quota_collectors(Path("unused.db"))) - set(REQUIRED_LIMITS) == {"claude-code-work", "opencode-go"}
+    assert set(default_quota_collectors(Path("unused.db"))) - set(REQUIRED_LIMITS) == {"claude-code-work", "opencode-go", "deepseek"}
+    # So does each extra OpenCode profile signed in to another Console account.
+    second = opencode_profiles.OpenCodeProfile(key="opencode-go-2", label="Profile 2", data_dir=Path("p"),
+                                               database=Path("p/opencode/opencode.db"))
+    monkeypatch.setattr(opencode_profiles, "extra_profiles", lambda: (second,))
+    assert "opencode-go-2" in default_quota_collectors(Path("unused.db"))
 
 
 def test_poll_quotas_public_seam_uses_default_collectors(tmp_path: Path, monkeypatch) -> None:
@@ -1095,7 +1102,7 @@ def test_muse_limits_without_subs_usage_is_unavailable_not_zero(tmp_path: Path, 
     assert payload["status"] == "unavailable"
     assert payload["windows"] == []
     assert payload["plan"] == "Power Usage"
-    assert "subs_usage" in payload["detail"]
+    assert "only for a few hours after you use it" in payload["detail"]
     assert "minted-secret-key" not in json.dumps(payload)
     assert "muse-test-token" not in json.dumps(payload)
     samples = {s.limit_key: s for s in muse_quota_samples(payload, source="muse_quota_endpoint")}
@@ -1103,7 +1110,7 @@ def test_muse_limits_without_subs_usage_is_unavailable_not_zero(tmp_path: Path, 
     for sample in samples.values():
         assert sample.unit == "unavailable"
         assert sample.pct is None
-        assert "subs_usage" in (sample.reason or "")
+        assert "only for a few hours after you use it" in (sample.reason or "")
 
 
 def test_expired_synced_quota_window_is_masked_not_shown_stale(tmp_path: Path) -> None:

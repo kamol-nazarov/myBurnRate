@@ -51,6 +51,7 @@ SCHEDULER_JOB_IDS = (
     "subscriptions",
     "quota-poll",
     "activity",
+    "desktop-notifications",
 )
 LOCAL_INGEST_ALIASES = (
     "codex",

@@ -50,3 +50,13 @@ the events. Otherwise it says to ease off until the stressed window resets.
 Delivery is the overview banner plus one browser notification after the page
 is allowed to notify. Dismissing the banner does not arm the same reset again.
 Phone push is not part of this version. Action Center is unchanged.
+
+The desktop service also sends Windows notifications (`spend_app/notify.py`)
+with no page open. They use the same threshold, overrides and quiet hours:
+a window passing its level, a window whose forecast runs out before the reset
+(once at least half of it is used), a meter held for over an hour and hub sync
+failing for over 15 minutes. Each fires once per window or stretch; a held
+meter or failing sync notifies again after it recovers and stalls again. When
+a window passes its level and runs out together, one notification is sent.
+Setup's Check step switches each kind; `BURNRATE_DESKTOP_NOTIFICATIONS=0`
+turns them off.

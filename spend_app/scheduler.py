@@ -83,7 +83,23 @@ def _ingest_callable(spec: ProviderSpec):
     return spec.ingest
 
 
-def _run_ingest_specs(jobs: list[tuple[ProviderSpec, dict]], settings=None, pricing=None, window=None, timings=None) -> None:
+def _after_source_written(source: str, settings) -> None:
+    """Web-process follow-up for a source that just wrote new usage."""
+    quota_provider = _SOURCE_TO_QUOTA_PROVIDER.get(source)
+    if quota_provider:
+        nudge_quota_lanes(settings.database_path, quota_provider)
+    from spend_app.sync import STREAM_BROKER, expire_hub_proxy_cache
+    expire_hub_proxy_cache()
+    STREAM_BROKER.publish({"type": "ingest", "source": source})
+
+
+def _run_ingest_specs(jobs: list[tuple[ProviderSpec, dict]], settings=None, pricing=None, window=None, timings=None,
+                      results: dict | None = None, side_effects: bool = True) -> None:
+    """Run collectors in order. ``results`` receives each source's written counts.
+
+    ``side_effects=False`` (the collector worker) leaves the follow-ups that
+    touch web-process memory to the caller, which applies them from ``results``.
+    """
     errors: list[BaseException] = []
     for spec, kwargs in jobs:
         ingest = _ingest_callable(spec)
@@ -96,16 +112,14 @@ def _run_ingest_specs(jobs: list[tuple[ProviderSpec, dict]], settings=None, pric
             else:
                 from spend_app.connections import execute
                 result = execute(settings, pricing, spec, ingest, window)
-                if isinstance(result, dict) and ((result.get("eventsWritten") or 0) + (result.get("unpricedEventsWritten") or 0)) > 0:
+                written = ((result.get("eventsWritten") or 0) + (result.get("unpricedEventsWritten") or 0)) if isinstance(result, dict) else 0
+                if results is not None and isinstance(result, dict):
+                    results[spec.key] = {"written": written, "status": result.get("status")}
+                if side_effects and written > 0:
                     try:
-                        quota_provider = _SOURCE_TO_QUOTA_PROVIDER.get(spec.key)
-                        if quota_provider:
-                            nudge_quota_lanes(settings.database_path, quota_provider)
                         from spend_app.setup_wizard import maybe_run_configured_spoke_sync
-                        from spend_app.sync import STREAM_BROKER, expire_hub_proxy_cache
+                        _after_source_written(spec.key, settings)
                         maybe_run_configured_spoke_sync(settings, pricing)
-                        expire_hub_proxy_cache()
-                        STREAM_BROKER.publish({"type": "ingest", "source": spec.key})
                     except Exception:
                         pass
             if isinstance(result, dict) and result.get("status") == "failed" and spec.stability != "experimental":
@@ -155,6 +169,10 @@ def create_scheduler(settings: Settings, pricing: PricingEngine, *, history_acti
     # ``history_active`` is accepted for compatibility; collection no longer
     # waits on viewers (see HistoryDemand).
     scheduler = BackgroundScheduler(timezone="UTC")
+    from spend_app import collector
+    # The windowless service reads transcripts in a worker process so a long
+    # pass cannot starve the web server (see spend_app.collector).
+    worker = collector.CollectorWorker(settings) if collector.enabled() else None
 
     local_ingest_interval = {
         "seconds": settings.local_ingest_interval_seconds,
@@ -177,7 +195,30 @@ def create_scheduler(settings: Settings, pricing: PricingEngine, *, history_acti
         timings: dict[str, float] = {}
         began = time.perf_counter()
         pass_started()
-        if not is_central:
+        if not is_central and worker is not None:
+            try:
+                reply = worker.run_pass()
+                timings.update(reply.get("timings") or {})
+                for source, summary in (reply.get("results") or {}).items():
+                    if summary.get("written"):
+                        try:
+                            _after_source_written(source, settings)
+                        except Exception:
+                            pass
+                if reply.get("errors"):
+                    errors.append(RuntimeError("; ".join(reply["errors"])))
+            except Exception as exc:
+                errors.append(exc)
+        elif not is_central:
+            try:
+                from spend_app.db import migrate_usage_keys_step
+                migrate_usage_keys_step(settings.database_path)
+            except Exception as exc:
+                errors.append(exc)
+            from spend_app.collector import run_profile_pass
+            profile_errors: list[str] = []
+            run_profile_pass(settings, pricing, timings, {}, profile_errors)
+            errors.extend(RuntimeError(message) for message in profile_errors)
             try:
                 _run_ingest_specs(
                     [
@@ -303,4 +344,6 @@ def create_scheduler(settings: Settings, pricing: PricingEngine, *, history_acti
     register(scheduler, settings, pricing)
     from spend_app.capacity_forecast import register_forecast
     register_forecast(scheduler, settings)
+    from spend_app import notify
+    notify.register(scheduler, settings)
     return scheduler

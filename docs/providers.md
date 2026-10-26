@@ -16,6 +16,7 @@ Format evidence is pinned to [Tokscale a3209ff](https://github.com/junhoyeo/toks
 | Antigravity | Manual populated Tokscale sync artifacts, or existing experimental RPC | The inspected producer writes persisted usage metadata; caches are not self-populating or guaranteed complete. Response IDs reconcile cache/RPC copies. Missing producer/cache/runtime is a prerequisite issue. Rows without response identity are reported and skipped. No producer execution, new authentication flow or TLS exception. |
 | OpenAI / Anthropic Admin | Existing official usage/cost APIs and vault bindings | Bounded pages, cursor/schema/deadline failures. Seven-day revisit of completed UTC hours; closed-day charge buckets remain separate. Delays/corrections beyond that window remain possible. |
 | OpenRouter | Existing management credits endpoint | Balance-only. Deposits, top-ups and credits never become token events. Usage still comes from supported harness evidence. |
+| DeepSeek | Official `/user/balance` endpoint with a connected API key | Balance-only, USD. A CNY-only balance is reported as unavailable, never converted. No usage events. |
 
 All managed local bindings remain **usage-only**, including new paths. Existing narrow bindings are not widened by discovery. Unknown models remain usage evidence; missing pricing does not imply a disconnected source. Unsupported schemas, source failures and ambiguous copies are reported rather than converted to zero-use success.
 
@@ -82,7 +83,7 @@ BURNRATE is not affiliated with these vendors. Interfaces change; experimental l
 
 **Requesty is not connected** and is not a rate authority. Direct xAI API usage is not ingested.
 
-Claude OAuth credential refresh is **opt-in** (`BURNRATE_CLAUDE_OAUTH_REFRESH=1`). All other local readers are read-only.
+Claude OAuth credential refresh (`BURNRATE_CLAUDE_OAUTH_REFRESH=1`) is on by default in the desktop service and follows the Claude switch in setup; the CLI leaves it off. All other local readers are read-only.
 
 Paths below use Windows conventions. `%USERPROFILE%` is `~`. `%APPDATA%` is typically `%USERPROFILE%\AppData\Roaming`. `%LOCALAPPDATA%` is typically `%USERPROFILE%\AppData\Local`.
 
@@ -149,7 +150,7 @@ HTTPS timeouts are 15–30 seconds depending on the client. Credential-bearing `
 | --- | --- | --- |
 | `https://api.openai.com` | `/v1/organization/usage/completions`, `/v1/organization/costs` | OpenAI admin |
 | `https://api.anthropic.com` | `/v1/organizations/usage_report/messages`, `/v1/organizations/cost_report`; experimental `/api/oauth/usage` | Anthropic admin; Claude OAuth |
-| `https://platform.claude.com` | `/v1/oauth/token` | Claude OAuth refresh (opt-in) |
+| `https://platform.claude.com` | `/v1/oauth/token` | Claude OAuth refresh (Claude switch in setup) |
 | `https://openrouter.ai` | `/api/v1/credits` | OpenRouter management key |
 | `https://api.z.ai` | `/api/monitor/usage/quota/limit` | Z.AI Coding Plan |
 | `https://127.0.0.1:<port>` | `/exa.language_server_pb.LanguageServerService/{GetAllCascadeTrajectories,GetCascadeTrajectory,RetrieveUserQuotaSummary}` | Antigravity **experimental** |
@@ -198,9 +199,9 @@ in this version. Missing telemetry does not require a paid turn to finish setup.
 
 ### Claude Code — supported local (OAuth quota experimental)
 
-Three quota collectors, in order: Desktop history, Traycer ambient profile, OAuth usage (opt-in).
+Three quota collectors, in order: Desktop history, Traycer ambient profile, OAuth usage (setup's Claude switch; on by default in the desktop service).
 
-OAuth is the only path that can mutate a provider file. Refresh uses `POST https://platform.claude.com/v1/oauth/token` with `grant_type=refresh_token`, then `os.replace` of a temp file next to `.credentials.json`. The opt-in client presents as Claude Code’s public OAuth client (not a BURNRATE-issued client id). Public default does **not** refresh unless `BURNRATE_CLAUDE_OAUTH_REFRESH=1`.
+OAuth is the only path that can mutate a provider file. Refresh uses `POST https://platform.claude.com/v1/oauth/token` with `grant_type=refresh_token`, then `os.replace` of a temp file next to `.credentials.json`. The refresh client presents as Claude Code’s public OAuth client (not a BURNRATE-issued client id). It refreshes only when `BURNRATE_CLAUDE_OAUTH_REFRESH=1`: the desktop service sets that at first start, setup's Claude switch turns it off, and the CLI leaves it unset.
 
 Live-session rule: a trailing `user` event without a terminal `assistant` `stop_reason` in `{end_turn, stop_sequence, max_tokens, refusal}`. An open editor with no in-flight turn does not qualify.
 

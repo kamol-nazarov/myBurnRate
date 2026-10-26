@@ -17,13 +17,15 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from spend_app import aggregate
+from spend_app.config import dashboard_enabled
 from spend_app.db import connect, initialize, utc_now
-from spend_app.diagnostics import detect_local_sources, source_reports
+from spend_app.diagnostics import detect_local_sources
 from spend_app.plan_service import PlanConflict, PlanError, apply_mutation, effective_terms, list_plans
 from spend_app.pricing import PricingEngine
+from spend_app.setup_checks import collection_progress, consent_state, lane_rows, plan_issues, plan_suggestions, write_consent
 from spend_app.subscriptions import add_subscription, materialize_subscription_days
 from spend_app.sync import (
     STREAM_BROKER,
@@ -44,15 +46,16 @@ SETUP_META_KEY = "app_setup.v1"
 ACCOUNTS_META_KEY = "accounts.v1"
 PAIRING_PREFIX = "brpair_"
 
-DEFAULT_CENTRAL_SERVER_URLS = (
-    "https://ai-harness-vps.tail982d0e.ts.net:8449",
-    "http://100.71.45.59:17331",
-)
+# No built-in hub: a computer joins the hub its owner names (pairing code,
+# saved account, or BURNRATE_CENTRAL_SERVER_URL).
+DEFAULT_CENTRAL_SERVER_URLS: tuple[str, ...] = ()
+# A hub that already has an account accepts no new ones (one owner, many
+# computers); computers join with a pairing code. Opt out deliberately.
+ALLOW_REGISTRATION_ENV = "BURNRATE_ALLOW_REGISTRATION"
 
 
 def default_central_server_url() -> str:
-    override = os.getenv("BURNRATE_CENTRAL_SERVER_URL", "").strip().rstrip("/")
-    return override or DEFAULT_CENTRAL_SERVER_URLS[0]
+    return os.getenv("BURNRATE_CENTRAL_SERVER_URL", "").strip().rstrip("/")
 
 
 HARNESS_CATALOG = {
@@ -67,16 +70,21 @@ HARNESS_CATALOG = {
 }
 
 SUBSCRIPTION_PRESETS = (
-    {"key": "claude_max", "tool_key": "claude-code", "name": "Claude Max", "amount_usd": 100.0, "cadence": "monthly", "badge": "Anthropic"},
+    {"key": "claude_max_20x", "tool_key": "claude-code", "name": "Claude Max 20x", "amount_usd": 200.0, "cadence": "monthly", "badge": "Anthropic"},
+    {"key": "claude_max", "tool_key": "claude-code", "name": "Claude Max 5x", "amount_usd": 100.0, "cadence": "monthly", "badge": "Anthropic"},
     {"key": "claude_pro", "tool_key": "claude-code", "name": "Claude Pro", "amount_usd": 20.0, "cadence": "monthly", "badge": "Anthropic"},
     {"key": "codex_pro", "tool_key": "codex", "name": "ChatGPT Pro", "amount_usd": 200.0, "cadence": "monthly", "badge": "OpenAI"},
     {"key": "codex_plus", "tool_key": "codex", "name": "ChatGPT Plus", "amount_usd": 20.0, "cadence": "monthly", "badge": "OpenAI"},
+    {"key": "grok_heavy", "tool_key": "grok", "name": "SuperGrok Heavy", "amount_usd": 300.0, "cadence": "monthly", "badge": "xAI"},
     {"key": "grok_super", "tool_key": "grok", "name": "SuperGrok", "amount_usd": 30.0, "cadence": "monthly", "badge": "xAI"},
     {"key": "zai_coding", "tool_key": "opencode", "name": "Z.AI Coding Plan", "amount_usd": 10.0, "cadence": "monthly", "badge": "Z.AI"},
     {"key": "opencode_go", "tool_key": "opencode-go", "name": "OpenCode Go", "amount_usd": 10.0, "cadence": "monthly", "badge": "OpenCode"},
     {"key": "opencode_go_plus", "tool_key": "opencode-go", "name": "OpenCode Go Plus", "amount_usd": 40.0, "cadence": "monthly", "badge": "OpenCode"},
+    {"key": "google_ai_ultra", "tool_key": "antigravity", "name": "Google AI Ultra", "amount_usd": 249.99, "cadence": "monthly", "badge": "Google"},
+    {"key": "google_ai_pro", "tool_key": "antigravity", "name": "Google AI Pro", "amount_usd": 19.99, "cadence": "monthly", "badge": "Google"},
     {"key": "muse_power", "tool_key": "muse", "name": "Muse Code Power Usage", "amount_usd": 0.0, "cadence": "monthly", "badge": "Meta"},
 )
+MIN_PASSWORD_LENGTH = 8
 
 
 def _default_computer_name() -> str:
@@ -94,6 +102,8 @@ def default_setup_state() -> dict:
         "version": 1,
         "completed": False,
         "completedAt": None,
+        # "Set up later": the desktop app stops opening the wizard on launch.
+        "deferredAt": None,
         "role": "hub",
         "computerName": _default_computer_name(),
         "account": {
@@ -466,30 +476,62 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
         return {"ok": False, "error": str(exc)}
 
 
+# Setup shows a tool as not read recently only after this long without a
+# successful read; the first pass after a restart can take several minutes.
+SETUP_STALE_AFTER_SECONDS = 15 * 60
+
+
 def _build_harness_list(settings) -> list[dict]:
+    """Each known tool: is it installed, and how did its latest collection go.
+
+    Built from the presence check and the ingest log only, so it answers in
+    milliseconds even while a collection pass is running (the dashboard's full
+    source diagnostics take seconds).
+    """
+    from spend_app.diagnostics import source_path_hint
+    from spend_app.setup_checks import _parse
+
     try:
         presence = detect_local_sources(Path.home())
     except Exception:
         presence = {}
+    now = datetime.now(UTC)
     with connect(settings.database_path) as connection:
-        reports = source_reports(connection, datetime.now(UTC), presence, settings=settings)
+        latest = {
+            row["source"]: row["status"]
+            for row in connection.execute(
+                "SELECT r.source, r.status FROM ingest_runs r "
+                "JOIN (SELECT source, MAX(id) AS max_id FROM ingest_runs GROUP BY source) last ON r.id = last.max_id"
+            )
+        }
+        successes = dict(connection.execute(
+            "SELECT source, MAX(finished_at) FROM ingest_runs WHERE status IN ('success','partial') GROUP BY source"
+        ).fetchall())
     result: list[dict] = []
-    for row in reports:
-        source = row["source"]
-        if source not in HARNESS_CATALOG:
-            continue
-        meta = HARNESS_CATALOG[source]
-        detected = bool(presence.get(source)) or row["state"] in {"healthy", "partial", "detected_without_history", "stale"}
+    for source, meta in HARNESS_CATALOG.items():
+        installed = bool(presence.get(source))
+        last_ok = successes.get(source)
+        read_at = _parse(last_ok)
+        if latest.get(source) == "failed":
+            state = "failed"
+        elif latest.get(source) == "running":
+            state = "reading"
+        elif read_at is None:
+            state = "detected_without_history" if installed else "not_detected"
+        elif (now - read_at).total_seconds() > SETUP_STALE_AFTER_SECONDS:
+            state = "stale"
+        else:
+            state = "healthy"
         result.append(
             {
                 "source": source,
                 "name": meta["name"],
                 "tool": meta["tool"],
                 "description": meta["desc"],
-                "state": row["state"],
-                "detected": detected,
-                "path": row.get("path") or "",
-                "lastSuccess": row.get("lastSuccess"),
+                "state": state,
+                "detected": installed or read_at is not None,
+                "path": source_path_hint(source) or "",
+                "lastSuccess": last_ok,
             }
         )
     return result
@@ -502,6 +544,8 @@ def _call_central_server_account(
 ) -> tuple[str, dict]:
     """Call `/api/account/register` or `/api/account/login` on the central server with fallback."""
     clean_primary = (server_url or "").strip().rstrip("/") or default_central_server_url()
+    if not clean_primary:
+        raise ValueError("Enter your hub's address, or join with a pairing code instead.")
     candidates = [clean_primary]
     for fallback in DEFAULT_CENTRAL_SERVER_URLS:
         if clean_primary in DEFAULT_CENTRAL_SERVER_URLS and fallback not in candidates:
@@ -532,12 +576,46 @@ def _call_central_server_account(
     raise ValueError(last_error)
 
 
-def setup_router(settings, pricing: PricingEngine) -> APIRouter:
+def _setup_request_refused(request: Request) -> JSONResponse | None:
+    """Setup changes come only from BURNRATE's own pages.
+
+    The custom header cannot be sent by another site without a CORS preflight,
+    which BURNRATE never grants, so a web page cannot repoint this computer at
+    another hub or change its settings.
+    """
+    if request.headers.get("x-burnrate-request") == "1":
+        return None
+    return JSONResponse({"error": "Setup changes must come from the BURNRATE setup page."}, status_code=403)
+
+
+def _api_connections(settings) -> dict:
+    """Provider API connections (balances and admin usage) without any secret."""
+    try:
+        from spend_app.connections import Service
+
+        listing = Service(settings).list()
+    except Exception:
+        return {"connections": [], "vaultAvailable": False}
+    rows = [
+        {key: row.get(key) for key in ("source", "name", "state", "detail", "enabled", "revision", "capabilities",
+                                        "credentialHelp", "externallyManaged", "credentialConfigured", "lastImport")}
+        for row in listing["connections"] if row.get("kind") == "api"
+    ]
+    return {"connections": rows, "vaultAvailable": bool(listing.get("vaultAvailable"))}
+
+
+def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRouter:
     router = APIRouter()
 
     @router.get("/setup")
     def setup_page():
         return HTMLResponse(render_setup_wizard(), headers={"Cache-Control": "no-cache"})
+
+    @router.get("/connections")
+    def connections_page():
+        # Provider keys live in the wizard's "Plans & balances" step, so they
+        # can be managed from the HUD even when the dashboard is off.
+        return RedirectResponse("/setup?step=3", status_code=307)
 
     @router.get("/api/setup/state")
     def get_setup_state(request: Request):
@@ -558,7 +636,6 @@ def setup_router(settings, pricing: PricingEngine) -> APIRouter:
                 "os": sys.platform,
                 "timezone": settings.timezone,
                 "networkAddresses": detect_network_addresses(port),
-                "harnesses": _build_harness_list(settings),
                 "machines": machines,
                 "subscriptions": active_plans,
                 "presets": list(SUBSCRIPTION_PRESETS),
@@ -566,9 +643,182 @@ def setup_router(settings, pricing: PricingEngine) -> APIRouter:
                     "eventsCount": int(events_count),
                     "liveAgentsCount": int(agents_count),
                 },
+                "consent": consent_state(),
+                "apiConnections": _api_connections(settings),
+                "dashboard": dashboard_enabled(),
+                "minPasswordLength": MIN_PASSWORD_LENGTH,
             },
             headers={"Cache-Control": "no-store"},
         )
+
+    @router.get("/api/setup/check")
+    def setup_check():
+        """One row per plan card: is usage read, does the meter have a current reading, and the fix."""
+        initialize(settings.database_path)
+        found = lane_rows(settings, _build_harness_list(settings))
+        with connect(settings.database_path) as connection:
+            plans = plan_suggestions(connection, found["lanes"], settings.timezone)
+        return JSONResponse(
+            {**found, "consent": consent_state(), "plans": plans, "checkedAt": utc_now()},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    def plans_payload() -> tuple[dict | None, str]:
+        """The plans setup should show: the Hub's for a spoke (plans live there), else this computer's."""
+        from spend_app.sync import fetch_from_configured_hub
+
+        hub = fetch_from_configured_hub(settings, "/api/subscriptions", ttl_seconds=20)
+        if isinstance(hub, dict) and isinstance(hub.get("plans"), list):
+            return hub, "hub"
+        now_local = datetime.now(UTC).astimezone(ZoneInfo(settings.timezone)).date()
+        with connect(settings.database_path) as connection:
+            return list_plans(connection, now_local), "local"
+
+    @router.get("/api/setup/plan-issues")
+    def setup_plan_issues():
+        initialize(settings.database_path)
+        payload, where = plans_payload()
+        return JSONResponse({"issues": plan_issues(payload), "where": where}, headers={"Cache-Control": "no-store"})
+
+    @router.post("/api/setup/plans/fix")
+    async def setup_fix_plan(request: Request):
+        refused = _setup_request_refused(request)
+        if refused:
+            return refused
+        import uuid as _uuid
+
+        try:
+            body = await request.json()
+            plan_id, version, fix = body.get("planId"), body.get("version"), body.get("fix")
+            if type(plan_id) is not int or type(version) is not int or fix not in {"end", "link"}:
+                raise ValueError("Choose a plan and a fix.")
+            payload, where = plans_payload()
+            issue = next((item for item in plan_issues(payload) if item["planId"] == plan_id and item["fix"] == fix), None)
+            if issue is None:
+                raise ValueError("That plan no longer needs this fix. Reload setup.")
+            today = datetime.now(UTC).astimezone(ZoneInfo(settings.timezone)).date().isoformat()
+            request_id = lambda: "setup-" + _uuid.uuid4().hex  # noqa: E731
+            if fix == "end":
+                steps = [{"operation": "end", "request_id": request_id(), "plan_id": plan_id,
+                          "expected_version": version, "end_date": today}]
+            else:
+                plan = next(item for item in payload["plans"] if item["id"] == plan_id)
+                term = next(item for item in plan["terms"] if item.get("id") == issue["termId"])
+                values = {key: term[key] for key in ("name", "amount_usd", "cadence", "start_date", "end_date")}
+                values["tool_key"] = issue["toolKeyFix"]
+                steps = [{"operation": "correct", "request_id": request_id(), "plan_id": plan_id, "expected_version": version,
+                          "term_id": issue["termId"], "values": values, "preview": True}]
+
+            def apply(step: dict) -> dict:
+                if where == "hub":
+                    from spend_app.sync import post_to_configured_hub
+
+                    result = post_to_configured_hub(settings, "/api/account/subscriptions", {"action": "plan", **step})
+                    if not isinstance(result, dict):
+                        raise ValueError("Your hub did not accept the change. It may need the latest BURNRATE.")
+                    return result
+                with connect(settings.database_path) as connection:
+                    connection.execute("BEGIN IMMEDIATE")
+                    return apply_mutation(connection, step, datetime.now(UTC).astimezone(ZoneInfo(settings.timezone)).date())
+
+            result = apply(steps[0])
+            if fix == "link":
+                # The button states the change; preview, then confirm it.
+                token = result.get("preview_token")
+                if not token:
+                    raise ValueError("The plan could not be previewed for correction.")
+                confirm = {**steps[0], "request_id": request_id(), "preview": False, "confirmed": True, "preview_token": token}
+                result = apply(confirm)
+            aggregate.reset_memo()
+            return JSONResponse({"ok": True, "result": result}, headers={"Cache-Control": "no-store"})
+        except (PlanConflict, PlanError, ValueError, KeyError, StopIteration) as exc:
+            return JSONResponse({"error": str(exc) or "The plan could not be changed."}, status_code=422)
+
+    @router.get("/api/setup/progress")
+    def setup_progress():
+        initialize(settings.database_path)
+        return JSONResponse(collection_progress(settings), headers={"Cache-Control": "no-store"})
+
+    @router.post("/api/setup/consent")
+    async def setup_consent(request: Request):
+        refused = _setup_request_refused(request)
+        if refused:
+            return refused
+        try:
+            body = await request.json()
+            switches = body.get("switches") if isinstance(body, dict) else None
+            if not isinstance(switches, dict) or not switches:
+                raise ValueError("Choose at least one setting to change.")
+            consent, warning = write_consent({str(key): bool(value) for key, value in switches.items()})
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=422)
+        # Readers check these switches on every poll; make the next one due now.
+        from spend_app.quotas import nudge_quota_lanes
+
+        nudge_quota_lanes(settings.database_path)
+        return JSONResponse({"ok": True, "consent": consent, "warning": warning}, headers={"Cache-Control": "no-store"})
+
+    @router.get("/api/setup/notifications")
+    def setup_notifications():
+        from spend_app.notify import public_settings
+
+        return JSONResponse(public_settings(settings.database_path), headers={"Cache-Control": "no-store"})
+
+    @router.post("/api/setup/notifications")
+    async def setup_save_notifications(request: Request):
+        refused = _setup_request_refused(request)
+        if refused:
+            return refused
+        from spend_app.notify import save_kinds
+
+        try:
+            body = await request.json()
+            kinds = body.get("kinds") if isinstance(body, dict) else None
+            if not isinstance(kinds, dict) or not kinds:
+                raise ValueError("Choose a notification to change.")
+            saved = save_kinds(settings.database_path, {str(key): bool(value) for key, value in kinds.items()})
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=422)
+        return JSONResponse(saved, headers={"Cache-Control": "no-store"})
+
+    @router.post("/api/setup/notifications/test")
+    async def setup_test_notification(request: Request):
+        refused = _setup_request_refused(request)
+        if refused:
+            return refused
+        from spend_app.notify import show_toast
+        from starlette.concurrency import run_in_threadpool
+
+        try:
+            await run_in_threadpool(show_toast, "BURNRATE notifications are on",
+                                    "You'll hear from BURNRATE when a plan nears its limit or a meter stops updating.",
+                                    tag="burnrate-test")
+        except (OSError, ValueError) as exc:
+            return JSONResponse({"error": f"Windows did not show it: {exc}"}, status_code=502)
+        return JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
+
+    @router.post("/api/setup/diagnostics")
+    async def setup_diagnostics(request: Request):
+        refused = _setup_request_refused(request)
+        if refused:
+            return refused
+        from spend_app.support_report import build_report
+        from starlette.concurrency import run_in_threadpool
+
+        text = await run_in_threadpool(build_report, settings)
+        return JSONResponse({"text": text}, headers={"Cache-Control": "no-store"})
+
+    @router.post("/api/setup/defer")
+    async def defer_setup(request: Request):
+        refused = _setup_request_refused(request)
+        if refused:
+            return refused
+        initialize(settings.database_path)
+        with connect(settings.database_path) as connection:
+            state = read_setup_state(connection)
+            state["deferredAt"] = utc_now()
+            saved = write_setup_state(connection, state)
+        return JSONResponse({"ok": True, "setup": public_setup_state(saved)}, headers={"Cache-Control": "no-store"})
 
     @router.post("/api/account/register")
     async def central_account_register(request: Request):
@@ -585,8 +835,8 @@ def setup_router(settings, pricing: PricingEngine) -> APIRouter:
 
             if len(username) < 2 or len(username) > 64:
                 raise ValueError("Username must be between 2 and 64 characters.")
-            if len(password) < 4:
-                raise ValueError("Password must be at least 4 characters.")
+            if len(password) < MIN_PASSWORD_LENGTH:
+                raise ValueError(f"Password must be at least {MIN_PASSWORD_LENGTH} characters.")
 
             user_key = username.lower()
             initialize(settings.database_path)
@@ -604,6 +854,13 @@ def setup_router(settings, pricing: PricingEngine) -> APIRouter:
                             status_code=401,
                         )
                 else:
+                    allow = os.getenv(ALLOW_REGISTRATION_ENV, "").strip().lower() in {"1", "true", "yes"}
+                    if accounts["users"] and not allow:
+                        return JSONResponse(
+                            {"error": "This hub already has an account, so it accepts no new ones. Sign in with that "
+                                      "account, or join with a pairing code created on the hub."},
+                            status_code=403,
+                        )
                     salt_hex, hash_hex = _hash_password(password)
                     accounts["users"][user_key] = {
                         "username": username,
@@ -664,15 +921,11 @@ def setup_router(settings, pricing: PricingEngine) -> APIRouter:
                 accounts = _read_accounts(connection)
                 user_rec = accounts["users"].get(user_key)
                 if not isinstance(user_rec, dict):
-                    salt_hex, hash_hex = _hash_password(password)
-                    accounts["users"][user_key] = {
-                        "username": username,
-                        "salt": salt_hex,
-                        "passwordHash": hash_hex,
-                        "createdAt": utc_now(),
-                    }
-                    _write_accounts(connection, accounts)
-                    display_username = username
+                    # A typo must not quietly create a second, empty account.
+                    return JSONResponse(
+                        {"error": f"There is no account named {username} on this server. Check the spelling, or choose Create account."},
+                        status_code=401,
+                    )
                 else:
                     if not _verify_password(
                         password,
@@ -728,9 +981,9 @@ def setup_router(settings, pricing: PricingEngine) -> APIRouter:
             now_local = datetime.now(UTC).astimezone(ZoneInfo(settings.timezone)).date()
             initialize(settings.database_path)
             with connect(settings.database_path) as connection:
-                if "action" in body:
+                if "action" in body or "operation" in body:
                     connection.execute("BEGIN IMMEDIATE")
-                    result = apply_mutation(connection, body, now_local)
+                    result = apply_mutation(connection, {key: value for key, value in body.items() if key != "action"}, now_local)
                     aggregate.reset_memo()
                     return JSONResponse(result, headers={"Cache-Control": "no-store"})
                 preset_keys = [str(k) for k in (body.get("presetKeys") or []) if k]
@@ -751,6 +1004,9 @@ def setup_router(settings, pricing: PricingEngine) -> APIRouter:
 
     @router.post("/api/setup/account")
     async def setup_connect_account(request: Request):
+        refused = _setup_request_refused(request)
+        if refused:
+            return refused
         try:
             body = await request.json()
             if not isinstance(body, dict):
@@ -760,6 +1016,10 @@ def setup_router(settings, pricing: PricingEngine) -> APIRouter:
                 raise ValueError("Mode must be 'login' or 'register'.")
             username = str(body.get("username") or "").strip()
             password = str(body.get("password") or "")
+            if not username or not password:
+                raise ValueError("Enter your account username and password.")
+            if mode == "register" and len(password) < MIN_PASSWORD_LENGTH:
+                raise ValueError(f"Choose a password of at least {MIN_PASSWORD_LENGTH} characters.")
             computer_name = str(body.get("computerName") or "").strip() or _default_computer_name()
             server_url = str(body.get("serverUrl") or "").strip() or default_central_server_url()
             preset_keys = [str(k) for k in (body.get("presetKeys") or []) if k]
@@ -847,56 +1107,32 @@ def setup_router(settings, pricing: PricingEngine) -> APIRouter:
             return JSONResponse({"error": str(exc)}, status_code=422)
 
     @router.post("/api/setup/scan")
-    async def scan_and_import():
+    async def scan_and_import(request: Request):
+        refused = _setup_request_refused(request)
+        if refused:
+            return refused
         from starlette.concurrency import run_in_threadpool
 
         def _do_scan() -> dict:
             initialize(settings.database_path)
-            from spend_app.providers import REGISTRY
-            from spend_app.quotas import poll_activity, poll_quotas
-            from spend_app.scheduler import _run_ingest_specs
+            from spend_app.quotas import nudge_quota_lanes
 
-            try:
-                _run_ingest_specs(
-                    [(spec, {}) for spec in REGISTRY if spec.kind in {"local", "manual"}],
-                    settings,
-                    pricing,
-                )
-            except Exception:
-                pass
-            try:
-                poll_activity(database_path=settings.database_path)
-            except Exception:
-                pass
-            try:
-                poll_quotas(database_path=settings.database_path, settings=settings)
-            except Exception:
-                pass
-            sync_res = maybe_run_configured_spoke_sync(settings, pricing)
-            aggregate.reset_memo()
-            STREAM_BROKER.publish({"type": "ingest", "source": "setup_scan"})
-            with connect(settings.database_path) as connection:
-                events_count = connection.execute("SELECT COUNT(*) FROM usage_events").fetchone()[0]
-                tokens_total = connection.execute(
-                    "SELECT COALESCE(SUM(input_tokens + cache_write_tokens + output_tokens), 0) FROM usage_events"
-                ).fetchone()[0]
-                agents_count = connection.execute(
-                    "SELECT COUNT(*) FROM agent_runs WHERE LOWER(state) IN ('live', 'running')"
-                ).fetchone()[0]
-            return {
-                "ok": True,
-                "harnesses": _build_harness_list(settings),
-                "eventsCount": int(events_count),
-                "tokensTotal": int(tokens_total),
-                "liveAgentsCount": int(agents_count),
-                "syncResult": sync_res,
-            }
+            started = utc_now()
+            if collect_now is not None:
+                collect_now()
+            nudge_quota_lanes(settings.database_path)
+            # Results come from /api/setup/check and /api/setup/progress; this
+            # only starts the work, so it stays fast during a busy first pass.
+            return {"ok": True, "started": started, "harnesses": _build_harness_list(settings)}
 
         res = await run_in_threadpool(_do_scan)
         return JSONResponse(res, headers={"Cache-Control": "no-store"})
 
     @router.post("/api/setup/pair-hub")
     async def create_hub_pairing(request: Request):
+        refused = _setup_request_refused(request)
+        if refused:
+            return refused
         try:
             body = await request.json()
             if not isinstance(body, dict):
@@ -932,6 +1168,9 @@ def setup_router(settings, pricing: PricingEngine) -> APIRouter:
 
     @router.post("/api/setup/connect-spoke")
     async def connect_spoke(request: Request):
+        refused = _setup_request_refused(request)
+        if refused:
+            return refused
         try:
             body = await request.json()
             if not isinstance(body, dict):
@@ -994,6 +1233,9 @@ def setup_router(settings, pricing: PricingEngine) -> APIRouter:
 
     @router.post("/api/setup/complete")
     async def complete_setup(request: Request):
+        refused = _setup_request_refused(request)
+        if refused:
+            return refused
         try:
             body = await request.json()
             if not isinstance(body, dict):
@@ -1025,6 +1267,7 @@ def setup_router(settings, pricing: PricingEngine) -> APIRouter:
 
                 state["completed"] = True
                 state["completedAt"] = utc_now()
+                state["deferredAt"] = None
                 state["computerName"] = computer_name
                 state["role"] = role
                 if role != "spoke":
@@ -1524,6 +1767,138 @@ SETUP_WIZARD_HTML = """<!doctype html>
       }
       .wizard-footer .btn-primary { min-width: 220px; }
 
+      .role-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+      }
+      .role-card {
+        appearance: none;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        min-height: 118px;
+        padding: 16px;
+        background: var(--soft);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        color: var(--text);
+        text-align: left;
+        cursor: pointer;
+        transition: border-color 0.15s;
+      }
+      .role-card:hover { border-color: var(--border-strong); }
+      .role-card[aria-checked=true] { border-color: var(--text); box-shadow: inset 0 0 0 1px var(--text); }
+      .role-card strong { font: 600 16px/1.25 var(--fd); }
+      .role-card small { font-size: 12.5px; line-height: 1.45; color: var(--muted); }
+      .current-box { flex-direction: row; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+      .current-box p { flex: 1 1 280px; }
+      .code-box {
+        padding: 12px;
+        background: var(--sunken);
+        border: 1px solid var(--border-strong);
+        border-radius: 8px;
+        font: 12px/1.5 var(--font-mono);
+        overflow-wrap: anywhere;
+        user-select: all;
+      }
+      textarea.text-input { min-height: 72px; padding: 10px 12px; resize: vertical; font: 12px/1.5 var(--font-mono); }
+      .link-btn {
+        appearance: none;
+        align-self: flex-start;
+        padding: 0;
+        border: 0;
+        background: none;
+        color: var(--accent);
+        font: 600 13px/1.4 var(--font-sans);
+        cursor: pointer;
+      }
+      .link-btn:hover { text-decoration: underline; }
+      .scan-row .btn { flex: 0 0 auto; }
+      .lane-list { display: flex; flex-direction: column; gap: 10px; }
+      .lane-row {
+        display: grid;
+        grid-template-columns: 34px minmax(0, 1fr) auto;
+        column-gap: 14px;
+        row-gap: 8px;
+        align-items: center;
+        padding: 14px 16px;
+        background: var(--soft);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+      }
+      .lane-row.attention { border-color: var(--danger-border); }
+      .lane-main { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+      .lane-main strong { font: 600 15px/1.3 var(--fd); color: var(--text); }
+      .lane-main small { font-size: 12px; color: var(--muted); }
+      .lane-facts { grid-column: 2 / -1; display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--secondary); min-width: 0; }
+      .fact { display: flex; gap: 10px; align-items: baseline; min-width: 0; }
+      .fact-key { flex: 0 0 52px; font: 600 10px/1.7 var(--fd); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+      .fact span:last-child { min-width: 0; overflow-wrap: anywhere; }
+      .lane-detail { font-size: 12.5px; color: var(--muted); }
+      .lane-fix { font-size: 13px; color: var(--text); }
+      .lane-form { grid-column: 2 / -1; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+      .lane-form .text-input { flex: 1 1 220px; }
+      .status-chip.warn { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+      .status-chip.bad { color: var(--danger); border-color: var(--danger-border); background: var(--danger-bg); }
+      .switch-row {
+        grid-column: 2 / -1;
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        margin-top: 2px;
+        padding-top: 10px;
+        border-top: 1px solid var(--line);
+        cursor: pointer;
+      }
+      .switch-row input { flex: 0 0 18px; width: 18px; height: 18px; margin-top: 2px; accent-color: var(--text); cursor: pointer; }
+      .switch-row strong { display: block; font: 600 14px/1.3 var(--fd); color: var(--text); }
+      .switch-row small { display: block; margin-top: 2px; font-size: 12.5px; line-height: 1.45; color: var(--muted); }
+      .section-head { display: flex; flex-direction: column; gap: 4px; }
+      .section-head h3 { font: 600 17px/1.25 var(--fd); color: var(--text); }
+      .plan-list { display: flex; flex-direction: column; gap: 8px; }
+      .plan-row {
+        display: grid;
+        grid-template-columns: 18px minmax(0, 1fr) 130px;
+        gap: 12px;
+        align-items: center;
+        padding: 10px 14px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+      }
+      .plan-row.tracked { grid-template-columns: minmax(0, 1fr) auto; }
+      .plan-row input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--text); cursor: pointer; }
+      .plan-row strong { display: block; font: 600 14px/1.3 var(--fd); }
+      .plan-row small { display: block; font-size: 12px; color: var(--muted); }
+      .plan-row .amount-input { min-height: 36px; }
+      .plan-row .price { font: 500 15px/1 var(--fd); white-space: nowrap; }
+      details.more { color: var(--secondary); }
+      details.more > summary { cursor: pointer; font: 600 13px/1.4 var(--font-sans); color: var(--secondary); }
+      details.more > *:not(summary) { margin-top: 10px; }
+      .preview-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+      .preview-card {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 12px 14px;
+        background: var(--soft);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+      }
+      .preview-head { display: flex; align-items: center; gap: 10px; }
+      .preview-head .logo-tile { width: 28px; height: 28px; padding: 6px; }
+      .preview-head strong { font: 600 15px/1.2 var(--fd); }
+      .preview-row { display: grid; grid-template-columns: 74px minmax(0, 1fr) 58px; gap: 10px; align-items: center; font-size: 12px; color: var(--muted); }
+      .preview-row b { font: 500 14px/1 var(--fd); color: var(--text); text-align: right; }
+      .bar { height: 6px; border-radius: 3px; background: var(--track); overflow: hidden; }
+      .bar i { display: block; height: 100%; width: 0; background: var(--meter); }
+      .bar.payg { background: repeating-linear-gradient(135deg, var(--track) 0 2px, transparent 2px 6px); }
+      .issue-list { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+      .issue-list li { padding: 10px 12px; background: var(--soft); border: 1px solid var(--line); border-radius: 8px; font-size: 13px; color: var(--secondary); }
+      .issue-list li strong { display: block; font: 600 14px/1.3 var(--fd); color: var(--text); }
+      .muted-line { font-size: 12.5px; color: var(--muted); }
+
       @media (max-width: 760px) {
         .wizard-shell {
           grid-template-columns: minmax(0, 1fr);
@@ -1532,14 +1907,16 @@ SETUP_WIZARD_HTML = """<!doctype html>
           padding: 16px 16px 28px;
         }
         .wizard-rail { position: static; }
-        .wizard-stepper { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 14px; }
+        .wizard-stepper { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); column-gap: 14px; }
         .wizard-stepper li { grid-template-columns: auto minmax(0, 1fr); padding-top: 14px; padding-bottom: 0; }
         .wizard-stepper small { display: none; }
         .wizard-card { padding: 22px 18px 20px; gap: 22px; }
         .auth-tab { min-height: 44px; padding: 6px 8px; font-size: 13px; line-height: 1.2; }
         .scan-row > .btn { width: 100%; }
         .step-head h1 { font-size: 24px; }
-        .form-grid, .harness-grid, .presets-grid { grid-template-columns: minmax(0, 1fr); }
+        .form-grid, .harness-grid, .presets-grid, .role-grid, .preview-grid { grid-template-columns: minmax(0, 1fr); }
+        .plan-row { grid-template-columns: 18px minmax(0, 1fr); }
+        .plan-row .amount-input { grid-column: 2; }
         .wizard-footer { flex-direction: column-reverse; align-items: stretch; }
         .wizard-footer .btn-primary { min-width: 0; }
       }
@@ -1561,115 +1938,235 @@ SETUP_WIZARD_HTML = """<!doctype html>
           <button type="button" class="icon-btn" id="wiz-theme-toggle" aria-label="Switch color theme" title="Switch color theme">
             <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.75a6.25 6.25 0 0 1 0 12.5z" fill="currentColor"/></svg>
           </button>
-          <a href="/" class="btn" id="wizard-skip-link"><span><span class="skip-lead">Skip to </span>__SKIP_TARGET__ →</span></a>
+          <button type="button" class="btn" id="wizard-later" title="Go to the __SKIP_TARGET__ now. Open setup again any time from the HUD or the tray.">Set up later</button>
         </div>
       </header>
 
       <aside class="wizard-rail" aria-label="Progress">
         <p class="eyebrow">Progress</p>
         <ol class="wizard-stepper" id="wizard-stepper" aria-label="Setup steps">
-          <li data-step="1" class="active"><span class="num">01</span><span class="step-text"><strong>Account login</strong><small>Central account on tk-server</small></span></li>
-          <li data-step="2"><span class="num">02</span><span class="step-text"><strong>Installed providers</strong><small>AI tools on this computer</small></span></li>
+          <li data-step="1" class="active"><span class="num">01</span><span class="step-text"><strong>This computer</strong><small>On its own, or with your hub</small></span></li>
+          <li data-step="2"><span class="num">02</span><span class="step-text"><strong>What we found</strong><small>Tools, usage and plan meters</small></span></li>
+          <li data-step="3"><span class="num">03</span><span class="step-text"><strong>Plans &amp; balances</strong><small>What you pay and what is left</small></span></li>
+          <li data-step="4"><span class="num">04</span><span class="step-text"><strong>Check</strong><small>Your HUD, with live data</small></span></li>
         </ol>
       </aside>
 
       <section class="wizard-card">
-        <!-- STEP 1: ACCOUNT LOGIN / CREATE ACCOUNT -->
+        <!-- STEP 1: THIS COMPUTER -->
         <div id="wiz-step-1" class="wiz-pane">
           <div class="step-head">
-            <p class="eyebrow"><span class="n">01</span>Central account · tk-server</p>
-            <h1 id="wiz-auth-heading">Sign in to your BURNRATE account</h1>
-            <p class="lede" id="wiz-auth-sub">Log in once on any computer. Your central server on <code>tk-server</code> automatically aggregates usage, live agents, and subscriptions across every computer on your account.</p>
-          </div>
-
-          <div class="auth-tabs" role="tablist" aria-label="Account mode">
-            <button type="button" class="auth-tab active" data-auth-mode="login" id="wiz-tab-login">Sign In</button>
-            <button type="button" class="auth-tab" data-auth-mode="register" id="wiz-tab-register">Create Account &amp; Subscriptions</button>
-          </div>
-
-          <div class="form-grid">
-            <div class="field-group">
-              <label for="wiz-username">Account username or email</label>
-              <input id="wiz-username" class="text-input" autocomplete="username" placeholder="e.g. kamol">
-            </div>
-            <div class="field-group">
-              <label for="wiz-password">Password</label>
-              <input id="wiz-password" type="password" class="text-input" autocomplete="current-password" placeholder="••••••••">
-            </div>
+            <p class="eyebrow"><span class="n">01</span>This computer</p>
+            <h1>How should this computer work?</h1>
+            <p class="lede">BURNRATE reads the AI tools on this computer. It can keep that to itself, or join your other computers through a hub so every HUD shows the same totals.</p>
           </div>
 
           <div class="field-group">
             <label for="wiz-computer-name">This computer's name</label>
             <input id="wiz-computer-name" class="text-input" maxlength="64" placeholder="e.g. MyDesktop, MacBook Pro">
-            <span class="hint">Shown in dashboard filters and live agents.</span>
+            <span class="hint">Shown in computer filters and next to live agents.</span>
           </div>
 
-          <!-- SUBSCRIPTIONS PICKER (SHOWN WHEN CREATING AN ACCOUNT) -->
-          <div id="wiz-register-subs" class="sub-box" hidden>
-            <div>
-              <h3>Set up your active AI subscriptions</h3>
-              <p class="hint">Saved to your account on <code>tk-server</code> so plan ROI is tracked across all your computers.</p>
-            </div>
-            <div class="presets-grid" id="wiz-presets-grid"></div>
-            <div class="inline-row">
-              <select id="wiz-custom-tool" class="text-input select-sm">
-                <option value="claude-code">Claude Code</option>
-                <option value="codex">Codex / OpenAI</option>
-                <option value="grok">SuperGrok (xAI)</option>
-                <option value="opencode">Z.AI / OpenCode</option>
-                <option value="opencode-go">OpenCode Go</option>
-                <option value="openrouter">OpenRouter</option>
-                <option value="custom">Custom</option>
-              </select>
-              <input id="wiz-custom-name" class="text-input" placeholder="Custom plan name (optional)">
-              <input id="wiz-custom-amount" type="number" min="0" step="0.01" class="text-input amount-input" placeholder="USD/mo">
-              <button type="button" class="btn btn-sm" id="wiz-add-custom-plan-btn">Add Plan</button>
-            </div>
-            <div id="wiz-existing-plans" class="plans-line"></div>
+          <div id="wiz-current" class="sub-box current-box" hidden>
+            <p id="wiz-current-text" class="lede"></p>
+            <button type="button" class="btn btn-sm" id="wiz-change-role">Change</button>
           </div>
 
-          <div id="wiz-auth-status" class="status-banner" hidden></div>
+          <div class="role-grid" id="wiz-roles" role="radiogroup" aria-label="How this computer works">
+            <button type="button" class="role-card" role="radio" data-role="standalone" aria-checked="true">
+              <strong>Just this computer</strong>
+              <small>Usage stays here. No account, nothing leaves this computer.</small>
+            </button>
+            <button type="button" class="role-card" role="radio" data-role="spoke" aria-checked="false">
+              <strong>Join my hub</strong>
+              <small>Send this computer's usage to the hub, and see every computer's totals here.</small>
+            </button>
+            <button type="button" class="role-card" role="radio" data-role="hub" aria-checked="false">
+              <strong>Make this the hub</strong>
+              <small>Your other computers send their usage here. You give each one a pairing code.</small>
+            </button>
+          </div>
 
-          <details class="advanced-server">
-            <summary>Account server: <code id="wiz-server-label">tk-server (100.71.45.59)</code></summary>
+          <div id="wiz-join" class="sub-box" hidden>
+            <div class="auth-tabs" role="tablist" aria-label="How to join">
+              <button type="button" class="auth-tab active" id="wiz-join-code-tab" role="tab">Pairing code</button>
+              <button type="button" class="auth-tab" id="wiz-join-account-tab" role="tab">Account</button>
+            </div>
+            <div id="wiz-join-code" class="field-group">
+              <label for="wiz-pair-input">Pairing code from your hub</label>
+              <textarea id="wiz-pair-input" class="text-input" spellcheck="false" autocomplete="off" placeholder="brpair_…"></textarea>
+              <span class="hint">On the hub, open setup, choose Make this the hub, then Create pairing code.</span>
+            </div>
+            <div id="wiz-join-account" class="field-group" hidden>
+              <div class="form-grid">
+                <div class="field-group">
+                  <label for="wiz-username">Username or email</label>
+                  <input id="wiz-username" class="text-input" autocomplete="username">
+                </div>
+                <div class="field-group">
+                  <label for="wiz-password">Password</label>
+                  <input id="wiz-password" type="password" class="text-input" autocomplete="current-password">
+                </div>
+              </div>
+              <div class="field-group" id="wiz-confirm-group" hidden>
+                <label for="wiz-password-confirm">Repeat the password</label>
+                <input id="wiz-password-confirm" type="password" class="text-input" autocomplete="new-password">
+                <span class="hint" id="wiz-password-hint"></span>
+              </div>
+              <button type="button" class="link-btn" id="wiz-auth-switch">Create an account instead</button>
+              <details class="advanced-server">
+                <summary>Hub address: <code id="wiz-server-label"></code></summary>
+                <div class="field-group">
+                  <label for="wiz-server-url">Hub address</label>
+                  <input id="wiz-server-url" class="text-input mono" spellcheck="false">
+                </div>
+              </details>
+            </div>
+          </div>
+
+          <div id="wiz-hub" class="sub-box" hidden>
+            <div class="section-head">
+              <h3>Add another computer</h3>
+              <p class="hint">Create a code here, then paste it on the other computer under Join my hub. Each code works for one computer.</p>
+            </div>
             <div class="field-group">
-              <label for="wiz-server-url">Central account server URL</label>
-              <input id="wiz-server-url" class="text-input mono" placeholder="https://ai-harness-vps.tail982d0e.ts.net:8449">
+              <label>Address the other computer uses to reach this one</label>
+              <div id="wiz-hub-addresses" class="plan-list"></div>
             </div>
-          </details>
+            <div class="inline-row">
+              <input id="wiz-remote-name" class="text-input" maxlength="64" placeholder="Name of the other computer">
+              <button type="button" class="btn btn-sm" id="wiz-pair-create">Create pairing code</button>
+            </div>
+            <div id="wiz-pair-result" class="field-group" hidden>
+              <label for="wiz-pair-code">Pairing code</label>
+              <div id="wiz-pair-code" class="code-box"></div>
+              <div class="inline-row">
+                <button type="button" class="btn btn-sm" id="wiz-pair-copy">Copy code</button>
+                <span class="hint">The code contains a key for this hub. Share it only with your own computers.</span>
+              </div>
+            </div>
+          </div>
+
+          <div id="wiz-role-warning" class="status-banner err" hidden></div>
+          <div id="wiz-step1-status" class="status-banner" hidden></div>
         </div>
 
-        <!-- STEP 2: CONNECT INSTALLED PROVIDERS -->
+        <!-- STEP 2: WHAT WE FOUND -->
         <div id="wiz-step-2" class="wiz-pane" hidden>
           <div class="step-head">
-            <p class="eyebrow"><span class="n">02</span>Installed providers · this computer</p>
-            <h1>Connect installed AI providers on this computer</h1>
-            <p class="lede">BURNRATE automatically detects the AI coding tools installed on this computer and streams their usage and live quotas to your account.</p>
+            <p class="eyebrow"><span class="n">02</span>What we found</p>
+            <h1>What BURNRATE found on this computer</h1>
+            <p class="lede">Each row is a card on your HUD. It shows whether usage is being read, whether the plan meter has a current reading, and what to do when it does not.</p>
           </div>
-
           <div class="scan-row">
-            <span id="wiz-scan-summary" class="status-banner">Checking installed AI providers…</span>
-            <button type="button" class="btn btn-primary" id="wiz-scan-btn">Reconnect &amp; Sync Installed Providers</button>
+            <span id="wiz-progress" class="status-banner"><span id="wiz-progress-text">Reading your tools…</span></span>
+            <button type="button" class="btn btn-sm" id="wiz-scan-btn">Check again</button>
+          </div>
+          <div class="lane-list" id="wiz-lanes"></div>
+          <div id="wiz-usage-only-wrap" class="field-group" hidden>
+            <p class="eyebrow">Also reading usage from</p>
+            <div class="lane-list" id="wiz-usage-only"></div>
+          </div>
+          <p id="wiz-not-found" class="muted-line" hidden></p>
+        </div>
+
+        <!-- STEP 3: PLANS & BALANCES -->
+        <div id="wiz-step-3" class="wiz-pane" hidden>
+          <div class="step-head">
+            <p class="eyebrow"><span class="n">03</span>Plans &amp; balances</p>
+            <h1>What you pay, and what is left</h1>
+            <p class="lede">Plans let BURNRATE compare what you pay with what you use. Balances show the money left on pay-as-you-go accounts.</p>
           </div>
 
-          <div class="harness-grid" id="wiz-harness-grid"></div>
+          <div class="sub-box">
+            <div class="section-head">
+              <h3>Plans</h3>
+              <p class="hint">Suggestions come from what the meters on this computer report. Check each price before you add it.</p>
+            </div>
+            <div id="wiz-plan-issues-wrap" class="field-group" hidden>
+              <p class="eyebrow">Plans that need a look</p>
+              <div class="plan-list" id="wiz-plan-issues"></div>
+            </div>
+            <div class="plan-list" id="wiz-plans-suggested"></div>
+            <div class="plan-list" id="wiz-plans-added"></div>
+            <details class="more" id="wiz-plans-add-wrap">
+              <summary>Add another plan</summary>
+              <div class="inline-row">
+                <select id="wiz-plan-preset" class="text-input select-sm" aria-label="Plan"></select>
+                <input id="wiz-plan-name" class="text-input" placeholder="Plan name" aria-label="Plan name">
+                <input id="wiz-plan-amount" type="number" min="0" step="0.01" class="text-input amount-input" placeholder="USD / month" aria-label="Monthly price in USD">
+                <button type="button" class="btn btn-sm" id="wiz-plan-add">Add</button>
+              </div>
+            </details>
+            <details class="more" id="wiz-plans-tracked-wrap">
+              <summary id="wiz-plans-tracked-label">Plans already tracked</summary>
+              <div class="plan-list" id="wiz-plans-tracked"></div>
+            </details>
+          </div>
 
+          <div class="sub-box">
+            <div class="section-head">
+              <h3>Pay-as-you-go balances</h3>
+              <p class="hint">Keys are tested, then stored in Windows Credential Manager. They are only used to read the balance.</p>
+            </div>
+            <div class="lane-list" id="wiz-balances"></div>
+            <p id="wiz-vault-note" class="status-banner err" hidden>Windows Credential Manager is not available, so keys cannot be saved here.</p>
+            <details class="more" id="wiz-admin-wrap" hidden>
+              <summary>Organization usage APIs</summary>
+              <div class="lane-list" id="wiz-admin-apis"></div>
+            </details>
+          </div>
+          <div id="wiz-step3-status" class="status-banner" hidden></div>
+        </div>
+
+        <!-- STEP 4: CHECK -->
+        <div id="wiz-step-4" class="wiz-pane" hidden>
+          <div class="step-head">
+            <p class="eyebrow"><span class="n">04</span>Check</p>
+            <h1>Check your HUD</h1>
+            <p class="lede">This is what your HUD shows right now. Anything that needs you is listed below the cards.</p>
+          </div>
+          <div class="preview-grid" id="wiz-preview"></div>
+          <div class="field-group">
+            <p class="eyebrow">Needs attention</p>
+            <ul class="issue-list" id="wiz-attention"></ul>
+          </div>
+          <p class="muted-line" id="wiz-progress-4"></p>
+          <div class="sub-box" id="wiz-notify-box">
+            <div class="section-head">
+              <h3>Desktop notifications</h3>
+              <p class="hint">Windows notifications from BURNRATE, sent once each and held back in quiet hours.</p>
+            </div>
+            <div class="lane-list" id="wiz-notify-kinds"></div>
+            <div class="inline-row">
+              <button type="button" class="btn btn-sm" id="wiz-notify-test">Send a test</button>
+              <span class="muted-line" id="wiz-notify-status"></span>
+            </div>
+          </div>
+          <div class="sub-box">
+            <div class="section-head">
+              <h3>Diagnostics</h3>
+              <p class="hint">Versions, freshness, meters and recent log lines, with keys, e-mail addresses and your home folder removed. Nothing is sent; paste it where you choose.</p>
+            </div>
+            <div class="inline-row">
+              <button type="button" class="btn btn-sm" id="wiz-diag-copy">Copy diagnostics</button>
+              <span class="muted-line" id="wiz-diag-status"></span>
+            </div>
+            <textarea id="wiz-diag-text" class="text-input mono" rows="8" readonly hidden aria-label="Diagnostics"></textarea>
+          </div>
           <div class="sub-box">
             <label class="check-row">
               <input type="checkbox" id="wiz-hud-auto" checked>
-              <span><strong>Launch Sidecar HUD automatically</strong><small>Keep a compact live burn-rate &amp; quota meter pinned on your screen</small></span>
+              <span><strong>Open the HUD when BURNRATE starts</strong><small>A compact live meter pinned on your screen</small></span>
             </label>
             <input type="checkbox" id="wiz-hud-top" checked hidden>
           </div>
-
-          <div id="wiz-finish-banner" class="status-banner good">
-            Account connected. Installed providers on this computer will sync automatically in the background.
-          </div>
+          <div id="wiz-finish-banner" class="status-banner" hidden></div>
         </div>
 
         <footer class="wizard-footer">
           <button type="button" class="btn" id="wiz-back-btn" disabled>← Back</button>
-          <button type="button" class="btn btn-primary" id="wiz-next-btn">Sign In &amp; Continue →</button>
+          <button type="button" class="btn btn-primary" id="wiz-next-btn">Continue →</button>
         </footer>
       </section>
     </main>
@@ -1679,195 +2176,687 @@ SETUP_WIZARD_HTML = """<!doctype html>
         const $ = id => document.getElementById(id);
         // The desktop app starts with this window hidden; show it for setup.
         try { window.__TAURI_INTERNALS__?.invoke?.("show_dashboard")?.catch?.(() => {}); } catch {}
+        const LAST_STEP = 4;
         let step = 1;
+        let role = "standalone";
+        let joinMode = "code";
         let authMode = "login";
+        let connected = false;
+        let changingRole = false;
         let stateData = null;
-        let accountConnected = false;
-        const selectedPresets = new Set();
-        const customPlans = [];
+        let checkData = null;
+        let scanSince = null;
+        let progressTimer = null;
+        let progressStarted = 0;
+        const suggestionChoices = new Map();
+        const addedPlans = [];
 
         async function api(url, method = "GET", body = null) {
           const opts = {method, cache: "no-store", headers: {}};
+          if (method !== "GET") opts.headers["X-BURNRATE-Request"] = "1";
           if (body != null) {
             opts.headers["Content-Type"] = "application/json";
             opts.body = JSON.stringify(body);
           }
           const res = await fetch(url, opts);
           const data = await res.json().catch(() => ({}));
-          if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+          if (!res.ok) throw new Error(data.error || data.detail || ("HTTP " + res.status));
           return data;
         }
-
-        function setAuthMode(nextMode) {
-          authMode = nextMode === "register" ? "register" : "login";
-          $("wiz-tab-login").classList.toggle("active", authMode === "login");
-          $("wiz-tab-register").classList.toggle("active", authMode === "register");
-          $("wiz-register-subs").hidden = authMode !== "register";
-          $("wiz-auth-heading").textContent = authMode === "register"
-            ? "Create your account & subscriptions"
-            : "Sign in to your BURNRATE account";
-          if (step === 1) {
-            $("wiz-next-btn").textContent = authMode === "register"
-              ? "Create Account & Continue →"
-              : "Sign In & Continue →";
-          }
+        const el = (tag, cls, text) => {
+          const node = document.createElement(tag);
+          if (cls) node.className = cls;
+          if (text != null) node.textContent = text;
+          return node;
+        };
+        function banner(id, kind, text) {
+          const node = $(id);
+          node.hidden = !text;
+          node.className = "status-banner" + (kind ? " " + kind : "");
+          node.textContent = text || "";
         }
-
-        function setStep(next) {
-          step = Math.max(1, Math.min(2, next));
-          $("wiz-step-1").hidden = step !== 1;
-          $("wiz-step-2").hidden = step !== 2;
-          document.querySelectorAll("#wizard-stepper li").forEach(li => {
-            const s = Number(li.dataset.step);
-            li.classList.toggle("active", s === step);
-            li.classList.toggle("done", s < step);
-          });
-          $("wiz-back-btn").disabled = step === 1;
-          if (step === 1) {
-            $("wiz-next-btn").textContent = authMode === "register"
-              ? "Create Account & Continue →"
-              : "Sign In & Continue →";
-          } else {
-            $("wiz-next-btn").textContent = "Finish Setup & Launch BURNRATE";
-          }
+        function uuid() {
+          if (window.crypto?.randomUUID) return crypto.randomUUID();
+          const b = crypto.getRandomValues(new Uint8Array(16));
+          b[6] = (b[6] & 15) | 64;
+          b[8] = (b[8] & 63) | 128;
+          const h = [...b].map(x => x.toString(16).padStart(2, "0")).join("");
+          return [h.slice(0, 8), h.slice(8, 12), h.slice(12, 16), h.slice(16, 20), h.slice(20)].join("-");
         }
+        function ago(iso) {
+          const ms = Date.now() - Date.parse(iso || "");
+          if (!Number.isFinite(ms)) return "";
+          const min = Math.floor(ms / 60000);
+          if (min < 1) return "just now";
+          if (min < 60) return min + " min ago";
+          const hours = Math.floor(min / 60);
+          return hours < 48 ? hours + " h ago" : Math.floor(hours / 24) + " days ago";
+        }
+        const money = value => "$" + Number(value).toFixed(2);
 
         // Provider marks come from the shared sprite served at /logos.svg.
         const TOOL_LOGOS = {
-          codex: "codex", "claude-code": "claude", opencode: "opencode", zcode: "zai",
-          grok: "grok", antigravity: "antigravity", muse: "meta", openrouter: "openrouter", traycer: "traycer", "opencode-go": "opencode"
+          codex: "codex", "claude-code": "claude", opencode: "zai", zcode: "zai", "opencode-go": "opencode",
+          grok: "grok", antigravity: "antigravity", muse: "meta", openrouter: "openrouter", traycer: "traycer"
         };
-        const logoFor = (key, name) => /z[.]?ai|glm/i.test(String(name || "")) ? "zai" : (TOOL_LOGOS[key] || "custom");
-        function logoTile(id) {
-          const tile = document.createElement("span");
-          tile.className = "logo-tile";
-          tile.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><use href="/logos.svg#' + id + '"></use></svg>';
+        const logoFor = key => TOOL_LOGOS[key] || (String(key).startsWith("claude") ? "claude" : String(key).startsWith("opencode") ? "opencode" : "custom");
+        function logoTile(key) {
+          const tile = el("span", "logo-tile");
+          tile.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><use href="/logos.svg#' + logoFor(key) + '"></use></svg>';
           return tile;
         }
 
-        function renderHarnesses(harnesses, stats) {
-          const grid = $("wiz-harness-grid");
-          const list = harnesses || [];
-          const detectedCount = list.filter(h => h.detected).length;
-          $("wiz-scan-summary").textContent =
-            `${detectedCount} installed AI provider${detectedCount === 1 ? "" : "s"} connected · ${stats?.eventsCount ?? 0} usage records · ${stats?.liveAgentsCount ?? 0} live agents`;
-          $("wiz-scan-summary").className = "status-banner" + (detectedCount > 0 ? " good" : "");
+        /* ---------- Step 1: this computer ---------- */
+        function renderStep1() {
+          const s = stateData?.setup || {};
+          const spoke = s.spokeConfig || {};
+          connected = Boolean(spoke.enabled && spoke.hasToken && s.role === "spoke");
+          $("wiz-current").hidden = !connected;
+          if (connected) {
+            let text = "This computer sends its usage to your hub at " + spoke.hubUrl;
+            if (s.account?.username) text += " as " + s.account.username;
+            if (spoke.lastSyncError) text += ". The last sync failed: " + spoke.lastSyncError;
+            else if (spoke.lastSyncAt) text += " · last sync " + ago(spoke.lastSyncAt);
+            $("wiz-current-text").textContent = text + ".";
+          }
+          const choosing = !connected || changingRole;
+          $("wiz-roles").hidden = !choosing;
+          document.querySelectorAll(".role-card").forEach(card => card.setAttribute("aria-checked", String(card.dataset.role === role)));
+          $("wiz-join").hidden = !choosing || role !== "spoke";
+          $("wiz-hub").hidden = role !== "hub";
+          $("wiz-join-code-tab").classList.toggle("active", joinMode === "code");
+          $("wiz-join-account-tab").classList.toggle("active", joinMode === "account");
+          $("wiz-join-code").hidden = joinMode !== "code";
+          $("wiz-join-account").hidden = joinMode !== "account";
+          $("wiz-confirm-group").hidden = authMode !== "register";
+          $("wiz-password").autocomplete = authMode === "register" ? "new-password" : "current-password";
+          $("wiz-auth-switch").textContent = authMode === "register" ? "I already have an account" : "Create an account instead";
+          $("wiz-password-hint").textContent = "At least " + (stateData?.minPasswordLength || 8) + " characters.";
+          $("wiz-server-label").textContent = $("wiz-server-url").value || "";
+          const leaving = connected && changingRole && role !== "spoke";
+          banner("wiz-role-warning", "err", leaving ? "When you finish, this computer stops sending its usage to " + spoke.hubUrl + "." : "");
+        }
 
-          grid.replaceChildren(...list.map(h => {
-            const card = document.createElement("div");
-            card.className = "harness-item" + (h.detected ? " detected" : "");
-            const left = document.createElement("div");
-            const title = document.createElement("strong");
-            title.textContent = h.name;
-            const sub = document.createElement("small");
-            sub.textContent = h.path || h.description;
-            left.append(title, sub);
-            const chip = document.createElement("span");
-            chip.className = "status-chip" + (h.detected ? " good" : "");
-            chip.textContent = h.detected ? "Connected" : "Not installed";
-            card.append(logoTile(logoFor(h.tool, h.name)), left, chip);
-            return card;
+        function renderHubAddresses() {
+          const list = $("wiz-hub-addresses");
+          list.replaceChildren(...(stateData?.networkAddresses || []).map((address, index) => {
+            const label = el("label", "check-row");
+            const input = el("input");
+            input.type = "radio";
+            input.name = "hub-address";
+            input.value = address.url;
+            input.checked = index === 0;
+            const copy = el("span");
+            copy.append(el("strong", null, address.url), el("small", null, address.label));
+            label.append(input, copy);
+            return label;
           }));
         }
 
-        function renderPresets(presets, existing) {
-          const grid = $("wiz-presets-grid");
-          const existingNames = new Set((existing || []).map(p => (p.tool_key + ":" + String(p.name).toLowerCase())));
-          grid.replaceChildren(...(presets || []).map(p => {
-            const already = existingNames.has(p.tool_key + ":" + p.name.toLowerCase());
-            const on = already || selectedPresets.has(p.key);
-            const btn = document.createElement("button");
-            btn.type = "button";
-            btn.className = "preset-card" + (on ? " selected" : "");
-            const left = document.createElement("div");
-            const title = document.createElement("strong");
-            title.textContent = p.name;
-            const sub = document.createElement("small");
-            sub.textContent = already ? `${p.badge} · Active on account` : `${p.badge} · Click to include`;
-            left.append(title, sub);
-            const price = document.createElement("span");
-            price.className = "preset-price";
-            price.textContent = "$" + p.amount_usd + "/mo";
-            btn.append(logoTile(logoFor(p.tool_key, p.name)), left, price);
-            btn.addEventListener("click", () => {
-              if (already) return;
-              if (selectedPresets.has(p.key)) selectedPresets.delete(p.key);
-              else selectedPresets.add(p.key);
-              renderPresets(presets, existing);
+        async function createPairingCode() {
+          const remoteName = $("wiz-remote-name").value.trim() || "Another computer";
+          const hubUrl = document.querySelector('input[name="hub-address"]:checked')?.value;
+          try {
+            const res = await api("/api/setup/pair-hub", "POST", {remoteName, hubUrl});
+            $("wiz-pair-code").textContent = res.pairingCode;
+            $("wiz-pair-result").hidden = false;
+            banner("wiz-step1-status", "", "");
+          } catch (err) {
+            banner("wiz-step1-status", "err", err.message);
+          }
+        }
+
+        async function leaveStep1() {
+          const computerName = $("wiz-computer-name").value.trim();
+          if (role !== "spoke" || (connected && !changingRole)) return true;
+          if (joinMode === "code") {
+            const pairingCode = $("wiz-pair-input").value.trim();
+            if (!pairingCode) {
+              banner("wiz-step1-status", "err", "Paste the pairing code from your hub.");
+              return false;
+            }
+            banner("wiz-step1-status", "", "Joining your hub…");
+            const res = await api("/api/setup/connect-spoke", "POST", {pairingCode, computerName, testSync: false});
+            stateData.setup = res.setup;
+          } else {
+            const username = $("wiz-username").value.trim();
+            const password = $("wiz-password").value;
+            const minimum = stateData?.minPasswordLength || 8;
+            if (!username || !password) {
+              banner("wiz-step1-status", "err", "Enter your username and password.");
+              return false;
+            }
+            if (authMode === "register") {
+              if (password.length < minimum) {
+                banner("wiz-step1-status", "err", "Choose a password of at least " + minimum + " characters.");
+                return false;
+              }
+              if (password !== $("wiz-password-confirm").value) {
+                banner("wiz-step1-status", "err", "The two passwords do not match.");
+                return false;
+              }
+            }
+            banner("wiz-step1-status", "", authMode === "register" ? "Creating your account…" : "Signing in…");
+            const res = await api("/api/setup/account", "POST", {
+              mode: authMode, username, password, computerName,
+              serverUrl: $("wiz-server-url").value.trim(), testSync: false
             });
-            return btn;
-          }));
-          const allPlans = [...(existing || []), ...customPlans];
-          $("wiz-existing-plans").textContent = allPlans.length
-            ? "Account plans: " + allPlans.map(p => `${p.name} ($${p.amount_usd}/mo)`).join(" · ")
-            : "Select your monthly plans above.";
+            stateData.setup = res.setup;
+          }
+          $("wiz-password").value = "";
+          $("wiz-password-confirm").value = "";
+          changingRole = false;
+          renderStep1();
+          banner("wiz-step1-status", "good", "Joined your hub. This computer's usage will sync in the background.");
+          return true;
         }
 
-        async function runProviderScan() {
+        /* ---------- Step 2: what we found ---------- */
+        const METER_CHIPS = {ok: ["good", "Meter OK"], held: ["warn", "Old reading"], unavailable: ["bad", "No meter"], idle: ["", "Idle"]};
+        const USAGE_CHIPS = {ok: "good", warn: "warn", bad: "bad"};
+        function chip(kind, text) { return el("span", "status-chip" + (kind ? " " + kind : ""), text); }
+        function fact(key, text) {
+          const row = el("p", "fact");
+          row.append(el("span", "fact-key", key), el("span", null, text));
+          return row;
+        }
+        function consentFor(key) {
+          return (checkData?.consent || stateData?.consent || []).find(item => item.key === key);
+        }
+        function consentSwitch(key) {
+          const info = consentFor(key) || {};
+          const row = el("label", "switch-row");
+          const input = el("input");
+          input.type = "checkbox";
+          input.checked = Boolean(info.enabled);
+          input.dataset.consent = key;
+          input.addEventListener("change", () => setConsent(key, input.checked));
+          const copy = el("span");
+          copy.append(el("strong", null, info.label || key), el("small", null, info.detail || ""));
+          row.append(input, copy);
+          return row;
+        }
+        function laneRow(row) {
+          const card = el("article", "lane-row" + (row.meter.state === "ok" || row.meter.state === "idle" ? "" : " attention"));
+          const main = el("div", "lane-main");
+          main.append(el("strong", null, row.name), el("small", null, row.plan || ""));
+          const [kind, label] = METER_CHIPS[row.meter.state] || ["", row.meter.state];
+          card.append(logoTile(row.tool), main, chip(kind, label));
+          const facts = el("div", "lane-facts");
+          facts.append(fact("Usage", row.usage.text), fact("Meter", row.meter.text));
+          if (row.meter.detail) facts.append(el("p", "lane-detail", row.meter.detail));
+          if (row.meter.fix) facts.append(el("p", "lane-fix", "→ " + row.meter.fix));
+          card.append(facts);
+          if (row.consent) card.append(consentSwitch(row.consent));
+          return card;
+        }
+        const USAGE_LABELS = {ok: "Reading", warn: "Not recent", bad: "Failed", waiting: "Waiting", missing: "Not installed"};
+        function usageRow(item) {
+          const card = el("article", "lane-row");
+          const main = el("div", "lane-main");
+          main.append(el("strong", null, item.name), el("small", null, [item.usage.text, item.usage.path].filter(Boolean).join(" · ")));
+          card.append(logoTile(item.tool), main, chip(USAGE_CHIPS[item.usage.state] || "", USAGE_LABELS[item.usage.state] || item.usage.state));
+          return card;
+        }
+        function renderCheck() {
+          if (!checkData) return;
+          $("wiz-lanes").replaceChildren(...checkData.lanes.map(laneRow));
+          $("wiz-usage-only").replaceChildren(...checkData.usageOnly.map(usageRow));
+          $("wiz-usage-only-wrap").hidden = !checkData.usageOnly.length;
+          $("wiz-not-found").hidden = !checkData.notFound.length;
+          $("wiz-not-found").textContent = "Not installed on this computer: " + checkData.notFound.join(", ") + ".";
+        }
+        async function loadCheck() {
+          if (!checkData) $("wiz-lanes").replaceChildren(el("p", "muted-line", "Checking each tool…"));
+          try {
+            checkData = await api("/api/setup/check");
+            renderCheck();
+            if (step === 3) renderPlans();
+          } catch (err) {
+            $("wiz-lanes").replaceChildren(el("p", "status-banner err", "Could not check this computer: " + err.message));
+          }
+        }
+        async function setConsent(key, on) {
+          const inputs = () => document.querySelectorAll('input[data-consent="' + key + '"]');
+          try {
+            const res = await api("/api/setup/consent", "POST", {switches: {[key]: on}});
+            if (checkData) checkData.consent = res.consent;
+            if (stateData) stateData.consent = res.consent;
+            inputs().forEach(input => { input.checked = on; });
+            if (res.warning) $("wiz-progress-text").textContent = res.warning;
+            setTimeout(loadCheck, 5000);
+          } catch (err) {
+            inputs().forEach(input => { input.checked = !on; });
+            $("wiz-progress-text").textContent = "Could not change that setting: " + err.message;
+          }
+        }
+        async function startScan() {
           const btn = $("wiz-scan-btn");
           btn.disabled = true;
-          btn.textContent = "Scanning & Syncing…";
+          // Show what is known now while the new pass runs.
+          const shown = loadCheck();
           try {
             const res = await api("/api/setup/scan", "POST", {});
-            renderHarnesses(res.harnesses, {eventsCount: res.eventsCount, liveAgentsCount: res.liveAgentsCount});
+            scanSince = res.started;
+            startProgress();
           } catch (err) {
-            $("wiz-scan-summary").textContent = "Scan error: " + err.message;
+            $("wiz-progress-text").textContent = "Could not start a check: " + err.message;
           } finally {
             btn.disabled = false;
-            btn.textContent = "Reconnect & Sync Installed Providers";
+          }
+          await shown;
+        }
+        function startProgress() {
+          clearInterval(progressTimer);
+          progressStarted = Date.now();
+          progressTimer = setInterval(pollProgress, 2500);
+          pollProgress();
+        }
+        async function pollProgress() {
+          let data;
+          try { data = await api("/api/setup/progress"); } catch { return; }
+          const since = Date.parse(scanSince || "") || 0;
+          const sources = data.sources || [];
+          const beat = data.heartbeat || {};
+          const done = sources.filter(item => item.status !== "running" && Date.parse(item.finishedAt || "") >= since);
+          const failed = sources.filter(item => item.status === "failed").map(item => item.name);
+          const passDone = Date.parse(beat.lastPassAt || "") >= since;
+          const gaveUp = Date.now() - progressStarted > 10 * 60 * 1000;
+          let text = passDone
+            ? "Checked " + sources.length + " tools " + ago(beat.lastPassAt) + "."
+            : "Reading your tools… " + done.length + " of " + sources.length + " done.";
+          if (failed.length) text += " Could not read " + failed.join(", ") + ".";
+          if (gaveUp && !passDone) text = "Still reading your tools in the background. The rows below show the latest results.";
+          $("wiz-progress-text").textContent = text;
+          $("wiz-progress-4").textContent = text;
+          if (passDone || gaveUp) {
+            clearInterval(progressTimer);
+            progressTimer = null;
+            await loadCheck();
+            if (step === 4) loadPreview();
           }
         }
 
-        async function loadInitialState() {
-          try {
-            stateData = await api("/api/setup/state");
-            const s = stateData.setup || {};
-            $("wiz-computer-name").value = s.computerName || "";
-            if (s.account?.username) {
-              $("wiz-username").value = s.account.username;
-            }
-            const serverUrl = s.account?.serverUrl || stateData.centralServerUrl || "";
-            $("wiz-server-url").value = serverUrl;
-            if (s.spokeConfig?.hasToken && s.account?.username) {
-              accountConnected = true;
-              const status = $("wiz-auth-status");
-              status.hidden = false;
-              status.className = "status-banner good";
-              status.textContent = `Signed in as ${s.account.username} on ${s.computerName || "this computer"}.`;
-            }
-            $("wiz-hud-auto").checked = s.hudConfig?.autoOpen !== false;
-            $("wiz-hud-top").checked = s.hudConfig?.alwaysOnTop !== false;
-
-            renderHarnesses(stateData.harnesses, stateData.stats);
-            renderPresets(stateData.presets, stateData.subscriptions);
-          } catch (err) {
-            $("wiz-scan-summary").textContent = "Could not load setup metadata: " + err.message;
-          }
+        /* ---------- Step 3: plans and balances ---------- */
+        function planRow(item, {checkbox = null, priceInput = null, price = null, note = ""} = {}) {
+          const row = el("div", "plan-row" + (checkbox ? "" : " tracked"));
+          if (checkbox) row.append(checkbox);
+          const copy = el("div");
+          copy.append(el("strong", null, item.name), el("small", null, note));
+          row.append(copy);
+          if (priceInput) row.append(priceInput);
+          else if (price != null) row.append(el("span", "price", money(price) + " / mo"));
+          return row;
         }
-
-        $("wiz-tab-login").addEventListener("click", () => setAuthMode("login"));
-        $("wiz-tab-register").addEventListener("click", () => setAuthMode("register"));
-
-        document.querySelectorAll("#wizard-stepper li").forEach(li => {
-          li.addEventListener("click", () => {
-            const target = Number(li.dataset.step);
-            if (target === 1 || accountConnected) setStep(target);
+        function renderPlans() {
+          const plans = checkData?.plans || {active: [], suggestions: []};
+          const suggested = plans.suggestions.map(item => {
+            if (!suggestionChoices.has(item.lane)) suggestionChoices.set(item.lane, {checked: true, amount: item.amount_usd});
+            const choice = suggestionChoices.get(item.lane);
+            const box = el("input");
+            box.type = "checkbox";
+            box.checked = choice.checked;
+            box.setAttribute("aria-label", "Add " + item.name);
+            box.addEventListener("change", () => { choice.checked = box.checked; });
+            const price = el("input", "text-input amount-input");
+            price.type = "number";
+            price.min = "0";
+            price.step = "0.01";
+            price.placeholder = "USD / month";
+            price.value = choice.amount ?? "";
+            price.setAttribute("aria-label", "Monthly price for " + item.name);
+            price.addEventListener("input", () => { choice.amount = price.value === "" ? null : Number(price.value); });
+            return planRow(item, {checkbox: box, priceInput: price, note: "Suggested · " + item.basis});
           });
+          $("wiz-plans-suggested").replaceChildren(...suggested);
+          if (!suggested.length) {
+            $("wiz-plans-suggested").replaceChildren(el("p", "muted-line", plans.active.length
+              ? "Every measured plan on this computer is already tracked."
+              : "No plan meters have a reading yet. You can add plans yourself below."));
+          }
+          $("wiz-plans-added").replaceChildren(...addedPlans.map((item, index) => {
+            const row = planRow(item, {price: item.amount_usd, note: "Will be added"});
+            const remove = el("button", "link-btn", "Remove");
+            remove.type = "button";
+            remove.addEventListener("click", () => { addedPlans.splice(index, 1); renderPlans(); });
+            row.append(remove);
+            return row;
+          }));
+          $("wiz-plans-tracked").replaceChildren(...plans.active.map(item => planRow(item, {price: item.amount_usd, note: "Tracked"})));
+          $("wiz-plans-tracked-label").textContent = "Plans already tracked (" + plans.active.length + ")";
+          $("wiz-plans-tracked-wrap").hidden = !plans.active.length;
+        }
+        let planIssues = [];
+        async function loadPlanIssues() {
+          try { planIssues = (await api("/api/setup/plan-issues")).issues || []; } catch { planIssues = []; }
+          renderPlanIssues();
+        }
+        function renderPlanIssues() {
+          $("wiz-plan-issues").replaceChildren(...planIssues.map(issue => {
+            const row = el("div", "plan-row tracked");
+            const copy = el("div");
+            copy.append(el("strong", null, issue.name + " · " + money(issue.amountUsd) + " / mo"), el("small", null, issue.issue));
+            const fix = el("button", "btn btn-sm", issue.fixLabel);
+            fix.type = "button";
+            fix.addEventListener("click", async () => {
+              fix.disabled = true;
+              fix.textContent = "Saving…";
+              try {
+                await api("/api/setup/plans/fix", "POST", {planId: issue.planId, version: issue.version, fix: issue.fix});
+                banner("wiz-step3-status", "good", issue.fix === "end" ? issue.name + " ended today." : issue.name + " is now " + issue.fixLabel.replace("Link to ", "linked to ") + ".");
+                await loadPlanIssues();
+                await loadCheck();
+              } catch (err) {
+                fix.disabled = false;
+                fix.textContent = issue.fixLabel;
+                banner("wiz-step3-status", "err", err.message);
+              }
+            });
+            row.append(copy, fix);
+            return row;
+          }));
+          $("wiz-plan-issues-wrap").hidden = !planIssues.length;
+        }
+        function renderPresetPicker() {
+          const select = $("wiz-plan-preset");
+          const presets = stateData?.presets || [];
+          select.replaceChildren(
+            ...presets.map((preset, index) => {
+              const option = el("option", null, preset.name);
+              option.value = String(index);
+              return option;
+            }),
+            Object.assign(el("option", null, "Other plan…"), {value: "custom"})
+          );
+          const fill = () => {
+            const preset = presets[Number(select.value)];
+            $("wiz-plan-name").value = preset ? preset.name : "";
+            $("wiz-plan-amount").value = preset && preset.amount_usd > 0 ? preset.amount_usd : "";
+          };
+          select.addEventListener("change", fill);
+          fill();
+        }
+        function addPlan() {
+          const presets = stateData?.presets || [];
+          const preset = presets[Number($("wiz-plan-preset").value)];
+          const name = $("wiz-plan-name").value.trim();
+          const amount = Number($("wiz-plan-amount").value);
+          if (!name || !Number.isFinite(amount) || amount <= 0) {
+            banner("wiz-step3-status", "err", "Give the plan a name and a monthly price.");
+            return;
+          }
+          addedPlans.push({tool_key: preset && preset.name === name ? preset.tool_key : (preset?.tool_key || "custom"), name, amount_usd: amount, cadence: "monthly"});
+          banner("wiz-step3-status", "", "");
+          renderPlans();
+        }
+
+        const CONNECTION_STATES = {
+          balance_available: ["good", "Connected"], awaiting_ingest: ["good", "Connected · first reading soon"],
+          receiving_usage: ["good", "Connected"], waiting_activity: ["good", "Connected"],
+          needs_attention: ["bad", "Needs attention"], disabled: ["", "Disconnected"]
+        };
+        function connectionRow(conn, vaultAvailable) {
+          const card = el("article", "lane-row");
+          const main = el("div", "lane-main");
+          const caps = conn.capabilities || [];
+          main.append(el("strong", null, conn.name), el("small", null, caps.includes("balance") ? "" : caps.join(", ")));
+          const live = conn.externallyManaged || (conn.credentialConfigured && conn.enabled !== false);
+          const [kind, label] = conn.externallyManaged
+            ? ["good", "Set outside BURNRATE"]
+            : live ? (CONNECTION_STATES[conn.state] || ["good", "Connected"]) : ["", "Not connected"];
+          card.append(logoTile(conn.source), main, chip(kind, label));
+          const facts = el("div", "lane-facts");
+          facts.append(el("p", "lane-detail", conn.credentialHelp || ""));
+          if (live && conn.detail) facts.append(el("p", "lane-fix", conn.detail));
+          card.append(facts);
+          if (conn.externallyManaged) return card;
+          const form = el("form", "lane-form");
+          const key = el("input", "text-input mono");
+          key.type = "password";
+          key.autocomplete = "off";
+          key.spellcheck = false;
+          key.placeholder = live ? "Paste a new key to replace it" : "Paste the key";
+          key.setAttribute("aria-label", conn.name + " key");
+          const save = el("button", "btn btn-sm btn-primary", live ? "Replace key" : "Test and connect");
+          save.type = "submit";
+          save.disabled = !vaultAvailable;
+          const result = el("p", "lane-detail");
+          form.append(key, save);
+          if (live) {
+            const off = el("button", "btn btn-sm", "Disconnect");
+            off.type = "button";
+            off.addEventListener("click", () => changeConnection(conn, "disable", null, result));
+            form.append(off);
+          }
+          form.addEventListener("submit", event => {
+            event.preventDefault();
+            const secret = key.value.trim();
+            key.value = "";
+            if (!secret) { result.textContent = "Paste the key first."; return; }
+            changeConnection(conn, "connect", secret, result);
+          });
+          card.append(form, result);
+          result.style.gridColumn = "2 / -1";
+          return card;
+        }
+        async function changeConnection(conn, operation, secret, result) {
+          result.textContent = operation === "connect" ? "Testing the key…" : "Disconnecting…";
+          try {
+            await api("/api/connections", "POST", {
+              source: conn.source, operation, location: "", mode: "api",
+              revision: conn.revision || 0, requestId: uuid(), ...(secret ? {secret} : {})
+            });
+            stateData = await api("/api/setup/state");
+            renderBalances();
+          } catch (err) {
+            result.textContent = err.message;
+          }
+        }
+        function renderBalances() {
+          const data = stateData?.apiConnections || {connections: [], vaultAvailable: false};
+          const isBalance = conn => (conn.capabilities || []).includes("balance");
+          $("wiz-balances").replaceChildren(...data.connections.filter(isBalance).map(conn => connectionRow(conn, data.vaultAvailable)));
+          const admin = data.connections.filter(conn => !isBalance(conn));
+          $("wiz-admin-apis").replaceChildren(...admin.map(conn => connectionRow(conn, data.vaultAvailable)));
+          $("wiz-admin-wrap").hidden = !admin.length;
+          $("wiz-vault-note").hidden = data.vaultAvailable;
+        }
+
+        /* ---------- Step 4: check ---------- */
+        function windowName(row) {
+          const text = String(row.label || row.limitKey || "").toLowerCase();
+          let scope = "";
+          if (text.includes("gemini")) scope = "Gemini ";
+          else if (text.includes("claude/gpt")) scope = "Other ";
+          let win = row.limitKey || "Plan";
+          if (/5-hour|five-hour|5h/.test(text)) win = "5h";
+          else if (text.includes("month")) win = "Month";
+          else if (text.includes("week")) win = "Week";
+          else if (text.includes("fund") || text.includes("balance")) win = "Balance";
+          return scope + win;
+        }
+        function previewCard(card) {
+          const box = el("article", "preview-card");
+          const head = el("div", "preview-head");
+          head.append(logoTile(card.toolKey || card.providerKey), el("strong", null, card.shortName || card.providerName || card.providerKey));
+          box.append(head);
+          for (const row of card.rows || []) {
+            const line = el("div", "preview-row");
+            const payg = Boolean(row.isPayg || card.isPayg);
+            const bar = el("div", "bar" + (payg ? " payg" : ""));
+            const fill = el("i");
+            if (row.pct != null && !payg) fill.style.width = Math.max(0, Math.min(100, Number(row.pct))) + "%";
+            bar.append(fill);
+            const value = row.pct != null && !payg ? Math.round(Number(row.pct)) + "%"
+              : payg && row.unit === "usd" && row.used != null ? money(row.used) : "—";
+            line.append(el("span", null, windowName(row)), bar, el("b", null, value));
+            box.append(line);
+            if (payg && row.runway && row.runway.line) box.append(el("p", "muted-line", row.runway.line));
+          }
+          return box;
+        }
+        async function loadNotifications() {
+          let data;
+          try { data = await api("/api/setup/notifications"); } catch { $("wiz-notify-box").hidden = true; return; }
+          $("wiz-notify-test").disabled = !data.available;
+          if (!data.available) $("wiz-notify-status").textContent = "Notifications come from the desktop service on Windows.";
+          $("wiz-notify-kinds").replaceChildren(...data.kinds.map(kind => {
+            const row = el("label", "check-row");
+            const input = el("input");
+            input.type = "checkbox";
+            input.checked = kind.on;
+            input.addEventListener("change", async () => {
+              try { await api("/api/setup/notifications", "POST", {kinds: {[kind.key]: input.checked}}); }
+              catch (err) { input.checked = !input.checked; $("wiz-notify-status").textContent = "Could not save: " + err.message; }
+            });
+            const text = el("span");
+            text.append(el("strong", null, kind.label));
+            row.append(input, text);
+            return row;
+          }));
+        }
+        $("wiz-notify-test").addEventListener("click", async () => {
+          const status = $("wiz-notify-status");
+          status.textContent = "Sending…";
+          try { await api("/api/setup/notifications/test", "POST", {}); status.textContent = "Sent. If nothing appeared, check Windows notification settings for BURNRATE."; }
+          catch (err) { status.textContent = err.message; }
         });
-
-        $("wiz-scan-btn").addEventListener("click", () => runProviderScan());
-
-        $("wiz-add-custom-plan-btn").addEventListener("click", () => {
-          const tool_key = $("wiz-custom-tool").value;
-          const name = $("wiz-custom-name").value.trim();
-          const amount_usd = Number($("wiz-custom-amount").value);
-          if (!name || !Number.isFinite(amount_usd) || amount_usd <= 0) return;
-          customPlans.push({tool_key, name, amount_usd, cadence: "monthly"});
-          $("wiz-custom-name").value = "";
-          $("wiz-custom-amount").value = "";
-          renderPresets(stateData?.presets || [], stateData?.subscriptions || []);
+        $("wiz-diag-copy").addEventListener("click", async () => {
+          const status = $("wiz-diag-status");
+          const box = $("wiz-diag-text");
+          status.textContent = "Collecting…";
+          try {
+            const {text} = await api("/api/setup/diagnostics", "POST", {});
+            box.value = text;
+            try { await navigator.clipboard.writeText(text); status.textContent = "Copied to the clipboard."; box.hidden = true; }
+            catch { box.hidden = false; box.select(); status.textContent = "Select the text below and copy it."; }
+          } catch (err) {
+            status.textContent = "Could not collect diagnostics: " + err.message;
+          }
         });
+        async function loadPreview() {
+          loadNotifications();
+          if (!planIssues.length) await loadPlanIssues();
+          const [hud, freshness] = await Promise.allSettled([api("/api/spend/hud"), api("/api/spend/freshness")]);
+          const cards = hud.status === "fulfilled" ? (hud.value.capacity || []) : [];
+          $("wiz-preview").replaceChildren(...cards.map(previewCard));
+          if (!cards.length) $("wiz-preview").replaceChildren(el("p", "muted-line", "No plan cards yet. They appear after the first readings."));
+          const issues = [];
+          for (const row of checkData?.lanes || []) {
+            if (row.meter.state !== "ok" && row.meter.state !== "idle") issues.push([row.name, row.meter.text + (row.meter.fix ? ". " + row.meter.fix : "")]);
+          }
+          for (const issue of planIssues) issues.push([issue.name, issue.issue + " " + issue.fixLabel + " in Plans & balances."]);
+          if (freshness.status === "fulfilled") {
+            for (const item of freshness.value.issues || []) {
+              if (item.kind === "version" || (item.kind !== "lane" && item.severity !== "info")) issues.push([item.name, item.detail]);
+            }
+          }
+          const list = $("wiz-attention");
+          list.replaceChildren(...issues.map(([name, detail]) => {
+            const item = el("li");
+            item.append(el("strong", null, name), document.createTextNode(detail || ""));
+            return item;
+          }));
+          if (!issues.length) list.replaceChildren(el("li", null, "Nothing. Every card has a current reading."));
+        }
 
+        async function finish() {
+          const plans = [...(checkData?.plans?.suggestions || [])
+            .filter(item => suggestionChoices.get(item.lane)?.checked && Number(suggestionChoices.get(item.lane)?.amount) > 0)
+            .map(item => ({tool_key: item.tool_key, name: item.name, amount_usd: Number(suggestionChoices.get(item.lane).amount), cadence: "monthly"})),
+            ...addedPlans];
+          const autoHud = $("wiz-hud-auto").checked;
+          const topHud = $("wiz-hud-top").checked;
+          await api("/api/setup/complete", "POST", {
+            computerName: $("wiz-computer-name").value.trim(),
+            role: connected && !changingRole ? "spoke" : role,
+            presetKeys: [],
+            customPlans: plans,
+            hudConfig: {autoOpen: autoHud, alwaysOnTop: topHud, dock: "top-left"}
+          });
+          const internals = window.__TAURI_INTERNALS__;
+          if (internals && typeof internals.invoke === "function") {
+            try { await internals.invoke(autoHud ? "show_hud" : "hide_hud"); } catch {}
+          } else if (autoHud) {
+            try {
+              const nat = await fetch("/api/hud/native", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({action: topHud ? "pin" : "open"})
+              }).then(r => r.json()).catch(() => null);
+              if (!nat || !nat.ok) window.open("/hud", "burnrate-hud", "popup=yes,width=440,height=580,left=24,top=72");
+            } catch {}
+          }
+          window.location.href = "/";
+        }
+
+        /* ---------- navigation ---------- */
+        function showStep(next) {
+          step = Math.max(1, Math.min(LAST_STEP, next));
+          for (let index = 1; index <= LAST_STEP; index++) $("wiz-step-" + index).hidden = index !== step;
+          document.querySelectorAll("#wizard-stepper li").forEach(li => {
+            const n = Number(li.dataset.step);
+            li.classList.toggle("active", n === step);
+            li.classList.toggle("done", n < step);
+          });
+          $("wiz-back-btn").disabled = step === 1;
+          $("wiz-next-btn").textContent = step === LAST_STEP ? "Finish setup" : "Continue →";
+          if (step === 2 && !scanSince) startScan();
+          if (step === 3) { renderPlans(); renderBalances(); loadPlanIssues(); if (!checkData) loadCheck(); }
+          if (step === 4) { loadPreview(); if (!scanSince) startScan(); }
+        }
+        async function goTo(target) {
+          if (target === step || !stateData) return;
+          if (step === 1 && target > 1) {
+            const btn = $("wiz-next-btn");
+            btn.disabled = true;
+            try {
+              if (!(await leaveStep1())) return;
+            } catch (err) {
+              banner("wiz-step1-status", "err", err.message);
+              return;
+            } finally {
+              btn.disabled = false;
+            }
+          }
+          showStep(target);
+        }
+
+        document.querySelectorAll(".role-card").forEach(card => card.addEventListener("click", () => {
+          role = card.dataset.role;
+          banner("wiz-step1-status", "", "");
+          renderStep1();
+        }));
+        $("wiz-change-role").addEventListener("click", () => { changingRole = true; renderStep1(); });
+        $("wiz-join-code-tab").addEventListener("click", () => { joinMode = "code"; renderStep1(); });
+        $("wiz-join-account-tab").addEventListener("click", () => { joinMode = "account"; renderStep1(); });
+        $("wiz-auth-switch").addEventListener("click", () => { authMode = authMode === "register" ? "login" : "register"; renderStep1(); });
+        $("wiz-server-url").addEventListener("input", () => { $("wiz-server-label").textContent = $("wiz-server-url").value; });
+        $("wiz-pair-create").addEventListener("click", createPairingCode);
+        $("wiz-pair-copy").addEventListener("click", async () => {
+          try { await navigator.clipboard.writeText($("wiz-pair-code").textContent); $("wiz-pair-copy").textContent = "Copied"; } catch {}
+        });
+        $("wiz-scan-btn").addEventListener("click", startScan);
+        $("wiz-plan-add").addEventListener("click", addPlan);
+        document.querySelectorAll("#wizard-stepper li").forEach(li => li.addEventListener("click", () => goTo(Number(li.dataset.step))));
+        $("wiz-back-btn").addEventListener("click", () => showStep(step - 1));
+        $("wiz-next-btn").addEventListener("click", async () => {
+          if (step < LAST_STEP) return goTo(step + 1);
+          const btn = $("wiz-next-btn");
+          btn.disabled = true;
+          btn.textContent = "Finishing…";
+          try {
+            await finish();
+          } catch (err) {
+            banner("wiz-finish-banner", "err", "Could not finish setup: " + err.message);
+            btn.disabled = false;
+            btn.textContent = "Finish setup";
+          }
+        });
+        $("wizard-later").addEventListener("click", async () => {
+          try { await api("/api/setup/defer", "POST", {}); } catch {}
+          window.location.href = "/";
+        });
         $("wiz-theme-toggle").addEventListener("click", () => {
           const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
           document.documentElement.dataset.theme = next;
@@ -1875,97 +2864,34 @@ SETUP_WIZARD_HTML = """<!doctype html>
           document.querySelector('meta[name="theme-color"]').content = next === "dark" ? "#08080a" : "#ebe9e4";
         });
 
-        $("wiz-back-btn").addEventListener("click", () => setStep(step - 1));
-
-        $("wiz-next-btn").addEventListener("click", async () => {
-          const btn = $("wiz-next-btn");
-          if (step === 1) {
-            const username = $("wiz-username").value.trim();
-            const password = $("wiz-password").value;
-            const computerName = $("wiz-computer-name").value.trim();
-            const serverUrl = $("wiz-server-url").value.trim();
-            const status = $("wiz-auth-status");
-
-            if (!username || !password) {
-              status.hidden = false;
-              status.className = "status-banner err";
-              status.textContent = "Please enter your account username and password.";
-              return;
-            }
-
-            btn.disabled = true;
-            btn.textContent = authMode === "register" ? "Creating Account…" : "Signing In…";
-            status.hidden = false;
-            status.className = "status-banner";
-            status.textContent = "Connecting to central account server (tk-server)…";
-            try {
-              const res = await api("/api/setup/account", "POST", {
-                mode: authMode,
-                username,
-                password,
-                computerName,
-                serverUrl,
-                presetKeys: [...selectedPresets],
-                customPlans,
-                testSync: false
-              });
-              accountConnected = true;
-              status.className = "status-banner good";
-              status.textContent = `Connected as ${res.account?.username || username}!`;
-              setStep(2);
-              runProviderScan();
-            } catch (err) {
-              status.className = "status-banner err";
-              status.textContent = err.message;
-              btn.disabled = false;
-              setStep(1);
-            } finally {
-              btn.disabled = false;
-            }
+        async function init() {
+          const next = $("wiz-next-btn");
+          next.disabled = true;
+          document.querySelectorAll(".role-card").forEach(card => { card.disabled = true; });
+          banner("wiz-step1-status", "", "Loading this computer's settings…");
+          try {
+            stateData = await api("/api/setup/state");
+          } catch (err) {
+            banner("wiz-step1-status", "err", "Could not load setup: " + err.message + " Reload the page to try again.");
             return;
           }
-
-          btn.disabled = true;
-          btn.textContent = "Finishing & Launching…";
-          try {
-            const autoHud = $("wiz-hud-auto").checked;
-            const topHud = $("wiz-hud-top").checked;
-            await api("/api/setup/complete", "POST", {
-              computerName: $("wiz-computer-name").value.trim(),
-              role: accountConnected ? "spoke" : "hub",
-              presetKeys: [...selectedPresets],
-              customPlans,
-              hudConfig: {autoOpen: autoHud, alwaysOnTop: topHud, dock: "top-left"}
-            });
-            const internals = window.__TAURI_INTERNALS__;
-            if (internals && typeof internals.invoke === "function") {
-              if (autoHud) {
-                try { await internals.invoke("show_hud"); } catch {}
-              } else {
-                try { await internals.invoke("hide_hud"); } catch {}
-              }
-            } else if (autoHud) {
-              try {
-                const nat = await fetch("/api/hud/native", {
-                  method: "POST",
-                  headers: {"Content-Type": "application/json"},
-                  body: JSON.stringify({action: topHud ? "pin" : "open"})
-                }).then(r => r.json()).catch(() => null);
-                if (!nat || !nat.ok) {
-                  window.open("/hud", "burnrate-hud", "popup=yes,width=440,height=580,left=24,top=72");
-                }
-              } catch {}
-            }
-            window.location.href = "/";
-          } catch (err) {
-            $("wiz-finish-banner").className = "status-banner err";
-            $("wiz-finish-banner").textContent = "Could not finish setup: " + err.message;
-            btn.disabled = false;
-            btn.textContent = "Finish Setup & Launch BURNRATE";
-          }
-        });
-
-        loadInitialState();
+          next.disabled = false;
+          document.querySelectorAll(".role-card").forEach(card => { card.disabled = false; });
+          banner("wiz-step1-status", "", "");
+          const s = stateData.setup || {};
+          $("wiz-computer-name").value = s.computerName || "";
+          $("wiz-username").value = s.account?.username || "";
+          $("wiz-server-url").value = s.account?.serverUrl || stateData.centralServerUrl || "";
+          $("wiz-hud-auto").checked = s.hudConfig?.autoOpen !== false;
+          $("wiz-hud-top").checked = s.hudConfig?.alwaysOnTop !== false;
+          role = s.role === "spoke" ? "spoke" : (s.completed && s.role === "hub" ? "hub" : "standalone");
+          renderStep1();
+          renderHubAddresses();
+          renderPresetPicker();
+          const wanted = Number(new URLSearchParams(location.search).get("step"));
+          if (wanted >= 2 && wanted <= LAST_STEP) showStep(wanted);
+        }
+        init();
       })();
     </script>
   </body>

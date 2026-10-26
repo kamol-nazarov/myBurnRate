@@ -47,6 +47,7 @@ SOURCE_NAMES = {
     "openai_admin": "OpenAI admin",
     "anthropic_admin": "Anthropic admin",
     "openrouter": "OpenRouter",
+    "deepseek": "DeepSeek",
 }
 
 # Quota lanes by provider, as the HUD names them.
@@ -59,13 +60,14 @@ LANE_NAMES = {
     "opencode": "Z.ai",
     "opencode-go": "OpenCode Go",
     "openrouter": "OpenRouter",
+    "deepseek": "DeepSeek",
 }
 
 _STARTED_MONO = time.monotonic()
 _COLLECTION_RESUMED_MONO: float | None = None
 _LOCK = threading.Lock()
 _HEARTBEAT: dict = {"startedAt": None, "finishedAt": None, "seconds": None, "slowest": [], "failed": [], "passes": 0}
-_HUB_VERSION: dict = {"checkedMono": None, "version": None, "refreshing": False}
+_HUB_VERSION: dict = {"checkedMono": None, "version": None, "build": None, "refreshing": False}
 
 
 def reset_state() -> None:
@@ -74,7 +76,7 @@ def reset_state() -> None:
         _STARTED_MONO = time.monotonic()
         _COLLECTION_RESUMED_MONO = None
         _HEARTBEAT.update(startedAt=None, finishedAt=None, seconds=None, slowest=[], failed=[], passes=0)
-        _HUB_VERSION.update(checkedMono=None, version=None, refreshing=False)
+        _HUB_VERSION.update(checkedMono=None, version=None, build=None, refreshing=False)
 
 
 def _iso(moment: datetime) -> str:
@@ -214,9 +216,9 @@ def _lane_issues(connection, now: datetime) -> list[dict]:
             (provider, polled_at),
         ).fetchone()
         reason = str(why[0]).split(" — ", 1)[1] if why and " — " in str(why[0]) else None
-        from spend_app.claude_accounts import provider_meta as claude_account_meta
+        from spend_app.aggregate import provider_meta
 
-        lane_name = LANE_NAMES.get(provider) or (claude_account_meta(provider) or {}).get("shortName") or provider
+        lane_name = LANE_NAMES.get(provider) or (provider_meta(provider) or {}).get("shortName") or provider
         short = f"{lane_name} {str(limit).replace('-', ' ')}"
         issues.append({"kind": "lane", "key": f"{provider}:{limit}", "name": name, "short": short, "state": "held", "severity": "warn",
                        "ageSeconds": age, "detail": reason or "The meter shows the last confirmed reading; newer polls returned no value."})
@@ -257,17 +259,18 @@ def _sync_state(state: dict, now: datetime, heartbeat_state: dict) -> tuple[dict
 
 
 def _refresh_hub_version(settings) -> None:
-    version = None
+    version = build = None
     try:
         from spend_app.sync import fetch_from_configured_hub
 
         payload = fetch_from_configured_hub(settings, "/api/spend", ttl_seconds=HUB_VERSION_TTL_SECONDS)
         if isinstance(payload, dict) and isinstance(payload.get("version"), str):
             version = payload["version"][:40]
+            build = payload["build"][:60] if isinstance(payload.get("build"), str) else None
     except Exception:
         version = None
     with _LOCK:
-        _HUB_VERSION.update(checkedMono=time.monotonic(), version=version, refreshing=False)
+        _HUB_VERSION.update(checkedMono=time.monotonic(), version=version, build=build, refreshing=False)
 
 
 def hub_version(settings, *, background: bool = True) -> str | None:
@@ -327,12 +330,21 @@ def report(settings, now: datetime | None = None, *, background: bool = True,
     issues += sync_issues + sources + lanes
     hub = None
     if sync is not None:
+        from spend_app.build import build_id
+
         remote = hub_version(settings, background=background)
-        hub = {"version": remote, "matches": None if remote is None else remote == __version__}
-        if remote is not None and remote != __version__:
+        with _LOCK:
+            remote_build = _HUB_VERSION.get("build")
+        local_build = build_id()
+        # Same version numbers can hide different code, so builds decide; a Hub
+        # that reports no build predates this check and is older.
+        matches = None if remote is None else (remote_build == local_build if remote_build else False)
+        hub = {"version": remote, "build": remote_build, "matches": matches}
+        if matches is False:
             # Informational: figures stay current, but the hub lacks this build's fixes.
             issues.append({"kind": "version", "key": "hub", "name": "Hub version", "short": "Hub version", "state": "mismatch", "severity": "info",
-                           "ageSeconds": None, "detail": f"Hub runs {remote}; this computer runs {__version__}."})
+                           "ageSeconds": None, "detail": f"Hub runs {remote_build or remote + ' (an older build)'}; this computer runs {local_build}. "
+                                                         "Update it with: burnrate hub update"})
     severities = {item["severity"] for item in issues}
     severity = "alarm" if "alarm" in severities else "warn" if "warn" in severities else "ok"
     return {

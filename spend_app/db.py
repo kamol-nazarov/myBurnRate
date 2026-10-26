@@ -4,6 +4,7 @@ import json
 import sqlite3
 import threading
 from contextlib import contextmanager, closing
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -243,6 +244,17 @@ CREATE TABLE IF NOT EXISTS quota_pace_samples (
 
 CREATE INDEX IF NOT EXISTS idx_quota_pace_samples_window
     ON quota_pace_samples(provider_key, limit_key, sampled_at);
+
+CREATE TABLE IF NOT EXISTS balance_samples (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider_key TEXT NOT NULL,
+    source TEXT NOT NULL,
+    usd REAL NOT NULL,
+    sampled_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_balance_samples_source
+    ON balance_samples(provider_key, source, sampled_at);
 """
 
 ACTIVITY_SCHEMA_SQL += PACE_SCHEMA_SQL
@@ -472,8 +484,10 @@ REQUIRED_SCHEMA_OBJECTS = frozenset(
         "opencode_session_progress",
         "quotas",
         "quota_pace_samples",
+        "balance_samples",
         "agent_runs",
         "idx_quota_pace_samples_window",
+        "idx_balance_samples_source",
         "idx_ingest_runs_source_id",
         "idx_ingest_runs_status_finished",
         "idx_ingest_runs_started_at",
@@ -557,7 +571,121 @@ def prune_ingest_runs(
 def initialize(path: Path) -> None:
     from spend_app.subscription_schema import upgrade_database
     upgrade_database(path, _initialize_base)
+    migrate_usage_keys(path)
     retire_cursor_usage(path)
+
+
+# Event identity and alias records (one or more per usage event) live in their
+# own compact table: a 32-byte digest instead of a 90-character text key that
+# app_meta stored twice (row and index), and large values compressed. Keys keep
+# their app_meta spelling at the call sites; usage_repair.read_meta/write_meta
+# route them here. Records still in app_meta move over in small background
+# steps (migrate_usage_keys_step), and reads fall back to app_meta until then.
+USAGE_KEYS_SQL = """
+CREATE TABLE IF NOT EXISTS usage_keys (
+    kind INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    digest BLOB NOT NULL,
+    value NOT NULL,
+    PRIMARY KEY (kind, source, digest)
+) WITHOUT ROWID;
+"""
+USAGE_KEY_PREFIXES = {"usage.alias.v1:": 0, "usage.identity.v1:": 1}
+USAGE_KEYS_MARKER = "usage_keys.migrated.v1"
+USAGE_KEYS_STEP_ROWS = 10000
+# JSON at least this long is stored zlib-compressed (identity records compress
+# about 2.7x; short alias values would not shrink).
+USAGE_VALUE_COMPRESS_AT = 160
+_USAGE_KEYS_READY: set[str] = set()
+_USAGE_KEYS_DONE: set[str] = set()
+_USAGE_KEYS_LOCK = threading.Lock()
+
+
+def split_usage_key(key: str) -> tuple[int, str, bytes] | None:
+    """``usage.alias.v1:<source>:<sha256 hex>`` -> (kind, source, digest), else None."""
+    for prefix, kind in USAGE_KEY_PREFIXES.items():
+        if key.startswith(prefix):
+            source, _, digest = key[len(prefix):].partition(":")
+            if len(digest) == 64:
+                try:
+                    return kind, source, bytes.fromhex(digest)
+                except ValueError:
+                    pass
+            return kind, source, digest.encode("utf-8")
+    return None
+
+
+def encode_usage_value(value) -> str | bytes:
+    import zlib
+
+    text = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return zlib.compress(text.encode("utf-8"), 6) if len(text) >= USAGE_VALUE_COMPRESS_AT else text
+
+
+def decode_usage_value(stored):
+    import zlib
+
+    if isinstance(stored, bytes):
+        stored = zlib.decompress(stored).decode("utf-8")
+    return json.loads(stored)
+
+
+def migrate_usage_keys(path: Path) -> None:
+    """Create the identity table once per database and process (cheap)."""
+    marker = str(Path(path).resolve())
+    if marker in _USAGE_KEYS_READY:
+        return
+    with _USAGE_KEYS_LOCK:
+        if marker in _USAGE_KEYS_READY:
+            return
+        with connect(Path(path)) as connection:
+            connection.executescript(USAGE_KEYS_SQL)
+        _USAGE_KEYS_READY.add(marker)
+
+
+def migrate_usage_keys_step(path: Path, limit: int = USAGE_KEYS_STEP_ROWS) -> int:
+    """Move up to ``limit`` identity records out of app_meta in one short transaction.
+
+    Returns how many moved; 0 once nothing is left (then the marker is written
+    and later calls are free). A record already rewritten in usage_keys keeps
+    its newer value.
+    """
+    path = Path(path)
+    marker = str(path.resolve())
+    if marker in _USAGE_KEYS_DONE or not path.exists():
+        return 0
+    moved = 0
+    with connect(path) as connection:
+        if not connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_meta'").fetchone():
+            return 0  # not initialized yet; nothing to move
+        connection.executescript(USAGE_KEYS_SQL)
+        if connection.execute("SELECT 1 FROM app_meta WHERE key=?", (USAGE_KEYS_MARKER,)).fetchone():
+            _USAGE_KEYS_DONE.add(marker)
+            return 0
+        connection.execute("BEGIN IMMEDIATE")
+        for prefix in USAGE_KEY_PREFIXES:
+            # A key range (not LIKE) so the primary-key index is used.
+            low, high = prefix, prefix[:-1] + chr(ord(prefix[-1]) + 1)
+            batch = connection.execute(
+                "SELECT key, value FROM app_meta WHERE key >= ? AND key < ? ORDER BY key LIMIT ?",
+                (low, high, limit - moved),
+            ).fetchall()
+            if not batch:
+                continue
+            rows = sorted((*split_usage_key(key), encode_usage_value(json.loads(value))) for key, value in batch)
+            connection.executemany(
+                "INSERT OR IGNORE INTO usage_keys(kind, source, digest, value) VALUES(?,?,?,?)", rows)
+            connection.execute("DELETE FROM app_meta WHERE key >= ? AND key <= ?", (low, batch[-1][0]))
+            moved += len(batch)
+            if moved >= limit:
+                break
+        if moved == 0:
+            connection.execute(
+                "INSERT INTO app_meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO NOTHING",
+                (USAGE_KEYS_MARKER, json.dumps({"at": utc_now()})),
+            )
+            _USAGE_KEYS_DONE.add(marker)
+    return moved
 
 
 # Cursor usage duplicates SuperGrok usage, so BURNRATE neither collects nor
@@ -621,6 +749,9 @@ def _retire_cursor_usage(path: Path, marker: str) -> int:
         # Ingest identity bookkeeping for the retired sources.
         connection.execute(
             "DELETE FROM app_meta WHERE key LIKE 'usage.alias.v1:cursor%' OR key LIKE 'usage.identity.v1:cursor%'"
+        )
+        connection.execute(
+            "DELETE FROM usage_keys WHERE source LIKE 'cursor%'"
         )
         connection.execute(
             "INSERT INTO app_meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -976,6 +1107,11 @@ def record_coverage_gap(
     )
 
 
+# While an extra profile is collected, its rows and sessions are recorded under
+# that profile's card key (see adapters.profiles_local): {"claude-code": "claude-code-work"}.
+TOOL_KEY_OVERRIDES: ContextVar[dict | None] = ContextVar("tool_key_overrides", default=None)
+
+
 def upsert_session(
     connection: sqlite3.Connection,
     *,
@@ -986,6 +1122,9 @@ def upsert_session(
     ended_at: str | None,
     model_key: str,
 ) -> None:
+    overrides = TOOL_KEY_OVERRIDES.get()
+    if overrides:
+        tool_key = overrides.get(tool_key, tool_key)
     connection.execute(
         """
         INSERT INTO sessions(session_id, tool_key, project, started_at, ended_at, model_key)

@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from starlette.middleware.gzip import GZipMiddleware
 
 from spend_app import __version__
+from spend_app.build import build_id
 
 
 ASSET_IMMUTABLE_CACHE = "public, max-age=31536000, immutable"
@@ -192,6 +193,21 @@ def create_app(
             for job_id in ("local-ingest", "provider-admin"):
                 scheduler.modify_job(job_id, next_run_time=datetime.now(UTC))
 
+    def collect_now():
+        # The setup wizard's "check again": run the next collection pass and
+        # quota poll now instead of waiting for their interval.
+        if scheduler is None:
+            return
+        from spend_app.freshness import collection_resumed
+
+        history_demand.touch()
+        collection_resumed()
+        for job_id in ("local-ingest", "quota-poll"):
+            try:
+                scheduler.modify_job(job_id, next_run_time=datetime.now(UTC))
+            except Exception:
+                pass
+
     def request_history(request: Request):
         # Dashboard views opt in explicitly. The HUD's separate usage read
         # also keeps collection active, without building dashboard summaries.
@@ -244,7 +260,7 @@ def create_app(
     from spend_app.sync import sync_router
     app.include_router(sync_router(settings, pricing))
     from spend_app.setup_wizard import setup_router
-    app.include_router(setup_router(settings, pricing))
+    app.include_router(setup_router(settings, pricing, collect_now=collect_now))
     app.state._resource_stack = resource_stack
     # Compress HTML, CSS, JS and JSON for clients that accept it (143 KB of
     # static assets otherwise travel uncompressed over the tailnet).
@@ -490,6 +506,7 @@ def create_app(
         return {
             "service": "BURNRATE",
             "version": __version__,
+            "build": build_id(),
             "endpoints": [
                 "/api/spend/summary",
                 "/api/spend/nav",
@@ -519,7 +536,9 @@ def create_app(
             try:
                 initialize(settings.database_path)
                 with connect(settings.database_path) as connection:
-                    completed = bool(read_setup_state(connection).get("completed"))
+                    state = read_setup_state(connection)
+                # "Set up later" counts: the wizard stays reachable from the HUD and tray.
+                completed = bool(state.get("completed") or state.get("deferredAt"))
             except Exception:
                 completed = False
             if not completed:

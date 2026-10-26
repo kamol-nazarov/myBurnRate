@@ -364,6 +364,25 @@
       "reason": "redacted provider failure"
     },
     {
+      "source": "deepseek",
+      "sourceLabel": "DeepSeek balance",
+      "toolKeys": [],
+      "associationKey": null,
+      "relevant": false,
+      "configuredState": "unknown",
+      "status": "never",
+      "lastAttemptAt": null,
+      "lastSuccessAt": null,
+      "freshness": {
+        "state": "unknown",
+        "ageSeconds": null,
+        "asOf": "2026-09-09T04:00:00Z"
+      },
+      "coverage": "No collection attempt observed; historical capture is unverified. Source usage capability is unavailable; pricing limitations are separate from collection failure.",
+      "eventsWritten": 0,
+      "reason": null
+    },
+    {
       "source": "grok_local",
       "sourceLabel": "Grok Build",
       "toolKeys": [

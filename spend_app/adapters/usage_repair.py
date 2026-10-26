@@ -3,15 +3,31 @@ import json
 from dataclasses import replace
 from decimal import Decimal
 
+from spend_app.db import decode_usage_value, encode_usage_value, split_usage_key
+
 COUNTS = ("input_tokens", "cached_input_tokens", "cache_write_tokens", "output_tokens", "unclassified_tokens")
 
 
 def read_meta(connection, key, default):
+    split = split_usage_key(key)
+    if split is not None:
+        row = connection.execute("SELECT value FROM usage_keys WHERE kind=? AND source=? AND digest=?", split).fetchone()
+        if row:
+            return decode_usage_value(row[0])
+        # Not migrated yet (see db.migrate_usage_keys_step): the old home.
     row = connection.execute("SELECT value FROM app_meta WHERE key=?", (key,)).fetchone()
     return json.loads(row[0]) if row else default
 
 
 def write_meta(connection, key, value):
+    split = split_usage_key(key)
+    if split is not None:
+        connection.execute(
+            "INSERT INTO usage_keys(kind, source, digest, value) VALUES(?,?,?,?) "
+            "ON CONFLICT(kind, source, digest) DO UPDATE SET value=excluded.value",
+            (*split, encode_usage_value(value)),
+        )
+        return
     connection.execute("INSERT INTO app_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, json.dumps(value, sort_keys=True)))
 
 

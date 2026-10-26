@@ -167,7 +167,7 @@ def test_spoke_reports_sync_and_hub_version(tmp_path: Path, monkeypatch) -> None
     monkeypatch.setattr("spend_app.sync.fetch_from_configured_hub", lambda *args, **kwargs: {"version": "0.3.0-beta.9"})
     report = freshness.report(settings, NOW, background=False)
     assert report["sync"] == {"role": "spoke", "lastSyncAt": _iso(NOW - timedelta(seconds=40)), "ageSeconds": 40, "failing": False}
-    assert report["hub"] == {"version": "0.3.0-beta.9", "matches": False}
+    assert report["hub"] == {"version": "0.3.0-beta.9", "build": None, "matches": False}
     mismatch = [item for item in report["issues"] if item["kind"] == "version"]
     assert mismatch and mismatch[0]["severity"] == "info"
     assert report["status"] == "ok"  # a version note alone does not raise the alarm

@@ -313,6 +313,8 @@ def _main() -> int:
     sync_parser.add_argument("--name", help="Optional display name override for this computer")
     sync_parser.add_argument("--interval", type=float, default=5.0, help="Sync interval in seconds")
     sync_parser.add_argument("--once", action="store_true", help="Push a single sync batch and exit")
+    from spend_app.hub_update import add_parser as add_hub_parser
+    add_hub_parser(subparsers)
     machines_parser = subparsers.add_parser("machines", help="Manage connected computers on the hub")
     machines_sub = machines_parser.add_subparsers(dest="machines_command", required=True)
     machines_sub.add_parser("list")
@@ -498,6 +500,10 @@ def _main() -> int:
             rows = effective_terms(connection)
             print(json.dumps(rows, indent=2))
             return 0
+    if args.command == "hub" and args.hub_command == "update":
+        from spend_app.hub_update import update_hub
+        return update_hub(ssh=args.ssh, path=args.path, service=args.service, branch=args.branch,
+                          push_local=args.push_local, dry_run=args.dry_run)
     if args.command == "machines":
         from spend_app.sync import list_machines, register_machine, revoke_machine
 

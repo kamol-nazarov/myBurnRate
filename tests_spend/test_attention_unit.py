@@ -348,7 +348,8 @@ def test_existing_scheduler_uses_fake_registration_only(monkeypatch):
     assert namespace['create_scheduler'](settings,Prices()) is fake
     attention=[job for job in jobs if job[1]['id']=='attention']
     forecast=[job for job in jobs if job[1]['id']=='capacity-forecast']
-    assert len(attention)==1 and len(forecast)==1 and len(jobs)==7
+    notifications=[job for job in jobs if job[1]['id']=='desktop-notifications']
+    assert len(attention)==1 and len(forecast)==1 and len(notifications)==1 and len(jobs)==8
     assert attention[0][1]['coalesce'] and attention[0][1]['max_instances']==1
 
 def drive(coroutine):

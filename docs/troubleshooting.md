@@ -4,7 +4,9 @@
 
 These dialogs belong to the full dashboard, which is off by default; set
 `BURNRATE_ENABLE_DASHBOARD=1` and restart to use them. Without it, the setup
-wizard (`/setup`) scans and imports local harnesses.
+wizard (`/setup`, or the gear button on the HUD) shows every tool's state and
+fix, and its **Plans & balances** step (`/connections`) connects provider API
+keys.
 
 Open the harness count in the navbar, **Connect harness** in Capacity, or the
 same button in Setup help. The dialog shows source states, home-relative known

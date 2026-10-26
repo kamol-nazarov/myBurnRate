@@ -106,6 +106,25 @@
       "reason": null
     },
     {
+      "source": "deepseek",
+      "sourceLabel": "DeepSeek balance",
+      "toolKeys": [],
+      "associationKey": null,
+      "relevant": false,
+      "configuredState": "unknown",
+      "status": "never",
+      "lastAttemptAt": null,
+      "lastSuccessAt": null,
+      "freshness": {
+        "state": "unknown",
+        "ageSeconds": null,
+        "asOf": "2026-09-09T04:00:00Z"
+      },
+      "coverage": "No collection attempt observed; historical capture is unverified. Source usage capability is unavailable; pricing limitations are separate from collection failure.",
+      "eventsWritten": 0,
+      "reason": null
+    },
+    {
       "source": "grok_local",
       "sourceLabel": "Grok Build",
       "toolKeys": [
@@ -355,6 +374,20 @@
       "documentation": "https://github.com/kamol-nazarov/burnrate/blob/main/docs/providers.md"
     },
     {
+      "source": "deepseek",
+      "path": null,
+      "state": "not_checked",
+      "lastAttempt": null,
+      "lastSuccess": null,
+      "freshnessSeconds": null,
+      "measurements": [],
+      "reason": null,
+      "nextAction": "Complete a supported turn and recheck.",
+      "pricingMissing": [],
+      "experimental": false,
+      "documentation": "https://github.com/kamol-nazarov/burnrate/blob/main/docs/providers.md"
+    },
+    {
       "source": "grok_local",
       "path": "~/.grok/logs",
       "state": "partial",
@@ -515,6 +548,6 @@
   },
   "queryCounts": [
     3,
-    49
+    53
   ]
 }

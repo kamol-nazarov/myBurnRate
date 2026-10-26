@@ -167,6 +167,12 @@ def serve(
         return 0
 
     pid_path = write_pid()
+    # Collection runs in a worker process here (see spend_app.collector).
+    os.environ.setdefault("BURNRATE_COLLECTOR_PROCESS", "1")
+    # Desktop notifications come from the service (see spend_app.notify);
+    # BURNRATE_DESKTOP_NOTIFICATIONS=0 in the per-user .env turns them off.
+    os.environ.setdefault("BURNRATE_DESKTOP_NOTIFICATIONS", "1")
+    os.environ.setdefault("BURNRATE_PORT", str(port))
     # Running again, by any launcher, ends an explicit stop; the watchdog resumes.
     try:
         (run_dir() / "stopped").unlink(missing_ok=True)
