@@ -12,7 +12,7 @@ account, no cloud and no analytics.
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 <p align="center">
-  <img src="docs/images/hud.png" width="380" alt="The BURNRATE HUD: $25.91 of usage today, a burn rate of $25 a day, 95% cache hit, and meters for Claude, OpenCode Go, Codex and Grok plans">
+  <img src="docs/images/hud.png" width="380" alt="The BURNRATE HUD: $24.69 of usage today, a burn rate of $25 a day, 95% cache hit, and meters for Claude, OpenCode Go, Codex and Grok plans">
 </p>
 
 <p align="center"><sub>Screenshots use the made-up data from <code>burnrate demo</code>.</sub></p>
@@ -28,7 +28,7 @@ account, no cloud and no analytics.
 - **Pay-as-you-go balances** (OpenRouter, DeepSeek) with how many days they last at your current spend.
 
 <p align="center">
-  <img src="docs/images/week-card.png" width="600" alt="A weekly card: $167 of AI coding at published API rates on $93 of plans, 1.8 times the plan cost, with the top tools">
+  <img src="docs/images/week-card.png" width="600" alt="A weekly card: $165 of AI coding at published API rates on $93 of plans, 1.8 times the plan cost, with the top tools">
 </p>
 
 ## Download

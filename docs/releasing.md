@@ -4,6 +4,17 @@ Releases are built only on GitHub Actions
 ([release workflow](../.github/workflows/release.yml)), never on a
 maintainer's computer, so every download traces back to a tagged commit.
 
+## Branches
+
+- **`prod`** is the default branch. It always points at the latest published
+  release, so the repository's front page, the README and the links in release
+  notes describe what people actually download.
+- **`main`** collects finished work. Feature branches merge into `main`;
+  releases are tagged from it.
+- `prod` only moves forward, to a published release tag (step 7 below).
+
+## Steps
+
 1. Bump the version in these files:
    - `pyproject.toml` (PEP 440, for example `0.4.0b2`);
    - `spend_app/__init__.py`;
@@ -25,7 +36,9 @@ maintainer's computer, so every download traces back to a tagged commit.
 6. Check the draft and publish it as the latest release. Installed apps find
    the update within about six hours, or at once from the tray's **Check for
    updates**.
-7. Command-line installs:
+7. Move `prod` to the release: `git push origin v<version>^{commit}:refs/heads/prod`
+   (a fast-forward; it fails rather than rewrite history).
+8. Command-line installs:
    - **Scoop** needs nothing more. The release carries `myburnrate.json`, so
      `scoop install https://github.com/kamol-nazarov/myBurnRate/releases/latest/download/myburnrate.json`
      installs the latest release.

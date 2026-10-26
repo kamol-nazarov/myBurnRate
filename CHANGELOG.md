@@ -9,6 +9,8 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-26
+
 ### Added
 
 - A real installer. The desktop app now ships its own copy of the BURNRATE
@@ -46,6 +48,8 @@ This project is licensed under Apache-2.0.
 - A weekly workflow lists price cards that need a person's attention (a price
   window ending soon, or an OpenRouter price that moved) in one open issue. It
   never edits a card.
+- A rate card for GPT-6.1 Terra ($1 input, $0.05 cached, $1.25 cache write,
+  $5 output per million tokens; 2x / 1.5x above 272K input tokens).
 
 ### Changed
 
@@ -65,6 +69,10 @@ This project is licensed under Apache-2.0.
   `cost`) no longer outranks the published card; a provider's own charge still
   does. Rate cards can price peak hours, and the DeepSeek V4.1 Flash and V4
   Pro cards do.
+- The HUD and dashboard show a capacity card only for a tool in use: one that
+  has given a real meter reading, recorded usage in the last 30 days, or has
+  an active plan. A tool that is not installed no longer shows an empty
+  "quota unavailable" card; a used tool whose meter is missing still does.
 
 ### Fixed
 

@@ -198,14 +198,14 @@ Tests: `tests_spend/test_pricing_reconciliation.py` encodes this day: the peak-h
 
 ## Rolling it out
 
-Nothing is merged, deployed or restarted yet.
+The fixes ship in BurnRate 0.5.0. A computer or hub picks them up when it runs 0.5.0:
 
 1. **This PC.**
-   - Merge the branch into the checkout the desktop service runs from, then restart the service.
+   - Install 0.5.0, or update the checkout the desktop service runs from, then restart the service.
    - On start-up it backs up `spend.db` to `backups\pre-grok-dedupe-*.db`, removes the duplicate Grok rows, and re-reads Grok and OpenCode. Turn rows then gain Grok Build's charge and are pushed to the hub again.
    - Note: the "BURNRATE Dashboard" task runs `python -m spend_app.service` with `C:\Dev\myBurnRateOfficial` as its working directory, so it imports whatever that development checkout holds, even modules loaded mid-run. An installed copy would be safer.
 2. **The hub.**
-   - Deploy the same change to `release/0.4.0-beta.1` (the hub tracks that branch of `kamol-nazarov/myBurnRate`). The hub runs the same backup and dedupe on `/var/lib/burnrate/burnrate_hub.db`.
+   - Deploy 0.5.0 to it (`prod` of `kamol-nazarov/myBurnRate`). The hub runs the same backup and dedupe on `/var/lib/burnrate/burnrate_hub.db`.
    - The HUD card reads from the hub, so it stays wrong until the hub is updated.
    - The Grok cards and the dedupe must ship together. With only the cards, the hub would value its duplicate Grok rows twice.
 3. **`kamol-nazarov/burnrate`** is the older repository and nothing deploys from it; it needs no change.
