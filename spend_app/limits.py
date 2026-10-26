@@ -32,6 +32,8 @@ from spend_app.adapters.local_common import sqlite_read_only
 from spend_app.adapters.traycer_local import projection_index, settings_candidates
 from spend_app.db import connect
 from spend_app.integration_policy import authorize, identity_headers
+from spend_app.platform_paths import app_support_dir, process_command_lines, process_running
+from spend_app.platform_paths import executable as platform_executable
 
 
 _CACHE: dict[str, tuple[float, dict]] = {}
@@ -125,8 +127,7 @@ def _amount(value: object) -> float | None:
 
 
 def _antigravity_log_path() -> Path:
-    roaming = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
-    return roaming / "Antigravity" / "logs" / "main.log"
+    return app_support_dir() / "Antigravity" / "logs" / "main.log"
 
 
 def _antigravity_process_csrf_tokens() -> list[str]:
@@ -136,26 +137,7 @@ def _antigravity_process_csrf_tokens() -> list[str]:
     The token still exists only on the language-server command line. It is
     kept in memory for the localhost RPC and is never logged.
     """
-    if os.name != "nt":
-        return []
-    try:
-        completed = subprocess.run(
-            [
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                "Get-CimInstance Win32_Process -Filter \"Name = 'language_server.exe'\" | "
-                "Select-Object -ExpandProperty CommandLine",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=8,
-            check=False,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return []
-    return re.findall(r"--csrf_token\s+(\S+)", completed.stdout)
+    return re.findall(r"--csrf_token\s+(\S+)", "\n".join(process_command_lines("language_server")))
 
 
 def _antigravity_local_connection(log_path: Path | None = None) -> tuple[str, str]:
@@ -247,16 +229,9 @@ ANTIGRAVITY_CLOSED_DETAIL = "Antigravity isn't running. Its meter is read from t
 
 
 def _antigravity_running() -> bool:
-    """True when an Antigravity language server process exists (Windows tasklist; cheap)."""
-    try:
-        completed = subprocess.run(
-            ["tasklist", "/FI", "IMAGENAME eq language_server.exe", "/NH", "/FO", "CSV"],
-            capture_output=True, text=True, timeout=5, check=False,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return True  # unknown: do not claim it is closed
-    return "language_server" in completed.stdout.lower()
+    """True when an Antigravity language server process exists (a cheap process-list read)."""
+    running = process_running("language_server")
+    return True if running is None else running  # unknown: do not claim it is closed
 
 
 def _antigravity_limits_uncached() -> dict:
@@ -540,15 +515,14 @@ def _codex_limits() -> dict:
 
 
 def _claude_desktop_usage_path() -> Path | None:
-    candidates: list[Path] = []
-    roaming = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
-    candidates.append(roaming / "Claude" / "plan-usage-history.json")
-    local = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
-    packages = local / "Packages"
-    candidates.extend(
-        package / "LocalCache" / "Roaming" / "Claude" / "plan-usage-history.json"
-        for package in packages.glob("Claude_*")
-    )
+    candidates: list[Path] = [app_support_dir() / "Claude" / "plan-usage-history.json"]
+    if os.name == "nt":
+        # The Microsoft Store build keeps its copy inside its package folder.
+        local = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+        candidates.extend(
+            package / "LocalCache" / "Roaming" / "Claude" / "plan-usage-history.json"
+            for package in (local / "Packages").glob("Claude_*")
+        )
     existing = [path for path in candidates if path.is_file()]
     return max(existing, key=lambda path: path.stat().st_mtime) if existing else None
 
@@ -1233,7 +1207,7 @@ def _traycer_profile_rate_limits(harness: str) -> dict:
 
 def _traycer_profile_rate_limits_uncached(harness: str) -> dict:
     sender = _traycer_sender()
-    executable = Path.home() / ".traycer" / "cli" / "bin" / "traycer.exe"
+    executable = Path.home() / ".traycer" / "cli" / "bin" / platform_executable("traycer")
     if sender is None or not executable.is_file():
         raise RuntimeError("Experimental Traycer CLI profile-rate-limits is unavailable")
     epic_id, agent_id = sender
@@ -1836,7 +1810,7 @@ def _claude_active_sessions(
 
 
 def _traycer_active_agents_uncached(epic_id: str, sender_agent_id: str) -> dict:
-    executable = Path.home() / ".traycer" / "cli" / "bin" / "traycer.exe"
+    executable = Path.home() / ".traycer" / "cli" / "bin" / platform_executable("traycer")
     if not executable.is_file():
         raise RuntimeError("Experimental Traycer CLI agent list is unavailable")
     environment = os.environ.copy()

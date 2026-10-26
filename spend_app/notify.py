@@ -26,7 +26,9 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -113,7 +115,7 @@ def public_settings(database_path) -> dict:
     initialize(database_path)
     with connect(database_path) as connection:
         state = load_state(connection)
-    return {"available": enabled() and os.name == "nt",
+    return {"available": enabled() and toasts_supported(),
             "kinds": [{"key": key, "label": label, "on": state["kinds"][key]} for key, label in KINDS]}
 
 
@@ -308,10 +310,34 @@ def _app_id() -> str:
     return APP_ID if shortcut.is_file() else FALLBACK_APP_ID
 
 
+def toasts_supported() -> bool:
+    """Windows toasts, macOS Notification Center (osascript), or a Linux notification daemon (notify-send)."""
+    if os.name == "nt":
+        return True
+    return shutil.which("osascript" if sys.platform == "darwin" else "notify-send") is not None
+
+
+def _show_posix(title: str, body: str, run) -> None:
+    # The text travels as arguments, never inside a script.
+    if sys.platform == "darwin":
+        command = ["osascript", "-e", "on run argv", "-e",
+                   "display notification (item 2 of argv) with title (item 1 of argv)", "-e", "end run",
+                   title[:200], body[:600]]
+    else:
+        notifier = shutil.which("notify-send")
+        if not notifier:
+            raise OSError("Desktop notifications need notify-send (libnotify)")
+        command = [notifier, "--app-name=BURNRATE", title[:200], body[:600]]
+    completed = run(command, capture_output=True, text=True, timeout=30)
+    if completed.returncode != 0:
+        raise OSError((completed.stderr or completed.stdout or "notification failed").strip()[-300:])
+
+
 def show_toast(title: str, body: str, *, tag: str = "burnrate", run=subprocess.run) -> None:
-    """Show a Windows toast; the text travels in environment variables, never in the script."""
+    """Show a desktop notification; on Windows the text travels in environment variables, never in the script."""
     if os.name != "nt":
-        raise OSError("Desktop notifications need Windows")
+        _show_posix(title, body, run)
+        return
     shell = Path(os.getenv("SystemRoot", r"C:\Windows")) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
     port = os.getenv("BURNRATE_PORT", "17331")
     env = {**os.environ, "BURNRATE_TOAST_TITLE": title[:200], "BURNRATE_TOAST_BODY": body[:600],

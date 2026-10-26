@@ -2107,10 +2107,10 @@ SETUP_WIZARD_HTML = """<!doctype html>
           <div class="sub-box">
             <div class="section-head">
               <h3>Pay-as-you-go balances</h3>
-              <p class="hint">Keys are tested, then stored in Windows Credential Manager. They are only used to read the balance.</p>
+              <p class="hint">Keys are tested, then stored in this computer's credential store (Windows Credential Manager, the macOS Keychain or the desktop keyring). They are only used to read the balance.</p>
             </div>
             <div class="lane-list" id="wiz-balances"></div>
-            <p id="wiz-vault-note" class="status-banner err" hidden>Windows Credential Manager is not available, so keys cannot be saved here.</p>
+            <p id="wiz-vault-note" class="status-banner err" hidden>This computer's credential store is not available, so keys cannot be saved here.</p>
             <details class="more" id="wiz-admin-wrap" hidden>
               <summary>Organization usage APIs</summary>
               <div class="lane-list" id="wiz-admin-apis"></div>

@@ -1,6 +1,7 @@
-"""BURNRATE-owned Windows vault references and explicit, bounded API tests."""
+"""BURNRATE-owned credential-store references and explicit, bounded API tests."""
 import hashlib
 import os
+import sys
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -13,20 +14,34 @@ from spend_app.integration_policy import assert_allowed_host, identity_headers
 POLICY_LANES = {"openrouter": "openrouter_credits", "deepseek": "deepseek_balance"}
 
 
+def store_name() -> str:
+    if os.name == "nt":
+        return "Windows Credential Manager"
+    if sys.platform == "darwin":
+        return "The macOS Keychain"
+    return "The desktop keyring (Secret Service)"
+
+
 class Vault:
     def __init__(self, database):
         self.service = "BURNRATE/connections/" + hashlib.sha256(os.path.normcase(str(database)).encode()).hexdigest()[:24]
 
     def backend(self):
+        # The operating system's own store, named explicitly; never keyring's
+        # global backend selection, plaintext plugins or fallback stores.
         try:
-            if os.name != "nt":
-                raise ImportError()
-            # Explicit Windows Credential Manager backend; never use global
-            # keyring backend selection, plaintext plugins or fallback stores.
-            from keyring.backends.Windows import WinVaultKeyring
-            return WinVaultKeyring()
+            if os.name == "nt":
+                from keyring.backends.Windows import WinVaultKeyring
+                return WinVaultKeyring()
+            if sys.platform == "darwin":
+                from keyring.backends.macOS import Keyring
+            else:
+                from keyring.backends.SecretService import Keyring
+            if Keyring.priority <= 0:  # raises when the store is not running
+                raise RuntimeError()
+            return Keyring()
         except Exception:
-            raise LocationError("Windows Credential Manager is unavailable. Local setup still works.") from None
+            raise LocationError(f"{store_name()} is unavailable. Local setup still works.") from None
 
     def available(self):
         try:
