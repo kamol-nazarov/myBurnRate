@@ -1,0 +1,43 @@
+# BURNRATE hub with automatic HTTPS (see docs/self-hosting.md).
+#
+#   BURNRATE_DOMAIN=burnrate.example.com docker compose up -d
+#
+# The domain's DNS must point at this server, and ports 80 and 443 must be
+# reachable, for Caddy to obtain a certificate. Data lives in the hub-data
+# volume.
+
+services:
+  hub:
+    image: ghcr.io/kamol-nazarov/myburnrate-hub:${BURNRATE_VERSION:-latest}
+    restart: unless-stopped
+    environment:
+      BURNRATE_CENTRAL_SERVER: "1"
+      BURNRATE_DATA_ROOT: /data
+      # Set to 1 only while adding a second account to this hub.
+      BURNRATE_ALLOW_REGISTRATION: ${BURNRATE_ALLOW_REGISTRATION:-0}
+    volumes:
+      - hub-data:/data
+    # Caddy shares this container's network, so the hub keeps listening on
+    # 127.0.0.1 and only Caddy's ports are published.
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    network_mode: "service:hub"
+    depends_on:
+      - hub
+    environment:
+      BURNRATE_DOMAIN: ${BURNRATE_DOMAIN:?Set BURNRATE_DOMAIN to the hub's public name}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  hub-data:
+  caddy-data:
+  caddy-config:
