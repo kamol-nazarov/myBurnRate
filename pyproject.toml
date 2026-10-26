@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "burnrate"
-version = "0.5.1"
+version = "0.5.2"
 description = "See what your AI coding agents are worth at API rates, and which plan runs out first. Local-first HUD for Claude Code, Codex, OpenCode, Grok Build and more."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"

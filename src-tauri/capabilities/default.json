@@ -24,6 +24,8 @@
     "core:window:allow-show",
     "core:window:allow-hide",
     "core:window:allow-set-focus",
-    "core:window:allow-close"
+    "core:window:allow-close",
+    "allow-pending-update",
+    "allow-install-update"
   ]
 }

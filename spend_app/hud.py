@@ -48,8 +48,8 @@ HUD_HTML = r"""<!doctype html>
         --tip-bg: #ffffff;
         --tip-line: rgba(20, 18, 15, 0.12);
         --tip-shadow: 0 12px 30px -12px rgba(20, 18, 15, 0.4), 0 2px 6px -2px rgba(20, 18, 15, 0.12);
-        --glass: rgba(244, 242, 238, 0.8);
-        --glass-hover: rgba(244, 242, 238, 0.96);
+        --glass: rgba(244, 242, 238, 0.97);
+        --glass-hover: rgb(244, 242, 238);
         --glass-line: rgba(20, 18, 15, 0.14);
         --sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
         --fd: Bahnschrift, "DIN Alternate", "DIN 2014", Barlow, "Segoe UI", system-ui, sans-serif;
@@ -75,8 +75,8 @@ HUD_HTML = r"""<!doctype html>
         --tip-bg: #18181b;
         --tip-line: rgba(255, 255, 255, 0.1);
         --tip-shadow: 0 14px 36px -10px rgba(0, 0, 0, 0.9);
-        --glass: rgba(10, 10, 12, 0.78);
-        --glass-hover: rgba(10, 10, 12, 0.95);
+        --glass: rgba(10, 10, 12, 0.97);
+        --glass-hover: rgb(10, 10, 12);
         --glass-line: rgba(255, 255, 255, 0.12);
       }
       * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -97,8 +97,10 @@ HUD_HTML = r"""<!doctype html>
       button { font: inherit; color: inherit; }
       .page { padding: 10px 14px 12px; }
 
-      /* Glass: the native window is transparent; the card is see-through at
-         rest and firms up under the pointer so it stays easy to read. */
+      /* Glass: the native window is transparent so the card can round its
+         corners. The window cannot blur what lies behind it, so the card is
+         all but opaque: any more see-through and text in the window behind
+         reads through the HUD. */
       html.is-glass, html.is-glass body { background: transparent; }
       html.is-glass body { min-height: 0; border: 0; border-radius: 0; }
       html.is-glass .page {
@@ -791,9 +793,15 @@ HUD_HTML = r"""<!doctype html>
           bar.disabled = true;
           bar.textContent = "Installing the update…";
           // A successful install never answers: the app closes for the installer or restarts.
-          await tauriInvoke("install_update");
+          let reason = "";
+          try {
+            await window.__TAURI_INTERNALS__?.invoke?.("install_update");
+          } catch (error) {
+            reason = String(error?.message ?? error ?? "").trim();
+          }
+          if (reason.length > 120) reason = reason.slice(0, 119) + "…";
           bar.disabled = false;
-          bar.textContent = "The update did not install · try again";
+          bar.textContent = "The update did not install" + (reason ? " (" + reason + ")" : "") + " · try again";
         });
         tauriInvoke("pending_update").then(showUpdate);
         window.__TAURI__?.event?.listen?.("burnrate://update-available", event => showUpdate(event.payload));

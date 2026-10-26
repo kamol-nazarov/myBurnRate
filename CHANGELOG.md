@@ -9,6 +9,23 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-10-26
+
+### Fixed
+
+- Installing an update from the HUD works. The HUD page comes from the local
+  service, which Tauri treats as a remote origin, and no capability allowed
+  the app's own commands for it: the HUD offered each update, and every click
+  was refused with "Command install_update not allowed by ACL". The two
+  update commands are now declared in `build.rs` and allowed in the default
+  capability, and a test checks both.
+- A failed update stays offered, so "try again" retries it. Before, the first
+  attempt removed it and every retry failed with "No update is waiting".
+- The HUD says why an update failed, and so does the tray menu item, which
+  then retries.
+- The HUD card is all but opaque. At 80% opacity, text in the window behind
+  read through it.
+
 ## [0.5.1] - 2026-10-26
 
 ### Fixed

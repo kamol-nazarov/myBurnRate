@@ -405,19 +405,21 @@ fn pending_update(state: State<'_, PendingUpdate>) -> Option<String> {
 
 #[tauri::command]
 async fn install_update(app: AppHandle) -> Result<(), String> {
+    // A copy, so the update stays offered if this attempt fails.
     let update = app
         .state::<PendingUpdate>()
         .update
         .lock()
         .map_err(|e| e.to_string())?
-        .take()
+        .clone()
         .ok_or_else(|| "No update is waiting".to_string())?;
-    set_update_menu_text(&app, &format!("Installing update {}…", update.version));
+    let version = update.version.clone();
+    set_update_menu_text(&app, &format!("Installing update {version}…"));
     // On Windows the installer takes over and this process exits; elsewhere the app restarts.
-    update
-        .download_and_install(|_, _| {}, || {})
-        .await
-        .map_err(|e| e.to_string())?;
+    if let Err(error) = update.download_and_install(|_, _| {}, || {}).await {
+        set_update_menu_text(&app, &format!("Update {version} failed, click to retry: {error}"));
+        return Err(error.to_string());
+    }
     app.restart();
 }
 
@@ -1222,10 +1224,9 @@ pub fn run() {
                             .map(|update| update.is_some())
                             .unwrap_or(false);
                         if waiting {
+                            // A failure shows on this menu item, which then retries.
                             tauri::async_runtime::spawn(async move {
-                                if let Err(error) = install_update(app.clone()).await {
-                                    set_update_menu_text(&app, &format!("Update failed: {error}"));
-                                }
+                                let _ = install_update(app).await;
                             });
                         } else {
                             thread::spawn(move || {
