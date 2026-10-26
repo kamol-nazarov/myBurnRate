@@ -17,7 +17,7 @@ from pathlib import Path
 import httpx
 
 from spend_app.adapters.common import UsageRow, failed_result, persist_rows, skipped_result, stable_id
-from spend_app.adapters.local_common import parse_iso_time
+from spend_app.adapters.local_common import parse_iso_time, project_name
 from spend_app.limits import (
     ANTIGRAVITY_RPC_ALLOWED_HOSTS,
     _antigravity_local_connection,
@@ -85,7 +85,14 @@ def _project_name(summary: dict) -> str | None:
     uri = workspaces[0].get("workspaceFolderAbsoluteUri") or workspaces[0].get("gitRootAbsoluteUri")
     if not isinstance(uri, str) or not uri.strip():
         return None
-    return uri.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] or None
+    # A file:// workspace URI names the folder; the project is its repository.
+    from urllib.parse import unquote, urlparse
+
+    parsed = urlparse(uri)
+    path = unquote(parsed.path) if parsed.scheme == "file" else uri
+    if len(path) > 2 and path[0] == "/" and path[2] == ":":
+        path = path[1:]  # file:///C:/Dev/app
+    return project_name(path)
 
 
 def parse_trajectory(payload: dict, *, summary: dict | None = None) -> list[UsageRow]:

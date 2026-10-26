@@ -10,7 +10,7 @@ import sqlite3
 from dataclasses import dataclass, replace
 
 from spend_app.adapters.common import UsageRow, stable_id
-from spend_app.adapters.local_common import parse_millis, positive_cost, folder_name
+from spend_app.adapters.local_common import parse_millis, positive_cost, project_name
 
 PARSER_VERSION = "opencode-message-v1"
 # OpenCode Go is its own subscription (not the Z.AI plan the "opencode" tool
@@ -106,7 +106,7 @@ def parse_message(data, *, row_id=None, session_id=None, role=None, format="json
         output += reasoning
     unknown = max(0, (total or 0) - fresh - read - write - output) if not complete else 0
     path = data.get("path")
-    project = folder_name(path["root"]) if isinstance(path, dict) and isinstance(path.get("root"), str) else None
+    project = project_name(path["root"]) if isinstance(path, dict) and isinstance(path.get("root"), str) else None
     tool = GO_PROVIDER if go else "opencode"
     row = UsageRow(source="opencode_local", tool_key=tool, model_key=tool + ":" + model_id.strip().lower(), occurred_at=when,
                    session_id=session, project=project, input_tokens=fresh + read, cached_input_tokens=read,

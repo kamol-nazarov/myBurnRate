@@ -6,7 +6,7 @@ Claude paths.js at e07aeb4. MIT notices are retained in NOTICE.
 from dataclasses import replace
 from datetime import UTC, datetime
 
-from spend_app.adapters.local_common import folder_name
+from spend_app.adapters.local_common import project_name
 from spend_app.adapters.common import UsageRow, stable_id
 from spend_app.adapters.event_identity import Observation
 from spend_app.adapters.opencode_schema import count
@@ -163,7 +163,7 @@ def reduce_records(records, health, fallback_session):
         sid = outer.get("sessionId")
         sid = sid if isinstance(sid, str) and sid else fallback_session
         cwd = outer.get("cwd")
-        project = folder_name(cwd) if isinstance(cwd, str) else previous.row.project if previous else None
+        project = project_name(cwd) if isinstance(cwd, str) else previous.row.project if previous else None
         aliases = list(previous.aliases if previous else ())
         if legacy_message:
             aliases.append(f"claude-local:{sid}:{legacy_message}")

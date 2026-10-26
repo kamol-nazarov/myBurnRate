@@ -3,6 +3,7 @@
 import calendar
 from collections import defaultdict
 from datetime import UTC, datetime, time, timedelta
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from spend_app import aggregate
@@ -174,9 +175,12 @@ def recorded_usage(settings, pricing, *, now: datetime, machine: str = "all") ->
                                          cap_date=local_now.date(), machine=machine)
         burn, average = aggregate._seven_day_pace(connection, pricing, now, settings.timezone, machine)
         mix = aggregate.TokenMix()
-        for event in [*aggregate._load_events(connection, now - timedelta(days=1), now, "all", machine),
-                      *aggregate._load_unpriced_events(connection, now - timedelta(days=1), now, "all", machine)]:
+        recent = aggregate._load_events(connection, now - timedelta(days=1), now, "all", machine)
+        for event in [*recent, *aggregate._load_unpriced_events(connection, now - timedelta(days=1), now, "all", machine)]:
             mix.add_event(event)
+        today_from = int(today_start.timestamp() * 1_000_000)
+        repos = repo_breakdown(aggregate._enrich(
+            [event for event in recent if (event.get("occurred_epoch_us") or 0) >= today_from], pricing))
         last_import = connection.execute(
             "SELECT MAX(finished_at) FROM ingest_runs WHERE status IN ('success','partial')"
         ).fetchone()[0]
@@ -194,7 +198,38 @@ def recorded_usage(settings, pricing, *, now: datetime, machine: str = "all") ->
                            "todayTokens": int(today.tokens) if today.records else 0,
                            "tokensAvgPerDay": average, "todayComplete": today.complete if today.records else False},
             "totals": {"cacheReusePct": aggregate._cache_reuse(mix)},
-            "windowTokens": window_tokens}
+            "windowTokens": window_tokens,
+            "repos": repos}
+
+
+REPO_TOKEN_FIELDS = ("input_tokens", "cached_input_tokens", "cache_write_tokens", "cache_write_1h_tokens", "output_tokens")
+
+
+def repo_breakdown(enriched: list[dict], *, limit: int = 5) -> dict:
+    """Today's API-rate value and tokens by repository (the session's project).
+
+    The top ``limit`` repositories are listed; the rest, and usage with no
+    known project, are summed as ``other``.
+    """
+    totals: dict[str | None, list] = {}
+    for event in enriched:
+        row = totals.setdefault(event.get("project") or None, [Decimal(0), 0])
+        if event.get("spend") is not None:
+            row[0] += event["spend"]
+        row[1] += sum(int(event.get(field) or 0) for field in REPO_TOKEN_FIELDS)
+    total = sum((value for value, _tokens in totals.values()), Decimal(0))
+    ranked = sorted(((name, row) for name, row in totals.items() if name), key=lambda item: (item[1][0], item[1][1]),
+                    reverse=True)
+    rest = ranked[limit:] + ([(None, totals[None])] if None in totals else [])
+    other_value = sum((row[0] for _name, row in rest), Decimal(0))
+    return {
+        "period": "today",
+        "totalUsd": float(total),
+        "rows": [{"project": name, "usd": float(value), "tokens": tokens,
+                  "sharePct": float(value / total * 100) if total else None}
+                 for name, (value, tokens) in ranked[:limit]],
+        "other": {"usd": float(other_value), "tokens": sum(row[1] for _name, row in rest)} if rest else None,
+    }
 
 
 def _window_start(limit_key: str, resets_at: str | None) -> datetime | None:

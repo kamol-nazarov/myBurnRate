@@ -61,6 +61,65 @@ def folder_name(value: object) -> str | None:
     return None if not name or name.endswith(":") else name
 
 
+_REPO_ROOTS: dict[str, str | None] = {}
+_REPO_MARKERS = ("/.t3/worktrees/", "/orca/workspaces/")
+
+
+def _repo_root(text: str) -> str | None:
+    """The git repository a folder on this computer belongs to (a worktree's main repository)."""
+    if text in _REPO_ROOTS:
+        return _REPO_ROOTS[text]
+    found = None
+    try:
+        start = Path(text)
+        home = Path.home()
+        if start.is_absolute():
+            for candidate in (start, *start.parents)[:16]:
+                if candidate == home or candidate == candidate.parent:
+                    break
+                marker = candidate / ".git"
+                if marker.is_dir():
+                    found = str(candidate)
+                    break
+                if marker.is_file():
+                    pointer = marker.read_text(encoding="utf-8", errors="replace").strip()
+                    gitdir = pointer.split(":", 1)[1].strip().replace("\\", "/") if pointer.startswith("gitdir:") else ""
+                    at = gitdir.lower().find("/.git/worktrees/")
+                    found = gitdir[:at] if at > 0 else str(candidate)
+                    break
+    except (OSError, ValueError):
+        found = None
+    if len(_REPO_ROOTS) > 4096:
+        _REPO_ROOTS.clear()
+    _REPO_ROOTS[text] = found
+    return found
+
+
+def project_name(value: object) -> str | None:
+    """The project a session ran in: its repository when known, else its folder.
+
+    Worktrees count toward their repository: T3 (``.t3/worktrees/<repo>/…``),
+    Claude Code (``<repo>/.claude/worktrees/…``), Orca
+    (``orca/workspaces/<repo>/…``) and any git worktree on this computer. A
+    subfolder of a repository counts toward the repository. A path from
+    another computer that matches none of these keeps its last folder name.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip().replace("\\", "/").rstrip("/")
+    lowered = text.lower()
+    for marker in _REPO_MARKERS:
+        at = lowered.find(marker)
+        if at >= 0:
+            repo = text[at + len(marker):].split("/", 1)[0]
+            if repo:
+                return repo
+    at = lowered.find("/.claude/worktrees/")
+    if at > 0:
+        return folder_name(text[:at])
+    return folder_name(_repo_root(value.strip()) or text)
+
+
 def sqlite_read_only(path: Path) -> sqlite3.Connection:
     from spend_app.connection_paths import confined
     return _read_only_connection(confined(path))

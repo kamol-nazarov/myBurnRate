@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from spend_app.adapters.local_common import folder_name
+from spend_app.adapters.local_common import project_name
 from spend_app.adapters.common import UsageRow, stable_id
 from spend_app.adapters.opencode_schema import count
 from spend_app.source_health import quarantine
@@ -211,7 +211,7 @@ def _project(record: dict) -> str | None:
         for key in _PROJECT_KEYS:
             value = node.get(key)
             if isinstance(value, str) and value:
-                return folder_name(value)
+                return project_name(value)
     return None
 
 

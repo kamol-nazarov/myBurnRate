@@ -255,6 +255,17 @@ HUD_HTML = r"""<!doctype html>
       .hud-agent:hover strong { color: var(--accent); }
       .hud-machine-tag { flex: none; color: var(--dim); font: 600 9.5px/1 var(--fd); letter-spacing: 0.1em; text-transform: uppercase; }
 
+      /* Repos: today's API-rate value by repository. */
+      .repos { margin-top: 12px; }
+      .repo-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 10px; padding: 6px 0 5px; border-bottom: 1px solid var(--line); }
+      .repo-row:last-child { border-bottom: 0; }
+      .repo-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; }
+      .repo-row.other .repo-name { color: var(--dim); font-weight: 400; }
+      .repo-value { color: var(--secondary); font: 11px/1.3 var(--mono); text-align: right; white-space: nowrap; }
+      .repo-bar { grid-column: 1 / -1; height: 3px; border-radius: 2px; background: var(--sunken); overflow: hidden; }
+      .repo-bar i { display: block; height: 100%; background: var(--accent); }
+      html.is-mini .repos { display: none !important; }
+
       /* Plans: aligned meter rows. */
       .plans { margin-top: 12px; }
       .plans-head { display: flex; align-items: center; justify-content: space-between; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
@@ -494,6 +505,11 @@ HUD_HTML = r"""<!doctype html>
         <div id="hud-quotas">
           <p class="hud-empty">Waiting for subscription usage…</p>
         </div>
+      </section>
+
+      <section class="repos" id="hud-repos" hidden aria-label="Today by repository">
+        <div class="plans-head"><span>Repos today</span></div>
+        <div id="hud-repo-rows"></div>
       </section>
 
       <footer class="foot">
@@ -1604,7 +1620,36 @@ HUD_HTML = r"""<!doctype html>
           noteDataAge(data);
           // An older hub sends no window tokens; meter tips then omit them.
           if (data.windowTokens && typeof data.windowTokens === "object") windowTokens = data.windowTokens;
+          renderRepos(data.repos);
           refreshTip();
+        }
+
+        // Today's value by repository; an older hub sends none and the section stays hidden.
+        function renderRepos(repos) {
+          const rows = repos && Array.isArray(repos.rows) ? repos.rows.filter(row => Number(row.usd) > 0) : [];
+          $("hud-repos").hidden = !rows.length;
+          if (!rows.length) return;
+          const top = Math.max(...rows.map(row => Number(row.usd) || 0));
+          const line = (label, usdValue, tokens, extraClass) => {
+            const item = document.createElement("div");
+            item.className = "repo-row" + (extraClass ? " " + extraClass : "");
+            const name = document.createElement("span");
+            name.className = "repo-name";
+            name.textContent = label;
+            const value = document.createElement("span");
+            value.className = "repo-value";
+            value.textContent = usd2(usdValue) + " · " + tok(tokens || 0);
+            const bar = document.createElement("span");
+            bar.className = "repo-bar";
+            const fill = document.createElement("i");
+            fill.style.width = (top ? Math.max(2, (Number(usdValue) || 0) / top * 100) : 0) + "%";
+            bar.append(fill);
+            item.append(name, value, bar);
+            return item;
+          };
+          const items = rows.map(row => line(row.project, row.usd, row.tokens));
+          if (repos.other && Number(repos.other.usd) > 0) items.push(line("Other", repos.other.usd, repos.other.tokens, "other"));
+          $("hud-repo-rows").replaceChildren(...items);
         }
 
         function renderSummary(data) {
