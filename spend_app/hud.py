@@ -171,6 +171,22 @@ HUD_HTML = r"""<!doctype html>
       .hud-status-pill[data-state="error"] { color: var(--danger); }
       .hud-status-pill[data-state="stale"] i, .hud-status-pill[data-state="error"] i { animation: none; }
       .hud-status-pill > span { max-width: 210px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .hud-update {
+        display: block;
+        width: 100%;
+        margin: 0 0 8px;
+        padding: 6px 10px;
+        border: 1px solid var(--accent);
+        border-radius: 8px;
+        background: transparent;
+        color: var(--accent);
+        font: 600 11px/1.3 var(--fd);
+        letter-spacing: 0.04em;
+        text-align: left;
+        cursor: pointer;
+      }
+      .hud-update[hidden] { display: none; }
+      .hud-update:disabled { cursor: default; opacity: 0.7; }
       @keyframes hudPing {
         0% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 55%, transparent); }
         80%, 100% { box-shadow: 0 0 0 6px transparent; }
@@ -434,6 +450,7 @@ HUD_HTML = r"""<!doctype html>
         <span class="date" id="hud-date">Today</span>
         <span class="hud-status-pill" id="hud-status-pill" data-state="live"><i></i><span id="hud-status-text">LIVE</span></span>
       </p>
+      <button type="button" class="hud-update" id="hud-update" hidden></button>
 
       <section class="hero" id="hud-stat-today" aria-label="API-rate spend today">
         <strong id="hud-today">—</strong>
@@ -739,6 +756,25 @@ HUD_HTML = r"""<!doctype html>
         }
         applyPinUi(pinned);
         tauriInvoke("set_hud_pin", { pinned });
+
+        // An installed app checks for updates in the background and offers one here.
+        function showUpdate(version) {
+          const bar = $("hud-update");
+          if (!bar || !version || bar.disabled) return;
+          bar.textContent = "BURNRATE " + version + " is ready · install and restart";
+          bar.hidden = false;
+        }
+        $("hud-update").addEventListener("click", async () => {
+          const bar = $("hud-update");
+          bar.disabled = true;
+          bar.textContent = "Installing the update…";
+          // A successful install never answers: the app closes for the installer or restarts.
+          await tauriInvoke("install_update");
+          bar.disabled = false;
+          bar.textContent = "The update did not install · try again";
+        });
+        tauriInvoke("pending_update").then(showUpdate);
+        window.__TAURI__?.event?.listen?.("burnrate://update-available", event => showUpdate(event.payload));
         labelTip($("hud-pin-btn"), () => pinned ? "Unpin from top" : "Keep on top");
         labelTip($("hud-mini-btn"), () => isMini ? "Expand" : "Collapse");
         labelTip($("hud-theme-btn"), () => root.dataset.theme === "dark" ? "Light theme" : "Dark theme");

@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import atexit
 import ctypes
+import hashlib
 import logging
 import logging.handlers
 import os
@@ -39,13 +40,9 @@ QUIET_LOGGERS = {
 
 
 def data_root() -> Path:
-    override = os.environ.get("BURNRATE_DATA_ROOT")
-    if override:
-        return Path(override)
-    local = os.environ.get("LOCALAPPDATA")
-    if not local:
-        raise RuntimeError("LOCALAPPDATA is not set")
-    return Path(local) / "BURNRATE"
+    from spend_app.config import default_app_dir
+
+    return default_app_dir()
 
 
 def run_dir() -> Path:
@@ -81,9 +78,43 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def mutex_name() -> str:
+    """The default data root's mutex; another root (BURNRATE_DATA_ROOT) gets its own."""
+    override = os.environ.get("BURNRATE_DATA_ROOT")
+    if not override:
+        return MUTEX_NAME
+    digest = hashlib.sha1(str(Path(override).resolve()).lower().encode("utf-8")).hexdigest()[:12]
+    return f"{MUTEX_NAME}-{digest}"
+
+
+def _acquire_lock_file(name: str):
+    """The macOS/Linux stand-in for the Windows mutex: an exclusive lock on a run file."""
+    import fcntl
+
+    path = run_dir() / ("service-" + hashlib.sha1(name.encode("utf-8")).hexdigest()[:12] + ".lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(path, "a+", encoding="utf-8")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return False
+    return handle
+
+
+def release_mutex(mutex) -> None:
+    if not mutex:
+        return
+    if sys.platform == "win32":
+        ctypes.windll.kernel32.CloseHandle(mutex)
+    else:
+        mutex.close()
+
+
 def acquire_mutex(name: str = MUTEX_NAME):
+    """A handle while this is the only service for its data root, False when another holds it."""
     if sys.platform != "win32":
-        return None
+        return _acquire_lock_file(name)
     kernel32 = ctypes.windll.kernel32
     kernel32.CreateMutexW.restype = ctypes.c_void_p
     kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
@@ -161,9 +192,9 @@ def serve(
 
     load_user_env()
     log_path = configure_logging()
-    mutex = acquire_mutex()
+    mutex = acquire_mutex(mutex_name())
     if mutex is False:
-        logging.info("BURNRATE dashboard already running (mutex %s held)", MUTEX_NAME)
+        logging.info("BURNRATE dashboard already running (mutex %s held)", mutex_name())
         return 0
 
     pid_path = write_pid()
@@ -187,8 +218,7 @@ def serve(
                 pid_path.unlink()
         except OSError:
             pass
-        if mutex:
-            ctypes.windll.kernel32.CloseHandle(mutex)
+        release_mutex(mutex)
 
     atexit.register(_cleanup)
 

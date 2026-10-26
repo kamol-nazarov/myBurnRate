@@ -69,7 +69,9 @@ def local_app_data() -> Path:
 
 
 def default_app_dir() -> Path:
-    return local_app_data() / APP_DIR_NAME
+    """Where this computer's database, settings and logs live (BURNRATE_DATA_ROOT overrides)."""
+    override = os.getenv("BURNRATE_DATA_ROOT", "").strip()
+    return Path(override) if override else local_app_data() / APP_DIR_NAME
 
 
 def default_database_path() -> Path:

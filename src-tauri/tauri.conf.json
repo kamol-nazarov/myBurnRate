@@ -13,7 +13,7 @@
       {
         "label": "main",
         "title": "BURNRATE · AI Cost Intelligence",
-        "url": "http://127.0.0.1:17331/?app=1",
+        "url": "starting.html",
         "width": 1340,
         "height": 860,
         "minWidth": 420,
@@ -25,7 +25,7 @@
       {
         "label": "hud",
         "title": "BURNRATE · Sidecar HUD",
-        "url": "http://127.0.0.1:17331/hud?glass=1",
+        "url": "starting.html",
         "width": 380,
         "height": 580,
         "minWidth": 260,
@@ -43,14 +43,66 @@
     ],
     "security": {
       "csp": null
-    }
+    },
+    "macOSPrivateApi": true
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": [
+      "nsis",
+      "app",
+      "dmg",
+      "appimage",
+      "deb"
+    ],
+    "createUpdaterArtifacts": true,
+    "publisher": "BURNRATE contributors",
+    "homepage": "https://github.com/kamol-nazarov/myBurnRate",
+    "copyright": "Apache-2.0",
+    "license": "Apache-2.0",
+    "category": "DeveloperTool",
+    "shortDescription": "Local-first AI coding-agent usage, plan meters and cost HUD",
+    "longDescription": "BURNRATE reads your AI coding tools' local files and shows token usage, plan meters, run-out forecasts and API-equivalent cost in an always-on-top HUD. Nothing leaves your computer unless you connect a hub you run yourself.",
     "icon": [
-      "icons/icon.png",
-      "icons/icon.ico"
-    ]
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "resources": {
+      "resources/burnrate-service/": "burnrate-service/"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerHooks": "nsis-hooks.nsh",
+        "displayLanguageSelector": false
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "signingIdentity": "-"
+    },
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libayatana-appindicator3-1"
+        ]
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVDQUNGNEMxNUMxRkNENkQKUldSdHpSOWN3ZlNzWE9yblR0Q1BIZUFTY3VhbWFFeHB2OWVkOVZhUjF5dVNaQm1CWHZTM0I3WkMK",
+      "endpoints": [
+        "https://github.com/kamol-nazarov/myBurnRate/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

@@ -360,8 +360,10 @@ def test_sidecar_hud_and_tauri_native_scaffold(tmp_path: Path, monkeypatch) -> N
     assert "main" in windows and "hud" in windows
     assert windows["hud"]["alwaysOnTop"] is True
     assert windows["hud"]["decorations"] is False
-    # The transparent HUD window asks the page for its glass card.
-    assert windows["hud"]["url"].endswith("/hud?glass=1")
+    # Windows open on the bundled starting page; the app moves them to the
+    # service once it answers, and the transparent HUD asks for its glass card.
+    assert windows["hud"]["url"] == windows["main"]["url"] == "starting.html"
+    assert (repo_root / "spend_web" / "starting.html").is_file()
     assert windows["hud"]["transparent"] is True
 
     lib_rs = (repo_root / "src-tauri" / "src" / "lib.rs").read_text(encoding="utf-8")
@@ -374,6 +376,9 @@ def test_sidecar_hud_and_tauri_native_scaffold(tmp_path: Path, monkeypatch) -> N
         "open_setup_wizard",
         "TrayIconBuilder",
         "BackendSupervisor",
+        '"/hud?glass=1"',
+        "install_update",
+        "child_job::adopt",
     ):
         assert symbol in lib_rs
 

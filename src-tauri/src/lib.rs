@@ -1,15 +1,26 @@
 use std::env;
 use std::net::{SocketAddr, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager, RunEvent, State, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent, Wry};
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
+use tauri_plugin_updater::UpdaterExt;
+
+const DEFAULT_PORT: u16 = 17331;
+// Windows open on a bundled "starting" page and move to the service once it answers.
+const STARTUP_WARNING_AFTER: Duration = Duration::from_secs(60);
+const WATCH_INTERVAL: Duration = Duration::from_secs(15);
+const RESTART_BUDGET: usize = 5;
+const RESTART_WINDOW: Duration = Duration::from_secs(600);
+const UPDATE_FIRST_CHECK: Duration = Duration::from_secs(45);
+const UPDATE_CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
 
 pub struct HudPinState {
     pub pinned: AtomicBool,
@@ -20,31 +31,406 @@ static ORIG_HUD_WNDPROC: AtomicIsize = AtomicIsize::new(0);
 #[cfg(target_os = "windows")]
 static HUD_DRAGGING: AtomicBool = AtomicBool::new(false);
 
-pub struct BackendSupervisor {
-    pub hub_child: Mutex<Option<Child>>,
-    pub sync_child: Mutex<Option<Child>>,
+fn configured_port() -> u16 {
+    env::var("BURNRATE_PORT")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(DEFAULT_PORT)
 }
 
-impl BackendSupervisor {
-    pub fn stop_all(&self) {
-        if let Ok(mut guard) = self.hub_child.lock() {
-            if let Some(mut child) = guard.take() {
-                let _ = child.kill();
-                let _ = child.wait();
+fn port_reachable(port: u16) -> bool {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok()
+}
+
+/// Where the service runs from.
+#[derive(Clone)]
+enum Backend {
+    /// The frozen service an installed app ships (packaging/build_service.py).
+    Bundled(PathBuf),
+    /// A checkout's Python environment: development and script installs.
+    Python { bin: PathBuf, root: PathBuf },
+}
+
+impl Backend {
+    fn is_bundled(&self) -> bool {
+        matches!(self, Backend::Bundled(_))
+    }
+
+    /// `module` runs under Python; the frozen service takes the same arguments directly.
+    fn command(&self, module: &str, args: &[&str]) -> Command {
+        let mut cmd = match self {
+            Backend::Bundled(exe) => {
+                let mut cmd = Command::new(exe);
+                if let Some(dir) = exe.parent() {
+                    cmd.current_dir(dir);
+                }
+                cmd
             }
+            Backend::Python { bin, root } => {
+                let mut cmd = Command::new(bin);
+                cmd.current_dir(root).args(["-m", module]);
+                cmd
+            }
+        };
+        cmd.args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        apply_no_window(&mut cmd);
+        cmd
+    }
+}
+
+fn bundled_service(resource_dir: Option<&Path>) -> Option<PathBuf> {
+    let name = if cfg!(target_os = "windows") { "burnrate-service.exe" } else { "burnrate-service" };
+    let exe = resource_dir?.join("burnrate-service").join(name);
+    exe.is_file().then_some(exe)
+}
+
+fn resolve_backend(resource_dir: Option<PathBuf>) -> Backend {
+    // BURNRATE_ROOT points a build at a checkout on purpose.
+    if env::var_os("BURNRATE_ROOT").is_none() {
+        if let Some(exe) = bundled_service(resource_dir.as_deref()) {
+            return Backend::Bundled(exe);
         }
-        if let Ok(mut guard) = self.sync_child.lock() {
-            if let Some(mut child) = guard.take() {
-                let _ = child.kill();
-                let _ = child.wait();
+    }
+    let (bin, root) = resolve_python_and_root();
+    Backend::Python { bin, root }
+}
+
+/// BURNRATE's data folder, as spend_app.config.default_app_dir finds it.
+fn data_root() -> PathBuf {
+    if let Some(root) = env::var_os("BURNRATE_DATA_ROOT").filter(|v| !v.is_empty()) {
+        return PathBuf::from(root);
+    }
+    let base = env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("XDG_DATA_HOME").map(PathBuf::from))
+        .or_else(|| {
+            env::var_os("HOME").map(|home| {
+                if cfg!(target_os = "windows") {
+                    PathBuf::from(home).join("AppData").join("Local")
+                } else {
+                    PathBuf::from(home).join(".local").join("share")
+                }
+            })
+        })
+        .unwrap_or_else(|| PathBuf::from("."));
+    base.join("BURNRATE")
+}
+
+#[cfg(target_os = "windows")]
+mod child_job {
+    use std::os::windows::io::AsRawHandle;
+    use std::sync::OnceLock;
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    static JOB: OnceLock<usize> = OnceLock::new();
+
+    /// The service and its collector worker end with this app, even after a crash.
+    pub fn adopt(child: &std::process::Child) {
+        let job = *JOB.get_or_init(|| unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                return 0;
+            }
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &info as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION as *const core::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            );
+            job as usize
+        });
+        if job != 0 {
+            unsafe {
+                AssignProcessToJobObject(job as _, child.as_raw_handle() as _);
             }
         }
     }
 }
 
-fn hub_port_reachable(port: u16) -> bool {
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok()
+#[cfg(not(target_os = "windows"))]
+mod child_job {
+    pub fn adopt(_child: &std::process::Child) {}
+}
+
+/// Starts the service when nothing answers on its port, and restarts it when it dies or stops answering.
+pub struct BackendSupervisor {
+    port: u16,
+    backend: Mutex<Option<Backend>>,
+    service: Mutex<Option<Child>>,
+    sync_child: Mutex<Option<Child>>,
+    stopping: AtomicBool,
+    restarts: Mutex<Vec<Instant>>,
+}
+
+impl BackendSupervisor {
+    fn new(port: u16) -> Self {
+        Self {
+            port,
+            backend: Mutex::new(None),
+            service: Mutex::new(None),
+            sync_child: Mutex::new(None),
+            stopping: AtomicBool::new(false),
+            restarts: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn stop_all(&self) {
+        self.stopping.store(true, Ordering::SeqCst);
+        for slot in [&self.service, &self.sync_child] {
+            if let Ok(mut guard) = slot.lock() {
+                if let Some(mut child) = guard.take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+        }
+    }
+
+    fn stopping(&self) -> bool {
+        self.stopping.load(Ordering::SeqCst)
+    }
+
+    fn backend(&self) -> Option<Backend> {
+        self.backend.lock().ok().and_then(|backend| backend.clone())
+    }
+
+    fn is_bundled(&self) -> bool {
+        self.backend().map(|backend| backend.is_bundled()).unwrap_or(false)
+    }
+
+    fn spawn_service(&self) {
+        let Some(backend) = self.backend() else { return };
+        if self.stopping() {
+            return;
+        }
+        let port = self.port.to_string();
+        if let Ok(child) = backend.command("spend_app.service", &["--port", &port]).spawn() {
+            child_job::adopt(&child);
+            if let Ok(mut guard) = self.service.lock() {
+                if let Some(mut old) = guard.replace(child) {
+                    let _ = old.kill();
+                    let _ = old.wait();
+                }
+            }
+        }
+    }
+
+    /// The older sync-only setup: BURNRATE_SYNC_HUB and BURNRATE_SYNC_TOKEN in the environment.
+    fn spawn_sync(&self) {
+        let (Ok(hub_url), Ok(token)) = (env::var("BURNRATE_SYNC_HUB"), env::var("BURNRATE_SYNC_TOKEN")) else {
+            return;
+        };
+        let (hub_url, token) = (hub_url.trim().to_string(), token.trim().to_string());
+        let Some(backend) = self.backend() else { return };
+        if hub_url.is_empty() || token.is_empty() {
+            return;
+        }
+        let args = ["sync", "--hub", hub_url.as_str(), "--token", token.as_str(), "--interval", "5"];
+        if let Ok(child) = backend.command("spend_app", &args).spawn() {
+            child_job::adopt(&child);
+            if let Ok(mut guard) = self.sync_child.lock() {
+                *guard = Some(child);
+            }
+        }
+    }
+
+    fn owns_service(&self) -> bool {
+        self.service.lock().map(|guard| guard.is_some()).unwrap_or(false)
+    }
+
+    fn service_exited(&self) -> bool {
+        self.service
+            .lock()
+            .map(|mut guard| match guard.as_mut() {
+                Some(child) => !matches!(child.try_wait(), Ok(None)),
+                None => false,
+            })
+            .unwrap_or(false)
+    }
+
+    /// At most RESTART_BUDGET restarts in RESTART_WINDOW, so a service that cannot start does not loop.
+    fn may_restart(&self) -> bool {
+        let Ok(mut times) = self.restarts.lock() else { return false };
+        let now = Instant::now();
+        times.retain(|at| now.duration_since(*at) < RESTART_WINDOW);
+        if times.len() >= RESTART_BUDGET {
+            return false;
+        }
+        times.push(now);
+        true
+    }
+}
+
+fn service_url(port: u16, path: &str) -> Option<tauri::Url> {
+    tauri::Url::parse(&format!("http://127.0.0.1:{port}{path}")).ok()
+}
+
+fn on_service(window: &tauri::WebviewWindow, port: u16) -> bool {
+    window
+        .url()
+        .map(|url| url.host_str() == Some("127.0.0.1") && url.port() == Some(port))
+        .unwrap_or(false)
+}
+
+/// Moves windows still on the starting page to the service.
+fn open_service_windows(app: &AppHandle, port: u16) {
+    for (label, path) in [("hud", "/hud?glass=1"), ("main", "/?app=1")] {
+        if let (Some(window), Some(url)) = (app.get_webview_window(label), service_url(port, path)) {
+            if !on_service(&window, port) {
+                let _ = window.navigate(url);
+            }
+        }
+    }
+}
+
+fn show_start_failure(app: &AppHandle, port: u16) {
+    let log = data_root().join("logs").join("dashboard.log");
+    let quoted = serde_json::to_string(&log.to_string_lossy()).unwrap_or_else(|_| "null".into());
+    for label in ["hud", "main"] {
+        if let Some(window) = app.get_webview_window(label) {
+            if !on_service(&window, port) {
+                let _ = window.eval(&format!("window.burnrateStartFailed && window.burnrateStartFailed({quoted})"));
+            }
+        }
+    }
+}
+
+fn supervise(app: AppHandle) {
+    thread::spawn(move || {
+        let supervisor = app.state::<BackendSupervisor>();
+        let port = supervisor.port;
+        if !port_reachable(port) {
+            supervisor.spawn_service();
+        }
+        supervisor.spawn_sync();
+
+        let started = Instant::now();
+        let mut warned = false;
+        while !port_reachable(port) {
+            if supervisor.stopping() {
+                return;
+            }
+            if !warned && started.elapsed() >= STARTUP_WARNING_AFTER {
+                warned = true;
+                show_start_failure(&app, port);
+            }
+            // A service that died while starting is tried again, within the restart budget.
+            if supervisor.service_exited() && supervisor.may_restart() {
+                supervisor.spawn_service();
+            }
+            thread::sleep(Duration::from_millis(250));
+        }
+        open_service_windows(&app, port);
+
+        let mut misses = 0u32;
+        loop {
+            thread::sleep(WATCH_INTERVAL);
+            if supervisor.stopping() {
+                return;
+            }
+            if port_reachable(port) {
+                misses = 0;
+                continue;
+            }
+            misses += 1;
+            let owned = supervisor.owns_service();
+            // Ours exited, ours has not answered for a minute, or nothing serves the port at all.
+            let restart = supervisor.service_exited() || (owned && misses >= 4) || (!owned && misses >= 2);
+            if restart && supervisor.may_restart() {
+                supervisor.spawn_service();
+                misses = 0;
+            }
+        }
+    });
+}
+
+/// An update found by the background check, and the tray item that installs it.
+pub struct PendingUpdate {
+    update: Mutex<Option<tauri_plugin_updater::Update>>,
+    menu: Mutex<Option<MenuItem<Wry>>>,
+}
+
+fn set_update_menu_text(app: &AppHandle, text: &str) {
+    if let Ok(menu) = app.state::<PendingUpdate>().menu.lock() {
+        if let Some(item) = menu.as_ref() {
+            let _ = item.set_text(text);
+        }
+    }
+}
+
+fn check_for_update(app: &AppHandle) -> Option<String> {
+    let updater = app.updater().ok()?;
+    let update = tauri::async_runtime::block_on(updater.check()).ok()??;
+    let version = update.version.clone();
+    if let Ok(mut pending) = app.state::<PendingUpdate>().update.lock() {
+        *pending = Some(update);
+    }
+    set_update_menu_text(app, &format!("Install update {version} and restart"));
+    let _ = app.emit_to("hud", "burnrate://update-available", &version);
+    Some(version)
+}
+
+fn schedule_update_checks(app: AppHandle) {
+    thread::spawn(move || {
+        thread::sleep(UPDATE_FIRST_CHECK);
+        loop {
+            check_for_update(&app);
+            thread::sleep(UPDATE_CHECK_EVERY);
+        }
+    });
+}
+
+fn updates_enabled(app: &AppHandle) -> bool {
+    app.state::<BackendSupervisor>().is_bundled()
+        && env::var("BURNRATE_UPDATES").map(|v| v.trim() != "0").unwrap_or(true)
+}
+
+#[tauri::command]
+fn pending_update(state: State<'_, PendingUpdate>) -> Option<String> {
+    state
+        .update
+        .lock()
+        .ok()
+        .and_then(|update| update.as_ref().map(|update| update.version.clone()))
+}
+
+#[tauri::command]
+async fn install_update(app: AppHandle) -> Result<(), String> {
+    let update = app
+        .state::<PendingUpdate>()
+        .update
+        .lock()
+        .map_err(|e| e.to_string())?
+        .take()
+        .ok_or_else(|| "No update is waiting".to_string())?;
+    set_update_menu_text(&app, &format!("Installing update {}…", update.version));
+    // On Windows the installer takes over and this process exits; elsewhere the app restarts.
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|e| e.to_string())?;
+    app.restart();
+}
+
+/// An installed app starts at sign-in unless the person turned that off; this applies the default once.
+fn apply_autostart_default(app: &AppHandle) {
+    let Ok(dir) = app.path().app_config_dir() else { return };
+    let marker = dir.join("autostart-default-applied");
+    if marker.exists() {
+        return;
+    }
+    let _ = app.autolaunch().enable();
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(&marker, b"1");
 }
 
 fn resolve_python_and_root() -> (PathBuf, PathBuf) {
@@ -379,72 +765,6 @@ fn resize_hud_window(window: &tauri::WebviewWindow, width: f64, height: f64, pin
     Ok(())
 }
 
-fn ensure_hub_and_sync_processes() -> (Option<Child>, Option<Child>) {
-    let port: u16 = env::var("BURNRATE_PORT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(17331);
-    let (python_bin, repo_root) = resolve_python_and_root();
-
-    let mut hub_child = None;
-    if !hub_port_reachable(port) {
-        let mut cmd = Command::new(&python_bin);
-        cmd.current_dir(&repo_root)
-            .args([
-                "-m",
-                "spend_app",
-                "serve",
-                "--host",
-                "127.0.0.1",
-                "--port",
-                &port.to_string(),
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        apply_no_window(&mut cmd);
-
-        if let Ok(child) = cmd.spawn() {
-            hub_child = Some(child);
-            let deadline = Instant::now() + Duration::from_secs(8);
-            while Instant::now() < deadline && !hub_port_reachable(port) {
-                thread::sleep(Duration::from_millis(120));
-            }
-        }
-    }
-
-    let mut sync_child = None;
-    if let (Ok(hub_url), Ok(token)) = (
-        env::var("BURNRATE_SYNC_HUB"),
-        env::var("BURNRATE_SYNC_TOKEN"),
-    ) {
-        if !hub_url.trim().is_empty() && !token.trim().is_empty() {
-            let mut cmd = Command::new(&python_bin);
-            cmd.current_dir(&repo_root)
-                .args([
-                    "-m",
-                    "spend_app",
-                    "sync",
-                    "--hub",
-                    hub_url.trim(),
-                    "--token",
-                    token.trim(),
-                    "--interval",
-                    "5",
-                ])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
-            apply_no_window(&mut cmd);
-            if let Ok(child) = cmd.spawn() {
-                sync_child = Some(child);
-            }
-        }
-    }
-
-    (hub_child, sync_child)
-}
-
 #[tauri::command]
 fn toggle_hud(app: AppHandle, state: State<'_, HudPinState>) -> Result<bool, String> {
     let window = app
@@ -636,7 +956,10 @@ fn hide_main(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn open_setup_wizard(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("main") {
-        let _ = window.eval("window.location.href = '/setup';");
+        let port = app.state::<BackendSupervisor>().port;
+        if let Some(url) = service_url(port, "/setup") {
+            let _ = window.navigate(url);
+        }
         window.show().map_err(|e| e.to_string())?;
         let _ = window.unminimize();
         window.set_focus().map_err(|e| e.to_string())?;
@@ -730,15 +1053,17 @@ fn apply_win32_window_icons(_window: &tauri::WebviewWindow) {}
 pub fn run() {
     set_windows_app_id();
     release_webview_lock_if_needed();
-    let (hub_child, sync_child) = ensure_hub_and_sync_processes();
 
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(HudPinState {
             pinned: AtomicBool::new(true),
         })
-        .manage(BackendSupervisor {
-            hub_child: Mutex::new(hub_child),
-            sync_child: Mutex::new(sync_child),
+        .manage(BackendSupervisor::new(configured_port()))
+        .manage(PendingUpdate {
+            update: Mutex::new(None),
+            menu: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             toggle_hud,
@@ -754,7 +1079,9 @@ pub fn run() {
             minimize_main,
             toggle_maximize_main,
             hide_main,
-            open_setup_wizard
+            open_setup_wizard,
+            pending_update,
+            install_update
         ])
         .setup(|app| {
             let default_icon = app.default_window_icon().cloned();
@@ -771,6 +1098,13 @@ pub fn run() {
                 let _ = apply_hud_always_on_top(&hud_win, true);
                 apply_win32_window_icons(&hud_win);
             }
+
+            let backend = resolve_backend(app.path().resource_dir().ok());
+            let installed = backend.is_bundled();
+            if let Ok(mut slot) = app.state::<BackendSupervisor>().backend.lock() {
+                *slot = Some(backend);
+            }
+            supervise(app.handle().clone());
 
             let toggle_hud_item = MenuItem::with_id(
                 app,
@@ -794,23 +1128,46 @@ pub fn run() {
                 None::<&str>,
             )?;
             let sep = PredefinedMenuItem::separator(app)?;
+            let sep_installed = PredefinedMenuItem::separator(app)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit BURNRATE", true, None::<&str>)?;
 
-            let menu = Menu::with_items(
-                app,
-                &[
-                    &toggle_hud_item,
-                    &pin_hud_item,
-                    &setup_wizard_item,
-                    &sep,
-                    &quit_item,
-                ],
-            )?;
+            // Start-at-sign-in and updates belong to an installed app, not a checkout.
+            let autostart_item = if installed {
+                apply_autostart_default(app.handle());
+                let enabled = app.autolaunch().is_enabled().unwrap_or(false);
+                Some(CheckMenuItem::with_id(app, "autostart", "Start BURNRATE at sign-in", true, enabled, None::<&str>)?)
+            } else {
+                None
+            };
+            let update_item = if updates_enabled(app.handle()) {
+                let item = MenuItem::with_id(app, "update", "Check for updates", true, None::<&str>)?;
+                if let Ok(mut slot) = app.state::<PendingUpdate>().menu.lock() {
+                    *slot = Some(item.clone());
+                }
+                schedule_update_checks(app.handle().clone());
+                Some(item)
+            } else {
+                None
+            };
 
+            let menu = Menu::with_items(app, &[&toggle_hud_item, &pin_hud_item, &setup_wizard_item])?;
+            if autostart_item.is_some() || update_item.is_some() {
+                menu.append(&sep_installed)?;
+            }
+            if let Some(item) = autostart_item.as_ref() {
+                menu.append(item)?;
+            }
+            if let Some(item) = update_item.as_ref() {
+                menu.append(item)?;
+            }
+            menu.append(&sep)?;
+            menu.append(&quit_item)?;
+
+            let autostart_toggle = autostart_item.clone();
             let mut tray_builder = TrayIconBuilder::new()
                 .menu(&menu)
                 .tooltip("BURNRATE · Live Multi-Computer Spend & Sidecar HUD")
-                .on_menu_event(|app, event| match event.id().as_ref() {
+                .on_menu_event(move |app, event| match event.id().as_ref() {
                     "toggle_hud" => {
                         let state = app.state::<HudPinState>();
                         let _ = toggle_hud(app.clone(), state);
@@ -821,6 +1178,37 @@ pub fn run() {
                     }
                     "setup_wizard" => {
                         let _ = open_setup_wizard(app.clone());
+                    }
+                    "autostart" => {
+                        let launcher = app.autolaunch();
+                        let enable = !launcher.is_enabled().unwrap_or(false);
+                        let _ = if enable { launcher.enable() } else { launcher.disable() };
+                        if let Some(item) = autostart_toggle.as_ref() {
+                            let _ = item.set_checked(launcher.is_enabled().unwrap_or(enable));
+                        }
+                    }
+                    "update" => {
+                        let app = app.clone();
+                        let waiting = app
+                            .state::<PendingUpdate>()
+                            .update
+                            .lock()
+                            .map(|update| update.is_some())
+                            .unwrap_or(false);
+                        if waiting {
+                            tauri::async_runtime::spawn(async move {
+                                if let Err(error) = install_update(app.clone()).await {
+                                    set_update_menu_text(&app, &format!("Update failed: {error}"));
+                                }
+                            });
+                        } else {
+                            thread::spawn(move || {
+                                set_update_menu_text(&app, "Checking for updates…");
+                                if check_for_update(&app).is_none() {
+                                    set_update_menu_text(&app, "BURNRATE is up to date");
+                                }
+                            });
+                        }
                     }
                     "quit" => {
                         app.state::<BackendSupervisor>().stop_all();

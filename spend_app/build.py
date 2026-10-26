@@ -23,10 +23,18 @@ def _git_dir(root: Path) -> Path | None:
 
 @lru_cache(maxsize=1)
 def commit() -> str | None:
+    return commit_at(Path(__file__).resolve().parents[1])
+
+
+def commit_at(root: Path) -> str | None:
     try:
-        git = _git_dir(Path(__file__).resolve().parents[1])
+        git = _git_dir(root)
         if git is None:
-            return None
+            # A packaged build has no git files; its build step records the commit.
+            stamped = root / "BUILD_COMMIT"
+            if not stamped.is_file():
+                return None
+            return stamped.read_text(encoding="utf-8").strip()[:12] or None
         head = (git / "HEAD").read_text(encoding="utf-8").strip()
         if not head.startswith("ref: "):
             return head[:12] or None

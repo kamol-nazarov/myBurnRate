@@ -9,6 +9,21 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+### Added
+
+- A real installer. The desktop app now ships its own copy of the BURNRATE
+  service (built with PyInstaller), so a download needs no Python, git or
+  PowerShell. The Windows installer installs per user, stops the app and
+  service before replacing files, and its "delete app data" box also removes
+  BURNRATE's database, settings and logs.
+- The desktop app starts the service itself, restarts it when it dies or stops
+  answering, and stops it on quit; on Windows a job object ends it even if the
+  app crashes. Windows open on a "Starting BURNRATE" page instead of waiting.
+- An installed app starts at sign-in (a tray switch turns it off) and checks
+  GitHub Releases for signed updates; the HUD and tray offer to install one.
+- `BURNRATE_DATA_ROOT` moves the database, settings and logs together, and a
+  service on another data root gets its own process lock.
+
 ### Changed
 
 - BURNRATE no longer reuses Claude's sign-in. It never reads or refreshes

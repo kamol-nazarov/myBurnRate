@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BURNRATE · Starting</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --glass: rgba(244, 242, 238, 0.94);
+      --line: rgba(20, 18, 15, 0.14);
+      --text: #141311;
+      --muted: #5f5b55;
+      --accent: #cf4509;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --glass: rgba(10, 10, 12, 0.92);
+        --line: rgba(255, 255, 255, 0.12);
+        --text: #f2f0eb;
+        --muted: #9a968f;
+        --accent: #ff6b22;
+      }
+    }
+    html, body { margin: 0; background: transparent; }
+    body {
+      font: 13px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+      color: var(--text);
+      padding: 6px;
+    }
+    .card {
+      background: var(--glass);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 18px 18px 16px;
+      cursor: default;
+      user-select: none;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; }
+    .brand svg { width: 26px; height: 26px; flex: none; }
+    .word {
+      font-family: Bahnschrift, "DIN Alternate", "Segoe UI", sans-serif;
+      font-weight: 600;
+      letter-spacing: 0.14em;
+      font-size: 13px;
+    }
+    #status { margin: 14px 0 0; color: var(--muted); }
+    #status strong { color: var(--accent); font-weight: 600; }
+    code { font: 12px Consolas, "SF Mono", monospace; overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+  <div class="card" data-tauri-drag-region>
+    <div class="brand" data-tauri-drag-region>
+      <svg viewBox="0 0 64 64" fill="none" aria-hidden="true">
+        <rect x="2" y="2" width="60" height="60" rx="14" fill="#0E0E10"/>
+        <g stroke-width="4.2" stroke-linecap="round">
+          <path d="M19.9 42L13 46M18 35H10M19.9 28L13 24M25 22.9L21 16M32 21V13M39 22.9L43 16" stroke="#F2F0EB"/>
+          <path d="M44.1 28L51 24M46 35H54M44.1 42L51 46" stroke="#FF6B22"/>
+        </g>
+        <path d="M32 35L44.5 22.5" stroke="#FF6B22" stroke-width="3" stroke-linecap="round"/>
+        <circle cx="32" cy="35" r="4.4" fill="#F2F0EB" stroke="#0E0E10" stroke-width="2"/>
+      </svg>
+      <span class="word" data-tauri-drag-region>BURNRATE</span>
+    </div>
+    <p id="status" data-tauri-drag-region>Starting the BURNRATE service…</p>
+  </div>
+  <script>
+    // The desktop app calls this when the service has not answered in a minute.
+    window.burnrateStartFailed = function (logPath) {
+      const status = document.getElementById("status");
+      status.textContent = "";
+      const lead = document.createElement("strong");
+      lead.textContent = "The BURNRATE service has not started. ";
+      status.append(lead, "It keeps retrying. Its log is ");
+      const code = document.createElement("code");
+      code.textContent = logPath || "logs/dashboard.log in BURNRATE's data folder";
+      status.append(code, ".");
+    };
+  </script>
+</body>
+</html>
