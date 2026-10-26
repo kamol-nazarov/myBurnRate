@@ -1123,6 +1123,26 @@ def _bucket_index(
     return len(buckets) - 1
 
 
+# Sources whose cost_usd is the tool's own estimate, not a provider's charge.
+# OpenCode prices each step from its local model table, which ignores
+# published peak hours, so the card wins and the estimate is only a fallback
+# for a model with no card. Grok Build's costUsdTicks and the providers' admin
+# and Traycer figures are charges and keep precedence.
+ESTIMATED_COST_SOURCES = frozenset({"opencode_local"})
+
+
+def _uses_reported(event: dict, computed: Decimal | None) -> bool:
+    """True when the event's own cost_usd is its value instead of the card's."""
+    if event.get("cost_usd") is None:
+        return False
+    return not (event.get("source") in ESTIMATED_COST_SOURCES and computed is not None)
+
+
+def _reported_value(event: dict, computed: Decimal | None) -> Decimal | None:
+    """The amount an event is worth: see docs/pricing.md, "Methodology"."""
+    return Decimal(str(event["cost_usd"])) if _uses_reported(event, computed) else computed
+
+
 def _try_price_event(pricing: PricingEngine, event: dict) -> tuple[Decimal | None, dict[str, Decimal] | None]:
     try:
         when = event["when"] if isinstance(event.get("when"), datetime) else _parse(event["occurred_at"])
@@ -1153,7 +1173,8 @@ def _enrich(events: list[dict], pricing: PricingEngine, _authority=None, *, _cac
 
     Every event's ``spend`` is its own authoritative amount: a provider-
     reported charge when the source carried one, otherwise the computed
-    reference value at the documented rate. Provider bucket totals are a
+    reference value at the documented rate. A tool's own estimate
+    (ESTIMATED_COST_SOURCES) counts only when no card prices the event. Provider bucket totals are a
     separate reported-charge metric and never rescale individual events —
     a daily bucket is authoritative at daily scope, not for each minute.
     A stored event whose model no longer resolves is priced as unknown
@@ -1180,7 +1201,6 @@ def _enrich(events: list[dict], pricing: PricingEngine, _authority=None, *, _cac
             computed_total = sum(components.values(), Decimal(0))
         except (UnpricedModelError, ValueError):
             components, computed_total = None, None
-        reported = Decimal(str(event["cost_usd"])) if event["cost_usd"] is not None else None
         price = None
         if components is not None:
             try:
@@ -1192,7 +1212,7 @@ def _enrich(events: list[dict], pricing: PricingEngine, _authority=None, *, _cac
                 **event,
                 "when": when,
                 "computed_total": computed_total,
-                "spend": reported if reported is not None else computed_total,
+                "spend": _reported_value(event, computed_total),
                 "components": components or {},
                 "price": price,
                 "telemetry_complete": True,
@@ -1242,10 +1262,11 @@ def _tracked_from_loaded(
                 event = {**event, "price": pricing.resolve(event["model_key"], when)}
             except (UnpricedModelError, ValueError, KeyError):
                 pass
-        if event["cost_usd"] is not None:
-            _add_value(parts, event, event["cost_usd"])
-            continue
         priced, _components = _try_price_event(pricing, event)
+        value = _reported_value(event, priced)
+        if event["cost_usd"] is not None and value is not None:
+            _add_value(parts, event, value)
+            continue
         if priced is None:
             parts.complete = False
             parts.note_unpriced(_measured(event), str(event.get("model_key") or "unknown"))
@@ -2040,14 +2061,12 @@ def _month_usage(
             else:
                 complete[event["tool_key"]] = False
         for event in unpriced:
-            if event["cost_usd"] is not None:
-                usage[event["tool_key"]] += event["cost_usd"]
+            priced, _components = _try_price_event(pricing, event)
+            value = _reported_value(event, priced)
+            if value is not None:
+                usage[event["tool_key"]] += value
             else:
-                priced, _components = _try_price_event(pricing, event)
-                if priced is not None:
-                    usage[event["tool_key"]] += priced
-                else:
-                    complete[event["tool_key"]] = False
+                complete[event["tool_key"]] = False
             if not event.get("telemetry_complete", True):
                 complete[event["tool_key"]] = False
         return parts, dict(usage), dict(complete)
@@ -2084,12 +2103,10 @@ def _heatmap_cells(
             heat[(local.weekday(), local.hour)] += event["spend"]
         for event in unpriced:
             local = event["when"].astimezone(zone)
-            if event["cost_usd"] is not None:
-                heat[(local.weekday(), local.hour)] += event["cost_usd"]
-            else:
-                priced, _components = _try_price_event(pricing, event)
-                if priced is not None:
-                    heat[(local.weekday(), local.hour)] += priced
+            priced, _components = _try_price_event(pricing, event)
+            value = _reported_value(event, priced)
+            if value is not None:
+                heat[(local.weekday(), local.hour)] += value
         return dict(heat)
 
     key = (
@@ -2391,7 +2408,7 @@ def aggregate_summary(
             tool_stat["telemetry"] = tool_stat["telemetry"] and event["telemetry_complete"]
             if event.get("session_id"):
                 model["runs"].add(event["session_id"])
-            if event["cost_usd"] is not None:
+            if _uses_reported(event, published_price):
                 model["value"] += event["cost_usd"]
                 tool_stat["value"] += event["cost_usd"]
             else:
@@ -2795,10 +2812,10 @@ def aggregate_entity(
             mix.add_event(event)
             token_series[_bucket_index(event["when"], window, zone=zone, buckets=buckets)] += _measured(event)
             entity_tool = entity_tool or event["tool_key"]
-            if event["cost_usd"] is not None:
+            priced, components = _try_price_event(pricing, event)
+            if _uses_reported(event, priced):
                 _accumulate_session(session_store, event, value=event["cost_usd"], complete=True)
             else:
-                priced, components = _try_price_event(pricing, event)
                 if priced is None:
                     _accumulate_session(session_store, event, value=None, complete=False)
                 else:

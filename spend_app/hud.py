@@ -1227,7 +1227,12 @@ HUD_HTML = r"""<!doctype html>
           return T.head("API-rate value", "today") +
             T.hero(usd2(nav.todayUsd), "", "since local midnight") +
             T.line("What today's usage would cost at published API rates. Not a bill.", "dim") +
-            (nav.todayComplete === false && nav.todayUsd != null ? T.line("Partial: some usage has no price yet.", "tight") : "") +
+            (nav.todayComplete === false && nav.todayUsd != null
+              ? T.line(nav.todayUnpricedTokens > 0
+                  ? "At least this much: " + tok(nav.todayUnpricedTokens) + " tokens have no published price (" +
+                    (nav.todayUnpricedModels || []).map(model => String(model).replace(/^[a-z-]+:/, "")).join(", ") + ")."
+                  : "At least this much: some usage arrived without complete token counts.", "tight")
+              : "") +
             T.foot(importedFoot());
         });
         setTip($("hud-stat-burn"), () => {
@@ -1620,8 +1625,10 @@ HUD_HTML = r"""<!doctype html>
           const burn = keep("burn", nav.burnRatePerDay);
           const cache = keep("cache", totals.cacheReusePct);
           setStat("hud-burn-rate", burn != null ? usd(burn) : "—");
-          setStat("hud-today", usd2(today));
-          setStat("hud-mini-today", usd2(today));
+          // A day with usage no card can price is a floor: mark the figure.
+          const floor = nav.todayComplete === false && today != null ? "≥" : "";
+          setStat("hud-today", floor + usd2(today));
+          setStat("hud-mini-today", floor + usd2(today));
           setStat("hud-cache", cache == null ? "—" : Math.round(Number(cache)) + "%");
           setStat("hud-tokens", tok(nav.todayTokens ?? 0));
           usageView = {nav: {...nav, todayUsd: today, burnRatePerDay: burn}, totals: {cacheReusePct: cache}, importedAt: data.historyUpdatedAt};

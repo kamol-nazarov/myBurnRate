@@ -22,7 +22,9 @@ _OFFICIAL_SOURCE_PREFIXES = (
     "https://openrouter.ai/",
     "https://opencode.ai/",
     "https://ai.google.dev/",
+    "https://api-docs.deepseek.com/",
 )
+_WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
 
 class UnpricedModelError(LookupError):
@@ -55,6 +57,47 @@ class Price:
     # figures and the source_url is not an official provider page. Only
     # allowed with `exactness: derived`.
     owner_asserted: bool = False
+    # Time-of-day pricing ("peak hours"): every token class is multiplied by
+    # peak_multiplier when a request runs inside one of the half-open UTC hour
+    # ranges on one of the weekdays (0 = Monday).
+    peak_hours_utc: tuple[tuple[int, int], ...] = ()
+    peak_weekdays: frozenset[int] = frozenset()
+    peak_multiplier: Decimal = Decimal(1)
+
+    def is_peak(self, occurred_at: datetime) -> bool:
+        if not self.peak_hours_utc:
+            return False
+        when = occurred_at.astimezone(UTC)
+        return when.weekday() in self.peak_weekdays and any(
+            start <= when.hour < end for start, end in self.peak_hours_utc
+        )
+
+
+def _parse_peak(row: dict, *, label: str, path: Path) -> dict:
+    hours = row.get("peak_hours_utc")
+    if hours is None:
+        if row.get("peak_weekdays") is not None or row.get("peak_multiplier") is not None:
+            raise ValueError(f"{path}: {label} peak_weekdays/peak_multiplier need peak_hours_utc")
+        return {}
+    ranges = []
+    for item in hours:
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            raise ValueError(f"{path}: {label} peak_hours_utc entries must be [start, end] hours")
+        start, end = int(item[0]), int(item[1])
+        if not 0 <= start < end <= 24:
+            raise ValueError(f"{path}: {label} peak hour range {item!r} must satisfy 0 <= start < end <= 24")
+        ranges.append((start, end))
+    days = row.get("peak_weekdays")
+    if not days:
+        raise ValueError(f"{path}: {label} peak_hours_utc needs peak_weekdays")
+    try:
+        weekdays = frozenset(_WEEKDAYS.index(str(day).strip().lower()[:3]) for day in days)
+    except ValueError as exc:
+        raise ValueError(f"{path}: {label} peak_weekdays must be weekday names, got {days!r}") from exc
+    multiplier = _parse_decimal(row.get("peak_multiplier"), field="peak_multiplier", label=label, path=path)
+    if multiplier <= 0:
+        raise ValueError(f"{path}: {label} peak_multiplier must be positive")
+    return {"peak_hours_utc": tuple(ranges), "peak_weekdays": weekdays, "peak_multiplier": multiplier}
 
 
 def _parse_time(value: object, *, field: str, path: Path) -> datetime:
@@ -243,6 +286,7 @@ class PricingEngine:
                             row.get("long_context_includes_cache_writes", False)
                         ),
                         owner_asserted=owner_asserted,
+                        **_parse_peak(row, label=label, path=path),
                     )
                 )
         return cls(prices)
@@ -314,6 +358,9 @@ class PricingEngine:
         )
         input_multiplier = price.long_input_multiplier if is_long else Decimal(1)
         output_multiplier = price.long_output_multiplier if is_long else Decimal(1)
+        if price.is_peak(occurred_at):
+            input_multiplier *= price.peak_multiplier
+            output_multiplier *= price.peak_multiplier
         cache_write_5m_tokens = cache_write_tokens - cache_write_1h_tokens
         cache_write_1h_rate = price.cache_write_1h_per_mtok or price.cache_write_per_mtok
         return {

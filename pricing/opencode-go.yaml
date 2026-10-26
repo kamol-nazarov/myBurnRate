@@ -7,8 +7,9 @@
 # reader adds it to output, which is how the recorded Go cost reproduces.
 #
 # DeepSeek V4.1 Flash and V4 Pro bill double during peak hours (01:00-04:00 and
-# 06:00-10:00 UTC, Monday to Friday). A card cannot vary by hour of day, so
-# they use the off-peak rates that apply to every other hour.
+# 06:00-10:00 UTC, Monday to Friday); their peak_* fields apply that 2x.
+# OpenCode's own per-step cost field ignores peak hours, so it is a cross-check
+# here, never the value.
 #
 # effective_from is the date this table was read from the official page; Go
 # usage before it stays unpriced rather than back-dated.
@@ -165,6 +166,9 @@ prices:
     cached_input_per_mtok: 0.003
     cache_write_per_mtok: 0.00
     output_per_mtok: 0.60
+    peak_hours_utc: [[1, 4], [6, 10]]
+    peak_weekdays: [mon, tue, wed, thu, fri]
+    peak_multiplier: 2
     effective_from: 2026-10-22T00:00:00Z
     source_url: https://opencode.ai/docs/go/
   - model_key: opencode-go:deepseek-v4-pro
@@ -173,6 +177,9 @@ prices:
     cached_input_per_mtok: 0.022
     cache_write_per_mtok: 0.00
     output_per_mtok: 1.98
+    peak_hours_utc: [[1, 4], [6, 10]]
+    peak_weekdays: [mon, tue, wed, thu, fri]
+    peak_multiplier: 2
     effective_from: 2026-10-22T00:00:00Z
     source_url: https://opencode.ai/docs/go/
   - model_key: opencode-go:hy4-preview

@@ -31,6 +31,20 @@ prices:
     long_output_multiplier: 1.5
     effective_from: 2026-09-29T00:00:00Z
     source_url: https://developers.openai.com/api/docs/models/gpt-6.1-sol
+  - model_key: gpt-6-sol
+    # Standard API rates verified 2026-10-26 on the model page, which gives no
+    # release date: effective_from is that verification floor, not a launch
+    # date. Cached input is $0.20, twice GPT-6.1 Sol's. Above 272K input
+    # tokens the whole request is 2x input-class and 1.5x output.
+    input_per_mtok: 2.00
+    cached_input_per_mtok: 0.20
+    cache_write_per_mtok: 2.50
+    output_per_mtok: 10.00
+    long_context_threshold: 272000
+    long_input_multiplier: 2
+    long_output_multiplier: 1.5
+    effective_from: 2026-10-26T00:00:00Z
+    source_url: https://developers.openai.com/api/docs/models/gpt-6-sol
   - model_key: gpt-5.6-sol
     aliases: [gpt-5.6]
     input_per_mtok: 4.00

@@ -4,6 +4,20 @@ BURNRATE never invents a dollar amount. Every figure is billed-exact, a publishe
 
 Runtime authority is the packaged YAML under `pricing/`, applied by `PricingEngine`. Cards are effective-dated. `effective_to` is exclusive (`when < effective_to`).
 
+## Methodology
+
+One rule produces every token count and every API-rate value (the HUD's "today", burn rate, the weekly card, the dashboard):
+
+1. **Unit: one model request.** Claude Code and Codex record a request each; OpenCode records a step; Grok Build records each model call in `unified.jsonl` and each completed turn in `updates.jsonl`. A Grok turn counts once: the per-call lines it covers are dropped, and calls from a turn that never completed (the CLI was stopped, or the turn is still running) stay counted on their own.
+2. **Tokens = fresh input + cache reads + cache writes + output.** Reasoning counts once, inside output: Claude, Codex and Grok already include it there; OpenCode Go and the DeepSeek API report it apart, so it is added.
+3. **Value = the provider's published API list price for that request,** from the rate cards, with every modifier the provider publishes and the logs let us apply: long-context tiers per request (OpenAI over 272K, xAI from 200K, Claude Haiku 5.5 over 100K), cache-write durations, and peak hours (DeepSeek V4.1 Flash and V4 Pro, 01:00–04:00 and 06:00–10:00 UTC on weekdays).
+4. **A provider's own charge for a request wins over the card.** That is OpenRouter's billed cost through Traycer, the admin APIs' cost reports, and Grok Build's `costUsdTicks` (1 USD = 10^10 ticks), which is Grok Build's sum of each call at xAI's list price. A Grok turn adds several calls together, so this charge is its only exact price; the card applied to the summed prompt would put the whole turn on the long-context tier.
+5. **A tool's own estimate never outranks a card.** OpenCode's per-step `cost` is computed by OpenCode from its local model table, without peak hours. It is used only for a model with no card.
+6. **Tokens and value cover the same requests.** A request no card can price still counts its tokens; the value is then a floor, shown as `≥` with the unpriced token count and models named.
+7. **Time.** A request belongs to the instant it finished; "today" starts at local midnight.
+
+The 2026-10-26 reconciliation that set these rules: [burnrate-pricing-reconciliation-oct26.md](burnrate-pricing-reconciliation-oct26.md).
+
 ## Price cards
 
 Each file declares `provider`, `exactness` (`exact` or `derived`), and a list of rows:
@@ -13,6 +27,7 @@ Each file declares `provider`, `exactness` (`exact` or `derived`), and a list of
 | `model_key` | Canonical id (and optional `aliases`) |
 | `input_per_mtok` / `cached_input_per_mtok` / `cache_write_per_mtok` / `cache_write_1h_per_mtok` / `output_per_mtok` | USD per million tokens |
 | `long_context_threshold` plus input/output multipliers | Optional; inclusive or exclusive per provider rules |
+| `peak_hours_utc` / `peak_weekdays` / `peak_multiplier` | Optional time-of-day pricing: half-open UTC hour ranges (`[[1, 4], [6, 10]]`), weekday names, and the multiplier on every token class |
 | `effective_from` / `effective_to` | UTC instants |
 | `source_url` | `https://` citation |
 | `source_policy` | `official` (default) or `owner-asserted` (derived only) |
@@ -25,6 +40,8 @@ Each file declares `provider`, `exactness` (`exact` or `derived`), and a list of
 - `https://docs.x.ai/`
 - `https://docs.z.ai/`
 - `https://ai.google.dev/`
+- `https://opencode.ai/`
+- `https://api-docs.deepseek.com/`
 - `https://openrouter.ai/` (OpenRouter’s own listings, for OpenRouter traffic only)
 
 Third-party aggregator pages are **not** invoice authority for another provider’s bill. Requesty is forbidden as a rate source: it must not appear in `pricing/*.yaml` or `reference_rates.py`.

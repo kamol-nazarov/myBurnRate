@@ -573,6 +573,7 @@ def initialize(path: Path) -> None:
     upgrade_database(path, _initialize_base)
     migrate_usage_keys(path)
     retire_cursor_usage(path)
+    dedupe_grok_calls(path)
 
 
 # Event identity and alias records (one or more per usage event) live in their
@@ -759,6 +760,56 @@ def _retire_cursor_usage(path: Path, marker: str) -> int:
         )
     _RETIRED_USAGE_CHECKED.add(marker)
     return removed
+
+
+# Grok Build usage used to be stored twice: once per model call (unified.jsonl)
+# and once per completed turn (updates.jsonl). The repair keeps the turn and
+# drops the calls it covers, on every database including a hub.
+GROK_DEDUPE_KEY = "repair.grok_call_dedupe.v1"
+_GROK_DEDUPE_CHECKED: set[str] = set()
+_GROK_DEDUPE_LOCK = threading.Lock()
+
+
+def dedupe_grok_calls(path: Path) -> int:
+    """Remove per-call Grok rows a stored turn already counts, once per database.
+
+    Takes a verified backup first when there is anything to remove, and
+    records a marker so later calls are a single lookup.
+    """
+    path = Path(path)
+    marker = str(path.resolve())
+    if marker in _GROK_DEDUPE_CHECKED:
+        return 0
+    with _GROK_DEDUPE_LOCK:
+        if marker in _GROK_DEDUPE_CHECKED:
+            return 0
+        with connect(path) as connection:
+            if connection.execute("SELECT 1 FROM app_meta WHERE key=?", (GROK_DEDUPE_KEY,)).fetchone():
+                _GROK_DEDUPE_CHECKED.add(marker)
+                return 0
+            recorded = connection.execute(
+                "SELECT EXISTS(SELECT 1 FROM unpriced_usage_events WHERE tool_key='grok') "
+                "OR EXISTS(SELECT 1 FROM usage_events WHERE tool_key='grok')"
+            ).fetchone()[0]
+        if recorded:
+            target = path.parent / "backups" / (
+                "pre-grok-dedupe-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%S") + ".db"
+            )
+            backup_database(path, target)
+            with closing(sqlite3.connect(target)) as backup:
+                if backup.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                    raise RuntimeError("Backup before removing duplicate Grok usage failed; nothing was removed")
+        from spend_app.adapters.grok_native import drop_covered_calls
+
+        with connect(path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            removed = drop_covered_calls(connection) if recorded else 0
+            connection.execute(
+                "INSERT INTO app_meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (GROK_DEDUPE_KEY, json.dumps({"removedEvents": removed, "at": utc_now()})),
+            )
+        _GROK_DEDUPE_CHECKED.add(marker)
+        return removed
 
 
 def _initialize_base(path: Path) -> None:

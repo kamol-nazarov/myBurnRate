@@ -2,7 +2,7 @@
 import json
 import os
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from spend_app.adapters.common import UsageRow, stable_id
@@ -58,9 +58,97 @@ def reduce_updates(records):
         ordinal = positions.get(key, 0)
         positions[key] = ordinal + 1
         rows.append(UsageRow("grok_local", "grok", "supergrok:" + model.lower(), stamp, sid, None,
-                             inp, cached, writes, 0, out, reasoning, None,
+                             inp, cached, writes, 0, out, reasoning, turn_charge(usage),
                              stable_id("grok-native-usage", *key, ordinal), unsplit, complete))
     return rows, issues
+
+
+TICKS_PER_USD = 10_000_000_000
+
+
+def turn_charge(usage):
+    """Grok Build's own charge for a turn, in USD, or None.
+
+    costUsdTicks (1 USD = 1e10 ticks) is the sum of the turn's model calls at
+    xAI's published rates, each call on its own long-context tier. A turn
+    record adds several calls together, so this is the only exact price for
+    it: the same rates applied to the summed prompt would wrongly put the
+    whole turn on the long-context tier.
+    """
+    ticks = usage.get("costUsdTicks")
+    if isinstance(ticks, bool) or not isinstance(ticks, int) or ticks < 0:
+        return None
+    return ticks / TICKS_PER_USD
+
+
+CALL_PREFIX = "grok-local:"
+TURN_PREFIX = "grok-native-usage:"
+CLOCK_SLACK = timedelta(seconds=2)
+
+
+def covered_calls(calls, turns):
+    """IDs of per-call rows that a completed turn record already counts.
+
+    calls and turns are (id, when, input_tokens, output_tokens) for one
+    session. unified.jsonl logs every model call; updates.jsonl logs one
+    total per completed turn. A turn covers the run of calls that ends at the
+    turn and, walking back, adds up to its input and output; it never reaches
+    back past the previous turn. Calls of a turn that never completed (the
+    CLI was stopped, or the turn is still running) stay counted.
+    """
+    pending = sorted(calls, key=lambda call: call[1])
+    covered = set()
+    previous_end = None
+    for _turn_id, end, turn_input, turn_output in sorted(turns, key=lambda turn: turn[1]):
+        candidates = [call for call in pending if call[0] not in covered and call[1] <= end + CLOCK_SLACK
+                      and (previous_end is None or call[1] > previous_end + CLOCK_SLACK)]
+        total_input = total_output = 0
+        for call_id, _when, call_input, call_output in reversed(candidates):
+            if total_input + call_input > turn_input or total_output + call_output > turn_output:
+                break
+            total_input += call_input
+            total_output += call_output
+            covered.add(call_id)
+            if total_input == turn_input and total_output == turn_output:
+                break
+        previous_end = end
+    return covered
+
+
+def drop_covered_calls(connection, session_ids=None) -> int:
+    """Delete stored per-call Grok rows that a turn row in the same session counts.
+
+    Works on any database, including a hub holding rows pushed by computers
+    on older versions (ids prefixed ``m:<machine>:``). Returns rows deleted.
+    """
+    from spend_app.sync import strip_machine_prefix
+    from spend_app.timeutil import parse_utc
+
+    query = ("SELECT raw_id, session_id, occurred_at, input_tokens, output_tokens FROM {table} "
+             "WHERE tool_key='grok' AND session_id IS NOT NULL")
+    params: tuple = ()
+    if session_ids is not None:
+        sessions = sorted({sid for sid in session_ids if sid})
+        if not sessions:
+            return 0
+        query += f" AND session_id IN ({','.join('?' for _ in sessions)})"
+        params = tuple(sessions)
+    by_session: dict = {}
+    for table in ("usage_events", "unpriced_usage_events"):
+        for raw_id, sid, at, tokens_in, tokens_out in connection.execute(query.format(table=table), params):
+            local_id = strip_machine_prefix(raw_id)
+            kind = "calls" if local_id.startswith(CALL_PREFIX) else "turns" if local_id.startswith(TURN_PREFIX) else None
+            when = parse_utc(at)
+            if kind and when is not None:
+                by_session.setdefault(sid, {"calls": [], "turns": []})[kind].append((raw_id, when, tokens_in, tokens_out))
+    removed = 0
+    for groups in by_session.values():
+        if not groups["calls"] or not groups["turns"]:
+            continue
+        for raw_id in covered_calls(groups["calls"], groups["turns"]):
+            delete_event(connection, raw_id)
+            removed += 1
+    return removed
 
 
 def signal_row(payload, sid, observed_at):
@@ -237,20 +325,29 @@ def _reconcile_session(connection, sid, incoming, issues):
     for row in incoming:
         if row.session_id == sid:
             rows[row.raw_id] = row
-    unified = [row for row in rows.values() if row.raw_id.startswith("grok-local:")]
-    if unified:
-        # updates.jsonl is a per-turn ledger. A unified line only replaces
-        # the native row when session, time, and token counts are the same turn.
-        fingerprints = {
-            (row.session_id, row.occurred_at.replace(microsecond=0), row.input_tokens, row.output_tokens)
-            for row in unified
-        }
-        for raw_id, row in list(rows.items()):
-            turn = (row.session_id, row.occurred_at.replace(microsecond=0), row.input_tokens, row.output_tokens)
-            if raw_id.startswith("grok-native-usage:") and turn in fingerprints:
-                if raw_id in existing:
-                    delete_event(connection, raw_id)
-                del rows[raw_id]
+    # updates.jsonl is the per-turn ledger and carries Grok Build's own charge;
+    # a per-call row from unified.jsonl that a turn already counts is dropped.
+    calls = [(row.raw_id, row.occurred_at, row.input_tokens, row.output_tokens)
+             for row in rows.values() if row.raw_id.startswith(CALL_PREFIX)]
+    turns = [(row.raw_id, row.occurred_at, row.input_tokens, row.output_tokens)
+             for row in rows.values() if row.raw_id.startswith(TURN_PREFIX)]
+    for raw_id in covered_calls(calls, turns):
+        if raw_id in existing:
+            delete_event(connection, raw_id)
+        del rows[raw_id]
+    turn_models = {row.model_key for row in rows.values() if row.raw_id.startswith(TURN_PREFIX)} - {"supergrok:unknown"}
+    for raw_id, row in list(rows.items()):
+        # The unified log loses its "model changed" lines when the CLI trims
+        # it; a call left without a model takes the one model its session's
+        # completed turns name.
+        if row.raw_id.startswith(CALL_PREFIX) and row.model_key == "supergrok:unknown" and len(turn_models) == 1:
+            rows[raw_id] = replace(row, model_key=next(iter(turn_models)))
+        # A turn stored before its charge was read is re-inserted, not updated,
+        # so the corrected row syncs to the hub again.
+        stored = existing.get(raw_id)
+        if (stored is not None and raw_id.startswith(TURN_PREFIX) and stored.cost_usd is None
+                and row.cost_usd is not None):
+            delete_event(connection, raw_id)
     coarse_id = stable_id("grok-native-total", sid)
     coarse = next((r for r in incoming if r.raw_id == coarse_id), None)
     if coarse and state and coarse.unclassified_tokens < state["total"]:

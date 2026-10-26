@@ -17,6 +17,11 @@ PARSER_VERSION = "opencode-message-v1"
 # stands for). It bills reasoning on top of the reported output tokens: the
 # recorded cost reproduces exactly from published rates only that way.
 GO_PROVIDER = "opencode-go"
+# Providers whose reasoning tokens OpenCode stores apart from output and bills
+# on top of it. For the DeepSeek API, OpenCode's recorded cost reproduces from
+# DeepSeek's published rates only with reasoning added (every step with
+# reasoning on 2026-10-26).
+SEPARATE_REASONING_PROVIDERS = frozenset({GO_PROVIDER, "deepseek"})
 LEGACY_COLUMNS = frozenset(("id", "project_id", "directory", "path", "model", "cost", "tokens_input", "tokens_output", "tokens_reasoning", "tokens_cache_read", "tokens_cache_write", "time_updated"))
 
 
@@ -99,10 +104,10 @@ def parse_message(data, *, row_id=None, session_id=None, role=None, format="json
         return None
     fresh, read, write, output = (value or 0 for value in values)
     complete = all(value is not None for value in values)
-    # OpenCode's output already includes reasoning; retain reasoning as detail.
+    # Other providers' output already includes reasoning; retain it as detail.
     reasoning = count(tokens.get("reasoning"))
     go = provider == GO_PROVIDER
-    if go and reasoning:
+    if provider in SEPARATE_REASONING_PROVIDERS and reasoning:
         output += reasoning
     unknown = max(0, (total or 0) - fresh - read - write - output) if not complete else 0
     path = data.get("path")

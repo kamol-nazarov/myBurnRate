@@ -67,9 +67,11 @@ prices:
     effective_from: 2026-06-30T00:00:00Z
     source_url: https://platform.claude.com/docs/en/about-claude/pricing
   - model_key: claude-sonnet-5-5
-    # Released 2026-09-28. Standard card includes the full 1M window.
+    # Released 2026-09-28. Standard card includes the full 1M window. Cache
+    # hits are 0.05x base input ($0.10), as for Opus 5.5 (footnote 2 of the
+    # pricing page); the card said $0.20 until 2026-10-26.
     input_per_mtok: 2.00
-    cached_input_per_mtok: 0.20
+    cached_input_per_mtok: 0.10
     cache_write_per_mtok: 2.50
     cache_write_1h_per_mtok: 4.00
     output_per_mtok: 10.00

@@ -1,0 +1,23 @@
+# DeepSeek API list prices from the official pricing page.
+# https://api-docs.deepseek.com/quick_start/pricing/
+#
+# deepseek-flash is served by DeepSeek-V4.1-Flash-1017. Off-peak rates below;
+# peak hours (01:00-04:00 and 06:00-10:00 UTC, Monday to Friday) bill 2x. The
+# page also treats Chinese public holidays as off-peak; a card cannot know
+# holidays, so a holiday weekday is priced as peak. DeepSeek bills no
+# cache-write class (0). Verified 2026-10-26; effective_from is that floor.
+provider: deepseek
+exactness: derived
+prices:
+  - model_key: deepseek:deepseek-flash
+    # OpenCode records DeepSeek API usage as opencode:<model>.
+    aliases: [opencode:deepseek-flash]
+    input_per_mtok: 0.15
+    cached_input_per_mtok: 0.003
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 0.60
+    peak_hours_utc: [[1, 4], [6, 10]]
+    peak_weekdays: [mon, tue, wed, thu, fri]
+    peak_multiplier: 2
+    effective_from: 2026-10-26T00:00:00Z
+    source_url: https://api-docs.deepseek.com/quick_start/pricing/

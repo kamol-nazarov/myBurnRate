@@ -564,6 +564,18 @@ def apply_sync_push(
                 if upsert_unpriced_event(connection, unpriced):
                     written += 1
 
+            # A computer on an older version pushes each Grok model call and
+            # its turn total; keep the turn and drop the calls it counts.
+            grok_sessions = {
+                prefix_machine_id(machine_id, str(item["session_id"]))
+                for item in (*usage_items, *unpriced_items)
+                if item.get("tool_key") == "grok" and item.get("session_id")
+            }
+            if grok_sessions:
+                from spend_app.adapters.grok_native import drop_covered_calls
+
+                drop_covered_calls(connection, grok_sessions)
+
             for item in session_items:
                 sid = prefix_machine_id(machine_id, str(item["session_id"]))
                 upsert_session(

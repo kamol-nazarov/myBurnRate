@@ -196,6 +196,10 @@ def recorded_usage(settings, pricing, *, now: datetime, machine: str = "all") ->
             "navigation": {"burnRatePerDay": float(burn) if burn is not None else None,
                            "todayUsd": float(today.usage_value) if today.records and today.usage_value is not None else None,
                            "todayTokens": int(today.tokens) if today.records else 0,
+                           # Tokens counted above with no published price: the
+                           # value is then a floor and the HUD says so.
+                           "todayUnpricedTokens": int(today.unpriced_tokens) if today.records else 0,
+                           "todayUnpricedModels": sorted(today.unpriced_models) if today.records else [],
                            "tokensAvgPerDay": average, "todayComplete": today.complete if today.records else False},
             "totals": {"cacheReusePct": aggregate._cache_reuse(mix)},
             "windowTokens": window_tokens,

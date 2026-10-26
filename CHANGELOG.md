@@ -60,6 +60,26 @@ This project is licensed under Apache-2.0.
 - A shorter README with screenshots, downloads and first-open steps; the
   detail moved to `docs/user-guide.md`, `docs/configuration.md` and
   `docs/development.md`.
+- One stated methodology for every token count and API-rate value
+  (`docs/pricing.md`, "Methodology"). A tool's own cost estimate (OpenCode's
+  `cost`) no longer outranks the published card; a provider's own charge still
+  does. Rate cards can price peak hours, and the DeepSeek V4.1 Flash and V4
+  Pro cards do.
+
+### Fixed
+
+- Grok Build usage was counted twice: once per model call and once per
+  completed turn. Each turn now counts once, at Grok Build's own charge
+  (`costUsdTicks`); calls of a turn that never completed still count. Every
+  database, a hub included, removes its stored duplicates once at start-up
+  after a backup to `backups/pre-grok-dedupe-*.db`, and a hub drops them from
+  computers on older versions as they push.
+- GPT-6 Sol, Grok 4.7, Grok 4.7 Fast and the DeepSeek API's `deepseek-flash`
+  had no rate card, so their tokens counted toward today but their value did
+  not. Claude Sonnet 5.5's cache hits were priced at $0.20 per million instead
+  of the published $0.10. DeepSeek API reasoning tokens were dropped.
+- The HUD's today figure marks a partial day with `≥` and says how many tokens
+  have no published price. See `docs/burnrate-pricing-reconciliation-oct26.md`.
 
 ## [0.4.0-beta.1] - 2026-10-26
 

@@ -21,6 +21,7 @@ _OFFICIAL_SOURCE_HOSTS = (
     "https://openrouter.ai/",
     "https://ai.google.dev/",
     "https://opencode.ai/",
+    "https://api-docs.deepseek.com/",
 )
 
 
@@ -126,7 +127,8 @@ def test_october_2026_cards_match_published_rates() -> None:
         sonnet.cache_write_per_mtok,
         sonnet.cache_write_1h_per_mtok,
         sonnet.output_per_mtok,
-    ) == (Decimal("2"), Decimal("0.20"), Decimal("2.50"), Decimal("4"), Decimal("10"))
+    # Cache hits on Sonnet 5.5 are 0.05x base input (pricing page footnote 2).
+    ) == (Decimal("2"), Decimal("0.10"), Decimal("2.50"), Decimal("4"), Decimal("10"))
     assert sonnet.effective_from == datetime(2026, 9, 28, tzinfo=UTC)
 
     haiku55 = engine.resolve("claude-haiku-5-5", datetime(2026, 10, 12, tzinfo=UTC))
