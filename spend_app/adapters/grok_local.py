@@ -149,11 +149,12 @@ def ingest(*, database_path: Path, pricing: PricingEngine, log_path: Path) -> di
             (lambda: listed) if listed is not None else (lambda: list(native_files(log_path))), pricing)
         if replayed is not None:
             return replayed
-        rows, issues, files = read_source(log_path, listed)
+        rows, issues, files, models = read_source(log_path, listed)
         memo_key = cache_identity(database_path, log_path, "grok-native-reconcile-v1")
         memo = session_memo(memo_key)
         result = persist_rows(database_path=database_path, pricing=pricing, source=SOURCE, usage_rows=rows,
-                              prepare=lambda connection, _: reconcile(connection, rows, issues, memo), issues=issues)
+                              prepare=lambda connection, _: reconcile(connection, rows, issues, memo, models),
+                              issues=issues)
         remember_sessions(memo_key, memo)
         result = {**result, "files": files, "issues": sorted(set(issues))}
         unchanged.remember(database_path, SOURCE, cache_key, current, result)

@@ -9,6 +9,18 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- Grok calls keep their model when the Grok CLI trims its log. The CLI cuts
+  the head of `unified.jsonl`, and the next pass read the remaining calls
+  again without their "model changed" line: calls already priced as
+  `grok-4.7-build-fast` moved to unknown, and the HUD showed the day as a
+  floor with "2.19M tokens have no published price (unknown)". A call read
+  again without a model keeps the one it was stored with. A call with no
+  model in a session with no completed turn takes the one model its
+  `updates.jsonl` records (`_meta.modelId` on each prompt), which also
+  prices calls already stored as unknown.
+
 ## [0.5.2] - 2026-10-26
 
 ### Fixed

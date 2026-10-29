@@ -237,6 +237,97 @@ def test_a_hub_drops_calls_an_older_computer_pushes_with_their_turn(tmp_path: Pa
     assert left == ["m:laptop-1:grok-native-usage:1"]
 
 
+# Grok calls whose model line the CLI trimmed ------------------------------------
+
+def _grok_line(when: datetime, msg: str, ctx: dict) -> str:
+    return json.dumps({"ts": when.isoformat().replace("+00:00", "Z"), "src": "shell", "pid": 1, "lvl": "info",
+                       "msg": msg, "ctx": ctx, "sid": SID})
+
+
+def _grok_call(when: datetime, prompt: int, cached: int, out: int) -> str:
+    return _grok_line(when, "shell.turn.inference_done", {"loop_index": 1, "model_elapsed_ms": 10, "attempts": 1,
+                                                           "prompt_tokens": prompt, "cached_prompt_tokens": cached,
+                                                           "completion_tokens": out})
+
+
+def _grok_stored(database: Path) -> tuple[list[tuple], list[str]]:
+    with connect(database) as connection:
+        priced = [tuple(row) for row in connection.execute(
+            "SELECT model_key, computed_cost_usd FROM usage_events WHERE tool_key='grok'")]
+        unpriced = [row[0] for row in connection.execute(
+            "SELECT model_key FROM unpriced_usage_events WHERE tool_key='grok'")]
+    return priced, unpriced
+
+
+def test_a_trimmed_log_keeps_the_model_a_call_was_stored_with(tmp_path: Path) -> None:
+    # 2026-10-28: Grok cut the head of unified.jsonl, the next pass read its
+    # calls again without their "model changed" line and moved them to unknown.
+    root = tmp_path / ".grok"
+    (root / "logs").mkdir(parents=True)
+    log = root / "logs" / "unified.jsonl"
+    start = MONDAY.replace(hour=13)
+    call = _grok_call(start + timedelta(seconds=10), 80_000, 70_000, 1_000)
+    log.write_text(_grok_line(start, "model changed", {"model": "grok-4.7-build-fast"}) + "\n" + call + "\n",
+                   encoding="utf-8")
+    database = tmp_path / "spend.db"
+    initialize(database)
+    grok_local.reset_state()
+    grok_local.ingest(database_path=database, pricing=_engine(), log_path=root)
+    log.write_text(call + "\n", encoding="utf-8")
+    grok_local.ingest(database_path=database, pricing=_engine(), log_path=root)
+    grok_local.reset_state()
+    priced, unpriced = _grok_stored(database)
+    assert [model for model, _cost in priced] == ["supergrok:grok-4.7-build-fast"] and unpriced == []
+
+
+def test_a_call_without_a_model_takes_the_one_its_session_records(tmp_path: Path) -> None:
+    root = tmp_path / ".grok"
+    (root / "logs").mkdir(parents=True)
+    log = root / "logs" / "unified.jsonl"
+    log.write_text(_grok_call(MONDAY.replace(hour=13), 80_000, 70_000, 1_000) + "\n", encoding="utf-8")
+    database = tmp_path / "spend.db"
+    initialize(database)
+    grok_local.reset_state()
+    grok_local.ingest(database_path=database, pricing=_engine(), log_path=root)
+    assert _grok_stored(database) == ([], ["supergrok:unknown"])
+
+    # The log has since dropped the call; the session's updates.jsonl names
+    # the model selected for its prompts, and the stored call is priced.
+    log.write_text("", encoding="utf-8")
+    session = root / "sessions" / "project" / SID
+    session.mkdir(parents=True)
+    prompt = {"method": "session/update", "params": {"sessionId": SID, "update": {
+        "sessionUpdate": "user_message_chunk", "_meta": {"modelId": "grok-4.7-build-fast"}}}}
+    (session / "updates.jsonl").write_text(json.dumps(prompt) + "\n", encoding="utf-8")
+    grok_local.ingest(database_path=database, pricing=_engine(), log_path=root)
+    grok_local.reset_state()
+    priced, unpriced = _grok_stored(database)
+    assert unpriced == []
+    assert priced == [("supergrok:grok-4.7-build-fast", pytest.approx(0.01 * 4 + 0.07 * 1 + 0.001 * 12))]
+
+
+def test_turn_names_outrank_the_recorded_selection(tmp_path: Path) -> None:
+    from spend_app.adapters.common import UsageRow
+
+    database = tmp_path / "spend.db"
+    initialize(database)
+    t = MONDAY.replace(hour=6)
+    call = UsageRow("grok_local", "grok", grok_native.UNKNOWN, t + timedelta(minutes=1), SID, None,
+                    100, 0, 0, 0, 10, None, None, "grok-local:1")
+    turn = replace(call, model_key="supergrok:grok-4.7-build", occurred_at=t, raw_id="grok-native-usage:1",
+                   input_tokens=300, output_tokens=30)
+
+    def models(incoming, recorded):
+        with connect(database) as connection:
+            rows = grok_native._reconcile_session(connection, SID, incoming, [], recorded=frozenset(recorded))
+            return {row.raw_id: row.model_key for row in rows}
+
+    # Grok Build records the selection as grok-4.7 and its turns as grok-4.7-build.
+    assert models([call, turn], {"supergrok:grok-4.7"})["grok-local:1"] == "supergrok:grok-4.7-build"
+    assert models([call], {"supergrok:grok-4.7"})["grok-local:1"] == "supergrok:grok-4.7"
+    assert models([call], {"supergrok:grok-4.7", "supergrok:grok-4.6"})["grok-local:1"] == grok_native.UNKNOWN
+
+
 # The value rule -----------------------------------------------------------------
 
 def _event(**fields) -> dict:

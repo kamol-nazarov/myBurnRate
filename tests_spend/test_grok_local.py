@@ -485,7 +485,7 @@ def test_native_pass_reconciles_only_changed_sessions_with_full_pass_results(tmp
     reconciled, opened = [], []
     original_session = grok_native._reconcile_session
     monkeypatch.setattr(grok_native, "_reconcile_session",
-                        lambda connection, sid, rows, issues: reconciled.append(sid) or original_session(connection, sid, rows, issues))
+                        lambda connection, sid, rows, issues, **kw: reconciled.append(sid) or original_session(connection, sid, rows, issues, **kw))
     original_loads = grok_native.json.loads
     monkeypatch.setattr(grok_native.json, "loads", lambda text, *a, **k: opened.append(1) or original_loads(text, *a, **k))
     with (root / "sessions" / "project" / "s1" / "updates.jsonl").open("a", encoding="utf-8") as stream:

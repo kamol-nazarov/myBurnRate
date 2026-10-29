@@ -63,6 +63,27 @@ def reduce_updates(records):
     return rows, issues
 
 
+def recorded_models(records):
+    """Session id -> the models a session's updates.jsonl names.
+
+    Grok Build stamps the selected model (``_meta.modelId``) on each prompt.
+    The file is never trimmed, so it still names a session's model after the
+    unified log has lost its "model changed" lines.
+    """
+    models = {}
+    for record in records:
+        params = record.get("params") if isinstance(record, dict) else None
+        if not isinstance(params, dict):
+            continue
+        update = params.get("update")
+        meta = update.get("_meta") if isinstance(update, dict) else None
+        model = meta.get("modelId") if isinstance(meta, dict) else None
+        sid = params.get("sessionId")
+        if sid and isinstance(model, str) and model.strip():
+            models.setdefault(sid, set()).add("supergrok:" + model.strip().lower())
+    return {sid: frozenset(names) for sid, names in models.items()}
+
+
 TICKS_PER_USD = 10_000_000_000
 
 
@@ -83,6 +104,7 @@ def turn_charge(usage):
 
 CALL_PREFIX = "grok-local:"
 TURN_PREFIX = "grok-native-usage:"
+UNKNOWN = "supergrok:unknown"
 CLOCK_SLACK = timedelta(seconds=2)
 
 
@@ -165,15 +187,16 @@ def signal_row(payload, sid, observed_at):
     # Observed producer contract: total includes compaction when context is
     # present; otherwise total is the post-compaction segment.
     value = max(total, before + context) if context is not None else before + total
-    return UsageRow("grok_local", "grok", "supergrok:unknown", observed_at, sid, None,
+    return UsageRow("grok_local", "grok", UNKNOWN, observed_at, sid, None,
                     0, 0, 0, 0, 0, None, None, stable_id("grok-native-total", sid), value, False)
 
 
-def _read_file(file, parse_log, issues):
+def _read_file(file, parse_log, issues, models):
     """Rows for one source file, a pure function of its path and content.
 
     Issues are appended to ``issues`` as they are found, so a read that fails
     part-way still reports what it saw, as the uncached reader always did.
+    The models an updates.jsonl names are added to ``models``.
     """
     if file.name == "unified.jsonl":
         parsed, state = parse_log(file)
@@ -193,11 +216,12 @@ def _read_file(file, parse_log, issues):
                 issues.append("malformed_grok_native_metadata")
     parsed, errors = reduce_updates(records)
     issues.extend(errors)
+    models.update(recorded_models(records))
     return parsed
 
 
 def read_source(root, listed=None):
-    """Rows and issues from every source file, in listing order.
+    """Rows, issues, file count and recorded session models from every source file.
 
     An active session appends to its updates.jsonl and the shared unified log
     on every turn, so some file changes on almost every pass. Each file's parse
@@ -206,7 +230,7 @@ def read_source(root, listed=None):
     """
     from spend_app.adapters.grok_local import parse_log
     from spend_app.connection_paths import file_signature
-    rows, issues, found = [], [], 0
+    rows, issues, models, found = [], [], {}, 0
     seen = set()
     for file in (files(root) if listed is None else listed):
         found += 1
@@ -220,10 +244,11 @@ def read_source(root, listed=None):
         if signature is not None and cached is not None and cached[0] == signature:
             rows.extend(cached[1])
             issues.extend(cached[2])
+            _merge_models(models, cached[3])
             continue
-        file_issues = []
+        file_issues, file_models = [], {}
         try:
-            parsed = _read_file(file, parse_log, file_issues)
+            parsed = _read_file(file, parse_log, file_issues, file_models)
         except (OSError, ValueError):
             _FILES.pop(key, None)
             issues.extend(file_issues)
@@ -231,15 +256,21 @@ def read_source(root, listed=None):
             continue
         rows.extend(parsed)
         issues.extend(file_issues)
+        _merge_models(models, file_models)
         if signature is not None:
-            _FILES[key] = (signature, tuple(parsed), tuple(file_issues))
+            _FILES[key] = (signature, tuple(parsed), tuple(file_issues), file_models)
     prefix = os.path.join(str(root), "")
     for key in [key for key in _FILES if key.startswith(prefix) and key not in seen]:
         _FILES.pop(key, None)
-    return rows, issues, found
+    return rows, issues, found, models
 
 
-# path -> (file signature, parsed rows, issues) for read_source.
+def _merge_models(models, more):
+    for sid, names in more.items():
+        models[sid] = models.get(sid, frozenset()) | names
+
+
+# path -> (file signature, parsed rows, issues, recorded models) for read_source.
 _FILES: dict[str, tuple] = {}
 # reconcile cache key -> {"sessions": {sid: (incoming, output, issues)},
 #                         "traycer": bool | None, "full_at": monotonic seconds}
@@ -276,7 +307,7 @@ def remember_sessions(key, memo) -> None:
     _RECONCILED[key] = {"sessions": memo["next"], "traycer": memo["traycer"], "full_at": memo["full_at"]}
 
 
-def reconcile(connection, incoming, issues, memo=None):
+def reconcile(connection, incoming, issues, memo=None, models=None):
     # A Traycer chat ID is not a Grok session ID. A native cumulative signal
     # has no start boundary with which to prove its otherwise-uncovered share.
     # Disabling Traycer preserves that history; it must not make a new signal
@@ -291,28 +322,38 @@ def reconcile(connection, incoming, issues, memo=None):
         if memo["traycer"] is not None and memo["traycer"] != traycer_history:
             memo["sessions"] = {}
         memo["traycer"] = traycer_history
+    models = models or {}
     by_session: dict = {}
     for row in incoming:
         by_session.setdefault(row.session_id, []).append(row)
+    # A stored call without a model whose session's updates.jsonl names one
+    # is revisited, even after the trimmed unified log no longer holds it.
+    if models:
+        for (sid,) in connection.execute(
+                "SELECT DISTINCT session_id FROM unpriced_usage_events WHERE source=? AND model_key=?",
+                ("grok_local", UNKNOWN)):
+            if sid in models:
+                by_session.setdefault(sid, [])
     output, reconciled = [], {}
     for sid, session_rows in by_session.items():
         session_rows = tuple(session_rows)
+        recorded = models.get(sid, frozenset())
         previous = memo["sessions"].get(sid) if memo is not None else None
-        if previous is not None and previous[0] == session_rows:
+        if previous is not None and previous[0] == (session_rows, recorded):
             rows, notes = previous[1], previous[2]
         else:
             notes = []
-            rows = tuple(_reconcile_session(connection, sid, session_rows, notes))
+            rows = tuple(_reconcile_session(connection, sid, session_rows, notes, recorded=recorded))
             notes = tuple(notes)
         issues.extend(notes)
         output.extend(rows)
-        reconciled[sid] = (session_rows, rows, notes)
+        reconciled[sid] = ((session_rows, recorded), rows, notes)
     if memo is not None:
         memo["next"] = reconciled
     return output
 
 
-def _reconcile_session(connection, sid, incoming, issues):
+def _reconcile_session(connection, sid, incoming, issues, recorded=frozenset()):
     from spend_app.adapters.opencode_granular import row_from_record
     key = "grok.native.v1:" + stable_id(sid)
     state = read_meta(connection, key, {})
@@ -324,6 +365,11 @@ def _reconcile_session(connection, sid, incoming, issues):
     rows = dict(existing)
     for row in incoming:
         if row.session_id == sid:
+            stored = existing.get(row.raw_id)
+            # The CLI trims unified.jsonl from the front. A call read again
+            # after its "model changed" line was cut keeps its stored model.
+            if row.model_key == UNKNOWN and stored is not None and stored.model_key != UNKNOWN:
+                row = replace(row, model_key=stored.model_key)
             rows[row.raw_id] = row
     # updates.jsonl is the per-turn ledger and carries Grok Build's own charge;
     # a per-call row from unified.jsonl that a turn already counts is dropped.
@@ -335,13 +381,16 @@ def _reconcile_session(connection, sid, incoming, issues):
         if raw_id in existing:
             delete_event(connection, raw_id)
         del rows[raw_id]
-    turn_models = {row.model_key for row in rows.values() if row.raw_id.startswith(TURN_PREFIX)} - {"supergrok:unknown"}
+    turn_models = {row.model_key for row in rows.values() if row.raw_id.startswith(TURN_PREFIX)} - {UNKNOWN}
+    # The unified log loses its "model changed" lines when the CLI trims it; a
+    # call left without a model takes the one model its session's completed
+    # turns name or, in a session with no completed turn, the one model its
+    # updates.jsonl records. Grok Build names the turn's model grok-4.7-build
+    # where the selection reads grok-4.7, so turns are asked first.
+    known = (turn_models or set(recorded)) - {UNKNOWN}
     for raw_id, row in list(rows.items()):
-        # The unified log loses its "model changed" lines when the CLI trims
-        # it; a call left without a model takes the one model its session's
-        # completed turns name.
-        if row.raw_id.startswith(CALL_PREFIX) and row.model_key == "supergrok:unknown" and len(turn_models) == 1:
-            rows[raw_id] = replace(row, model_key=next(iter(turn_models)))
+        if row.raw_id.startswith(CALL_PREFIX) and row.model_key == UNKNOWN and len(known) == 1:
+            rows[raw_id] = replace(row, model_key=next(iter(known)))
         # A turn stored before its charge was read is re-inserted, not updated,
         # so the corrected row syncs to the hub again.
         stored = existing.get(raw_id)
