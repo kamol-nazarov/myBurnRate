@@ -33,7 +33,7 @@ dependencies = [
   "PyYAML>=6.0,<7",
   "python-dotenv>=1.1,<2",
   "httpx>=0.28,<1",
-  "tzdata>=2024.1",
+  "tzdata>=2026.5",
   "tzlocal>=3.0",
   "keyring>=25,<26",
 ]
