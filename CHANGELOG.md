@@ -9,6 +9,8 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-10-28
+
 ### Fixed
 
 - Grok calls keep their model when the Grok CLI trims its log. The CLI cuts
