@@ -12,6 +12,7 @@ services:
     restart: unless-stopped
     environment:
       BURNRATE_CENTRAL_SERVER: "1"
+      BURNRATE_SUMMARY_PREWARM: "0"
       BURNRATE_DATA_ROOT: /data
       # Set to 1 only while adding a second account to this hub.
       BURNRATE_ALLOW_REGISTRATION: ${BURNRATE_ALLOW_REGISTRATION:-0}

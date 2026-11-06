@@ -31,10 +31,15 @@ def update_hub(*, ssh: str, path: str, service: str, branch: str, push_local: bo
     if push_local:
         # Unpublished work: push this commit to its own branch, then check it out there.
         steps.append(["git", "push", f"{ssh}:{path}", f"HEAD:refs/heads/{branch}"])
-        remote = f"cd {path} && git checkout -f {branch}"
+        remote = f'cd {path} && test -z "$(git status --porcelain)" && git checkout {branch}'
     else:
-        remote = f"cd {path} && git fetch origin && git checkout {branch} && git merge --ff-only origin/{branch}"
-    remote += f" && sudo systemctl restart {service} && sleep 4 && curl -s http://127.0.0.1:{port}/api/spend"
+        remote = f'cd {path} && test -z "$(git status --porcelain)" && git fetch origin && git checkout {branch} && git merge --ff-only origin/{branch}'
+    # Updating source alone leaves the old dependency/trust bundle installed.
+    # Stop before restart unless both the installed package and host guard pass.
+    remote += " && .venv/bin/python -m pip install . && .venv/bin/python -m pip check"
+    remote += " && .venv/bin/python -I -B scripts/verify-runtime.py"
+    remote += " && (test ! -x /usr/local/sbin/tk-security-preflight || sudo /usr/local/sbin/tk-security-preflight burnrate)"
+    remote += f" && sudo systemctl restart {service} && sleep 4 && curl --fail -s http://127.0.0.1:{port}/api/spend"
     steps.append(["ssh", ssh, remote])
     output = ""
     for step in steps:
@@ -64,6 +69,6 @@ def add_parser(subparsers) -> None:
     update.add_argument("--ssh", default=os.getenv("BURNRATE_HUB_SSH", ""), help="ssh host or alias of the hub")
     update.add_argument("--path", default=os.getenv("BURNRATE_HUB_PATH", "/opt/burnrate"), help="Hub checkout path")
     update.add_argument("--service", default=os.getenv("BURNRATE_HUB_SERVICE", "burnrate-hub"), help="systemd unit")
-    update.add_argument("--branch", default=os.getenv("BURNRATE_HUB_BRANCH", "main"), help="Branch the hub tracks")
+    update.add_argument("--branch", default=os.getenv("BURNRATE_HUB_BRANCH", "prod"), help="Branch the hub tracks")
     update.add_argument("--push-local", action="store_true", help="Deploy this checkout's commit (unpublished work)")
     update.add_argument("--dry-run", action="store_true", help="Print the steps without running them")

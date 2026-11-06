@@ -1,3 +1,8 @@
 spend_web/*.js text eol=lf
 spend_web/*.css text eol=lf
 spend_web/*.html text eol=lf
+*.py text eol=lf
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+Dockerfile text eol=lf

@@ -272,8 +272,15 @@ def test_hub_update_runs_the_deploy_steps_and_refuses_odd_arguments() -> None:
 
     assert update_hub(ssh="my-hub", path="/opt/burnrate", service="burnrate-hub", branch="main",
                       run=lambda step, **kwargs: calls.append(step) or Done(), echo=lines.append) == 0
-    assert calls == [["ssh", "my-hub", "cd /opt/burnrate && git fetch origin && git checkout main && git merge --ff-only "
-                      "origin/main && sudo systemctl restart burnrate-hub && sleep 4 && curl -s http://127.0.0.1:17331/api/spend"]]
+    assert calls[0][:2] == ["ssh", "my-hub"]
+    command = calls[0][2]
+    assert 'test -z "$(git status --porcelain)"' in command
+    assert "git merge --ff-only origin/main" in command
+    assert command.index("pip install .") < command.index("scripts/verify-runtime.py") < command.index("systemctl restart")
+    assert "pip check" in command
+    assert "tk-security-preflight burnrate" in command
+    assert "curl --fail" in command
+    assert "checkout -f" not in command
     assert lines[-1] == "Hub now runs 0.3.0-beta.18+abc123."
     calls.clear()
     assert update_hub(ssh="my-hub; rm -rf /", path="/opt/burnrate", service="burnrate-hub", branch="main",

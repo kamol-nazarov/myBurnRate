@@ -43,6 +43,13 @@ jobs:
         with:
           ref: ${{ env.TAG }}
           persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Security regressions before release bundles
+        run: |
+          python -m pip install '.[dev]'
+          python -m pytest tests_spend/test_security_runtime.py -q
       - id: version
         shell: python
         run: |

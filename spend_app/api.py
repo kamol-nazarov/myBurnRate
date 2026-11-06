@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import hashlib
 import os
 import time
@@ -13,6 +15,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from starlette.middleware.gzip import GZipMiddleware
 
+from spend_app.bounded_reads import BoundedReadExecutor, ReadCapacityExceeded
 from spend_app import __version__
 from spend_app.build import build_id
 
@@ -182,6 +185,15 @@ def create_app(
     settings = settings or load_settings()
     initialize(settings.database_path)
     pricing = PricingEngine.load(settings.pricing_path)
+    bounded_reads = BoundedReadExecutor(max_workers=1)
+
+    async def _run_bounded_read(function, *args):
+        try:
+            return await bounded_reads.run(function, *args)
+        except ReadCapacityExceeded:
+            raise HTTPException(status_code=503, detail="Spend data is temporarily busy; retry shortly.",
+                                headers={"Retry-After": "1"}) from None
+
     history_demand = HistoryDemand()
     scheduler = create_scheduler(settings, pricing, history_active=history_demand.active) if enable_scheduler else None
 
@@ -241,6 +253,7 @@ def create_app(
         try:
             yield
         finally:
+            await asyncio.to_thread(bounded_reads.close)
             if scheduler:
                 scheduler.shutdown(wait=False)
             resource_stack.close()
@@ -304,8 +317,7 @@ def create_app(
             raise HTTPException(status_code=400, detail="unsupported spend window")
         return canonicalize_window(window)
 
-    @app.get("/api/spend/summary")
-    def spend_summary(
+    def _spend_summary_sync(
         request: Request,
         window: str = Query(default="1d"),
         tool: str = Query(default="all"),
@@ -316,7 +328,7 @@ def create_app(
         # after a backend upgrade. Keep its collection and lightweight reads.
         referrer = urlsplit(request.headers.get("referer", ""))
         if referrer.path == "/hud" or parse_qs(referrer.query).get("hud") == ["1"]:
-            return {**spend_hud_usage(machine), **spend_hud_live(machine)}
+            return {**_spend_hud_usage_sync(machine), **_spend_hud_live_sync(machine)}
         request_history(request)
         record_summary_request(resolved, tool)
         from spend_app.sync import fetch_from_configured_hub
@@ -338,6 +350,16 @@ def create_app(
             now=slot_now(),
             machine=machine,
         )
+
+
+    @app.get("/api/spend/summary")
+    async def spend_summary(
+        request: Request,
+        window: str = Query(default="1d"),
+        tool: str = Query(default="all"),
+        machine: str = Query(default="all"),
+    ) -> dict:
+        return await _run_bounded_read(_spend_summary_sync, request, window, tool, machine)
 
     @app.get("/api/spend/nav")
     def spend_nav(request: Request) -> dict:
@@ -406,8 +428,7 @@ def create_app(
         return report(settings, history_active=collecting if scheduler else True,
                       include_history=view != "hud" or collecting)
 
-    @app.get("/api/spend/hud")
-    def spend_hud_live(machine: str = Query(default="all")) -> dict:
+    def _spend_hud_live_sync(machine: str = Query(default="all")) -> dict:
         from spend_app.hud_data import live_snapshot
         from spend_app.sync import fetch_from_configured_hub
 
@@ -419,8 +440,12 @@ def create_app(
             return _stamp_hub_age(hub, now=current_now())
         return live_snapshot(settings, now=current_now(), machine=machine)
 
-    @app.get("/api/spend/hud/usage")
-    def spend_hud_usage(machine: str = Query(default="all")) -> dict:
+
+    @app.get("/api/spend/hud")
+    async def spend_hud_live(machine: str = Query(default="all")) -> dict:
+        return await _run_bounded_read(_spend_hud_live_sync, machine)
+
+    def _spend_hud_usage_sync(machine: str = Query(default="all")) -> dict:
         from spend_app.hud_data import local_usage_machine, recorded_usage
         from spend_app.sync import fetch_from_configured_hub
 
@@ -434,6 +459,11 @@ def create_app(
             return _stamp_hub_age(hub, now=current_now(), stamp=hub.get("historyUpdatedAt"))
         return recorded_usage(settings, pricing, now=current_now(),
                               machine=local_usage_machine(settings, machine))
+
+
+    @app.get("/api/spend/hud/usage")
+    async def spend_hud_usage(machine: str = Query(default="all")) -> dict:
+        return await _run_bounded_read(_spend_hud_usage_sync, machine)
 
     @app.get("/api/spend/share/week")
     def spend_share_week(machine: str = Query(default="all")) -> dict:
@@ -530,7 +560,7 @@ def create_app(
         }
 
     @app.get("/healthz")
-    def healthz() -> dict:
+    async def healthz() -> dict:
         return {"status": "ok"}
 
     @app.get("/")

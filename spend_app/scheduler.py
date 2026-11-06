@@ -246,6 +246,9 @@ def create_scheduler(settings: Settings, pricing: PricingEngine, *, history_acti
             raise RuntimeError(f"{len(errors)} local ingest job(s) failed") from errors[0]
 
     def warm_summaries() -> None:
+        # Optional derived-cache work; ingestion and sync continue unchanged.
+        if os.getenv("BURNRATE_SUMMARY_PREWARM", "1") == "0":
+            return
         # Compute the summaries viewers are currently watching right after the
         # cycle that could have changed them, so their next poll is a memo hit.
         is_central = os.getenv("BURNRATE_CENTRAL_SERVER", "").strip().lower() in {"1", "true", "yes"}

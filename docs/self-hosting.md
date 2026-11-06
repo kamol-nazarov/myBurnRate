@@ -62,6 +62,12 @@ environment and `Restart=always`. Put Caddy, nginx or Tailscale Serve in front
 of it for HTTPS.
 
 `burnrate hub update --ssh <host>` updates a git-checkout hub from your own
-computer: it fast-forwards the checkout, restarts the service and prints the
-hub's build. Set its defaults with `BURNRATE_HUB_SSH`, `BURNRATE_HUB_PATH`,
+computer: it requires a clean checkout, fast-forwards it, installs its Python
+dependencies, checks the installed trust bundle, and runs an installed host
+security gate before restarting the service and printing the hub's build.
+Keep `BURNRATE_SUMMARY_PREWARM=0` on the central hub so background ingestion
+does not compete with bounded interactive reads. Source, trust failures, or
+unreviewed host drift stop the update before restart. Make a verified database
+backup before an authorized update; never overwrite local changes to bypass
+the clean-checkout gate. Set its defaults with `BURNRATE_HUB_SSH`, `BURNRATE_HUB_PATH`,
 `BURNRATE_HUB_SERVICE` and `BURNRATE_HUB_BRANCH`.
