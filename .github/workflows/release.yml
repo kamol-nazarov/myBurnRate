@@ -43,7 +43,7 @@ jobs:
         with:
           ref: ${{ env.TAG }}
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Security regressions before release bundles
@@ -91,7 +91,7 @@ jobs:
         with:
           ref: ${{ env.TAG }}
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - uses: actions/setup-node@v4
@@ -212,7 +212,7 @@ jobs:
         with:
           ref: ${{ env.TAG }}
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Wheel and sdist
