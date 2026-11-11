@@ -11,11 +11,20 @@ multiple computers work, and what the numbers mean.
   - **Plans & Value**: Compare `This month` or `Last month` subscription expense against recorded API-equivalent usage, shared tool associations, and value multiples.
   - **Action Center**: Tracks quota thresholds, monitored-source issues, and unpriced models with snooze/acknowledge workflows.
   - **Token & Unit Economics**: Breakdown of fresh input, cached input, cache writes, output, and reasoning tokens by tool, model, project, and session, plus counterfactual cache-savings calculations.
-- **Always-on-Top Sidecar HUD (`/hud`)**: Frameless floating window (`380` wide, sized to its content) in a graphite or paper theme. It leads with today’s API-rate spend, then burn rate, cache reuse, and tokens, then every subscription window as a segmented meter row: percentage, an even-pace tick, and the time until that window resets. **Mini** collapses it to a `296`-wide glance strip with one line per plan (its tightest window); click a plan to list all of its windows. A poll that returns no value never blanks a meter: it keeps its last reading (dimmed) until that window resets. Drag it from any empty surface; Mini, Theme, Pin, and Hide stay clickable, and a double-click does not maximize it.
+- **Always-on-Top Sidecar HUD (`/hud`)**: Frameless floating window in a graphite or paper theme. It leads with today's API-rate value, followed by subscription meters and a separate Balances section. Mini mode shows each plan's tightest window; its chevron reveals the others. Machine selection, data freshness and attention status remain visible. A held meter keeps its last reading until reset, with a visible age label. Drag the window from an empty surface; its controls remain clickable.
 - **Cost per repository**: the HUD lists today's value by the repository each session ran in, worktrees included.
 - **Weekly card**: the share button copies the last seven days as an image (value, plans, tokens, cache hit, top tools; never repository names).
 - **Single-Account Multi-Computer Sync**: Pair laptops and secondary desktops to your primary Hub using a 1-click `brpair_...` pairing code. Spokes automatically push incremental token usage, sessions, and live agent state into your Hub database.
 - **Native Desktop App (`src-tauri/`)**: Tauri v2 desktop wrapper with system tray menu (`Toggle Sidecar HUD`, `Toggle HUD Always on Top`, `Run Setup Wizard…`, `Quit BURNRATE`); its main window opens only for setup and automatic background process supervision.
+
+## Reading and arranging the HUD
+
+- **API value today** estimates recorded usage at published API rates, not a bill. Select **Partial** to see why some usage cannot be valued. An unavailable amount remains a dash.
+- **Source attention** opens a panel with the affected source, its last known update, an explanation and actions to recheck or open source settings. Escape or Close returns focus to the control that opened it.
+- **Plan windows** show the percentage used and a labeled reset countdown. Select the name/chevron button to reveal the remaining windows; Tab and Enter/Space work too. When the dashboard is enabled, its detail button is separate.
+- **Provider pins** keep favorite subscription providers first in the order you pinned them. Other providers use a stable alphabetical order. The **Closest limit** summary still identifies the most urgent quota independently of that order. The window's top pin button separately controls always-on-top behavior.
+- **Balances** show pay-as-you-go money remaining and estimated runway without a quota gauge.
+- **Compact / Comfortable** changes text size, spacing and width independently of Mini/Expanded mode. Mini uses one line per provider, with short window/reset labels; open a provider to see additional windows. Select the machine/freshness line to reveal computer choices and density controls. Mini is 296 pixels wide in Compact and 344 in Comfortable; expanded is 380 or 420. Density and provider pins are remembered on this computer; pin controls are in the expanded view.
 
 ## First-run setup
 
@@ -66,7 +75,7 @@ A typical overview (synthetic demo data — not a real account):
 - **Recoverable / forecast.** Cache savings versus a no-cache counterfactual, and a labeled forecast of plan cost versus published-rate value.
 - **Unit economics.** Cost by model (click through for a tool or model detail page), token mix (cached input / fresh input / output), and any subscriptions you configured, as hairline tables with inline share bars.
 
-The Sidecar HUD at [http://127.0.0.1:17331/hud](http://127.0.0.1:17331/hud) uses the same system in a narrow window: today’s spend as one large readout, a three-cell strip (burn rate, cache, tokens), any live agents, then one aligned meter row per plan window with its percentage and reset countdown. Mini mode keeps only today’s spend and each plan’s tightest window.
+The Sidecar HUD at [http://127.0.0.1:17331/hud](http://127.0.0.1:17331/hud) uses the same system in a narrow window. Expanded mode adds burn rate, cache, tokens, live agents and repository totals. Mini keeps the cost label, coverage, machine/freshness context, source attention, subscription windows and balances.
 
 Public screenshots use the made-up data from `burnrate demo` (fictional Northwind-style project names and placeholder figures), never a live database.
 

@@ -22,6 +22,16 @@ auto-launch = "0.6"
 tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Loopback supervisor probes need a total HTTP/body deadline, without proxying
+# or following redirects. Reuses the updater's existing reqwest version.
+reqwest = { version = "0.13", default-features = false, features = ["blocking"] }
+# The updater enables rustls without choosing its provider until its first
+# request. Supervisor HTTP client construction happens earlier; use the same
+# already-bundled ring provider without adding a second TLS implementation.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

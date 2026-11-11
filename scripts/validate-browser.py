@@ -17,15 +17,6 @@ def main():
         raise SystemExit(
             "Required Chrome/Node runtime missing. Set BURNRATE_CHROME to the Chrome executable."
         )
-    suites = [
-        "tests_spend/test_request_races.py",
-        "tests_spend/test_frontend_viewports.py",
-        "tests_spend/test_performance_phase2.py",
-    ]
-    suites.extend(
-        str(p.relative_to(ROOT))
-        for p in sorted((ROOT / "tests_spend").glob("test_product_browser*.py"))
-    )
     report = ROOT / "test-results" / "required-browser.xml"
     report.parent.mkdir(exist_ok=True)
     env = dict(os.environ, BURNRATE_CHROME=str(CHROME))
@@ -35,7 +26,12 @@ def main():
             sys.executable,
             "-m",
             "pytest",
-            *suites,
+            "tests_spend",
+            "-m",
+            "browser",
+            "--ignore=tests_spend/test_s01_real_db.py",
+            "--ignore=tests_spend/test_s02_real_db.py",
+            "--ignore=tests_spend/test_s03_real_db.py",
             "-q",
             "-o",
             "addopts=",
@@ -49,7 +45,8 @@ def main():
         return result.returncode
     cases = ET.parse(report).findall(".//testcase")
     races = [c for c in cases if "request_races" in c.get("classname", "")]
-    if len(races) < 29 or any(c.find("skipped") is not None for c in cases):
+    hud = [c for c in cases if "test_hud" in c.get("classname", "")]
+    if not hud or len(races) < 29 or any(c.find("skipped") is not None for c in cases):
         raise SystemExit("Required browser coverage missing or skipped")
     print(
         f"Required browser validation: {len(cases)} executed; {len(races)} request races; zero skipped"

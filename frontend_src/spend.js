@@ -39,6 +39,7 @@ const state = {
   view:"overview",
   entity:null,
   summary:null,
+  summaryDataIdentity:null,
   entityData:null,
   entityDataIdentity:null,
   health:null,
@@ -521,6 +522,10 @@ function readSnapshot(windowKey) {
     const age = Date.now() - Date.parse(snapshot?.storedAt || "");
     const endAge = Date.now() - Date.parse(snapshot?.summary?.window?.to || "");
     if (snapshot?.summary?.window?.key !== windowKey || !Number.isFinite(age) || age < 0 || age > SNAPSHOT_MAX_AGE_MS || !Number.isFinite(endAge) || endAge < 0 || endAge > SNAPSHOT_MAX_AGE_MS) return null;
+    const identity = queryIdentity(windowKey, "all", "all");
+    if (snapshot.queryIdentity != null && snapshot.queryIdentity !== identity) return null;
+    if (snapshot.summary.selectedMachine && snapshot.summary.selectedMachine !== "all") return null;
+    if (snapshot.summary.tool && snapshot.summary.tool !== "all") return null;
     return snapshot;
   } catch {
     return null;
@@ -528,7 +533,7 @@ function readSnapshot(windowKey) {
 }
 function writeSnapshot(windowKey, summary, health) {
   try {
-    localStorage.setItem(SNAPSHOT_PREFIX + windowKey, JSON.stringify({storedAt: new Date().toISOString(), summary, health: health || null}));
+    localStorage.setItem(SNAPSHOT_PREFIX + windowKey, JSON.stringify({storedAt: new Date().toISOString(), queryIdentity:queryIdentity(windowKey, "all", "all"), summary, health: health || null}));
   } catch {}
 }
 function pruneSnapshots() {
@@ -544,9 +549,11 @@ function pruneSnapshots() {
 function paintSnapshot(windowKey) {
   // A stored payload paints instantly but is never presented as live: the
   // navbar reads "Stale · as of HH:MM" until a real fetch succeeds.
+  if (queryIdentity() !== queryIdentity(windowKey, "all", "all")) return false;
   const snapshot = readSnapshot(windowKey);
   if (!snapshot) return false;
   state.summary = {...snapshot.summary, status: "stale", snapshot: true};
+  state.summaryDataIdentity = queryIdentity(windowKey, "all", "all");
   if (snapshot.health) state.health = snapshot.health;
   if (snapshot.summary.navigation) state.navigation = snapshot.summary.navigation;
   setLoading(false);
@@ -1713,6 +1720,14 @@ function heatValueLabel(value) {
   if (n == null) return unknown;
   return usd(n) + " reference usage";
 }
+function applyHeatCell(button, short = Boolean(state.heatShort)) {
+  if (!button) return;
+  state.heatCell = button;
+  setText($("heat-label"), button.dataset.label);
+  // Heat cells are reference usage USD (N03) with the unit spoken and shown.
+  setText($("heat-value"), button.dataset.value === "" ? unknown : usd(button.dataset.value));
+  $("heat-value").style.color = short ? "var(--muted)" : "var(--text)";
+}
 function moveHeatFocus(cells, currentIndex, delta) {
   const dayStep = 24;
   let day = Math.floor(currentIndex / dayStep);
@@ -1726,7 +1741,7 @@ function moveHeatFocus(cells, currentIndex, delta) {
     cells.forEach(cell => cell.tabIndex = -1);
     target.tabIndex = 0;
     target.focus();
-    applyHeat(target);
+    applyHeatCell(target);
   }
 }
 function rateLabel(value) {
@@ -1882,13 +1897,8 @@ function renderHeat(data) {
     else if (band.len <= 1) setText(spanEl, `Half of this pattern sits at ${clock(band.start)}. Peak hour ${clock(peakHour)}.`);
     else setText(spanEl, `Half of this pattern sits in ${clock(band.start)}–${clock((band.start + band.len - 1) % 24)}. Peak hour ${clock(peakHour)}.`);
   }
-  const applyHeat = button => {
-    state.heatCell = button;
-    setText($("heat-label"), button.dataset.label);
-    // Heat cells are reference usage USD (N03) with the unit spoken and shown.
-    setText($("heat-value"), button.dataset.value === "" ? unknown : usd(button.dataset.value));
-    $("heat-value").style.color = short ? "var(--muted)" : "var(--text)";
-  };
+  state.heatShort = short;
+  const applyHeat = button => applyHeatCell(button, short);
   const hours = Array.from({length:24}, (_, hour) => hour);
   reconcileChildren($("heatmap"), DAYS, (label, day) => day, label => nodeFrom(`<div class="heat-row"><span>${esc(label)}</span><div class="heat-cells"></div></div>`), (rowNode, label, day) => {
     reconcileChildren(rowNode.querySelector(".heat-cells"), hours, hour => hour, hour => {
@@ -1918,15 +1928,19 @@ function renderHeat(data) {
     setText(node.children[2], cell.value == null ? unknown : String(cell.value));
   });
   // Roving tabindex (C14): the grid is one tab stop; arrows move within it.
+  const heatRoot = $("heatmap");
+  if (heatRoot && !heatRoot.dataset.keyBound) {
+    heatRoot.dataset.keyBound = "1";
+    heatRoot.addEventListener("keydown", event => {
+      const step = {ArrowLeft:-1, ArrowRight:1, ArrowUp:-24, ArrowDown:24}[event.key];
+      if (!step || !event.target.closest("button.heat-cell")) return;
+      event.preventDefault();
+      moveHeatFocus([...heatRoot.querySelectorAll("button.heat-cell")], state.heatFocus || 0, step);
+    });
+  }
   const gridCells = [...$("heatmap").querySelectorAll("button.heat-cell")];
   gridCells.forEach((cell, index) => {
     cell.tabIndex = index === state.heatFocus ? 0 : -1;
-    cell.addEventListener("keydown", event => {
-      const step = {ArrowLeft:-1, ArrowRight:1, ArrowUp:-24, ArrowDown:24}[event.key];
-      if (!step) return;
-      event.preventDefault();
-      moveHeatFocus(gridCells, state.heatFocus, step);
-    });
   });
   const focused = gridCells[state.heatFocus];
   if (focused && state.heatCell && document.activeElement === state.heatCell) {
@@ -2011,7 +2025,7 @@ async function postJson(url, body) {
   const response = await fetch(url, {
     method: "POST",
     cache: "no-store",
-    headers: {"Content-Type": "application/json"},
+    headers: {"Content-Type": "application/json", "X-BURNRATE-Request": "1"},
     body: JSON.stringify(body),
   });
   if (!response.ok) {
@@ -2211,7 +2225,7 @@ window.openSidecarHud = async () => {
   try {
     const res = await fetch("/api/hud/native", {
       method: "POST",
-      headers: {"Content-Type": "application/json"},
+      headers: {"Content-Type": "application/json", "X-BURNRATE-Request": "1"},
       body: JSON.stringify({action: "open"})
     });
     const data = await res.json();
@@ -2511,6 +2525,32 @@ function renderDetailHover(data) {
   $("detail-hover-value").style.color = bucket ? "var(--accent)" : "var(--text)";
 }
 
+function pricingGuidanceRows(data) {
+  const labels = {
+    unknown_model_identity:"Model identity unavailable",
+    missing_current_rate:"Current rate unavailable",
+    missing_historical_rate:"Historical rate unavailable",
+    incomplete_telemetry:"Token details incomplete",
+    invalid_timestamp:"Usage date unavailable"
+  };
+  const rows = [], covered = new Set();
+  for (const source of data.sources || []) {
+    for (const model of source.pricingCoverage?.models || []) {
+      covered.add(model.model);
+      if (!model.reasons?.length) continue;
+      rows.push({key:JSON.stringify([source.source, model.model]), label:model.model,
+        detail:[...new Set(model.reasons.map(reason=>labels[reason.code] || reason.message || "Pricing unavailable"))].join(" · "),
+        records:model.records});
+    }
+  }
+  // Older hubs provide only model IDs. Keep their diagnostic useful without
+  // claiming a reason the server has not supplied.
+  for (const model of data.pricingGaps || []) {
+    if (!covered.has(model)) rows.push({key:"legacy:" + model, label:model, detail:"Pricing unavailable", records:null});
+  }
+  return rows;
+}
+
 function renderDiagnostics() {
   const data = state.health;
   if (!data || state.view !== "diagnostics") return;
@@ -2548,9 +2588,12 @@ function renderDiagnostics() {
     });
   }
   const gaps = $("pricing-gaps");
-  if ((data.pricingGaps || []).length) {
-    reconcileChildren(gaps, data.pricingGaps, gap => gap, () => nodeFrom(`<div class="waste-item"><strong></strong><span>${unknown}</span></div>`), (node, gap) => {
-      setText(node.querySelector("strong"), gap);
+  const pricingRows = pricingGuidanceRows(data);
+  if (pricingRows.length) {
+    reconcileChildren(gaps, pricingRows, row => row.key, () => nodeFrom(`<div class="waste-item"><div><strong></strong><small></small></div><span></span></div>`), (node, row) => {
+      setText(node.querySelector("strong"), row.label);
+      setText(node.querySelector("small"), row.detail);
+      setText(node.querySelector(":scope > span"), row.records == null ? unknown : number(row.records) + " records");
     });
   } else {
     setEmpty(gaps, "<p>No pricing gaps.</p>");
@@ -2568,7 +2611,7 @@ async function loadSummary(background = false) {
   const toolKey = state.tool && state.tool !== "all" ? state.tool : "all";
   const machineSuffix = state.machine && state.machine !== "all" ? '&machine=' + encodeURIComponent(state.machine) : '';
   const unfiltered = !machineSuffix && toolKey === "all";
-  const painted = unfiltered && (!state.summary || state.summary.window?.key !== state.window) && paintSnapshot(windowKey);
+  const painted = unfiltered && !summaryMatches() && paintSnapshot(windowKey);
   const request = startViewRequest("overview");
   if (!request) return;
   // Consume startup prefetch once, even when a matching snapshot was painted.
@@ -2584,7 +2627,10 @@ async function loadSummary(background = false) {
       unfiltered ? prefetch?.summary : null, request.controller.signal);
     if (!ownsRender(request)) return;
     if (data.window?.key !== windowKey) throw new Error("Response range did not match the selection");
+    if (data.selectedMachine != null && data.selectedMachine !== request.machine)
+      throw new Error("Response machine did not match the selection");
     state.summary = data;
+    state.summaryDataIdentity = request.queryIdentity;
     if (data.navigation) state.navigation = data.navigation;
     clearError();
     renderPreservingScroll(background || painted, renderOverview);

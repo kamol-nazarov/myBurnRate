@@ -247,7 +247,12 @@ def _sync_state(state: dict, now: datetime, heartbeat_state: dict) -> tuple[dict
     age = None if last is None else max(0, int((now - last).total_seconds()))
     error = bool(spoke.get("lastSyncError"))
     sync = {"role": "spoke", "lastSyncAt": spoke.get("lastSyncAt"), "ageSeconds": age, "failing": error}
+    sync["usageChangesPending"] = bool(spoke.get("usageChangesPending"))
     issues = []
+    if sync["usageChangesPending"]:
+        issues.append({"kind": "sync", "key": "hub-upgrade", "name": "Hub update", "short": "Hub update",
+                       "state": "stale", "severity": "warn", "ageSeconds": age,
+                       "detail": "Update the hub to receive usage corrections and deletions. They remain queued on this computer."})
     # Sync runs after each ingest pass; judge its age only once a pass could have run.
     settled = heartbeat_state["uptimeSeconds"] > SYNC_STALE_AFTER_SECONDS
     if error or (settled and (age is None or age > SYNC_STALE_AFTER_SECONDS)):

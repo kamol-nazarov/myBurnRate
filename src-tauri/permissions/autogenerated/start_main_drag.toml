@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-start-main-drag"
+description = "Enables the start_main_drag command without any pre-configured scope."
+commands.allow = ["start_main_drag"]
+
+[[permission]]
+identifier = "deny-start-main-drag"
+description = "Denies the start_main_drag command without any pre-configured scope."
+commands.deny = ["start_main_drag"]

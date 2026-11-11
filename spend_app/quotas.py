@@ -4,6 +4,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 import math
+import logging
 import os
 from pathlib import Path
 import threading
@@ -45,6 +46,7 @@ LABEL_REASON_SEPARATOR = " \u2014 "
 WEEKLY_MINUTES = 7 * 24 * 60
 AGENT_LIVE_STATE = "live"
 AGENT_NO_DATA_STATE = "no_data"
+LOG = logging.getLogger("burnrate.quotas")
 LIVE_STATE_ALIASES = frozenset({"live", "running"})
 QUOTA_LIMIT_ORDER = {
     "claude-code": ("5h", "weekly"),
@@ -934,6 +936,24 @@ from spend_app.connections import lock_for, serialize_collection, suppresses_def
 from spend_app.capacity_forecast import record_balance_sample, record_pace_samples
 
 
+def _sync_after_update(path, *, kind: str, settings=None, pricing=None) -> None:
+    """Best-effort follow-up without hiding configuration/programming errors."""
+    from spend_app.config import load_settings
+    from spend_app.pricing import PricingEngine
+    from spend_app.setup_wizard import maybe_run_configured_spoke_sync
+
+    try:
+        configured = settings if settings is not None else replace(load_settings(), database_path=path)
+        engine = pricing if pricing is not None else PricingEngine.load(configured.pricing_path)
+        result = maybe_run_configured_spoke_sync(configured, engine)
+        if isinstance(result, dict) and result.get("ok") is False:
+            LOG.warning("Immediate %s sync failed; periodic sync will retry", kind)
+    except Exception as exc:
+        # Never log the exception message: provider URLs, paths and tokens may
+        # be embedded in it. Class names still reveal a broken call contract.
+        LOG.warning("Immediate %s sync failed (%s); periodic sync will retry", kind, type(exc).__name__)
+
+
 def poll_quotas(
     database_path: Path | str,
     *,
@@ -942,6 +962,7 @@ def poll_quotas(
     lanes: QuotaLaneScheduler | None = None,
     activity: Callable[[str], bool] | None = None,
     settings=None,
+    pricing=None,
 ) -> dict:
     """Poll the lanes that are due on this tick and persist their samples.
 
@@ -1108,15 +1129,7 @@ def poll_quotas(
                 scheduler.record(provider_key, samples, active=lane_active)
     if written > 0:
         if collectors is None:
-            try:
-                from dataclasses import replace as _replace
-                from spend_app.config import load_settings as _load_settings
-                from spend_app.pricing import PricingEngine as _PricingEngine
-                from spend_app.setup_wizard import maybe_run_configured_spoke_sync
-                _s = settings if settings is not None else _replace(_load_settings(), database_path=path)
-                maybe_run_configured_spoke_sync(_s, _PricingEngine.default())
-            except Exception:
-                pass
+            _sync_after_update(path, kind="quota", settings=settings, pricing=pricing)
         try:
             from spend_app.sync import STREAM_BROKER, expire_hub_proxy_cache
             expire_hub_proxy_cache()
@@ -1279,6 +1292,8 @@ def poll_activity(
     *,
     collector: Callable[[], dict] | None = None,
     now: Callable[[], str] | None = None,
+    settings=None,
+    pricing=None,
 ) -> dict:
     path = Path(database_path)
     polled_at = (now or utc_now)()
@@ -1297,6 +1312,7 @@ def poll_activity(
     new = 0
     with lock_for(path):
         with connect(path) as connection:
+            before = connection.total_changes
             for record in records:
                 if upsert_agent_run(
                     connection,
@@ -1308,20 +1324,13 @@ def poll_activity(
                     last_seen_at=record.last_seen_at,
                 ):
                     new += 1
+            changed = connection.total_changes - before
             cleared = _clear_unseen_live_runs(connection, {record.id for record in records})
-    if new > 0 or cleared > 0:
+    if changed > 0 or cleared > 0:
         if collector is None:
             if cleared > 0:
                 nudge_quota_lanes(path)
-            try:
-                from dataclasses import replace as _replace
-                from spend_app.config import load_settings as _load_settings
-                from spend_app.pricing import PricingEngine as _PricingEngine
-                from spend_app.setup_wizard import maybe_run_configured_spoke_sync
-                _s = _replace(_load_settings(), database_path=path)
-                maybe_run_configured_spoke_sync(_s, _PricingEngine.default())
-            except Exception:
-                pass
+            _sync_after_update(path, kind="activity", settings=settings, pricing=pricing)
         try:
             from spend_app.sync import STREAM_BROKER
             STREAM_BROKER.publish({"type": "activity", "new": new, "cleared": cleared, "at": polled_at})

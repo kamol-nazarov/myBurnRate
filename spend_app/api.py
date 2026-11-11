@@ -150,12 +150,9 @@ def _content_security_policy() -> str:
 
 
 def _live_hud_html() -> str:
-    """Reload the HUD module so a design switch shows up on the next request."""
-    import importlib
-
+    """Render the HUD page, refreshing automatically when hud.py or hud.js changes on disk."""
     import spend_app.hud as hud
 
-    importlib.reload(hud)
     return hud.render_hud(dashboard=dashboard_enabled())
 
 
@@ -231,7 +228,7 @@ def create_app(
     def source_guidance():
         presence = {}
         with connect(settings.database_path) as connection:
-            return source_reports(connection, current_now(), presence, settings=settings)
+            return source_reports(connection, current_now(), presence, settings=settings, pricing=pricing)
     resource_stack = ExitStack()
     web_root = Path(resource_stack.enter_context(as_file(files("spend_web"))))
 
@@ -253,13 +250,19 @@ def create_app(
         try:
             yield
         finally:
-            await asyncio.to_thread(bounded_reads.close)
-            if scheduler:
-                scheduler.shutdown(wait=False)
-            resource_stack.close()
+            try:
+                if scheduler:
+                    await asyncio.to_thread(scheduler.shutdown, wait=False)
+            finally:
+                try:
+                    await asyncio.to_thread(bounded_reads.close)
+                finally:
+                    resource_stack.close()
 
     app = FastAPI(title="BURNRATE", version=__version__, lifespan=lifespan)
     app.state.history_demand = history_demand
+    app.state.scheduler = scheduler
+    app.state.collector_worker = getattr(scheduler, "collector_worker", None)
     from spend_app.connections import Store
     Store(settings.database_path).bootstrap()
     from spend_app.connection_api import connection_router
@@ -298,7 +301,11 @@ def create_app(
 
     @app.middleware("http")
     async def access_boundary(request, call_next):
-        from spend_app.connection_api import access_allowed
+        import hmac as _hmac
+        from spend_app.connection_api import access_allowed, csrf_mutation_allowed, trusted
+
+        if not csrf_mutation_allowed(request):
+            return JSONResponse({"error": "Request rejected: use the configured BURNRATE origin."}, status_code=403)
         if not access_allowed(request, _access_token):
             return JSONResponse({"error": "Authentication required for the API"}, status_code=401)
         auth = request.headers.get("authorization", "")
@@ -306,7 +313,21 @@ def create_app(
             from spend_app.sync import authenticate_machine_token
 
             authenticate_machine_token(settings.database_path, auth[7:].strip())
-        return await call_next(request)
+        response = await call_next(request)
+        if _access_token and request.method == "GET" and request.url.path in {"/", "/hud", "/setup"}:
+            query_tok = request.query_params.get("token", "").strip()
+            bearer_tok = auth[7:].strip() if auth.startswith("Bearer ") else ""
+            candidate = query_tok or bearer_tok
+            if candidate and _hmac.compare_digest(candidate, _access_token) and trusted(request, mutation=False):
+                response.set_cookie(
+                    "burnrate_access",
+                    _access_token,
+                    httponly=True,
+                    samesite="strict",
+                    path="/api",
+                    secure=request.url.scheme == "https",
+                )
+        return response
 
     @app.exception_handler(ValueError)
     async def value_error_handler(_request, exc: ValueError):
@@ -560,8 +581,14 @@ def create_app(
         }
 
     @app.get("/healthz")
-    async def healthz() -> dict:
-        return {"status": "ok"}
+    async def healthz(supervisor: bool = False) -> dict:
+        if not supervisor:
+            return {"status": "ok"}
+        from spend_app.freshness import heartbeat
+
+        return {"status": "ok", "application": "burnrate", "pid": os.getpid(),
+                "collectorEnabled": scheduler is not None,
+                "ingest": heartbeat(current_now()) if scheduler is not None else None}
 
     @app.get("/")
     def spend_frontend(
@@ -604,7 +631,7 @@ def create_app(
 
         if os.getenv("BURNRATE_CENTRAL_SERVER", "").strip().lower() in {"1", "true", "yes"}:
             return {"ok": False, "reason": "central_server"}
-        # A demo in a browser must not move or resize the real desktop HUD.
+        # A demo in a browser must not open or control the real desktop HUD.
         if demo_mode():
             return {"ok": False, "reason": "demo"}
         try:
@@ -612,6 +639,8 @@ def create_app(
         except Exception:
             body = {}
         action = str((body or {}).get("action") or "open").strip().lower()
+        if action not in {"open", "show", "pin"}:
+            return {"ok": False, "reason": "use_tauri_ipc"}
         repo_root = Path(__file__).resolve().parents[1]
         data_root = Path(os.getenv("LOCALAPPDATA") or (Path.home() / "AppData" / "Local")) / "BURNRATE"
         candidates = [
@@ -620,107 +649,20 @@ def create_app(
             repo_root / "src-tauri" / "target" / "debug" / "burnrate-desktop.exe",
         ]
         exe_path = next((p for p in candidates if p.is_file()), None)
-        if sys.platform == "win32" and action in {"pin", "unpin", "open", "show", "hide", "resize", "drag"}:
-            pinned = action != "unpin"
+        if sys.platform == "win32":
             try:
                 import ctypes
-                from ctypes import wintypes
 
                 user32 = ctypes.windll.user32
-                dwmapi = ctypes.windll.dwmapi
-                user32.GetWindowTextLengthW.argtypes = [ctypes.c_ssize_t]
-                user32.GetWindowTextLengthW.restype = ctypes.c_int
-                user32.GetWindowTextW.argtypes = [ctypes.c_ssize_t, wintypes.LPWSTR, ctypes.c_int]
-                user32.GetWindowTextW.restype = ctypes.c_int
-                user32.GetClassNameW.argtypes = [ctypes.c_ssize_t, wintypes.LPWSTR, ctypes.c_int]
-                user32.GetClassNameW.restype = ctypes.c_int
-                user32.GetWindowLongW.argtypes = [ctypes.c_ssize_t, ctypes.c_int]
-                user32.GetWindowLongW.restype = ctypes.c_long
-                user32.SetWindowLongW.argtypes = [ctypes.c_ssize_t, ctypes.c_int, ctypes.c_long]
-                user32.SetWindowLongW.restype = ctypes.c_long
-                user32.ShowWindow.argtypes = [ctypes.c_ssize_t, ctypes.c_int]
-                user32.ShowWindow.restype = wintypes.BOOL
-                user32.PostMessageW.argtypes = [ctypes.c_ssize_t, wintypes.UINT, ctypes.c_size_t, ctypes.c_ssize_t]
-                user32.SetWindowPos.argtypes = [
-                    ctypes.c_ssize_t,
-                    ctypes.c_ssize_t,
-                    ctypes.c_int,
-                    ctypes.c_int,
-                    ctypes.c_int,
-                    ctypes.c_int,
-                    wintypes.UINT,
-                ]
-                user32.SetWindowPos.restype = wintypes.BOOL
-                user32.GetDpiForWindow.argtypes = [ctypes.c_ssize_t]
-                user32.GetDpiForWindow.restype = wintypes.UINT
-                WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, ctypes.c_ssize_t, ctypes.c_ssize_t)
-                found_hwnds = []
-
-                def _cb(hwnd, _lparam):
-                    length = user32.GetWindowTextLengthW(hwnd)
-                    if length > 0:
-                        buf = ctypes.create_unicode_buffer(length + 1)
-                        user32.GetWindowTextW(hwnd, buf, length + 1)
-                        title = buf.value or ""
-                        if "Sidecar HUD" in title:
-                            cls_buf = ctypes.create_unicode_buffer(128)
-                            user32.GetClassNameW(hwnd, cls_buf, 128)
-                            if (cls_buf.value or "") == "Tauri Window":
-                                found_hwnds.append(hwnd)
-                    return True
-
-                user32.EnumWindows(WNDENUMPROC(_cb), 0)
-                if found_hwnds:
-                    for hwnd in found_hwnds:
-                        user32.SetWindowLongW(hwnd, -16, ctypes.c_long(0x96000000 - 0x100000000))
-                        pref = ctypes.c_int(2)
-                        dwmapi.DwmSetWindowAttribute(ctypes.c_ssize_t(hwnd), 33, ctypes.byref(pref), 4)
-                        if action == "hide":
-                            user32.ShowWindow(hwnd, 0)
-                        elif action == "drag":
-                            import threading, time
-                            def _drag_loop(target_hwnd):
-                                pt_start = wintypes.POINT()
-                                rc_start = wintypes.RECT()
-                                if not user32.GetCursorPos(ctypes.byref(pt_start)) or not user32.GetWindowRect(target_hwnd, ctypes.byref(rc_start)):
-                                    return
-                                lx, ly = rc_start.left, rc_start.top
-                                while (user32.GetAsyncKeyState(0x01) & 0x8000) != 0:
-                                    pt_cur = wintypes.POINT()
-                                    if user32.GetCursorPos(ctypes.byref(pt_cur)):
-                                        nx = rc_start.left + (pt_cur.x - pt_start.x)
-                                        ny = rc_start.top + (pt_cur.y - pt_start.y)
-                                        if nx != lx or ny != ly:
-                                            lx, ly = nx, ny
-                                            user32.SetWindowPos(target_hwnd, 0, nx, ny, 0, 0, 0x0001 | 0x0004 | 0x0010)
-                                    time.sleep(0.004)
-                            threading.Thread(target=_drag_loop, args=(hwnd,), daemon=True).start()
-                        elif action == "resize":
-                            w = int(float((body or {}).get("width") or 440))
-                            h = int(float((body or {}).get("height") or 580))
-                            dpi = user32.GetDpiForWindow(hwnd) or 96
-                            pw = max(240, int(round(w * dpi / 96.0)))
-                            ph = max(140, int(round(h * dpi / 96.0)))
-                            user32.SetWindowPos(hwnd, 0, 0, 0, pw, ph, 0x0002 | 0x0004 | 0x0010 | 0x0020)
-                        else:
-                            if action in {"open", "show"}:
-                                user32.ShowWindow(hwnd, 5)
-                            ins = -1 if pinned else -2
-                            user32.SetWindowPos(hwnd, ins, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010 | 0x0020 | 0x0040)
-                    return {"ok": True, "pinned": pinned, "nativeFound": True, "count": len(found_hwnds)}
-            except Exception as exc:
-                return {"ok": False, "error": str(exc)}
-        if exe_path is not None and action in {"open", "show", "pin"}:
+                hwnd = user32.FindWindowW("Tauri Window", "BURNRATE \u00b7 Sidecar HUD")
+                if hwnd:
+                    user32.ShowWindow(hwnd, 5)
+                    user32.SetForegroundWindow(hwnd)
+                    return {"ok": True, "pinned": True, "nativeFound": True}
+            except Exception:
+                pass
+        if exe_path is not None:
             try:
-                chk = subprocess.run(
-                    ["tasklist", "/FI", "IMAGENAME eq burnrate-desktop.exe", "/NH"],
-                    capture_output=True,
-                    text=True,
-                    timeout=2,
-                    creationflags=0x08000000 if sys.platform == "win32" else 0,
-                )
-                if "burnrate-desktop.exe" in (chk.stdout or "").lower():
-                    return {"ok": True, "pinned": True, "alreadyRunning": True}
                 si = None
                 if sys.platform == "win32":
                     si = subprocess.STARTUPINFO()
@@ -816,4 +758,13 @@ def create_app(
     return app
 
 
-app = create_app()
+_DEFAULT_APP: FastAPI | None = None
+
+
+def __getattr__(name: str):
+    global _DEFAULT_APP
+    if name == "app":
+        if _DEFAULT_APP is None:
+            _DEFAULT_APP = create_app()
+        return _DEFAULT_APP
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

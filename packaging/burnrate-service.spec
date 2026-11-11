@@ -32,7 +32,20 @@ a = Analysis(
     pathex=[str(ROOT)],
     datas=datas,
     hiddenimports=hiddenimports,
-    excludes=["tkinter", "pytest", "_pytest", "IPython"],
+    excludes=[
+        "tkinter",
+        "pytest",
+        "_pytest",
+        "IPython",
+        "unittest",
+        "pydoc",
+        "doctest",
+        "xmlrpc",
+        "curses",
+        "lib2to3",
+        "idlelib",
+        "turtledemo",
+    ],
     noarchive=False,
 )
 pyz = PYZ(a.pure)

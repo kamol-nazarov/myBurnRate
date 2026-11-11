@@ -13,7 +13,7 @@ from spend_app.adapters.opencode_schema import count
 from spend_app.source_health import quarantine
 from spend_app.timeutil import parse_utc
 
-PARSER_VERSION = "codex-rollout-4"
+PARSER_VERSION = "codex-rollout-5"
 ORIGINATORS = frozenset({"Codex Desktop", "codex_cli_rs", "codex-tui", "codex_exec", "T3 Code", "codex_sdk_ts"})
 KINDS = frozenset({"cli", "exec", "vscode"})
 
@@ -86,6 +86,14 @@ def reduce_records(records, health, fallback_session):
     previous = None
     accounted = (0, 0, 0, 0)
     accounted_total = 0
+    # Last-only records can occur between cumulative snapshots. Their usage
+    # is already emitted, so advance the next delta's baseline by that usage
+    # rather than billing it again when the cumulative counter returns.
+    pending_values = (0, 0, 0, 0)
+    pending_total = 0
+    pending_complete = True
+    pending_known = (True, True, True, True)
+    pending_reasoning = 0
     latest_time = None
     epoch = "initial"
     legacy_index = 0
@@ -180,6 +188,16 @@ def reduce_records(records, health, fallback_session):
         form = "last"
         if cumulative:
             base = previous or {"values": accounted, "known": (True, True, True, True), "total": accounted_total, "complete": True, "reasoning": 0}
+            if previous is not None and pending_total:
+                base = {
+                    **previous,
+                    "values": tuple(a + b for a, b in zip(previous["values"], pending_values)),
+                    "known": tuple(a and b for a, b in zip(previous["known"], pending_known)),
+                    "total": previous["total"] + pending_total,
+                    "complete": previous["complete"] and pending_complete,
+                    "reasoning": (previous["reasoning"] + pending_reasoning
+                                  if previous["reasoning"] is not None and pending_reasoning is not None else None),
+                }
             delta_total = cumulative["total"] - base["total"]
             if delta_total < 0:
                 # An evidenced hard reset starts with last == the new totals.
@@ -203,6 +221,8 @@ def reduce_records(records, health, fallback_session):
                     values = cumulative["values"]
                     observations[key] = replace(observations[key], row=replace(row, input_tokens=values[0], cached_input_tokens=values[1], cache_write_tokens=values[2], output_tokens=values[3], unclassified_tokens=0, telemetry_complete=True))
                 previous = cumulative
+                pending_values, pending_total = (0, 0, 0, 0), 0
+                pending_complete, pending_known, pending_reasoning = True, (True, True, True, True), 0
                 continue
             values = tuple(value - prior for value, prior in zip(cumulative["values"], base["values"]))
             complete = cumulative["complete"] and base["complete"] and min(values) >= 0
@@ -217,6 +237,8 @@ def reduce_records(records, health, fallback_session):
                 partial = tuple(value if known[i] and prior_known[i] and value >= 0 else 0 for i, value in enumerate(values))
                 selected = {"values": partial, "total": delta_total, "complete": False, "reasoning": None}
             previous = cumulative
+            pending_values, pending_total = (0, 0, 0, 0), 0
+            pending_complete, pending_known, pending_reasoning = True, (True, True, True, True), 0
             form = "cumulative_delta"
         else:
             stamp = when.isoformat()
@@ -247,6 +269,17 @@ def reduce_records(records, health, fallback_session):
         earlier = observations.get(key)
         old_values = (earlier.row.input_tokens, earlier.row.cached_input_tokens, earlier.row.cache_write_tokens, earlier.row.output_tokens) if earlier else (0, 0, 0, 0)
         old_total = earlier.row.input_tokens + earlier.row.cache_write_tokens + earlier.row.output_tokens + earlier.row.unclassified_tokens if earlier else 0
+        if cumulative is None and previous is not None:
+            if earlier and dict(earlier.components).get("counter_scope"):
+                components = earlier.components
+            elif not earlier and selected["total"]:
+                # This last-only request occupies the next known interval.
+                # Retaining it in the counter ledger also lets a full replay
+                # refine an older, inflated interval when upgrading parsers.
+                start = previous["total"] + pending_total
+                components = (("counter_scope", stable_id(session["id"], epoch)),
+                              ("counter_start", start), ("counter_end", start + selected["total"]),
+                              ("counter_reset", epoch != "initial"))
         if earlier and old_values == values and old_total == selected["total"]:
             components = tuple({**dict(earlier.components), **dict(components)}.items())
         observations[key] = Observation(row, (), when.timestamp(), form, components=components)
@@ -254,6 +287,15 @@ def reduce_records(records, health, fallback_session):
             aliases.setdefault(key, []).append(legacy)
         accounted = tuple(a+b-old for a,b,old in zip(accounted, values, old_values))
         accounted_total += selected["total"] - old_total
+        if cumulative is None and previous is not None:
+            pending_values = tuple(a + b - old for a, b, old in zip(pending_values, values, old_values))
+            pending_total += selected["total"] - old_total
+            pending_complete = pending_complete and selected["complete"]
+            pending_known = tuple(a and b for a, b in zip(pending_known, selected["known"]))
+            old_reasoning = earlier.row.reasoning_tokens if earlier else 0
+            pending_reasoning = (pending_reasoning + selected["reasoning"] - old_reasoning
+                                 if pending_reasoning is not None and selected["reasoning"] is not None
+                                 and old_reasoning is not None else None)
         latest_time = when
         previous_key = key
         session["started_at"] = session["started_at"] or when

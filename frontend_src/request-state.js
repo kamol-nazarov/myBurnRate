@@ -3,11 +3,15 @@
 const pendingViews = {overview:null, detail:null, diagnostics:null};
 let overviewHealth = null;
 let navigationEpoch = 0;
-function entityIdentity(kind, key, windowKey) {
-  return JSON.stringify([kind, key, windowKey]);
+function queryIdentity(windowKey = state.window, machine = state.machine, tool = state.tool) {
+  return JSON.stringify([windowKey, machine || "all", tool || "all"]);
+}
+function entityIdentity(kind, key, windowKey, machine = state.machine, tool = state.tool) {
+  return JSON.stringify([kind, key, queryIdentity(windowKey, machine, tool)]);
 }
 function summaryMatches() {
-  return state.summary?.window?.key === state.window;
+  return state.summary?.window?.key === state.window
+    && state.summaryDataIdentity === queryIdentity();
 }
 function entityMatches() {
   return Boolean(state.entity && state.entityData
@@ -38,6 +42,9 @@ function updateDataValidity() {
   if (state.view !== "diagnostics" && !activeDataMatches()) {
     $("range-label").textContent = windowLabel(state.window) + " window · unavailable";
     if (state.view === "overview") $("window-note").textContent = "Waiting for the selected range";
+    // The navbar is outside the view's inert subtree. Do not keep another
+    // machine's totals visible there while the selected query is unavailable.
+    renderNavbar({navigation:{todayUsd:null, burnRatePerDay:null}, status:"loading"});
   }
 }
 function navigateView(view, entity = null) {
@@ -63,12 +70,14 @@ function ownsRender(request) {
     && request.generation === state.request
     && request.view === state.view
     && request.window === state.window
+    && request.queryIdentity === queryIdentity()
     && (request.view !== "detail" || request.identity === entityIdentity(state.entity?.kind, state.entity?.key, state.window));
 }
 function startViewRequest(view) {
   if (state.view !== view || pendingViews[view]) return null;
   const request = {
-    view, window:state.window, generation:++state.request,
+    view, window:state.window, machine:state.machine, tool:state.tool, generation:++state.request,
+    queryIdentity:queryIdentity(),
     kind:state.entity?.kind, key:state.entity?.key,
     identity:entityIdentity(state.entity?.kind, state.entity?.key, state.window),
     controller:new AbortController()

@@ -6,6 +6,17 @@
 provider: anthropic
 exactness: exact
 prices:
+  - model_key: claude-fable-5-2
+    # Released 2026-11-09. Standard API pricing, including the full 1M
+    # context window. Effort changes token consumption, not these rates;
+    # Fast mode is a separate tier and is not inferred from missing metadata.
+    input_per_mtok: 8.00
+    cached_input_per_mtok: 0.20
+    cache_write_per_mtok: 10.00
+    cache_write_1h_per_mtok: 16.00
+    output_per_mtok: 40.00
+    effective_from: 2026-11-09T00:00:00Z
+    source_url: https://platform.claude.com/docs/en/models/fable-5-2/overview
   # Claude Fable 5.1 succeeds Claude Fable 5 in the same tier at the same
   # per-token base price ($10 / $50 per MTok) with cache reads at $0.25/MTok
   # per the official pricing page. effective_from is the telemetry assertion
@@ -45,6 +56,10 @@ prices:
     effective_from: 2026-07-24T00:00:00Z
     source_url: https://platform.claude.com/docs/en/about-claude/pricing
   - model_key: claude-opus-5-5
+    # Antigravity's thinking levels select the same Opus model:
+    # https://antigravity.google/docs/models. Price at the underlying API
+    # rate; antigravity_local remains a derived source, never a billed charge.
+    aliases: [antigravity:claude-opus-5-5, antigravity:claude-opus-5-5-low, antigravity:claude-opus-5-5-medium, antigravity:claude-opus-5-5-high]
     # Released 2026-09-22. Standard card: $4 input, $0.20 cache read (0.05x),
     # $5 / $8 cache writes, $20 output. The full 1M window uses these rates.
     input_per_mtok: 4.00
@@ -104,7 +119,10 @@ prices:
   - model_key: claude-haiku-4-5
     # The dated snapshot is the same Haiku 4.5 card. Window is 200K; no
     # long-context tier is published.
-    aliases: [claude-haiku-4-5-20251001]
+    # OpenCode can preserve OpenRouter's model slug. It identifies Haiku 4.5
+    # (https://openrouter.ai/anthropic/claude-haiku-4.5/api); attribution here
+    # uses Anthropic's API list rates and remains derived for opencode_local.
+    aliases: [claude-haiku-4-5-20251001, opencode:anthropic/claude-haiku-4.5]
     input_per_mtok: 1.00
     cached_input_per_mtok: 0.10
     cache_write_per_mtok: 1.25

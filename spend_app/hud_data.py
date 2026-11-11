@@ -176,12 +176,15 @@ def recorded_usage(settings, pricing, *, now: datetime, machine: str = "all") ->
                                          cap_date=local_now.date(), machine=machine)
         burn, average = aggregate._seven_day_pace(connection, pricing, now, settings.timezone, machine)
         mix = aggregate.TokenMix()
-        recent = aggregate._load_events(connection, now - timedelta(days=1), now, "all", machine)
-        for event in [*recent, *aggregate._load_unpriced_events(connection, now - timedelta(days=1), now, "all", machine)]:
+        # The local day can exceed 24 hours at a DST transition. Keep the
+        # cache statistic's rolling day and the repository calendar day apart.
+        recent_start = now - timedelta(days=1)
+        recent = aggregate.usage_projection(connection, pricing, min(today_start, recent_start), now, machine=machine)
+        for event in recent:
+            if event["when"] < recent_start:
+                continue
             mix.add_event(event)
-        today_from = int(today_start.timestamp() * 1_000_000)
-        repos = repo_breakdown(aggregate._enrich(
-            [event for event in recent if (event.get("occurred_epoch_us") or 0) >= today_from], pricing))
+        repos = repo_breakdown([event for event in recent if event["when"] >= today_start])
         last_import = connection.execute(
             "SELECT MAX(finished_at) FROM ingest_runs WHERE status IN ('success','partial')"
         ).fetchone()[0]
@@ -215,28 +218,26 @@ def week_card(settings, pricing, *, now: datetime, machine: str = "all") -> dict
     start = now - timedelta(days=7)
     with connect(settings.database_path) as connection:
         parts = aggregate._tracked_value(connection, pricing, start, now, "all", settings.timezone, machine=machine)
-        events = aggregate._load_events(connection, start, now, "all", machine)
+        events = aggregate.usage_projection(connection, pricing, start, now, machine=machine)
     mix = aggregate.TokenMix()
     for event in events:
         mix.add_event(event)
     by_tool: dict[str, Decimal] = defaultdict(Decimal)
-    for event in aggregate._enrich(events, pricing):
+    for event in events:
         if event.get("spend") is not None:
             by_tool[event["tool_key"]] += event["spend"]
     total = sum(by_tool.values(), Decimal(0))
     tools = sorted(by_tool.items(), key=lambda item: item[1], reverse=True)[:4]
     return {
         "from": aggregate._iso(start), "to": aggregate._iso(now), "days": 7,
-        "usd": float(parts.usage_value) if parts.records else 0.0,
+        "usd": aggregate._money(parts.usage_value),
+        "complete": parts.complete,
         "planUsd": float(parts.subscriptions) if parts.subscriptions else None,
         "tokens": int(parts.tokens), "sessions": parts.sessions,
         "cacheReusePct": aggregate._cache_reuse(mix),
         "tools": [{"name": aggregate.tool_name(key), "usd": float(value),
                    "sharePct": float(value / total * 100) if total else None} for key, value in tools if value > 0],
     }
-
-
-REPO_TOKEN_FIELDS = ("input_tokens", "cached_input_tokens", "cache_write_tokens", "cache_write_1h_tokens", "output_tokens")
 
 
 def repo_breakdown(enriched: list[dict], *, limit: int = 5) -> dict:
@@ -246,11 +247,14 @@ def repo_breakdown(enriched: list[dict], *, limit: int = 5) -> dict:
     known project, are summed as ``other``.
     """
     totals: dict[str | None, list] = {}
+    valued_projects: set[str | None] = set()
     for event in enriched:
-        row = totals.setdefault(event.get("project") or None, [Decimal(0), 0])
+        project = event.get("project") or None
+        row = totals.setdefault(project, [Decimal(0), 0])
         if event.get("spend") is not None:
             row[0] += event["spend"]
-        row[1] += sum(int(event.get(field) or 0) for field in REPO_TOKEN_FIELDS)
+            valued_projects.add(project)
+        row[1] += aggregate._measured(event)
     total = sum((value for value, _tokens in totals.values()), Decimal(0))
     ranked = sorted(((name, row) for name, row in totals.items() if name), key=lambda item: (item[1][0], item[1][1]),
                     reverse=True)
@@ -258,11 +262,12 @@ def repo_breakdown(enriched: list[dict], *, limit: int = 5) -> dict:
     other_value = sum((row[0] for _name, row in rest), Decimal(0))
     return {
         "period": "today",
-        "totalUsd": float(total),
-        "rows": [{"project": name, "usd": float(value), "tokens": tokens,
-                  "sharePct": float(value / total * 100) if total else None}
+        "totalUsd": float(total) if valued_projects or not enriched else None,
+        "rows": [{"project": name, "usd": float(value) if name in valued_projects else None, "tokens": tokens,
+                  "sharePct": float(value / total * 100) if total and name in valued_projects else None}
                  for name, (value, tokens) in ranked[:limit]],
-        "other": {"usd": float(other_value), "tokens": sum(row[1] for _name, row in rest)} if rest else None,
+        "other": {"usd": float(other_value) if any(name in valued_projects for name, _row in rest) else None,
+                  "tokens": sum(row[1] for _name, row in rest)} if rest else None,
     }
 
 

@@ -59,8 +59,20 @@ jobs:
             --ignore=tests_spend/test_performance_phase2.py `
             -m "not real_db and not browser"
 
+  native-tests:
+    name: Native supervisor regressions
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test owned-process supervision
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib supervisor_tests
+
   lint:
-    name: ruff or compileall
+    name: Python correctness and product lint
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
@@ -77,36 +89,17 @@ jobs:
       - name: Refuse provider credentials
         run: ./.github/scripts/assert-no-provider-env.ps1
 
-      - name: Syntax gate (ruff if declared, else compileall)
+      - name: Required Python correctness checks
         run: |
           python -m pip install --upgrade pip
           python -m pip install ruff
           python -m compileall -q spend_app tests_spend
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-          $declared = $false
-          if (Test-Path -LiteralPath "pyproject.toml") {
-            if ((Get-Content -LiteralPath "pyproject.toml" -Raw) -match '(?m)^\s*ruff\b') {
-              $declared = $true
-            }
-          }
-          if (Test-Path -LiteralPath "requirements-spend.txt") {
-            if ((Get-Content -LiteralPath "requirements-spend.txt" -Raw) -match '(?m)^\s*ruff\b') {
-              $declared = $true
-            }
-          }
-
-          python -m ruff check spend_app tests_spend
-          $ruffCode = $LASTEXITCODE
-          if ($declared) {
-            if ($ruffCode -ne 0) { exit $ruffCode }
-            python -m ruff format --check spend_app tests_spend
-            exit $LASTEXITCODE
-          }
-          if ($ruffCode -ne 0) {
-            Write-Host "ruff is not a declared dependency yet; compileall is the gate."
-          }
-          exit 0
+          # Required across the entire tree, independent of dependency syntax.
+          # Broader lint/format rules remain mandatory for product modules below.
+          python -m ruff check --select E9,F63,F7,F82 spend_app tests_spend
+          exit $LASTEXITCODE
 
       - name: Lint new product modules and release helpers
         run: |
@@ -170,7 +163,7 @@ jobs:
             Write-Host "node not available; skipping node --check"
             exit 0
           }
-          $scripts = Get-ChildItem -Path spend_web -Filter *.js -File -ErrorAction SilentlyContinue
+          $scripts = Get-ChildItem -Path spend_web -Filter *.js -File -Recurse -ErrorAction SilentlyContinue
           if (-not $scripts) {
             Write-Host "no spend_web/*.js files"
             exit 0

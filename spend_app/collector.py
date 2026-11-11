@@ -18,6 +18,7 @@ import logging
 import multiprocessing
 import os
 import threading
+import time
 
 ENV_FLAG = "BURNRATE_COLLECTOR_PROCESS"
 # A first read of a large history can take many minutes; a pass that has not
@@ -25,6 +26,10 @@ ENV_FLAG = "BURNRATE_COLLECTOR_PROCESS"
 PASS_TIMEOUT_SECONDS = 60 * 60
 
 LOG = logging.getLogger("burnrate.collector")
+
+
+class CollectorStopped(RuntimeError):
+    """Collection was cancelled because the owning application is stopping."""
 
 
 def enabled() -> bool:
@@ -112,44 +117,78 @@ class CollectorWorker:
         self._context = multiprocessing.get_context("spawn")
         self._process = None
         self._connection = None
+        # Serialize passes separately from lifecycle changes: shutdown must
+        # never need the lock held while a worker is answering a request.
         self._lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        self._stopping = threading.Event()
 
-    def _ensure(self) -> None:
-        if self._process is not None and self._process.is_alive():
-            return
-        self._close()
-        parent, child = self._context.Pipe()
-        process = self._context.Process(
-            target=_worker_main, args=(child, self._settings), name="burnrate-collector", daemon=True)
-        process.start()
-        child.close()
-        self._process, self._connection = process, parent
-        LOG.info("collector worker started (pid %s)", process.pid)
-
-    def _close(self) -> None:
-        if self._connection is not None:
+    def _ensure(self):
+        with self._state_lock:
+            if self._stopping.is_set():
+                raise CollectorStopped("Collector is stopped")
+            if self._process is not None and self._process.is_alive():
+                return self._connection
+            self._dispose(self._connection, self._process)
+            self._process, self._connection = None, None
+            parent, child = self._context.Pipe()
+            process = self._context.Process(
+                target=_worker_main, args=(child, self._settings), name="burnrate-collector", daemon=True)
             try:
-                self._connection.close()
+                process.start()
+            except BaseException:
+                parent.close()
+                raise
+            finally:
+                child.close()
+            self._process, self._connection = process, parent
+            LOG.info("collector worker started (pid %s)", process.pid)
+            return parent
+
+    @staticmethod
+    def _dispose(connection, process) -> None:
+        if process is not None:
+            if process.is_alive():
+                process.kill()
+            process.join(timeout=5)
+        if connection is not None:
+            try:
+                connection.close()
             except OSError:
                 pass
-        if self._process is not None and self._process.is_alive():
-            self._process.kill()
-            self._process.join(timeout=5)
-        self._process, self._connection = None, None
+
+    def _close(self, expected_connection=None) -> None:
+        with self._state_lock:
+            if expected_connection is not None and self._connection is not expected_connection:
+                return
+            connection, process = self._connection, self._process
+            self._process, self._connection = None, None
+        self._dispose(connection, process)
 
     def run_pass(self, timeout: float = PASS_TIMEOUT_SECONDS) -> dict:
         with self._lock:
-            self._ensure()
+            connection = self._ensure()
             try:
-                self._connection.send({"op": "pass"})
-                if not self._connection.poll(timeout):
-                    raise TimeoutError(f"collector pass did not finish within {int(timeout)} s")
-                return self._connection.recv()
-            except (EOFError, OSError, TimeoutError):
+                if self._stopping.is_set():
+                    raise CollectorStopped("Collector is stopped")
+                connection.send({"op": "pass"})
+                deadline = time.monotonic() + timeout
+                while True:
+                    if self._stopping.is_set():
+                        raise CollectorStopped("Collector is stopped")
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError(f"collector pass did not finish within {int(timeout)} s")
+                    if connection.poll(min(remaining, 0.1)):
+                        break
+                if self._stopping.is_set():
+                    raise CollectorStopped("Collector is stopped")
+                return connection.recv()
+            except (EOFError, OSError, TimeoutError, CollectorStopped):
                 # A dead or stuck worker is replaced on the next pass.
-                self._close()
+                self._close(connection)
                 raise
 
     def stop(self) -> None:
-        with self._lock:
-            self._close()
+        self._stopping.set()
+        self._close()

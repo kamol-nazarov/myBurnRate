@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MILLION = Decimal("1000000")
 
 _OFFICIAL_SOURCE_HOSTS = (
+    "https://www.inceptionlabs.ai/",
     "https://developers.openai.com/",
     "https://platform.claude.com/",
     "https://cursor.com/",
@@ -22,6 +23,8 @@ _OFFICIAL_SOURCE_HOSTS = (
     "https://ai.google.dev/",
     "https://opencode.ai/",
     "https://api-docs.deepseek.com/",
+    "https://dev.meta.ai/",
+    "https://research.meta.ai/",
 )
 
 

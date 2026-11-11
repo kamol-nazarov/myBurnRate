@@ -18,7 +18,7 @@ from spend_app.subscriptions import (
 )
 
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 EXACT_USAGE_SOURCES = ("codex_local", "openai_admin", "claude_local", "anthropic_admin")
 
@@ -219,6 +219,7 @@ CREATE TABLE IF NOT EXISTS quotas (
 );
 
 CREATE INDEX IF NOT EXISTS idx_quotas_provider ON quotas(provider_key, polled_at);
+CREATE INDEX IF NOT EXISTS idx_quotas_lane_id ON quotas(provider_key, limit_key, id);
 
 CREATE TABLE IF NOT EXISTS agent_runs (
     id TEXT PRIMARY KEY,
@@ -568,12 +569,157 @@ def prune_ingest_runs(
     return int(cursor.rowcount or 0)
 
 
+QUOTA_RETENTION_DAYS = 30
+QUOTA_KEEP_PER_LANE = 5
+
+
+def prune_quotas(
+    connection: sqlite3.Connection,
+    *,
+    now: str | None = None,
+    retention_days: int = QUOTA_RETENTION_DAYS,
+    keep_per_lane: int = QUOTA_KEEP_PER_LANE,
+) -> int:
+    """Drop quota snapshots and pace samples older than ``retention_days``.
+
+    Always retains the newest ``keep_per_lane`` snapshots per ``(provider_key,
+    limit_key, sync-origin)`` so dormant or synced providers keep their last
+    known status.
+    """
+    stamp = now or utc_now()
+    cutoff = (
+        datetime.fromisoformat(stamp.replace("Z", "+00:00")) - timedelta(days=retention_days)
+    ).isoformat().replace("+00:00", "Z")
+    removed = 0
+    if connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='quotas'"
+    ).fetchone():
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_quotas_lane_id ON quotas(provider_key, limit_key, id)"
+        )
+        cur = connection.execute(
+            """
+            DELETE FROM quotas
+            WHERE polled_at < ?
+              AND id NOT IN (
+                  SELECT q.id FROM quotas AS q
+                  WHERE q.provider_key = quotas.provider_key
+                    AND q.limit_key = quotas.limit_key
+                    AND (CASE WHEN q.source LIKE 'sync:%' THEN q.source ELSE '' END)
+                        = (CASE WHEN quotas.source LIKE 'sync:%' THEN quotas.source ELSE '' END)
+                  ORDER BY q.id DESC LIMIT ?
+              )
+            """,
+            (cutoff, int(keep_per_lane)),
+        )
+        removed += int(cur.rowcount or 0)
+    if connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='quota_pace_samples'"
+    ).fetchone():
+        cur_pace = connection.execute(
+            "DELETE FROM quota_pace_samples WHERE sampled_at < ?",
+            (cutoff,),
+        )
+        removed += int(cur_pace.rowcount or 0)
+    return removed
+
+
+def prune_usage_changes(
+    connection: sqlite3.Connection,
+    *,
+    acknowledged_seq: int | None = None,
+) -> int:
+    """Compact ``usage_changes`` by removing Hub-acknowledged rows and superseded duplicates.
+
+    - When one or more ``sync.cursor.v1:*`` entries exist in ``app_meta``, any
+      journal entry ``seq <= min(cursor.change_seq)`` has already been received
+      by every paired Hub and is deleted.
+    - Superseded earlier entries for the same ``raw_id`` are also compacted to
+      their latest ``seq``, matching ``export_sync_batch``'s identity collapse.
+    """
+    if not connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='usage_changes'"
+    ).fetchone():
+        return 0
+    removed = 0
+    safe_seq: int | None = None
+    if connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_meta'"
+    ).fetchone():
+        rows = connection.execute(
+            "SELECT value FROM app_meta WHERE key >= 'sync.cursor.v1:' AND key < 'sync.cursor.v1;'"
+        ).fetchall()
+        seqs: list[int] = []
+        for (raw_val,) in rows:
+            try:
+                parsed = json.loads(raw_val)
+                seqs.append(int(parsed.get("change_seq") or 0))
+            except (ValueError, TypeError, AttributeError):
+                seqs.append(0)
+        if seqs:
+            safe_seq = min(seqs)
+    if safe_seq is None and acknowledged_seq is not None and acknowledged_seq > 0:
+        safe_seq = int(acknowledged_seq)
+    if safe_seq is not None and safe_seq > 0:
+        cur = connection.execute("DELETE FROM usage_changes WHERE seq <= ?", (safe_seq,))
+        removed += int(cur.rowcount or 0)
+    cur_dedup = connection.execute(
+        """
+        DELETE FROM usage_changes
+        WHERE seq NOT IN (
+            SELECT MAX(seq) FROM usage_changes GROUP BY raw_id
+        )
+        """
+    )
+    removed += int(cur_dedup.rowcount or 0)
+    return removed
+
+
 def initialize(path: Path) -> None:
     from spend_app.subscription_schema import upgrade_database
     upgrade_database(path, _initialize_base)
+    ensure_usage_change_journal(path)
     migrate_usage_keys(path)
     retire_cursor_usage(path)
     dedupe_grok_calls(path)
+
+
+def ensure_usage_change_journal(path: Path) -> None:
+    """Capture every local usage mutation, including SQL-based parser repairs.
+
+    Trigger writes commit or roll back with their event mutation. The journal
+    stores identities, not another copy of usage payloads; exporters resolve
+    the latest state in one read transaction. Imported machine rows never echo.
+    Existing rows seed the first sequence so legacy ID cursors can be upgraded.
+    """
+    marker = "usage_changes.initialized.v1"
+    with connect(path) as connection:
+        if connection.execute("SELECT 1 FROM app_meta WHERE key=?", (marker,)).fetchone():
+            return
+        connection.execute("BEGIN IMMEDIATE")
+        if connection.execute("SELECT 1 FROM app_meta WHERE key=?", (marker,)).fetchone():
+            return
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS usage_changes ("
+            "seq INTEGER PRIMARY KEY AUTOINCREMENT, raw_id TEXT NOT NULL)"
+        )
+        for table in ("usage_events", "unpriced_usage_events"):
+            for action, reference in (("INSERT", "NEW"), ("UPDATE", "NEW"), ("DELETE", "OLD")):
+                connection.execute(
+                    f"CREATE TRIGGER IF NOT EXISTS journal_{table}_{action.lower()} "
+                    f"AFTER {action} ON {table} WHEN {reference}.raw_id NOT LIKE 'm:%' "
+                    f"BEGIN INSERT INTO usage_changes(raw_id) VALUES({reference}.raw_id); END"
+                )
+            connection.execute(
+                f"CREATE TRIGGER IF NOT EXISTS journal_{table}_rename AFTER UPDATE OF raw_id ON {table} "
+                "WHEN OLD.raw_id != NEW.raw_id AND OLD.raw_id NOT LIKE 'm:%' "
+                "BEGIN INSERT INTO usage_changes(raw_id) VALUES(OLD.raw_id); END"
+            )
+            connection.execute(
+                f"INSERT INTO usage_changes(raw_id) SELECT raw_id FROM {table} "
+                "WHERE raw_id NOT LIKE 'm:%' ORDER BY id"
+            )
+        connection.execute("INSERT INTO app_meta(key,value) VALUES(?, '1')", (marker,))
 
 
 # Event identity and alias records (one or more per usage event) live in their
@@ -963,24 +1109,47 @@ def backfill_event_epochs(connection: sqlite3.Connection, *, batch_size: int = 5
     with a NULL epoch are visited, and repeated runs after an interrupted
     upgrade finish the remaining rows.
     """
+    if batch_size < 1:
+        raise ValueError("batch_size must be positive")
     updated = 0
+    invalid = {}
     for table in ("usage_events", "unpriced_usage_events"):
         columns = {row[1] for row in connection.execute(f"PRAGMA table_info('{table}')")}
         if "occurred_epoch_us" not in columns:
             continue
+        last_id = 0
+        invalid_count = 0
         while True:
             rows = connection.execute(
-                f"SELECT id, occurred_at FROM {table} WHERE occurred_epoch_us IS NULL LIMIT ?",
-                (batch_size,),
+                f"SELECT id, occurred_at FROM {table} WHERE occurred_epoch_us IS NULL AND id>? ORDER BY id LIMIT ?",
+                (last_id, batch_size),
             ).fetchall()
             if not rows:
                 break
             for row in rows:
+                last_id = row["id"]
+                epoch = _event_epoch(row["occurred_at"])
+                if epoch is None:
+                    invalid_count += 1
+                    continue
                 connection.execute(
                     f"UPDATE {table} SET occurred_epoch_us=? WHERE id=?",
-                    (_event_epoch(row["occurred_at"]), row["id"]),
+                    (epoch, row["id"]),
                 )
-            updated += len(rows)
+                updated += 1
+        if invalid_count:
+            invalid[table] = invalid_count
+    # Keep a bounded diagnostic, without retaining bad source text. Some unit
+    # callers use minimal in-memory tables with no app_meta.
+    if connection.execute("SELECT 1 FROM sqlite_master WHERE name='app_meta' AND type='table'").fetchone():
+        if invalid:
+            connection.execute(
+                "INSERT INTO app_meta(key,value) VALUES('migration.invalid_event_timestamps', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (json.dumps(invalid, sort_keys=True),),
+            )
+        else:
+            connection.execute("DELETE FROM app_meta WHERE key='migration.invalid_event_timestamps'")
     return updated
 
 

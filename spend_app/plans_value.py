@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
+from itertools import chain
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
@@ -182,6 +183,11 @@ def resolve_event_reference_usd(
     if is_api_only_source(event.get("source")):
         return None
     if is_charge_only(event) or is_noncomparable(event):
+        return None
+    # Stored zeroes in incomplete telemetry may represent missing cache or
+    # output components. Even an older computed value cannot certify that
+    # breakdown, and provider charges are not reference-value substitutes.
+    if not event.get("telemetry_complete", True):
         return None
 
     computed = _decimal(event.get("computed_cost_usd"))
@@ -470,7 +476,9 @@ def _accumulate_events(
             }
         )
 
-    for raw in events or ():
+    # Table placement records past pricing availability, not present value.
+    # Apply the same exclusions and event-time valuation to both tables.
+    for raw in chain(events or (), unpriced_events or ()):
         event = raw if isinstance(raw, Mapping) else _as_mapping(raw)
         tokens = measured_tokens(event)
         tool_tokens[_tool_key(event)] = tool_tokens.get(_tool_key(event), 0) + tokens
@@ -511,7 +519,7 @@ def _accumulate_events(
             continue
 
         amount = resolve_event_reference_usd(event, pricing=pricing)
-        incomplete = event.get("telemetry_complete") is False
+        incomplete = not event.get("telemetry_complete", True)
         if amount is None:
             summary.add_unpriced(tokens, model=_model_key(event), complete=not incomplete)
             stats = unpriced_model_stats.setdefault(
@@ -527,36 +535,6 @@ def _accumulate_events(
         model = _model_key(event)
         if model not in priced_model_refs:
             priced_model_refs.append(model)
-
-    for raw in unpriced_events or ():
-        event = raw if isinstance(raw, Mapping) else _as_mapping(raw)
-        tokens = measured_tokens(event)
-        tool_tokens[_tool_key(event)] = tool_tokens.get(_tool_key(event), 0) + tokens
-        summary.measured_tokens += tokens
-        summary.events += 1
-
-        if is_api_only_source(event.get("source")):
-            excluded_api_only += 1
-            note_exclusion(
-                event,
-                "api_only_source",
-                "API-only admin/invoice traffic is not subscription reference value",
-            )
-            continue
-        if is_noncomparable(event):
-            excluded_scope += 1
-            note_exclusion(
-                event,
-                "incompatible_scope",
-                "Conflicting or mixed scope cannot safely join this plan comparison",
-            )
-            continue
-
-        incomplete = event.get("telemetry_complete") is False
-        summary.add_unpriced(tokens, model=_model_key(event), complete=not incomplete)
-        stats = unpriced_model_stats.setdefault(_model_key(event), {"events": 0, "tokens": 0})
-        stats["events"] += 1
-        stats["tokens"] += tokens
 
     return {
         "summary": summary,

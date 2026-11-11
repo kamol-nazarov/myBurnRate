@@ -50,6 +50,7 @@ prices:
     effective_from: 2026-09-02T00:00:00Z
     source_url: https://cursor.com/docs/models-and-pricing
   - model_key: cursor:composer-2.5
+    aliases: [opencode:composer-2.5]
     # effective_from is Cursor's official Composer 2.5 launch date (2026-05-18).
     # https://cursor.com/blog/composer-2-5
     input_per_mtok: 0.50
@@ -59,6 +60,7 @@ prices:
     effective_from: 2026-05-18T00:00:00Z
     source_url: https://cursor.com/docs/models-and-pricing
   - model_key: cursor:composer-2.5-fast
+    aliases: [opencode:composer-2.5-fast]
     input_per_mtok: 3.00
     cached_input_per_mtok: 0.50
     cache_write_per_mtok: 0.00

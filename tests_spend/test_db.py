@@ -545,12 +545,11 @@ def test_pricing_files_sync_into_effective_dated_table(tmp_path: Path) -> None:
         written = sync_model_prices(connection, engine)
         count = connection.execute("SELECT COUNT(*) FROM model_prices").fetchone()[0]
         rows = connection.execute("SELECT model_key, source_url FROM model_prices").fetchall()
-    # openai 6 + daybreak 1 + auto-review 1 + anthropic 10 + xai 3 + cursor 10 + zai 3 + openrouter 1 + google 2 revisions
-    # + opencode-go 29 + deepseek 1
-    assert len(engine.prices) == 68  # Includes current routed-model cards.
-    assert written == 68
-    assert count == 68
-    assert len({row[0] for row in rows}) == 66
+    # Every effective-dated revision must survive the database sync as cards
+    # are added; aliases are lookup names, not additional billed models.
+    assert engine.prices
+    assert written == count == len(engine.prices)
+    assert {row[0] for row in rows} == {price.model_key for price in engine.prices}
     assert all(str(row[1]).startswith("https://") for row in rows)
 
 

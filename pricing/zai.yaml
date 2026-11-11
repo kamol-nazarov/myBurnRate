@@ -19,7 +19,7 @@ provider: zai
 exactness: derived
 prices:
   - model_key: opencode:glm-5.3-flash
-    aliases: [zcode:glm-5.3-flash]
+    aliases: [zcode:glm-5.3-flash, opencode:z-ai/glm-5.3-flash]
     input_per_mtok: 0.075
     cached_input_per_mtok: 0.015
     cache_write_per_mtok: 0.00
@@ -28,7 +28,7 @@ prices:
     effective_to: 2026-09-09T16:00:00Z
     source_url: https://docs.z.ai/guides/overview/pricing.md
   - model_key: opencode:glm-5.3-flash
-    aliases: [zcode:glm-5.3-flash]
+    aliases: [zcode:glm-5.3-flash, opencode:z-ai/glm-5.3-flash]
     input_per_mtok: 0.15
     cached_input_per_mtok: 0.03
     cache_write_per_mtok: 0.00

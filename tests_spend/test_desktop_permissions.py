@@ -35,9 +35,11 @@ def _handler_commands() -> set[str]:
 def test_hud_update_commands_are_allowed_for_the_service_origin() -> None:
     capability = json.loads((SRC_TAURI / "capabilities" / "default.json").read_text(encoding="utf-8"))
     assert "hud" in capability["windows"]
+    assert "main" in capability["windows"]
     assert any(url.startswith("http://127.0.0.1:") for url in capability["remote"]["urls"])
+    assert any(url.startswith("http://localhost:") for url in capability["remote"]["urls"])
     manifest = _manifest_commands()
     assert HUD_COMMANDS <= manifest
-    assert manifest <= _handler_commands()
+    assert manifest == _handler_commands()
     for command in manifest:
         assert "allow-" + command.replace("_", "-") in capability["permissions"], command

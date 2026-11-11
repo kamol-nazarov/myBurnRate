@@ -124,6 +124,7 @@ def default_setup_state() -> dict:
             "enabled": False,
             "lastSyncAt": None,
             "lastSyncError": None,
+            "usageChangesPending": False,
             "eventsPushed": 0,
         },
         "hudConfig": {
@@ -478,6 +479,7 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
             latest = read_setup_state(connection)
             latest["spokeConfig"]["lastSyncAt"] = utc_now()
             latest["spokeConfig"]["lastSyncError"] = None
+            latest["spokeConfig"]["usageChangesPending"] = bool(result.get("usageChangesPending"))
             latest["spokeConfig"]["eventsPushed"] = int(
                 latest["spokeConfig"].get("eventsPushed") or 0
             ) + int(result.get("eventsWritten") or 0)
@@ -575,7 +577,7 @@ def _call_central_server_account(
             else:
                 import httpx
 
-                with httpx.Client(timeout=8.0) as http:
+                with httpx.Client(timeout=8.0, trust_env=False) as http:
                     res = http.post(f"{base_url}{endpoint_path}", json=payload)
             data = res.json() if res.content else {}
             if res.status_code >= 400:
@@ -1099,6 +1101,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     "enabled": True,
                     "lastSyncAt": utc_now() if sync_result else state["spokeConfig"].get("lastSyncAt"),
                     "lastSyncError": None,
+                    "usageChangesPending": bool((sync_result or {}).get("usageChangesPending")),
                     "eventsPushed": int((sync_result or {}).get("eventsWritten") or 0),
                 }
                 saved = write_setup_state(connection, state)
@@ -1230,6 +1233,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     "enabled": True,
                     "lastSyncAt": utc_now() if sync_result else state["spokeConfig"].get("lastSyncAt"),
                     "lastSyncError": None,
+                    "usageChangesPending": bool((sync_result or {}).get("usageChangesPending")),
                     "eventsPushed": int((sync_result or {}).get("eventsWritten") or 0),
                 }
                 saved = write_setup_state(connection, state)
@@ -2271,6 +2275,7 @@ SETUP_WIZARD_HTML = """<!doctype html>
             let text = "This computer sends its usage to your hub at " + spoke.hubUrl;
             if (s.account?.username) text += " as " + s.account.username;
             if (spoke.lastSyncError) text += ". The last sync failed: " + spoke.lastSyncError;
+            else if (spoke.usageChangesPending) text += ". Update the hub to receive usage corrections and deletions.";
             else if (spoke.lastSyncAt) text += " · last sync " + ago(spoke.lastSyncAt);
             $("wiz-current-text").textContent = text + ".";
           }

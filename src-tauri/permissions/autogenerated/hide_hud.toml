@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-hide-hud"
+description = "Enables the hide_hud command without any pre-configured scope."
+commands.allow = ["hide_hud"]
+
+[[permission]]
+identifier = "deny-hide-hud"
+description = "Denies the hide_hud command without any pre-configured scope."
+commands.deny = ["hide_hud"]

@@ -11,7 +11,7 @@ exactness: derived
 prices:
   - model_key: deepseek:deepseek-flash
     # OpenCode records DeepSeek API usage as opencode:<model>.
-    aliases: [opencode:deepseek-flash]
+    aliases: [opencode:deepseek-flash, opencode:deepseek/deepseek-v4.1-flash-1017]
     input_per_mtok: 0.15
     cached_input_per_mtok: 0.003
     cache_write_per_mtok: 0.00

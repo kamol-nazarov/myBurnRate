@@ -167,7 +167,7 @@ def test_hud_api_surfaces_data_age(tmp_path: Path) -> None:
 def test_hud_polls_are_bounded_and_their_age_is_visible() -> None:
     html = render_hud()
     assert "AbortController" in html and "FETCH_TIMEOUT_MS" in html
-    assert "paintUpdated" in html and "DATA STALE" in html
+    assert "paintUpdated" in html and "Usage needs attention" in html
     assert 'id="hud-updated-foot"' in html
     # The indicator is driven by the server-reported data age, and a dead
     # usage poll alarms even while the live-meter poll still answers.
@@ -256,7 +256,7 @@ console.log(JSON.stringify({{fresh, staleData, deadUsage}}));
     assert report["fresh"] == {"text": "Updated 5s ago", "stale": False, "pill": ""}
     assert report["staleData"]["stale"] is True
     assert report["staleData"]["pill"] == "stale"
-    assert report["staleData"]["mini"] == "! DATA STALE"
+    assert report["staleData"]["mini"] == "Usage needs attention"
     assert "11m" in report["staleData"]["text"]
     assert report["deadUsage"]["stale"] is True
     assert report["deadUsage"]["pill"] == "stale"

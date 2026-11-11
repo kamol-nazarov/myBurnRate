@@ -165,14 +165,35 @@ class HistoryDemand:
             return activated
 
 
+class CollectionScheduler(BackgroundScheduler):
+    """Own the collector for the same lifetime as its scheduled jobs."""
+
+    def __init__(self, *, worker=None):
+        super().__init__(timezone="UTC")
+        self.collector_worker = worker
+        self.collection_stopping = threading.Event()
+
+    def shutdown(self, wait=True):
+        # Stop admission before interrupting a running collection. A queued
+        # local job also checks the event and cannot resurrect the worker.
+        self.collection_stopping.set()
+        if self.running:
+            self.pause()
+        try:
+            if self.collector_worker is not None:
+                self.collector_worker.stop()
+        finally:
+            super().shutdown(wait=wait)
+
+
 def create_scheduler(settings: Settings, pricing: PricingEngine, *, history_active=None) -> BackgroundScheduler:
     # ``history_active`` is accepted for compatibility; collection no longer
     # waits on viewers (see HistoryDemand).
-    scheduler = BackgroundScheduler(timezone="UTC")
     from spend_app import collector
     # The windowless service reads transcripts in a worker process so a long
     # pass cannot starve the web server (see spend_app.collector).
     worker = collector.CollectorWorker(settings) if collector.enabled() else None
+    scheduler = CollectionScheduler(worker=worker)
 
     local_ingest_interval = {
         "seconds": settings.local_ingest_interval_seconds,
@@ -182,6 +203,8 @@ def create_scheduler(settings: Settings, pricing: PricingEngine, *, history_acti
     }
 
     def local_ingest_jobs() -> None:
+        if scheduler.collection_stopping.is_set():
+            return
         # Collection is not gated on viewers: an unwatched machine keeps its
         # usage current (adapters skip unchanged inputs), and the heartbeat
         # keeps reporting truthfully so the watchdog still restarts a
@@ -232,10 +255,16 @@ def create_scheduler(settings: Settings, pricing: PricingEngine, *, history_acti
                 )
             except Exception as exc:
                 errors.append(exc)
+        if scheduler.collection_stopping.is_set():
+            return
         pass_finished(timings, _failed_sources(settings.database_path, timings), time.perf_counter() - began)
         try:
+            from spend_app.db import prune_quotas, prune_usage_changes
+
             with connect(settings.database_path) as connection:
                 prune_ingest_runs(connection)
+                prune_quotas(connection)
+                prune_usage_changes(connection)
         except Exception as exc:
             errors.append(exc)
         warm_summaries()
@@ -329,7 +358,7 @@ def create_scheduler(settings: Settings, pricing: PricingEngine, *, history_acti
         poll_quotas,
         "interval",
         seconds=settings.quota_poll_seconds,
-        kwargs={"database_path": settings.database_path},
+        kwargs={"database_path": settings.database_path, "settings": settings, "pricing": pricing},
         id="quota-poll",
         next_run_time=datetime.now(UTC) + timedelta(seconds=3),
         **poller_opts,
@@ -338,7 +367,7 @@ def create_scheduler(settings: Settings, pricing: PricingEngine, *, history_acti
         poll_activity,
         "interval",
         seconds=settings.activity_poll_seconds,
-        kwargs={"database_path": settings.database_path},
+        kwargs={"database_path": settings.database_path, "settings": settings, "pricing": pricing},
         id="activity",
         next_run_time=datetime.now(UTC) + timedelta(seconds=1),
         **poller_opts,

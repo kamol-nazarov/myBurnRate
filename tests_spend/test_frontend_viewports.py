@@ -13,6 +13,8 @@ from urllib.request import urlopen
 
 import pytest
 
+pytestmark = pytest.mark.browser
+
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "spend_web"

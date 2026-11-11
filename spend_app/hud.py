@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-HUD_HTML = r"""<!doctype html>
+from importlib.resources import files
+
+HUD_TEMPLATE = r"""<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8">
@@ -20,6 +22,7 @@ HUD_HTML = r"""<!doctype html>
         if (theme !== "dark" && theme !== "light") theme = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
         document.documentElement.dataset.theme = theme;
         try { if (localStorage.getItem("burnrate:hud-mini") === "1") document.documentElement.classList.add("is-mini"); } catch {}
+        try { if (localStorage.getItem("burnrate:hud-density") === "comfortable") document.documentElement.classList.add("is-comfortable"); } catch {}
         // A native shell with a transparent HUD window asks for glass; older
         // shells and the browser sidecar stay opaque.
         if (new URLSearchParams(location.search).get("glass") === "1") document.documentElement.classList.add("is-glass");
@@ -88,7 +91,7 @@ HUD_HTML = r"""<!doctype html>
         overflow-x: hidden;
         overflow-y: auto;
         user-select: none;
-        cursor: grab;
+        cursor: default;
         scrollbar-width: none;
         -webkit-font-smoothing: antialiased;
       }
@@ -112,6 +115,8 @@ HUD_HTML = r"""<!doctype html>
         transition: background-color 0.25s ease;
       }
       html.is-glass.is-mini .page { width: 296px; }
+      html.is-glass.is-comfortable .page { width: 420px; }
+      html.is-glass.is-mini.is-comfortable .page { width: 344px; }
       /* Whatever shows through shifts the card's tone, so quiet labels sit a
          step closer to the text colour than on the opaque card. */
       html.is-glass { --dim: #66625c; --muted: #55524c; }
@@ -123,12 +128,82 @@ HUD_HTML = r"""<!doctype html>
       .page.morphing { overflow: hidden; }
 
       /* Chrome row: brand on the left, icon controls on the right. */
-      .top { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 30px; }
+      .top { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 30px; cursor: grab; }
+      .top:active, .hud-mini-bar:active { cursor: grabbing; }
       .brand { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
       .brand img { width: 20px; height: 20px; border-radius: 5px; display: block; }
       .brand b { font: 700 12px/1 var(--fd); letter-spacing: 0.08em; }
       .brand b span { color: var(--accent); }
-      .hud-controls { display: inline-flex; align-items: center; gap: 1px; flex: none; }
+      .hud-controls { position: relative; display: inline-flex; align-items: center; gap: 1px; flex: none; }
+      .hud-more-wrap { position: relative; display: inline-flex; }
+      .hud-more-menu {
+        position: absolute;
+        top: calc(100% + 4px);
+        right: 0;
+        z-index: 35;
+        min-width: 176px;
+        padding: 4px;
+        border: 1px solid var(--tip-line);
+        border-radius: 9px;
+        background: var(--tip-bg);
+        box-shadow: var(--tip-shadow);
+        display: grid;
+        gap: 1px;
+        cursor: default;
+      }
+      .hud-more-menu .hud-btn {
+        display: flex;
+        align-items: center;
+        justify-content: flex-start;
+        gap: 9px;
+        width: 100%;
+        height: 30px;
+        padding: 0 9px;
+        color: var(--secondary);
+        font: 500 11.5px/1.2 var(--sans);
+        white-space: nowrap;
+      }
+      .hud-more-menu .hud-btn:hover { color: var(--text); }
+      .hud-menu-label { flex: 1; text-align: left; }
+      .hud-quick-plan {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-top: 10px;
+        padding: 7px 9px;
+        border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
+        border-radius: 8px;
+        background: var(--accent-soft);
+        font-size: 11px;
+        line-height: 1.35;
+      }
+      .hud-quick-plan-copy { min-width: 0; color: var(--text); overflow-wrap: anywhere; }
+      .hud-quick-plan-copy small { display: block; color: var(--muted); font-size: 10px; }
+      .hud-quick-plan-actions { flex: none; display: inline-flex; align-items: center; gap: 4px; }
+      .hud-quick-confirm {
+        height: 24px;
+        padding: 0 9px;
+        border: 1px solid var(--accent);
+        border-radius: 6px;
+        background: var(--accent);
+        color: #fff;
+        font: 600 10.5px/1 var(--sans);
+        cursor: pointer;
+      }
+      .hud-quick-dismiss {
+        width: 24px;
+        height: 24px;
+        border: 0;
+        border-radius: 6px;
+        background: transparent;
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1;
+        cursor: pointer;
+      }
+      .hud-quick-dismiss:hover { background: var(--hair); color: var(--text); }
+      html.is-mini .hud-more-wrap, html.is-mini .hud-quick-plan { display: none !important; }
       .hud-btn {
         display: inline-grid;
         place-items: center;
@@ -161,6 +236,11 @@ HUD_HTML = r"""<!doctype html>
         color: var(--dim);
       }
       .hud-status-pill {
+        border: 0;
+        background: none;
+        padding: 4px 0;
+        text-align: left;
+        cursor: pointer;
         display: inline-flex;
         align-items: center;
         gap: 6px;
@@ -294,23 +374,21 @@ HUD_HTML = r"""<!doctype html>
       .hud-poll-btn:disabled { opacity: 0.55; cursor: wait; }
       .hud-poll-btn.spinning svg { animation: hud-spin 0.75s linear infinite; }
       @keyframes hud-spin { to { transform: rotate(360deg); } }
-      .plan { padding: 9px 0 8px; border-bottom: 1px solid var(--hair); cursor: pointer; }
+      .plan { padding: 10px 0; border-bottom: 1px solid var(--hair); }
       .plan:last-child { border-bottom: 0; }
       .plan-head { display: flex; align-items: center; gap: 8px; min-width: 0; margin-bottom: 7px; }
       .mark { flex: none; width: 16px; height: 16px; display: grid; place-items: center; color: var(--text); }
       .mark svg { width: 15px; height: 15px; display: block; }
       .plan-head b { flex: none; font: 600 13.5px/1 var(--fd); letter-spacing: 0.01em; }
       .plan-head em { min-width: 0; margin-left: auto; overflow: hidden; color: var(--dim); font-size: 11px; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
-      .plan:hover .plan-head b { color: var(--accent); }
+      .plan-toggle:hover b { color: var(--accent); }
       .windows { display: grid; gap: 4px; }
-      .win { position: relative; display: grid; grid-template-columns: 62px minmax(0, 1fr) 46px 32px; align-items: center; gap: 9px; min-height: 18px; }
+      .win { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 5px 10px; padding: 5px 0; min-height: 24px; }
       .win-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .win-label .short { display: none; }
-      html.is-mini .win-label .long { display: none; }
-      html.is-mini .win-label .short { display: inline; }
       .plan-head b .short { display: none; }
-      html.is-mini .plan-head b .long { display: none; }
-      html.is-mini .plan-head b .short { display: inline; }
+      html.is-mini .plan-head b .long { display: inline; }
+      html.is-mini .plan-head b .short { display: none; }
       .meter { position: relative; height: 9px; }
       .meter::before { content: ""; position: absolute; inset: 0; background: repeating-linear-gradient(90deg, var(--track) 0 2px, transparent 2px 4px); }
       .meter.payg::before { background: repeating-linear-gradient(135deg, var(--track) 0 2px, transparent 2px 6px); }
@@ -334,41 +412,157 @@ HUD_HTML = r"""<!doctype html>
       .win.held b, .win.held .meter { opacity: 0.7; }
       html[data-dashboard="off"] #hud-expand-btn { display: none; }
       html[data-dashboard="off"] .plan, html[data-dashboard="off"] .hud-agent { cursor: default; }
-      html[data-dashboard="off"].is-mini .plan { cursor: pointer; }
-      .win .win-reset { color: var(--dim); font: 500 11px/1 var(--fd); font-style: normal; text-align: right; }
+      .win .win-reset { grid-column: 1 / -1; color: var(--muted); font: 500 11px/1.3 var(--sans); font-style: normal; text-align: left; }
       .win.warn .win-reset, .win.crit .win-reset { color: var(--secondary); }
       .hud-empty { padding: 12px 0 4px; color: var(--muted); font-size: 12px; }
       .foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--dim); font-size: 10.5px; }
       .hud-mini-bar, .mini-head { display: none !important; }
 
-      /* Mini: a glance strip. One line per plan, its tightest window only. */
+      /* Mini: keep each plan name readable above its tightest window. */
       html.is-mini .page { padding: 6px 10px 8px; }
       html.is-mini .brand, html.is-mini .date-row, html.is-mini .hero, html.is-mini .stats,
-      html.is-mini #hud-machines, html.is-mini .live-list, html.is-mini .plans-head, html.is-mini .foot,
+      html.is-mini .live-list, html.is-mini .plans > .plans-head, html.is-mini .foot,
       html.is-mini #hud-theme-btn, html.is-mini #hud-setup-btn, html.is-mini #hud-share-btn, html.is-mini #hud-expand-btn { display: none !important; }
-      html.is-mini .mini-head { display: flex !important; align-items: baseline; gap: 7px; min-width: 0; }
-      .mini-head strong { font: 400 21px/1 var(--fd); letter-spacing: -0.01em; }
+      html.is-mini .mini-head { display: grid !important; flex: 1; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 5px 7px; min-width: 0; }
+      .mini-head strong { font: 400 25px/1 var(--fd); letter-spacing: -0.01em; }
       .mini-head span { color: var(--dim); font-size: 10.5px; white-space: nowrap; }
       .mini-head .mini-live { color: var(--green); font: 600 9.5px/1 var(--fd); letter-spacing: 0.12em; text-transform: uppercase; }
-      .mini-head .mini-alert { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--accent); font: 600 9.5px/1 var(--fd); letter-spacing: 0.12em; text-transform: uppercase; }
-      .mini-head .mini-alert[data-state="error"] { color: var(--danger); }
-      .mini-head:has(.mini-alert:not([hidden])) .mini-today-label { display: none; }
+      .mini-head .mini-today-label { grid-column: 1 / -1; font-size: 11px; color: var(--muted); }
+      .mini-head .mini-live { grid-column: 1 / -1; }
       html.is-mini .top { min-height: 28px; }
+      html.is-mini .hud-controls { align-self: flex-start; }
       html.is-mini .plans { margin-top: 4px; border-top: 1px solid var(--line); }
-      html.is-mini .plan { display: grid; grid-template-columns: 74px minmax(0, 1fr); align-items: center; gap: 8px; padding: 6px 0; }
+      html.is-mini .plan { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; padding: 7px 0; }
       html.is-mini .plan-head { margin: 0; }
       html.is-mini .plan-head { gap: 6px; }
       html.is-mini .plan-head em { display: none; }
       html.is-mini .mark { width: 13px; height: 13px; }
       html.is-mini .mark svg { width: 13px; height: 13px; }
-      html.is-mini .plan-head b { flex: 1 1 auto; min-width: 0; overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-      html.is-mini .win:not(.is-peak) { display: none; }
-      html.is-mini .plan.open .win:not(.is-peak) { display: grid; }
-      html.is-mini .win { grid-template-columns: 34px minmax(0, 1fr) 36px 26px; gap: 6px; }
+      html.is-mini .plan-head b { flex: 1 1 auto; min-width: 0; font-size: 12px; white-space: normal; overflow-wrap: anywhere; }
+      html.is-mini .win { grid-template-columns: minmax(0, 1fr) auto; gap: 4px 8px; padding: 2px 0; }
       html.is-mini .win b { font-size: 14px; }
       html.is-mini .win b.payg { font-size: 9.5px; }
       html.is-mini .win b.bal { font-size: 12px; }
       html.is-mini .meter { height: 7px; }
+
+      /* Glance information stays visible at both densities. */
+      [hidden] { display: none !important; }
+      button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+      .hud-context-disclosure { margin-top: 8px; border-top: 1px solid var(--hair); }
+      .hud-context-summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0; cursor: pointer; list-style: none; }
+      .hud-context-summary::-webkit-details-marker { display: none; }
+      .hud-context-summary::after { content: "⌄"; color: var(--muted); }
+      .hud-context-summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+      .hud-context-panel { padding: 4px 0 7px; }
+      .hud-context-panel > .density-btn { display: block; margin-left: auto; }
+      .hud-context-copy { min-width: 0; display: grid; gap: 3px; }
+      #hud-machine-label { color: var(--secondary); font-size: 11px; font-weight: 600; overflow-wrap: anywhere; }
+      #hud-updated-compact { color: var(--muted); font-size: 10.5px; }
+      #hud-updated-compact.stale { color: var(--accent); }
+      .density-btn, .coverage-btn { flex: none; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--secondary); min-height: 28px; padding: 4px 8px; font-size: 11px; cursor: pointer; }
+      .coverage-btn { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 30%, var(--line)); background: var(--accent-soft); font: 600 10px/1.2 var(--sans); }
+      .hero small .coverage-btn { display: block; margin: 6px 0 0 auto; }
+      .density-btn:hover, .plan-pin:hover, .plan-detail:hover { background: var(--hair); color: var(--text); }
+      .attention-trigger { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; margin-top: 10px; border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line)); border-radius: 7px; background: var(--accent-soft); color: var(--accent); padding: 8px 10px; font: 600 11px/1.35 var(--sans); text-align: left; cursor: pointer; }
+      .attention-trigger::after { content: "›"; font-size: 17px; }
+      .attention-trigger[aria-expanded="true"]::after { transform: rotate(90deg); }
+      .attention-trigger[data-state="error"] { color: var(--danger); }
+      .hud-disclosure { margin-top: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); cursor: default; }
+      .hud-disclosure > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 9px; }
+      .hud-disclosure h2 { font: 600 13px/1.3 var(--sans); }
+      .hud-disclosure p, .hud-disclosure li { color: var(--secondary); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+      .hud-disclosure ul { padding-left: 16px; margin-top: 7px; }
+      .hud-issue + .hud-issue { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 10px; }
+      .hud-issue strong { display: block; font-size: 12px; margin-bottom: 4px; }
+      .issue-action { border: 1px solid var(--line); background: var(--sunken); padding: 6px 9px; margin-top: 8px; border-radius: 6px; font-size: 11px; min-height: 30px; cursor: pointer; }
+      .plan-head { gap: 4px; }
+      .plan-toggle { display: flex; align-items: center; gap: 7px; flex: 1; min-width: 0; padding: 2px 0; min-height: 30px; background: transparent; border: 0; text-align: left; cursor: pointer; }
+      .plan-toggle b { flex: 1; min-width: 0; overflow-wrap: anywhere; line-height: 1.3; }
+      .plan-chevron { flex: none; display: grid; place-items: center; width: 16px; height: 16px; overflow: hidden; line-height: 1; font-size: 16px; color: var(--muted); transition: transform .15s ease; }
+      .plan-toggle[aria-expanded="true"] .plan-chevron { transform: rotate(90deg); }
+      .plan-window-count { color: var(--muted); font: 500 10px/1.25 var(--sans); white-space: nowrap; }
+      .plan-pin, .plan-detail { flex: none; display: grid; place-items: center; width: 28px; height: 28px; border: 0; border-radius: 6px; color: var(--dim); background: transparent; cursor: pointer; }
+      .plan-pin[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
+      .plan-pin svg, .plan-detail svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+      .plan-extra { display: grid; gap: 4px; }
+      .win-label { font: 500 11px/1.3 var(--sans); letter-spacing: 0; text-transform: none; color: var(--secondary); white-space: normal; }
+      .win > .meter { grid-column: 1 / -1; grid-row: 2; }
+      .win-value { font-variant-numeric: tabular-nums; white-space: nowrap; }
+      .win-freshness { grid-column: 1 / -1; color: var(--accent); font: 500 10.5px/1.35 var(--sans); }
+      .balances { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 10px; }
+      .balances > .plans-head { padding-bottom: 6px; border: 0; }
+      .balance-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; padding: 9px 0; border-bottom: 1px solid var(--hair); }
+      .balance-row:last-child { border-bottom: 0; }
+      .balance-name { color: var(--text); font: 600 12px/1.3 var(--fd); overflow-wrap: anywhere; }
+      .balance-value { color: var(--text); font: 500 16px/1.2 var(--fd); text-align: right; white-space: nowrap; }
+      .balance-unit { color: var(--muted); font-size: 10px; text-align: right; }
+      .balance-runway { grid-column: 1; grid-row: 2; color: var(--muted); font-size: 10.5px; line-height: 1.4; }
+      .hud-urgent { margin-top: 9px; padding: 7px 9px; border-left: 2px solid var(--accent); color: var(--secondary); background: var(--accent-soft); font-size: 11px; line-height: 1.45; }
+      .hud-urgent strong { color: var(--accent); }
+      .hud-urgent[data-state="quiet"] { border-color: var(--line); background: transparent; color: var(--muted); }
+      .hud-urgent[data-state="critical"] { border-color: var(--danger); color: var(--danger); background: color-mix(in srgb, var(--danger) 6%, transparent); }
+      .balance-row.crit .balance-value { color: var(--danger); }
+      .balance-row.warn .balance-value { color: var(--accent); }
+      .plan-toggle:disabled { cursor: default; }
+      .win-number .short, .win-reset-value .short { display: none; }
+
+      /* Collapsed is a true glance strip, sized for the real eleven-provider
+         account. Detailed wording, pin controls and extra windows remain in
+         the expanded view or explicit disclosures. */
+      html.is-mini .page { padding: 6px 10px; }
+      html.is-mini .top { min-height: 34px; }
+      html.is-mini .hud-btn { width: 24px; height: 24px; }
+      html.is-mini .mini-head { gap: 3px 5px; }
+      html.is-mini .mini-head strong { font-size: 21px; }
+      html.is-mini .mini-today-label { grid-column: 1; grid-row: 2; font-size: 10px; }
+      html.is-mini .mini-live { grid-column: 2; grid-row: 2; font-size: 9px; }
+      html.is-mini .coverage-btn { min-height: 22px; padding: 3px 6px; }
+      html.is-mini .hud-context-disclosure { margin-top: 5px; }
+      html.is-mini .hud-context-summary { padding: 4px 0; }
+      html.is-mini #hud-machine-label { font-size: 10px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+      html.is-mini #hud-updated-compact { margin-left: auto; font-size: 10px; white-space: nowrap; }
+      html.is-mini .attention-trigger { margin-top: 4px; padding: 4px 7px; min-height: 24px; font-size: 10px; }
+      html.is-mini .hud-urgent { margin-top: 4px; padding: 4px 7px; font-size: 10px; }
+      html.is-mini .plan { grid-template-columns: 112px minmax(0, 1fr); align-items: center; gap: 6px; padding: 3px 0; min-height: 29px; }
+      html.is-mini .plan-toggle { min-height: 24px; gap: 4px; padding: 0; width: 100%; flex: 1 1 0; }
+      html.is-mini .plan-head { gap: 0; }
+      html.is-mini .plan-head b { font-size: 11.5px; line-height: 1.15; }
+      html.is-mini .plan-chevron { width: 16px; height: 16px; font-size: 12px; }
+      html.is-mini .plan-window-count, html.is-mini .plan-pin, html.is-mini .plan-detail { display: none; }
+      html.is-mini .windows, html.is-mini .plan-extra { gap: 2px; }
+      html.is-mini .win { grid-template-columns: 24px minmax(0, 1fr) 28px 24px; gap: 4px; padding: 0; min-height: 22px; }
+      html.is-mini .win-label { grid-column: 1; grid-row: 1; font: 500 9px/1.1 var(--fd); white-space: nowrap; }
+      html.is-mini .win-label .long, html.is-mini .win-number .long, html.is-mini .win-reset-value .long { display: none; }
+      html.is-mini .win-label .short, html.is-mini .win-number .short, html.is-mini .win-reset-value .short { display: inline; }
+      html.is-mini .win > .meter { grid-column: 2; grid-row: 1; height: 7px; }
+      html.is-mini .win-value { grid-column: 3; grid-row: 1; font-size: 12px; }
+      html.is-mini .win-unit, html.is-mini .win-reset-prefix, html.is-mini .win-freshness { display: none; }
+      html.is-mini .win .win-reset { grid-column: 4; grid-row: 1; text-align: right; font: 500 10px/1 var(--fd); }
+      html.is-mini .win.held .win-value { color: var(--accent); }
+      html.is-mini .balances { margin-top: 4px; padding-top: 7px; }
+      html.is-mini .balances > .plans-head { padding-bottom: 3px; font-size: 9px; }
+      html.is-mini .balance-row { grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; padding: 5px 0; }
+      html.is-mini .balance-name { font-size: 11.5px; }
+      html.is-mini .balance-value { font-size: 13px; }
+      html.is-mini .balance-runway, html.is-mini .balance-unit { font-size: 9px; }
+      html.is-mini.is-comfortable .plan { grid-template-columns: 132px minmax(0, 1fr); min-height: 34px; padding: 5px 0; }
+      html.is-mini.is-comfortable .plan-head b { font-size: 13px; }
+      html.is-mini.is-comfortable .win-label { font-size: 10px; }
+      html.is-mini.is-comfortable .win-value { font-size: 13px; }
+      html.is-comfortable .page { padding: 12px 16px 14px; }
+      html.is-comfortable .hud-btn { width: 32px; height: 32px; }
+      html.is-comfortable .plan { padding: 12px 0; }
+      html.is-comfortable .plan-toggle { min-height: 34px; }
+      html.is-comfortable .plan-head b, html.is-comfortable .balance-name { font-size: 14px; }
+      html.is-comfortable .plan-window-count, html.is-comfortable .win-freshness, html.is-comfortable #hud-updated-compact, html.is-comfortable .balance-runway { font-size: 12px; }
+      html.is-comfortable .win-label, html.is-comfortable .win .win-reset, html.is-comfortable .hud-disclosure p, html.is-comfortable .hud-disclosure li, html.is-comfortable .attention-trigger, html.is-comfortable #hud-machine-label { font-size: 12px; }
+      html.is-comfortable .plan-pin, html.is-comfortable .plan-detail { width: 32px; height: 32px; }
+      html.is-comfortable .win { padding: 6px 0; gap: 6px 10px; }
+      /* Tall provider lists and open details remain visibly scrollable. */
+      html { scrollbar-width: thin; scrollbar-color: var(--track) transparent; }
+      html::-webkit-scrollbar { display: block; width: 5px; }
+      html::-webkit-scrollbar-thumb { background: var(--track); border-radius: 3px; }
+      html.is-glass .page:not(.morphing) { max-width: 100%; }
 
       /* Tooltips: one solid card, a title row, an optional big figure,
          label/value rows and a muted footer. Never translucent. */
@@ -425,6 +619,7 @@ HUD_HTML = r"""<!doctype html>
       #hud-tip .safe { color: var(--green); }
       #hud-tip .tight { color: var(--accent); }
       #hud-tip .dry { color: var(--danger); }
+      html.is-comfortable .hud-more-menu .hud-btn { width: 100%; height: 32px; }
       @media (prefers-reduced-motion: reduce) {
         *, *::before, *::after { animation: none !important; transition: none !important; }
       }
@@ -437,27 +632,40 @@ HUD_HTML = r"""<!doctype html>
       <header class="top">
         <span class="brand"><img src="/favicon.svg" alt=""><b>BURN<span>RATE</span></b></span>
         <div class="mini-head" aria-live="polite">
-          <strong id="hud-mini-today">—</strong><span class="mini-today-label">today</span><span class="mini-live" id="hud-mini-live" hidden></span><span class="mini-alert" id="hud-mini-alert" hidden></span>
+          <strong id="hud-mini-today">—</strong>
+          <button type="button" id="hud-mini-coverage-btn" class="coverage-btn" aria-expanded="false" aria-controls="hud-coverage-panel" hidden>Partial</button>
+          <span class="mini-today-label">API value today</span><span class="mini-live" id="hud-mini-live" hidden></span>
         </div>
         <div class="hud-controls">
           <button type="button" class="hud-btn" id="hud-mini-btn" aria-label="Collapse HUD" aria-pressed="false" data-tip>
             <svg class="icon-fold" viewBox="0 0 24 24" aria-hidden="true"><g><path d="M14 10l7-7"/><path d="M20 10h-6V4"/></g><g><path d="M3 21l7-7"/><path d="M4 14h6v6"/></g></svg>
           </button>
-          <button type="button" class="hud-btn" id="hud-theme-btn" aria-label="Switch theme" aria-pressed="false" data-tip>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none"/></svg>
-          </button>
-          <button type="button" class="hud-btn" id="hud-share-btn" aria-label="Copy this week's card" data-tip>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V3M7 8l5-5 5 5M5 13v7h14v-7"/></svg>
-          </button>
-          <button type="button" class="hud-btn" id="hud-setup-btn" aria-label="Setup and connections" data-tip>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.2 2.2M16.2 16.2l2.2 2.2M5.6 18.4l2.2-2.2M16.2 7.8l2.2-2.2"/></svg>
-          </button>
           <button type="button" class="hud-btn active" id="hud-pin-btn" aria-label="Pin always on top" aria-pressed="true" data-tip>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16v5"/><path class="pin-head" d="M9 4h6l-1 5 3 3v3H7v-3l3-3z"/></svg>
           </button>
-          <button type="button" class="hud-btn" id="hud-expand-btn" aria-label="Open dashboard" data-tip>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>
-          </button>
+          <div class="hud-more-wrap" id="hud-more-wrap">
+            <button type="button" class="hud-btn" id="hud-more-btn" aria-label="More actions" aria-expanded="false" aria-controls="hud-more-menu" data-tip>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.5" fill="currentColor" stroke="none"/></svg>
+            </button>
+            <div class="hud-more-menu" id="hud-more-menu" role="menu" hidden>
+              <button type="button" class="hud-btn" id="hud-expand-btn" role="menuitem" aria-label="Open dashboard">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>
+                <span class="hud-menu-label">Open dashboard</span>
+              </button>
+              <button type="button" class="hud-btn" id="hud-setup-btn" role="menuitem" aria-label="Setup and connections">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.2 2.2M16.2 16.2l2.2 2.2M5.6 18.4l2.2-2.2M16.2 7.8l2.2-2.2"/></svg>
+                <span class="hud-menu-label">Setup &amp; connections</span>
+              </button>
+              <button type="button" class="hud-btn" id="hud-share-btn" role="menuitem" aria-label="Copy this week's card">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V3M7 8l5-5 5 5M5 13v7h14v-7"/></svg>
+                <span class="hud-menu-label">Copy weekly card</span>
+              </button>
+              <button type="button" class="hud-btn" id="hud-theme-btn" role="menuitem" aria-label="Switch theme" aria-pressed="false">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none"/></svg>
+                <span class="hud-menu-label" id="hud-theme-label">Switch theme</span>
+              </button>
+            </div>
+          </div>
           <button type="button" class="hud-btn" id="hud-hide-btn" aria-label="Hide HUD" data-tip>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg>
           </button>
@@ -466,14 +674,32 @@ HUD_HTML = r"""<!doctype html>
 
       <p class="date-row">
         <span class="date" id="hud-date">Today</span>
-        <span class="hud-status-pill" id="hud-status-pill" data-state="live"><i></i><span id="hud-status-text">LIVE</span></span>
+        <button type="button" class="hud-status-pill" id="hud-status-pill" data-state="live" aria-expanded="false" aria-controls="hud-attention-panel"><i></i><span id="hud-status-text">LIVE</span></button>
       </p>
       <button type="button" class="hud-update" id="hud-update" hidden></button>
       <p class="hud-notice" id="hud-notice" role="status" hidden></p>
 
       <section class="hero" id="hud-stat-today" aria-label="API-rate spend today">
         <strong id="hud-today">—</strong>
-        <small>API-rate value<br>since midnight</small>
+        <small>API value today<br>since midnight<button type="button" id="hud-coverage-btn" class="coverage-btn" aria-expanded="false" aria-controls="hud-coverage-panel" hidden>Partial</button></small>
+      </section>
+
+      <details class="hud-context-disclosure" id="hud-context-disclosure">
+        <summary class="hud-context-summary"><span id="hud-machine-label">All computers</span><span id="hud-updated-compact">Updating…</span></summary>
+        <div class="hud-context-panel">
+          <button type="button" class="density-btn" id="hud-density-btn" aria-pressed="false" aria-label="Use comfortable spacing">Compact</button>
+          <div id="hud-machines" role="radiogroup" aria-label="Computer filter"></div>
+        </div>
+      </details>
+      <button type="button" class="attention-trigger" id="hud-mini-alert" aria-expanded="false" aria-controls="hud-attention-panel" hidden>1 source needs attention</button>
+
+      <section class="hud-disclosure" id="hud-coverage-panel" aria-labelledby="hud-coverage-title" hidden>
+        <header><h2 id="hud-coverage-title">Pricing coverage</h2><button type="button" class="hud-btn" id="hud-coverage-close" aria-label="Close pricing coverage">×</button></header>
+        <div id="hud-coverage-detail"></div>
+      </section>
+      <section class="hud-disclosure" id="hud-attention-panel" aria-labelledby="hud-attention-title" hidden>
+        <header><h2 id="hud-attention-title">Source status</h2><button type="button" class="hud-btn" id="hud-attention-close" aria-label="Close source status">×</button></header>
+        <div id="hud-attention-content"></div>
       </section>
 
       <section class="stats" aria-label="Live BurnRate KPIs">
@@ -494,8 +720,6 @@ HUD_HTML = r"""<!doctype html>
         </article>
       </section>
 
-      <div id="hud-machines" role="radiogroup" aria-label="Computer filter"></div>
-
       <section class="live-list" id="hud-live" hidden aria-label="Running agents across computers">
         <div id="hud-agents"></div>
       </section>
@@ -505,14 +729,22 @@ HUD_HTML = r"""<!doctype html>
         <strong id="hud-mini-pct">—</strong>
       </div>
 
+      <div class="hud-quick-plan" id="hud-quick-plan" hidden></div>
+
       <section class="plans" aria-label="Subscription usage">
         <div class="plans-head">
           <span>Plans<span id="hud-quota-badge">—</span></span>
           <button type="button" class="hud-poll-btn" id="hud-poll-btn" data-tip><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg><span>Poll</span></button>
         </div>
+        <div class="hud-urgent" id="hud-urgent" hidden></div>
         <div id="hud-quotas">
           <p class="hud-empty">Waiting for subscription usage…</p>
         </div>
+      </section>
+
+      <section class="balances" id="hud-balances-section" aria-label="Pay-as-you-go balances" hidden>
+        <div class="plans-head"><span>Balances</span><span>Pay as you go</span></div>
+        <div id="hud-balances"></div>
       </section>
 
       <section class="repos" id="hud-repos" hidden aria-label="Today by repository">
@@ -530,1492 +762,42 @@ HUD_HTML = r"""<!doctype html>
     <div id="hud-tip" role="tooltip" aria-hidden="true"></div>
 
     <script>
-      (() => {
-        const $ = id => document.getElementById(id);
-        const root = document.documentElement;
-        // The full dashboard is optional (BURNRATE_ENABLE_DASHBOARD=1).
-        const dashboardOn = root.dataset.dashboard !== "off";
-        const glass = root.classList.contains("is-glass");
-        // True while the card animates between the full and mini layouts.
-        let morphing = false;
-        let selectedMachine = new URLSearchParams(location.search).get("machine") || "all";
-        let pinned = true;
-        try {
-          const savedPin = localStorage.getItem("burnrate:hud-pinned");
-          if (savedPin === "0") pinned = false;
-        } catch {}
-
-        const usd = v => {
-          const n = v == null || v === "" ? NaN : Number(v);
-          if (!Number.isFinite(n)) return "—";
-          return "$" + Math.round(n).toLocaleString("en-US");
-        };
-        const usd2 = v => {
-          const n = v == null || v === "" ? NaN : Number(v);
-          if (!Number.isFinite(n)) return "—";
-          return "$" + n.toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2});
-        };
-        // A balance short enough for the meter's value column; the tip shows cents.
-        const usdShort = v => {
-          const n = v == null || v === "" ? NaN : Number(v);
-          if (!Number.isFinite(n)) return "—";
-          if (n >= 1000) return "$" + (n / 1000).toFixed(1) + "K";
-          if (n >= 10) return "$" + Math.round(n);
-          return "$" + n.toFixed(2);
-        };
-        const tok = v => {
-          const n = v == null || v === "" ? NaN : Number(v);
-          if (!Number.isFinite(n)) return "—";
-          if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
-          if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
-          if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
-          return String(Math.round(n));
-        };
-        const pctText = value => value == null ? "—" : (value > 0 && value < 1 ? "<1%" : Math.round(value) + "%");
-        const esc = value => String(value ?? "").replace(/[&<>"']/g, ch => (
-          {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[ch]
-        ));
-        const fmtNum = v => {
-          const n = Number(v);
-          if (!Number.isFinite(n)) return "—";
-          if (Math.abs(n) >= 100) return Math.round(n).toLocaleString("en-US");
-          if (Math.abs(n) >= 10) return String(Math.round(n * 10) / 10);
-          return String(Math.round(n * 100) / 100);
-        };
-        const qtyText = (value, unit) => {
-          const n = Number(value);
-          if (!Number.isFinite(n)) return null;
-          const u = String(unit || "");
-          if (u === "usd") return usd2(n);
-          if (u === "pct" || u === "percent") return Math.round(n) + "%";
-          if (u === "credits") return fmtNum(n) + " credits";
-          if (u === "unavailable" || u === "") return fmtNum(n);
-          return fmtNum(n) + " " + u;
-        };
-        const tok1 = v => {
-          const n = v == null || v === "" ? NaN : Number(v);
-          if (!Number.isFinite(n)) return "—";
-          const a = Math.abs(n);
-          if (a >= 1e9) return (n / 1e9).toFixed(a >= 1e10 ? 1 : 2) + "B";
-          if (a >= 1e6) return (n / 1e6).toFixed(a >= 1e8 ? 0 : 1) + "M";
-          if (a >= 1e3) return (n / 1e3).toFixed(a >= 1e5 ? 0 : 1) + "K";
-          return String(Math.round(n));
-        };
-
-        // Tooltip markup. Every builder escapes its own text.
-        const T = {
-          head: (title, sub) => '<div class="tt-head"><b>' + esc(title) + "</b>" + (sub ? "<span>" + esc(sub) + "</span>" : "") + "</div>",
-          hero: (big, strong, side) => '<div class="tt-hero"><strong>' + esc(big) + "</strong><span>" +
-            (strong ? "<b>" + esc(strong) + "</b>" : "") + esc(side || "") + "</span></div>",
-          kv: rows => {
-            const body = rows.filter(Boolean).map(([key, value, cls, note]) =>
-              "<dt>" + esc(key) + "</dt><dd" + (cls ? ' class="' + cls + '"' : "") + ">" + esc(value) +
-              (note ? "<small>" + esc(note) + "</small>" : "") + "</dd>").join("");
-            return body ? '<dl class="tt-kv">' + body + "</dl>" : "";
-          },
-          line: (text, cls) => text ? '<p class="tt-line' + (cls ? " " + cls : "") + '">' + esc(text) + "</p>" : "",
-          section: (label, value) => '<div class="tt-section"><span>' + esc(label) + "</span>" + (value ? "<b>" + esc(value) + "</b>" : "") + "</div>",
-          sep: '<hr class="tt-sep">',
-          foot: text => text ? '<p class="tt-foot">' + esc(text) + "</p>" : ""
-        };
-
-        // An element's tip is built when shown (and rebuilt on every data
-        // refresh while open), so an open tip always shows current values.
-        const tipContent = new WeakMap();
-        function setTip(el, content, kind = "wide") {
-          if (!el) return;
-          tipContent.set(el, {content, kind});
-          el.setAttribute("data-tip", "");
-        }
-        const labelTip = (el, text) => setTip(el, text, "label");
-
-        const tipEl = $("hud-tip");
-        const TIP_DELAY_MS = 320;
-        const TIP_WARM_MS = 600;
-        const tip = {target: null, pending: null, timer: 0, leaveTimer: 0, restoreTimer: 0, hiddenAt: 0, x: -1, y: -1, inside: false, grown: false};
-        const tipUnderPointer = () => {
-          if (!tip.inside || tip.x < 0) return null;
-          const el = document.elementFromPoint(tip.x, tip.y);
-          return el ? el.closest("[data-tip]") : null;
-        };
-        function placeTip(target) {
-          const rect = target.getBoundingClientRect();
-          const tw = tipEl.offsetWidth;
-          const th = tipEl.offsetHeight;
-          const x = Math.min(Math.max(6, rect.left + rect.width / 2 - tw / 2), Math.max(6, window.innerWidth - tw - 6));
-          let y = rect.top - th - 6;
-          if (y < 6) {
-            y = rect.bottom + 6;
-            const bottom = y + th + 6;
-            if (bottom > window.innerHeight) {
-              // Glass: the window is transparent past the card, so it can
-              // grow downward for a tall tip instead of clipping it.
-              if (glass && !morphing) growWindowForTip(bottom);
-              else y = Math.max(6, window.innerHeight - th - 6);
-            }
-          }
-          tipEl.style.left = Math.round(x) + "px";
-          tipEl.style.top = Math.round(y) + "px";
-        }
-        function showTip(target, snap) {
-          const entry = target && target.isConnected ? tipContent.get(target) : null;
-          const value = entry ? (typeof entry.content === "function" ? entry.content() : entry.content) : "";
-          if (!value) { hideTip(); return; }
-          clearTimeout(tip.leaveTimer);
-          clearTimeout(tip.restoreTimer);
-          tip.target = target;
-          tipEl.className = "is-" + entry.kind + (snap ? " snap" : "");
-          tipEl.innerHTML = entry.kind === "label" ? esc(value) : value;
-          placeTip(target);
-          tipEl.classList.add("on");
-          tipEl.setAttribute("aria-hidden", "false");
-        }
-        function hideTip() {
-          clearTimeout(tip.timer);
-          clearTimeout(tip.leaveTimer);
-          tip.pending = null;
-          if (tip.target) tip.hiddenAt = Date.now();
-          tip.target = null;
-          tipEl.classList.remove("on", "snap");
-          tipEl.setAttribute("aria-hidden", "true");
-          if (tip.grown) {
-            clearTimeout(tip.restoreTimer);
-            tip.restoreTimer = setTimeout(() => {
-              if (tip.target) return;
-              tip.grown = false;
-              syncHudWindowSize(true);
-            }, 160);
-          }
-        }
-        function wantTip(target) {
-          if (morphing) { hideTip(); return; }
-          if (target && (target === tip.target || target === tip.pending)) { clearTimeout(tip.leaveTimer); return; }
-          clearTimeout(tip.timer);
-          tip.pending = null;
-          if (!target) {
-            // A short grace so crossing the gap between two rows moves the
-            // open tip instead of closing and reopening it.
-            if (tip.target) { clearTimeout(tip.leaveTimer); tip.leaveTimer = setTimeout(hideTip, 90); }
-            return;
-          }
-          if (tip.target || Date.now() - tip.hiddenAt < TIP_WARM_MS) { showTip(target, Boolean(tip.target)); return; }
-          tip.pending = target;
-          tip.timer = setTimeout(() => {
-            tip.pending = null;
-            const live = target.isConnected ? target : tipUnderPointer();
-            if (live && tip.inside) showTip(live, false);
-          }, TIP_DELAY_MS);
-        }
-        // After a re-render the hovered element may be a new node: follow the
-        // pointer to it, or close the tip when nothing tipped is under it.
-        function refreshTip() {
-          if (!tip.target) return;
-          const target = tip.target.isConnected && tip.target.matches(":hover") ? tip.target : tipUnderPointer();
-          if (target) showTip(target, true); else hideTip();
-        }
-        document.addEventListener("pointermove", event => { tip.x = event.clientX; tip.y = event.clientY; tip.inside = true; }, {passive: true});
-        document.addEventListener("pointerover", event => {
-          tip.inside = true;
-          tip.x = event.clientX;
-          tip.y = event.clientY;
-          wantTip(event.target instanceof Element ? event.target.closest("[data-tip]") : null);
-        });
-        const leaveWindow = () => { tip.inside = false; hideTip(); };
-        document.addEventListener("pointerout", event => { if (!event.relatedTarget) leaveWindow(); });
-        document.documentElement.addEventListener("pointerleave", leaveWindow);
-        document.addEventListener("pointerdown", hideTip, true);
-        window.addEventListener("wheel", hideTip, {passive: true});
-        window.addEventListener("scroll", hideTip, true);
-        window.addEventListener("blur", hideTip);
-        document.addEventListener("visibilitychange", () => { if (document.hidden) hideTip(); });
-        // Last line of defence against a tip left behind by a missed event.
-        setInterval(() => { if (tip.target && !(tip.target.isConnected && tip.target.matches(":hover"))) refreshTip(); }, 700);
-
-        function setStat(id, text) {
-          const el = $(id);
-          if (!el || el.textContent === text) return;
-          const first = el.textContent === "—";
-          el.textContent = text;
-          if (first) return;
-          el.classList.remove("tick");
-          void el.offsetWidth;
-          el.classList.add("tick");
-        }
-
-        async function tauriInvoke(cmd, args = {}) {
-          const internals = window.__TAURI_INTERNALS__;
-          if (internals && typeof internals.invoke === "function") {
-            try {
-              return await internals.invoke(cmd, args);
-            } catch {
-              return null;
-            }
-          }
-          return null;
-        }
-
-        document.addEventListener("mousedown", async event => {
-          if (event.button !== 0 || event.detail > 1) return;
-          if (event.target.closest("button, a, input, select, textarea, [role='button'], [role='radio'], .plan, .hud-agent, .hud-machine-chip")) return;
-          const handled = await tauriInvoke("start_hud_drag");
-          if (handled === null && !window.opener) {
-            try {
-              await fetch("/api/hud/native", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ action: "drag" })
-              });
-            } catch {}
-          }
-        });
-
-        function applyPinUi(stateVal) {
-          pinned = Boolean(stateVal);
-          try { localStorage.setItem("burnrate:hud-pinned", pinned ? "1" : "0"); } catch {}
-          const btn = $("hud-pin-btn");
-          if (btn) {
-            btn.classList.toggle("active", pinned);
-            btn.setAttribute("aria-pressed", String(pinned));
-          }
-        }
-        applyPinUi(pinned);
-        tauriInvoke("set_hud_pin", { pinned });
-
-        // An installed app checks for updates in the background and offers one here.
-        function showUpdate(version) {
-          const bar = $("hud-update");
-          if (!bar || !version || bar.disabled) return;
-          bar.textContent = "BURNRATE " + version + " is ready · install and restart";
-          bar.hidden = false;
-        }
-        $("hud-update").addEventListener("click", async () => {
-          const bar = $("hud-update");
-          bar.disabled = true;
-          bar.textContent = "Installing the update…";
-          // A successful install never answers: the app closes for the installer or restarts.
-          let reason = "";
-          try {
-            await window.__TAURI_INTERNALS__?.invoke?.("install_update");
-          } catch (error) {
-            reason = String(error?.message ?? error ?? "").trim();
-          }
-          if (reason.length > 120) reason = reason.slice(0, 119) + "…";
-          bar.disabled = false;
-          bar.textContent = "The update did not install" + (reason ? " (" + reason + ")" : "") + " · try again";
-        });
-        tauriInvoke("pending_update").then(showUpdate);
-        window.__TAURI__?.event?.listen?.("burnrate://update-available", event => showUpdate(event.payload));
-        labelTip($("hud-pin-btn"), () => pinned ? "Unpin from top" : "Keep on top");
-        labelTip($("hud-mini-btn"), () => isMini ? "Expand" : "Collapse");
-        labelTip($("hud-theme-btn"), () => root.dataset.theme === "dark" ? "Light theme" : "Dark theme");
-        labelTip($("hud-expand-btn"), "Open dashboard");
-        labelTip($("hud-setup-btn"), "Setup & connections");
-        labelTip($("hud-share-btn"), "Copy this week's card to share");
-        $("hud-share-btn").addEventListener("click", () => shareWeek());
-        // Setup is reachable from the HUD even with the dashboard off: the
-        // desktop app opens it in its main window, a browser in a new tab.
-        $("hud-setup-btn").addEventListener("click", async () => {
-          const internals = window.__TAURI_INTERNALS__;
-          if (internals && typeof internals.invoke === "function") {
-            try { await internals.invoke("open_setup_wizard"); return; } catch {}
-          }
-          window.open("/setup", "burnrate-setup");
-        });
-        labelTip($("hud-hide-btn"), "Hide · reopen from the tray");
-        labelTip($("hud-poll-btn"), "Poll every plan now");
-
-        $("hud-pin-btn").addEventListener("click", async () => {
-          const nextPin = !pinned;
-          const res = await tauriInvoke("set_hud_pin", { pinned: nextPin });
-          if (typeof res === "boolean") {
-            applyPinUi(res);
-            return;
-          }
-          try {
-            const resp = await fetch("/api/hud/native", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ action: nextPin ? "pin" : "unpin" })
-            });
-            const data = await resp.json();
-            applyPinUi(typeof data?.pinned === "boolean" ? data.pinned : nextPin);
-          } catch {
-            applyPinUi(nextPin);
-          }
-        });
-
-        $("hud-expand-btn").addEventListener("click", async () => {
-          const handled = await tauriInvoke("show_dashboard");
-          if (handled === null) window.open("/", "_blank");
-        });
-
-        $("hud-hide-btn").addEventListener("click", async () => {
-          const handled = await tauriInvoke("hide_hud");
-          if (handled === null) {
-            try {
-              await fetch("/api/hud/native", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ action: "hide" })
-              });
-            } catch {}
-            window.close();
-          }
-        });
-
-        async function openToolInDashboard(toolKey) {
-          if (!dashboardOn) return;
-          const clean = String(toolKey || "").trim();
-          try {
-            if (clean) {
-              localStorage.setItem("burnrate:focus-tool", JSON.stringify({ key: clean, ts: Date.now() }));
-            }
-          } catch {}
-          const targetUrl = clean ? "/?focusTool=" + encodeURIComponent(clean) : "/";
-          const handled = await tauriInvoke("show_dashboard");
-          if (handled === null) {
-            window.open(targetUrl, "burnrate-dashboard");
-          }
-        }
-
-        let isMini = root.classList.contains("is-mini");
-        let lastAppliedWidth = 0;
-        let lastAppliedHeight = 0;
-        const hudWidth = () => isMini ? 296 : 380;
-        // An opaque window frames the card with the body's 1px border; a
-        // glass card carries its own border inside its measured rect.
-        const frameExtra = glass ? 0 : 2;
-        const windowHeightFor = cardHeight => Math.max(160, Math.min(820, Math.ceil(cardHeight) + frameExtra));
-
-        async function setWindowSize(width, height) {
-          const handled = await tauriInvoke("set_hud_size", { width, height });
-          if (handled !== null) return;
-          if (window.opener) {
-            try { window.resizeTo(width + 16, height + 38); } catch {}
-            return;
-          }
-          try {
-            await fetch("/api/hud/native", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ action: "resize", width, height })
-            });
-          } catch {}
-        }
-
-        function measuredCardHeight() {
-          const shell = $("hud-shell");
-          return shell.getBoundingClientRect().height || shell.offsetHeight || (isMini ? 200 : 540);
-        }
-
-        async function syncHudWindowSize(force = false) {
-          // A morph or a tall tip owns the window size until it finishes.
-          if (morphing || tip.grown) return;
-          const targetWidth = hudWidth();
-          const targetHeight = windowHeightFor(measuredCardHeight());
-          if (!force && targetWidth === lastAppliedWidth && Math.abs(targetHeight - lastAppliedHeight) <= 2) {
-            return;
-          }
-          lastAppliedWidth = targetWidth;
-          lastAppliedHeight = targetHeight;
-          await setWindowSize(targetWidth, targetHeight);
-          setTimeout(() => {
-            if (morphing || tip.grown) return;
-            const settled = windowHeightFor(measuredCardHeight());
-            if (Math.abs(settled - lastAppliedHeight) > 2) {
-              lastAppliedHeight = settled;
-              setWindowSize(targetWidth, settled);
-            }
-          }, 45);
-        }
-
-        function growWindowForTip(bottom) {
-          const height = Math.min(820, Math.ceil(bottom));
-          if (height <= window.innerHeight) return;
-          tip.grown = true;
-          clearTimeout(tip.restoreTimer);
-          setWindowSize(lastAppliedWidth || hudWidth(), height);
-        }
-
-        function paintMiniButton() {
-          const btn = $("hud-mini-btn");
-          btn.setAttribute("aria-pressed", String(isMini));
-          btn.setAttribute("aria-label", isMini ? "Expand HUD" : "Collapse HUD");
-        }
-        paintMiniButton();
-        syncHudWindowSize(true);
-
-        // Collapse/expand: the content dissolves, the card glides to its new
-        // size with the next layout laid out at its final width (so nothing
-        // reflows mid-flight), then the content settles in. A growing card
-        // gets its window first; a shrinking one gives it back at the end.
-        const MORPH = {fadeOut: 90, resize: 300, fadeIn: 220};
-        async function setMini(next) {
-          if (morphing || next === isMini) return;
-          try { localStorage.setItem("burnrate:hud-mini", next ? "1" : "0"); } catch {}
-          hideTip();
-          const shell = $("hud-shell");
-          const body = $("hud-body");
-          if (matchMedia("(prefers-reduced-motion: reduce)").matches || typeof shell.animate !== "function") {
-            isMini = next;
-            root.classList.toggle("is-mini", isMini);
-            paintMiniButton();
-            syncHudWindowSize(true);
-            return;
-          }
-          morphing = true;
-          try {
-            const from = shell.getBoundingClientRect();
-            shell.classList.add("morphing");
-            shell.style.width = from.width + "px";
-            shell.style.height = from.height + "px";
-            await body.animate(
-              [{opacity: 1, transform: "none"}, {opacity: 0, transform: "scale(0.985)"}],
-              {duration: MORPH.fadeOut, easing: "cubic-bezier(.4, 0, 1, 1)", fill: "forwards"}
-            ).finished;
-
-            isMini = next;
-            root.classList.toggle("is-mini", isMini);
-            paintMiniButton();
-            const toWidth = hudWidth();
-            shell.style.width = toWidth + "px";
-            shell.style.height = "auto";
-            const toHeight = shell.getBoundingClientRect().height;
-            const box = getComputedStyle(shell);
-            const inset = ["paddingLeft", "paddingRight", "borderLeftWidth", "borderRightWidth"]
-              .reduce((sum, name) => sum + (parseFloat(box[name]) || 0), 0);
-            body.style.width = (toWidth - inset) + "px";
-            shell.style.width = from.width + "px";
-            shell.style.height = from.height + "px";
-
-            if (toWidth > from.width || toHeight > from.height) {
-              await setWindowSize(Math.max(toWidth, Math.ceil(from.width)), windowHeightFor(Math.max(toHeight, from.height)));
-            }
-            const resize = shell.animate(
-              [{width: from.width + "px", height: from.height + "px"}, {width: toWidth + "px", height: toHeight + "px"}],
-              {duration: MORPH.resize, easing: "cubic-bezier(.22, .8, .24, 1)"}
-            );
-            body.getAnimations().forEach(animation => animation.cancel());
-            const fadeIn = body.animate(
-              [{opacity: 0, transform: "translateY(4px)"}, {opacity: 1, transform: "none"}],
-              {duration: MORPH.fadeIn, delay: MORPH.resize * 0.2, easing: "cubic-bezier(.2, .7, .3, 1)", fill: "backwards"}
-            );
-            await Promise.all([resize.finished, fadeIn.finished]);
-          } catch {} finally {
-            shell.style.width = "";
-            shell.style.height = "";
-            body.style.width = "";
-            shell.classList.remove("morphing");
-            body.getAnimations().forEach(animation => animation.cancel());
-            morphing = false;
-            syncHudWindowSize(true);
-          }
-        }
-        $("hud-mini-btn").addEventListener("click", () => setMini(!isMini));
-        $("hud-mini-bar").addEventListener("click", () => {
-          const key = $("hud-mini-bar").dataset.providerKey || "";
-          openToolInDashboard(key);
-        });
-
-        function applyTheme() {
-          const dark = root.dataset.theme === "dark";
-          const btn = $("hud-theme-btn");
-          if (btn) {
-            btn.setAttribute("aria-pressed", String(dark));
-            btn.setAttribute("aria-label", dark ? "Switch to light theme" : "Switch to dark theme");
-          }
-        }
-        applyTheme();
-        $("hud-theme-btn").addEventListener("click", () => {
-          const theme = root.dataset.theme === "dark" ? "light" : "dark";
-          root.dataset.theme = theme;
-          try { localStorage.setItem("burnrate:hud-theme", theme); } catch {}
-          applyTheme();
-        });
-
-        $("hud-poll-btn").addEventListener("click", async event => {
-          event.stopPropagation();
-          const btn = $("hud-poll-btn");
-          if (!btn || btn.disabled) return;
-          btn.disabled = true;
-          btn.classList.add("spinning");
-          try {
-            await fetch("/api/spend/quotas/refresh", { method: "POST", cache: "no-store" });
-            await refresh(true);
-            // A paired spoke answers from its last Hub copy while renewing
-            // it; read once more so the Hub's side of the poll shows promptly.
-            setTimeout(() => refresh(true), 1500);
-          } catch {} finally {
-            btn.disabled = false;
-            btn.classList.remove("spinning");
-          }
-        });
-
-        function windowElapsedPct(q) {
-          if (!q || !q.resetsAt || q.payg) return null;
-          const resetMs = Date.parse(q.resetsAt);
-          if (!Number.isFinite(resetMs)) return null;
-          const remMs = resetMs - Date.now();
-          if (remMs <= 0) return null;
-          const text = String((q.limitKey || "") + " " + (q.label || "")).toLowerCase();
-          let durMs = null;
-          if (text.includes("5h") || text.includes("5-hour") || text.includes("five-hour")) {
-            durMs = 5 * 3600 * 1000;
-          } else if (text.includes("week") || text.includes("7d")) {
-            durMs = 7 * 86400 * 1000;
-          } else if (text.includes("day") || text.includes("24h") || text.includes("daily")) {
-            durMs = 86400 * 1000;
-          } else if (text.includes("month")) {
-            // A monthly window runs from the same day of the previous month.
-            const start = new Date(resetMs);
-            start.setUTCMonth(start.getUTCMonth() - 1);
-            durMs = resetMs - start.getTime();
-          }
-          if (!durMs || remMs > durMs) return null;
-          return Math.max(0, Math.min(100, 100 - (remMs / durMs) * 100));
-        }
-
-        function relTime(iso) {
-          if (!iso) return "";
-          const ms = Date.now() - new Date(iso).getTime();
-          if (!Number.isFinite(ms)) return "";
-          if (ms < 60000) return "just now";
-          if (ms < 3600000) return Math.round(ms / 60000) + "m ago";
-          if (ms < 86400000) return Math.round(ms / 3600000) + "h ago";
-          return Math.round(ms / 86400000) + "d ago";
-        }
-
-        function renderMachines(machines) {
-          const host = $("hud-machines");
-          const list = Array.isArray(machines) ? machines : [];
-          $("hud-computers-foot").textContent =
-            list.length === 1 ? "1 computer" : list.length + " computers";
-          if (list.length < 2) {
-            host.replaceChildren();
-            return;
-          }
-          const items = [{id: "all", name: "All", isLocal: true}, ...list];
-          host.replaceChildren(...items.map(item => {
-            const btn = document.createElement("button");
-            btn.type = "button";
-            btn.className = "hud-machine-chip" + (item.id === selectedMachine ? " active" : "");
-            btn.setAttribute("role", "radio");
-            btn.setAttribute("aria-checked", String(item.id === selectedMachine));
-            const dot = document.createElement("i");
-            const seenMs = item.lastSeenAt ? Date.parse(item.lastSeenAt) : NaN;
-            const isFresh = Boolean(item.isLocal || item.id === "local" || (Number.isFinite(seenMs) && (Date.now() - seenMs) < 120000));
-            if (isFresh) dot.className = "live";
-            const label = document.createElement("span");
-            label.textContent = item.name || item.id;
-            btn.append(dot, label);
-            labelTip(btn, () => {
-              if (item.id === "all") return "Every computer combined";
-              if (item.isLocal || item.id === "local") return "This computer";
-              const seen = relTime(item.lastSeenAt);
-              return "Paired computer" + (seen ? " · seen " + seen : "");
-            });
-            btn.addEventListener("click", () => {
-              selectedMachine = item.id;
-              windowTokens = {};
-              refresh();
-              refreshUsage(true);
-              refreshMachines();
-            });
-            return btn;
-          }));
-        }
-
-        function windowName(key, label) {
-          const text = String(label || "").toLowerCase();
-          let scope = "";
-          if (key === "antigravity") {
-            if (text.includes("gemini")) scope = "Gemini";
-            else if (text.includes("claude") || text.includes("gpt")) scope = "Other";
-          }
-          let win = label || "Plan";
-          if (text.includes("5-hour") || text.includes("five-hour") || text.includes("5h")) win = "5h";
-          else if (text.includes("month")) win = "Month";
-          else if (text.includes("week")) win = scope ? "Wk" : "Week";
-          else if (text.includes("other model")) win = "Other";
-          else if (text.includes("model")) win = "Models";
-          else if (text.includes("fund") || text.includes("balance")) win = "Balance";
-          return [scope, win].filter(Boolean).join(" ");
-        }
-        function windowShort(key, label) {
-          const long = windowName(key, label).toLowerCase();
-          const scope = long.startsWith("gemini ") ? "G·" : long.startsWith("other ") && long !== "other" ? "O·" : "";
-          const win = long.replace(/^(gemini|other) /, "");
-          const short = {"5h": "5H", "week": "WK", "wk": "WK", "month": "MO", "balance": "BAL", "models": "MOD", "other": "OTH"}[win];
-          return scope + (short || win.slice(0, 3).toUpperCase());
-        }
-
-        function resetIn(iso) {
-          if (!iso) return "";
-          const ms = new Date(iso).getTime() - Date.now();
-          if (!Number.isFinite(ms)) return "";
-          if (ms <= 0) return "now";
-          const hours = ms / 3600000;
-          if (hours < 1) return Math.max(1, Math.round(ms / 60000)) + "m";
-          if (hours < 48) return Math.round(hours) + "h";
-          return Math.round(hours / 24) + "d";
-        }
-
-        // Days a balance lasts at the recent spend, short enough for the reset column.
-        const runwayDays = q => q.payg && q.runway && q.runway.days != null && Number.isFinite(Number(q.runway.days))
-          ? Number(q.runway.days) : null;
-        function runwayShort(days) {
-          if (days < 1) return Math.max(1, Math.round(days * 24)) + "h";
-          if (days < 100) return Math.round(days) + "d";
-          return days < 365 ? Math.round(days / 30) + "mo" : "1y+";
-        }
-        const runwayState = days => days < 3 ? "dry" : days < 7 ? "tight" : "safe";
-
-        function resetWhen(iso) {
-          const date = new Date(iso || "");
-          if (Number.isNaN(date.getTime())) return "";
-          return date.toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"});
-        }
-
-        // Feed health: the newest instant each poll delivered data, plus the
-        // age the server reports for the data itself. A wedged request, a dead
-        // HUD poller and a stalled collector are all visible; none of them can
-        // silently leave a number on screen pretending to be current.
-        const FEED_LATE_MS = 30000;
-        const USAGE_LATE_MS = 45000;
-        const DATA_STALE_SECONDS = 600;
-        const feedHealth = {live: 0, usage: 0, machines: 0, freshness: 0, dataAt: null};
-        const lastGood = () => feedHealth.live;
-        // The payload's age is measured when it was generated; keep the
-        // newest data instant across the live and usage reads so neither can
-        // rewind the indicator.
-        function noteDataAge(data) {
-          const age = Number(data.lastIngestAgeSeconds);
-          if (!Number.isFinite(age)) return;
-          const generated = Date.parse(data.generatedAt || "") || Date.now();
-          const at = generated - age * 1000;
-          if (feedHealth.dataAt == null || at > feedHealth.dataAt) feedHealth.dataAt = at;
-        }
-        const dataAgeSeconds = () => (
-          feedHealth.dataAt == null ? null : Math.max(0, (Date.now() - feedHealth.dataAt) / 1000)
-        );
-        const feedLate = () => (
-          (feedHealth.live > 0 && Date.now() - feedHealth.live > FEED_LATE_MS)
-          || (feedHealth.usage > 0 && Date.now() - feedHealth.usage > USAGE_LATE_MS)
-          || (dataAgeSeconds() != null && dataAgeSeconds() > DATA_STALE_SECONDS)
-        );
-        function paintUpdated() {
-          const foot = $("hud-updated-foot");
-          if (!feedHealth.live) { foot.textContent = "Updating…"; foot.classList.remove("stale"); return; }
-          const ageS = dataAgeSeconds();
-          if (ageS != null) {
-            foot.textContent = ageS < 2 ? "Updated now" : "Updated " + ago(Math.round(ageS)) + " ago";
-          } else {
-            foot.textContent = "Waiting for collection";
-          }
-          foot.classList.toggle("stale", feedLate());
-          if (feedLate()) {
-            const pill = $("hud-status-pill");
-            pill.dataset.state = "stale";
-            $("hud-status-text").textContent = "STALE";
-            const miniAlert = $("hud-mini-alert");
-            miniAlert.hidden = false;
-            miniAlert.dataset.state = "stale";
-            miniAlert.textContent = "! DATA STALE";
-          }
-        }
-
-        // Stat tips read the latest usage response when shown.
-        let usageView = {nav: {}, totals: {}, importedAt: null};
-        const importedFoot = () => {
-          const imported = relTime(usageView.importedAt);
-          return imported ? "Usage imported " + imported : "";
-        };
-        setTip($("hud-stat-today"), () => {
-          const nav = usageView.nav;
-          return T.head("API-rate value", "today") +
-            T.hero(usd2(nav.todayUsd), "", "since local midnight") +
-            T.line("What today's usage would cost at published API rates. Not a bill.", "dim") +
-            (nav.todayComplete === false && nav.todayUsd != null
-              ? T.line(nav.todayUnpricedTokens > 0
-                  ? "At least this much: " + tok(nav.todayUnpricedTokens) + " tokens have no published price (" +
-                    (nav.todayUnpricedModels || []).map(model => String(model).replace(/^[a-z-]+:/, "")).join(", ") + ")."
-                  : "At least this much: some usage arrived without complete token counts.", "tight")
-              : "") +
-            T.foot(importedFoot());
-        });
-        setTip($("hud-stat-burn"), () => {
-          const burn = usageView.nav.burnRatePerDay;
-          return T.head("Burn rate", "7-day average") +
-            T.hero(burn == null ? "—" : usd(burn), "", "per day") +
-            T.line("Average API-rate value over the last 7 full days. Today is not counted.", "dim") +
-            T.foot(importedFoot());
-        });
-        setTip($("hud-stat-cache"), () => {
-          const cache = usageView.totals.cacheReusePct;
-          return T.head("Cache hit", "last 24 hours") +
-            T.hero(cache == null ? "—" : Math.round(Number(cache)) + "%", "", "of prompt tokens") +
-            T.line("Prompt tokens served from cache instead of processed fresh.", "dim") +
-            T.foot(importedFoot());
-        });
-        setTip($("hud-stat-tokens"), () => {
-          const nav = usageView.nav;
-          return T.head("Tokens", "today") +
-            T.hero(tok1(nav.todayTokens ?? 0), "", "since local midnight") +
-            T.kv([nav.tokensAvgPerDay == null ? null : ["7-day average", tok1(nav.tokensAvgPerDay) + " / day"]]) +
-            T.foot(importedFoot());
-        });
-
-        const shortNames = {
-          codex: "Codex",
-          "claude-code": "Claude",
-          antigravity: "Antigravity",
-          grok: "Grok",
-          opencode: "Z.AI",
-          "opencode-go": "OpenCode Go",
-          muse: "Muse",
-          openrouter: "OpenRouter",
-          deepseek: "DeepSeek"
-        };
-        // Provider marks come from the shared sprite served at /logos.svg.
-        const PLAN_LOGOS = {
-          codex: "codex", "claude-code": "claude", grok: "grok", opencode: "zai", "opencode-go": "opencode",
-          antigravity: "antigravity", muse: "meta", openrouter: "openrouter", traycer: "traycer"
-        };
-        const MODEL_LOGOS = [
-          [/claude|opus|sonnet|haiku/i, "claude"], [/gpt|codex/i, "codex"], [/grok/i, "grok"],
-          [/glm|z\.ai/i, "zai"], [/muse/i, "meta"], [/gemini/i, "gemini"]
-        ];
-        const iconFor = id => {
-          const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-          svg.setAttribute("viewBox", "0 0 24 24");
-          svg.setAttribute("aria-hidden", "true");
-          const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
-          use.setAttribute("href", "/logos.svg#" + id);
-          svg.append(use);
-          return svg;
-        };
-
-        function planGroups(data) {
-          const groups = [];
-          for (const provider of (data.capacity || [])) {
-            const key = provider.providerKey || "";
-            const name = shortNames[key] || provider.shortName || provider.providerName || key || "Plan";
-            const sourceRows = Array.isArray(provider.rows) && provider.rows.length ? provider.rows : [provider];
-            const rows = sourceRows.map(row => {
-              const value = row.pct == null || row.pct === "" ? NaN : Number(row.pct);
-              return {
-                limitKey: row.limitKey || "",
-                label: row.label || row.limitKey || provider.plan || "",
-                title: [provider.providerName || name, row.label || provider.plan || ""].filter(Boolean).join(" · "),
-                pct: Number.isFinite(value) ? value : null,
-                payg: Boolean(row.isPayg || provider.isPayg),
-                used: row.used == null || row.used === "" ? null : Number(row.used),
-                allowance: row.allowance == null || row.allowance === "" ? null : Number(row.allowance),
-                unit: row.unit || "",
-                source: row.source || "",
-                resetsAt: row.resetsAt || "",
-                polledAt: row.polledAt || row.observedAt || provider.polledAt || "",
-                forecast: row.forecast && typeof row.forecast === "object" ? row.forecast : {},
-                runway: row.runway && typeof row.runway === "object" ? row.runway : null
-              };
-            });
-            const polledAt = provider.polledAt || (rows.find(r => r.polledAt)?.polledAt) || "";
-            // An extra Claude account lane opens Claude Code's tool view.
-            const toolKey = provider.toolKey || key;
-            if (rows.length) groups.push({ key, toolKey, name, accountLabel: provider.accountLabel || "", plan: provider.plan || "", rows, providerName: provider.providerName || name, polledAt });
-          }
-          return groups;
-        }
-        // The last real reading of every window, per computer filter. A poll
-        // that comes back without a value (a slow provider, a Hub hiccup, a
-        // lane between samples) keeps the number on screen until the window
-        // resets, and a card missing from one response stays for a while.
-        const heldReadings = new Map();
-        const HELD_CARD_MS = 15 * 60 * 1000;
-        const windowOpen = q => {
-          const reset = Date.parse(q.resetsAt || "");
-          return !Number.isFinite(reset) || reset > Date.now();
-        };
-        function holdReadings(groups) {
-          const now = Date.now();
-          const scope = selectedMachine + "|";
-          const seen = new Set();
-          for (const group of groups) {
-            const key = scope + group.key;
-            seen.add(key);
-            const prior = heldReadings.get(key);
-            group.rows = group.rows.map(q => {
-              if (q.pct != null || q.payg) return q;
-              const last = prior && prior.group.rows.find(row => row.limitKey === q.limitKey);
-              return last && last.pct != null && windowOpen(last) ? {...last, held: true} : q;
-            });
-            heldReadings.set(key, {group, seenAt: now});
-          }
-          for (const [key, entry] of heldReadings) {
-            if (seen.has(key) || !key.startsWith(scope)) continue;
-            if (now - entry.seenAt > HELD_CARD_MS) { heldReadings.delete(key); continue; }
-            const rows = entry.group.rows.filter(q => q.pct != null && windowOpen(q)).map(q => ({...q, held: true}));
-            if (rows.length) groups.push({...entry.group, rows});
-          }
-          return groups;
-        }
-        const shownPeak = group => {
-          const finite = group.rows.map(item => item.pct).filter(value => value != null);
-          if (!finite.length) return group.rows.some(item => item.payg) ? -2 : -1;
-          return Math.max(...finite);
-        };
-
-        // Tokens burned inside each plan window, from the usage read and
-        // scoped to the selected computer like every other usage figure.
-        let windowTokens = {};
-        const burnFor = (group, q) => {
-          const lane = (windowTokens[group.key] || {})[q.limitKey];
-          return lane && Number.isFinite(Number(lane.tokens)) ? lane : null;
-        };
-
-        function windowTitle(key, label) {
-          const name = windowName(key, label);
-          const scoped = /^(Gemini|Other) (.+)$/.exec(name);
-          const win = scoped ? scoped[2] : name;
-          const text = {"5h": "5-hour window", "Week": "Weekly window", "Wk": "Weekly window", "Month": "Monthly window"}[win] || win;
-          return scoped ? scoped[1] + " · " + text.toLowerCase() : text;
-        }
-
-        function modelList(today) {
-          const models = Array.isArray(today.models) ? today.models : [];
-          if (!models.length) return T.line("Nothing yet since midnight.", "dim");
-          const total = Number(today.tokens) || models.reduce((sum, m) => sum + Number(m.tokens || 0), 0) || 1;
-          const items = models.slice(0, 4).map(m =>
-            "<li><span>" + esc(m.name) + "</span><b>" + esc(tok1(m.tokens)) + '</b><i style="--share:' +
-            Math.min(100, Number(m.tokens || 0) / total * 100).toFixed(1) + '%"></i></li>');
-          const rest = models.slice(4);
-          if (rest.length) {
-            items.push('<li class="more"><span>' + esc(rest.length === 1 ? "1 more model" : rest.length + " more models") + "</span><b>" +
-              esc(tok1(rest.reduce((sum, m) => sum + Number(m.tokens || 0), 0))) + "</b></li>");
-          }
-          return '<ul class="tt-models">' + items.join("") + "</ul>";
-        }
-
-        function windowTip(group, q) {
-          const f = q.forecast || {};
-          const fstate = f.state || "";
-          let html = T.head(group.providerName || group.name, windowTitle(group.key, q.label));
-          if (q.payg) {
-            const balance = q.unit === "usd" && q.used != null ? usd2(q.used) : (q.used != null ? qtyText(q.used, q.unit) : null);
-            html += T.hero(balance || "—", "", balance ? "left · pay as you go" : "pay as you go");
-          } else if (q.pct != null) {
-            const until = resetIn(q.resetsAt);
-            html += T.hero(pctText(q.pct), until ? (until === "now" ? "resets now" : "resets in " + until) : "", resetWhen(q.resetsAt));
-          } else {
-            html += T.hero("—", "", "no reading");
-          }
-
-          const rows = [];
-          const runway = q.payg ? q.runway : null;
-          const days = runwayDays(q);
-          if (days != null) {
-            const spend = usd2(runway.dailyUsd) + "/day over the last " + Math.max(1, Math.round(Number(runway.basisDays) || 0)) + " days";
-            rows.push(["Runway", String(runway.line || "").split(" at ")[0] || runwayShort(days), runwayState(days), spend]);
-          } else if (runway && runway.line) {
-            rows.push(["Runway", runway.state === "idle" ? "no recent spend" : "learning", runway.state === "idle" ? "safe" : "", runway.line]);
-          }
-          if (!q.payg && q.allowance != null && q.allowance > 0 && q.used != null) {
-            rows.push(["Used", qtyText(q.used, q.unit) + " of " + qtyText(q.allowance, q.unit)]);
-          }
-          const lane = q.payg ? null : burnFor(group, q);
-          if (lane) {
-            const tokens = Number(lane.tokens);
-            rows.push(["Burned", tokens ? tok1(tokens) + " tokens" : "none recorded", "",
-              tokens ? tok1(lane.input) + " in · " + tok1(lane.output) + " out · " + tok1(lane.cached) + " cached" : ""]);
-          }
-          // One pace verdict: a run-dry forecast from the recent burn wins
-          // over the whole-window average, which it would otherwise contradict.
-          const elapsed = windowElapsedPct(q);
-          if (fstate === "tight" || fstate === "dry") {
-            const [when, before] = String(f.line || "").replace(/^pace\s*→\s*/, "").replace(/\)$/, "").split(" (");
-            const lately = f.burnPctPerHour != null ? "+" + (Math.round(f.burnPctPerHour * 10) / 10).toFixed(1) + "%/h lately" : "";
-            const measured = f.basis === "usage" && f.tokensPerHour ? " · " + tok1(f.tokensPerHour) + " tok/h measured" : "";
-            rows.push(["Pace", when || "running dry", fstate, [before, lately + measured].filter(Boolean).join(" · ")]);
-          } else if (elapsed != null && q.pct != null && !q.payg) {
-            const delta = Math.round(q.pct - elapsed);
-            rows.push(["Pace",
-              delta > 2 ? delta + "% ahead of even" : delta < -2 ? Math.abs(delta) + "% under even" : "on even pace",
-              delta >= 15 ? "dry" : delta >= 5 ? "tight" : "safe",
-              Math.round(elapsed) + "% of the window gone"]);
-          } else if (fstate === "stale" && q.pct != null) {
-            rows.push(["Pace", "unknown", "", "the newest sample is stale"]);
-          }
-          html += T.kv(rows);
-          const detail = String(q.label || "").split(" · ").slice(1).join(" · ");
-          if (q.pct == null && !q.payg && detail) html += T.line(detail, "dim");
-
-          if (lane && lane.today) html += T.sep + T.section("Today by model", tok1(lane.today.tokens)) + modelList(lane.today);
-
-          const age = relTime(q.polledAt);
-          if (q.held) html += T.line("Showing the reading from " + (age || "earlier") + "; the newest poll came back empty.", "tight");
-          else html += T.foot(age ? "Polled " + age : "");
-          return html;
-        }
-
-        function windowRow(group, q, isPeak) {
-          const cell = document.createElement("div");
-          cell.className = "win" + (isPeak ? " is-peak" : "") + (q.held ? " held" : "");
-          const f = q.forecast || {};
-          const fstate = f.state || "";
-          const label = document.createElement("span");
-          label.className = "win-label";
-          const longLabel = document.createElement("span");
-          longLabel.className = "long";
-          longLabel.textContent = windowName(group.key, q.label);
-          const shortLabel = document.createElement("span");
-          shortLabel.className = "short";
-          shortLabel.textContent = windowShort(group.key, q.label);
-          label.append(longLabel, shortLabel);
-          const meter = document.createElement("div");
-          meter.className = "meter" + (q.payg ? " payg" : "");
-          const fill = document.createElement("i");
-          fill.className = "fill";
-          meter.append(fill);
-          if (q.pct != null && !q.payg) {
-            const p = Math.max(0, Math.min(100, q.pct));
-            meter.style.setProperty("--fill", p.toFixed(1) + "%");
-            if (fstate === "dry" || p >= 90) cell.classList.add("crit");
-            else if (fstate === "tight" || p >= 75) cell.classList.add("warn");
-          }
-          const elapsed = windowElapsedPct(q);
-          if (elapsed != null && !q.payg) {
-            const tick = document.createElement("i");
-            tick.className = "win-pace-tick";
-            tick.style.left = elapsed.toFixed(2) + "%";
-            meter.append(tick);
-          }
-          const value = document.createElement("b");
-          // A pay-as-you-go lane with a known balance shows the money left, not just "PAYG".
-          const balance = q.pct == null && q.payg && q.unit === "usd" && q.used != null ? usdShort(q.used) : "";
-          value.textContent = q.pct == null ? (balance || (q.payg ? "PAYG" : "—")) : pctText(q.pct);
-          if (q.pct == null && q.payg) value.className = balance ? "bal" : "payg";
-          const eta = document.createElement("i");
-          eta.className = "win-reset";
-          const days = runwayDays(q);
-          eta.textContent = days != null ? runwayShort(days) : resetIn(q.resetsAt);
-          if (days != null && days < 3) cell.classList.add("crit");
-          else if (days != null && days < 7) cell.classList.add("warn");
-          cell.append(label, meter, value, eta);
-          setTip(cell, () => windowTip(group, q));
-          return cell;
-        }
-
-        const openPlans = new Set();
-        function renderPlans(groups) {
-          const badge = $("hud-quota-badge");
-          badge.textContent = groups.length ? String(groups.length) : "—";
-          labelTip(badge, groups.length ? (groups.length === 1 ? "1 plan" : groups.length + " plans") + " · tightest first" : "No plans yet");
-          const quotasRoot = $("hud-quotas");
-          if (!groups.length) {
-            quotasRoot.innerHTML = '<p class="hud-empty">No subscription usage yet.</p>';
-            return;
-          }
-          quotasRoot.replaceChildren(...groups.map(group => {
-            const card = document.createElement("article");
-            card.className = "plan";
-            card.setAttribute("aria-label", group.name);
-            card.dataset.providerKey = group.key;
-            // Without the dashboard, a click in mini mode lists every window of the plan.
-            card.classList.toggle("open", openPlans.has(group.key));
-            card.addEventListener("click", () => {
-              if (dashboardOn) { openToolInDashboard(group.toolKey || group.key); return; }
-              if (!isMini) return;
-              if (!openPlans.delete(group.key)) openPlans.add(group.key);
-              card.classList.toggle("open", openPlans.has(group.key));
-              hideTip();
-              syncHudWindowSize();
-            });
-            const head = document.createElement("header");
-            head.className = "plan-head";
-            const mark = document.createElement("span");
-            mark.className = "mark";
-            const extraLogo = String(group.key).startsWith("claude") ? "claude" : String(group.key).startsWith("opencode-go-") ? "opencode" : "custom";
-            mark.append(iconFor(PLAN_LOGOS[group.key] || extraLogo));
-            const name = document.createElement("b");
-            if (group.accountLabel) {
-              // Mini mode keeps only the account ("Work"); the Claude mark says the rest.
-              const long = document.createElement("span");
-              long.className = "long";
-              long.textContent = group.name;
-              const short = document.createElement("span");
-              short.className = "short";
-              short.textContent = group.accountLabel;
-              name.append(long, short);
-            } else {
-              name.textContent = group.name;
-            }
-            const em = document.createElement("em");
-            const planLabel = group.key === "opencode" && group.plan === "Max" ? "Coding Plan Max" : group.plan;
-            const ageLabel = relTime(group.polledAt);
-            em.textContent = [planLabel, ageLabel].filter(Boolean).join(" · ");
-            head.append(mark, name, em);
-            // The full row already shows plan and age; the tip earns its
-            // place only where that text is hidden or a click does something.
-            setTip(head, () => {
-              if (!isMini && !dashboardOn) return "";
-              const age = relTime(group.polledAt);
-              return T.head(group.providerName, planLabel) +
-                T.foot([age ? "Polled " + age : "", dashboardOn ? "Click for tool detail" : "Click to show every window"].filter(Boolean).join(" · "));
-            });
-            const windows = document.createElement("div");
-            windows.className = "windows";
-            const peak = group.rows.reduce((best, row) => (row.pct != null && (best == null || row.pct > best.pct) ? row : best), null) || group.rows[0];
-            for (const q of group.rows) windows.append(windowRow(group, q, q === peak));
-            card.append(head, windows);
-            return card;
-          }));
-        }
-
-        function renderAgents(data) {
-          const liveAgents = (data.activity || []).filter(item => String(item.state || "").toUpperCase() === "LIVE");
-          const miniLive = $("hud-mini-live");
-          miniLive.hidden = !liveAgents.length;
-          miniLive.textContent = liveAgents.length ? "● " + liveAgents.length + " live" : "";
-          const liveSection = $("hud-live");
-          const agentsRoot = $("hud-agents");
-          liveSection.hidden = !liveAgents.length;
-          agentsRoot.replaceChildren(...liveAgents.slice(0, 3).map(agent => {
-            const row = document.createElement("div");
-            row.className = "hud-agent";
-            const mainWrap = document.createElement("div");
-            mainWrap.className = "hud-agent-main";
-            const pulse = document.createElement("span");
-            pulse.className = "hud-agent-mark";
-            const modelId = MODEL_LOGOS.find(([pattern]) => pattern.test(String(agent.modelKey || "")))?.[1] || "custom";
-            const badge = document.createElement("i");
-            badge.className = "hud-pulse";
-            pulse.append(iconFor(modelId), badge);
-            const textWrap = document.createElement("div");
-            textWrap.className = "hud-agent-text";
-            const rawName = String(agent.name || "Active session").replace(/\s+/g, " ").trim() || "Active session";
-            const shortName = rawName.length > 54 ? rawName.slice(0, 53).trimEnd() + "…" : rawName;
-            const strong = document.createElement("strong");
-            strong.textContent = shortName;
-            const small = document.createElement("small");
-            small.textContent = agent.modelKey || "live";
-            textWrap.append(strong, small);
-            mainWrap.append(pulse, textWrap);
-            const tag = document.createElement("span");
-            tag.className = "hud-machine-tag";
-            tag.textContent = agent.machineName || "LIVE";
-            row.append(mainWrap, tag);
-            const modelLower = String(agent.modelKey || "").toLowerCase();
-            const inferredTool = modelLower.includes("claude") ? "claude-code" : modelLower.includes("gpt") || modelLower.includes("codex") ? "codex" : modelLower.includes("grok") ? "grok" : modelLower.includes("muse") ? "muse" : "";
-            const whereLabel = [agent.modelKey || "live", agent.machineName || ""].filter(Boolean).join(" · ");
-            setTip(row, () => T.head(shortName) + T.line(whereLabel, "dim") + (dashboardOn ? T.foot("Click to open it in the dashboard") : ""));
-            if (dashboardOn) row.addEventListener("click", () => openToolInDashboard(inferredTool));
-            return row;
-          }));
-        }
-
-        let heldStats = {day: "", byMachine: {}};
-        function renderUsage(data) {
-          const nav = data.navigation || {};
-          const totals = data.totals || {};
-          $("hud-date").textContent = "Today · " + new Date().toLocaleDateString("en-US", {
-            weekday: "short", month: "short", day: "numeric"
-          });
-
-          // A read without a value keeps this computer's figure until the date
-          // changes. Another computer's spend is a different figure.
-          const day = new Date().toDateString();
-          if (heldStats.day !== day) heldStats = {day, byMachine: {}};
-          const slot = heldStats.byMachine[selectedMachine] || (heldStats.byMachine[selectedMachine] = {});
-          const keep = (name, value) => value == null || value === ""
-            ? slot[name]
-            : (slot[name] = value);
-          const today = keep("today", nav.todayUsd);
-          const burn = keep("burn", nav.burnRatePerDay);
-          const cache = keep("cache", totals.cacheReusePct);
-          setStat("hud-burn-rate", burn != null ? usd(burn) : "—");
-          // A day with usage no card can price is a floor: mark the figure.
-          const floor = nav.todayComplete === false && today != null ? "≥" : "";
-          setStat("hud-today", floor + usd2(today));
-          setStat("hud-mini-today", floor + usd2(today));
-          setStat("hud-cache", cache == null ? "—" : Math.round(Number(cache)) + "%");
-          setStat("hud-tokens", tok(nav.todayTokens ?? 0));
-          usageView = {nav: {...nav, todayUsd: today, burnRatePerDay: burn}, totals: {cacheReusePct: cache}, importedAt: data.historyUpdatedAt};
-          noteDataAge(data);
-          // An older hub sends no window tokens; meter tips then omit them.
-          if (data.windowTokens && typeof data.windowTokens === "object") windowTokens = data.windowTokens;
-          renderRepos(data.repos);
-          refreshTip();
-        }
-
-        let noticeTimer = 0;
-        function notice(text) {
-          const line = $("hud-notice");
-          line.textContent = text;
-          line.hidden = false;
-          clearTimeout(noticeTimer);
-          noticeTimer = setTimeout(() => { line.hidden = true; }, 4000);
-        }
-
-        // The weekly card: a 1200 x 630 image of the last seven days, copied
-        // to the clipboard. Totals and tool names only, never repositories.
-        const CARD_GAUGE = ["M19.9 42L13 46M18 35H10M19.9 28L13 24M25 22.9L21 16M32 21V13M39 22.9L43 16",
-                            "M44.1 28L51 24M46 35H54M44.1 42L51 46", "M32 35L44.5 22.5"];
-        function drawWeekCard(week) {
-          const canvas = document.createElement("canvas");
-          canvas.width = 1200;
-          canvas.height = 630;
-          const ctx = canvas.getContext("2d");
-          const display = "Bahnschrift, 'DIN Alternate', 'Segoe UI', system-ui, sans-serif";
-          const body = "'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, sans-serif";
-          const ink = "#f2f0eb", muted = "#9a968f", ember = "#ff6b22", line = "rgba(255,255,255,0.12)";
-          ctx.fillStyle = "#0a0a0c";
-          ctx.fillRect(0, 0, 1200, 630);
-          ctx.fillStyle = "#121215";
-          ctx.fillRect(40, 40, 1120, 550);
-          ctx.strokeStyle = line;
-          ctx.strokeRect(40.5, 40.5, 1119, 549);
-          // Gauge mark and wordmark.
-          ctx.save();
-          ctx.translate(80, 76);
-          ctx.scale(0.75, 0.75);
-          ctx.lineCap = "round";
-          ctx.lineWidth = 4.2;
-          ctx.strokeStyle = ink;
-          ctx.stroke(new Path2D(CARD_GAUGE[0]));
-          ctx.strokeStyle = ember;
-          ctx.stroke(new Path2D(CARD_GAUGE[1]));
-          ctx.lineWidth = 3;
-          ctx.stroke(new Path2D(CARD_GAUGE[2]));
-          ctx.fillStyle = ink;
-          ctx.beginPath();
-          ctx.arc(32, 35, 4.4, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.restore();
-          ctx.fillStyle = ink;
-          ctx.font = "600 22px " + display;
-          if ("letterSpacing" in ctx) ctx.letterSpacing = "5px";
-          ctx.fillText("BURNRATE", 140, 113);
-          if ("letterSpacing" in ctx) ctx.letterSpacing = "0px";
-          const from = new Date(week.from), to = new Date(week.to);
-          const range = from.toLocaleDateString("en-US", {month: "short", day: "numeric"}) + " – " +
-            to.toLocaleDateString("en-US", {month: "short", day: "numeric", year: "numeric"});
-          ctx.fillStyle = muted;
-          ctx.font = "20px " + body;
-          ctx.textAlign = "right";
-          ctx.fillText("Last 7 days · " + range, 1120, 110);
-          ctx.textAlign = "left";
-          // Headline: the week's value at API rates.
-          ctx.fillStyle = ink;
-          ctx.font = "400 120px " + display;
-          ctx.fillText(usd(week.usd), 80, 270);
-          ctx.fillStyle = muted;
-          ctx.font = "26px " + body;
-          ctx.fillText("of AI coding at published API rates", 84, 316);
-          if (week.planUsd) {
-            ctx.fillStyle = ember;
-            ctx.font = "600 26px " + body;
-            const times = week.usd / week.planUsd;
-            ctx.fillText("on " + usd(week.planUsd) + " of plans" + (times >= 1.5 ? " · " + times.toFixed(1) + "× the plan cost" : ""), 84, 356);
-          }
-          // Stats row.
-          const stats = [["Tokens", tok(week.tokens)], ["Cache hit", week.cacheReusePct == null ? "—" : Math.round(week.cacheReusePct) + "%"],
-                         ["Sessions", String(week.sessions || 0)]];
-          stats.forEach(([label, value], index) => {
-            const x = 84 + index * 190;
-            ctx.fillStyle = muted;
-            ctx.font = "600 15px " + display;
-            if ("letterSpacing" in ctx) ctx.letterSpacing = "2px";
-            ctx.fillText(label.toUpperCase(), x, 446);
-            if ("letterSpacing" in ctx) ctx.letterSpacing = "0px";
-            ctx.fillStyle = ink;
-            ctx.font = "400 44px " + display;
-            ctx.fillText(value, x, 496);
-          });
-          // Top tools with share bars.
-          const tools = (week.tools || []).slice(0, 4);
-          const top = Math.max(...tools.map(tool => tool.usd), 0);
-          ctx.fillStyle = muted;
-          ctx.font = "600 15px " + display;
-          if ("letterSpacing" in ctx) ctx.letterSpacing = "2px";
-          ctx.fillText("TOP TOOLS", 760, 196);
-          if ("letterSpacing" in ctx) ctx.letterSpacing = "0px";
-          tools.forEach((tool, index) => {
-            const y = 240 + index * 70;
-            ctx.fillStyle = ink;
-            ctx.font = "600 22px " + body;
-            ctx.fillText(tool.name, 760, y);
-            ctx.fillStyle = muted;
-            ctx.font = "20px " + body;
-            ctx.textAlign = "right";
-            ctx.fillText(usd(tool.usd), 1120, y);
-            ctx.textAlign = "left";
-            ctx.fillStyle = "rgba(255,255,255,0.08)";
-            ctx.fillRect(760, y + 14, 360, 6);
-            ctx.fillStyle = ember;
-            ctx.fillRect(760, y + 14, top ? Math.max(4, 360 * tool.usd / top) : 0, 6);
-          });
-          // Footer.
-          ctx.strokeStyle = line;
-          ctx.beginPath();
-          ctx.moveTo(80, 540.5);
-          ctx.lineTo(1120, 540.5);
-          ctx.stroke();
-          ctx.fillStyle = muted;
-          ctx.font = "18px " + body;
-          ctx.fillText("Measured locally with BURNRATE · nothing left my computer", 80, 572);
-          ctx.textAlign = "right";
-          ctx.fillText("github.com/kamol-nazarov/myBurnRate", 1120, 572);
-          ctx.textAlign = "left";
-          return canvas;
-        }
-
-        async function shareWeek() {
-          let week;
-          try {
-            const res = await hudFetch("/api/spend/share/week?machine=" + encodeURIComponent(selectedMachine || "all"));
-            if (!res.ok) throw new Error(String(res.status));
-            week = await res.json();
-          } catch {
-            notice("This week's card could not be made");
-            return;
-          }
-          const blob = await new Promise(resolve => drawWeekCard(week).toBlob(resolve, "image/png"));
-          try {
-            await navigator.clipboard.write([new ClipboardItem({"image/png": blob})]);
-            notice("This week's card is on the clipboard · paste it anywhere");
-          } catch {
-            window.open(URL.createObjectURL(blob), "_blank");
-            notice("This week's card opened in a new window");
-          }
-        }
-
-        // Today's value by repository; an older hub sends none and the section stays hidden.
-        function renderRepos(repos) {
-          const rows = repos && Array.isArray(repos.rows) ? repos.rows.filter(row => Number(row.usd) > 0) : [];
-          $("hud-repos").hidden = !rows.length;
-          if (!rows.length) return;
-          const top = Math.max(...rows.map(row => Number(row.usd) || 0));
-          const line = (label, usdValue, tokens, extraClass) => {
-            const item = document.createElement("div");
-            item.className = "repo-row" + (extraClass ? " " + extraClass : "");
-            const name = document.createElement("span");
-            name.className = "repo-name";
-            name.textContent = label;
-            const value = document.createElement("span");
-            value.className = "repo-value";
-            value.textContent = usd2(usdValue) + " · " + tok(tokens || 0);
-            const bar = document.createElement("span");
-            bar.className = "repo-bar";
-            const fill = document.createElement("i");
-            fill.style.width = (top ? Math.max(2, (Number(usdValue) || 0) / top * 100) : 0) + "%";
-            bar.append(fill);
-            item.append(name, value, bar);
-            return item;
-          };
-          const items = rows.map(row => line(row.project, row.usd, row.tokens));
-          if (repos.other && Number(repos.other.usd) > 0) items.push(line("Other", repos.other.usd, repos.other.tokens, "other"));
-          $("hud-repo-rows").replaceChildren(...items);
-        }
-
-        function renderSummary(data) {
-          statusView.summary = data.status || "live";
-          statusView.failing = data.failingSource || "";
-          statusView.offline = false;
-          paintStatus();
-          renderAgents(data);
-
-          const groups = holdReadings(planGroups(data));
-          groups.sort((a, b) => shownPeak(b) - shownPeak(a));
-          const topGroup = groups.find(g => shownPeak(g) >= 0) || groups[0] || null;
-          const miniBar = $("hud-mini-bar");
-          if (topGroup) {
-            const topRow = topGroup.rows.find(r => r.pct != null) || topGroup.rows[0];
-            const until = topRow ? resetIn(topRow.resetsAt) : "";
-            $("hud-mini-lead").textContent = topGroup.name + (topRow ? " · " + windowName(topGroup.key, topRow.label) : "") + (until ? " (" + until + ")" : "");
-            $("hud-mini-pct").textContent = topRow && topRow.pct != null ? pctText(topRow.pct) : "—";
-            miniBar.dataset.providerKey = topGroup.toolKey || topGroup.key;
-          } else {
-            $("hud-mini-lead").textContent = "All subscription limits healthy";
-            $("hud-mini-pct").textContent = "—";
-            miniBar.dataset.providerKey = "";
-          }
-          renderPlans(groups);
-          feedHealth.live = Date.now();
-          noteDataAge(data);
-          paintUpdated();
-          syncHudWindowSize();
-          refreshTip();
-        }
-
-        // Every poll is bounded: a hung request aborts and reports offline
-        // instead of wedging the one-in-flight guard forever.
-        const FETCH_TIMEOUT_MS = 12000;
-        const hudFetch = (url, options = {}) => {
-          const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-          return fetch(url, {...options, cache: "no-store", signal: controller.signal})
-            .finally(() => clearTimeout(timer));
-        };
-        let livePending = null, liveAgain = false, usagePending = false, usageAgain = false, machinesPending = false;
-        // One read at a time. A queued request (a manual poll, a stream
-        // update) runs again once the current read finishes; timer ticks
-        // never stack up behind a slow read.
-        function refresh(queue = false) {
-          if (livePending) {
-            if (queue) liveAgain = true;
-            return livePending;
-          }
-          livePending = (async () => {
-            do {
-              liveAgain = false;
-              const machine = selectedMachine;
-              try {
-                const res = await hudFetch("/api/spend/hud?machine=" + encodeURIComponent(machine || "all"));
-                if (!res.ok) throw new Error(String(res.status));
-                const data = await res.json();
-                if (machine === selectedMachine) renderSummary(data);
-              } catch {
-                statusView.offline = true;
-                paintStatus();
-              }
-            } while (liveAgain);
-          })().finally(() => { livePending = null; });
-          return livePending;
-        }
-
-        async function refreshUsage(queue = false) {
-          if (usagePending) {
-            if (queue) usageAgain = true;
-            return;
-          }
-          usagePending = true;
-          try {
-            do {
-              usageAgain = false;
-              const machine = selectedMachine;
-              try {
-                const res = await hudFetch("/api/spend/hud/usage?machine=" + encodeURIComponent(machine || "all"));
-                if (!res.ok) continue;
-                const data = await res.json();
-                feedHealth.usage = Date.now();
-                if (machine === selectedMachine) renderUsage(data);
-              } catch {}
-            } while (usageAgain);
-          } finally { usagePending = false; }
-        }
-
-        async function refreshMachines() {
-          if (machinesPending) return;
-          machinesPending = true;
-          try {
-            const res = await hudFetch("/api/machines");
-            if (res.ok) { feedHealth.machines = Date.now(); renderMachines((await res.json()).machines || []); refreshTip(); }
-          } catch {} finally { machinesPending = false; }
-        }
-
-        // This computer's own freshness (local only, never the hub's view):
-        // a stalled source, a meter holding an old reading, a failing sync.
-        const statusView = {summary: "loading", failing: "", offline: false, freshness: null};
-        const ago = seconds => {
-          const n = Number(seconds);
-          if (seconds == null || !Number.isFinite(n)) return "";
-          if (n < 90) return Math.round(n) + "s";
-          if (n < 5400) return Math.round(n / 60) + "m";
-          if (n < 172800) return Math.round(n / 3600) + "h";
-          return Math.round(n / 86400) + "d";
-        };
-        let statusTip = "";
-        function paintStatus() {
-          const pill = $("hud-status-pill");
-          const miniAlert = $("hud-mini-alert");
-          const fresh = statusView.freshness;
-          const all = fresh && Array.isArray(fresh.issues) ? fresh.issues : [];
-          const issues = all.filter(item => item.severity !== "info");
-          const notes = all.filter(item => item.severity === "info");
-          const lead = issues[0];
-          const summary = statusView.offline ? "offline" : statusView.summary;
-          let state = summary === "success" || summary === "live" || summary === "loading" ? "live" : summary === "offline" ? "error" : summary;
-          let label = summary === "offline" ? "OFFLINE" : summary === "stale" ? "STALE" : summary === "error" ? "ERR" : "LIVE";
-          let title = summary === "offline" ? "Offline" : summary === "stale" ? "Stale" : summary === "error" ? "Ingest failed" : "Live ingest";
-          let body = summary === "offline"
-            ? T.line("The local BURNRATE service is unreachable.", "dim")
-            : summary === "stale"
-              ? T.line("Ingest has not refreshed on schedule" + (statusView.failing ? ": " + statusView.failing : "") + ".", "dim")
-              : summary === "error"
-                ? T.line("A source failed to collect" + (statusView.failing ? ": " + statusView.failing : "") + ".", "dim")
-                : lead ? "" : T.line("Every source on this computer is collecting on schedule.", "dim");
-          if (state === "live" && lead) {
-            state = fresh.status === "alarm" ? "error" : "stale";
-            label = (lead.short + " " + lead.state).toUpperCase() + (issues.length > 1 ? " +" + (issues.length - 1) : "");
-            title = issues.length === 1 ? "1 source needs attention" : issues.length + " sources need attention";
-          }
-          let foot = "";
-          if (!statusView.offline) {
-            body += T.kv(issues.map(item => {
-              const age = ago(item.ageSeconds);
-              return [item.short, item.state + (age ? " " + age : ""), item.severity === "alarm" ? "dry" : "tight", item.detail];
-            }));
-            if (notes.length) body += T.sep + notes.map(item => T.line(item.detail, "dim")).join("");
-            const beat = fresh && fresh.ingest;
-            if (beat && beat.lastPassSeconds != null) {
-              foot = "Last collection pass " + beat.lastPassSeconds + "s, " + (ago(beat.lastPassAgeSeconds) || "0s") + " ago";
-            }
-          }
-          pill.dataset.state = state;
-          $("hud-status-text").textContent = label;
-          statusTip = T.head(title) + body + T.foot(foot);
-          miniAlert.hidden = state === "live";
-          miniAlert.dataset.state = state;
-          miniAlert.textContent = state === "live" ? "" : "! " + (lead && summary !== "offline" && summary !== "stale" && summary !== "error"
-            ? lead.short.toUpperCase() + (issues.length > 1 ? " +" + (issues.length - 1) : "")
-            : label);
-          refreshTip();
-        }
-        setTip($("hud-status-pill"), () => statusTip);
-        setTip($("hud-mini-alert"), () => statusTip);
-        async function refreshFreshness() {
-          try {
-            const res = await hudFetch("/api/spend/freshness?view=hud");
-            if (!res.ok) throw new Error(String(res.status));
-            statusView.freshness = await res.json();
-            feedHealth.freshness = Date.now();
-          } catch {
-            statusView.freshness = null;
-          }
-          paintStatus();
-        }
-
-        refresh();
-        refreshUsage();
-        refreshMachines();
-        refreshFreshness();
-        setInterval(paintUpdated, 1000);
-        setInterval(() => refresh(), 5000);
-        setInterval(refreshUsage, 20000);
-        setInterval(refreshMachines, 20000);
-        setInterval(refreshFreshness, 20000);
-        window.addEventListener("focus", () => { refresh(); refreshUsage(); refreshMachines(); refreshFreshness(); });
-        document.addEventListener("visibilitychange", () => {
-          if (!document.hidden) { refresh(); refreshUsage(); refreshMachines(); refreshFreshness(); }
-        });
-        if (typeof EventSource === "function") {
-          let debounce = null;
-          try {
-            const es = new EventSource("/api/spend/stream");
-            es.addEventListener("update", () => {
-              if (debounce) clearTimeout(debounce);
-              debounce = setTimeout(() => { debounce = null; refresh(true); }, 100);
-            });
-          } catch {}
-        }
-      })();
+/*__HUD_SCRIPT__*/
     </script>
   </body>
 </html>
 """
 
+from pathlib import Path
+
+# Embed the packaged browser entry so the HUD needs no additional request and
+# keeps the same inline-script CSP and early theme bootstrap in every install.
+_HUD_JS_PATH = Path(__file__).resolve().parents[1] / "spend_web" / "hud" / "hud.js"
+
+
+def _read_hud_js() -> str:
+    if _HUD_JS_PATH.is_file():
+        return _HUD_JS_PATH.read_text(encoding="utf-8")
+    return files("spend_web").joinpath("hud", "hud.js").read_text(encoding="utf-8")
+
+
+HUD_HTML = HUD_TEMPLATE.replace("/*__HUD_SCRIPT__*/\n", _read_hud_js())
+_HUD_CACHE: tuple[int | None, str] = (
+    _HUD_JS_PATH.stat().st_mtime_ns if _HUD_JS_PATH.is_file() else None,
+    HUD_HTML,
+)
+
 
 def render_hud(*, dashboard: bool = False) -> str:
+    global _HUD_CACHE, HUD_HTML
+    try:
+        mtime_ns = _HUD_JS_PATH.stat().st_mtime_ns if _HUD_JS_PATH.is_file() else None
+    except OSError:
+        mtime_ns = _HUD_CACHE[0]
+    if mtime_ns is not None and mtime_ns != _HUD_CACHE[0]:
+        HUD_HTML = HUD_TEMPLATE.replace("/*__HUD_SCRIPT__*/\n", _read_hud_js())
+        _HUD_CACHE = (mtime_ns, HUD_HTML)
+    html = _HUD_CACHE[1]
     if dashboard:
-        return HUD_HTML
-    return HUD_HTML.replace('<html lang="en">', '<html lang="en" data-dashboard="off">', 1)
+        return html
+    return html.replace('<html lang="en">', '<html lang="en" data-dashboard="off">', 1)

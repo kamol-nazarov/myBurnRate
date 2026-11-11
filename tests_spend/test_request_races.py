@@ -19,6 +19,8 @@ CASES = [
     "health_ok", "health_fail", "health_across_ticks", "poll_summary", "poll_detail", "poll_diagnostics",
     "entity_identity", "cancel", "cache_reuse", "mismatched_response", "abort_transport", "standalone_startup",
     "snapshot_valid", "snapshot_expired", "snapshot_mismatch", "snapshot_stored_expired",
+    "machine_failure", "machine_race", "tool_failure", "tool_race",
+    "detail_machine_failure", "detail_tool_failure", "snapshot_foreign_machine", "snapshot_foreign_tool",
 ]
 
 

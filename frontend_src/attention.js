@@ -32,7 +32,13 @@
     panel.addEventListener('close',()=>{if(panel.open)return;++epoch;controller?.abort();busy=false;restore();});
     panel.addEventListener('cancel',()=>{++epoch;controller?.abort();});
     function open(target=document.activeElement){opener=target;if(!panel.open)panel.showModal();title.focus();refresh(true);}
-    function select(next){tab=next;++epoch;controller?.abort();paint();refresh(true);}
+    function select(next){
+      tab=next;paint();
+      // A save returns both tabs. Navigation may change which one is shown,
+      // but must not cancel the write or invalidate its busy-state cleanup.
+      if(busy)return;
+      ++epoch;controller?.abort();refresh(true);
+    }
     async function request(body,signal,detail) {
       const response=await fetch('/api/attention'+(!body&&!detail?'?detail=false':''),{cache:'no-store',signal,
         ...(body?{method:'POST',headers:{'Content-Type':'application/json','X-BURNRATE-Request':'1'},body:JSON.stringify(body)}:{})});

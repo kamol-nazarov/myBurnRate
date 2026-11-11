@@ -257,9 +257,11 @@ def test_zcode_unmatched_session_retains_valid_token_row():
 def test_failed_cycle_still_warms_only_requested_windows(monkeypatch):
     from spend_app import scheduler
     class FakeScheduler:
-        def __init__(self,**kwargs):self.jobs={}
+        def __init__(self,**kwargs):
+            self.jobs={}
+            self.collection_stopping=SimpleNamespace(is_set=lambda:False)
         def add_job(self,func,*args,**kwargs):self.jobs[kwargs['id']]=func
-    monkeypatch.setattr(scheduler,'BackgroundScheduler',FakeScheduler)
+    monkeypatch.setattr(scheduler,'CollectionScheduler',FakeScheduler)
     monkeypatch.setattr(scheduler,'connect',lambda path:nullcontext(object()))
     monkeypatch.setattr(scheduler,'prune_ingest_runs',lambda db:None)
     monkeypatch.setattr(scheduler,'_run_ingest_specs',Mock(side_effect=RuntimeError('one failed source')))

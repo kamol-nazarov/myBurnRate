@@ -13,7 +13,10 @@
     else {
       const url = new URL(request.url, location.href);
       let data;
-      if (url.pathname.endsWith("summary")) data = raceSummary(url.searchParams.get("window"));
+      if (url.pathname.endsWith("summary")) {
+        data = raceSummary(url.searchParams.get("window"));
+        data.selectedMachine = url.searchParams.get("machine") || "all";
+      }
       else if (url.pathname.endsWith("entity")) {
         data = structuredClone(RACE_FIXTURES.entity);
         data.window = raceSummary(url.searchParams.get("window")).window;
@@ -26,6 +29,8 @@
   };
   const click = id => document.getElementById(id).click();
   const select = key => document.querySelector(`#${state.view === "detail" ? "detail-ranges" : "range-switch"} [data-window="${key}"]`).click();
+  const machine = key => document.querySelector(`#machine-switch [data-machine="${key}"]`).click();
+  const tool = key => document.querySelector(`#tool-switch [data-tool="${key}"]`).click();
   const tick = () => raceTicks.forEach(callback => callback());
   const busy = () => document.getElementById("main").getAttribute("aria-busy") === "true";
   const errorVisible = () => !document.getElementById("error-banner").hidden;
@@ -82,6 +87,42 @@
     await seed();
     if (RACE_CASE === "standalone_startup") {
       overview("1d");
+    } else if (["machine_failure", "machine_race", "tool_failure", "tool_race"].includes(RACE_CASE)) {
+      const isMachine = RACE_CASE.startsWith("machine_");
+      const choose = isMachine ? machine : tool;
+      const keys = isMachine ? ["desktop", "laptop"] : [...document.querySelectorAll('#tool-switch [data-tool]')].map(n=>n.dataset.tool).filter(k=>k!=="all").slice(0,2);
+      choose(keys[0]); const first = last("summary");
+      assert(!visible("kpi-grid") && document.getElementById("nav-today").textContent === "—", "changing a filter must hide mismatched costs immediately");
+      if (RACE_CASE.endsWith("_race")) {
+        choose(keys[1]); const latest = last("summary");
+        assert(first.options.signal.aborted, "previous filter request must be aborted");
+        await settle(first); assert(!visible("kpi-grid") && busy(), "late old filter response must not repaint");
+        await settle(latest);
+      } else {
+        await settle(first, true);
+        assert(errorVisible() && !visible("kpi-grid"), "failed filter cannot show old costs as selected data");
+        click("retry-button"); await settle(last("summary"));
+      }
+      overview("1d");
+      const requested = new URL(last("summary").url, location.href);
+      assert((requested.searchParams.get(isMachine ? "machine" : "tool") || "all") === state[isMachine ? "machine" : "tool"], "rendered data must own the full filter identity");
+      const cached = JSON.parse(localStorage.getItem("burnrate:snapshot:v1:1d"));
+      assert(cached.queryIdentity === JSON.stringify(["1d","all","all"]), "filtered data must not replace the all-machines/tools snapshot");
+      choose("all");
+      assert(visible("kpi-grid") && state.summary.snapshot, "returning to all may reuse only the matching snapshot");
+      await settle(last("summary")); overview("1d");
+    } else if (RACE_CASE === "detail_machine_failure" || RACE_CASE === "detail_tool_failure") {
+      loadEntity("model", "model-a"); await settle(last("entity"));
+      click("detail-back");
+      if (RACE_CASE === "detail_machine_failure") machine("laptop");
+      else tool([...document.querySelectorAll('#tool-switch [data-tool]')].find(n=>n.dataset.tool!=="all").dataset.tool);
+      await settle(last("summary"));
+      loadEntity("model", "model-a");
+      assert(!visible("detail-kpis"), "cached detail from another filter must not be visible");
+      await settle(last("entity"), true);
+      assert(errorVisible() && !visible("detail-kpis"), "failed detail must not expose a different filter's cache");
+      click("retry-button"); await settle(last("entity"));
+      assert(visible("detail-kpis"), "matching detail recovers on retry");
     } else if (RACE_CASE.startsWith("resume_")) {
       tick();
       const old = last("summary");

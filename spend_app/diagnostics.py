@@ -112,13 +112,32 @@ def collection_stale_after(source):
     return 3600 if source in SETTINGS else 180
 
 
-def source_reports(connection, now, detected=None, settings=None):
+def _public_model_name(model):
+    if (
+        re.fullmatch(r"[A-Za-z0-9_./:\[\]-]{1,100}", model or "")
+        and not model.startswith("/")
+        and not re.match(r"^[A-Za-z]:[/\\]", model)
+    ):
+        return model
+    return "unidentified model"
+
+
+def source_reports(connection, now, detected=None, settings=None, *, pricing=None):
     detected = detected or {}
     bindings = {}
     if settings is not None:
         from spend_app.connections import Store
 
         bindings = Store(settings.database_path).read()["bindings"]
+        if pricing is None:
+            from spend_app.pricing import PricingEngine
+
+            pricing = PricingEngine.load(settings.pricing_path)
+    coverage = {}
+    if pricing is not None:
+        from spend_app.pricing_audit import coverage_by_source
+
+        coverage = coverage_by_source(connection, pricing, now=now)
     from spend_app.providers import RETIRED_SOURCES
 
     sources = set(LOCAL_PATHS) | set(SETTINGS)
@@ -127,6 +146,7 @@ def source_reports(connection, now, detected=None, settings=None):
         for row in connection.execute("SELECT DISTINCT source FROM ingest_runs")
         if row[0] not in RETIRED_SOURCES
     )
+    sources.update(source for source in coverage if source not in RETIRED_SOURCES)
     reports = []
     for source in sorted(sources):
         latest = connection.execute(
@@ -193,13 +213,34 @@ def source_reports(connection, now, detected=None, settings=None):
                 "SELECT model_key FROM pricing_gaps WHERE source=?", (source,)
             )
         ]
-        models = [
-            m
-            if re.fullmatch(r"[A-Za-z0-9_./:\[\]-]{1,100}", m or "")
-            and not m.startswith("/")
-            else "unidentified model"
-            for m in models
-        ]
+        pricing_coverage = coverage.get(source)
+        if pricing is not None and pricing_coverage is None:
+            pricing_coverage = {
+                "records": 0,
+                "pricedRecords": 0,
+                "missingRateRecords": 0,
+                "missingRateTokens": 0,
+                "incompleteRecords": 0,
+                "invalidTimestampRecords": 0,
+                "models": [],
+                "reasons": [],
+            }
+        if pricing_coverage is not None:
+            # This view follows the effective rate cards, rather than old
+            # ingest-time gap rows which survive a later pricing update.
+            models = [
+                m["model"]
+                for m in pricing_coverage["models"]
+                if m["missingRateRecords"]
+            ]
+            pricing_coverage = {
+                **pricing_coverage,
+                "models": [
+                    {**model, "model": _public_model_name(model["model"])}
+                    for model in pricing_coverage["models"]
+                ],
+            }
+        models = [_public_model_name(model) for model in models]
         reports.append(
             {
                 "source": source,
@@ -220,6 +261,9 @@ def source_reports(connection, now, detected=None, settings=None):
                 "reason": reason,
                 "nextAction": action,
                 "pricingMissing": models,
+                **(
+                    {"pricingCoverage": pricing_coverage} if pricing is not None else {}
+                ),
                 "experimental": source in EXPERIMENTAL,
                 "documentation": HELP_URL,
             }

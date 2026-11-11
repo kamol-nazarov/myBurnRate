@@ -119,8 +119,10 @@ def test_quota_and_activity_jobs_are_independent_interval_jobs(tmp_path: Path) -
     assert quota.func is poll_quotas
     assert activity.func is poll_activity
     database = tmp_path / "spend.db"
-    assert quota.kwargs == {"database_path": database}
-    assert activity.kwargs == {"database_path": database}
+    assert quota.kwargs["database_path"] == activity.kwargs["database_path"] == database
+    assert quota.kwargs["settings"] == activity.kwargs["settings"] == make_settings(tmp_path)
+    assert quota.kwargs["pricing"] is activity.kwargs["pricing"]
+    assert isinstance(quota.kwargs["pricing"], PricingEngine)
     assert quota.id != activity.id
     for job_id in LOCAL_INGEST_JOB_IDS:
         job = jobs[job_id]
@@ -320,10 +322,10 @@ def test_scheduled_poller_jobs_pass_database_path(tmp_path: Path, monkeypatch) -
     jobs[QUOTA_JOB_ID].func(**jobs[QUOTA_JOB_ID].kwargs)
     jobs[ACTIVITY_JOB_ID].func(**jobs[ACTIVITY_JOB_ID].kwargs)
     database = tmp_path / "spend.db"
-    assert calls == [
-        ("quota", {"database_path": database}),
-        ("activity", {"database_path": database}),
-    ]
+    assert [name for name, _kwargs in calls] == ["quota", "activity"]
+    assert all(kwargs["database_path"] == database for _name, kwargs in calls)
+    assert all(kwargs["settings"] == make_settings(tmp_path) for _name, kwargs in calls)
+    assert calls[0][1]["pricing"] is calls[1][1]["pricing"]
 
 
 def test_disabled_scheduler_does_not_call_pollers(tmp_path: Path, monkeypatch) -> None:

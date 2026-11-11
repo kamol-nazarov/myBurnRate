@@ -232,10 +232,10 @@ selectedMachine = "desktop";
 renderUsage(payload(null, 0, null));
 const desktopEmpty = snap();
 renderUsage(payload(12.5, 40, 8));
-renderUsage(payload(null, 0, null));
+renderUsage({navigation: {todayTokens: 40}, totals: {}});
 const desktopHeld = snap();
 selectedMachine = "all";
-renderUsage(payload(null, 100, null));
+renderUsage({navigation: {todayTokens: 100}, totals: {}});
 const allHeld = snap();
 console.log(JSON.stringify({all, desktopEmpty, desktopHeld, allHeld}));
 """ % _usage_hold_source()
@@ -247,7 +247,7 @@ console.log(JSON.stringify({all, desktopEmpty, desktopHeld, allHeld}));
     assert report["desktopEmpty"]["today"] == "—"
     assert report["desktopEmpty"]["burn"] == "—"
     assert report["desktopHeld"]["today"] == "$12.50"
-    assert report["allHeld"]["today"] == "$343.45", "a missing read keeps this computer's figure, not the other one's"
+    assert report["allHeld"]["today"] == "$343.45", "an omitted field keeps this computer's figure, not the other one's"
 
 
 def _hold_source() -> str:

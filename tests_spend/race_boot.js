@@ -21,11 +21,14 @@ window.raceSummary = key => {
   data.window.key = key;
   data.window.to = new Date().toISOString();
   data.generatedAt = data.window.to;
+  data.machines = [{id:"desktop",name:"Desktop"},{id:"laptop",name:"Laptop"}];
   return data;
 };
 if (RACE_CASE.startsWith("snapshot_")) {
   const summary = raceSummary(RACE_CASE === "snapshot_mismatch" ? "1w" : "1d");
   if (RACE_CASE === "snapshot_expired") summary.window.to = "2000-01-01T00:00:00Z";
+  if (RACE_CASE === "snapshot_foreign_machine") summary.selectedMachine = "desktop";
   const storedAt = RACE_CASE === "snapshot_stored_expired" ? "2000-01-01T00:00:00Z" : new Date().toISOString();
-  localStorage.setItem("burnrate:snapshot:v1:1d", JSON.stringify({storedAt, summary}));
+  const queryIdentity = RACE_CASE === "snapshot_foreign_tool" ? JSON.stringify(["1d","all","codex"]) : undefined;
+  localStorage.setItem("burnrate:snapshot:v1:1d", JSON.stringify({storedAt, summary, queryIdentity}));
 }

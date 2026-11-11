@@ -65,6 +65,12 @@ Responses never include credentials or raw provider documents. API JSON is `Cach
 
 The HUD reads `/api/spend/hud` every 5 seconds and `/api/spend/hud/usage` every 20 seconds, each with a 12-second abort. A meter whose newest poll returns no value keeps its last reading (dimmed) until that window resets, a plan missing from one response stays for up to 15 minutes, and spend figures hold until the local date changes. Both payloads carry `lastIngestAt`, `lastIngestAgeSeconds` and `stale`; the HUD footer shows the data's age and alarms when the data is older than 10 minutes or either poll misses its cadence. On a paired spoke both reads serve the last hub copy at once and renew it in the background (`HUD_HUB_STALE_SECONDS`, 300 s), so a slow or unreachable hub never stalls a refresh.
 
+The HUD browser entry is a packaged JavaScript resource embedded by `hud.py`.
+The request timeout includes reading the response body. A failed request can
+retain a visibly stale reading; a successful response explicitly reporting an
+unavailable amount or cache percentage clears that figure. Machine changes
+invalidate the previous machine's display immediately.
+
 Windows: `15m`, `30m`, `1h`, `3h`, `6h`, `12h`, `1d`, `1w`, `1mo`, `mtd`, `ytd`, `all` (plus legacy aliases `7d`, `30d`, `MTD`, `YTD`, `All`).
 
 ## Persistence
@@ -80,10 +86,24 @@ Events are provider-agnostic once stored:
 | `quotas` | used / allowance / pct / reset / unit / PAYG flag; unused fields stay NULL |
 | `agent_runs` | live-turn cards (id, name, model, state, timestamps) |
 | `ingest_runs` | status, event counts, redacted error |
+| `usage_changes` | ordered local usage identities changed by inserts, corrections or deletions; written transactionally by triggers |
 | `subscriptions` / `subscription_daily_costs` | operator-configured plans and materialized daily proration |
 | `pricing_gaps` / `coverage_gap_events` | unpriced or incomplete coverage, no prompts |
 
 Credentials never enter these tables. Project fields store directory **names**, not full home paths.
+
+Schema 12 adds a usage change journal. Export batches read a consistent snapshot
+and send the latest state or a deletion for each changed identity. Hubs acknowledge
+the sequence transactionally, so replay cannot restore an older correction.
+Imported machine rows do not echo back into the journal. Malformed historical
+timestamps are diagnosed and skipped explicitly rather than blocking a batch;
+repairing the local row creates a new change to synchronize.
+
+Upgrade both spoke and hub to replicate corrections and deletions. Older hubs
+still accept ordinary upserts, but cannot acknowledge the new journal; pending
+repairs stay queued and the HUD/setup status requests a hub update. Existing rows
+seed the journal during migration. Events deleted before the journal existed
+cannot be reconstructed from the remaining local database.
 
 ## Scheduler
 
@@ -106,6 +126,16 @@ Quota collectors tick every 15 seconds; each lane decides whether it is due:
 | Antigravity | 90 / 300 |
 
 Activity (live cards) polls every 4 seconds.
+
+The scheduler owns the collector worker's lifetime. Shutdown stops admission and
+interrupts an in-flight worker before closing shared resources. Quota and activity
+updates also request immediate spoke sync using the configured pricing engine;
+follow-up failures produce sanitized log warnings.
+
+Native supervision uses a bounded `/healthz?supervisor=1` probe with application
+identity, process ID and collection progress. It preserves startup grace and a
+restart budget, and restarts only its owned service. An open TCP port alone is
+not application health; unrelated listeners are left untouched.
 
 Cursor is no longer collected or counted. Cursor usage duplicates SuperGrok usage, so it is not counted: on first start each database (this computer's and the Hub's) removes its recorded Cursor rows after saving a verified backup to `backups/pre-cursor-removal-*.db`, and a Hub drops Cursor rows pushed by computers still on an older version.
 

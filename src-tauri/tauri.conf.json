@@ -5,23 +5,11 @@
   "identifier": "dev.burnrate.desktop",
   "build": {
     "devUrl": "http://127.0.0.1:17331",
-    "frontendDist": "../spend_web"
+    "frontendDist": "boot"
   },
   "app": {
     "withGlobalTauri": true,
     "windows": [
-      {
-        "label": "main",
-        "title": "BURNRATE · AI Cost Intelligence",
-        "url": "starting.html",
-        "width": 1340,
-        "height": 860,
-        "minWidth": 420,
-        "minHeight": 560,
-        "resizable": true,
-        "center": true,
-        "visible": false
-      },
       {
         "label": "hud",
         "title": "BURNRATE · Sidecar HUD",
@@ -33,6 +21,7 @@
         "x": 24,
         "y": 72,
         "alwaysOnTop": true,
+        "skipTaskbar": true,
         "decorations": false,
         "transparent": true,
         "shadow": false,

@@ -417,6 +417,59 @@ def _retired_item(item) -> bool:
     return isinstance(item, dict) and (item.get("tool_key") == "cursor" or item.get("source") in RETIRED_SOURCES)
 
 
+def _usage_change_batch(connection, machine_id: str, batch: object):
+    """Validate and select unacknowledged changes while holding the writer lock."""
+    if not isinstance(batch, dict) or batch.get("version") != 1:
+        raise ValueError("Unsupported usage change protocol.")
+    after, through, changes = batch.get("after"), batch.get("through"), batch.get("changes")
+    if (type(after) is not int or type(through) is not int or not 0 <= after <= through
+            or not isinstance(changes, list)):
+        raise ValueError("Invalid usage change sequence.")
+    key = "sync.received.usage_changes.v1:" + machine_id
+    row = connection.execute("SELECT value FROM app_meta WHERE key=?", (key,)).fetchone()
+    acknowledged = int(row[0]) if row else 0
+    if after > acknowledged:
+        raise ValueError("Usage changes have a sequence gap; reset this hub's sync cursor.")
+    usage, unpriced, deleted = [], [], []
+    skipped = 0
+    previous = after
+    seen = set()
+    for change in changes:
+        if not isinstance(change, dict):
+            raise ValueError("Invalid usage change.")
+        seq, raw_id, kind = change.get("seq"), change.get("raw_id"), change.get("kind")
+        if (type(seq) is not int or not previous < seq <= through
+                or not isinstance(raw_id, str) or not raw_id or raw_id.startswith("m:")
+                or raw_id in seen or kind not in {"usage", "unpriced", "delete", "skip"}):
+            raise ValueError("Invalid usage change.")
+        previous = seq
+        seen.add(raw_id)
+        if kind == "skip" and change.get("reason") != "invalid_timestamp":
+            raise ValueError("Unsupported skipped usage reason.")
+        if kind in {"usage", "unpriced"}:
+            event = change.get("event")
+            if not isinstance(event, dict) or event.get("raw_id") != raw_id:
+                raise ValueError("Usage change identity does not match its event.")
+        if seq <= acknowledged:
+            continue
+        if kind == "delete":
+            deleted.append(raw_id)
+        elif kind == "skip":
+            # A malformed local observation is quarantined, not a deletion of
+            # a previously valid remote event. Its later repair gets a new seq.
+            skipped += 1
+        elif not _retired_item(event):
+            (usage if kind == "usage" else unpriced).append(event)
+    if previous != through:
+        raise ValueError("Usage change sequence is incomplete.")
+    return usage, unpriced, deleted, key, max(acknowledged, through), skipped
+
+
+def _validate_usage_timestamp(item: dict) -> None:
+    if not isinstance(item, dict) or _parse_iso(str(item.get("occurred_at") or "")) is None:
+        raise ValueError("Usage event requires a valid occurred_at timestamp.")
+
+
 def apply_sync_push(
     database_path: Path,
     pricing: PricingEngine,
@@ -456,9 +509,24 @@ def apply_sync_push(
     written = 0
     agents_changed = False
     quotas_changed = False
+    usage_changed = False
+    change_ack = None
+    skipped_changes = 0
     with connect(database_path) as connection:
+        # Serialise acknowledgement with event writes. Retried or concurrent
+        # pushes must never replay an older correction over a newer one.
+        connection.execute("BEGIN IMMEDIATE")
         try:
+            if "usageChanges" in body:
+                usage_items, unpriced_items, deleted, ack_key, change_ack, skipped_changes = _usage_change_batch(
+                    connection, machine_id, body["usageChanges"])
+                usage_changed = bool(usage_items or unpriced_items or deleted)
+                for identifier in deleted:
+                    raw_id = prefix_machine_id(machine_id, identifier)
+                    for table in ("usage_events", "unpriced_usage_events", "coverage_gap_events", "pricing_gap_events"):
+                        connection.execute(f"DELETE FROM {table} WHERE raw_id=?", (raw_id,))
             for item in usage_items:
+                _validate_usage_timestamp(item)
                 raw_id = prefix_machine_id(machine_id, str(item["raw_id"]))
                 session_id = prefix_machine_id(
                     machine_id,
@@ -529,6 +597,7 @@ def apply_sync_push(
                     written += 1
 
             for item in unpriced_items:
+                _validate_usage_timestamp(item)
                 raw_id = prefix_machine_id(machine_id, str(item["raw_id"]))
                 session_id = prefix_machine_id(
                     machine_id,
@@ -707,17 +776,24 @@ def apply_sync_push(
             _write_state(connection, state)
             run = IngestRun.start(connection, f"sync:{machine_id}")
             run.events_written = written
-            run.finish(status="success")
+            run.finish(status="partial" if skipped_changes else "success", error=(
+                f"{skipped_changes} usage observations have invalid timestamps and were skipped."
+                if skipped_changes else None))
             if now is not None:
                 connection.execute(
                     "UPDATE ingest_runs SET started_at=?, finished_at=? WHERE id=?",
                     (stamp, stamp, run.id),
                 )
             prune_ingest_runs(connection, now=stamp)
+            if change_ack is not None:
+                connection.execute(
+                    "INSERT INTO app_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (ack_key, str(change_ack)),
+                )
         except Exception:
             raise
 
-    if written > 0 or agents_changed or quotas_changed:
+    if written > 0 or agents_changed or quotas_changed or usage_changed:
         STREAM_BROKER.publish(
             {
                 "type": "sync",
@@ -731,6 +807,7 @@ def apply_sync_push(
         "machineId": machine_id,
         "eventsWritten": written,
         "receivedAt": stamp,
+        **({"usageChangeSeq": change_ack, "usageChangesSkipped": skipped_changes} if change_ack is not None else {}),
     }
 
 
@@ -744,8 +821,13 @@ def export_sync_batch(
     cursor = cursor or {}
     last_usage_id = int(cursor.get("usage_id") or 0)
     last_unpriced_id = int(cursor.get("unpriced_id") or 0)
+    last_change_seq = int(cursor.get("change_seq") or 0)
+    if limit < 1:
+        raise ValueError("Sync batch limit must be positive.")
     initialize(database_path)
     with connect(database_path) as connection:
+        # Journal identities and current payloads must share a read snapshot.
+        connection.execute("BEGIN")
         usage_rows = [
             dict(row)
             for row in connection.execute(
@@ -760,6 +842,37 @@ def export_sync_batch(
                 (last_unpriced_id, int(limit)),
             )
         ]
+        next_usage_id = max([last_usage_id, *[int(r["id"]) for r in usage_rows]])
+        next_unpriced_id = max([last_unpriced_id, *[int(r["id"]) for r in unpriced_rows]])
+        journal = connection.execute(
+            "SELECT seq,raw_id FROM usage_changes WHERE seq>? ORDER BY seq LIMIT ?",
+            (last_change_seq, int(limit)),
+        ).fetchall()
+        next_change_seq = journal[-1]["seq"] if journal else last_change_seq
+        # Multiple mutations of one identity can be represented by its latest
+        # state. Keep the last sequence so acknowledgement remains monotonic.
+        identities = {row["raw_id"]: row["seq"] for row in journal}
+        changes = []
+        for raw_id, seq in sorted(identities.items(), key=lambda item: item[1]):
+            change = {"seq": seq, "raw_id": raw_id, "kind": "delete"}
+            for table, kind, rows in (("usage_events", "usage", usage_rows),
+                                      ("unpriced_usage_events", "unpriced", unpriced_rows)):
+                row = connection.execute(f"SELECT * FROM {table} WHERE raw_id=?", (raw_id,)).fetchone()
+                if row is not None:
+                    event = dict(row)
+                    if _parse_iso(str(event.get("occurred_at") or "")) is None:
+                        change.update(kind="skip", reason="invalid_timestamp")
+                        break
+                    rows.append(event.copy())  # Upserts also work with legacy hubs.
+                    event.pop("id", None)
+                    event.pop("occurred_epoch_us", None)
+                    change.update(kind=kind, event=event)
+                    break
+            changes.append(change)
+        usage_rows = list({row["raw_id"]: row for row in usage_rows
+                           if _parse_iso(str(row.get("occurred_at") or "")) is not None}.values())
+        unpriced_rows = list({row["raw_id"]: row for row in unpriced_rows
+                              if _parse_iso(str(row.get("occurred_at") or "")) is not None}.values())
         session_ids = {
             row["session_id"]
             for row in (*usage_rows, *unpriced_rows)
@@ -824,8 +937,9 @@ def export_sync_batch(
         hub_name = state.get("hub_name") or _default_hub_name()
 
     next_cursor = {
-        "usage_id": max([last_usage_id, *[int(r["id"]) for r in usage_rows]]),
-        "unpriced_id": max([last_unpriced_id, *[int(r["id"]) for r in unpriced_rows]]),
+        "usage_id": next_usage_id,
+        "unpriced_id": next_unpriced_id,
+        "change_seq": next_change_seq,
     }
     for row in usage_rows:
         row.pop("id", None)
@@ -842,6 +956,8 @@ def export_sync_batch(
         "agentRuns": agent_runs,
         "quotas": quota_rows,
         "replaceAgentRuns": True,
+        "usageChanges": {"version": 1, "after": last_change_seq, "through": next_change_seq,
+                         "changes": changes, "hasMore": len(journal) == limit},
     }
     return payload, next_cursor
 
@@ -911,6 +1027,7 @@ def sync_once(
 
     cursor = read_sync_cursor(settings.database_path, hub_url)
     total_written = 0
+    total_skipped = 0
     last_result: dict = {"ok": True, "eventsWritten": 0}
     endpoint = hub_url.strip().rstrip("/") + "/api/sync/push"
     headers = {
@@ -920,7 +1037,7 @@ def sync_once(
     batch_limit = 1000
 
     def _run_batches(post_fn) -> None:
-        nonlocal cursor, total_written, last_result
+        nonlocal cursor, total_written, total_skipped, last_result
         for batch_idx in range(15):
             batch, next_cursor = export_sync_batch(
                 settings.database_path, cursor=cursor, limit=batch_limit
@@ -936,11 +1053,34 @@ def sync_once(
                 raise RuntimeError(f"Sync push failed ({response.status_code}): {response.text}")
             last_result = response.json()
             total_written += int(last_result.get("eventsWritten") or 0)
+            total_skipped += int(last_result.get("usageChangesSkipped") or 0)
+            acknowledged = last_result.get("usageChangeSeq")
+            if type(acknowledged) is int and acknowledged >= next_cursor["change_seq"]:
+                # Only an explicit protocol acknowledgement consumes repair
+                # records. A successful legacy HTTP response cannot acknowledge
+                # deletions it did not understand.
+                next_cursor["change_seq"] = acknowledged
+            else:
+                next_cursor["change_seq"] = int(cursor.get("change_seq") or 0)
+                if batch["usageChanges"]["changes"]:
+                    last_result = {**last_result, "usageChangesPending": True,
+                                   "warning": "Upgrade the hub to synchronize usage corrections and deletions."}
             write_sync_cursor(settings.database_path, hub_url, next_cursor)
+            if type(acknowledged) is int and acknowledged > 0:
+                try:
+                    from spend_app.db import prune_usage_changes
+
+                    with connect(settings.database_path) as connection:
+                        prune_usage_changes(connection, acknowledged_seq=acknowledged)
+                except Exception:
+                    pass
             cursor = next_cursor
+            if last_result.get("usageChangesPending"):
+                break
             if (
                 len(batch.get("usageEvents") or []) < batch_limit
                 and len(batch.get("unpricedEvents") or []) < batch_limit
+                and not batch["usageChanges"]["hasMore"]
             ):
                 break
 
@@ -949,9 +1089,12 @@ def sync_once(
     else:
         import httpx
 
-        with httpx.Client(timeout=30.0) as http:
+        with httpx.Client(timeout=30.0, trust_env=False) as http:
             _run_batches(http.post)
-    return {**last_result, "eventsWritten": total_written, "cursor": cursor}
+    return {**last_result, "eventsWritten": total_written, "cursor": cursor,
+            **({"usageChangesSkipped": total_skipped,
+                "invalidUsageWarning": "Some usage observations have invalid timestamps and were not synchronized."}
+               if total_skipped else {})}
 
 
 _HUB_PROXY_LOCK = threading.Lock()
@@ -1013,7 +1156,7 @@ def post_to_configured_hub(
         else:
             import httpx
 
-            with httpx.Client(timeout=5.0) as http:
+            with httpx.Client(timeout=5.0, trust_env=False) as http:
                 response = http.post(f"{hub_url}{path}", json=body, headers=headers)
         clear_hub_proxy_cache()
         if response.status_code >= 400:
@@ -1317,7 +1460,7 @@ def _read_hub_copy(cache_key: tuple, hub_url: str, token: str, path: str, params
         else:
             import httpx
 
-            with httpx.Client(timeout=timeout) as http:
+            with httpx.Client(timeout=timeout, trust_env=False) as http:
                 response = http.get(f"{hub_url}{path}", params=params, headers=headers)
         if response.status_code != 200:
             return None

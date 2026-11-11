@@ -357,12 +357,14 @@ def test_sidecar_hud_and_tauri_native_scaffold(tmp_path: Path, monkeypatch) -> N
     repo_root = Path(__file__).resolve().parents[1]
     tauri_conf = json.loads((repo_root / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8"))
     windows = {w["label"]: w for w in tauri_conf["app"]["windows"]}
-    assert "main" in windows and "hud" in windows
+    assert "hud" in windows and "main" not in windows
     assert windows["hud"]["alwaysOnTop"] is True
     assert windows["hud"]["decorations"] is False
-    # Windows open on the bundled starting page; the app moves them to the
-    # service once it answers, and the transparent HUD asks for its glass card.
-    assert windows["hud"]["url"] == windows["main"]["url"] == "starting.html"
+    assert windows["hud"]["skipTaskbar"] is True
+    # Only the lightweight HUD spawns at startup on the boot page; the main
+    # dashboard window is lazily created on demand and destroyed when closed.
+    assert windows["hud"]["url"] == "starting.html"
+    assert (repo_root / "src-tauri" / "boot" / "starting.html").is_file()
     assert (repo_root / "spend_web" / "starting.html").is_file()
     assert windows["hud"]["transparent"] is True
 
@@ -373,12 +375,15 @@ def test_sidecar_hud_and_tauri_native_scaffold(tmp_path: Path, monkeypatch) -> N
         "hide_hud",
         "toggle_hud_pin",
         "show_dashboard",
+        "ensure_main_window",
         "open_setup_wizard",
         "TrayIconBuilder",
         "BackendSupervisor",
         '"/hud?glass=1"',
         "install_update",
-        "child_job::adopt",
+        "ManagedChild::spawn",
+        "JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE",
+        "fn service_health",
     ):
         assert symbol in lib_rs
 

@@ -102,7 +102,7 @@ function buildPlanMutation(op,values,p,t,preview,confirmed){const b={operation:o
         s.experimental ? "Experimental integration; other sources continue independently." : ""
       ];
       card.querySelectorAll("p").forEach((p,i) => { setText(p,t[i]); p.hidden=!t[i]; });
-      card.querySelector("a").href = s.documentation;
+      card.querySelector("a").href = /^https?:\/\//i.test(String(s.documentation || "")) ? s.documentation : "";
     });
   };
 
@@ -139,7 +139,7 @@ function buildPlanMutation(op,values,p,t,preview,confirmed){const b={operation:o
     syncBtn.disabled = true;
     if (syncLabel) syncLabel.textContent = "Syncing…";
     try {
-      const res = await fetch("/api/sync/trigger", {method: "POST", cache: "no-store"});
+      const res = await fetch("/api/sync/trigger", {method: "POST", cache: "no-store", headers: {"X-BURNRATE-Request": "1"}});
       if (res.ok) {
         const out = await res.json();
         if (setupData && out.setup) setupData.setup = out.setup;
@@ -162,10 +162,11 @@ function buildPlanMutation(op,values,p,t,preview,confirmed){const b={operation:o
   function renderHarnesses(payload) {
     el("harness-content").hidden=false; el("harness-message").hidden=true;
     el("harness-scanned").textContent=harnessScannedAt == null ? "Not checked yet" : "Checked "+relative((Date.now()-harnessScannedAt)/1000);
-    el("harness-docs").href=payload.documentation || payload.sources?.find(s=>s.documentation)?.documentation || "";
+    const rawDoc=payload.documentation || payload.sources?.find(s=>s.documentation)?.documentation || "";
+    el("harness-docs").href=/^https?:\/\//i.test(String(rawDoc)) ? rawDoc : "";
     const sourceCopy={antigravity_local:["Antigravity","Local app"],claude_local:["Claude Code","Transcripts"],codex_local:["Codex","Sessions"],cursor_local:["Cursor","Project files"],cursor_usage_service:["Cursor","Usage service"],cursor_csv:["Cursor","CSV import"],grok_local:["Grok","Local logs"],opencode_local:["OpenCode","Local database"],traycer_local:["Traycer","Host"],zcode_local:["ZCode","Local database"],muse_local:["Muse Code","Sessions"]};
-    const integrationCopy={OPENAI_ADMIN_KEY:["OpenAI","Admin API"],ANTHROPIC_ADMIN_KEY:["Anthropic","Admin API"],CURSOR_API_KEY:["Cursor","Admin API"],OPENROUTER_MANAGEMENT_KEY:["OpenRouter","Management API"],BURNRATE_ENABLE_CURSOR_USAGE_SERVICE:["Cursor","Usage service"],BURNRATE_ENABLE_ZAI_QUOTA:["Z.AI","Quota"]};
-    const integrationTool={OPENAI_ADMIN_KEY:"openai",ANTHROPIC_ADMIN_KEY:"anthropic",CURSOR_API_KEY:"cursor",OPENROUTER_MANAGEMENT_KEY:"openrouter",BURNRATE_ENABLE_CURSOR_USAGE_SERVICE:"cursor",BURNRATE_ENABLE_ZAI_QUOTA:"zai"};
+    const integrationCopy={OPENAI_ADMIN_KEY:["OpenAI","Admin API"],ANTHROPIC_ADMIN_KEY:["Anthropic","Admin API"],CURSOR_API_KEY:["Cursor","Admin API"],OPENROUTER_MANAGEMENT_KEY:["OpenRouter","Management API"],DEEPSEEK_BALANCE_KEY:["DeepSeek","Balance API"],BURNRATE_ENABLE_CURSOR_USAGE_SERVICE:["Cursor","Usage service"],BURNRATE_ENABLE_ZAI_QUOTA:["Z.AI","Quota"],BURNRATE_ENABLE_OPENCODE_GO_QUOTA:["OpenCode Go","Quota"]};
+    const integrationTool={OPENAI_ADMIN_KEY:"openai",ANTHROPIC_ADMIN_KEY:"anthropic",CURSOR_API_KEY:"cursor",OPENROUTER_MANAGEMENT_KEY:"openrouter",DEEPSEEK_BALANCE_KEY:"deepseek",BURNRATE_ENABLE_CURSOR_USAGE_SERVICE:"cursor",BURNRATE_ENABLE_ZAI_QUOTA:"zai",BURNRATE_ENABLE_OPENCODE_GO_QUOTA:"opencode"};
     const statusLine=source=>{
       const state=source.state;
       if(state==="healthy")return "Updated "+relative(source.freshnessSeconds);
@@ -194,23 +195,54 @@ function buildPlanMutation(op,values,p,t,preview,confirmed){const b={operation:o
       const note=node.querySelector(".source-setting-status small"); setText(note,detail); if(note) note.title=full;
       paintMark(node,sourceTool(source.source));
       const button=node.querySelector("button"),action=["healthy","partial","receiving_usage"].includes(source.state) ? "View usage" : ["detected_without_history","stale","waiting_activity","awaiting_ingest"].includes(source.state) ? "Recheck" : "Docs";
-      setText(button,action); button.onclick=()=>{ if (action === "View usage") { harnessRestore=false;harnessDialog.close(); window.openHarnessUsage?.(sourceTool(source.source)); } else if(action === "Recheck") refreshHarnesses(); else if(source.documentation) window.open(source.documentation,"_blank","noopener,noreferrer"); };
+      setText(button,action); button.onclick=()=>{ if (action === "View usage") { harnessRestore=false;harnessDialog.close(); window.openHarnessUsage?.(sourceTool(source.source)); } else if(action === "Recheck") refreshHarnesses(); else if(/^https?:\/\//i.test(String(source.documentation || ""))) window.open(source.documentation,"_blank","noopener,noreferrer"); };
     });
     if (!local.length) setEmpty(el("harness-rows"),'<p class="settings-helper">No local source metadata is available.</p>');
     const integrations=payload.integrations || []; el("harness-vault-note").hidden=!integrations.some(i=>i.managed);
+    const CONSENT_KEYS={BURNRATE_ENABLE_ZAI_QUOTA:"zai",BURNRATE_ENABLE_OPENCODE_GO_QUOTA:"opencode_go"};
     reconcileChildren(el("integration-rows"),integrations,i=>i.setting,()=>nodeFrom('<article class="source-setting-row integration-row"><span class="harness-mark"><span class="plan-logo" hidden></span><i class="settings-dot"></i></span><div class="source-setting-name"><strong></strong><span class="experimental-pill" hidden>Preview</span><small class="mono"></small></div><div class="source-setting-status"><b></b></div><button class="config-indicator" type="button" aria-expanded="false"><span class="toggle-track" aria-hidden="true"><i></i></span></button><div class="integration-hint" hidden><span></span><button type="button" class="ghost-button row-secondary">Copy</button></div></article>'),(node,item)=>{
       const copy=integrationCopy[item.setting]||[item.setting.replace(/^BURNRATE_ENABLE_/,"").replaceAll("_"," "),item.host];
       node.dataset.tone=item.configured ? "good" : "quiet"; setText(node.querySelector("strong"),copy[0]);
       node.querySelector(".experimental-pill").hidden=!item.experimental;
-      const hostNode=node.querySelector(".mono"); setText(hostNode,copy[1]); if(hostNode) hostNode.title=`${item.setting} → ${item.host}`;
+      const hostNode=node.querySelector(".mono"); setText(hostNode,copy[1]); if(hostNode) hostNode.title=`${item.setting} \u2192 ${item.host}`;
       setText(node.querySelector(".source-setting-status b"),item.configured ? (item.experimental ? "On" : "Key set") : (item.experimental ? "Off" : "Not set"));
       paintMark(node,integrationTool[item.setting]);
-      const button=node.querySelector(".config-indicator"),hint=node.querySelector(".integration-hint"),instructions=item.configured?"This connection is on.":item.experimental?"Set this to 1, then restart BURNRATE.":"Add this key, then restart BURNRATE.";
-      const copyValue=item.experimental?item.setting+"=1":item.setting;
-      hint.id="integration-hint-"+item.setting;button.setAttribute("aria-controls",hint.id);
-      button.setAttribute("aria-label",`${item.setting}: ${item.configured ? "configured" : "not configured"}. Show configuration instructions; read-only.`);
-      button.onclick=()=>{hint.hidden=!hint.hidden;button.setAttribute("aria-expanded",String(!hint.hidden));}; setText(hint.querySelector("span"),instructions);
-      hint.querySelector("button").onclick=async()=>{try {await navigator.clipboard.writeText(copyValue);setText(hint.querySelector("span"),"Copied. Restart BURNRATE after you save it.");}catch{setText(hint.querySelector("span"),instructions+" Copy this manually: "+copyValue);}};
+      const consentKey=CONSENT_KEYS[item.setting];
+      const button=node.querySelector(".config-indicator"),hint=node.querySelector(".integration-hint");
+      hint.id="integration-hint-"+item.setting;
+      if (consentKey) {
+        hint.hidden=true;
+        button.removeAttribute("aria-controls");
+        button.removeAttribute("aria-expanded");
+        button.setAttribute("aria-pressed",String(Boolean(item.configured)));
+        button.setAttribute("aria-label",`${copy[0]} quota reader: ${item.configured ? "on" : "off"}. Toggle live.`);
+        button.onclick=async()=>{
+          if(button.disabled)return;
+          const next=!item.configured;
+          button.disabled=true;
+          try {
+            const res=await fetch("/api/setup/consent",{method:"POST",cache:"no-store",headers:{"Content-Type":"application/json","X-BURNRATE-Request":"1"},body:JSON.stringify({switches:{[consentKey]:next}})});
+            if(res.ok){item.configured=next;renderHarnesses(payload);window.refreshCapacitySourceHints?.();}
+          } catch {} finally { button.disabled=false; }
+        };
+      } else {
+        const canManage=Boolean(window.BurnrateConnections?.open);
+        const instructions=item.configured?"This connection is on.":canManage?"Save this key in Managed Connections (takes effect immediately).":"Add this key, then restart BURNRATE.";
+        const copyValue=item.experimental?item.setting+"=1":item.setting;
+        button.removeAttribute("aria-pressed");
+        button.setAttribute("aria-controls",hint.id);
+        button.setAttribute("aria-label",`${item.setting}: ${item.configured ? "configured" : "not configured"}. Show configuration instructions.`);
+        button.onclick=()=>{hint.hidden=!hint.hidden;button.setAttribute("aria-expanded",String(!hint.hidden));};
+        setText(hint.querySelector("span"),instructions);
+        const hintBtn=hint.querySelector("button");
+        if (canManage) {
+          setText(hintBtn,"Manage keys\u2026");
+          hintBtn.onclick=()=>{harnessRestore=false;harnessDialog.close();restoreOpener(harnessOpener,"nav-connect");window.BurnrateConnections.open();};
+        } else {
+          setText(hintBtn,"Copy");
+          hintBtn.onclick=async()=>{try {await navigator.clipboard.writeText(copyValue);setText(hint.querySelector("span"),"Copied. Restart BURNRATE after you save it.");}catch{setText(hint.querySelector("span"),instructions+" Copy this manually: "+copyValue);}};
+        }
+      }
     });
     if (!integrations.length) setEmpty(el("integration-rows"),'<p class="settings-helper">No integration metadata is available.</p>');
   }
@@ -226,13 +258,10 @@ function buildPlanMutation(op,values,p,t,preview,confirmed){const b={operation:o
   }
   async function refreshHarnesses() {
     const owner=++harnessGeneration; ++metadataGeneration; harnessController?.abort();harnessController=new AbortController();
-    const started=Date.now();
     harnessDialog.setAttribute("aria-busy","true"); harnessDialog.classList?.add?.("is-scanning"); setRescan(true);
     try {const response=await fetch("/api/onboarding",{cache:"no-store",signal:harnessController.signal});if(!response.ok)throw new Error();const payload=await response.json();if(owner!==harnessGeneration || !harnessDialog.open)return;harnessMetadataReady=true;harnessScannedAt=Date.now();setupData=payload;acceptSources(payload.sources || []);renderHarnesses(payload);if(owner===harnessGeneration)setRescan(true);}
     catch(error){if(owner===harnessGeneration && error.name!=="AbortError"){harnessMetadataReady=false;el("harness-content").hidden=true;el("harness-message").hidden=false;el("harness-message").textContent=metadataError;}}
     finally{
-      const remain=Math.max(0, 720-(Date.now()-started));
-      if(remain && typeof setTimeout==="function") await new Promise(resolve=>setTimeout(resolve, remain));
       if(owner===harnessGeneration){harnessDialog.setAttribute("aria-busy","false"); harnessDialog.classList?.remove?.("is-scanning"); setRescan(false);}
     }
   }

@@ -16,6 +16,15 @@
 provider: opencode-go
 exactness: derived
 prices:
+  - model_key: opencode-go:kimi-k3.1-pro
+    # Official Go table verified 2026-11-09. Do not infer older Go prices
+    # from the model's release date or its direct API provider's rates.
+    input_per_mtok: 2.00
+    cached_input_per_mtok: 0.20
+    cache_write_per_mtok: 2.00
+    output_per_mtok: 10.00
+    effective_from: 2026-11-09T00:00:00Z
+    source_url: https://opencode.ai/docs/go/
   - model_key: opencode-go:glm-5.3-flash
     input_per_mtok: 0.15
     cached_input_per_mtok: 0.03

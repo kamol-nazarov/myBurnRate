@@ -14,6 +14,7 @@ MILLION = Decimal("1000000")
 _EXACTNESS_VALUES = ("exact", "derived")
 _SOURCE_POLICY_VALUES = ("official", "owner-asserted")
 _OFFICIAL_SOURCE_PREFIXES = (
+    "https://www.inceptionlabs.ai/",
     "https://developers.openai.com/",
     "https://platform.claude.com/",
     "https://cursor.com/",
@@ -23,6 +24,8 @@ _OFFICIAL_SOURCE_PREFIXES = (
     "https://opencode.ai/",
     "https://ai.google.dev/",
     "https://api-docs.deepseek.com/",
+    "https://dev.meta.ai/",
+    "https://research.meta.ai/",
 )
 _WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 

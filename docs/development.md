@@ -113,6 +113,22 @@ For frontend development, edit the readable files in `frontend_src/`. Run
 assets and their checksums. Node is a development tool only; Python installs
 use the committed assets. Existing public IDs and CSS classes are preserved.
 
+The HUD browser entry lives in `spend_web/hud/hud.js`. `render_hud()` embeds this
+packaged resource into the page; edits do not require the dashboard optimizer.
+Keep HUD request helpers and handlers covered by flow tests, including sharing,
+unavailable data, and poll recovery.
+
+`python scripts/preview-hud.py` generates a self-contained interactive HUD at
+`validation/hud-ui-preview.html`. It uses the production markup and JavaScript
+with synthetic responses and isolated preferences; it never contacts providers
+or the running service. Regenerate it after HUD edits. Use `--theme light` or
+`--theme dark` for standalone theme inspection.
+
+CI requires Python compilation and Ruff's `E9,F63,F7,F82` correctness rules across
+the whole tree. Selected product modules retain their broader lint and formatting
+gate. `python scripts/validate-browser.py` discovers every `browser`-marked test
+and rejects skipped browser coverage; mark new browser tests so they join that gate.
+
 ```powershell
 py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1

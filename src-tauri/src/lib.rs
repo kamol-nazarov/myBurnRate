@@ -1,4 +1,5 @@
 use std::env;
+use std::io::Read;
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -17,6 +18,8 @@ const DEFAULT_PORT: u16 = 17331;
 // Windows open on a bundled "starting" page and move to the service once it answers.
 const STARTUP_WARNING_AFTER: Duration = Duration::from_secs(60);
 const WATCH_INTERVAL: Duration = Duration::from_secs(15);
+const HEALTH_TIMEOUT: Duration = Duration::from_secs(2);
+const HEALTH_BODY_LIMIT: u64 = 16 * 1024;
 const RESTART_BUDGET: usize = 5;
 const RESTART_WINDOW: Duration = Duration::from_secs(600);
 const UPDATE_FIRST_CHECK: Duration = Duration::from_secs(45);
@@ -24,6 +27,43 @@ const UPDATE_CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
 
 pub struct HudPinState {
     pub pinned: AtomicBool,
+    pub show_in_taskbar: AtomicBool,
+}
+
+#[derive(Default, serde::Serialize, serde::Deserialize, Clone, Copy)]
+struct HudWindowPrefs {
+    x: Option<i32>,
+    y: Option<i32>,
+    #[serde(default)]
+    taskbar: bool,
+}
+
+fn hud_prefs_path(app: &AppHandle) -> Option<PathBuf> {
+    app.path().app_config_dir().ok().map(|dir| dir.join("hud-window.json"))
+}
+
+fn load_hud_prefs(app: &AppHandle) -> HudWindowPrefs {
+    let mut prefs = hud_prefs_path(app)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str::<HudWindowPrefs>(&s).ok())
+        .unwrap_or_default();
+    if let Ok(val) = env::var("BURNRATE_HUD_TASKBAR") {
+        let v = val.trim().to_ascii_lowercase();
+        prefs.taskbar = matches!(v.as_str(), "1" | "true" | "yes" | "on");
+    }
+    prefs
+}
+
+fn update_hud_prefs(app: &AppHandle, mutate: impl FnOnce(&mut HudWindowPrefs)) {
+    let Some(path) = hud_prefs_path(app) else { return };
+    let mut prefs = load_hud_prefs(app);
+    mutate(&mut prefs);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string(&prefs) {
+        let _ = std::fs::write(path, json);
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -41,6 +81,92 @@ fn configured_port() -> u16 {
 fn port_reachable(port: u16) -> bool {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok()
+}
+
+#[derive(Debug, PartialEq)]
+struct ServiceHealth {
+    pid: u32,
+    collection_stalled: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct HealthPayload {
+    status: String,
+    application: String,
+    pid: u32,
+    #[serde(rename = "collectorEnabled")]
+    collector_enabled: bool,
+    ingest: Option<IngestHealth>,
+}
+
+#[derive(serde::Deserialize)]
+struct IngestHealth {
+    // The backend applies its 30-minute first-pass grace and 10-minute
+    // completed-pass deadline; a quiet optional provider is not a stall.
+    stalled: bool,
+}
+
+fn health_client(timeout: Duration) -> Result<reqwest::blocking::Client, reqwest::Error> {
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+    reqwest::blocking::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(timeout)
+        .timeout(timeout)
+        .build()
+}
+
+fn service_health(client: &reqwest::blocking::Client, port: u16) -> Option<ServiceHealth> {
+    let response = client.get(format!("http://127.0.0.1:{port}/healthz?supervisor=1"))
+        .send().ok()?;
+    if response.status() != reqwest::StatusCode::OK {
+        return None;
+    }
+    // A malformed or unrelated listener must not allocate an unbounded body.
+    let mut body = Vec::new();
+    response.take(HEALTH_BODY_LIMIT + 1).read_to_end(&mut body).ok()?;
+    if body.len() as u64 > HEALTH_BODY_LIMIT {
+        return None;
+    }
+    let payload: HealthPayload = serde_json::from_slice(&body).ok()?;
+    if payload.status != "ok" || payload.application != "burnrate" || payload.pid == 0 {
+        return None;
+    }
+    let collection_stalled = if payload.collector_enabled {
+        payload.ingest?.stalled
+    } else {
+        false
+    };
+    Some(ServiceHealth { pid: payload.pid, collection_stalled })
+}
+
+#[derive(Clone, Copy)]
+struct OwnedService {
+    pid: u32,
+    exited: bool,
+    uptime: Duration,
+}
+
+fn restart_due(owned: Option<OwnedService>, listener: bool, health: Option<&ServiceHealth>, misses: u32) -> bool {
+    match owned {
+        Some(service) => {
+            if let Some(health) = health {
+                // Another BURNRATE process may have taken the port after our
+                // child exited. Its heartbeat never authorizes killing it.
+                return health.pid == service.pid && health.collection_stalled
+                    && service.uptime >= STARTUP_WARNING_AFTER && misses >= 4;
+            }
+            if service.exited {
+                return !listener;
+            }
+            service.uptime >= STARTUP_WARNING_AFTER && misses >= 4
+        }
+        // TCP is used only to avoid starting a competing service, never as a
+        // health signal. An unrelated/unowned listening process is untouched.
+        None => !listener && misses >= 2,
+    }
 }
 
 /// Where the service runs from.
@@ -121,54 +247,185 @@ fn data_root() -> PathBuf {
 }
 
 #[cfg(target_os = "windows")]
-mod child_job {
-    use std::os::windows::io::AsRawHandle;
-    use std::sync::OnceLock;
+mod process_tree {
+    use std::io;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use std::os::windows::process::CommandExt;
+    use std::process::{Child, Command};
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Thread32First, Thread32Next, THREADENTRY32, TH32CS_SNAPTHREAD,
+    };
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    use windows_sys::Win32::System::Threading::{
+        OpenThread, ResumeThread, CREATE_NO_WINDOW, CREATE_SUSPENDED, THREAD_SUSPEND_RESUME,
     };
 
-    static JOB: OnceLock<usize> = OnceLock::new();
+    // Each service/sync generation has its own non-inherited handle. Closing
+    // it kills only that generation, including grandchildren after parent exit.
+    pub struct Tree(OwnedHandle);
 
-    /// The service and its collector worker end with this app, even after a crash.
-    pub fn adopt(child: &std::process::Child) {
-        let job = *JOB.get_or_init(|| unsafe {
-            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
-            if job.is_null() {
-                return 0;
-            }
-            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            SetInformationJobObject(
-                job,
-                JobObjectExtendedLimitInformation,
-                &info as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION as *const core::ffi::c_void,
-                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-            );
-            job as usize
-        });
-        if job != 0 {
+    impl Tree {
+        fn new() -> io::Result<Self> {
             unsafe {
-                AssignProcessToJobObject(job as _, child.as_raw_handle() as _);
+                let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                if job.is_null() { return Err(io::Error::last_os_error()); }
+                let handle = OwnedHandle::from_raw_handle(job);
+                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                if SetInformationJobObject(
+                    job, JobObjectExtendedLimitInformation,
+                    &info as *const _ as *const core::ffi::c_void,
+                    std::mem::size_of_val(&info) as u32,
+                ) == 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(Self(handle))
             }
         }
+
+        pub fn spawn(command: &mut Command) -> io::Result<(Child, Self)> {
+            let tree = Self::new()?;
+            // Assign before any application code runs: otherwise a fast child
+            // can create an untracked collector before job assignment.
+            command.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
+            let mut child = command.spawn()?;
+            let result = unsafe {
+                if AssignProcessToJobObject(tree.0.as_raw_handle(), child.as_raw_handle()) == 0 {
+                    Err(io::Error::last_os_error())
+                } else {
+                    resume_primary_thread(child.id())
+                }
+            };
+            if let Err(error) = result {
+                drop(tree);
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+            Ok((child, tree))
+        }
+
+        pub fn terminate(self, child: &mut Child) {
+            unsafe { TerminateJobObject(self.0.as_raw_handle(), 1); }
+            // Drop the kill-on-close handle before waiting, including when
+            // explicit termination failed. The Child handle is our fallback.
+            drop(self);
+            let _ = child.kill();
+        }
+    }
+
+    unsafe fn resume_primary_thread(pid: u32) -> io::Result<()> {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if snapshot == INVALID_HANDLE_VALUE { return Err(io::Error::last_os_error()); }
+        let snapshot = OwnedHandle::from_raw_handle(snapshot);
+        let mut entry: THREADENTRY32 = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of_val(&entry) as u32;
+        let mut found = Thread32First(snapshot.as_raw_handle(), &mut entry);
+        while found != 0 {
+            if entry.th32OwnerProcessID == pid {
+                let thread = OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID);
+                if thread.is_null() { return Err(io::Error::last_os_error()); }
+                let thread = OwnedHandle::from_raw_handle(thread);
+                if ResumeThread(thread.as_raw_handle()) == u32::MAX {
+                    return Err(io::Error::last_os_error());
+                }
+                return Ok(());
+            }
+            found = Thread32Next(snapshot.as_raw_handle(), &mut entry);
+        }
+        Err(io::Error::new(io::ErrorKind::NotFound, "owned child thread unavailable"))
+    }
+
+    pub fn exited(child: &mut Child) -> bool {
+        !matches!(child.try_wait(), Ok(None))
     }
 }
 
-#[cfg(not(target_os = "windows"))]
-mod child_job {
-    pub fn adopt(_child: &std::process::Child) {}
+#[cfg(unix)]
+mod process_tree {
+    use std::io;
+    use std::os::unix::process::CommandExt;
+    use std::process::{Child, Command};
+
+    pub struct Tree(libc::pid_t);
+
+    // Inspect without reaping so the group leader's PID cannot be reused by
+    // an unrelated process before its generation is terminated.
+    fn exit_state(pid: u32) -> io::Result<bool> {
+        unsafe {
+            let mut info: libc::siginfo_t = std::mem::zeroed();
+            if libc::waitid(libc::P_PID, pid, &mut info,
+                            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(info.si_pid() != 0)
+        }
+    }
+
+    impl Tree {
+        pub fn spawn(command: &mut Command) -> io::Result<(Child, Self)> {
+            // The child becomes group leader before exec; descendants inherit
+            // the group without sharing it with the app or the sync worker.
+            command.process_group(0);
+            let child = command.spawn()?;
+            let tree = Self(child.id() as libc::pid_t);
+            Ok((child, tree))
+        }
+
+        pub fn terminate(self, child: &mut Child) {
+            if exit_state(child.id()).is_ok() {
+                unsafe { libc::kill(-self.0, libc::SIGKILL); }
+            }
+        }
+    }
+
+    pub fn exited(child: &mut Child) -> bool {
+        exit_state(child.id()).unwrap_or(true)
+    }
+}
+
+struct ManagedChild {
+    child: Child,
+    tree: Option<process_tree::Tree>,
+    started: Instant,
+}
+
+impl ManagedChild {
+    fn spawn(command: &mut Command) -> std::io::Result<Self> {
+        let (child, tree) = process_tree::Tree::spawn(command)?;
+        Ok(Self { child, tree:Some(tree), started:Instant::now() })
+    }
+
+    fn stop(&mut self) {
+        if let Some(tree) = self.tree.take() {
+            tree.terminate(&mut self.child);
+            let _ = self.child.wait();
+        }
+    }
+
+    fn exited(&mut self) -> bool {
+        process_tree::exited(&mut self.child)
+    }
+}
+
+impl Drop for ManagedChild {
+    fn drop(&mut self) { self.stop(); }
 }
 
 /// Starts the service when nothing answers on its port, and restarts it when it dies or stops answering.
 pub struct BackendSupervisor {
     port: u16,
     backend: Mutex<Option<Backend>>,
-    service: Mutex<Option<Child>>,
-    sync_child: Mutex<Option<Child>>,
+    service: Mutex<Option<ManagedChild>>,
+    sync_child: Mutex<Option<ManagedChild>>,
     stopping: AtomicBool,
     restarts: Mutex<Vec<Instant>>,
+    pending_main_path: Mutex<String>,
 }
 
 impl BackendSupervisor {
@@ -180,6 +437,7 @@ impl BackendSupervisor {
             sync_child: Mutex::new(None),
             stopping: AtomicBool::new(false),
             restarts: Mutex::new(Vec::new()),
+            pending_main_path: Mutex::new("/".to_string()),
         }
     }
 
@@ -188,8 +446,7 @@ impl BackendSupervisor {
         for slot in [&self.service, &self.sync_child] {
             if let Ok(mut guard) = slot.lock() {
                 if let Some(mut child) = guard.take() {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    child.stop();
                 }
             }
         }
@@ -212,15 +469,18 @@ impl BackendSupervisor {
         if self.stopping() {
             return;
         }
+        let Ok(mut guard) = self.service.lock() else { return };
+        // Release our old listener before launching its replacement. Starting
+        // first can make the new service fail its own port/mutex check.
+        if let Some(mut old) = guard.take() {
+            old.stop();
+        }
+        if self.stopping() {
+            return;
+        }
         let port = self.port.to_string();
-        if let Ok(child) = backend.command("spend_app.service", &["--port", &port]).spawn() {
-            child_job::adopt(&child);
-            if let Ok(mut guard) = self.service.lock() {
-                if let Some(mut old) = guard.replace(child) {
-                    let _ = old.kill();
-                    let _ = old.wait();
-                }
-            }
+        if let Ok(child) = ManagedChild::spawn(&mut backend.command("spend_app.service", &["--port", &port])) {
+            *guard = Some(child);
         }
     }
 
@@ -234,27 +494,30 @@ impl BackendSupervisor {
         if hub_url.is_empty() || token.is_empty() {
             return;
         }
+        let Ok(mut guard) = self.sync_child.lock() else { return };
+        if self.stopping() {
+            return;
+        }
+        if let Some(mut old) = guard.take() {
+            old.stop();
+        }
+        if self.stopping() {
+            return;
+        }
         let args = ["sync", "--hub", hub_url.as_str(), "--token", token.as_str(), "--interval", "5"];
-        if let Ok(child) = backend.command("spend_app", &args).spawn() {
-            child_job::adopt(&child);
-            if let Ok(mut guard) = self.sync_child.lock() {
-                *guard = Some(child);
-            }
+        if let Ok(child) = ManagedChild::spawn(&mut backend.command("spend_app", &args)) {
+            *guard = Some(child);
         }
     }
 
-    fn owns_service(&self) -> bool {
-        self.service.lock().map(|guard| guard.is_some()).unwrap_or(false)
-    }
-
-    fn service_exited(&self) -> bool {
-        self.service
-            .lock()
-            .map(|mut guard| match guard.as_mut() {
-                Some(child) => !matches!(child.try_wait(), Ok(None)),
-                None => false,
-            })
-            .unwrap_or(false)
+    fn owned_service(&self) -> Option<OwnedService> {
+        let mut guard = self.service.lock().ok()?;
+        let child = guard.as_mut()?;
+        Some(OwnedService {
+            pid: child.child.id(),
+            exited: child.exited(),
+            uptime: child.started.elapsed(),
+        })
     }
 
     /// At most RESTART_BUDGET restarts in RESTART_WINDOW, so a service that cannot start does not loop.
@@ -283,7 +546,11 @@ fn on_service(window: &tauri::WebviewWindow, port: u16) -> bool {
 
 /// Moves windows still on the starting page to the service.
 fn open_service_windows(app: &AppHandle, port: u16) {
-    for (label, path) in [("hud", "/hud?glass=1"), ("main", "/?app=1")] {
+    let main_path = app
+        .try_state::<BackendSupervisor>()
+        .and_then(|s| s.pending_main_path.lock().ok().map(|g| g.clone()))
+        .unwrap_or_else(|| "/".to_string());
+    for (label, path) in [("hud", "/hud?glass=1"), ("main", main_path.as_str())] {
         if let (Some(window), Some(url)) = (app.get_webview_window(label), service_url(port, path)) {
             if !on_service(&window, port) {
                 let _ = window.navigate(url);
@@ -312,43 +579,40 @@ fn supervise(app: AppHandle) {
             supervisor.spawn_service();
         }
         supervisor.spawn_sync();
-
+        let Ok(client) = health_client(HEALTH_TIMEOUT) else {
+            show_start_failure(&app, port);
+            return;
+        };
         let started = Instant::now();
         let mut warned = false;
-        while !port_reachable(port) {
+        let mut opened = false;
+        let mut misses = 0u32;
+        loop {
             if supervisor.stopping() {
                 return;
             }
-            if !warned && started.elapsed() >= STARTUP_WARNING_AFTER {
+            let health = service_health(&client, port);
+            let owned = supervisor.owned_service();
+            if health.is_some() && !opened {
+                open_service_windows(&app, port);
+                opened = true;
+            }
+            if !opened && !warned && started.elapsed() >= STARTUP_WARNING_AFTER {
                 warned = true;
                 show_start_failure(&app, port);
             }
-            // A service that died while starting is tried again, within the restart budget.
-            if supervisor.service_exited() && supervisor.may_restart() {
-                supervisor.spawn_service();
-            }
-            thread::sleep(Duration::from_millis(250));
-        }
-        open_service_windows(&app, port);
-
-        let mut misses = 0u32;
-        loop {
-            thread::sleep(WATCH_INTERVAL);
-            if supervisor.stopping() {
-                return;
-            }
-            if port_reachable(port) {
+            if health.as_ref().is_some_and(|h| !h.collection_stalled
+                || owned.is_none_or(|service| service.pid != h.pid)) {
                 misses = 0;
-                continue;
+            } else {
+                misses = misses.saturating_add(1);
             }
-            misses += 1;
-            let owned = supervisor.owns_service();
-            // Ours exited, ours has not answered for a minute, or nothing serves the port at all.
-            let restart = supervisor.service_exited() || (owned && misses >= 4) || (!owned && misses >= 2);
-            if restart && supervisor.may_restart() {
+            let listener = health.is_some() || port_reachable(port);
+            if restart_due(owned, listener, health.as_ref(), misses) && supervisor.may_restart() {
                 supervisor.spawn_service();
                 misses = 0;
             }
+            thread::sleep(if opened { WATCH_INTERVAL } else { Duration::from_millis(250) });
         }
     });
 }
@@ -414,7 +678,7 @@ async fn install_update(app: AppHandle) -> Result<(), String> {
         .clone()
         .ok_or_else(|| "No update is waiting".to_string())?;
     let version = update.version.clone();
-    set_update_menu_text(&app, &format!("Installing update {version}…"));
+    set_update_menu_text(&app, &format!("Installing update {version}\u{2026}"));
     // On Windows the installer takes over and this process exits; elsewhere the app restarts.
     if let Err(error) = update.download_and_install(|_, _| {}, || {}).await {
         set_update_menu_text(&app, &format!("Update {version} failed, click to retry: {error}"));
@@ -588,6 +852,11 @@ unsafe extern "system" fn hud_subclass_wndproc(
 
 #[cfg(target_os = "windows")]
 fn enforce_win32_topmost(window: &tauri::WebviewWindow, pinned: bool) {
+    let show_in_taskbar = window
+        .app_handle()
+        .try_state::<HudPinState>()
+        .map(|s| s.show_in_taskbar.load(Ordering::SeqCst))
+        .unwrap_or(false);
     if let Ok(hwnd) = window.hwnd() {
         #[link(name = "user32")]
         extern "system" {
@@ -624,6 +893,7 @@ fn enforce_win32_topmost(window: &tauri::WebviewWindow, pinned: bool) {
         const WS_CLIPCHILDREN: u32 = 0x0200_0000;
         const WS_EX_DLGMODALFRAME: u32 = 0x0000_0001;
         const WS_EX_TOPMOST: u32 = 0x0000_0008;
+        const WS_EX_TOOLWINDOW: u32 = 0x0000_0080;
         const WS_EX_WINDOWEDGE: u32 = 0x0000_0100;
         const WS_EX_CLIENTEDGE: u32 = 0x0000_0200;
         const WS_EX_STATICEDGE: u32 = 0x0002_0000;
@@ -660,13 +930,19 @@ fn enforce_win32_topmost(window: &tauri::WebviewWindow, pinned: bool) {
                 needs_frame_refresh = true;
             }
             let old_ex = GetWindowLongW(h, GWL_EXSTYLE) as u32;
-            let mut new_ex = (old_ex
+            let mut new_ex = old_ex
                 & !(WS_EX_DLGMODALFRAME
                     | WS_EX_WINDOWEDGE
                     | WS_EX_CLIENTEDGE
                     | WS_EX_STATICEDGE
-                    | WS_EX_NOREDIRECTIONBITMAP))
-                | WS_EX_APPWINDOW;
+                    | WS_EX_NOREDIRECTIONBITMAP
+                    | WS_EX_APPWINDOW
+                    | WS_EX_TOOLWINDOW);
+            if show_in_taskbar {
+                new_ex |= WS_EX_APPWINDOW;
+            } else {
+                new_ex |= WS_EX_TOOLWINDOW;
+            }
             if pinned {
                 new_ex |= WS_EX_TOPMOST;
             } else {
@@ -741,9 +1017,21 @@ fn apply_hud_always_on_top(window: &tauri::WebviewWindow, pinned: bool) -> Resul
     Ok(())
 }
 
+fn max_hud_logical_height(window: &tauri::WebviewWindow) -> f64 {
+    if let Ok(Some(monitor)) = window.current_monitor() {
+        let scale = monitor.scale_factor().max(1.0);
+        let work_h = monitor.work_area().size.height as f64 / scale;
+        if work_h >= 360.0 {
+            return (work_h * 0.85).clamp(320.0, 920.0);
+        }
+    }
+    820.0
+}
+
 #[cfg(target_os = "windows")]
 fn resize_hud_window(window: &tauri::WebviewWindow, width: f64, height: f64, pinned: bool) -> Result<(), String> {
     enforce_win32_topmost(window, pinned);
+    let clamped_height = height.min(max_hud_logical_height(window));
     if let Ok(hwnd) = window.hwnd() {
         #[link(name = "user32")]
         extern "system" {
@@ -769,7 +1057,7 @@ fn resize_hud_window(window: &tauri::WebviewWindow, width: f64, height: f64, pin
             let dpi = GetDpiForWindow(h);
             let scale = if dpi > 0 { (dpi as f64) / 96.0 } else { 1.0 };
             let pw = ((width * scale).round() as i32).max(240);
-            let ph = ((height * scale).round() as i32).max(140);
+            let ph = ((clamped_height * scale).round() as i32).max(140);
             SetWindowPos(
                 h,
                 if pinned { HWND_TOPMOST } else { HWND_NOTOPMOST },
@@ -787,9 +1075,10 @@ fn resize_hud_window(window: &tauri::WebviewWindow, width: f64, height: f64, pin
 #[cfg(not(target_os = "windows"))]
 fn resize_hud_window(window: &tauri::WebviewWindow, width: f64, height: f64, pinned: bool) -> Result<(), String> {
     use tauri::{LogicalSize, Size};
+    let clamped_height = height.min(max_hud_logical_height(window));
     let _ = window.set_min_size(Some(Size::Logical(LogicalSize::new(260.0, 160.0))));
     window
-        .set_size(Size::Logical(LogicalSize::new(width, height)))
+        .set_size(Size::Logical(LogicalSize::new(width, clamped_height)))
         .map_err(|e| e.to_string())?;
     let _ = apply_hud_always_on_top(window, pinned);
     Ok(())
@@ -880,6 +1169,7 @@ fn start_hud_drag(app: AppHandle) -> Result<(), String> {
                 return Ok(());
             }
             let h = hwnd.0 as isize;
+            let app_for_save = app.clone();
             thread::spawn(move || {
                 #[link(name = "user32")]
                 extern "system" {
@@ -900,6 +1190,7 @@ fn start_hud_drag(app: AppHandle) -> Result<(), String> {
                 const SWP_NOSIZE: u32 = 0x0001;
                 const SWP_NOZORDER: u32 = 0x0004;
                 const SWP_NOACTIVATE: u32 = 0x0010;
+                let mut saved_pos: Option<(i32, i32)> = None;
                 unsafe {
                     let mut start_pt = [0i32; 2];
                     let mut start_rect = [0i32; 4];
@@ -929,9 +1220,18 @@ fn start_hud_drag(app: AppHandle) -> Result<(), String> {
                             }
                             thread::sleep(Duration::from_millis(4));
                         }
+                        if last_x != start_rect[0] || last_y != start_rect[1] {
+                            saved_pos = Some((last_x, last_y));
+                        }
                     }
                 }
                 HUD_DRAGGING.store(false, Ordering::SeqCst);
+                if let Some((x, y)) = saved_pos {
+                    update_hud_prefs(&app_for_save, |p| {
+                        p.x = Some(x);
+                        p.y = Some(y);
+                    });
+                }
             });
             return Ok(());
         }
@@ -949,14 +1249,88 @@ fn start_main_drag(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-fn show_dashboard(app: AppHandle) -> Result<(), String> {
+fn sanitize_main_path(raw: Option<&str>) -> String {
+    let trimmed = raw.map(str::trim).unwrap_or("");
+    if trimmed.is_empty() {
+        return "/".to_string();
+    }
+    if trimmed.starts_with('/') && !trimmed.starts_with("//") {
+        return trimmed.to_string();
+    }
+    if let Ok(parsed) = tauri::Url::parse(trimmed) {
+        let mut out = parsed.path().to_string();
+        if let Some(q) = parsed.query() {
+            out.push('?');
+            out.push_str(q);
+        }
+        if let Some(f) = parsed.fragment() {
+            out.push('#');
+            out.push_str(f);
+        }
+        if out.starts_with('/') && !out.starts_with("//") {
+            return out;
+        }
+    }
+    "/".to_string()
+}
+
+fn ensure_main_window(app: &AppHandle, raw_path: Option<&str>) -> Result<(), String> {
+    let clean_path = sanitize_main_path(raw_path);
+    let supervisor = app.state::<BackendSupervisor>();
+    let port = supervisor.port;
+    if let Ok(mut pending) = supervisor.pending_main_path.lock() {
+        *pending = clean_path.clone();
+    }
+
     if let Some(window) = app.get_webview_window("main") {
+        if port_reachable(port) {
+            if let Some(url) = service_url(port, &clean_path) {
+                let needs_nav = window
+                    .url()
+                    .map(|cur| cur.as_str() != url.as_str())
+                    .unwrap_or(true);
+                if needs_nav {
+                    let _ = window.navigate(url);
+                }
+            }
+        }
         window.show().map_err(|e| e.to_string())?;
         let _ = window.unminimize();
         window.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
     }
+
+    let initial_url = if port_reachable(port) {
+        service_url(port, &clean_path)
+            .map(tauri::WebviewUrl::External)
+            .unwrap_or_else(|| tauri::WebviewUrl::App("starting.html".into()))
+    } else {
+        tauri::WebviewUrl::App("starting.html".into())
+    };
+
+    let window = tauri::WebviewWindowBuilder::new(app, "main", initial_url)
+        .title("BURNRATE \u{00b7} AI Cost Intelligence")
+        .inner_size(1340.0, 860.0)
+        .min_inner_size(420.0, 560.0)
+        .resizable(true)
+        .center()
+        .visible(true)
+        .focused(true)
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    if let Some(ic) = app.default_window_icon().cloned() {
+        let _ = window.set_icon(ic);
+    }
+    apply_win32_window_icons(&window);
+    let _ = window.show();
+    let _ = window.set_focus();
     Ok(())
+}
+
+#[tauri::command]
+fn show_dashboard(app: AppHandle, path: Option<String>) -> Result<(), String> {
+    ensure_main_window(&app, path.as_deref())
 }
 
 #[tauri::command]
@@ -978,49 +1352,125 @@ fn toggle_maximize_main(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn hide_main(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("main") {
-        window.hide().map_err(|e| e.to_string())?;
+        window.destroy().map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
 #[tauri::command]
 fn open_setup_wizard(app: AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("main") {
-        let port = app.state::<BackendSupervisor>().port;
-        if let Some(url) = service_url(port, "/setup") {
-            let _ = window.navigate(url);
-        }
-        window.show().map_err(|e| e.to_string())?;
-        let _ = window.unminimize();
-        window.set_focus().map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    ensure_main_window(&app, Some("/setup"))
+}
+
+fn restore_hud_position(window: &tauri::WebviewWindow, x: i32, y: i32) {
+    let monitors = window.available_monitors().unwrap_or_default();
+    let on_any_monitor = monitors.iter().any(|m| {
+        let area = m.work_area();
+        let wx = area.position.x;
+        let wy = area.position.y;
+        let ww = area.size.width as i32;
+        let wh = area.size.height as i32;
+        x + 80 >= wx && x <= wx + (ww - 80).max(0) && y + 32 >= wy && y <= wy + (wh - 60).max(0)
+    });
+    let (target_x, target_y) = if on_any_monitor {
+        (x, y)
+    } else if let Ok(Some(primary)) = window.primary_monitor().or_else(|_| window.current_monitor()) {
+        let area = primary.work_area();
+        let wx = area.position.x;
+        let wy = area.position.y;
+        let ww = area.size.width as i32;
+        let wh = area.size.height as i32;
+        (
+            x.clamp(wx, (wx + ww - 280).max(wx)),
+            y.clamp(wy, (wy + wh - 180).max(wy)),
+        )
+    } else {
+        (x, y)
+    };
+    let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
+        target_x, target_y,
+    )));
 }
 
 #[cfg(target_os = "windows")]
-fn release_webview_lock_if_needed() {
-    let my_pid = std::process::id();
-    let script = format!(
-        "Get-CimInstance Win32_Process -Filter \"Name='burnrate-desktop.exe' OR Name='msedgewebview2.exe'\" -ErrorAction SilentlyContinue | Where-Object {{ ($_.Name -eq 'burnrate-desktop.exe' -and $_.ProcessId -ne {my_pid}) -or ($_.Name -eq 'msedgewebview2.exe' -and $_.CommandLine -like '*burnrate-desktop.exe*') }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}"
-    );
-    let mut cmd = Command::new("powershell");
-    cmd.args([
-        "-NoProfile",
-        "-NonInteractive",
-        "-WindowStyle",
-        "Hidden",
-        "-Command",
-        &script,
-    ])
-    .stdin(Stdio::null())
-    .stdout(Stdio::null())
-    .stderr(Stdio::null());
-    apply_no_window(&mut cmd);
-    let _ = cmd.status();
+struct SingleInstanceGuard(isize);
+
+#[cfg(target_os = "windows")]
+impl Drop for SingleInstanceGuard {
+    fn drop(&mut self) {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn ReleaseMutex(hMutex: isize) -> i32;
+            fn CloseHandle(hObject: isize) -> i32;
+        }
+        if self.0 != 0 {
+            unsafe {
+                let _ = ReleaseMutex(self.0);
+                let _ = CloseHandle(self.0);
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn focus_existing_hud_window() {
+    #[link(name = "user32")]
+    extern "system" {
+        fn FindWindowW(lpClassName: *const u16, lpWindowName: *const u16) -> isize;
+        fn ShowWindow(hWnd: isize, nCmdShow: i32) -> i32;
+        fn SetForegroundWindow(hWnd: isize) -> i32;
+    }
+    const SW_SHOW: i32 = 5;
+    let class_name: Vec<u16> = "Tauri Window\0".encode_utf16().collect();
+    let hud_title: Vec<u16> = "BURNRATE \u{00b7} Sidecar HUD\0".encode_utf16().collect();
+    let boot_title: Vec<u16> = "BURNRATE\0".encode_utf16().collect();
+    unsafe {
+        let mut hwnd = FindWindowW(class_name.as_ptr(), hud_title.as_ptr());
+        if hwnd == 0 {
+            hwnd = FindWindowW(class_name.as_ptr(), boot_title.as_ptr());
+        }
+        if hwnd != 0 {
+            let _ = ShowWindow(hwnd, SW_SHOW);
+            let _ = SetForegroundWindow(hwnd);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn acquire_single_instance_or_focus() -> Option<SingleInstanceGuard> {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateMutexW(
+            lpMutexAttributes: *const std::ffi::c_void,
+            bInitialOwner: i32,
+            lpName: *const u16,
+        ) -> isize;
+        fn GetLastError() -> u32;
+        fn CloseHandle(hObject: isize) -> i32;
+    }
+    const ERROR_ALREADY_EXISTS: u32 = 183;
+    let name: Vec<u16> = "Local\\BURNRATE-Desktop-Shell\0".encode_utf16().collect();
+    unsafe {
+        let handle = CreateMutexW(std::ptr::null(), 1, name.as_ptr());
+        if handle == 0 {
+            return Some(SingleInstanceGuard(0));
+        }
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            let _ = CloseHandle(handle);
+            focus_existing_hud_window();
+            return None;
+        }
+        Some(SingleInstanceGuard(handle))
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
-fn release_webview_lock_if_needed() {}
+struct SingleInstanceGuard;
+
+#[cfg(not(target_os = "windows"))]
+fn acquire_single_instance_or_focus() -> Option<SingleInstanceGuard> {
+    Some(SingleInstanceGuard)
+}
 
 #[cfg(target_os = "windows")]
 fn set_windows_app_id() {
@@ -1082,12 +1532,15 @@ fn apply_win32_window_icons(_window: &tauri::WebviewWindow) {}
 
 pub fn run() {
     set_windows_app_id();
-    release_webview_lock_if_needed();
+    let Some(_instance_guard) = acquire_single_instance_or_focus() else {
+        return;
+    };
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(HudPinState {
             pinned: AtomicBool::new(true),
+            show_in_taskbar: AtomicBool::new(false),
         })
         .manage(BackendSupervisor::new(configured_port()))
         .manage(PendingUpdate {
@@ -1113,16 +1566,19 @@ pub fn run() {
             install_update
         ])
         .setup(|app| {
+            let prefs = load_hud_prefs(app.handle());
+            app.state::<HudPinState>()
+                .show_in_taskbar
+                .store(prefs.taskbar, Ordering::SeqCst);
+
             let default_icon = app.default_window_icon().cloned();
-            if let Some(main_win) = app.get_webview_window("main") {
-                if let Some(ref ic) = default_icon {
-                    let _ = main_win.set_icon(ic.clone());
-                }
-                apply_win32_window_icons(&main_win);
-            }
             if let Some(hud_win) = app.get_webview_window("hud") {
                 if let Some(ref ic) = default_icon {
                     let _ = hud_win.set_icon(ic.clone());
+                }
+                let _ = hud_win.set_skip_taskbar(!prefs.taskbar);
+                if let (Some(x), Some(y)) = (prefs.x, prefs.y) {
+                    restore_hud_position(&hud_win, x, y);
                 }
                 let _ = apply_hud_always_on_top(&hud_win, true);
                 apply_win32_window_icons(&hud_win);
@@ -1149,10 +1605,25 @@ pub fn run() {
                 true,
                 None::<&str>,
             )?;
+            let hud_taskbar_item = CheckMenuItem::with_id(
+                app,
+                "hud_taskbar",
+                "Show HUD in taskbar",
+                true,
+                prefs.taskbar,
+                None::<&str>,
+            )?;
+            let open_dashboard_item = MenuItem::with_id(
+                app,
+                "open_dashboard",
+                "Open Full Dashboard",
+                true,
+                None::<&str>,
+            )?;
             let setup_wizard_item = MenuItem::with_id(
                 app,
                 "setup_wizard",
-                "Run Setup Wizard…",
+                "Run Setup Wizard\u{2026}",
                 true,
                 None::<&str>,
             )?;
@@ -1179,7 +1650,16 @@ pub fn run() {
                 None
             };
 
-            let menu = Menu::with_items(app, &[&toggle_hud_item, &pin_hud_item, &setup_wizard_item])?;
+            let menu = Menu::with_items(
+                app,
+                &[
+                    &toggle_hud_item,
+                    &pin_hud_item,
+                    &hud_taskbar_item,
+                    &open_dashboard_item,
+                    &setup_wizard_item,
+                ],
+            )?;
             if autostart_item.is_some() || update_item.is_some() {
                 menu.append(&sep_installed)?;
             }
@@ -1193,9 +1673,10 @@ pub fn run() {
             menu.append(&quit_item)?;
 
             let autostart_toggle = autostart_item.clone();
+            let hud_taskbar_toggle = hud_taskbar_item.clone();
             let mut tray_builder = TrayIconBuilder::new()
                 .menu(&menu)
-                .tooltip("BURNRATE · Live Multi-Computer Spend & Sidecar HUD")
+                .tooltip("BURNRATE \u{00b7} Live Multi-Computer Spend & Sidecar HUD")
                 .on_menu_event(move |app, event| match event.id().as_ref() {
                     "toggle_hud" => {
                         let state = app.state::<HudPinState>();
@@ -1204,6 +1685,21 @@ pub fn run() {
                     "pin_hud" => {
                         let state = app.state::<HudPinState>();
                         let _ = toggle_hud_pin(app.clone(), state);
+                    }
+                    "hud_taskbar" => {
+                        let state = app.state::<HudPinState>();
+                        let next = !state.show_in_taskbar.load(Ordering::SeqCst);
+                        state.show_in_taskbar.store(next, Ordering::SeqCst);
+                        update_hud_prefs(app, |p| p.taskbar = next);
+                        let _ = hud_taskbar_toggle.set_checked(next);
+                        if let Some(hud_win) = app.get_webview_window("hud") {
+                            let _ = hud_win.set_skip_taskbar(!next);
+                            let pinned = state.pinned.load(Ordering::SeqCst);
+                            let _ = apply_hud_always_on_top(&hud_win, pinned);
+                        }
+                    }
+                    "open_dashboard" => {
+                        let _ = show_dashboard(app.clone(), None);
                     }
                     "setup_wizard" => {
                         let _ = open_setup_wizard(app.clone());
@@ -1230,7 +1726,7 @@ pub fn run() {
                             });
                         } else {
                             thread::spawn(move || {
-                                set_update_menu_text(&app, "Checking for updates…");
+                                set_update_menu_text(&app, "Checking for updates\u{2026}");
                                 if check_for_update(&app).is_none() {
                                     set_update_menu_text(&app, "BURNRATE is up to date");
                                 }
@@ -1265,8 +1761,22 @@ pub fn run() {
         })
         .on_window_event(|window, event| match event {
             WindowEvent::CloseRequested { api, .. } => {
-                api.prevent_close();
-                let _ = window.hide();
+                if window.label() == "hud" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+            WindowEvent::Moved(pos) => {
+                #[cfg(not(target_os = "windows"))]
+                if window.label() == "hud" {
+                    let (x, y) = (pos.x, pos.y);
+                    update_hud_prefs(window.app_handle(), |p| {
+                        p.x = Some(x);
+                        p.y = Some(y);
+                    });
+                }
+                #[cfg(target_os = "windows")]
+                let _ = pos;
             }
             WindowEvent::Focused(true) => {
                 if window.label() == "hud" {
@@ -1287,4 +1797,199 @@ pub fn run() {
             app_handle.state::<BackendSupervisor>().stop_all();
         }
     });
+}
+
+#[cfg(test)]
+mod supervisor_tests {
+    use super::*;
+    use std::io::Write;
+    use std::net::TcpListener;
+
+    #[cfg(target_os = "windows")]
+    fn helper_command(role: &str) -> Command {
+        let mut command = Command::new(env::current_exe().unwrap());
+        command.args(["--exact", "supervisor_tests::process_tree_helper", "--ignored"])
+            .env("BURNRATE_PROCESS_TREE_TEST_ROLE", role)
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        apply_no_window(&mut command);
+        command
+    }
+
+    // This ignored entry point runs only as a subprocess of the tree test.
+    // It never imports provider data or starts the real BURNRATE service.
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore]
+    fn process_tree_helper() {
+        let Ok(role) = env::var("BURNRATE_PROCESS_TREE_TEST_ROLE") else { return };
+        if role == "parent" || role == "exiting-parent" {
+            let child = helper_command("leaf").spawn().unwrap();
+            std::fs::write(env::var_os("BURNRATE_PROCESS_TREE_TEST_PID_FILE").unwrap(), child.id().to_string()).unwrap();
+            if role == "exiting-parent" { return; }
+        } else if role != "leaf" {
+            return;
+        }
+        // The owning test always terminates this process's job; a lost test
+        // process also closes its non-inherited kill-on-close job handle.
+        loop { thread::park(); }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn terminating_generation_kills_descendants_but_preserves_other_tree() {
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+        use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+        use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE};
+
+        let mut other_tree = ManagedChild::spawn(&mut helper_command("leaf")).unwrap();
+        for role in ["parent", "exiting-parent"] {
+            let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+            let path = env::temp_dir().join(format!("burnrate-process-tree-{}-{stamp}.pid", std::process::id()));
+            let mut command = helper_command(role);
+            command.env("BURNRATE_PROCESS_TREE_TEST_PID_FILE", &path);
+            let mut generation = ManagedChild::spawn(&mut command).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let descendant_pid = loop {
+                if let Ok(text) = std::fs::read_to_string(&path) {
+                    if let Ok(pid) = text.parse::<u32>() { break pid; }
+                }
+                assert!(Instant::now() < deadline, "synthetic parent did not publish its child PID");
+                thread::sleep(Duration::from_millis(10));
+            };
+            let _ = std::fs::remove_file(&path);
+            let descendant = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, descendant_pid) };
+            assert!(!descendant.is_null(), "synthetic descendant was not running");
+            let descendant = unsafe { OwnedHandle::from_raw_handle(descendant) };
+            if role == "exiting-parent" {
+                while !generation.exited() {
+                    assert!(Instant::now() < deadline, "synthetic parent did not exit");
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
+            generation.stop();
+            assert_eq!(unsafe { WaitForSingleObject(descendant.as_raw_handle(), 2000) }, WAIT_OBJECT_0,
+                       "owned descendant survived generation termination");
+            assert!(!other_tree.exited(), "a separate sync/service tree was terminated");
+        }
+        other_tree.stop();
+    }
+
+    fn serve_once(response: String) -> (u16, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 4096];
+            let count = stream.read(&mut request).unwrap();
+            assert!(String::from_utf8_lossy(&request[..count]).starts_with("GET /healthz?supervisor=1 "));
+            let _ = stream.write_all(response.as_bytes());
+        });
+        (port, handle)
+    }
+
+    fn json_response(value: serde_json::Value) -> String {
+        let body = value.to_string();
+        format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+    }
+
+    fn payload(stalled: bool) -> serde_json::Value {
+        serde_json::json!({"status":"ok", "application":"burnrate", "pid":123,
+            "collectorEnabled":true, "ingest":{"stalled":stalled}})
+    }
+
+    #[test]
+    fn health_checks_application_identity_pid_and_collection_progress() {
+        let client = health_client(Duration::from_secs(2)).unwrap();
+        for stalled in [false, true] {
+            let (port, server) = serve_once(json_response(payload(stalled)));
+            assert_eq!(service_health(&client, port), Some(ServiceHealth { pid:123, collection_stalled:stalled }));
+            server.join().unwrap();
+        }
+        for value in [
+            serde_json::json!({"status":"ok"}),
+            serde_json::json!({"status":"ok","application":"other","pid":123,"collectorEnabled":false}),
+            serde_json::json!({"status":"ok","application":"burnrate","pid":0,"collectorEnabled":false}),
+            serde_json::json!({"status":"ok","application":"burnrate","pid":123,"collectorEnabled":true}),
+        ] {
+            let (port, server) = serve_once(json_response(value));
+            assert_eq!(service_health(&client, port), None);
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn disabled_collector_does_not_need_a_heartbeat() {
+        let client = health_client(Duration::from_secs(2)).unwrap();
+        let (port, server) = serve_once(json_response(serde_json::json!({"status":"ok",
+            "application":"burnrate","pid":123,"collectorEnabled":false,"ingest":null})));
+        assert_eq!(service_health(&client, port), Some(ServiceHealth { pid:123, collection_stalled:false }));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn listening_socket_and_stalled_response_body_fail_within_deadline() {
+        let client = health_client(Duration::from_millis(100)).unwrap();
+        for headers in ["", "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n{"] {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let (release, wait) = std::sync::mpsc::channel();
+            let server = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0; 4096];
+                let _ = stream.read(&mut request);
+                let _ = stream.write_all(headers.as_bytes());
+                let _ = wait.recv_timeout(Duration::from_secs(3));
+            });
+            let started = Instant::now();
+            assert_eq!(service_health(&client, port), None);
+            assert!(started.elapsed() < Duration::from_secs(2));
+            release.send(()).unwrap();
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn redirects_and_oversized_bodies_are_not_accepted() {
+        let client = health_client(Duration::from_secs(2)).unwrap();
+        let (port, server) = serve_once("HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/\r\nContent-Length: 0\r\n\r\n".into());
+        assert_eq!(service_health(&client, port), None);
+        server.join().unwrap();
+        let mut large = payload(false);
+        large["padding"] = serde_json::Value::String("x".repeat(HEALTH_BODY_LIMIT as usize));
+        let (port, server) = serve_once(json_response(large));
+        assert_eq!(service_health(&client, port), None);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn startup_grace_and_ownership_bound_restarts() {
+        let mut owned = OwnedService { pid:123, exited:false, uptime:Duration::from_secs(30) };
+        assert!(!restart_due(Some(owned), true, None, 100));
+        let stalled = ServiceHealth { pid:123, collection_stalled:true };
+        assert!(!restart_due(Some(owned), true, Some(&stalled), 100));
+        owned.uptime = STARTUP_WARNING_AFTER;
+        assert!(!restart_due(Some(owned), true, None, 3));
+        assert!(restart_due(Some(owned), true, None, 4));
+        assert!(restart_due(Some(owned), true, Some(&stalled), 4));
+        let another = ServiceHealth { pid:456, collection_stalled:true };
+        assert!(!restart_due(Some(owned), true, Some(&another), 100));
+        assert!(!restart_due(None, true, None, 100));
+        assert!(!restart_due(None, true, Some(&stalled), 100));
+        assert!(restart_due(None, false, None, 2));
+        owned.exited = true;
+        assert!(!restart_due(Some(owned), true, None, 100));
+        assert!(restart_due(Some(owned), false, None, 1));
+    }
+
+    #[test]
+    fn healthy_or_warming_collector_and_restart_budget_are_preserved() {
+        let owned = OwnedService { pid:123, exited:false, uptime:Duration::from_secs(1200) };
+        let warming = ServiceHealth { pid:123, collection_stalled:false };
+        assert!(!restart_due(Some(owned), true, Some(&warming), 100));
+        let supervisor = BackendSupervisor::new(17331);
+        for _ in 0..RESTART_BUDGET {
+            assert!(supervisor.may_restart());
+        }
+        assert!(!supervisor.may_restart());
+    }
 }

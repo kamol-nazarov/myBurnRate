@@ -9,8 +9,9 @@
 #
 # The promo row ends at the published promo boundary 2026-09-09T16:00:00Z and
 # MUST NOT silently apply afterwards: from that instant openrouter:glm-5.3-flash
-# is unpriced again until refreshed official OpenRouter model metadata is
-# recorded. Underlying provider rates and third-party pages are not authority.
+# is unpriced again until the 2026-11-09 official metadata verification below.
+# The intervening period is deliberately not filled from today's rates.
+# Underlying provider rates and third-party pages are not authority.
 provider: openrouter
 exactness: derived
 prices:
@@ -22,3 +23,20 @@ prices:
     effective_from: 2026-08-26T13:59:01Z
     effective_to: 2026-09-09T16:00:00Z
     source_url: https://openrouter.ai/api/v1/models?q=glm-5.3-flash
+  - model_key: openrouter:glm-5.3-flash
+    # Public /api/v1/models response verified 2026-11-09.
+    input_per_mtok: 0.15
+    cached_input_per_mtok: 0.03
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 0.50
+    effective_from: 2026-11-09T00:00:00Z
+    source_url: https://openrouter.ai/api/v1/models?q=glm-5.3-flash
+  - model_key: openrouter:deepseek/deepseek-v4.1-flash
+    # OpenRouter's own current routed price, not DeepSeek direct API pricing.
+    # Verified 2026-11-09; model creation time does not date these rates.
+    input_per_mtok: 0.051
+    cached_input_per_mtok: 0.018
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 0.567
+    effective_from: 2026-11-09T00:00:00Z
+    source_url: https://openrouter.ai/api/v1/models?q=deepseek/deepseek-v4.1-flash

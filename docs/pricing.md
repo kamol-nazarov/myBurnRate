@@ -12,9 +12,10 @@ One rule produces every token count and every API-rate value (the HUD's "today",
 2. **Tokens = fresh input + cache reads + cache writes + output.** Reasoning counts once, inside output: Claude, Codex and Grok already include it there; OpenCode Go and the DeepSeek API report it apart, so it is added.
 3. **Value = the provider's published API list price for that request,** from the rate cards, with every modifier the provider publishes and the logs let us apply: long-context tiers per request (OpenAI over 272K, xAI from 200K, Claude Haiku 5.5 over 100K), cache-write durations, and peak hours (DeepSeek V4.1 Flash and V4 Pro, 01:00–04:00 and 06:00–10:00 UTC on weekdays).
 4. **A provider's own charge for a request wins over the card.** That is OpenRouter's billed cost through Traycer, the admin APIs' cost reports, and Grok Build's `costUsdTicks` (1 USD = 10^10 ticks), which is Grok Build's sum of each call at xAI's list price. A Grok turn adds several calls together, so this charge is its only exact price; the card applied to the summed prompt would put the whole turn on the long-context tier.
-5. **A tool's own estimate never outranks a card.** OpenCode's per-step `cost` is computed by OpenCode from its local model table, without peak hours. It is used only for a model with no card.
-6. **Tokens and value cover the same requests.** A request no card can price still counts its tokens; the value is then a floor, shown as `≥` with the unpriced token count and models named.
-7. **Time.** A request belongs to the instant it finished; "today" starts at local midnight.
+5. **A tool's own estimate never outranks a card.** OpenCode's per-step `cost` is computed by OpenCode from its local model table, without peak hours. It is used only for a model with no card and complete token telemetry.
+6. **Missing token components are not zero.** Incomplete observations retain their measured tokens, but their computed value is unavailable: an unknown cache split cannot be charged as entirely fresh input. An authoritative reported charge remains usable. If other observations have reliable values, their subtotal is a floor (`≥`); if none do, the amount is unavailable (`—`). A measured zero remains `$0`.
+7. **Totals and breakdowns use the same observations.** A previously unpriced observation is revalued when an effective rate becomes available, including repository and weekly tool breakdowns. Cache reads and one-hour cache writes are subsets, counted once in token totals.
+8. **Time.** A request belongs to the instant it finished; "today" starts at local midnight. Rolling durations use elapsed UTC time, so a rolling day is always 24 hours while a local calendar day can be 23 or 25 hours.
 
 The 2026-10-26 reconciliation that set these rules: [burnrate-pricing-reconciliation-oct26.md](burnrate-pricing-reconciliation-oct26.md).
 
@@ -60,10 +61,26 @@ Everything else that can be priced is **derived** (dashboard `≈`). OpenRouter 
 | Priced + exact source + exact card | Plain currency |
 | Priced + derived card | `≈` published-rate equivalent, not a bill |
 | Unpriced model | Row goes to `unpriced_usage_events`; spend is not invented |
-| Incomplete token classes | Coverage gap; cache rate and savings stay unavailable |
+| Incomplete token classes | Computed value, cache rate and savings stay unavailable; authoritative reported charges remain usable |
 | Promo window ended | Model becomes unpriced until a new dated revision is added |
 
 `$0` means “measured zero,” never “we do not know.” The UI uses `—` for unknown.
+
+Diagnostics report separate reasons for an unidentified model, no current verified
+rate, a missing historical rate interval, incomplete token components, and invalid
+usage timestamps. The report follows the current cards rather than old ingest-time
+gap records, so a verified new card can resolve a warning without reimporting usage.
+
+For a read-only audit of all recorded model IDs:
+
+```powershell
+python -m spend_app.pricing_audit --database "C:\path\to\spend.db"
+```
+
+The JSON includes current and historical rate coverage plus component availability.
+The command never initializes or migrates the database, contacts a provider, or
+fills an unknown price. A model having a card does not prove its telemetry is
+complete or its historical dates are covered.
 
 Owner-asserted cards (for example Codex auto-review when OpenAI has not published a page) must be `exactness: derived` and carry a `source_note`. They always render `≈`.
 
@@ -73,7 +90,7 @@ Owner-asserted cards (for example Codex auto-review when OpenAI has not publishe
 | --- | --- | --- |
 | Priced / billed-exact | YAML cost for exact sources | Subscriptions, forecasts |
 | Published-rate / API-equivalent | YAML cost for derived sources | Subscription proration |
-| Tracked value / today / burn rate | Priced + published-rate **plus** subscription daily cost | Do not read this as an invoice |
+| Usage value / today / burn rate | Priced + published-rate usage value | Subscription daily cost; do not read this as an invoice |
 | Effective cost per million tokens | Measured token classes with reliable pricing coverage | Unpriced tokens; subscriptions |
 | Cache savings | Per-event no-cache counterfactual | Blended cache-hit × list price |
 | Forecast | Labeled projection | Complete if pricing is incomplete — then it is a known-spend floor |

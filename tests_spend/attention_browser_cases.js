@@ -17,7 +17,25 @@
   assert(el('attention-panel').open,'Native dialog must open');
   assert(el('attention-status').textContent.includes('Evaluation ok'),'Evaluation state missing');
   assert(cards().some(card=>card.textContent.includes('missing') && card.textContent.includes('measured tokens')),'Pricing evidence missing');
+  // Hold a real successful write response while navigating between tabs.
+  // The write still owns its completion; switching views must not wedge it.
+  const originalFetch=window.fetch;
+  let releaseSave,saveSignal;
+  window.fetch=(url,options={})=>{
+    const response=originalFetch(url,options);
+    if(String(url)==='/api/attention'&&options.method==='POST'){
+      saveSignal=options.signal;
+      return response.then(value=>new Promise(resolve=>{releaseSave=()=>resolve(value);}));
+    }
+    return response;
+  };
   click(quota(),'Acknowledge');
+  await until(()=>releaseSave);
+  window.fetch=originalFetch;
+  el('attention-history').click();
+  assert(!saveSignal.aborted,'Tab changes must not abandon an in-flight write');
+  releaseSave();await until(()=>el('attention-message').textContent==='Saved');
+  el('attention-current').click();
   await until(()=>el('attention-message').textContent==='Saved' && ![...quota().querySelectorAll('button')].some(b=>b.textContent==='Acknowledge'));
   click(quota(),'Snooze 1 hour');
   await until(()=>[...quota().querySelectorAll('button')].some(b=>b.textContent==='Unsnooze'));

@@ -1,0 +1,45 @@
+# Muse Code usage valued at Meta Model API Standard prices, verified 2026-11-09.
+# https://dev.meta.ai/docs/pricing-rate-limits
+# https://dev.meta.ai/docs/prompt-caching
+# Prefix caching is automatic; Meta publishes no separate per-token write SKU.
+# The write rate is therefore 0, not an invented Anthropic-style write premium.
+# Web-search query charges are outside these token-only estimates.
+# Muse Wonder Full is subscription-only and has no published API token price:
+# https://dev.meta.ai/models/muse-wonder
+provider: meta
+exactness: derived
+prices:
+  - model_key: muse:muse-ember-1.0
+    aliases: [muse-ember-1.0]
+    input_per_mtok: 0.10
+    cached_input_per_mtok: 0.004
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 0.50
+    # All request tokens use the higher tier above 200K input, including cache
+    # hits when deciding the tier. Exactly 200K remains at the standard rate.
+    long_context_threshold: 200000
+    long_input_multiplier: 3
+    long_output_multiplier: 3
+    # Launch and rates: https://research.meta.ai/blog/muse-ember
+    effective_from: 2026-11-09T00:00:00Z
+    source_url: https://dev.meta.ai/docs/pricing-rate-limits
+  - model_key: muse:muse-spark-1.3
+    aliases: [muse-spark-1.3]
+    input_per_mtok: 1.25
+    cached_input_per_mtok: 0.15
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 4.25
+    # Verification floor, not the Sep 2 launch date. The launch post does not
+    # give historical prices; older usage stays unpriced pending evidence.
+    # Contributor mode is a different model ID, not an alias for this card.
+    effective_from: 2026-11-09T00:00:00Z
+    source_url: https://dev.meta.ai/docs/pricing-rate-limits
+  - model_key: muse:muse-wonder-1.0
+    aliases: [muse-wonder-1.0]
+    input_per_mtok: 4.00
+    cached_input_per_mtok: 0.20
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 20.00
+    # Verification floor, not the Oct 12 launch date. No long-context premium.
+    effective_from: 2026-11-09T00:00:00Z
+    source_url: https://dev.meta.ai/docs/pricing-rate-limits

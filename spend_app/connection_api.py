@@ -1,4 +1,5 @@
 """Settings-only protected discovery, verification and connection mutations."""
+import hmac
 import json
 import os
 import sqlite3
@@ -16,6 +17,10 @@ _SPOKE_READ_PATHS = {
     "/api/spend/nav",
     "/api/spend/entity",
     "/api/spend/limits",
+    "/api/spend/hud",
+    "/api/spend/hud/usage",
+    "/api/spend/share/week",
+    "/api/spend/freshness",
     "/api/subscriptions",
     "/api/subscriptions/value",
     "/api/machines",
@@ -32,13 +37,64 @@ def access_allowed(request, token):
     """The existing API-wide bearer boundary, shared with the application."""
     if request.url.path in _PUBLIC_ACCOUNT_PATHS:
         return True
+    method = getattr(request, "method", "GET")
     auth = request.headers.get("authorization", "")
     if auth.startswith("Bearer br_m_"):
         if request.url.path in {"/api/sync/push", "/api/account/subscriptions", "/api/machines"}:
             return True
-        if request.method == "GET" and request.url.path in _SPOKE_READ_PATHS:
+        if method == "GET" and request.url.path in _SPOKE_READ_PATHS:
             return True
-    return not token or not request.url.path.startswith("/api/") or auth == f"Bearer {token}"
+    if not token or not request.url.path.startswith("/api/"):
+        return True
+    if auth.startswith("Bearer ") and hmac.compare_digest(auth[7:].strip(), token):
+        return True
+    cookies = getattr(request, "cookies", None) or {}
+    cookie_token = cookies.get("burnrate_access", "")
+    if cookie_token and hmac.compare_digest(cookie_token, token) and method in {"GET", "HEAD"}:
+        return trusted(request, mutation=False)
+    return False
+
+
+def csrf_mutation_allowed(request) -> bool:
+    """Reject cross-origin CSRF and DNS-rebinding mutations across all /api/* routes."""
+    if getattr(request, "method", "GET") in {"GET", "HEAD", "OPTIONS"} or not request.url.path.startswith("/api/"):
+        return True
+    if request.url.path in _PUBLIC_ACCOUNT_PATHS:
+        return True
+    if request.headers.get("authorization", "").startswith("Bearer "):
+        return True
+    host = request.headers.get("host", "")
+    allowed_hosts = {"127.0.0.1", "localhost", "::1", "testserver", "test"} | {
+        s.strip().lower() for s in os.getenv("BURNRATE_ALLOWED_HOSTS", "").split(",") if s.strip()
+    }
+    allowed_origins = {s.strip() for s in os.getenv("BURNRATE_ALLOWED_ORIGINS", "").split(",") if s.strip()}
+    try:
+        parsed_host = urlsplit("//" + host)
+        if (
+            parsed_host.hostname not in allowed_hosts
+            or parsed_host.username
+            or parsed_host.password
+            or parsed_host.path
+            or parsed_host.query
+            or parsed_host.fragment
+        ):
+            return False
+        fetch_site = request.headers.get("sec-fetch-site", "").strip().lower()
+        if fetch_site in {"cross-site", "same-site"}:
+            return False
+        origin_text = request.headers.get("origin", "").strip()
+        if not origin_text:
+            return True
+        if origin_text.lower() == "null":
+            return False
+        origin = urlsplit(origin_text)
+        return (
+            origin.scheme in {"http", "https"}
+            and (origin.netloc == host or origin_text in allowed_origins)
+            and not any((origin.username, origin.password, origin.path, origin.query, origin.fragment))
+        )
+    except ValueError:
+        return False
 
 
 def trusted(request, mutation=True):

@@ -1,0 +1,16 @@
+# API-equivalent value from Inception's dated 2026-10-19 launch announcement.
+# The 50% launch discount remains listed at https://www.inceptionlabs.ai/models
+# on 2026-11-09. No expiry is published; refresh when Inception changes it
+# rather than inventing a transition to the $0.20/$0.02/$0.70 list rates.
+# Automatic caching has no separately billed per-token cache-write class.
+provider: inception
+exactness: derived
+prices:
+  - model_key: inception:mercury-3
+    aliases: [opencode:inception/mercury-3]
+    input_per_mtok: 0.10
+    cached_input_per_mtok: 0.01
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 0.35
+    effective_from: 2026-10-19T00:00:00Z
+    source_url: https://www.inceptionlabs.ai/blog/introducing-mercury-3

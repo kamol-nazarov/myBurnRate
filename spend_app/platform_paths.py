@@ -124,8 +124,9 @@ def process_running(name_fragment: str) -> bool | None:
             return None
         if processes is None:
             return None
-        image = name_fragment.lower() + ".exe"
-        return any(name.lower() == image for _, name in processes)
+        fragment = name_fragment.lower()
+        image = fragment + ".exe"
+        return any(name.lower() == image or fragment in Path(name).stem.lower() for _, name in processes)
     try:
         completed = subprocess.run(["ps", "-A", "-o", "comm="], capture_output=True, text=True, timeout=5, check=False)
     except (OSError, subprocess.TimeoutExpired):

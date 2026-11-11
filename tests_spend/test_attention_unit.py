@@ -342,7 +342,7 @@ def test_existing_scheduler_uses_fake_registration_only(monkeypatch):
         tree=ast.parse(file.read())
     function=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='create_scheduler')
     module=ast.Module(body=[ast.ImportFrom(module='__future__',names=[ast.alias(name='annotations')],level=0),function],type_ignores=[])
-    namespace={'BackgroundScheduler':lambda **_:fake,'datetime':datetime,'UTC':UTC,'timedelta':timedelta,'poll_quotas':denied,'poll_activity':denied}
+    namespace={'CollectionScheduler':lambda **_:fake,'datetime':datetime,'UTC':UTC,'timedelta':timedelta,'poll_quotas':denied,'poll_activity':denied}
     exec(compile(ast.fix_missing_locations(module),'scheduler-registration','exec'),namespace)
     settings=SimpleNamespace(database_path=Path('C:/fake/attention.db'),timezone='UTC',local_ingest_interval_seconds=15,admin_ingest_interval_minutes=15,quota_poll_seconds=15,activity_poll_seconds=4)
     assert namespace['create_scheduler'](settings,Prices()) is fake

@@ -164,9 +164,20 @@ def _log_config(log_path: Path) -> dict:
     }
 
 
+def _close_root_handlers() -> None:
+    root = logging.getLogger()
+    for existing in list(root.handlers):
+        root.removeHandler(existing)
+        try:
+            existing.close()
+        except Exception:
+            pass
+
+
 def configure_logging() -> Path:
     ensure_directories()
     log_path = log_dir() / "dashboard.log"
+    _close_root_handlers()
     handler = logging.handlers.RotatingFileHandler(
         log_path, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUPS, encoding="utf-8"
     )
@@ -195,11 +206,14 @@ def serve(
     mutex = acquire_mutex(mutex_name())
     if mutex is False:
         logging.info("BURNRATE dashboard already running (mutex %s held)", mutex_name())
+        _close_root_handlers()
         return 0
 
     pid_path = write_pid()
-    # Collection runs in a worker process here (see spend_app.collector).
-    os.environ.setdefault("BURNRATE_COLLECTOR_PROCESS", "1")
+    # Run incremental collection on the background scheduler thread by default
+    # instead of keeping a second frozen Python process resident 24/7. Users
+    # with multi-GB transcript backlogs can still opt in via BURNRATE_COLLECTOR_PROCESS=1.
+    os.environ.setdefault("BURNRATE_COLLECTOR_PROCESS", "0")
     # Desktop notifications come from the service (see spend_app.notify);
     # BURNRATE_DESKTOP_NOTIFICATIONS=0 in the per-user .env turns them off.
     os.environ.setdefault("BURNRATE_DESKTOP_NOTIFICATIONS", "1")
@@ -224,6 +238,9 @@ def serve(
 
     import uvicorn
 
+    # Close the bootstrap RotatingFileHandler before uvicorn's dictConfig opens
+    # its own RotatingFileHandler on dashboard.log (prevents WinError 32 on rollover).
+    _close_root_handlers()
     uvicorn.run(
         app,
         host=host,

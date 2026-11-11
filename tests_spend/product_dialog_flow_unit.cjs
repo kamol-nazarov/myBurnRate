@@ -190,6 +190,24 @@ const planData=amount=>({today:'2026-09-07',timezone:'UTC',tools:['codex','openc
   el('attention-preferences').dispatch('submit');const pref=latest('/api/attention','POST');
   assert.equal(JSON.parse(pref.options.body).preferences.lower,85);reply(pref,{error:'Invalid thresholds'},false,422);await flush();
   assert.equal(el('attention-lower').value,'85');assert.match(el('attention-message').textContent,/Changes kept/);
+  // Navigating tabs does not abandon a write's ownership or its eventual
+  // busy-state cleanup, even while the transport is still pending.
+  el('attention-preferences').dispatch('submit');const movingSave=latest('/api/attention','POST');
+  el('attention-current').click();
+  assert.equal(movingSave.options.signal.aborted,false,'tab change must preserve an in-flight save');
+  reply(movingSave,{...updated,revision:updated.revision+1});await flush();
+  const refreshCount=requests.length;window.BurnrateAttention.refresh(true);
+  assert.equal(requests.length,refreshCount+1,'completed save must release refresh after tab change');
+  reply(latest('/api/attention'),{...updated,revision:updated.revision+1});await flush();
+  el('attention-preferences').dispatch('submit');const cancelledSave=latest('/api/attention','POST');
+  el('attention-close').click();assert.equal(cancelledSave.options.signal.aborted,true);
+  el('nav-attention').click();const afterCancelled=latest('/api/attention');
+  reply(cancelledSave,{...updated,revision:999,badgeLabel:'obsolete'});await flush();
+  reply(afterCancelled,{...updated,revision:updated.revision+1});await flush();
+  assert.equal(el('nav-attention').textContent,'Attention 0','cancelled write must not overwrite a reopened panel');
+  el('attention-preferences').dispatch('submit');const afterReopen=latest('/api/attention','POST');
+  assert.notEqual(afterReopen,cancelledSave,'reopened panel must accept writes');
+  reply(afterReopen,{error:'Controlled failure'},false,503);await flush();
   document.hidden=true;const count=requests.length;window.BurnrateAttention.refresh(true);assert.equal(requests.length,count);document.hidden=false;
   el('attention-current').click();const late=latest('/api/attention');el('attention-close').click();
   reply(late,{...updated,revision:1000,badgeCount:100});await flush();assert.equal(el('nav-attention').textContent,'Attention 0');

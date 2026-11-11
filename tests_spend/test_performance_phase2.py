@@ -17,6 +17,8 @@ from urllib.parse import urlparse
 
 import pytest
 
+pytestmark = pytest.mark.browser
+
 from tests_spend.test_frontend_viewports import CHROME, FixtureHandler, _chrome_dump, _probe
 
 
@@ -45,7 +47,7 @@ def test_snapshot_is_painted_first_but_never_presented_as_live() -> None:
     assert 'status: "stale", snapshot: true' in paint
     assert "renderOverview()" in paint
     load = JS.split("async function loadSummary", 1)[1].split("\nasync function ", 1)[0]
-    assert "state.summary.window?.key !== state.window) && paintSnapshot(windowKey)" in load
+    assert "!summaryMatches() && paintSnapshot(windowKey)" in load
     assert 'startViewRequest("overview")' in load
     assert "writeSnapshot(windowKey, data, state.health);" in load
     assert load.index("clearError();") < load.index("writeSnapshot(")

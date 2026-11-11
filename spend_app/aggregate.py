@@ -522,7 +522,7 @@ class TokenMix:
         self.writes += int(event.get("cache_write_tokens") or 0)
         self.output += int(event.get("output_tokens") or 0)
         self.unclassified += int(event.get("unclassified_tokens") or 0)
-        if event.get("telemetry_complete") is False:
+        if not event.get("telemetry_complete", True):
             self.telemetry_complete = False
 
 
@@ -542,8 +542,9 @@ class TrackedParts:
     complete: bool = True
     tokens: int = 0
     records: int = 0
+    valued_records: int = 0
     session_ids: set[str] = field(default_factory=set)
-    # model_key -> rows that no pricing card could value. Non-empty implies
+    # model_key -> rows lacking a price or enough telemetry to value. Non-empty implies
     # complete is False; surfaced so the UI can name what is missing instead
     # of hiding the known total.
     unpriced_models: dict[str, int] = field(default_factory=dict)
@@ -551,11 +552,13 @@ class TrackedParts:
     reported_charges: Decimal = Decimal(0)
 
     @property
-    def known(self) -> Decimal:
+    def known(self) -> Decimal | None:
         return self.usage_value
 
     @property
-    def usage_value(self) -> Decimal:
+    def usage_value(self) -> Decimal | None:
+        if self.records and not self.valued_records:
+            return None
         return self.priced + self.published
 
     def note_unpriced(self, tokens: int, model: str | None) -> None:
@@ -578,7 +581,7 @@ def resolve_window(key: str, *, now: datetime, timezone: str) -> ResolvedWindow:
     if duration is not None:
         # Fixed-duration controls are elapsed UTC durations: 1d is exactly 24
         # hours, even across a DST transition.
-        start_local = local_now - duration
+        start_local = (now.astimezone(UTC) - duration).astimezone(zone)
         previous_label = f"vs prior {label}"
     elif canonical == "mtd":
         start_local = datetime.combine(local_now.date().replace(day=1), time.min, zone)
@@ -597,9 +600,9 @@ def resolve_window(key: str, *, now: datetime, timezone: str) -> ResolvedWindow:
         previous_start, previous_end = prior.start, prior.end
         previous_label = f"{previous_label} (prior full period)"
     else:
-        span = local_now - start_local
+        span = local_now.astimezone(UTC) - start_local.astimezone(UTC)
         previous_end = start_local.astimezone(UTC)
-        previous_start = (start_local - span).astimezone(UTC)
+        previous_start = previous_end - span
     return ResolvedWindow(
         key=canonical,
         label=label,
@@ -1135,6 +1138,8 @@ def _uses_reported(event: dict, computed: Decimal | None) -> bool:
     """True when the event's own cost_usd is its value instead of the card's."""
     if event.get("cost_usd") is None:
         return False
+    if event.get("source") in ESTIMATED_COST_SOURCES and not event.get("telemetry_complete", True):
+        return False
     return not (event.get("source") in ESTIMATED_COST_SOURCES and computed is not None)
 
 
@@ -1144,6 +1149,11 @@ def _reported_value(event: dict, computed: Decimal | None) -> Decimal | None:
 
 
 def _try_price_event(pricing: PricingEngine, event: dict) -> tuple[Decimal | None, dict[str, Decimal] | None]:
+    # Older incomplete rows store unavailable components as zero. Their
+    # availability cannot be reconstructed, so pricing the other fields can
+    # charge unknown cached input as fresh input and invent a lower bound.
+    if not event.get("telemetry_complete", True):
+        return None, None
     try:
         when = event["when"] if isinstance(event.get("when"), datetime) else _parse(event["occurred_at"])
         components = pricing.components(
@@ -1186,27 +1196,12 @@ def _enrich(events: list[dict], pricing: PricingEngine, _authority=None, *, _cac
     output = []
     for event in events:
         when = event.get("when") if isinstance(event.get("when"), datetime) else _parse(event["occurred_at"])
-        computed_total: Decimal | None
-        components: dict[str, Decimal] | None
-        try:
-            components = pricing.components(
-                model_key=event["model_key"],
-                occurred_at=when,
-                input_tokens=event["input_tokens"],
-                cached_input_tokens=event["cached_input_tokens"],
-                cache_write_tokens=event["cache_write_tokens"],
-                cache_write_1h_tokens=event.get("cache_write_1h_tokens", 0),
-                output_tokens=event["output_tokens"],
-            )
-            computed_total = sum(components.values(), Decimal(0))
-        except (UnpricedModelError, ValueError):
-            components, computed_total = None, None
+        computed_total, components = _try_price_event(pricing, event)
         price = None
-        if components is not None:
-            try:
-                price = pricing.resolve(event["model_key"], when)
-            except UnpricedModelError:
-                price = None
+        try:
+            price = pricing.resolve(event["model_key"], when)
+        except UnpricedModelError:
+            pass
         output.append(
             {
                 **event,
@@ -1215,13 +1210,14 @@ def _enrich(events: list[dict], pricing: PricingEngine, _authority=None, *, _cac
                 "spend": _reported_value(event, computed_total),
                 "components": components or {},
                 "price": price,
-                "telemetry_complete": True,
+                "telemetry_complete": bool(event.get("telemetry_complete", True)),
             }
         )
     return output
 
 
 def _add_value(parts: TrackedParts, event: dict, amount: Decimal) -> None:
+    parts.valued_records += 1
     if _event_is_exact(event):
         parts.priced += amount
     else:
@@ -1238,7 +1234,9 @@ def _tracked_from_loaded(
     reported_charges: Decimal = Decimal(0),
 ) -> TrackedParts:
     parts = TrackedParts(subscriptions=subscriptions, reported_charges=reported_charges)
-    for event in enriched:
+    # Storage placement is historical: a once-unpriced row may now have a
+    # rate, or still lack complete token metadata. Both use one valuation.
+    for event in [*enriched, *_enrich(unpriced, pricing)]:
         if event["spend"] is None:
             parts.complete = False
             parts.note_unpriced(_measured(event), event["model_key"])
@@ -1248,33 +1246,14 @@ def _tracked_from_loaded(
         parts.records += 1
         if event.get("session_id"):
             parts.session_ids.add(event["session_id"])
-    for event in unpriced:
-        parts.tokens += _measured(event)
-        parts.records += 1
-        if event.get("session_id"):
-            parts.session_ids.add(event["session_id"])
-        when = event.get("when")
-        if when is None and event.get("occurred_at"):
-            when = _parse(event["occurred_at"])
-            event = {**event, "when": when}
-        if event.get("price") is None and when is not None:
-            try:
-                event = {**event, "price": pricing.resolve(event["model_key"], when)}
-            except (UnpricedModelError, ValueError, KeyError):
-                pass
-        priced, _components = _try_price_event(pricing, event)
-        value = _reported_value(event, priced)
-        if event["cost_usd"] is not None and value is not None:
-            _add_value(parts, event, value)
-            continue
-        if priced is None:
-            parts.complete = False
-            parts.note_unpriced(_measured(event), str(event.get("model_key") or "unknown"))
-        else:
-            _add_value(parts, event, priced)
-        if not event.get("telemetry_complete", True):
-            parts.complete = False
     return parts
+
+
+def usage_projection(connection, pricing: PricingEngine, start: datetime, end: datetime,
+                     tool: str = "all", machine: str = "all") -> list[dict]:
+    """Every recorded observation, valued identically regardless of storage table."""
+    return _enrich([*_load_events(connection, start, end, tool, machine),
+                    *_load_unpriced_events(connection, start, end, tool, machine)], pricing)
 
 
 def _tracked_value(
@@ -1382,12 +1361,12 @@ def _cache_savings(*, events: list[dict], pricing: PricingEngine) -> float | Non
     cached_rows = 0
     priced_cached_rows = 0
     for event in events:
+        if not event.get("telemetry_complete", True):
+            return None
         cached = int(event.get("cached_input_tokens") or 0)
         if cached <= 0:
             continue
         cached_rows += 1
-        if not event.get("telemetry_complete", True):
-            continue
         when = event.get("when")
         if not isinstance(when, datetime):
             when = _parse(event["occurred_at"])
@@ -1852,7 +1831,7 @@ def _connection_identity(connection) -> str:
 def _seven_day_pace_uncached(
     connection, pricing: PricingEngine, local_now: datetime, today_start: datetime, timezone: str, machine: str = "all"
 ) -> tuple[Decimal | None, float | None]:
-    values: list[Decimal] = []
+    values: list[Decimal | None] = []
     token_counts: list[int] = []
     for offset in range(7, 0, -1):
         start_local = today_start - timedelta(days=offset)
@@ -1874,7 +1853,7 @@ def _seven_day_pace_uncached(
     if not values:
         return None, None
     return (
-        sum(values, Decimal(0)) / Decimal(len(values)),
+        None if any(value is None for value in values) else sum(values, Decimal(0)) / Decimal(len(values)),
         sum(token_counts) / len(token_counts),
     )
 
@@ -2712,7 +2691,7 @@ def aggregate_summary(
             "selectedMachine": machine,
             "navigation": {
                 "burnRatePerDay": float(burn) if burn is not None else None,
-                "todayUsd": float(today.usage_value) if today.records else None,
+                "todayUsd": _money(today.usage_value) if today.records else None,
                 "todayTokens": int(today.tokens) if today.records else 0,
                 "tokensAvgPerDay": tokens_per_day,
                 "todayKnown": bool(today.records) and today.usage_value is not None,
@@ -2753,7 +2732,7 @@ def aggregate_summary(
                 "effectiveCostComplete": api_equivalent_complete,
                 # Sum of every row that could be valued, even when trackedValue
                 # is withheld because some rows are unpriced. Null only when
-                # the window has no rows at all.
+                # the window has no reliably valued rows at all.
                 "knownValue": _money(parts.known) if parts.records else None,
                 "unpricedModels": [
                     {

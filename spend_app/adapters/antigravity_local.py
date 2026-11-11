@@ -31,7 +31,9 @@ SOURCE = "antigravity_local"
 TOOL_KEY = "antigravity"
 MODEL_PREFIX = "antigravity:"
 PROD_UI_VERBOSITY = 2
-_TRAJECTORY_SIGNATURES: dict[tuple[str, str], tuple[object, ...]] = {}
+REPORTING_TIMEOUT_SECONDS = 20
+MAX_TRAJECTORIES_PER_PASS = 100
+_TRAJECTORY_SIGNATURES: dict[tuple[str, str, str], tuple[object, ...]] = {}
 
 
 def reset_state() -> None:
@@ -199,9 +201,11 @@ def ingest(*, database_path: Path, pricing: PricingEngine, import_path: Path | N
             reason="Experimental Antigravity localhost gRPC-Web: desktop is not running or the RPC is unavailable.",
         )
     import time
-    deadline = time.monotonic() + 20
+    deadline = time.monotonic() + REPORTING_TIMEOUT_SECONDS
     usage_rows: list[UsageRow] = []
-    pending_signatures: list[tuple[tuple[str, str], tuple[object, ...]]] = []
+    pending_signatures: list[tuple[tuple[str, str, str], tuple[object, ...]]] = []
+    issues: list[str] = []
+    seen = fetched = 0
     try:
         _assert_allowed_https_host(base_url, ANTIGRAVITY_RPC_ALLOWED_HOSTS)
         with httpx.Client(verify=False, timeout=15, trust_env=False, follow_redirects=False) as client:
@@ -218,11 +222,7 @@ def ingest(*, database_path: Path, pricing: PricingEngine, import_path: Path | N
                 for index, item in enumerate(raw_summaries)
                 if isinstance(item, dict)
             )
-            seen = 0
-            fetched = 0
             for cascade_id, summary in summaries:
-                if time.monotonic() >= deadline or seen >= 100:
-                    raise RuntimeError("Antigravity reporting deadline or trajectory limit reached; coverage is incomplete.")
                 if not isinstance(summary, dict):
                     continue
                 seen += 1
@@ -237,6 +237,11 @@ def ingest(*, database_path: Path, pricing: PricingEngine, import_path: Path | N
                 state_key = (cache_identity(database_path, database_path, "antigravity-response-v1"), base_url, cascade_id)
                 if _TRAJECTORY_SIGNATURES.get(state_key) == signature:
                     continue
+                # Count RPCs, not cached histories. Save each completed batch so
+                # the next pass can skip it and reach the remaining histories.
+                if time.monotonic() >= deadline or fetched >= MAX_TRAJECTORIES_PER_PASS:
+                    issues.append("Antigravity history collection is incomplete; remaining trajectories will resume on the next pass.")
+                    break
                 trajectory = _rpc_json(
                     client,
                     base_url=base_url,
@@ -248,17 +253,17 @@ def ingest(*, database_path: Path, pricing: PricingEngine, import_path: Path | N
                 usage_rows.extend(parse_trajectory(trajectory, summary=summary))
                 pending_signatures.append((state_key, signature))
     except (httpx.HTTPError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
-        return failed_result(
-            database_path=database_path,
-            source=SOURCE,
-            reason=f"Experimental Antigravity localhost gRPC-Web usage lookup failed ({type(exc).__name__}).",
-        )
+        reason = f"Experimental Antigravity localhost gRPC-Web usage lookup failed ({type(exc).__name__})."
+        if not pending_signatures:
+            return failed_result(database_path=database_path, source=SOURCE, reason=reason)
+        issues.append(reason)
 
     result = persist_rows(
         database_path=database_path,
         pricing=pricing,
         source=SOURCE,
         usage_rows=usage_rows,
+        issues=issues,
     )
     for state_key, signature in pending_signatures:
         _TRAJECTORY_SIGNATURES[state_key] = signature
