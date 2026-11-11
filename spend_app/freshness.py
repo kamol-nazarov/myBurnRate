@@ -217,10 +217,23 @@ def _lane_issues(connection, now: datetime) -> list[dict]:
         ).fetchone()
         reason = str(why[0]).split(" — ", 1)[1] if why and " — " in str(why[0]) else None
         from spend_app.aggregate import provider_meta
+        from spend_app.limits import MUSE_IDLE_DETAIL
+
+        severity = "warn"
+        if provider == "muse" and reason == MUSE_IDLE_DETAIL:
+            used_since = connection.execute(
+                "SELECT 1 FROM usage_events WHERE tool_key='muse' AND raw_id NOT LIKE 'm:%' AND occurred_at>? "
+                "UNION ALL "
+                "SELECT 1 FROM unpriced_usage_events WHERE tool_key='muse' AND raw_id NOT LIKE 'm:%' AND occurred_at>? "
+                "LIMIT 1",
+                (polled_at, polled_at),
+            ).fetchone()
+            if not used_since:
+                severity = "info"
 
         lane_name = LANE_NAMES.get(provider) or (provider_meta(provider) or {}).get("shortName") or provider
         short = f"{lane_name} {str(limit).replace('-', ' ')}"
-        issues.append({"kind": "lane", "key": f"{provider}:{limit}", "name": name, "short": short, "state": "held", "severity": "warn",
+        issues.append({"kind": "lane", "key": f"{provider}:{limit}", "name": name, "short": short, "state": "held", "severity": severity,
                        "ageSeconds": age, "detail": reason or "The meter shows the last confirmed reading; newer polls returned no value."})
     return sorted(issues, key=lambda item: -item["ageSeconds"])
 

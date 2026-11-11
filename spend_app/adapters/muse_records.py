@@ -20,16 +20,26 @@ from spend_app.adapters.opencode_schema import count
 from spend_app.source_health import quarantine
 from spend_app.timeutil import parse_utc
 
-PARSER_VERSION = "muse-session-3"
+PARSER_VERSION = "muse-session-4"
 
-_CACHED_KEYS = (
-    "cache_read_input_tokens",
+_ANTHROPIC_CACHED_KEYS = ("cache_read_input_tokens",)
+_INCLUSIVE_CACHED_KEYS = (
     "cached_input_tokens",
     "prompt_tokens_cached",
     "cached_tokens",
     "cache_read_tokens",
     "cache_read",
     "cacheReadTokens",
+)
+_CACHED_KEYS = _ANTHROPIC_CACHED_KEYS + _INCLUSIVE_CACHED_KEYS
+_NON_TURN_KINDS = frozenset(
+    {
+        "context_projection_checkpoint",
+        "workflow_child_lifecycle",
+        "session_summary",
+        "session_checkpoint",
+        "compaction_checkpoint",
+    }
 )
 _WRITE_KEYS = (
     "cache_creation_input_tokens",
@@ -65,7 +75,34 @@ def _first_count(mapping: dict, keys: tuple[str, ...]) -> int | None:
     return None
 
 
+def _is_non_turn_record(record: dict) -> bool:
+    """Reject session compaction checkpoints and child-agent lifecycle rollups.
+
+    Muse Code's ``runtime.session`` stream emits cumulative session usage on
+    ``context_projection_checkpoint`` and child rollups on
+    ``workflow_child_lifecycle`` (both without model names) alongside per-turn
+    ``model_completed`` events. Counting them double-counts turns and creates
+    spurious ``muse:unknown`` rows.
+    """
+    payload = record.get("payload")
+    event = payload.get("event") if isinstance(payload, dict) else None
+    if record.get("payload_type") == "runtime.session" and isinstance(event, dict):
+        kind = event.get("kind")
+        if isinstance(kind, str) and kind.strip() and kind.strip() != "model_completed":
+            return True
+    for node in (record, payload, event):
+        if not isinstance(node, dict):
+            continue
+        for key in ("kind", "type"):
+            raw = node.get(key)
+            if isinstance(raw, str) and raw.strip().lower() in _NON_TURN_KINDS:
+                return True
+    return False
+
+
 def _usage_slot(record: dict) -> dict | None:
+    if _is_non_turn_record(record):
+        return None
     for slot in ("usage", "tokens"):
         value = record.get(slot)
         if isinstance(value, dict):
@@ -97,10 +134,12 @@ def _usage_slot(record: dict) -> dict | None:
 def usage_from_record(record: dict) -> dict | None:
     """Token components for one record, or None when it reports no usage.
 
-    Input semantics follow the fields the record actually carries: an
-    ``input_tokens``-style field excludes cached reads (Anthropic layout),
-    while a ``prompt_tokens``-style field includes them (OpenAI layout), so
-    the fresh component is derived by subtraction and never double-counted.
+    Muse Code's MSP ``model_completed`` usage block follows OpenAI/Meta
+    conventions where ``input_tokens`` already includes ``cached_tokens`` /
+    ``cache_read_tokens`` (verified against ``estimated_prompt_tokens`` across
+    real session transcripts). Pure Anthropic wire payloads using only
+    ``cache_read_input_tokens`` (or where ``input_tokens < cached``) exclude
+    cached reads, so cached reads are added only in that layout.
     """
     usage = _usage_slot(record)
     if usage is None:
@@ -108,18 +147,28 @@ def usage_from_record(record: dict) -> dict | None:
     cached = _first_count(usage, _CACHED_KEYS)
     write = _first_count(usage, _WRITE_KEYS)
     output = _first_count(usage, _OUTPUT_KEYS)
-    fresh = _first_count(usage, _INPUT_KEYS)
-    if fresh is None:
-        prompt = _first_count(usage, _PROMPT_KEYS)
-        if prompt is not None:
-            fresh = max(0, prompt - (cached or 0))
-    if fresh is None and output is None:
+    raw_input = _first_count(usage, _INPUT_KEYS)
+    prompt = _first_count(usage, _PROMPT_KEYS)
+    has_inclusive_cache = _first_count(usage, _INCLUSIVE_CACHED_KEYS) is not None
+    has_anthropic_cache = _first_count(usage, _ANTHROPIC_CACHED_KEYS) is not None
+    if raw_input is not None:
+        if cached and (raw_input < cached or (has_anthropic_cache and not has_inclusive_cache)):
+            measured_input = raw_input + cached
+        else:
+            measured_input = raw_input
+        has_input = True
+    elif prompt is not None:
+        measured_input = max(prompt, cached or 0)
+        has_input = True
+    else:
+        measured_input = cached or 0
+        has_input = False
+    if not has_input and output is None:
         return None
     total = _first_count(usage, _TOTAL_KEYS)
-    measured_input = (fresh or 0) + (cached or 0)
     unclassified = (
         max(0, total - measured_input - (write or 0) - (output or 0))
-        if total is not None and (fresh is None or output is None)
+        if total is not None and (not has_input or output is None)
         else 0
     )
     return {
@@ -130,7 +179,7 @@ def usage_from_record(record: dict) -> dict | None:
         "output_tokens": output or 0,
         "reasoning_tokens": _first_count(usage, _REASONING_KEYS),
         "unclassified_tokens": unclassified,
-        "telemetry_complete": fresh is not None and output is not None,
+        "telemetry_complete": has_input and output is not None,
     }
 
 

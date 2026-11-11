@@ -31,6 +31,25 @@ prices:
     output_per_mtok: 20.00
     effective_from: 2026-12-01T00:00:00Z
     source_url: https://ai.google.dev/gemini-api/docs/pricing#gemini-4-argon
+  # GA 2026-11-10: https://ai.google.dev/gemini-api/docs/changelog#11-10-2026
+  # Standard tier only; implicit caching has no separate cache-write SKU.
+  - model_key: antigravity:gemini-4-carbon
+    aliases: [antigravity:gemini-4-carbon-low, antigravity:gemini-4-carbon-medium, antigravity:gemini-4-carbon-high]
+    input_per_mtok: 2.00
+    cached_input_per_mtok: 0.10
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 10.00
+    effective_from: 2026-11-10T00:00:00Z
+    effective_to: 2026-12-01T00:00:00Z
+    source_url: https://ai.google.dev/gemini-api/docs/pricing#gemini-4-carbon
+  - model_key: antigravity:gemini-4-carbon
+    aliases: [antigravity:gemini-4-carbon-low, antigravity:gemini-4-carbon-medium, antigravity:gemini-4-carbon-high]
+    input_per_mtok: 4.00
+    cached_input_per_mtok: 0.20
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 20.00
+    effective_from: 2026-12-01T00:00:00Z
+    source_url: https://ai.google.dev/gemini-api/docs/pricing#gemini-4-carbon
   - model_key: antigravity:gemini-3.8-flash
     aliases: [antigravity:gemini-3.8-flash-high]
     input_per_mtok: 0.75

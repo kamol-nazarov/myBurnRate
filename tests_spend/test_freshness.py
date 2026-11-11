@@ -212,3 +212,37 @@ def test_first_pass_after_start_is_warming_not_stale(tmp_path: Path) -> None:
     freshness.pass_finished({}, [], 40.0, NOW - timedelta(seconds=1))
     states = {item["key"]: item["state"] for item in freshness.report(settings, NOW)["issues"]}
     assert states.get("claude_local") == "stale" and "local-ingest" not in states
+
+
+def test_idle_muse_weekly_held_is_informational_until_used(tmp_path: Path) -> None:
+    from spend_app.db import UsageEvent, upsert_quota, upsert_usage_event
+    from spend_app.limits import MUSE_IDLE_DETAIL
+
+    settings = _settings(tmp_path)
+    initialize(settings.database_path)
+    freshness.pass_finished({}, [], 1.0, NOW - timedelta(seconds=5))
+    freshness.pass_finished({}, [], 1.0, NOW - timedelta(seconds=2))
+    polled_at = _iso(NOW - timedelta(hours=16))
+    with connect(settings.database_path) as connection:
+        common = {"used": None, "allowance": None, "is_payg": False}
+        upsert_quota(connection, provider_key="muse", limit_key="weekly", label="Muse Code weekly window", unit="percent",
+                     pct=4.0, resets_at=_iso(NOW + timedelta(days=5)), source="muse_quota_endpoint",
+                     polled_at=polled_at, **common)
+        upsert_quota(connection, provider_key="muse", limit_key="5h", label=f"Muse Code 5-hour window — {MUSE_IDLE_DETAIL}",
+                     unit="unavailable", pct=None, resets_at=None, source="muse_quota_endpoint",
+                     polled_at=_iso(NOW - timedelta(minutes=1)), **common)
+    idle_report = freshness.report(settings, NOW)
+    assert idle_report["status"] == "ok"
+    assert [i["severity"] for i in idle_report["issues"] if i["key"] == "muse:weekly"] == ["info"]
+
+    with connect(settings.database_path) as connection:
+        upsert_usage_event(connection, UsageEvent(
+            source="muse_local", tool_key="muse", model_key="muse:muse-ember-1.0",
+            occurred_at=_iso(NOW - timedelta(minutes=10)), session_id="s1", project="Proj",
+            input_tokens=1000, cached_input_tokens=800, cache_write_tokens=0, cache_write_1h_tokens=0,
+            output_tokens=100, reasoning_tokens=0, cost_usd=None, computed_cost_usd=0.001,
+            raw_id="muse-after-poll", ingested_at=_iso(NOW - timedelta(minutes=9)),
+        ))
+    active_report = freshness.report(settings, NOW)
+    assert active_report["status"] == "warn"
+    assert [i["severity"] for i in active_report["issues"] if i["key"] == "muse:weekly"] == ["warn"]

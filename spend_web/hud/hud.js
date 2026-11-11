@@ -77,8 +77,8 @@
             (strong ? "<b>" + esc(strong) + "</b>" : "") + esc(side || "") + "</span></div>",
           kv: rows => {
             const body = rows.filter(Boolean).map(([key, value, cls, note]) =>
-              "<dt>" + esc(key) + "</dt><dd" + (cls ? ' class="' + cls + '"' : "") + ">" + esc(value) +
-              (note ? "<small>" + esc(note) + "</small>" : "") + "</dd>").join("");
+              "<dt>" + esc(key) + "</dt><dd" + (cls ? ' class="' + cls + '"' : "") + ">" + esc(value) + "</dd>" +
+              (note ? '<dd class="tt-note">' + esc(note) + "</dd>" : "")).join("");
             return body ? '<dl class="tt-kv">' + body + "</dl>" : "";
           },
           line: (text, cls) => text ? '<p class="tt-line' + (cls ? " " + cls : "") + '">' + esc(text) + "</p>" : "",
@@ -101,10 +101,17 @@
         const TIP_DELAY_MS = 320;
         const TIP_WARM_MS = 600;
         const tip = {target: null, pending: null, timer: 0, leaveTimer: 0, restoreTimer: 0, hiddenAt: 0, x: -1, y: -1, inside: false, grown: false};
+        const tipSuppressed = el => {
+          if (!el || typeof el.getAttribute !== "function") return false;
+          const id = el.getAttribute("aria-controls");
+          const controlled = id ? $(id) : null;
+          return Boolean(controlled && !controlled.hidden);
+        };
         const tipUnderPointer = () => {
           if (!tip.inside || tip.x < 0) return null;
           const el = document.elementFromPoint(tip.x, tip.y);
-          return el ? el.closest("[data-tip]") : null;
+          const candidate = el ? el.closest("[data-tip]") : null;
+          return tipSuppressed(candidate) ? null : candidate;
         };
         function placeTip(target) {
           const rect = target.getBoundingClientRect();
@@ -126,6 +133,7 @@
           tipEl.style.top = Math.round(y) + "px";
         }
         function showTip(target, snap) {
+          if (tipSuppressed(target)) { hideTip(); return; }
           const entry = target && target.isConnected ? tipContent.get(target) : null;
           const value = entry ? (typeof entry.content === "function" ? entry.content() : entry.content) : "";
           if (!value) { hideTip(); return; }
@@ -157,6 +165,7 @@
         }
         function wantTip(target) {
           if (morphing) { hideTip(); return; }
+          if (tipSuppressed(target)) target = null;
           if (target && (target === tip.target || target === tip.pending)) { clearTimeout(tip.leaveTimer); return; }
           clearTimeout(tip.timer);
           tip.pending = null;
@@ -170,7 +179,7 @@
           tip.pending = target;
           tip.timer = setTimeout(() => {
             tip.pending = null;
-            const live = target.isConnected ? target : tipUnderPointer();
+            const live = target.isConnected && !tipSuppressed(target) ? target : tipUnderPointer();
             if (live && tip.inside) showTip(live, false);
           }, TIP_DELAY_MS);
         }
@@ -178,7 +187,7 @@
         // pointer to it, or close the tip when nothing tipped is under it.
         function refreshTip() {
           if (!tip.target) return;
-          const target = tip.target.isConnected && tip.target.matches(":hover") ? tip.target : tipUnderPointer();
+          const target = tip.target.isConnected && !tipSuppressed(tip.target) && tip.target.matches(":hover") ? tip.target : tipUnderPointer();
           if (target) showTip(target, true); else hideTip();
         }
         document.addEventListener("pointermove", event => { tip.x = event.clientX; tip.y = event.clientY; tip.inside = true; }, {passive: true});
@@ -638,13 +647,14 @@
         }
 
         function windowName(key, label) {
-          const text = String(label || "").toLowerCase();
+          const baseLabel = String(label || "").split(/ \u2014 | \u00b7 /)[0];
+          const text = baseLabel.toLowerCase();
           let scope = "";
           if (key === "antigravity") {
             if (text.includes("gemini")) scope = "Gemini";
             else if (text.includes("claude") || text.includes("gpt")) scope = "Other";
           }
-          let win = label || "Plan";
+          let win = baseLabel || "Plan";
           if (text.includes("5-hour") || text.includes("five-hour") || text.includes("5h")) win = "5h";
           else if (text.includes("month")) win = "Month";
           else if (text.includes("week")) win = "Week";
@@ -975,7 +985,7 @@
             rows.push(["Pace", "unknown", "", "the newest sample is stale"]);
           }
           html += T.kv(rows);
-          const detail = String(q.label || "").split(" · ").slice(1).join(" · ");
+          const detail = String(q.label || "").split(/ — | · /).slice(1).join(" · ");
           if (q.pct == null && !q.payg && detail) html += T.line(detail, "dim");
 
           if (lane && lane.today) html += T.sep + T.section("Today by model", tok1(lane.today.tokens)) + modelList(lane.today);
@@ -1018,13 +1028,14 @@
             tick.style.left = elapsed.toFixed(2) + "%";
             meter.append(tick);
           }
+          const idleWindow = q.pct == null && String(q.label || "").includes("only for a few hours after you use it");
           const value = document.createElement("b");
           value.className = "win-value";
           const number = document.createElement("span");
           number.className = "win-number";
           if (q.pct == null) {
             const full = document.createElement("span"), short = document.createElement("span");
-            full.className = "long"; full.textContent = "No reading";
+            full.className = "long"; full.textContent = idleWindow ? "Idle" : "No reading";
             short.className = "short"; short.textContent = "—";
             number.append(full, short);
           } else number.textContent = pctText(q.pct);
@@ -1037,13 +1048,13 @@
           const reset = resetIn(q.resetsAt);
           const resetPrefix = document.createElement("span");
           resetPrefix.className = "win-reset-prefix";
-          resetPrefix.textContent = reset ? (reset === "now" ? "Resets " : "Resets in ") : "Reset ";
+          resetPrefix.textContent = reset ? (reset === "now" ? "Resets " : "Resets in ") : (idleWindow ? "" : "Reset ");
           const resetValue = document.createElement("span");
           resetValue.className = "win-reset-value";
           if (reset) resetValue.textContent = reset;
           else {
             const full = document.createElement("span"), short = document.createElement("span");
-            full.className = "long"; full.textContent = "unavailable";
+            full.className = "long"; full.textContent = idleWindow ? "Starts on next use" : "unavailable";
             short.className = "short"; short.textContent = "—";
             resetValue.append(full, short);
           }
@@ -1130,6 +1141,11 @@
           host.textContent = (lead.q.held ? "Closest known limit · " : "Closest limit · ") + lead.group.name + " · " + pctText(lead.q.pct) + " used" +
             (lead.q.held ? " · held " + (relTime(lead.q.polledAt) || "reading") : "");
         }
+        const defaultPlanExpanded = group => {
+          if (isMini) return false;
+          const peak = group.rows.reduce((best, row) => row.pct != null && (best == null || row.pct > best.pct) ? row : best, null) || group.rows[0];
+          return group.rows.length < 2 || !peak || peak.pct == null || group.rows.some(row => row !== peak && row.pct != null);
+        };
         function renderPlans(groups, force = false) {
           latestGroups = groups;
           const plans = groups.map(group => ({...group, rows: group.rows.filter(q => !q.payg)}))
@@ -1141,7 +1157,7 @@
             selectedMachine, isMini, dashboardOn, pinnedProviders,
             plans.map(group => {
               const expansionKey = selectedMachine + "|" + group.key;
-              const expanded = planExpansion.has(expansionKey) ? planExpansion.get(expansionKey) : !isMini;
+              const expanded = planExpansion.has(expansionKey) ? planExpansion.get(expansionKey) : defaultPlanExpanded(group);
               return [
                 group.key, group.toolKey, group.name, group.providerName, group.accountLabel, group.plan, group.polledAt, expanded,
                 group.rows.map(q => [
@@ -1162,7 +1178,7 @@
               card.setAttribute("aria-label", group.name);
               card.dataset.providerKey = group.key;
               const expansionKey = selectedMachine + "|" + group.key;
-              const expanded = planExpansion.has(expansionKey) ? planExpansion.get(expansionKey) : !isMini;
+              const expanded = planExpansion.has(expansionKey) ? planExpansion.get(expansionKey) : defaultPlanExpanded(group);
               card.classList.toggle("open", expanded);
               const head = document.createElement("header");
               head.className = "plan-head";
@@ -1829,8 +1845,9 @@
             detail.textContent = issue.detail || "This source needs a fresh reading.";
             const next = document.createElement("p");
             next.className = "issue-next";
+            const isQuotaIssue = issue.kind === "quota" || issue.kind === "lane";
             next.textContent = issue.nextAction || (issue.key === "hub-upgrade" ? "Update the hub; queued corrections will sync after it reconnects."
-              : issue.kind === "quota" ? "Check the provider is signed in, then recheck the reading."
+              : isQuotaIssue ? "Check the provider is signed in, then recheck the reading."
               : issue.kind === "sync" ? "Check the hub connection, then retry."
               : "Recheck the source. If it stays unavailable, open source settings.");
             const retry = document.createElement("button");
@@ -1839,7 +1856,7 @@
             retry.dataset.attentionFocus = String(issue.key || index);
             retry.textContent = "Recheck";
             retry.addEventListener("click", () => {
-              if (issue.kind === "quota") $("hud-poll-btn")?.click();
+              if (isQuotaIssue) $("hud-poll-btn")?.click();
               refresh(true); refreshUsage(true); refreshFreshness();
               notice("Checking the latest readings…");
             });
@@ -1903,7 +1920,7 @@
               return;
             }
             const copy = document.createElement("span");
-            copy.className = "quick-plan-copy";
+            copy.className = "hud-quick-plan-copy";
             const strong = document.createElement("b");
             strong.textContent = sug.name;
             const amount = Number(sug.amount_usd);
@@ -1911,10 +1928,10 @@
             copy.append(strong, " · " + priceLabel + "/mo detected");
 
             const actions = document.createElement("div");
-            actions.className = "quick-plan-actions";
+            actions.className = "hud-quick-plan-actions";
             const confirmBtn = document.createElement("button");
             confirmBtn.type = "button";
-            confirmBtn.className = "quick-plan-confirm";
+            confirmBtn.className = "hud-quick-confirm";
             confirmBtn.textContent = "Confirm";
             confirmBtn.addEventListener("click", async () => {
               confirmBtn.disabled = true;
@@ -1958,7 +1975,7 @@
 
             const dismissBtn = document.createElement("button");
             dismissBtn.type = "button";
-            dismissBtn.className = "quick-plan-dismiss";
+            dismissBtn.className = "hud-quick-dismiss";
             dismissBtn.setAttribute("aria-label", "Dismiss plan suggestion");
             dismissBtn.textContent = "×";
             dismissBtn.addEventListener("click", () => {

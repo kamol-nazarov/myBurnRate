@@ -682,6 +682,7 @@ def initialize(path: Path) -> None:
     migrate_usage_keys(path)
     retire_cursor_usage(path)
     dedupe_grok_calls(path)
+    retire_muse_rollup_events(path)
 
 
 def ensure_usage_change_journal(path: Path) -> None:
@@ -955,6 +956,71 @@ def dedupe_grok_calls(path: Path) -> int:
                 (GROK_DEDUPE_KEY, json.dumps({"removedEvents": removed, "at": utc_now()})),
             )
         _GROK_DEDUPE_CHECKED.add(marker)
+        return removed
+
+
+MUSE_ROLLUP_CLEANUP_KEY = "repair.muse_rollup_cleanup.v1"
+_MUSE_ROLLUP_CHECKED: set[str] = set()
+_MUSE_ROLLUP_LOCK = threading.Lock()
+
+
+def retire_muse_rollup_events(path: Path) -> int:
+    """Remove non-turn ``muse:unknown`` rollup rows ingested by older Muse parsers.
+
+    Muse Code ``runtime.session`` checkpoints and child-lifecycle summaries
+    carried cumulative usage without a model identifier. Removing those stale
+    ``muse:unknown`` rows once per database (local and Hub) clears false
+    ``Partial`` badges while ``muse-session-4`` re-parses real turns in place.
+    """
+    path = Path(path)
+    marker = str(path.resolve())
+    if marker in _MUSE_ROLLUP_CHECKED:
+        return 0
+    with _MUSE_ROLLUP_LOCK:
+        if marker in _MUSE_ROLLUP_CHECKED:
+            return 0
+        with connect(path) as connection:
+            if connection.execute("SELECT 1 FROM app_meta WHERE key=?", (MUSE_ROLLUP_CLEANUP_KEY,)).fetchone():
+                _MUSE_ROLLUP_CHECKED.add(marker)
+                return 0
+            recorded = connection.execute(
+                "SELECT EXISTS(SELECT 1 FROM unpriced_usage_events "
+                "WHERE tool_key='muse' AND model_key='muse:unknown' AND (source='muse_local' OR source LIKE 'sync:%'))"
+            ).fetchone()[0]
+        if recorded:
+            target = path.parent / "backups" / (
+                "pre-muse-rollup-cleanup-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%S") + ".db"
+            )
+            backup_database(path, target)
+            with closing(sqlite3.connect(target)) as backup:
+                if backup.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                    raise RuntimeError("Backup before removing Muse rollup events failed; nothing was removed")
+        removed = 0
+        with connect(path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if recorded:
+                removed = connection.execute(
+                    "DELETE FROM unpriced_usage_events "
+                    "WHERE tool_key='muse' AND model_key='muse:unknown' AND (source='muse_local' OR source LIKE 'sync:%')"
+                ).rowcount
+                connection.execute(
+                    "DELETE FROM coverage_gap_events "
+                    "WHERE tool_key='muse' AND model_key='muse:unknown' AND (source='muse_local' OR source LIKE 'sync:%')"
+                )
+                connection.execute(
+                    "DELETE FROM pricing_gap_events "
+                    "WHERE model_key='muse:unknown' AND (source='muse_local' OR source LIKE 'sync:%')"
+                )
+                connection.execute(
+                    "DELETE FROM pricing_gaps "
+                    "WHERE model_key='muse:unknown' "
+                    "AND NOT EXISTS (SELECT 1 FROM unpriced_usage_events WHERE model_key='muse:unknown')"
+                )
+            connection.execute(
+                "INSERT INTO app_meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (MUSE_ROLLUP_CLEANUP_KEY, json.dumps({"removedEvents": removed, "at": utc_now()})),
+            )
+        _MUSE_ROLLUP_CHECKED.add(marker)
         return removed
 
 

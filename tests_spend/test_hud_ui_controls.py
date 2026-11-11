@@ -68,7 +68,10 @@ setTimeout(() => {
   report.coverage.closed=document.getElementById('hud-coverage-panel').hidden;
   report.coverage.focus=document.activeElement===partial;
   const attention=document.getElementById('hud-mini-alert'); attention.click();
+  attention.dispatchEvent(new PointerEvent('pointerover',{bubbles:true,clientX:20,clientY:20}));
+  const tipWhileOpen=document.getElementById('hud-tip').classList.contains('on');
   report.attention={text:attention.textContent,open:!document.getElementById('hud-attention-panel').hidden,
+    tipWhileOpen,
     detail:document.getElementById('hud-attention-content').textContent,
     actions:[...document.querySelectorAll('.issue-action')].map(node=>node.textContent)};
   document.getElementById('hud-attention-close').click();
@@ -124,6 +127,7 @@ setTimeout(()=>{
     assert "not a bill" in result["coverage"]["text"]
     assert result["attention"]["text"] == "1 source needs attention"
     assert result["attention"]["open"]
+    assert result["attention"]["tipWhileOpen"] is False
     assert "Beta" in result["attention"]["detail"] and "3m ago" in result["attention"]["detail"]
     assert result["attention"]["actions"] == ["Recheck", "Source settings"]
     assert result["expansion"] == {"tag":"BUTTON","initial":"false","after":"true","visible":True}
