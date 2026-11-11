@@ -687,9 +687,13 @@ async fn install_update(app: AppHandle) -> Result<(), String> {
     app.restart();
 }
 
+fn is_autostart_launch() -> bool {
+    env::args_os().any(|arg| arg == "--autostart")
+}
+
 /// Start at sign-in for this user only: never the machine-wide Run key, even
 /// when the app runs elevated (the autostart plugin tries that first).
-fn launcher(app: &AppHandle) -> Option<AutoLaunch> {
+fn launcher_with_args(app: &AppHandle, args: &[&str]) -> Option<AutoLaunch> {
     let exe = env::current_exe().ok()?.display().to_string();
     #[cfg(target_os = "linux")]
     let exe = app
@@ -700,14 +704,29 @@ fn launcher(app: &AppHandle) -> Option<AutoLaunch> {
     AutoLaunchBuilder::new()
         .set_app_name(&app.package_info().name)
         .set_app_path(&exe)
+        .set_args(args)
         .set_macos_launch_mode(MacOSLaunchMode::LaunchAgent)
         .set_windows_enable_mode(WindowsEnableMode::CurrentUser)
         .build()
         .ok()
 }
 
+fn launcher(app: &AppHandle) -> Option<AutoLaunch> {
+    launcher_with_args(app, &["--autostart"])
+}
+
 fn starts_at_sign_in(app: &AppHandle) -> bool {
-    launcher(app).and_then(|launcher| launcher.is_enabled().ok()).unwrap_or(false)
+    if launcher(app).and_then(|launcher| launcher.is_enabled().ok()).unwrap_or(false) {
+        return true;
+    }
+    if launcher_with_args(app, &[])
+        .and_then(|launcher| launcher.is_enabled().ok())
+        .unwrap_or(false)
+    {
+        let _ = set_start_at_sign_in(app, true);
+        return true;
+    }
+    false
 }
 
 fn set_start_at_sign_in(app: &AppHandle, enabled: bool) -> bool {
@@ -1094,10 +1113,13 @@ fn toggle_hud(app: AppHandle, state: State<'_, HudPinState>) -> Result<bool, Str
         window.hide().map_err(|e| e.to_string())?;
         Ok(false)
     } else {
+        let _ = window.unminimize();
+        ensure_hud_on_screen(&window);
         window.show().map_err(|e| e.to_string())?;
         let pinned = state.pinned.load(Ordering::SeqCst);
         let _ = apply_hud_always_on_top(&window, pinned);
         let _ = window.set_focus();
+        force_win32_foreground(&window);
         Ok(true)
     }
 }
@@ -1105,10 +1127,13 @@ fn toggle_hud(app: AppHandle, state: State<'_, HudPinState>) -> Result<bool, Str
 #[tauri::command]
 fn show_hud(app: AppHandle, state: State<'_, HudPinState>) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("hud") {
+        let _ = window.unminimize();
+        ensure_hud_on_screen(&window);
         window.show().map_err(|e| e.to_string())?;
         let pinned = state.pinned.load(Ordering::SeqCst);
         let _ = apply_hud_always_on_top(&window, pinned);
         let _ = window.set_focus();
+        force_win32_foreground(&window);
     }
     Ok(())
 }
@@ -1226,7 +1251,7 @@ fn start_hud_drag(app: AppHandle) -> Result<(), String> {
                     }
                 }
                 HUD_DRAGGING.store(false, Ordering::SeqCst);
-                if let Some((x, y)) = saved_pos {
+                if let Some((x, y)) = saved_pos.filter(|&(x, y)| x > -30000 && y > -30000) {
                     update_hud_prefs(&app_for_save, |p| {
                         p.x = Some(x);
                         p.y = Some(y);
@@ -1294,9 +1319,10 @@ fn ensure_main_window(app: &AppHandle, raw_path: Option<&str>) -> Result<(), Str
                 }
             }
         }
-        window.show().map_err(|e| e.to_string())?;
         let _ = window.unminimize();
+        window.show().map_err(|e| e.to_string())?;
         window.set_focus().map_err(|e| e.to_string())?;
+        force_win32_foreground(&window);
         return Ok(());
     }
 
@@ -1325,6 +1351,7 @@ fn ensure_main_window(app: &AppHandle, raw_path: Option<&str>) -> Result<(), Str
     apply_win32_window_icons(&window);
     let _ = window.show();
     let _ = window.set_focus();
+    force_win32_foreground(&window);
     Ok(())
 }
 
@@ -1392,8 +1419,152 @@ fn restore_hud_position(window: &tauri::WebviewWindow, x: i32, y: i32) {
     )));
 }
 
+fn ensure_hud_on_screen(window: &tauri::WebviewWindow) {
+    let prefs = load_hud_prefs(window.app_handle());
+    let fallback = window
+        .outer_position()
+        .ok()
+        .map(|p| (p.x, p.y))
+        .filter(|&(x, y)| x > -30000 && y > -30000)
+        .unwrap_or((24, 72));
+    let x = prefs.x.filter(|&v| v > -30000).unwrap_or(fallback.0);
+    let y = prefs.y.filter(|&v| v > -30000).unwrap_or(fallback.1);
+    restore_hud_position(window, x, y);
+}
+
 #[cfg(target_os = "windows")]
-struct SingleInstanceGuard(isize);
+fn force_win32_foreground(window: &tauri::WebviewWindow) {
+    if let Ok(hwnd) = window.hwnd() {
+        #[link(name = "user32")]
+        extern "system" {
+            fn IsIconic(hWnd: isize) -> i32;
+            fn ShowWindow(hWnd: isize, nCmdShow: i32) -> i32;
+            fn BringWindowToTop(hWnd: isize) -> i32;
+            fn SetForegroundWindow(hWnd: isize) -> i32;
+        }
+        const SW_SHOW: i32 = 5;
+        const SW_RESTORE: i32 = 9;
+        unsafe {
+            let h = hwnd.0 as isize;
+            if IsIconic(h) != 0 {
+                let _ = ShowWindow(h, SW_RESTORE);
+            } else {
+                let _ = ShowWindow(h, SW_SHOW);
+            }
+            let _ = BringWindowToTop(h);
+            let _ = SetForegroundWindow(h);
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn force_win32_foreground(_window: &tauri::WebviewWindow) {}
+
+fn activate_from_shortcut(app: &AppHandle) {
+    let pinned = app
+        .try_state::<HudPinState>()
+        .map(|s| s.pinned.load(Ordering::SeqCst))
+        .unwrap_or(true);
+    let mut hud_was_visible = false;
+    if let Some(hud_win) = app.get_webview_window("hud") {
+        hud_was_visible = hud_win.is_visible().unwrap_or(false)
+            && !hud_win.is_minimized().unwrap_or(false);
+        let _ = hud_win.unminimize();
+        ensure_hud_on_screen(&hud_win);
+        let _ = hud_win.show();
+        let _ = apply_hud_always_on_top(&hud_win, pinned);
+        let _ = hud_win.set_focus();
+        force_win32_foreground(&hud_win);
+    }
+    if hud_was_visible || app.get_webview_window("hud").is_none() {
+        let _ = ensure_main_window(app, Some("/"));
+    }
+}
+
+fn sanitize_desktop_tag(raw: &str) -> String {
+    let cleaned: String = raw
+        .trim()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    if cleaned.is_empty() {
+        "Default".to_string()
+    } else {
+        cleaned
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn current_desktop_tag() -> String {
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetThreadDesktop(dwThreadId: u32) -> isize;
+        fn GetUserObjectInformationW(
+            hObj: isize,
+            nIndex: i32,
+            pvInfo: *mut u16,
+            nLength: u32,
+            lpnLengthNeeded: *mut u32,
+        ) -> i32;
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetCurrentThreadId() -> u32;
+    }
+    const UOI_NAME: i32 = 2;
+    unsafe {
+        let hdesk = GetThreadDesktop(GetCurrentThreadId());
+        if hdesk == 0 {
+            return "Default".to_string();
+        }
+        let mut buf = [0u16; 128];
+        let mut needed = 0u32;
+        if GetUserObjectInformationW(
+            hdesk,
+            UOI_NAME,
+            buf.as_mut_ptr(),
+            (buf.len() * 2) as u32,
+            &mut needed,
+        ) == 0
+        {
+            return "Default".to_string();
+        }
+        let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        sanitize_desktop_tag(&String::from_utf16_lossy(&buf[..len]))
+    }
+}
+
+#[cfg(target_os = "windows")]
+static INSTANCE_EXITING: AtomicBool = AtomicBool::new(false);
+
+#[cfg(target_os = "windows")]
+struct SharedWinHandle(isize);
+
+#[cfg(target_os = "windows")]
+unsafe impl Send for SharedWinHandle {}
+#[cfg(target_os = "windows")]
+unsafe impl Sync for SharedWinHandle {}
+
+#[cfg(target_os = "windows")]
+impl Drop for SharedWinHandle {
+    fn drop(&mut self) {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn CloseHandle(hObject: isize) -> i32;
+        }
+        if self.0 != 0 {
+            unsafe {
+                let _ = CloseHandle(self.0);
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+struct SingleInstanceGuard {
+    mutex: isize,
+    activate_event: Option<std::sync::Arc<SharedWinHandle>>,
+}
 
 #[cfg(target_os = "windows")]
 impl Drop for SingleInstanceGuard {
@@ -1402,38 +1573,105 @@ impl Drop for SingleInstanceGuard {
         extern "system" {
             fn ReleaseMutex(hMutex: isize) -> i32;
             fn CloseHandle(hObject: isize) -> i32;
+            fn SetEvent(hEvent: isize) -> i32;
         }
-        if self.0 != 0 {
+        INSTANCE_EXITING.store(true, Ordering::SeqCst);
+        if let Some(ev) = self.activate_event.as_ref() {
+            if ev.0 != 0 {
+                unsafe {
+                    let _ = SetEvent(ev.0);
+                }
+            }
+        }
+        if self.mutex != 0 {
             unsafe {
-                let _ = ReleaseMutex(self.0);
-                let _ = CloseHandle(self.0);
+                let _ = ReleaseMutex(self.mutex);
+                let _ = CloseHandle(self.mutex);
             }
         }
     }
 }
 
 #[cfg(target_os = "windows")]
-fn focus_existing_hud_window() {
+unsafe extern "system" fn enum_focus_burnrate_proc(hwnd: isize, _lparam: isize) -> i32 {
     #[link(name = "user32")]
     extern "system" {
-        fn FindWindowW(lpClassName: *const u16, lpWindowName: *const u16) -> isize;
+        fn GetWindowTextW(hWnd: isize, lpString: *mut u16, nMaxCount: i32) -> i32;
+        fn IsIconic(hWnd: isize) -> i32;
         fn ShowWindow(hWnd: isize, nCmdShow: i32) -> i32;
+        fn BringWindowToTop(hWnd: isize) -> i32;
         fn SetForegroundWindow(hWnd: isize) -> i32;
     }
     const SW_SHOW: i32 = 5;
-    let class_name: Vec<u16> = "Tauri Window\0".encode_utf16().collect();
-    let hud_title: Vec<u16> = "BURNRATE \u{00b7} Sidecar HUD\0".encode_utf16().collect();
-    let boot_title: Vec<u16> = "BURNRATE\0".encode_utf16().collect();
-    unsafe {
-        let mut hwnd = FindWindowW(class_name.as_ptr(), hud_title.as_ptr());
-        if hwnd == 0 {
-            hwnd = FindWindowW(class_name.as_ptr(), boot_title.as_ptr());
-        }
-        if hwnd != 0 {
-            let _ = ShowWindow(hwnd, SW_SHOW);
+    const SW_RESTORE: i32 = 9;
+    let mut buf = [0u16; 160];
+    let n = GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32);
+    if n > 0 {
+        let title = String::from_utf16_lossy(&buf[..n as usize]);
+        if title == "BURNRATE" || title.starts_with("BURNRATE \u{00b7}") {
+            let cmd = if IsIconic(hwnd) != 0 { SW_RESTORE } else { SW_SHOW };
+            let _ = ShowWindow(hwnd, cmd);
+            let _ = BringWindowToTop(hwnd);
             let _ = SetForegroundWindow(hwnd);
         }
     }
+    1
+}
+
+#[cfg(target_os = "windows")]
+fn signal_existing_instance(desktop_tag: &str) {
+    #[link(name = "user32")]
+    extern "system" {
+        fn AllowSetForegroundWindow(dwProcessId: u32) -> i32;
+        fn EnumWindows(lpEnumFunc: unsafe extern "system" fn(isize, isize) -> i32, lParam: isize) -> i32;
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn OpenEventW(dwDesiredAccess: u32, bInheritHandle: i32, lpName: *const u16) -> isize;
+        fn SetEvent(hEvent: isize) -> i32;
+        fn CloseHandle(hObject: isize) -> i32;
+    }
+    const ASFW_ANY: u32 = 0xFFFF_FFFF;
+    const EVENT_MODIFY_STATE: u32 = 0x0002;
+    let event_name: Vec<u16> = format!("Local\\BURNRATE-Desktop-Activate-{desktop_tag}\0")
+        .encode_utf16()
+        .collect();
+    unsafe {
+        // Grant the already-running BURNRATE shell permission to take foreground focus.
+        let _ = AllowSetForegroundWindow(ASFW_ANY);
+        let ev = OpenEventW(EVENT_MODIFY_STATE, 0, event_name.as_ptr());
+        if ev != 0 {
+            let _ = SetEvent(ev);
+            let _ = CloseHandle(ev);
+        } else {
+            let _ = EnumWindows(enum_focus_burnrate_proc, 0);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn spawn_activation_listener(app: AppHandle, activate_event: Option<std::sync::Arc<SharedWinHandle>>) {
+    let Some(ev) = activate_event.filter(|h| h.0 != 0) else {
+        return;
+    };
+    thread::spawn(move || {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn WaitForSingleObject(hHandle: isize, dwMilliseconds: u32) -> u32;
+        }
+        const WAIT_OBJECT_0: u32 = 0;
+        const INFINITE: u32 = 0xFFFF_FFFF;
+        loop {
+            let rc = unsafe { WaitForSingleObject(ev.0, INFINITE) };
+            if INSTANCE_EXITING.load(Ordering::SeqCst) || rc != WAIT_OBJECT_0 {
+                break;
+            }
+            let app_for_main = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                activate_from_shortcut(&app_for_main);
+            });
+        }
+    });
 }
 
 #[cfg(target_os = "windows")]
@@ -1445,22 +1683,51 @@ fn acquire_single_instance_or_focus() -> Option<SingleInstanceGuard> {
             bInitialOwner: i32,
             lpName: *const u16,
         ) -> isize;
+        fn CreateEventW(
+            lpEventAttributes: *const std::ffi::c_void,
+            bManualReset: i32,
+            bInitialState: i32,
+            lpName: *const u16,
+        ) -> isize;
         fn GetLastError() -> u32;
         fn CloseHandle(hObject: isize) -> i32;
     }
     const ERROR_ALREADY_EXISTS: u32 = 183;
-    let name: Vec<u16> = "Local\\BURNRATE-Desktop-Shell\0".encode_utf16().collect();
+    let desktop_tag = current_desktop_tag();
+    if desktop_tag.to_ascii_lowercase().starts_with("exebox-")
+        && env::var("BURNRATE_ALLOW_SANDBOX_DESKTOP").as_deref() != Ok("1")
+    {
+        eprintln!(
+            "Refusing to run BURNRATE GUI shell on isolated sandbox desktop '{desktop_tag}'; launch on WinSta0\\Default."
+        );
+        return None;
+    }
+    INSTANCE_EXITING.store(false, Ordering::SeqCst);
+    let mutex_name: Vec<u16> = format!("Local\\BURNRATE-Desktop-Shell-{desktop_tag}\0")
+        .encode_utf16()
+        .collect();
+    let event_name: Vec<u16> = format!("Local\\BURNRATE-Desktop-Activate-{desktop_tag}\0")
+        .encode_utf16()
+        .collect();
     unsafe {
-        let handle = CreateMutexW(std::ptr::null(), 1, name.as_ptr());
+        let handle = CreateMutexW(std::ptr::null(), 1, mutex_name.as_ptr());
         if handle == 0 {
-            return Some(SingleInstanceGuard(0));
+            return Some(SingleInstanceGuard {
+                mutex: 0,
+                activate_event: None,
+            });
         }
         if GetLastError() == ERROR_ALREADY_EXISTS {
             let _ = CloseHandle(handle);
-            focus_existing_hud_window();
+            signal_existing_instance(&desktop_tag);
             return None;
         }
-        Some(SingleInstanceGuard(handle))
+        let ev = CreateEventW(std::ptr::null(), 0, 0, event_name.as_ptr());
+        let activate_event = (ev != 0).then(|| std::sync::Arc::new(SharedWinHandle(ev)));
+        Some(SingleInstanceGuard {
+            mutex: handle,
+            activate_event,
+        })
     }
 }
 
@@ -1532,9 +1799,11 @@ fn apply_win32_window_icons(_window: &tauri::WebviewWindow) {}
 
 pub fn run() {
     set_windows_app_id();
-    let Some(_instance_guard) = acquire_single_instance_or_focus() else {
+    let Some(instance_guard) = acquire_single_instance_or_focus() else {
         return;
     };
+    #[cfg(target_os = "windows")]
+    let activate_event = instance_guard.activate_event.clone();
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -1565,7 +1834,10 @@ pub fn run() {
             pending_update,
             install_update
         ])
-        .setup(|app| {
+        .setup(move |app| {
+            #[cfg(target_os = "windows")]
+            spawn_activation_listener(app.handle().clone(), activate_event);
+
             let prefs = load_hud_prefs(app.handle());
             app.state::<HudPinState>()
                 .show_in_taskbar
@@ -1577,11 +1849,14 @@ pub fn run() {
                     let _ = hud_win.set_icon(ic.clone());
                 }
                 let _ = hud_win.set_skip_taskbar(!prefs.taskbar);
-                if let (Some(x), Some(y)) = (prefs.x, prefs.y) {
-                    restore_hud_position(&hud_win, x, y);
-                }
+                ensure_hud_on_screen(&hud_win);
+                let _ = hud_win.show();
                 let _ = apply_hud_always_on_top(&hud_win, true);
                 apply_win32_window_icons(&hud_win);
+                if !is_autostart_launch() {
+                    let _ = hud_win.set_focus();
+                    force_win32_foreground(&hud_win);
+                }
             }
 
             let backend = resolve_backend(app.path().resource_dir().ok());
@@ -1792,7 +2067,8 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building BURNRATE desktop application");
 
-    app.run(|app_handle, event| {
+    app.run(move |app_handle, event| {
+        let _ = &instance_guard;
         if let RunEvent::Exit = event {
             app_handle.state::<BackendSupervisor>().stop_all();
         }
@@ -1804,6 +2080,42 @@ mod supervisor_tests {
     use super::*;
     use std::io::Write;
     use std::net::TcpListener;
+
+    #[test]
+    fn desktop_tag_and_main_path_sanitization() {
+        assert_eq!(sanitize_desktop_tag("Default"), "Default");
+        assert_eq!(sanitize_desktop_tag(""), "Default");
+        assert_eq!(sanitize_desktop_tag("WinSta0\\Default"), "WinSta0_Default");
+        assert_eq!(sanitize_desktop_tag("exebox-ABC_123"), "exebox-ABC_123");
+        assert_eq!(sanitize_main_path(None), "/");
+        assert_eq!(sanitize_main_path(Some("/setup")), "/setup");
+        assert_eq!(sanitize_main_path(Some("//evil.example")), "/");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn activation_event_signals_primary_listener() {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn CreateEventW(
+                lpEventAttributes: *const std::ffi::c_void,
+                bManualReset: i32,
+                bInitialState: i32,
+                lpName: *const u16,
+            ) -> isize;
+            fn WaitForSingleObject(hHandle: isize, dwMilliseconds: u32) -> u32;
+        }
+        let unique_tag = format!("test-{}-{}", std::process::id(), Instant::now().elapsed().as_nanos());
+        let event_name: Vec<u16> = format!("Local\\BURNRATE-Desktop-Activate-{unique_tag}\0")
+            .encode_utf16()
+            .collect();
+        let ev = unsafe { CreateEventW(std::ptr::null(), 0, 0, event_name.as_ptr()) };
+        assert_ne!(ev, 0);
+        let guard = SharedWinHandle(ev);
+        assert_eq!(unsafe { WaitForSingleObject(guard.0, 0) }, 0x0000_0102); // WAIT_TIMEOUT
+        signal_existing_instance(&unique_tag);
+        assert_eq!(unsafe { WaitForSingleObject(guard.0, 500) }, 0); // WAIT_OBJECT_0
+    }
 
     #[cfg(target_os = "windows")]
     fn helper_command(role: &str) -> Command {
