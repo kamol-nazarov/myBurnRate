@@ -593,6 +593,9 @@ class UsageWindow:
                             self.live_status.configure(
                                 text="●  Unavailable", foreground=theme.WARNING
                             )
+                            if self.report is None:
+                                self.value_text = "Unavailable"
+                                self._paint_value()
                             self.notice.configure(
                                 text=str(exc)
                                 if isinstance(exc, DesktopError)
@@ -662,7 +665,8 @@ class UsageWindow:
                     else "Could not refresh usage. Retry shortly."
                 )
                 if self.report is None:
-                    self.value.configure(text="Unavailable")
+                    self.value_text = "Unavailable"
+                    self._paint_value()
             finish()
 
         def read():
