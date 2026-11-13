@@ -104,7 +104,16 @@ class NativeClient:
         try:
             with httpx.Client(
                 timeout=httpx.Timeout(
-                    35 if path.startswith("/api/spend/usage") else 20, connect=2
+                    45
+                    if path.startswith(
+                        (
+                            "/api/spend/usage",
+                            "/api/setup/account",
+                            "/api/setup/connect-spoke",
+                        )
+                    )
+                    else 20,
+                    connect=2,
                 ),
                 trust_env=False,
                 follow_redirects=False,

@@ -836,7 +836,8 @@ button, input {
   cursor: pointer;
   transition: background 0.14s ease, border-color 0.14s ease;
 }
-.btn-secondary:hover {
+.btn-secondary:hover,
+.btn-secondary.active {
   background: var(--accent-soft);
   color: var(--accent);
   border-color: rgba(72, 64, 187, 0.22);
@@ -921,10 +922,15 @@ button, input {
   border-radius: 999px;
   background: var(--surface-subtle);
   color: var(--ink-secondary);
+  white-space: nowrap;
 }
 .state-badge.ok {
   background: var(--mint-bg);
   color: var(--mint);
+}
+.state-badge.warn {
+  background: var(--warn-bg);
+  color: var(--warn);
 }
 
 .inline-editor {
@@ -1256,8 +1262,11 @@ const state = {
   expandedTools: new Set(),
   settingsOpen: false,
   settingsTab: "sources",
-  settingsData: { connections: [], machines: [], setup: {} },
+  settingsData: { connections: [], machines: [], setup: {}, centralServerUrl: "" },
   editingSource: null,
+  accountFormOpen: false,
+  accountAuthMode: "login",
+  accountBusy: false,
   pairMode: null,
   generatedCode: null
 };
@@ -1720,7 +1729,64 @@ function renderSettingsBody() {
 
   if (tab === "computers") {
     const machines = state.settingsData.machines || [];
+    const setup = state.settingsData.setup || {};
+    const account = setup.account || {};
+    const spoke = setup.spokeConfig || {};
+    const hubConnected = !!(spoke.enabled && spoke.hubUrl);
+    const syncErr = spoke.lastSyncError ? String(spoke.lastSyncError) : "";
+    const defaultHubUrl = account.serverUrl || spoke.hubUrl || state.settingsData.centralServerUrl || "";
+    const defaultUser = account.username || "";
+    const defaultComp = setup.computerName || "";
+    const showAccountForm = !state.demo && (!hubConnected || state.accountFormOpen);
+
     body.innerHTML = `
+      ${!state.demo ? `
+      <div class="wf-card">
+        <div class="card-header">
+          <span class="card-title">Central Hub account</span>
+          <span class="state-badge ${hubConnected ? (syncErr ? "warn" : "ok") : ""}">
+            ${hubConnected ? (syncErr ? "Sync issue" : "Connected") : "Not signed in"}
+          </span>
+        </div>
+        ${hubConnected ? `
+          <div class="source-row" style="border-top:none;padding-top:4px">
+            <span class="source-logo" style="background:var(--accent-soft);color:var(--accent)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            </span>
+            <div class="source-info">
+              <div class="source-name">${esc(account.username || "Paired spoke")}</div>
+              <div class="source-meta" title="${esc(spoke.hubUrl)}">${esc(spoke.hubUrl)}${defaultComp ? " · " + esc(defaultComp) : ""}</div>
+            </div>
+            <button class="btn-secondary" type="button" onclick="toggleAccountForm()">
+              ${state.accountFormOpen ? "Cancel" : "Reconnect"}
+            </button>
+          </div>
+          ${syncErr ? `<div style="padding:0 12px 9px;font-size:10.5px;color:var(--warn)">${esc(syncErr)}</div>` : ""}
+        ` : `
+          <div style="padding:2px 12px 6px;font-size:11px;color:var(--ink-secondary);line-height:1.38">
+            Sign in to your VPS hub so this computer counts toward <strong>All computers</strong> automatically.
+          </div>
+        `}
+        ${showAccountForm ? `
+          <div style="padding:4px 12px 11px;display:grid;gap:6px;border-top:${hubConnected ? "1px solid var(--divider)" : "none"}">
+            <div style="display:flex;gap:5px">
+              <button class="btn-secondary ${state.accountAuthMode === "login" ? "active" : ""}" type="button" onclick="setAccountAuthMode('login')">Sign in</button>
+              <button class="btn-secondary ${state.accountAuthMode === "register" ? "active" : ""}" type="button" onclick="setAccountAuthMode('register')">Create hub account</button>
+            </div>
+            <input class="text-input" id="hubAccountUrl" placeholder="VPS Hub URL (e.g. https://your-hub.ts.net:8449)" value="${esc(defaultHubUrl)}"/>
+            <input class="text-input" id="hubAccountUser" placeholder="Account email or username" value="${esc(defaultUser)}"/>
+            <input class="text-input" id="hubAccountPass" type="password" placeholder="Account password" onkeydown="if(event.key==='Enter')submitHubAccount()"/>
+            <input class="text-input" id="hubAccountComp" placeholder="This computer's name (e.g. Laptop)" value="${esc(defaultComp)}" onkeydown="if(event.key==='Enter')submitHubAccount()"/>
+            <div style="display:flex;justify-content:flex-end">
+              <button class="btn-primary" id="hubSignInBtn" type="button" onclick="submitHubAccount()" ${state.accountBusy ? "disabled" : ""}>
+                ${state.accountBusy ? "Connecting…" : (state.accountAuthMode === "register" ? "Create account &amp; sync" : "Sign in &amp; sync")}
+              </button>
+            </div>
+          </div>
+        ` : ""}
+      </div>
+      ` : ""}
+
       <div class="wf-card">
         <div class="card-header">
           <span class="card-title">Paired computers</span>
@@ -1744,21 +1810,21 @@ function renderSettingsBody() {
 
       ${!state.demo ? `
       <div class="wf-card" style="padding:11px 12px;display:grid;gap:8px">
-        <div class="card-title" style="font-size:12.5px">Sync another computer</div>
+        <div class="card-title" style="font-size:12.5px">Pairing code (passwordless)</div>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
-          <button class="btn-secondary" type="button" onclick="setPairMode('create')">Create pairing code</button>
-          <button class="btn-secondary" type="button" onclick="setPairMode('join')">Join with code</button>
+          <button class="btn-secondary ${state.pairMode === "create" ? "active" : ""}" type="button" onclick="setPairMode('create')">Create pairing code</button>
+          <button class="btn-secondary ${state.pairMode === "join" ? "active" : ""}" type="button" onclick="setPairMode('join')">Join with code</button>
         </div>
         ${state.pairMode === "create" ? `
           <div style="display:grid;gap:6px;margin-top:2px">
-            <input class="text-input" id="pairHubUrl" placeholder="Reachable hub URL (e.g. https://my-pc.tailnet.ts.net:17331)"/>
+            <input class="text-input" id="pairHubUrl" placeholder="Reachable hub URL (e.g. https://your-hub.ts.net:8449)" value="${esc(defaultHubUrl)}"/>
             <input class="text-input" id="pairCompName" placeholder="Name of new computer (e.g. MacBook Pro)"/>
             <div><button class="btn-primary" type="button" onclick="submitCreatePair()">Generate code</button></div>
           </div>
         ` : ""}
         ${state.pairMode === "join" ? `
           <div style="display:grid;gap:6px;margin-top:2px">
-            <input class="text-input" id="joinCodeInput" placeholder="Paste pairing code from main computer"/>
+            <input class="text-input" id="joinCodeInput" placeholder="Paste pairing code from hub"/>
             <div><button class="btn-primary" type="button" onclick="submitJoinPair()">Connect &amp; sync</button></div>
           </div>
         ` : ""}
@@ -1830,6 +1896,63 @@ window.disconnectSource = async function(source, revision) {
     loadUsage(false);
   } else {
     showToast((res && res.error) || "Could not disconnect");
+  }
+};
+
+window.toggleAccountForm = function() {
+  state.accountFormOpen = !state.accountFormOpen;
+  renderSettingsBody();
+};
+
+window.setAccountAuthMode = function(mode) {
+  state.accountAuthMode = mode === "register" ? "register" : "login";
+  renderSettingsBody();
+};
+
+window.submitHubAccount = async function() {
+  if (!apiAvailable() || state.accountBusy) return;
+  const serverUrl = document.getElementById("hubAccountUrl")?.value.trim() || "";
+  const username = document.getElementById("hubAccountUser")?.value.trim() || "";
+  const password = document.getElementById("hubAccountPass")?.value || "";
+  const computerName = document.getElementById("hubAccountComp")?.value.trim() || "";
+  if (!serverUrl) { showToast("Enter your VPS hub URL"); return; }
+  if (!username || !password) { showToast("Enter your account username and password"); return; }
+
+  state.accountBusy = true;
+  const btn = document.getElementById("hubSignInBtn");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Connecting…";
+  }
+  try {
+    const res = await window.pywebview.api.connect_hub_account(
+      serverUrl,
+      username,
+      password,
+      computerName,
+      state.accountAuthMode
+    );
+    if (res && res.ok) {
+      state.accountBusy = false;
+      state.accountFormOpen = false;
+      showToast("Connected to Hub! Syncing all computers.");
+      await refreshSettingsData();
+      loadUsage(false);
+    } else {
+      state.accountBusy = false;
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = state.accountAuthMode === "register" ? "Create account & sync" : "Sign in & sync";
+      }
+      showToast((res && res.error) || "Hub sign-in failed");
+    }
+  } catch (err) {
+    state.accountBusy = false;
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = state.accountAuthMode === "register" ? "Create account & sync" : "Sign in & sync";
+    }
+    showToast("Hub sign-in failed");
   }
 };
 

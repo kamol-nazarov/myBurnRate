@@ -639,3 +639,137 @@ def test_provider_logos_resolve_all_tools_and_admin_sources():
         assert logo_key in ICONS_15X
         assert logo_key in ICONS_2X
         assert theme.tool_color(source_key).startswith("#")
+
+
+def test_wealthfront_bridge_hub_account_sign_in_and_spoke_sync(tmp_path, monkeypatch):
+    from datetime import UTC, datetime
+
+    from fastapi.testclient import TestClient
+
+    import spend_app.native_desktop as desktop
+    from spend_app import sync
+    from spend_app.api import create_app
+    from spend_app.db import UsageEvent, connect, initialize, upsert_usage_event
+    from spend_app.wealthfront_window import DesktopBridge, load_ui_html
+
+    html = load_ui_html()
+    assert "Central Hub account" in html
+    assert "submitHubAccount" in html
+
+    demo_bridge = DesktopBridge(DemoClient(), demo=True)
+    assert (
+        demo_bridge.connect_hub_account("https://hub.invalid", "u", "password123")["ok"]
+        is False
+    )
+
+    hub_settings = make_settings(tmp_path / "vps-hub.db")
+    spoke_settings = make_settings(tmp_path / "new-pc.db")
+    initialize(hub_settings.database_path)
+    initialize(spoke_settings.database_path)
+
+    now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    with connect(spoke_settings.database_path) as connection:
+        upsert_usage_event(
+            connection,
+            UsageEvent(
+                source="codex_local",
+                tool_key="codex",
+                model_key="gpt-5.6-sol",
+                occurred_at=now,
+                session_id=None,
+                project=None,
+                input_tokens=1200,
+                cached_input_tokens=0,
+                cache_write_tokens=0,
+                cache_write_1h_tokens=0,
+                output_tokens=200,
+                reasoning_tokens=0,
+                cost_usd=0.0,
+                computed_cost_usd=0.0,
+                raw_id="spoke-evt-1",
+                ingested_at=now,
+                is_exact=True,
+            ),
+        )
+
+    hub_client = TestClient(create_app(hub_settings, enable_scheduler=False))
+    spoke_client = TestClient(
+        create_app(spoke_settings, enable_scheduler=False),
+        base_url="http://127.0.0.1:17331",
+    )
+    monkeypatch.setitem(
+        sync._HUB_TEST_CLIENTS, "https://vps-hub.tailnet.ts.net:8449", hub_client
+    )
+
+    class LoopbackTransport:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, url, **kwargs):
+            return spoke_client.get(url, **kwargs)
+
+        def post(self, url, **kwargs):
+            return spoke_client.post(url, **kwargs)
+
+    monkeypatch.setattr(desktop.httpx, "Client", lambda **kwargs: LoopbackTransport())
+    native_client = NativeClient(spoke_settings, port=17331)
+    bridge = DesktopBridge(native_client)
+    bridge._service_ready = True
+
+    try:
+        missing = bridge.connect_hub_account(
+            "vps-hub.tailnet.ts.net:8449", "owner@example.com", ""
+        )
+        assert missing["ok"] is False
+
+        reg_res = hub_client.post(
+            "/api/account/register",
+            json={
+                "username": "owner@example.com",
+                "password": "correct-horse-88",
+                "computerName": "MyDesktop",
+                "os": "win32",
+            },
+        )
+        assert reg_res.status_code == 200, reg_res.text
+
+        bad = bridge.connect_hub_account(
+            "vps-hub.tailnet.ts.net:8449",
+            "owner@example.com",
+            "wrong-password",
+            "NewLaptop",
+            "login",
+        )
+        assert bad["ok"] is False
+        assert "Invalid username or password" in bad["error"]
+
+        good = bridge.connect_hub_account(
+            "vps-hub.tailnet.ts.net:8449",
+            "owner@example.com",
+            "correct-horse-88",
+            "NewLaptop",
+            "login",
+        )
+        assert good["ok"] is True, good
+        assert good["account"]["username"] == "owner@example.com"
+        assert good["setup"]["spokeConfig"]["enabled"] is True
+        assert (
+            good["setup"]["spokeConfig"]["hubUrl"]
+            == "https://vps-hub.tailnet.ts.net:8449"
+        )
+
+        settings_view = bridge.get_settings_data()
+        assert settings_view["ok"] is True
+        assert settings_view["setup"]["account"]["username"] == "owner@example.com"
+
+        usage_view = bridge.fetch_usage("all", "all")
+        assert usage_view["ok"] is True
+        assert usage_view["report"]["scope"] == "all-computers"
+        assert usage_view["report"]["total"]["events"] == 1
+    finally:
+        sync.clear_hub_proxy_cache()
+        hub_client.close()
+        spoke_client.close()

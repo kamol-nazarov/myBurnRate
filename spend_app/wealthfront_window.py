@@ -200,6 +200,7 @@ class DesktopBridge:
                 "connections": connections.get("connections") or [],
                 "machines": machines.get("machines") or [],
                 "setup": setup.get("setup") or {},
+                "centralServerUrl": setup.get("centralServerUrl") or "",
             }
         except DesktopError as exc:
             return {"ok": False, "error": str(exc)}
@@ -278,6 +279,61 @@ class DesktopBridge:
             return {"ok": False, "error": str(exc)}
         except (OSError, RuntimeError, ValueError, KeyError, TypeError):
             return {"ok": False, "error": "Could not disconnect source."}
+
+    def connect_hub_account(
+        self,
+        server_url: str,
+        username: str,
+        password: str,
+        computer_name: str = "",
+        mode: str = "login",
+    ) -> dict:
+        if self._demo:
+            return {"ok": False, "error": "Hub sign-in is disabled in demo mode."}
+        raw_url = (server_url or "").strip().rstrip("/")
+        if raw_url and "://" not in raw_url:
+            raw_url = "https://" + raw_url
+        parsed = urlsplit(raw_url)
+        if parsed.scheme not in {"https", "http"} or not parsed.hostname:
+            return {
+                "ok": False,
+                "error": "Enter your VPS hub URL (for example https://your-hub.ts.net:8449).",
+            }
+        clean_user = (username or "").strip()
+        if not clean_user or not password:
+            return {
+                "ok": False,
+                "error": "Enter your hub account username and password.",
+            }
+        auth_mode = (
+            "register" if str(mode or "").strip().lower() == "register" else "login"
+        )
+        clean_comp = (computer_name or "").strip()
+        try:
+            res = self._client.request(
+                "/api/setup/account",
+                {
+                    "mode": auth_mode,
+                    "serverUrl": raw_url,
+                    "username": clean_user,
+                    "password": password,
+                    "computerName": clean_comp,
+                    "testSync": True,
+                },
+            )
+            try:
+                self._client.request("/api/setup/defer", {})
+            except DesktopError:
+                pass
+            return {
+                "ok": True,
+                "account": res.get("account") or {},
+                "setup": res.get("setup") or {},
+            }
+        except DesktopError as exc:
+            return {"ok": False, "error": str(exc)}
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "error": "Could not sign in to hub account."}
 
     def create_pairing_code(self, hub_url: str, name: str) -> dict:
         if self._demo:
