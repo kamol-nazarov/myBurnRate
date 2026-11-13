@@ -56,6 +56,12 @@ tracker uses `BURNRATE_USAGE_ONLY=1`: collection and synchronization run without
 quota polling, live-agent polling, plan materialization, forecast or notification
 jobs. Existing service configurations are preserved until their next restart.
 
+An installed Python package also includes the application icons. A Python 3.12
+environment with Tcl/Tk can run `pythonw -m spend_app desktop` on Windows without
+the frozen executable. This is the supported source-install route when a local
+security product blocks an unsigned development bundle; keep the security product
+enabled rather than adding an exclusion or restoring a quarantined executable.
+
 ## Build a portable app
 
 ```powershell

@@ -352,6 +352,7 @@ class UsageWindow:
         resource_root = Path(__file__).resolve().parents[1]
         for icon in (
             resource_root / "burnrate.ico",
+            resource_root / "burnrate-assets" / "burnrate.ico",
             resource_root / "src-tauri" / "icons" / "icon.ico",
         ):
             if sys.platform == "win32" and icon.is_file():

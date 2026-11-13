@@ -333,6 +333,7 @@ def brand(parent):
     resources = Path(__file__).resolve().parents[1]
     for path in (
         resources / "32x32.png",
+        resources / "burnrate-assets/32x32.png",
         resources / "src-tauri/icons/32x32.png",
     ):
         if path.is_file():
