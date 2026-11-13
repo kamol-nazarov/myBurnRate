@@ -26,6 +26,8 @@ TOOL_COLORS = {
     "grok": "#5fd0e3",
     "muse": "#f29bd0",
     "cursor": "#e3c26b",
+    "zcode": "#f28b82",
+    "antigravity": "#a6e36f",
 }
 
 
@@ -385,7 +387,16 @@ def tool_icon(root, key):
     """A tiny vector-like tile, drawn in memory; no image files or web assets."""
     import tkinter as tk
 
-    color = TOOL_COLORS.get(str(key).split(":")[0], MUTED)
+    name = str(key)
+    family = next(
+        (
+            family
+            for family in TOOL_COLORS
+            if name == family or name.startswith(family + "-")
+        ),
+        "",
+    )
+    color = TOOL_COLORS.get(family, MUTED)
     image = tk.PhotoImage(master=root, width=40, height=29)
     base = "#212125"
     for y in range(29):
@@ -410,11 +421,23 @@ def tool_icon(root, key):
             pixels.update(((8, y), (21, y)))
         for t in range(7):
             pixels.update(((8 + t, 9 + t), (21 - t, 9 + t)))
-    else:
+    elif "grok" in name:
         for t in range(9, 21):
             pixels.update(((t, 9), (t, 20), (9, t)))
         for t in range(14, 21):
             pixels.update(((t, 15), (20, t)))
+    elif "zcode" in name:
+        for t in range(9, 21):
+            pixels.update(((t, 9), (t, 20), (29 - t, t)))
+    elif "antigravity" in name:
+        for t in range(13):
+            pixels.update(((14 - t // 2, 8 + t), (14 + t // 2, 8 + t)))
+        pixels.update((x, 16) for x in range(10, 19))
+    else:
+        for t in range(7):
+            pixels.update(
+                ((14 - t, 8 + t), (14 + t, 8 + t), (14 - t, 20 - t), (14 + t, 20 - t))
+            )
     for x, y in pixels:
         image.put(color, to=(x, y, x + 1, y + 1))
     zoom = max(1, round(ui_scale(root)))
