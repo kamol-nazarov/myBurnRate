@@ -76,6 +76,10 @@ exclude = [
   "exporters/**",
 ]
 
+[tool.hatch.build.targets.sdist.force-include]
+"src-tauri/icons/32x32.png" = "src-tauri/icons/32x32.png"
+"src-tauri/icons/icon.ico" = "src-tauri/icons/icon.ico"
+
 [tool.hatch.build.targets.wheel]
 packages = ["spend_app", "spend_web"]
 
