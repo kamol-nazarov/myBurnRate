@@ -28,7 +28,7 @@ jobs:
       - name: Install native build tools
         run: python -m pip install -e ".[dev]" pyinstaller
       - name: Verify native accounting and client
-        run: python -m pytest tests_spend/test_native_usage.py tests_spend/test_native_desktop.py -q
+        run: python -m pytest tests_spend/test_native_usage.py tests_spend/test_native_desktop.py tests_spend/test_native_frame.py -q
       - name: Build portable native app
         run: python packaging/build_native.py
       - name: Run frozen native widget smoke test

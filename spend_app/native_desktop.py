@@ -24,6 +24,7 @@ import httpx
 
 from spend_app import native_theme as theme
 from spend_app.config import Settings, load_settings, load_user_env
+from spend_app.native_frame import NativeFrame
 from spend_app.platform_paths import NO_WINDOW
 from spend_app.timeutil import parse_utc
 
@@ -362,12 +363,32 @@ class UsageWindow:
                 break
         root.protocol("WM_DELETE_WINDOW", self.close)
         theme.install(root)
+        self.chrome = NativeFrame(root)
         frame = ttk.Frame(root, padding=(28, 24, 28, 18))
         frame.pack(fill="both", expand=True)
         header = ttk.Frame(frame)
         self.header_frame = header
         header.pack(fill="x", pady=(0, 12))
         theme.brand(header).pack(side="left")
+        if self.chrome.enabled:
+            controls = ttk.Frame(header)
+            controls.pack(side="right", padx=(10, 0))
+            self.minimize_button = ttk.Button(
+                controls,
+                text="−",
+                width=2,
+                style="Window.TButton",
+                command=self.chrome.minimize,
+            )
+            self.minimize_button.pack(side="left")
+            self.close_button = ttk.Button(
+                controls,
+                text="×",
+                width=2,
+                style="Close.Window.TButton",
+                command=self.close,
+            )
+            self.close_button.pack(side="left", padx=(3, 0))
         self.live_status = ttk.Label(
             header, text="●  Starting tracker", style="Live.TLabel"
         )
@@ -498,7 +519,9 @@ class UsageWindow:
                     label.configure(wraplength=max(240, event.width - 56))
                 self._adapt_layout(event.height)
 
-        root.bind("<Configure>", resize)
+        root.bind("<Configure>", resize, add="+")
+        self.chrome.drag_region(header)
+        self.chrome.drag_region(heading)
         root.after(50, self._drain)
         root.after(
             50,
@@ -1324,6 +1347,7 @@ class SettingsWindow:
 
         def pin():
             app.root.attributes("-topmost", app.topmost.get())
+            app.chrome.refresh()
             app.save_preferences()
 
         ttk.Checkbutton(
@@ -1366,6 +1390,7 @@ def main(
             pass
     try:
         root = tk.Tk()
+        root.withdraw()
     except tk.TclError as exc:
         raise SystemExit(
             "A desktop display with Tcl/Tk is required for the native window."
@@ -1409,6 +1434,7 @@ def main(
                 root.after(50, check)
 
         root.after(100, check)
+    root.deiconify()
     root.mainloop()
     return result[0]
 

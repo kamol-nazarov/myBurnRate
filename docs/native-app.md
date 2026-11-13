@@ -5,6 +5,9 @@ It opens directly, without a browser or embedded web renderer.
 The graphite and ember palette, Segoe typography, period segments, tool marks,
 and matching Settings controls use BURNRATE's existing visual identity. Initial
 window sizing adapts to display scaling; the usage list scrolls at smaller sizes.
+On Windows, the app draws directly without a system title bar or border. Drag its
+header to move it, resize from an edge, and use the small minimize/close controls
+in the header. Taskbar restore and Alt+F4 continue to work.
 
 ## Open it
 

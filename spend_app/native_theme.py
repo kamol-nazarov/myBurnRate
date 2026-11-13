@@ -120,6 +120,29 @@ def install(root):
         bordercolor=[("focus", ACCENT), ("active", RAISED)],
     )
     style.configure(
+        "Window.TButton",
+        background=BG,
+        foreground=MUTED,
+        bordercolor=BG,
+        lightcolor=BG,
+        darkcolor=BG,
+        borderwidth=0,
+        padding=(6, 2),
+        font=(FONT, 12),
+    )
+    style.map(
+        "Window.TButton",
+        background=[("active", RAISED), ("pressed", HOVER)],
+        foreground=[("active", TEXT)],
+        bordercolor=[("focus", ACCENT), ("active", RAISED)],
+    )
+    style.map(
+        "Close.Window.TButton",
+        background=[("pressed", "#862a2a"), ("active", "#a33636")],
+        foreground=[("active", "#ffffff")],
+        bordercolor=[("focus", ACCENT), ("active", "#a33636")],
+    )
+    style.configure(
         "Accent.TButton",
         background=ACCENT,
         foreground=BG,
