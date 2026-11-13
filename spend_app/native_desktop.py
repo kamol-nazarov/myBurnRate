@@ -1517,25 +1517,44 @@ def main(
     settings = settings or load_settings()
     port = port if port is not None else int(os.getenv("BURNRATE_PORT", "17331"))
     if os.getenv("BURNRATE_TK_FALLBACK") != "1":
-        try:
-            from webview.errors import WebViewException
+        if smoke_test and os.getenv("GITHUB_ACTIONS") == "true":
+            # GitHub Actions Windows runners execute in headless Session 0 where
+            # Edge WebView2 has no interactive desktop compositor; verify bundled
+            # Wealthfront HTML, embedded Plus Jakarta Sans WOFF2, and bridge APIs,
+            # then run the native Tk window smoke path.
+            from spend_app.wealthfront_window import DesktopBridge, load_ui_html
 
-            from spend_app.wealthfront_window import run_webview
-        except ImportError:
-            run_webview = None
-            WebViewException = RuntimeError
-        if run_webview is not None:
+            bundled_html = load_ui_html()
+            bridge = DesktopBridge(
+                DemoClient() if demo else NativeClient(settings, port), demo=demo
+            )
+            probe = bridge.fetch_usage("today", "all")
+            if (
+                "Plus Jakarta Sans" not in bundled_html
+                or "data:font/woff2;base64," not in bundled_html
+                or not probe.get("ok")
+            ):
+                return 1
+        else:
             try:
-                return run_webview(
-                    DemoClient() if demo else NativeClient(settings, port),
-                    preferences=None
-                    if demo
-                    else settings.database_path.parent / "native-window.json",
-                    demo=demo,
-                    smoke_test=smoke_test,
-                )
-            except WebViewException:
-                pass
+                from webview.errors import WebViewException
+
+                from spend_app.wealthfront_window import run_webview
+            except ImportError:
+                run_webview = None
+                WebViewException = RuntimeError
+            if run_webview is not None:
+                try:
+                    return run_webview(
+                        DemoClient() if demo else NativeClient(settings, port),
+                        preferences=None
+                        if demo
+                        else settings.database_path.parent / "native-window.json",
+                        demo=demo,
+                        smoke_test=smoke_test,
+                    )
+                except WebViewException:
+                    pass
     if sys.platform == "win32":
         try:
             import ctypes
