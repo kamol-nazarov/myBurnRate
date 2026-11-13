@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import math
 import os
 import shutil
 import sys
@@ -12,7 +13,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 from spend_app.native_desktop import (
     PERIOD_LABELS,
@@ -34,6 +35,526 @@ EDGE_HITS = {
     "bottomleft": 16,
     "bottomright": 17,
 }
+
+SHORT_WINDOW_LABELS = {
+    "5h": "5h",
+    "weekly": "7d",
+    "monthly": "30d",
+    "gemini-5h": "Gemini 5h",
+    "gemini-weekly": "Gemini 7d",
+    "3p-5h": "3P 5h",
+    "3p-weekly": "3P 7d",
+    "balance": "Balance",
+}
+
+WINDOW_TIE_ORDER = {
+    "5h": 0,
+    "gemini-5h": 1,
+    "3p-5h": 2,
+    "weekly": 3,
+    "gemini-weekly": 4,
+    "3p-weekly": 5,
+    "monthly": 6,
+}
+
+SESSION_KEYS = ("5h", "gemini-5h", "3p-5h")
+WEEKLY_KEYS = ("weekly", "gemini-weekly", "3p-weekly")
+LABEL_SEPARATOR = " \u2014 "
+
+
+def _compact_count(value: float | None) -> str:
+    if value is None:
+        return "0"
+    num = float(value)
+    if not math.isfinite(num):
+        return "0"
+    if abs(num) >= 1e9:
+        return f"{num / 1e9:.1f}B"
+    if abs(num) >= 1e6:
+        return f"{num / 1e6:.1f}M"
+    if abs(num) >= 1e3:
+        return f"{num / 1e3:.1f}K"
+    return f"{num:,.0f}"
+
+
+def _clean_window_label(raw_label: str, limit_key: str) -> tuple[str, str]:
+    text = str(raw_label or "").strip()
+    reason = ""
+    if LABEL_SEPARATOR in text:
+        text, _, reason = text.partition(LABEL_SEPARATOR)
+        text = text.strip()
+        reason = reason.strip()
+    text = (
+        text.replace("Antigravity Gemini models · ", "Gemini · ")
+        .replace("Antigravity Claude & GPT models · ", "Claude & GPT · ")
+        .replace(" remaining", "")
+    )
+    if not text:
+        text = SHORT_WINDOW_LABELS.get(limit_key, limit_key or "Window")
+    return text, reason
+
+
+def _combine_tool_entries(tool_map: dict[str, dict], keys: tuple[str, ...]) -> dict:
+    present = [tool_map[k] for k in keys if k in tool_map]
+    if not present:
+        return {}
+    if len(present) == 1:
+        return dict(present[0])
+    tokens_sum = sum(int(item.get("tokens") or 0) for item in present)
+    values = [
+        float(item["valueUsd"])
+        for item in present
+        if isinstance(item.get("valueUsd"), (int, float))
+    ]
+    models: list[dict] = []
+    for item in present:
+        models.extend(m for m in (item.get("models") or []) if isinstance(m, dict))
+    reasoning_vals = [
+        int(item["reasoning"])
+        for item in present
+        if isinstance(item.get("reasoning"), (int, float))
+    ]
+    return {
+        "key": keys[0],
+        "name": present[0].get("name") or keys[0],
+        "tokens": tokens_sum,
+        "valueUsd": round(sum(values), 4) if values else None,
+        "complete": all(item.get("complete", True) for item in present),
+        "events": sum(int(item.get("events") or 0) for item in present),
+        "unpricedEvents": sum(int(item.get("unpricedEvents") or 0) for item in present),
+        "organization": any(bool(item.get("organization")) for item in present),
+        "input": sum(int(item.get("input") or 0) for item in present),
+        "cached": sum(int(item.get("cached") or 0) for item in present),
+        "writes": sum(int(item.get("writes") or 0) for item in present),
+        "output": sum(int(item.get("output") or 0) for item in present),
+        "reasoning": sum(reasoning_vals) if reasoning_vals else None,
+        "models": models,
+    }
+
+
+def _default_provider_rank(key: str) -> tuple[int, str]:
+    k = key.lower()
+    if k == "claude-code":
+        return (10, k)
+    if k.startswith("claude-code-"):
+        return (11, k)
+    if k == "opencode-go":
+        return (20, k)
+    if k.startswith("opencode-go-"):
+        return (21, k)
+    if k == "opencode":
+        return (22, k)
+    if k == "codex":
+        return (30, k)
+    if k == "antigravity":
+        return (40, k)
+    if k == "grok":
+        return (50, k)
+    if k == "openrouter":
+        return (60, k)
+    if k == "deepseek":
+        return (70, k)
+    if k == "muse":
+        return (80, k)
+    return (90, k)
+
+
+def merge_provider_entries(
+    period_report: dict,
+    hud: dict | None = None,
+    hud_usage: dict | None = None,
+    today_report: dict | None = None,
+    week_report: dict | None = None,
+    provider_order: list[str] | None = None,
+) -> list[dict]:
+    """Merge live quota/balance lanes with recorded token telemetry across accounts."""
+    capacity = (hud or {}).get("capacity") if isinstance(hud, dict) else []
+    if not isinstance(capacity, list):
+        capacity = []
+    window_tokens_all = (
+        (hud_usage or {}).get("windowTokens") if isinstance(hud_usage, dict) else {}
+    )
+    if not isinstance(window_tokens_all, dict):
+        window_tokens_all = {}
+
+    period_tools = {
+        str(t["key"]): t
+        for t in (period_report.get("tools") or [])
+        if isinstance(t, dict) and t.get("key")
+    }
+    today_tools = {
+        str(t["key"]): t
+        for t in ((today_report or {}).get("tools") or [])
+        if isinstance(t, dict) and t.get("key")
+    }
+    week_tools = {
+        str(t["key"]): t
+        for t in ((week_report or {}).get("tools") or [])
+        if isinstance(t, dict) and t.get("key")
+    }
+
+    capacity_keys = {
+        str(c.get("providerKey") or "").strip()
+        for c in capacity
+        if isinstance(c, dict) and c.get("providerKey")
+    }
+    has_multi_claude = "claude-code" in capacity_keys and any(
+        k.startswith("claude-code-") for k in capacity_keys
+    )
+    has_multi_opencode_go = "opencode-go" in capacity_keys and any(
+        k.startswith("opencode-go-") for k in capacity_keys
+    )
+
+    consumed_usage_keys: set[str] = set()
+    providers: list[dict] = []
+
+    for card in capacity:
+        if not isinstance(card, dict):
+            continue
+        key = str(card.get("providerKey") or "").strip()
+        if not key:
+            continue
+
+        if key == "opencode" and "zcode" not in capacity_keys:
+            usage_keys: tuple[str, ...] = ("opencode", "zcode")
+        else:
+            usage_keys = (key,)
+        consumed_usage_keys.update(usage_keys)
+
+        period_entry = _combine_tool_entries(period_tools, usage_keys)
+        today_entry = _combine_tool_entries(today_tools, usage_keys)
+        week_entry = _combine_tool_entries(week_tools, usage_keys)
+
+        raw_title = str(card.get("title") or period_entry.get("name") or key).strip()
+        acct_label = str(card.get("accountLabel") or "").strip()
+        if acct_label and raw_title.endswith(" · " + acct_label):
+            display_name = raw_title[: -(len(acct_label) + 3)].strip()
+            badge = acct_label
+        else:
+            display_name = raw_title
+            badge = acct_label
+
+        if (
+            key == "claude-code"
+            and has_multi_claude
+            and not badge
+            or key == "opencode-go"
+            and has_multi_opencode_go
+            and not badge
+        ):
+            badge = "Primary"
+        elif key == "opencode" and not badge:
+            if "z.ai" in display_name.lower():
+                badge = "OpenCode"
+            elif "opencode-go" in capacity_keys and card.get("plan"):
+                badge = str(card["plan"])
+
+        wt_provider = window_tokens_all.get(key)
+        if not isinstance(wt_provider, dict):
+            wt_provider = {}
+
+        windows: list[dict] = []
+        for row in card.get("rows") or []:
+            if not isinstance(row, dict):
+                continue
+            limit_key = str(row.get("limitKey") or "").strip()
+            clean_lbl, reason = _clean_window_label(
+                str(row.get("label") or ""), limit_key
+            )
+            unit = str(row.get("unit") or "pct")
+            unavailable = bool(row.get("unavailable"))
+            raw_pct = row.get("pct")
+            if (
+                unit != "usd"
+                and not unavailable
+                and isinstance(raw_pct, (int, float))
+                and math.isfinite(float(raw_pct))
+            ):
+                used_pct: float | None = max(0.0, min(100.0, float(raw_pct)))
+                rem_pct: float | None = max(0.0, min(100.0, 100.0 - used_pct))
+            else:
+                used_pct = None
+                rem_pct = None
+
+            used_amt = (
+                float(row["used"])
+                if isinstance(row.get("used"), (int, float))
+                and math.isfinite(float(row["used"]))
+                else None
+            )
+            allowance = (
+                float(row["allowance"])
+                if isinstance(row.get("allowance"), (int, float))
+                and math.isfinite(float(row["allowance"]))
+                else None
+            )
+            rem_credits = (
+                max(0.0, allowance - used_amt)
+                if unit == "credits" and allowance is not None and used_amt is not None
+                else None
+            )
+            rem_usd = used_amt if unit == "usd" else None
+
+            wt_entry = wt_provider.get(limit_key)
+            win_tok = (
+                int(wt_entry["tokens"])
+                if isinstance(wt_entry, dict)
+                and isinstance(wt_entry.get("tokens"), (int, float))
+                else None
+            )
+            forecast_line = (
+                str(row["forecast"].get("line") or "")
+                if isinstance(row.get("forecast"), dict)
+                else ""
+            )
+            runway_line = (
+                str(row["runway"].get("line") or "")
+                if isinstance(row.get("runway"), dict)
+                else ""
+            )
+
+            windows.append(
+                {
+                    "limitKey": limit_key,
+                    "shortLabel": SHORT_WINDOW_LABELS.get(
+                        limit_key, clean_lbl[:12] or "Window"
+                    ),
+                    "label": clean_lbl,
+                    "reason": reason,
+                    "unit": unit,
+                    "usedPct": round(used_pct, 1) if used_pct is not None else None,
+                    "remainingPct": round(rem_pct, 1) if rem_pct is not None else None,
+                    "used": used_amt,
+                    "allowance": allowance,
+                    "remainingCredits": rem_credits,
+                    "remainingUsd": rem_usd,
+                    "resetsAt": row.get("resetsAt"),
+                    "unavailable": unavailable,
+                    "stale": bool(row.get("stale")),
+                    "windowTokens": win_tok,
+                    "forecast": forecast_line,
+                    "runway": runway_line,
+                }
+            )
+
+        # Hover token burn telemetry: Day, Session (5h), Weekly session
+        has_session = any(w["limitKey"] in SESSION_KEYS for w in windows)
+        session_tokens: int | None = None
+        if has_session:
+            session_tokens = sum(
+                int(wt_provider[lk]["tokens"])
+                for lk in SESSION_KEYS
+                if isinstance(wt_provider.get(lk), dict)
+                and isinstance(wt_provider[lk].get("tokens"), (int, float))
+            )
+
+        day_from_windows = 0
+        week_from_windows = 0
+        have_weekly_window_tok = False
+        for lk in WEEKLY_KEYS:
+            entry = wt_provider.get(lk)
+            if isinstance(entry, dict):
+                if isinstance(entry.get("tokens"), (int, float)):
+                    week_from_windows += int(entry["tokens"])
+                    have_weekly_window_tok = True
+                today_sub = entry.get("today")
+                if isinstance(today_sub, dict) and isinstance(
+                    today_sub.get("tokens"), (int, float)
+                ):
+                    day_from_windows += int(today_sub["tokens"])
+
+        day_tokens = max(int(today_entry.get("tokens") or 0), day_from_windows)
+        week_tokens = (
+            max(week_from_windows, day_tokens)
+            if have_weekly_window_tok and week_from_windows > 0
+            else max(int(week_entry.get("tokens") or 0), day_tokens, week_from_windows)
+        )
+
+        # Primary Remaining Usage headline
+        funds_usd = card.get("fundsRemainingUsd")
+        has_funds = isinstance(funds_usd, (int, float)) and math.isfinite(
+            float(funds_usd)
+        )
+        measured_windows = [
+            w for w in windows if w["remainingPct"] is not None and not w["unavailable"]
+        ]
+
+        if has_funds:
+            bal = max(0.0, float(funds_usd))
+            funds_runway = (
+                str(card["fundsRunway"].get("line") or "")
+                if isinstance(card.get("fundsRunway"), dict)
+                else ""
+            )
+            tone = "danger" if bal < 1.0 else "warn" if bal < 5.0 else "mint"
+            bar_pct = 100.0 if bal >= 25.0 else max(8.0, (bal / 25.0) * 100.0)
+            remaining = {
+                "kind": "balance",
+                "headline": f"${bal:,.2f}",
+                "sub": "balance left",
+                "barPct": round(bar_pct, 1),
+                "tone": tone,
+                "resetsAt": None,
+                "summary": funds_runway or "Prepaid API balance",
+            }
+        elif measured_windows:
+            primary = min(
+                measured_windows,
+                key=lambda w: (
+                    round(float(w["remainingPct"]), 1),
+                    WINDOW_TIE_ORDER.get(w["limitKey"], 99),
+                ),
+            )
+            rem_val = float(primary["remainingPct"])
+            tone = (
+                "danger" if rem_val <= 8.0 else "warn" if rem_val <= 20.0 else "accent"
+            )
+            if (
+                primary["unit"] == "credits"
+                and primary.get("remainingCredits") is not None
+            ):
+                summary = f"{_compact_count(primary['remainingCredits'])} cr left · {card.get('plan') or 'Plan'}"
+            elif len(measured_windows) > 1:
+                peers = [
+                    f"{w['shortLabel']} {float(w['remainingPct']):.0f}%"
+                    for w in measured_windows
+                    if w is not primary
+                ][:2]
+                summary = " · ".join(peers)
+                if card.get("plan") and len(peers) == 1:
+                    summary += f" · {card['plan']}"
+            else:
+                summary = str(card.get("plan") or primary["label"] or "Active quota")
+
+            remaining = {
+                "kind": "quota",
+                "headline": f"{rem_val:.0f}% left",
+                "sub": primary["shortLabel"],
+                "barPct": round(rem_val, 1),
+                "tone": tone,
+                "resetsAt": primary.get("resetsAt"),
+                "summary": summary,
+            }
+        else:
+            first_reason = next((w["reason"] for w in windows if w.get("reason")), "")
+            lower_reason = first_reason.lower()
+            if "not been used recently" in lower_reason:
+                summary = "Meter wakes on next session"
+            elif (
+                "wait for a fresh" in lower_reason
+                or "bounded local sample" in lower_reason
+                or "reset" in lower_reason
+            ):
+                summary = "Waiting for fresh reading"
+            elif first_reason:
+                summary = (
+                    first_reason[:44] + "…" if len(first_reason) > 44 else first_reason
+                )
+            else:
+                summary = str(card.get("plan") or "Connected")
+
+            remaining = {
+                "kind": "idle",
+                "headline": "No key" if card.get("isPayg") else "Idle",
+                "sub": str(card.get("plan") or "meter idle"),
+                "barPct": 0.0,
+                "tone": "muted",
+                "resetsAt": None,
+                "summary": summary,
+            }
+
+        providers.append(
+            {
+                "key": key,
+                "name": display_name,
+                "badge": badge,
+                "plan": str(card.get("plan") or ""),
+                "inUse": bool(card.get("inUse")),
+                "isPayg": bool(card.get("isPayg")),
+                "fundsRemainingUsd": float(funds_usd) if has_funds else None,
+                "organization": bool(period_entry.get("organization")),
+                "remaining": remaining,
+                "burn": {
+                    "dayTokens": day_tokens,
+                    "sessionTokens": session_tokens,
+                    "hasSession": has_session,
+                    "weekTokens": week_tokens,
+                },
+                "windows": windows,
+                "tokens": int(period_entry.get("tokens") or 0),
+                "valueUsd": period_entry.get("valueUsd"),
+                "complete": period_entry.get("complete", True),
+                "input": int(period_entry.get("input") or 0),
+                "cached": int(period_entry.get("cached") or 0),
+                "writes": int(period_entry.get("writes") or 0),
+                "output": int(period_entry.get("output") or 0),
+                "reasoning": period_entry.get("reasoning"),
+                "models": period_entry.get("models") or [],
+            }
+        )
+
+    # Include any recorded-usage tools that do not have a quota card (e.g. Org API feeds)
+    for key, tool in period_tools.items():
+        if key in consumed_usage_keys:
+            continue
+        day_tok = int((today_tools.get(key) or {}).get("tokens") or 0)
+        week_tok = max(int((week_tools.get(key) or {}).get("tokens") or 0), day_tok)
+        val_usd = tool.get("valueUsd")
+        has_val = isinstance(val_usd, (int, float)) and math.isfinite(float(val_usd))
+        headline = f"${float(val_usd):,.2f}" if has_val else "Tracked"
+        providers.append(
+            {
+                "key": key,
+                "name": str(tool.get("name") or key),
+                "badge": "Org API" if tool.get("organization") else "",
+                "plan": "API",
+                "inUse": False,
+                "isPayg": True,
+                "fundsRemainingUsd": None,
+                "organization": bool(tool.get("organization")),
+                "remaining": {
+                    "kind": "usage_only",
+                    "headline": headline,
+                    "sub": "API value" if has_val else "usage only",
+                    "barPct": 100.0 if day_tok > 0 else 0.0,
+                    "tone": "muted",
+                    "resetsAt": None,
+                    "summary": "Organization API feed"
+                    if tool.get("organization")
+                    else f"{len(tool.get('models') or [])} models recorded",
+                },
+                "burn": {
+                    "dayTokens": day_tok,
+                    "sessionTokens": None,
+                    "hasSession": False,
+                    "weekTokens": week_tok,
+                },
+                "windows": [],
+                "tokens": int(tool.get("tokens") or 0),
+                "valueUsd": val_usd,
+                "complete": tool.get("complete", True),
+                "input": int(tool.get("input") or 0),
+                "cached": int(tool.get("cached") or 0),
+                "writes": int(tool.get("writes") or 0),
+                "output": int(tool.get("output") or 0),
+                "reasoning": tool.get("reasoning"),
+                "models": tool.get("models") or [],
+            }
+        )
+
+    order_list = [
+        str(k) for k in (provider_order or []) if isinstance(k, str) and k.strip()
+    ]
+    order_index = {k: idx for idx, k in enumerate(order_list)}
+
+    providers.sort(
+        key=lambda item: (
+            0 if item["key"] in order_index else 1,
+            order_index.get(item["key"], 0),
+            *_default_provider_rank(item["key"]),
+        )
+    )
+    return providers
 
 
 def load_ui_html() -> str:
@@ -96,6 +617,121 @@ def _apply_win11_chrome(window, icon_path: Path | None) -> int:
     return hwnd
 
 
+class WindowOpacityController:
+    """Smoothly fades the Win32 frameless window when the cursor leaves its bounds."""
+
+    def __init__(self, bridge: DesktopBridge, hwnd_getter) -> None:
+        self._bridge = bridge
+        self._hwnd_getter = hwnd_getter
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._layered_hwnd = 0
+        self._current_alpha = 255.0
+
+    def start(self) -> None:
+        if sys.platform != "win32" or self._thread is not None:
+            return
+        self._thread = threading.Thread(
+            target=self._run, name="burnrate-opacity", daemon=True
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _ensure_layered(self, user32, hwnd: int) -> bool:
+        if self._layered_hwnd == hwnd:
+            return True
+        try:
+            gwl_exstyle = -20
+            ws_ex_layered = 0x00080000
+            style = user32.GetWindowLongW(hwnd, gwl_exstyle)
+            if not (style & ws_ex_layered):
+                user32.SetWindowLongW(hwnd, gwl_exstyle, style | ws_ex_layered)
+            user32.SetLayeredWindowAttributes(hwnd, 0, 255, 0x02)
+            self._layered_hwnd = hwnd
+            self._current_alpha = 255.0
+            return True
+        except OSError:
+            return False
+
+    def _run(self) -> None:
+        try:
+            import ctypes
+            from ctypes import wintypes
+        except ImportError:
+            return
+
+        user32 = ctypes.windll.user32
+        pt = wintypes.POINT()
+        rect = wintypes.RECT()
+        last_inside_at = time.monotonic()
+        dragging_inside = False
+
+        while not self._stop.is_set():
+            hwnd = int(self._hwnd_getter() or 0)
+            if not hwnd or not user32.IsWindow(hwnd):
+                self._stop.wait(0.08)
+                continue
+            if user32.IsIconic(hwnd):
+                self._stop.wait(0.15)
+                continue
+            if not self._ensure_layered(user32, hwnd):
+                self._stop.wait(0.25)
+                continue
+
+            hovered = True
+            if user32.GetCursorPos(ctypes.byref(pt)) and user32.GetWindowRect(
+                hwnd, ctypes.byref(rect)
+            ):
+                inside = (rect.left - 4) <= pt.x <= (rect.right + 4) and (
+                    rect.top - 4
+                ) <= pt.y <= (rect.bottom + 4)
+                lmb_down = bool(user32.GetAsyncKeyState(0x01) & 0x8000)
+                if inside and lmb_down:
+                    dragging_inside = True
+                elif not lmb_down:
+                    dragging_inside = False
+
+                now = time.monotonic()
+                if inside or dragging_inside:
+                    last_inside_at = now
+                    hovered = True
+                else:
+                    # Brief 160ms grace window prevents edge jitter when brushing border
+                    hovered = (now - last_inside_at) < 0.16
+
+            auto_fade, idle_opacity, ui_busy = self._bridge.opacity_state()
+            if not auto_fade or ui_busy or hovered:
+                target = 255.0
+            else:
+                target = max(46.0, min(235.0, round(idle_opacity * 255.0)))
+
+            diff = target - self._current_alpha
+            if abs(diff) >= 0.75:
+                # Snappy fade-in on hover (~130ms), silky fade-out on leave (~250ms)
+                rate = 0.30 if diff > 0 else 0.15
+                step = diff * rate
+                if abs(step) < 1.1:
+                    self._current_alpha = target
+                else:
+                    self._current_alpha += step
+                alpha_byte = max(35, min(255, round(self._current_alpha)))
+                try:
+                    user32.SetLayeredWindowAttributes(hwnd, 0, alpha_byte, 0x02)
+                except OSError:
+                    pass
+                self._stop.wait(0.016)
+            else:
+                if self._current_alpha != target:
+                    self._current_alpha = target
+                    try:
+                        user32.SetLayeredWindowAttributes(hwnd, 0, round(target), 0x02)
+                    except OSError:
+                        pass
+                self._stop.wait(0.055)
+
+
 class DesktopBridge:
     """In-process Python bridge exposed to the local WebView2 UI."""
 
@@ -114,15 +750,36 @@ class DesktopBridge:
         self._service_ready = demo
         self._lock = threading.Lock()
         self._mutations: dict[str, SourceMutation] = {}
+        self._ui_busy = False
 
         saved = self._read_preferences()
         period = saved.get("period", "today")
         self._period = period if period in PERIOD_LABELS else "today"
         self._topmost = bool(saved.get("topmost", False))
+        self._auto_fade = bool(saved.get("autoFade", True))
+        raw_opacity = saved.get("idleOpacity", 0.38)
+        try:
+            parsed_opacity = float(raw_opacity)
+        except (TypeError, ValueError):
+            parsed_opacity = 0.38
+        self._idle_opacity = (
+            max(0.20, min(0.85, parsed_opacity))
+            if math.isfinite(parsed_opacity)
+            else 0.38
+        )
+        raw_order = saved.get("providerOrder")
+        self._provider_order: list[str] = (
+            [str(k) for k in raw_order if isinstance(k, str) and k.strip()]
+            if isinstance(raw_order, list)
+            else []
+        )
 
     def attach(self, window, hwnd_getter) -> None:
         self._window = window
         self._hwnd_getter = hwnd_getter
+
+    def opacity_state(self) -> tuple[bool, float, bool]:
+        return (self._auto_fade, self._idle_opacity, self._ui_busy)
 
     def _read_preferences(self) -> dict:
         if self._preferences is None:
@@ -139,10 +796,14 @@ class DesktopBridge:
         try:
             self._preferences.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._preferences.with_suffix(".tmp")
-            tmp.write_text(
-                json.dumps({"period": self._period, "topmost": self._topmost}),
-                encoding="utf-8",
-            )
+            payload = {
+                "period": self._period,
+                "topmost": self._topmost,
+                "autoFade": self._auto_fade,
+                "idleOpacity": round(self._idle_opacity, 2),
+                "providerOrder": self._provider_order,
+            }
+            tmp.write_text(json.dumps(payload), encoding="utf-8")
             tmp.replace(self._preferences)
         except OSError:
             pass
@@ -151,6 +812,9 @@ class DesktopBridge:
         return {
             "period": self._period,
             "topmost": self._topmost,
+            "autoFade": self._auto_fade,
+            "idleOpacity": round(self._idle_opacity, 2),
+            "providerOrder": list(self._provider_order),
             "demo": self._demo,
         }
 
@@ -159,6 +823,19 @@ class DesktopBridge:
             self._period = period
             self._write_preferences()
         return {"ok": True}
+
+    def save_provider_order(self, order: list[str]) -> dict:
+        if isinstance(order, list):
+            cleaned: list[str] = []
+            seen: set[str] = set()
+            for item in order:
+                key = str(item or "").strip()
+                if key and key not in seen:
+                    seen.add(key)
+                    cleaned.append(key)
+            self._provider_order = cleaned
+            self._write_preferences()
+        return {"ok": True, "providerOrder": list(self._provider_order)}
 
     def set_topmost(self, enabled: bool) -> dict:
         self._topmost = bool(enabled)
@@ -170,16 +847,72 @@ class DesktopBridge:
         self._write_preferences()
         return {"ok": True, "topmost": self._topmost}
 
+    def set_auto_fade(self, enabled: bool) -> dict:
+        self._auto_fade = bool(enabled)
+        self._write_preferences()
+        return {"ok": True, "autoFade": self._auto_fade}
+
+    def set_idle_opacity(self, opacity: float) -> dict:
+        try:
+            val = float(opacity)
+        except (TypeError, ValueError):
+            val = 0.38
+        if math.isfinite(val):
+            self._idle_opacity = max(0.20, min(0.85, val))
+            self._write_preferences()
+        return {"ok": True, "idleOpacity": round(self._idle_opacity, 2)}
+
+    def set_ui_busy(self, busy: bool) -> dict:
+        self._ui_busy = bool(busy)
+        return {"ok": True}
+
+    def _safe_snapshot(self, period: str, machine: str) -> dict | None:
+        try:
+            return self._client.snapshot(period, machine)
+        except (DesktopError, OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return None
+
+    def _safe_request(self, path: str, body: dict | None = None) -> dict | None:
+        try:
+            res = self._client.request(path, body)
+            return res if isinstance(res, dict) else None
+        except (DesktopError, OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return None
+
     def fetch_usage(
         self, period: str = "today", machine: str = "all", restart: bool = False
     ) -> dict:
         use_period = period if period in PERIOD_LABELS else "today"
+        use_machine = machine or "all"
         try:
             with self._lock:
                 if restart or not self._service_ready:
                     self._client.ensure_service()
                     self._service_ready = True
-                report = self._client.snapshot(use_period, machine or "all")
+                if restart and not self._demo:
+                    self._safe_request("/api/spend/quotas/refresh", {})
+                report = self._client.snapshot(use_period, use_machine)
+                today_report = (
+                    report
+                    if use_period == "today"
+                    else self._safe_snapshot("today", use_machine)
+                )
+                week_report = (
+                    report
+                    if use_period == "week"
+                    else self._safe_snapshot("week", use_machine)
+                )
+                query = urlencode({"machine": use_machine})
+                hud = self._safe_request("/api/spend/hud?" + query)
+                hud_usage = self._safe_request("/api/spend/hud/usage?" + query)
+                report["providers"] = merge_provider_entries(
+                    report,
+                    hud=hud,
+                    hud_usage=hud_usage,
+                    today_report=today_report,
+                    week_report=week_report,
+                    provider_order=self._provider_order,
+                )
             return {"ok": True, "report": report}
         except DesktopError as exc:
             return {"ok": False, "error": str(exc)}
@@ -210,6 +943,8 @@ class DesktopBridge:
     def browse_location(self, kind: str = "") -> str:
         if self._window is None:
             return ""
+        prev_busy = self._ui_busy
+        self._ui_busy = True
         try:
             import webview
 
@@ -223,6 +958,8 @@ class DesktopBridge:
                 return str(selected[0])
         except (OSError, AttributeError, RuntimeError) as exc:
             LOGGER.debug("File dialog skipped: %s", exc)
+        finally:
+            self._ui_busy = prev_busy
         return ""
 
     def connect_source(
@@ -457,15 +1194,22 @@ def run_webview(
 
     hwnd_box = [0]
     bridge.attach(window, lambda: hwnd_box[0])
+    opacity_ctl = WindowOpacityController(bridge, lambda: hwnd_box[0])
     result = [0]
 
     def on_shown():
         hwnd_box[0] = _apply_win11_chrome(window, _find_icon())
+        if not smoke_test:
+            opacity_ctl.start()
+
+    def on_closed():
+        opacity_ctl.stop()
 
     def on_loaded():
         if not hwnd_box[0]:
             hwnd_box[0] = _apply_win11_chrome(window, _find_icon())
         if not smoke_test:
+            opacity_ctl.start()
             return
 
         def verify():
@@ -484,7 +1228,7 @@ def run_webview(
                     )
                     if (
                         isinstance(count, int)
-                        and count >= 5
+                        and count >= 8
                         and hero.startswith("$")
                         and font_ok
                     ):
@@ -500,7 +1244,7 @@ def run_webview(
                     count_after = window.evaluate_js(
                         "document.querySelectorAll('#providerList .provider-item').length"
                     )
-                    ok = isinstance(count_after, int) and count_after >= 5
+                    ok = isinstance(count_after, int) and count_after >= 8
                 except (OSError, AttributeError, RuntimeError, ValueError):
                     ok = False
             result[0] = 0 if ok else 1
@@ -510,6 +1254,7 @@ def run_webview(
 
     window.events.shown += on_shown
     window.events.loaded += on_loaded
+    window.events.closed += on_closed
 
     cache_root = Path(tempfile.gettempdir()) / "burnrate-wv2-sessions"
     cache_root.mkdir(parents=True, exist_ok=True)
@@ -523,6 +1268,10 @@ def run_webview(
             private_mode=False,
             storage_path=str(storage_dir),
         )
+    except Exception:
+        opacity_ctl.stop()
+        raise
     finally:
+        opacity_ctl.stop()
         shutil.rmtree(storage_dir, ignore_errors=True)
     return result[0]

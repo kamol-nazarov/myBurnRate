@@ -16,7 +16,7 @@ import sys
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -108,6 +108,7 @@ class NativeClient:
                     if path.startswith(
                         (
                             "/api/spend/usage",
+                            "/api/spend/quotas/refresh",
                             "/api/setup/account",
                             "/api/setup/connect-spoke",
                         )
@@ -208,7 +209,6 @@ class NativeClient:
             os.environ,
             BURNRATE_PORT=str(self.port),
             SPEND_DATABASE_PATH=str(self.settings.database_path),
-            BURNRATE_USAGE_ONLY="1",
         )
         if getattr(sys, "frozen", False):
             command = [sys.executable, "--service", "--port", str(self.port)]
@@ -310,6 +310,257 @@ def demo_report(period="today", machine="all") -> dict:
     }
 
 
+def demo_hud() -> dict:
+    now = datetime.now(UTC)
+    in_3h = (now + timedelta(hours=3, minutes=18)).isoformat().replace("+00:00", "Z")
+    in_4d = (now + timedelta(days=4, hours=14)).isoformat().replace("+00:00", "Z")
+    in_9d = (now + timedelta(days=9, hours=6)).isoformat().replace("+00:00", "Z")
+    stamp = now.isoformat().replace("+00:00", "Z")
+    return {
+        "generatedAt": stamp,
+        "status": "live",
+        "capacity": [
+            {
+                "providerKey": "claude-code",
+                "title": "Claude Code",
+                "plan": "Claude Max",
+                "inUse": True,
+                "rows": [
+                    {
+                        "limitKey": "5h",
+                        "label": "5-hour window",
+                        "pct": 18.0,
+                        "unit": "pct",
+                        "resetsAt": in_3h,
+                    },
+                    {
+                        "limitKey": "weekly",
+                        "label": "Weekly window",
+                        "pct": 25.0,
+                        "unit": "pct",
+                        "resetsAt": in_4d,
+                    },
+                ],
+            },
+            {
+                "providerKey": "claude-code-work",
+                "title": "Claude Code · Work",
+                "accountLabel": "Work",
+                "plan": "Claude Max",
+                "inUse": False,
+                "rows": [
+                    {
+                        "limitKey": "5h",
+                        "label": "5-hour window",
+                        "pct": 4.0,
+                        "unit": "pct",
+                        "resetsAt": in_3h,
+                    },
+                    {
+                        "limitKey": "weekly",
+                        "label": "Weekly window",
+                        "pct": 12.0,
+                        "unit": "pct",
+                        "resetsAt": in_4d,
+                    },
+                ],
+            },
+            {
+                "providerKey": "opencode-go",
+                "title": "OpenCode Go",
+                "plan": "Go",
+                "inUse": False,
+                "rows": [
+                    {
+                        "limitKey": "5h",
+                        "label": "5-hour window",
+                        "pct": 8.0,
+                        "unit": "pct",
+                        "resetsAt": in_3h,
+                    },
+                    {
+                        "limitKey": "weekly",
+                        "label": "Weekly window",
+                        "pct": 32.0,
+                        "unit": "pct",
+                        "resetsAt": in_4d,
+                    },
+                    {
+                        "limitKey": "monthly",
+                        "label": "Monthly window",
+                        "pct": 80.0,
+                        "unit": "pct",
+                        "resetsAt": in_9d,
+                    },
+                ],
+            },
+            {
+                "providerKey": "opencode-go-2",
+                "title": "OpenCode Go · Profile 2",
+                "accountLabel": "Profile 2",
+                "plan": "Go",
+                "inUse": False,
+                "rows": [
+                    {
+                        "limitKey": "5h",
+                        "label": "5-hour window",
+                        "pct": 0.0,
+                        "unit": "pct",
+                        "resetsAt": in_3h,
+                    },
+                    {
+                        "limitKey": "weekly",
+                        "label": "Weekly window",
+                        "pct": 5.0,
+                        "unit": "pct",
+                        "resetsAt": in_4d,
+                    },
+                    {
+                        "limitKey": "monthly",
+                        "label": "Monthly window",
+                        "pct": 7.0,
+                        "unit": "pct",
+                        "resetsAt": in_9d,
+                    },
+                ],
+            },
+            {
+                "providerKey": "opencode",
+                "title": "Z.AI Coding Plan",
+                "plan": "Max",
+                "inUse": False,
+                "rows": [
+                    {
+                        "limitKey": "weekly",
+                        "label": "Weekly credits",
+                        "pct": 6.0,
+                        "used": 8570,
+                        "allowance": 140000,
+                        "unit": "credits",
+                        "resetsAt": in_4d,
+                    }
+                ],
+            },
+            {
+                "providerKey": "grok",
+                "title": "Grok Build",
+                "plan": "SuperGrok",
+                "inUse": False,
+                "rows": [
+                    {
+                        "limitKey": "weekly",
+                        "label": "Weekly",
+                        "pct": 1.0,
+                        "unit": "pct",
+                        "resetsAt": in_4d,
+                    }
+                ],
+            },
+            {
+                "providerKey": "codex",
+                "title": "Codex",
+                "plan": "ChatGPT Pro",
+                "inUse": True,
+                "rows": [
+                    {
+                        "limitKey": "weekly",
+                        "label": "Weekly",
+                        "pct": 14.0,
+                        "unit": "pct",
+                        "resetsAt": in_4d,
+                    }
+                ],
+            },
+            {
+                "providerKey": "openrouter",
+                "title": "OpenRouter",
+                "plan": "PAYG",
+                "isPayg": True,
+                "fundsRemainingUsd": 15.84,
+                "fundsRunway": {"line": "Runway ~42d at recent pace"},
+                "rows": [
+                    {
+                        "limitKey": "balance",
+                        "label": "Balance",
+                        "used": 15.84,
+                        "unit": "usd",
+                        "runway": {"line": "Runway ~42d at recent pace"},
+                    }
+                ],
+            },
+            {
+                "providerKey": "deepseek",
+                "title": "DeepSeek",
+                "plan": "PAYG",
+                "isPayg": True,
+                "fundsRemainingUsd": 54.82,
+                "fundsRunway": {"line": "Prepaid USD balance"},
+                "rows": [
+                    {
+                        "limitKey": "balance",
+                        "label": "Balance",
+                        "used": 54.82,
+                        "unit": "usd",
+                    }
+                ],
+            },
+            {
+                "providerKey": "muse",
+                "title": "Muse Code",
+                "plan": "Power Usage",
+                "inUse": False,
+                "rows": [
+                    {
+                        "limitKey": "weekly",
+                        "label": "Weekly window",
+                        "pct": 4.0,
+                        "unit": "pct",
+                        "resetsAt": in_4d,
+                    }
+                ],
+            },
+        ],
+    }
+
+
+def demo_hud_usage() -> dict:
+    return {
+        "generatedAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "windowTokens": {
+            "claude-code": {
+                "5h": {"tokens": 640_000},
+                "weekly": {"tokens": 9_400_000, "today": {"tokens": 2_900_000}},
+            },
+            "claude-code-work": {
+                "5h": {"tokens": 120_000},
+                "weekly": {"tokens": 1_850_000, "today": {"tokens": 410_000}},
+            },
+            "opencode-go": {
+                "5h": {"tokens": 210_000},
+                "weekly": {"tokens": 3_200_000, "today": {"tokens": 580_000}},
+                "monthly": {"tokens": 18_400_000},
+            },
+            "opencode-go-2": {
+                "5h": {"tokens": 0},
+                "weekly": {"tokens": 480_000, "today": {"tokens": 95_000}},
+                "monthly": {"tokens": 1_100_000},
+            },
+            "opencode": {
+                "weekly": {"tokens": 4_600_000, "today": {"tokens": 1_400_000}},
+            },
+            "grok": {
+                "weekly": {"tokens": 390_000, "today": {"tokens": 100_000}},
+            },
+            "codex": {
+                "weekly": {"tokens": 11_200_000, "today": {"tokens": 3_100_000}},
+            },
+            "muse": {
+                "weekly": {"tokens": 1_900_000, "today": {"tokens": 700_000}},
+            },
+        },
+    }
+
+
 class DemoClient:
     def ensure_service(self):
         pass
@@ -320,6 +571,10 @@ class DemoClient:
     def request(self, path, body=None):
         if body is not None:
             raise DesktopError("Settings changes are disabled in the sample-data demo.")
+        if path.startswith("/api/spend/hud/usage"):
+            return copy.deepcopy(demo_hud_usage())
+        if path.startswith("/api/spend/hud"):
+            return copy.deepcopy(demo_hud())
         if path.startswith("/api/connections"):
             return {
                 "connections": [
@@ -330,6 +585,24 @@ class DemoClient:
                         "location": "Example location",
                     }
                     for r in demo_report()["tools"]
+                ]
+                + [
+                    {
+                        "source": "openrouter",
+                        "name": "OpenRouter balance",
+                        "kind": "api",
+                        "capabilities": ["balance"],
+                        "state": "connected",
+                        "detail": "Prepaid credits connected",
+                    },
+                    {
+                        "source": "deepseek",
+                        "name": "DeepSeek balance",
+                        "kind": "api",
+                        "capabilities": ["balance"],
+                        "state": "connected",
+                        "detail": "Prepaid USD balance connected",
+                    },
                 ]
             }
         if path.startswith("/api/machines"):
@@ -1084,7 +1357,9 @@ class SettingsWindow:
         sources_shell, sources = theme.card(sources_tab, padding=(18, 16, 18, 16))
         sources_shell.pack(fill="both", expand=True)
         ttk.Label(
-            sources, text="USAGE SOURCES ON THIS COMPUTER", style="CardEyebrow.TLabel"
+            sources,
+            text="USAGE & BALANCE SOURCES ON THIS COMPUTER",
+            style="CardEyebrow.TLabel",
         ).pack(anchor="w", pady=(0, 8))
         listing = ttk.Treeview(
             sources, columns=("state",), show="tree headings", height=8
@@ -1150,9 +1425,6 @@ class SettingsWindow:
                 listing.delete(*listing.get_children())
                 rows.clear()
                 for row in data[0].get("connections") or []:
-                    # Balance-only integrations have no token usage to display.
-                    if row.get("capabilities") == ["balance"]:
-                        continue
                     key = listing.insert(
                         "",
                         "end",

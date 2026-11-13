@@ -603,7 +603,11 @@ def test_usage_only_scheduler_keeps_collection_jobs_and_omits_dashboard_jobs(
     scheduled = scheduler.create_scheduler(
         settings, PricingEngine.load(settings.pricing_path)
     )
-    job_ids = {job.id for job in scheduled.get_jobs()}
+    job_ids = (
+        {job.id for job in scheduled.get_jobs()}
+        if hasattr(scheduled, "get_jobs")
+        else set()
+    )
     assert {"local-ingest", "provider-admin"} <= job_ids
     assert not {"subscriptions", "quota-poll", "activity"} & job_ids
 
@@ -773,3 +777,125 @@ def test_wealthfront_bridge_hub_account_sign_in_and_spoke_sync(tmp_path, monkeyp
         sync.clear_hub_proxy_cache()
         hub_client.close()
         spoke_client.close()
+
+
+def test_wealthfront_merges_multi_accounts_balances_grok_and_remaining_windows(
+    tmp_path,
+):
+    from spend_app.wealthfront_window import DesktopBridge
+
+    prefs = tmp_path / "native-window.json"
+    bridge = DesktopBridge(DemoClient(), preferences=prefs, demo=True)
+
+    initial = bridge.fetch_usage("today", "all")
+    assert initial["ok"] is True
+    providers = {row["key"]: row for row in initial["report"]["providers"]}
+
+    # Missing providers, balances, and multi-accounts are all present
+    expected_keys = {
+        "claude-code",
+        "claude-code-work",
+        "opencode-go",
+        "opencode-go-2",
+        "opencode",
+        "grok",
+        "openrouter",
+        "deepseek",
+        "codex",
+        "muse",
+    }
+    assert expected_keys <= set(providers)
+
+    # Multi-account tags distinguish accounts cleanly
+    assert providers["claude-code"]["badge"] == "Primary"
+    assert providers["claude-code-work"]["badge"] == "Work"
+    assert providers["opencode-go"]["badge"] == "Primary"
+    assert providers["opencode-go-2"]["badge"] == "Profile 2"
+    assert providers["opencode"]["badge"] == "OpenCode"
+
+    # Remaining-usage headline picks the tightest measured window
+    assert providers["claude-code"]["remaining"]["kind"] == "quota"
+    assert providers["claude-code"]["remaining"]["headline"] == "75% left"
+    assert providers["claude-code"]["remaining"]["sub"] == "7d"
+    assert providers["claude-code"]["burn"]["hasSession"] is True
+    assert providers["claude-code"]["burn"]["sessionTokens"] > 0
+    assert providers["claude-code"]["burn"]["dayTokens"] > 0
+    assert providers["claude-code"]["burn"]["weekTokens"] > 0
+
+    assert providers["opencode-go"]["remaining"]["headline"] == "20% left"
+    assert providers["opencode-go"]["remaining"]["sub"] == "30d"
+    assert len(providers["opencode-go"]["windows"]) == 3
+
+    # Balance providers surface live prepaid credit balances
+    assert providers["openrouter"]["remaining"]["kind"] == "balance"
+    assert providers["openrouter"]["fundsRemainingUsd"] == pytest.approx(15.84)
+    assert providers["deepseek"]["remaining"]["kind"] == "balance"
+    assert providers["deepseek"]["fundsRemainingUsd"] == pytest.approx(54.82)
+
+    # Custom drag-and-drop ordering + window opacity preferences persist
+    saved_order = bridge.save_provider_order(["deepseek", "grok", "claude-code-work"])
+    assert saved_order["ok"] is True
+    reordered = bridge.fetch_usage("today", "all")["report"]["providers"]
+    assert [row["key"] for row in reordered[:3]] == [
+        "deepseek",
+        "grok",
+        "claude-code-work",
+    ]
+
+    fade_res = bridge.set_auto_fade(False)
+    opacity_res = bridge.set_idle_opacity(0.55)
+    assert fade_res["autoFade"] is False
+    assert opacity_res["idleOpacity"] == pytest.approx(0.55)
+
+    reloaded = DesktopBridge(DemoClient(), preferences=prefs, demo=True)
+    prefs_payload = reloaded.get_initial_state()
+    assert prefs_payload["autoFade"] is False
+    assert prefs_payload["idleOpacity"] == pytest.approx(0.55)
+    assert prefs_payload["providerOrder"][:3] == [
+        "deepseek",
+        "grok",
+        "claude-code-work",
+    ]
+
+
+def test_native_service_spawn_enables_quota_and_balance_polling_by_default(
+    tmp_path, monkeypatch
+):
+    import httpx
+
+    import spend_app.native_desktop as desktop
+
+    monkeypatch.delenv("BURNRATE_USAGE_ONLY", raising=False)
+    spawned_envs: list[dict[str, str]] = []
+    probe_calls = {"count": 0}
+
+    class ProbeTransport:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, url, **kwargs):
+            probe_calls["count"] += 1
+            if probe_calls["count"] == 1:
+                raise httpx.ConnectError("not running yet")
+            return Response(
+                status=200,
+                payload={"application": "burnrate", "status": "ok", "pid": 4321},
+            )
+
+    class DummyProc:
+        def poll(self):
+            return None
+
+    def fake_popen(cmd, **kwargs):
+        spawned_envs.append(dict(kwargs.get("env") or {}))
+        return DummyProc()
+
+    monkeypatch.setattr(desktop.httpx, "Client", lambda **kwargs: ProbeTransport())
+    monkeypatch.setattr(desktop.subprocess, "Popen", fake_popen)
+
+    _client(tmp_path).ensure_service()
+    assert len(spawned_envs) == 1
+    assert "BURNRATE_USAGE_ONLY" not in spawned_envs[0]
