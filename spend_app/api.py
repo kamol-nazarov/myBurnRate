@@ -410,7 +410,7 @@ def create_app(
 
         request_collection()
         hub = fetch_from_configured_hub(settings, "/api/spend/usage",
-                                        {"period": period, "machine": machine})
+                                        {"period": period, "machine": machine}, read_timeout=20.0)
         if hub is not None and isinstance(hub.get("total"), dict):
             return {**hub, "scope": "all-computers" if machine == "all" else "computer"}
         with connect(settings.database_path) as connection:

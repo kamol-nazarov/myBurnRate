@@ -102,7 +102,9 @@ class NativeClient:
             headers["Authorization"] = "Bearer " + token
         try:
             with httpx.Client(
-                timeout=httpx.Timeout(20, connect=2),
+                timeout=httpx.Timeout(
+                    35 if path.startswith("/api/spend/usage") else 20, connect=2
+                ),
                 trust_env=False,
                 follow_redirects=False,
             ) as client:
