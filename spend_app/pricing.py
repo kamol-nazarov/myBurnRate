@@ -126,6 +126,8 @@ def _parse_decimal(value: object, *, field: str, label: str, path: Path) -> Deci
         parsed = Decimal(str(value))
     except ArithmeticError as exc:
         raise ValueError(f"{path}: {label} has invalid {field}: {value!r}") from exc
+    if not parsed.is_finite():
+        raise ValueError(f"{path}: {label} {field} must be finite, got {parsed}")
     if parsed < 0:
         raise ValueError(f"{path}: {label} {field} must be nonnegative, got {parsed}")
     return parsed
@@ -342,6 +344,15 @@ class PricingEngine:
         output_tokens: int,
         cache_write_1h_tokens: int = 0,
     ) -> dict[str, Decimal]:
+        for name, value in (
+            ("input_tokens", input_tokens),
+            ("cached_input_tokens", cached_input_tokens),
+            ("cache_write_tokens", cache_write_tokens),
+            ("cache_write_1h_tokens", cache_write_1h_tokens),
+            ("output_tokens", output_tokens),
+        ):
+            if type(value) is not int or value < 0:
+                raise ValueError(f"{name} must be a nonnegative integer")
         if cached_input_tokens > input_tokens:
             raise ValueError("cached_input_tokens cannot exceed input_tokens")
         if cache_write_1h_tokens > cache_write_tokens:
@@ -365,7 +376,11 @@ class PricingEngine:
             input_multiplier *= price.peak_multiplier
             output_multiplier *= price.peak_multiplier
         cache_write_5m_tokens = cache_write_tokens - cache_write_1h_tokens
-        cache_write_1h_rate = price.cache_write_1h_per_mtok or price.cache_write_per_mtok
+        cache_write_1h_rate = (
+            price.cache_write_per_mtok
+            if price.cache_write_1h_per_mtok is None
+            else price.cache_write_1h_per_mtok
+        )
         return {
             "fresh_input": Decimal(fresh_input) / MILLION * price.input_per_mtok * input_multiplier,
             "cached_input": Decimal(cached_input_tokens)

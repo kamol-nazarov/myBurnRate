@@ -82,13 +82,19 @@ Use the included PowerShell lifecycle scripts to run BURNRATE silently in the ba
 .\scripts\uninstall-burnrate.ps1
 ```
 
-### Option C: Native Desktop App & System Tray (`burnrate desktop`)
+### Option C: Native usage app (`burnrate desktop`)
 
-Launch the native Tauri v2 desktop application (which automatically supervises the local backend process, opens the main window and Always-on-Top Sidecar HUD, and docks in the Windows system tray):
+Open the compact Tk/ttk usage window. It starts the existing local collector,
+combines paired computers, and shows API-equivalent value by tool and model.
+All controls are native widgets. Use `--demo` for sample data without collection.
 
 ```powershell
 burnrate desktop
 ```
+
+The portable native build and its smoke test are documented in [native app](native-app.md).
+The earlier Tauri shell remains under `src-tauri/` for existing release bundles;
+the `desktop` command now opens the native usage interface.
 
 ## Try it with made-up data
 

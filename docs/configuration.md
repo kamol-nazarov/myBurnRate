@@ -7,7 +7,7 @@ burnrate --version
 burnrate init                                  # Initialize %LOCALAPPDATA%\BURNRATE\spend.db
 burnrate doctor                                # Read-only environment, asset & SQLite health check
 burnrate serve [--host 127.0.0.1] [--port 17331]
-burnrate desktop [--check-only]                # Launch Tauri v2 native desktop app & Sidecar HUD
+burnrate desktop [--demo] [--check-only]        # Compact native usage application
 burnrate demo [--port 17377] [--data-root DIR] # Serve made-up data on 127.0.0.1; nothing is collected
 
 # Multi-computer management & sync

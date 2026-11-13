@@ -13,7 +13,7 @@ from spend_app.capacity_forecast import (
     apply_forecasts,
     load_pace_samples,
 )
-from spend_app.db import connect
+from spend_app.db import connect, usage_cache_revision
 from spend_app.sync import list_machines
 from spend_app.timeutil import epoch_micros
 
@@ -362,7 +362,8 @@ def _usage_fingerprint(connection, start: datetime, end: datetime) -> tuple:
 
     Token sums are part of the key. A revision of an existing row does not
     move the count, the max id, or the ingest stamp, and the settled burn
-    would otherwise keep the old tokens.
+    would otherwise keep the old tokens. The usage revision also catches
+    model or machine corrections whose token totals did not change.
     """
     bounds = (epoch_micros(start), epoch_micros(end))
     usage = connection.execute(
@@ -379,7 +380,7 @@ def _usage_fingerprint(connection, start: datetime, end: datetime) -> tuple:
         "WHERE occurred_epoch_us IS NOT NULL AND occurred_epoch_us >= ? AND occurred_epoch_us < ?",
         bounds,
     ).fetchone()
-    return tuple(usage), tuple(unpriced)
+    return tuple(usage), tuple(unpriced), usage_cache_revision(connection, start, end)
 
 
 def _burn_rows(connection, tools, start: datetime, end: datetime, machine: str) -> dict[str, list[tuple]]:

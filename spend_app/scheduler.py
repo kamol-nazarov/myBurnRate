@@ -276,7 +276,7 @@ def create_scheduler(settings: Settings, pricing: PricingEngine, *, history_acti
 
     def warm_summaries() -> None:
         # Optional derived-cache work; ingestion and sync continue unchanged.
-        if os.getenv("BURNRATE_SUMMARY_PREWARM", "1") == "0":
+        if os.getenv("BURNRATE_SUMMARY_PREWARM", "1") == "0" or os.getenv("BURNRATE_USAGE_ONLY") == "1":
             return
         # Compute the summaries viewers are currently watching right after the
         # cycle that could have changed them, so their next poll is a memo hit.
@@ -325,6 +325,11 @@ def create_scheduler(settings: Settings, pricing: PricingEngine, *, history_acti
         coalesce=True,
         max_instances=1,
     )
+
+    # The native usage utility needs collection and multi-computer sync only.
+    # Existing deployments retain their configured dashboard/HUD jobs.
+    if os.getenv("BURNRATE_USAGE_ONLY") == "1":
+        return scheduler
 
     def subscription_job() -> None:
         initialize(settings.database_path)

@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
+from spend_app.subscriptions import daily_cost
 from spend_app.timeutil import CalendarDay, days_in_month, local_day, overlap_seconds
 
 ZERO = Decimal(0)
@@ -41,24 +42,14 @@ class PlanTerms:
 
         Monthly plans divide by the true length of each month (31-day months
         and leap Februaries accrue differently per day but sum to the plan
-        price); quarterly and annual divide by their fixed day counts so the
+        price); quarterly and annual divide by their calendar day counts so the
         calendar sum still equals the configured amount.
         """
         if day < self.start_date or (self.end_date is not None and day > self.end_date):
             return ZERO
         if self.amount <= 0:
             return ZERO
-        if self.cadence == "monthly":
-            return self.amount / Decimal(days_in_month(day))
-        if self.cadence == "quarterly":
-            return self.amount / Decimal(91)
-        if self.cadence == "annual":
-            return self.amount / Decimal(366 if _is_leap(day.year) else 365)
-        raise ValueError(f"unsupported cadence: {self.cadence}")
-
-
-def _is_leap(year: int) -> bool:
-    return year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+        return daily_cost(self.amount, self.cadence, day)
 
 
 @dataclass(frozen=True)

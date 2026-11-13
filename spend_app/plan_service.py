@@ -190,13 +190,13 @@ def effective_terms(connection):
     return rows
 
 
-def _sum(terms, start, end):
+def _sum(terms, start, end, plan_end=None):
     from spend_app.subscriptions import daily_cost
 
     total = Decimal(0)
     for term in terms:
         day = max(start, iso_date(term["start_date"]))
-        stop = min(end, iso_date(term["end_date"], True) or end)
+        stop = min(end, iso_date(term["end_date"], True) or end, plan_end or end)
         while day <= stop:
             total += daily_cost(term["amount_usd"], term["cadence"], day)
             day += timedelta(days=1)
@@ -347,11 +347,17 @@ def apply_mutation(connection, body, today):
             token = hashlib.sha256(
                 json.dumps([plan_id, plan[0], terms], sort_keys=True).encode()
             ).hexdigest()
+            old_end = iso_date(plan["end_date"], True)
+            new_end = (
+                iso_date(terms[-1]["end_date"], True)
+                if terms[-1].get("id") == body.get("term_id")
+                else old_end
+            )
             impact = {
                 "from": start.isoformat(),
                 "through": end.isoformat(),
-                "before_usd": str(_sum(old, start, end)),
-                "after_usd": str(_sum(terms, start, end)),
+                "before_usd": str(_sum(old, start, end, old_end)),
+                "after_usd": str(_sum(terms, start, end, new_end)),
                 "note": "Preview covers these calendar dates only; open-ended future days are not included.",
                 "preview_token": token,
             }

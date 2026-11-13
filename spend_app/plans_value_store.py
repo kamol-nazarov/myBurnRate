@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from spend_app.db import connect
+from spend_app.db import connect, usage_cache_revision
 from spend_app.diagnostics import collection_stale_after, safe_reason
 from spend_app.plan_service import list_plans
 from spend_app.plans_value_groups import (
@@ -93,7 +93,7 @@ def _plan_revision(connection) -> tuple:
 
 
 def _usage_fingerprint(connection, start: datetime, end: datetime) -> tuple:
-    """Bounded period fingerprint (not an all-history scan)."""
+    """Bounded period totals plus the correction revision (no history scan)."""
     start_us = epoch_micros(start)
     end_us = epoch_micros(end)
     priced = tuple(
@@ -131,7 +131,7 @@ def _usage_fingerprint(connection, start: datetime, end: datetime) -> tuple:
             "SELECT COUNT(*), MAX(id), MAX(finished_at) FROM ingest_runs"
         ).fetchone()
     )
-    return priced, unpriced, ingest
+    return priced, unpriced, ingest, usage_cache_revision(connection, start, end)
 
 
 def _normalize_event(row: dict) -> dict:

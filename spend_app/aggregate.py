@@ -11,7 +11,7 @@ from pathlib import Path
 from functools import lru_cache
 from zoneinfo import ZoneInfo
 
-from spend_app.db import EXACT_USAGE_SOURCES, connect
+from spend_app.db import EXACT_USAGE_SOURCES, connect, usage_cache_revision
 from spend_app.source_reconcile import reconcile_events
 from spend_app.sync import list_machines, machines_fingerprint, row_machine_id
 from spend_app.timeutil import epoch_micros, from_epoch_micros, next_month_start as _next_month_start_utc, parse_utc, previous_calendar_period
@@ -256,7 +256,7 @@ def _range_fingerprint(connection, start: datetime, end: datetime, tool: str) ->
         tuple(row) for row in connection.execute("SELECT * FROM subscriptions ORDER BY id")
     )
     plans = tuple(tuple(row) for row in connection.execute("SELECT * FROM subscription_plans ORDER BY id"))
-    return usage, unpriced, buckets, subscriptions, plans
+    return usage, unpriced, buckets, subscriptions, plans, usage_cache_revision(connection, start, end)
 EXACT_TOOLS = {"codex", "claude-code"}
 WINDOW_ALIASES = {
     "7d": "1w",

@@ -1,6 +1,25 @@
 # BURNRATE
 
-**See what your AI coding agents are worth, and which plan runs out first.**
+**A small native app for AI usage and API-equivalent pricing.**
+
+The new desktop interface shows usage from all your paired computers in one
+compact window: a total at API rates, token counts, and a tool/model breakdown.
+It uses native desktop widgets and preserves the existing readers, history,
+pricing cards, and background synchronization.
+
+```powershell
+python -m pip install -e ".[dev]"  # Python 3.12 with Tcl/Tk
+burnrate desktop                 # Native usage app
+burnrate desktop --demo          # Sample data, no collection
+```
+
+Build a portable executable with `python packaging/build_native.py` after
+installing PyInstaller. See [native app](docs/native-app.md) for setup, pairing,
+data semantics, upgrade notes, and the build path. Published installers still
+use the previous HUD until the native release is prepared.
+
+<details>
+<summary>Previous HUD releases and documentation</summary>
 
 BURNRATE reads the usage your coding tools already record on your computer (Claude Code, Codex,
 OpenCode, Grok Build, Antigravity and more), prices it at published API rates, and shows it beside
@@ -156,3 +175,5 @@ Tests, the desktop app, the Windows service scripts and the front-end build are 
 
 BURNRATE is not affiliated with OpenAI, Anthropic, xAI, Google, Z.AI, OpenRouter, DeepSeek, Traycer,
 Muse or their products. Trademarks belong to their owners.
+
+</details>

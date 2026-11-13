@@ -9,10 +9,12 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from spend_app.db import connect
 from spend_app.plan_service import PlanConflict, PlanError, apply_mutation, list_plans
 from spend_app.plans_value_periods import SUPPORTED_PERIODS
+from spend_app.sync import HubMutationError
 
 
 def product_router(settings, pricing=None):
@@ -123,17 +125,47 @@ def product_router(settings, pricing=None):
             body = json.loads(
                 raw, parse_constant=lambda _: (_ for _ in ()).throw(ValueError())
             )
-            with connect(settings.database_path) as connection:
-                connection.execute("BEGIN IMMEDIATE")
-                result = apply_mutation(connection, body, today())
-            from spend_app.sync import post_to_configured_hub
+            if not isinstance(body, dict):
+                raise PlanError("Expected a subscription request object")
 
-            hub_res = post_to_configured_hub(
-                settings, "/api/account/subscriptions", body
-            )
-            if isinstance(hub_res, dict) and isinstance(hub_res.get("plans"), list):
-                return hub_res
-            return result
+            def apply_change():
+                from spend_app.sync import post_to_configured_hub
+
+                hub_result = post_to_configured_hub(
+                    settings, "/api/account/subscriptions", body, strict=True
+                )
+                if hub_result is not None:
+                    if (
+                        body.get("operation") == "correct"
+                        and body.get("preview") is True
+                    ):
+                        valid = all(
+                            isinstance(hub_result.get(key), str) and hub_result[key]
+                            for key in (
+                                "from",
+                                "through",
+                                "before_usd",
+                                "after_usd",
+                                "preview_token",
+                            )
+                        )
+                    else:
+                        valid = all(
+                            type(hub_result.get(key)) is int and hub_result[key] > 0
+                            for key in ("id", "version")
+                        )
+                    if not valid:
+                        raise HubMutationError(
+                            "The hub returned an invalid save response. Retry with the same request identifier."
+                        )
+                    return hub_result
+                with connect(settings.database_path) as connection:
+                    connection.execute("BEGIN IMMEDIATE")
+                    return apply_mutation(connection, body, today())
+
+            return await run_in_threadpool(apply_change)
+        except HubMutationError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=exc.status_code)
         except PlanConflict as exc:
             return JSONResponse({"error": str(exc)}, status_code=409)
         except PlanError as exc:

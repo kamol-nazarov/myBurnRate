@@ -563,6 +563,10 @@ def prune_ingest_runs(
               WHERE r.source = ingest_runs.source
               ORDER BY r.id DESC LIMIT ?
           )
+          AND id NOT IN (
+              SELECT MAX(id) FROM ingest_runs
+              WHERE status IN ('success', 'partial') GROUP BY source
+          )
         """,
         (cutoff, int(keep_per_source)),
     )
@@ -675,10 +679,101 @@ def prune_usage_changes(
     return removed
 
 
+_USAGE_CACHE_HOUR_US = 3_600_000_000
+
+
+def _usage_cache_bucket_sql(reference: str) -> str:
+    # SQLite integer division truncates toward zero; keep pre-epoch hours
+    # aligned with Python's floor division as well.
+    epoch = f"{reference}.occurred_epoch_us" if reference else "occurred_epoch_us"
+    return (
+        f"CASE WHEN {epoch} >= 0 THEN {epoch} / {_USAGE_CACHE_HOUR_US} "
+        f"ELSE ({epoch} - {_USAGE_CACHE_HOUR_US - 1}) / {_USAGE_CACHE_HOUR_US} END"
+    )
+
+
+def ensure_usage_cache_revisions(path: Path) -> None:
+    """Track changed usage hours independently of the compacted sync journal.
+
+    Revisions include local and imported rows, and persist deletion
+    tombstones. A recent insert must not invalidate cached settled history.
+    The additive table, triggers, seed and readiness marker commit together.
+    """
+    marker = "cache.usage-revisions.v1"
+    with connect(path) as connection:
+        if connection.execute("SELECT 1 FROM app_meta WHERE key=?", (marker,)).fetchone():
+            return
+        connection.execute("BEGIN IMMEDIATE")
+        if connection.execute("SELECT 1 FROM app_meta WHERE key=?", (marker,)).fetchone():
+            return
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS usage_cache_revisions ("
+            "bucket INTEGER PRIMARY KEY, revision INTEGER NOT NULL) WITHOUT ROWID"
+        )
+
+        def touch(reference: str, condition: str) -> str:
+            return (
+                "INSERT INTO usage_cache_revisions(bucket, revision) "
+                f"SELECT {_usage_cache_bucket_sql(reference)}, 1 WHERE {condition} "
+                "ON CONFLICT(bucket) DO UPDATE SET revision=usage_cache_revisions.revision+1;"
+            )
+
+        for table in ("usage_events", "unpriced_usage_events"):
+            for action, reference in (("INSERT", "NEW"), ("DELETE", "OLD")):
+                connection.execute(
+                    f"CREATE TRIGGER IF NOT EXISTS cache_{table}_{action.lower()} "
+                    f"AFTER {action} ON {table} "
+                    f"BEGIN {touch(reference, reference + '.occurred_epoch_us IS NOT NULL')} END"
+                )
+            new_bucket = _usage_cache_bucket_sql("NEW")
+            old_bucket = _usage_cache_bucket_sql("OLD")
+            connection.execute(
+                f"CREATE TRIGGER IF NOT EXISTS cache_{table}_update AFTER UPDATE ON {table} "
+                f"BEGIN {touch('OLD', 'OLD.occurred_epoch_us IS NOT NULL')} "
+                + touch(
+                    "NEW",
+                    "NEW.occurred_epoch_us IS NOT NULL AND "
+                    f"(OLD.occurred_epoch_us IS NULL OR ({new_bucket}) != ({old_bucket}))",
+                )
+                + " END"
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO usage_cache_revisions(bucket, revision) "
+                f"SELECT {_usage_cache_bucket_sql('')}, 1 FROM {table} "
+                "WHERE occurred_epoch_us IS NOT NULL GROUP BY 1"
+            )
+        connection.execute("INSERT INTO app_meta(key,value) VALUES(?, '1')", (marker,))
+
+
+def usage_cache_revision(
+    connection: sqlite3.Connection, start: datetime, end: datetime
+) -> tuple[tuple[int, int], ...]:
+    """Revisions for hours intersecting half-open ``[start, end)``.
+
+    Model/tool/machine corrections can leave token sums and ingest stamps
+    unchanged. Hour-scoped revisions catch them without a history scan or
+    invalidating settled rows for activity in the recent live slice.
+    """
+    from spend_app.timeutil import epoch_micros
+
+    start_us, end_us = epoch_micros(start), epoch_micros(end)
+    if end_us <= start_us:
+        return ()
+    return tuple(
+        tuple(row)
+        for row in connection.execute(
+            "SELECT bucket, revision FROM usage_cache_revisions "
+            "WHERE bucket >= ? AND bucket <= ? ORDER BY bucket",
+            (start_us // _USAGE_CACHE_HOUR_US, (end_us - 1) // _USAGE_CACHE_HOUR_US),
+        )
+    )
+
+
 def initialize(path: Path) -> None:
     from spend_app.subscription_schema import upgrade_database
     upgrade_database(path, _initialize_base)
     ensure_usage_change_journal(path)
+    ensure_usage_cache_revisions(path)
     migrate_usage_keys(path)
     retire_cursor_usage(path)
     dedupe_grok_calls(path)

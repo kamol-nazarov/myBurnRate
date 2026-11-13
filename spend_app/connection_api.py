@@ -13,6 +13,7 @@ from spend_app.connection_paths import LocationError
 
 
 _SPOKE_READ_PATHS = {
+    "/api/spend/usage",
     "/api/spend/summary",
     "/api/spend/nav",
     "/api/spend/entity",

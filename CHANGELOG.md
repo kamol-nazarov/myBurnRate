@@ -9,6 +9,23 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+### Added
+
+- A native desktop usage app with graphite styling, measured token breakdowns,
+  API-equivalent pricing, and filters for period and paired computer. Source
+  connections and computer pairing use native Settings dialogs. A portable
+  Windows build and CI smoke checks exercise both the interface and collector.
+
+### Fixed
+
+- Reject invalid and revoked machine bearer tokens, preserve pairing identity
+  during offline fallback, and retry source changes with the same mutation ID
+  after a lost response.
+- Keep imported usage corrections visible in cached summaries without rescanning
+  settled history after unrelated recent activity or empty synchronization runs.
+- Preserve hub errors when changing plans from a paired computer. Correct plan
+  boundaries, quarterly costs, telemetry timestamps, and invalid pricing inputs.
+
 ## [0.5.3] - 2026-10-28
 
 ### Fixed

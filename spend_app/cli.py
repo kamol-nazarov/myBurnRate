@@ -325,11 +325,14 @@ def _main() -> int:
     m_rev.add_argument("--id", required=True)
     desktop_parser = subparsers.add_parser(
         "desktop",
-        help="Launch the BURNRATE Tauri native app and Always-on-Top Sidecar HUD",
+        help="Open the compact native usage application",
     )
     desktop_parser.add_argument("--hub", help="Optional remote hub URL to sync local telemetry to")
     desktop_parser.add_argument("--token", help="Optional machine bearer token for remote hub sync")
-    desktop_parser.add_argument("--check-only", action="store_true", help="Verify Tauri manifest and exit")
+    desktop_parser.add_argument("--check-only", action="store_true", help="Verify native widget support and exit")
+    desktop_parser.add_argument("--demo", action="store_true", help="Show sample data without starting collection")
+    desktop_parser.add_argument("--port", type=int, help="Local tracker port (default: BURNRATE_PORT or 17331)")
+    desktop_parser.add_argument("--smoke-test", action="store_true", help=argparse.SUPPRESS)
     demo_parser = subparsers.add_parser(
         "demo",
         help="Serve a demo with made-up usage on 127.0.0.1; nothing on this computer is read",
@@ -554,32 +557,28 @@ def _main() -> int:
                     return 2
             _time.sleep(max(1.0, float(args.interval)))
     if args.command == "desktop":
-        import os
-        import subprocess
-
-        repo_root = Path(__file__).resolve().parents[1]
-        manifest = repo_root / "src-tauri" / "Cargo.toml"
-        if not manifest.is_file():
-            print(json.dumps({"ok": False, "error": f"Tauri manifest not found at {manifest}"}), file=sys.stderr)
-            return 2
         if args.check_only:
-            print(json.dumps({"ok": True, "manifest": str(manifest)}))
+            try:
+                from tkinter import TkVersion, ttk
+                del ttk
+            except ImportError:
+                print(json.dumps({"ok": False, "error": "Install Python with Tcl/Tk support."}))
+                return 2
+            print(json.dumps({"ok": True, "interface": "native", "toolkit": "ttk", "tkVersion": TkVersion}))
             return 0
-        env = dict(os.environ)
-        if args.hub:
-            env["BURNRATE_SYNC_HUB"] = args.hub
-        if args.token:
-            env["BURNRATE_SYNC_TOKEN"] = args.token
-        exe_name = "burnrate-desktop.exe" if sys.platform == "win32" else "burnrate-desktop"
-        for profile in ("release", "debug"):
-            candidate = repo_root / "src-tauri" / "target" / profile / exe_name
-            if candidate.is_file():
-                return subprocess.call([str(candidate)], cwd=str(repo_root), env=env)
-        return subprocess.call(
-            ["cargo", "run", "--manifest-path", str(manifest)],
-            cwd=str(repo_root),
-            env=env,
-        )
+        if not args.demo and (args.hub or args.token):
+            if not args.hub or not args.token:
+                print(json.dumps({"error": "Provide both --hub and --token, or pair in Settings."}))
+                return 2
+            from spend_app.setup_wizard import read_setup_state, write_setup_state
+            initialize(settings.database_path)
+            with connect(settings.database_path) as connection:
+                state = read_setup_state(connection)
+                state["role"] = "spoke"
+                state["spokeConfig"].update(hubUrl=args.hub, token=args.token, enabled=True)
+                write_setup_state(connection, state)
+        from spend_app.native_desktop import main as native_main
+        return native_main(settings, demo=args.demo, port=args.port, smoke_test=args.smoke_test)
     return 1
 
 

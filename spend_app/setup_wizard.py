@@ -479,6 +479,8 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
             latest = read_setup_state(connection)
             latest["spokeConfig"]["lastSyncAt"] = utc_now()
             latest["spokeConfig"]["lastSyncError"] = None
+            if isinstance(result.get("machineId"), str) and result["machineId"]:
+                latest["account"] = {**latest.get("account", {}), "machineId": result["machineId"], "serverUrl": hub_url}
             latest["spokeConfig"]["usageChangesPending"] = bool(result.get("usageChangesPending"))
             latest["spokeConfig"]["eventsPushed"] = int(
                 latest["spokeConfig"].get("eventsPushed") or 0
@@ -1194,11 +1196,13 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             if not isinstance(body, dict):
                 raise ValueError("Expected a JSON object.")
             pairing_code = str(body.get("pairingCode") or "").strip()
+            paired_id = ""
             if pairing_code:
                 decoded = decode_pairing_code(pairing_code)
                 hub_url = str(decoded["hubUrl"]).strip().rstrip("/")
                 token = str(decoded["token"]).strip()
                 default_name = str(decoded.get("machineName") or "")
+                paired_id = str(decoded.get("machineId") or "")
             else:
                 hub_url = str(body.get("hubUrl") or "").strip().rstrip("/")
                 token = str(body.get("token") or "").strip()
@@ -1222,11 +1226,13 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     collect_local=False,
                     client=_HUB_TEST_CLIENTS.get(hub_url),
                 )
+                paired_id = str((sync_result or {}).get("machineId") or paired_id)
             initialize(settings.database_path)
             with connect(settings.database_path) as connection:
                 state = read_setup_state(connection)
                 state["role"] = "spoke"
                 state["computerName"] = computer_name
+                state["account"] = {**state.get("account", {}), "machineId": paired_id, "serverUrl": hub_url}
                 state["spokeConfig"] = {
                     "hubUrl": hub_url,
                     "token": token,

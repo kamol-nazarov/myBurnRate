@@ -18,6 +18,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote
 
+from spend_app.timeutil import parse_utc
+
 
 def number(value: object) -> int:
     if isinstance(value, bool):
@@ -156,12 +158,7 @@ def open_binary_read_only(path: Path):
 
 
 def parse_iso_time(value: object) -> datetime | None:
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
-    except ValueError:
-        return None
+    return parse_utc(value)
 
 
 def parse_millis(value: object) -> datetime | None:

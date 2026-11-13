@@ -27,6 +27,14 @@ def _schema10_database(path: Path) -> dict:
     with connect(path) as connection:
         connection.execute("UPDATE app_meta SET value='10' WHERE key='schema_version'")
         # Simulate the schema-10 shape: no epoch column, mixed precision.
+        for trigger in (
+            "cache_usage_events_insert", "cache_usage_events_update", "cache_usage_events_delete",
+            "cache_unpriced_usage_events_insert", "cache_unpriced_usage_events_update",
+            "cache_unpriced_usage_events_delete",
+        ):
+            connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+        connection.execute("DROP TABLE IF EXISTS usage_cache_revisions")
+        connection.execute("DELETE FROM app_meta WHERE key='cache.usage-revisions.v1'")
         connection.execute("DROP INDEX IF EXISTS idx_usage_events_epoch")
         connection.execute("ALTER TABLE usage_events DROP COLUMN occurred_epoch_us")
         rows = [

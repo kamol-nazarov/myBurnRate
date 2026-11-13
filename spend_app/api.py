@@ -309,10 +309,16 @@ def create_app(
         if not access_allowed(request, _access_token):
             return JSONResponse({"error": "Authentication required for the API"}, status_code=401)
         auth = request.headers.get("authorization", "")
-        if auth.startswith("Bearer br_m_"):
+        admin_bearer = bool(_access_token and auth.startswith("Bearer ")
+                            and _hmac.compare_digest(auth[7:].strip(), _access_token))
+        if auth.startswith("Bearer br_m_") and not admin_bearer:
             from spend_app.sync import authenticate_machine_token
 
-            authenticate_machine_token(settings.database_path, auth[7:].strip())
+            machine_id = await asyncio.to_thread(
+                authenticate_machine_token, settings.database_path, auth[7:].strip()
+            )
+            if not machine_id:
+                return JSONResponse({"error": "Invalid or revoked machine token."}, status_code=401)
         response = await call_next(request)
         if _access_token and request.method == "GET" and request.url.path in {"/", "/hud", "/setup"}:
             query_tok = request.query_params.get("token", "").strip()
@@ -396,6 +402,41 @@ def create_app(
             cadence_seconds=settings.local_ingest_interval_seconds,
             now=current_now(),
         )
+
+    def _native_usage_sync(period: str, machine: str) -> dict:
+        from spend_app.native_usage import usage_report
+        from spend_app.setup_wizard import read_setup_state
+        from spend_app.sync import fetch_from_configured_hub
+
+        request_collection()
+        hub = fetch_from_configured_hub(settings, "/api/spend/usage",
+                                        {"period": period, "machine": machine})
+        if hub is not None and isinstance(hub.get("total"), dict):
+            return {**hub, "scope": "all-computers" if machine == "all" else "computer"}
+        with connect(settings.database_path) as connection:
+            setup = read_setup_state(connection)
+        if setup.get("role") == "spoke" and setup.get("spokeConfig", {}).get("enabled"):
+            own_id = str(setup.get("account", {}).get("machineId") or "")
+            own_selected = machine == "all" or bool(own_id and machine == own_id)
+            # On the Hub, 'local' means the Hub itself, never this Spoke.
+            # A cold/offline cache must not put this machine's totals under
+            # another machine's name, or count imports left from a former Hub.
+            report = usage_report(settings, pricing, now=slot_now(), period=period,
+                                  machine="local" if own_selected else "_unavailable")
+            own = next((row for row in report["machines"] if row["id"] == "local"), None)
+            machines = [{**own, "id": own_id}] if own and own_id else []
+            return {**report, "machine": machine, "machines": machines,
+                    "scope": "local-fallback" if own_selected else "unavailable",
+                    "warning": (
+                        "Hub unavailable or needs an update. Showing this computer's recorded usage only."
+                        if own_selected else "This computer's history is unavailable until the hub reconnects."
+                    )}
+        return usage_report(settings, pricing, now=slot_now(), period=period, machine=machine)
+
+    @app.get("/api/spend/usage")
+    async def native_usage(period: str = Query(default="today", pattern="^(today|week|month|all)$"),
+                           machine: str = Query(default="all")) -> dict:
+        return await _run_bounded_read(_native_usage_sync, period, machine)
 
     @app.get("/api/spend/entity")
     def spend_entity(

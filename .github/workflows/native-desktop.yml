@@ -1,0 +1,48 @@
+name: Native desktop
+
+"on":
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  native-windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Refuse provider credentials
+        run: ./.github/scripts/assert-no-provider-env.ps1
+      - name: Install native build tools
+        run: python -m pip install -e ".[dev]" pyinstaller
+      - name: Verify native accounting and client
+        run: python -m pytest tests_spend/test_native_usage.py tests_spend/test_native_desktop.py -q
+      - name: Build portable native app
+        run: python packaging/build_native.py
+      - name: Run frozen native widget smoke test
+        run: |
+          $app = Join-Path $PWD 'packaging/build/native/BURNRATE/BURNRATE.exe'
+          $process = Start-Process -FilePath $app -ArgumentList @('--demo', '--smoke-test') -WindowStyle Hidden -PassThru
+          if (-not $process.WaitForExit(30000)) {
+            Stop-Process -Id $process.Id -Force
+            throw 'Native sample-data smoke test timed out'
+          }
+          if ($process.ExitCode -ne 0) { throw "Native smoke test failed: $($process.ExitCode)" }
+      - name: Verify frozen collector and desktop IPC
+        run: python scripts/smoke-native.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BURNRATE-native-windows
+          path: packaging/build/BURNRATE-native.zip

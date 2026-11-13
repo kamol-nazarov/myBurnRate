@@ -1123,18 +1123,34 @@ def expire_hub_proxy_cache() -> None:
             _HUB_PROXY_CACHE[key] = (fetched_at, data, False)
 
 
+class HubMutationError(RuntimeError):
+    """A paired computer must not turn a rejected Hub write into a local save."""
+
+    def __init__(self, message: str, status_code: int = 503):
+        super().__init__(message)
+        self.status_code = status_code
+
+
 def post_to_configured_hub(
     settings,
     path: str,
     body: dict,
+    *,
+    strict: bool = False,
 ) -> dict | None:
-    """Forward a write mutation from a paired Spoke to the central Hub."""
+    """Forward a write mutation from a paired Spoke to the central Hub.
+
+    With ``strict`` only an unpaired instance returns None; an enabled Spoke
+    raises on failure so its caller cannot silently commit a local mutation.
+    """
     try:
         from spend_app.setup_wizard import read_setup_state
 
         with connect(settings.database_path) as connection:
             state = read_setup_state(connection)
-    except Exception:
+    except Exception as exc:
+        if strict:
+            raise HubMutationError("Could not read the hub configuration. Retry the change.") from exc
         return None
     if state.get("role") != "spoke":
         return None
@@ -1144,6 +1160,8 @@ def post_to_configured_hub(
     hub_url = str(spoke.get("hubUrl") or "").strip().rstrip("/")
     token = str(spoke.get("token") or "").strip()
     if not hub_url or not token:
+        if strict:
+            raise HubMutationError("Reconnect this computer to its hub before saving plans.")
         return None
     headers = {
         "Authorization": f"Bearer {token}",
@@ -1158,12 +1176,33 @@ def post_to_configured_hub(
 
             with httpx.Client(timeout=5.0, trust_env=False) as http:
                 response = http.post(f"{hub_url}{path}", json=body, headers=headers)
-        clear_hub_proxy_cache()
-        if response.status_code >= 400:
+        if not 200 <= response.status_code < 300:
+            if strict:
+                code = response.status_code
+                message = "The hub could not save this change. Retry with the same request identifier."
+                if code in {400, 401, 403, 409, 413, 415, 422, 429}:
+                    try:
+                        error = response.json().get("error")
+                        if isinstance(error, str) and error:
+                            message = error
+                    except (ValueError, AttributeError):
+                        pass
+                else:
+                    code = 503
+                raise HubMutationError(message, code)
             return None
         data = response.json()
-        return data if isinstance(data, dict) else None
-    except Exception:
+        if not isinstance(data, dict):
+            if strict:
+                raise HubMutationError("The hub returned an invalid save response. Retry with the same request identifier.")
+            return None
+        clear_hub_proxy_cache()
+        return data
+    except HubMutationError:
+        raise
+    except Exception as exc:
+        if strict:
+            raise HubMutationError("Could not reach the hub. Retry with the same request identifier.") from exc
         return None
 
 
