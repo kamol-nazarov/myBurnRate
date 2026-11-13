@@ -858,6 +858,101 @@ def test_wealthfront_merges_multi_accounts_balances_grok_and_remaining_windows(
     ]
 
 
+def test_wealthfront_distinguishes_missing_and_zero_window_tokens():
+    from spend_app.wealthfront_window import merge_provider_entries
+
+    hud = {"capacity": [{"providerKey": "claude-code", "rows": [
+        {"limitKey": "5h", "label": "5-hour window", "unavailable": True},
+        {"limitKey": "weekly", "label": "Weekly window", "pct": 20},
+    ]}]}
+    today = {"tools": [{"key": "claude-code", "tokens": 800}]}
+    week = {"tools": [{"key": "claude-code", "tokens": 1200}]}
+    windows = {"windowTokens": {"claude-code": {
+        "weekly": {"tokens": 0, "today": {"tokens": 800}},
+    }}}
+
+    row = merge_provider_entries(today, hud, windows, today, week)[0]
+    assert row["burn"]["dayTokens"] == 800
+    assert row["burn"]["sessionTokens"] is None
+    # A reset can make the current weekly window smaller than today's total.
+    assert row["burn"]["weekTokens"] == 0
+    assert row["burn"]["weekBasis"] == "window"
+
+    windows["windowTokens"]["claude-code"]["5h"] = {"tokens": 0}
+    assert merge_provider_entries(today, hud, windows, today, week)[0]["burn"]["sessionTokens"] == 0
+
+    missing = merge_provider_entries({"tools": []}, hud, {}, None, None)[0]["burn"]
+    assert missing["dayTokens"] is None
+    assert missing["sessionTokens"] is None
+    assert missing["weekTokens"] is None
+
+    rolling = merge_provider_entries(today, hud, {}, today, week)[0]["burn"]
+    assert rolling["weekTokens"] == 1200
+    assert rolling["weekBasis"] == "rolling"
+
+
+@pytest.mark.parametrize(("label", "expected"), [
+    ("Antigravity Gemini models · Five-hour remaining", "Gemini · Five-hour"),
+    ("Antigravity Gemini models · Weekly remaining", "Gemini · Weekly"),
+    ("Antigravity Claude/GPT models · Five-hour remaining", "Claude / GPT · Five-hour"),
+    ("Antigravity Claude/GPT models · Weekly remaining", "Claude / GPT · Weekly"),
+])
+def test_antigravity_window_labels_do_not_repeat_the_provider(label, expected):
+    from spend_app.wealthfront_window import _clean_window_label
+
+    assert _clean_window_label(label, "5h") == (expected, "")
+
+
+def test_pin_preserves_the_independent_fade_preference(tmp_path, monkeypatch):
+    from spend_app import wealthfront_window
+
+    monkeypatch.setattr(
+        wealthfront_window, "_set_window_topmost",
+        lambda window, _hwnd_getter, enabled: setattr(window, "on_top", enabled),
+    )
+    DesktopBridge = wealthfront_window.DesktopBridge
+
+    class Window:
+        on_top = False
+
+    prefs = tmp_path / "native-window.json"
+    bridge = DesktopBridge(DemoClient(), preferences=prefs, demo=True)
+    window = Window()
+    bridge.attach(window, lambda: 0)
+    bridge.set_idle_opacity(0.70)
+
+    assert bridge.opacity_state()[0] is True
+    assert bridge.set_topmost(True)["ok"] is True
+    assert window.on_top is True
+    assert bridge.opacity_state() == (True, 0.70, False)
+    assert bridge.get_initial_state()["autoFade"] is True
+    reloaded = DesktopBridge(DemoClient(), preferences=prefs, demo=True)
+    assert reloaded.get_initial_state()["topmost"] is True
+    assert reloaded.opacity_state() == (True, 0.70, False)
+
+    bridge.set_auto_fade(False)
+    assert bridge.opacity_state()[0] is False
+    bridge.set_auto_fade(True)
+
+    assert bridge.set_topmost(False)["ok"] is True
+    assert window.on_top is False
+    assert bridge.opacity_state()[0] is True
+
+    class RejectedWindow:
+        @property
+        def on_top(self):
+            return False
+
+        @on_top.setter
+        def on_top(self, value):
+            raise RuntimeError("window refused pin")
+
+    bridge.attach(RejectedWindow(), lambda: 0)
+    assert bridge.set_topmost(True)["ok"] is False
+    assert bridge.get_initial_state()["topmost"] is False
+    assert bridge.opacity_state()[0] is True
+
+
 def test_native_service_spawn_enables_quota_and_balance_polling_by_default(
     tmp_path, monkeypatch
 ):

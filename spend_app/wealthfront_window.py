@@ -87,6 +87,7 @@ def _clean_window_label(raw_label: str, limit_key: str) -> tuple[str, str]:
     text = (
         text.replace("Antigravity Gemini models · ", "Gemini · ")
         .replace("Antigravity Claude & GPT models · ", "Claude & GPT · ")
+        .replace("Antigravity Claude/GPT models · ", "Claude / GPT · ")
         .replace(" remaining", "")
     )
     if not text:
@@ -339,36 +340,42 @@ def merge_provider_entries(
 
         # Hover token burn telemetry: Day, Session (5h), Weekly session
         has_session = any(w["limitKey"] in SESSION_KEYS for w in windows)
-        session_tokens: int | None = None
-        if has_session:
-            session_tokens = sum(
-                int(wt_provider[lk]["tokens"])
-                for lk in SESSION_KEYS
-                if isinstance(wt_provider.get(lk), dict)
-                and isinstance(wt_provider[lk].get("tokens"), (int, float))
-            )
+        session_readings = [
+            int(wt_provider[lk]["tokens"])
+            for lk in SESSION_KEYS
+            if isinstance(wt_provider.get(lk), dict)
+            and isinstance(wt_provider[lk].get("tokens"), (int, float))
+        ]
+        session_tokens = sum(session_readings) if has_session and session_readings else None
 
-        day_from_windows = 0
-        week_from_windows = 0
-        have_weekly_window_tok = False
+        day_from_windows: list[int] = []
+        week_from_windows: list[int] = []
         for lk in WEEKLY_KEYS:
             entry = wt_provider.get(lk)
             if isinstance(entry, dict):
                 if isinstance(entry.get("tokens"), (int, float)):
-                    week_from_windows += int(entry["tokens"])
-                    have_weekly_window_tok = True
+                    week_from_windows.append(int(entry["tokens"]))
                 today_sub = entry.get("today")
                 if isinstance(today_sub, dict) and isinstance(
                     today_sub.get("tokens"), (int, float)
                 ):
-                    day_from_windows += int(today_sub["tokens"])
+                    day_from_windows.append(int(today_sub["tokens"]))
 
-        day_tokens = max(int(today_entry.get("tokens") or 0), day_from_windows)
-        week_tokens = (
-            max(week_from_windows, day_tokens)
-            if have_weekly_window_tok and week_from_windows > 0
-            else max(int(week_entry.get("tokens") or 0), day_tokens, week_from_windows)
-        )
+        day_candidates = [sum(day_from_windows)] if day_from_windows else []
+        if isinstance(today_entry.get("tokens"), (int, float)):
+            day_candidates.append(int(today_entry["tokens"]))
+        day_tokens = max(day_candidates) if day_candidates else None
+        if week_from_windows:
+            # A quota window can have reset today, so it can legitimately be
+            # smaller than the calendar-day total, including a measured zero.
+            week_tokens = sum(week_from_windows)
+            week_basis = "window"
+        elif isinstance(week_entry.get("tokens"), (int, float)):
+            week_tokens = int(week_entry["tokens"])
+            week_basis = "rolling"
+        else:
+            week_tokens = None
+            week_basis = None
 
         # Primary Remaining Usage headline
         funds_usd = card.get("fundsRemainingUsd")
@@ -479,6 +486,7 @@ def merge_provider_entries(
                     "sessionTokens": session_tokens,
                     "hasSession": has_session,
                     "weekTokens": week_tokens,
+                    "weekBasis": week_basis,
                 },
                 "windows": windows,
                 "tokens": int(period_entry.get("tokens") or 0),
@@ -497,8 +505,10 @@ def merge_provider_entries(
     for key, tool in period_tools.items():
         if key in consumed_usage_keys:
             continue
-        day_tok = int((today_tools.get(key) or {}).get("tokens") or 0)
-        week_tok = max(int((week_tools.get(key) or {}).get("tokens") or 0), day_tok)
+        today_value = (today_tools.get(key) or {}).get("tokens")
+        week_value = (week_tools.get(key) or {}).get("tokens")
+        day_tok = int(today_value) if isinstance(today_value, (int, float)) else None
+        week_tok = int(week_value) if isinstance(week_value, (int, float)) else None
         val_usd = tool.get("valueUsd")
         has_val = isinstance(val_usd, (int, float)) and math.isfinite(float(val_usd))
         headline = f"${float(val_usd):,.2f}" if has_val else "Tracked"
@@ -516,7 +526,7 @@ def merge_provider_entries(
                     "kind": "usage_only",
                     "headline": headline,
                     "sub": "API value" if has_val else "usage only",
-                    "barPct": 100.0 if day_tok > 0 else 0.0,
+                    "barPct": 100.0 if day_tok is not None and day_tok > 0 else 0.0,
                     "tone": "muted",
                     "resetsAt": None,
                     "summary": "Organization API feed"
@@ -528,6 +538,7 @@ def merge_provider_entries(
                     "sessionTokens": None,
                     "hasSession": False,
                     "weekTokens": week_tok,
+                    "weekBasis": "rolling" if week_tok is not None else None,
                 },
                 "windows": [],
                 "tokens": int(tool.get("tokens") or 0),
@@ -615,6 +626,32 @@ def _apply_win11_chrome(window, icon_path: Path | None) -> int:
     except OSError:
         pass
     return hwnd
+
+
+def _set_window_topmost(window, hwnd_getter, enabled: bool) -> None:
+    if sys.platform != "win32":
+        window.on_top = enabled
+        return
+
+    import ctypes
+    from ctypes import wintypes
+
+    hwnd = hwnd_getter()
+    if not hwnd:
+        raise RuntimeError("The window is not ready to pin")
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    set_position = user32.SetWindowPos
+    set_position.argtypes = [
+        wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+        ctypes.c_int, ctypes.c_int, wintypes.UINT,
+    ]
+    set_position.restype = wintypes.BOOL
+    insert_after = ctypes.c_void_p(-1 if enabled else -2)  # TOPMOST / NOTOPMOST
+    # The WebView bridge runs off the UI thread. Queue the change rather than
+    # synchronously setting the WinForms TopMost property and deadlocking it.
+    flags = 0x0001 | 0x0002 | 0x0010 | 0x4000  # NOSIZE, NOMOVE, NOACTIVATE, ASYNC
+    if not set_position(hwnd, insert_after, 0, 0, 0, 0, flags):
+        raise ctypes.WinError(ctypes.get_last_error())
 
 
 class WindowOpacityController:
@@ -779,6 +816,7 @@ class DesktopBridge:
         self._hwnd_getter = hwnd_getter
 
     def opacity_state(self) -> tuple[bool, float, bool]:
+        # Pinning controls z-order; fading is an independent preference.
         return (self._auto_fade, self._idle_opacity, self._ui_busy)
 
     def _read_preferences(self) -> dict:
@@ -838,12 +876,15 @@ class DesktopBridge:
         return {"ok": True, "providerOrder": list(self._provider_order)}
 
     def set_topmost(self, enabled: bool) -> dict:
-        self._topmost = bool(enabled)
+        requested = bool(enabled)
         if self._window is not None:
             try:
-                self._window.on_top = self._topmost
+                _set_window_topmost(self._window, self._hwnd_getter, requested)
             except (OSError, AttributeError, RuntimeError) as exc:
                 LOGGER.debug("Topmost update skipped: %s", exc)
+                return {"ok": False, "topmost": self._topmost,
+                        "error": "Could not change the window pin."}
+        self._topmost = requested
         self._write_preferences()
         return {"ok": True, "topmost": self._topmost}
 

@@ -111,9 +111,10 @@ button, input {
 
 /* Compact frameless navigation bar */
 .topbar {
-  display: flex;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) max-content;
+  grid-template-areas: "brand scope actions";
   align-items: center;
-  justify-content: space-between;
   padding: 8px 10px 5px 14px;
   background: var(--bg-hero);
   flex-shrink: 0;
@@ -121,6 +122,7 @@ button, input {
 }
 
 .brand-group {
+  grid-area: brand;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -185,6 +187,7 @@ button, input {
 }
 
 .top-actions {
+  grid-area: actions;
   display: flex;
   align-items: center;
   gap: 2px;
@@ -192,6 +195,8 @@ button, input {
 }
 
 .scope-trigger {
+  grid-area: scope;
+  justify-self: end;
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -206,7 +211,9 @@ button, input {
   font-weight: 600;
   cursor: pointer;
   transition: background 0.18s var(--spring), border-color 0.18s ease, color 0.18s ease, transform 0.16s var(--spring);
+  width: 100%;
   max-width: 126px;
+  min-width: 0;
 }
 
 .scope-trigger span {
@@ -222,6 +229,18 @@ button, input {
 }
 .scope-trigger:active {
   transform: scale(0.97);
+}
+
+@media (max-width: 410px) {
+  .topbar {
+    grid-template-columns: minmax(0, 1fr) max-content;
+    grid-template-areas: "brand actions" "scope scope";
+    row-gap: 3px;
+  }
+  .scope-trigger {
+    justify-self: start;
+    margin-right: 0;
+  }
 }
 
 .icon-btn {
@@ -244,6 +263,11 @@ button, input {
 }
 .icon-btn:active {
   transform: scale(0.92);
+}
+
+.icon-btn.pin-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .icon-btn.close-btn:hover {
@@ -735,29 +759,15 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
   white-space: nowrap;
 }
 
-.burn-pills {
-  display: flex;
-  align-items: center;
-  gap: 4px;
+.burn-summary {
   min-width: 0;
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-secondary);
+  font-size: 10.3px;
   font-variant-numeric: tabular-nums lining-nums;
   font-feature-settings: "tnum" 1, "lnum" 1;
-}
-
-.burn-pill {
-  font-size: 9.8px;
-  font-weight: 500;
-  color: var(--ink-secondary);
-  background: #f1f0fb;
-  border-radius: 999px;
-  padding: 0.5px 5px;
-  white-space: nowrap;
-}
-
-.burn-pill strong {
-  color: var(--accent);
-  font-weight: 680;
 }
 
 .provider-right {
@@ -820,10 +830,12 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
 }
 
 .drawer-inner {
+  min-width: 0;
   overflow: hidden;
 }
 
 .model-drawer {
+  min-width: 0;
   padding: 0 11px 9px 26px;
 }
 
@@ -833,6 +845,7 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
   border-radius: 10px;
   padding: 8px 10px;
   display: grid;
+  min-width: 0;
   gap: 7px;
   transform: translateY(-4px);
   transition: transform 0.28s var(--spring);
@@ -846,11 +859,13 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
 .limits-stack {
   display: grid;
   gap: 6px;
+  min-width: 0;
 }
 
 .limit-row {
   display: grid;
   gap: 3px;
+  min-width: 0;
   padding-top: 5px;
   border-top: 1px solid rgba(24, 23, 43, 0.05);
 }
@@ -860,41 +875,52 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
 }
 
 .limit-head {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
   align-items: baseline;
-  justify-content: space-between;
-  gap: 6px;
+  gap: 8px;
+  min-width: 0;
   font-size: 11px;
   font-variant-numeric: tabular-nums lining-nums;
   font-feature-settings: "tnum" 1, "lnum" 1;
 }
 
 .limit-title {
+  min-width: 0;
   color: var(--ink);
   font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .limit-reset {
-  color: var(--ink-tertiary);
-  font-size: 9.8px;
   font-weight: 450;
-  margin-left: 4px;
 }
 
 .limit-val {
   font-weight: 680;
   color: var(--ink);
   white-space: nowrap;
-  flex-shrink: 0;
+  text-align: right;
 }
 .limit-val .used-muted {
-  color: var(--ink-tertiary);
+  color: var(--ink-secondary);
   font-weight: 450;
   font-size: 9.8px;
-  margin-left: 3px;
+}
+
+.limit-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 4px 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+  color: var(--ink-secondary);
+  font-size: 9.8px;
+  font-variant-numeric: tabular-nums lining-nums;
+}
+.limit-used {
+  margin-left: auto;
+  white-space: nowrap;
 }
 
 .limit-bar-track {
@@ -925,10 +951,8 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
 /* Burned Tokens Strip inside Drawer */
 .drawer-burn-strip {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(64px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(70px, 1fr));
   gap: 5px;
-  padding-top: 6px;
-  border-top: 1px solid rgba(24, 23, 43, 0.06);
 }
 
 .burn-stat {
@@ -937,6 +961,7 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
   border-radius: 7px;
   padding: 4px 6px;
   display: grid;
+  min-width: 0;
   gap: 0.5px;
 }
 
@@ -955,6 +980,17 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
   font-variant-numeric: tabular-nums lining-nums;
   font-feature-settings: "tnum" 1, "lnum" 1;
 }
+
+.burn-section-label, .burn-note, .api-equivalent {
+  color: var(--ink-secondary);
+  font-size: 10px;
+}
+.burn-section-label {
+  font-weight: 650;
+  padding-top: 6px;
+  border-top: 1px solid rgba(24, 23, 43, 0.06);
+}
+.api-equivalent strong { color: var(--ink); }
 
 .token-chips {
   display: flex;
@@ -1001,6 +1037,7 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
 }
 
 .model-name {
+  min-width: 0;
   color: var(--ink);
   font-weight: 500;
   overflow: hidden;
@@ -1448,10 +1485,14 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
       </span>
     </div>
 
+    <button class="scope-trigger" id="scopeBtn" type="button" title="Select computer scope">
+      <span id="scopeLabel">All computers</span>
+      <svg width="10.5" height="10.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+    </button>
+
     <div class="top-actions">
-      <button class="scope-trigger" id="scopeBtn" type="button" title="Select computer scope">
-        <span id="scopeLabel">All computers</span>
-        <svg width="10.5" height="10.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+      <button class="icon-btn pin-btn" id="pinBtn" type="button" aria-label="Pin window above other apps" aria-pressed="false" title="Pin window above other apps">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6l-1 5 3 3v2H7v-2l3-3-1-5ZM12 13v8"/></svg>
       </button>
       <button class="icon-btn" id="refreshBtn" type="button" title="Refresh usage &amp; live limits">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
@@ -1623,6 +1664,7 @@ function logoHtml(key, cls = "logo-badge", inUse = false) {
 }
 
 function fmtTokens(val) {
+  if (val === null || val === undefined || val === "") return "\u2014";
   const n = Number(val);
   if (!Number.isFinite(n)) return "—";
   if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(2) + "B";
@@ -1917,10 +1959,11 @@ function getNormalizedProviders(data) {
       summary: `${(t.models || []).length} models`
     },
     burn: {
-      dayTokens: Number(t.tokens || 0),
+      dayTokens: state.period === "today" ? Number(t.tokens || 0) : null,
       sessionTokens: null,
       hasSession: false,
-      weekTokens: Number(t.tokens || 0)
+      weekTokens: state.period === "week" ? Number(t.tokens || 0) : null,
+      weekBasis: state.period === "week" ? "rolling" : null
     },
     windows: [],
     tokens: Number(t.tokens || 0),
@@ -1981,8 +2024,9 @@ function paintHeroText(data, animate = true) {
 
 function renderWindowItem(w) {
   const cd = fmtCountdown(w.resetsAt);
-  const resetText = cd ? `resets ${cd}` : "";
+  const resetText = cd ? (cd === "resets soon" ? "Resets soon" : `Resets in ${cd}`) : "";
   let rightHtml = "";
+  let usedText = "";
   let barPct = null;
   let barTone = "accent";
 
@@ -1994,12 +2038,13 @@ function renderWindowItem(w) {
   } else if (!w.unavailable && w.remainingPct !== null && w.remainingPct !== undefined) {
     const rem = Number(w.remainingPct);
     const used = Number(w.usedPct ?? (100 - rem));
+    usedText = `${used.toFixed(0)}% used`;
     barPct = Math.max(0, Math.min(100, rem));
     barTone = rem <= 8 ? "danger" : rem <= 20 ? "warn" : "accent";
     if (w.unit === "credits" && w.remainingCredits !== null && w.remainingCredits !== undefined) {
-      rightHtml = `${esc(fmtCredits(w.remainingCredits))} cr left <span class="used-muted">(${rem.toFixed(0)}%)</span>`;
+      rightHtml = `${esc(fmtCredits(w.remainingCredits))} cr left`;
     } else {
-      rightHtml = `${rem.toFixed(0)}% left <span class="used-muted">(${used.toFixed(0)}% used)</span>`;
+      rightHtml = `${rem.toFixed(0)}% left`;
     }
   } else {
     rightHtml = `<span class="used-muted">Awaiting reading</span>`;
@@ -2016,10 +2061,15 @@ function renderWindowItem(w) {
       <div class="limit-head">
         <span class="limit-title">
           ${esc(w.label || w.shortLabel)}
-          ${resetText ? `<span class="limit-reset">· ${esc(resetText)}</span>` : ""}
         </span>
         <span class="limit-val">${rightHtml}</span>
       </div>
+      ${resetText || usedText ? `
+        <div class="limit-meta">
+          ${resetText ? `<span class="limit-reset">${esc(resetText)}</span>` : ""}
+          ${usedText ? `<span class="limit-used">${esc(usedText)}</span>` : ""}
+        </div>
+      ` : ""}
       ${barPct !== null ? `
         <div class="limit-bar-track">
           <span class="limit-bar-fill tone-${barTone}" style="width:${barPct.toFixed(1)}%"></span>
@@ -2085,14 +2135,12 @@ function renderReport(data, animateChart = false) {
     const rightSub = cd ? `${rem.sub || ""} · ${cd}` : (rem.sub || "");
     const barPct = Math.max(0, Math.min(100, Number(rem.barPct ?? 0)));
 
-    // Hover telemetry pills: Day · Session (if tracked) · Weekly
-    const hoverPills = [
-      `<span class="burn-pill">Day <strong>${fmtTokens(burn.dayTokens || 0)}</strong></span>`
-    ];
-    if (burn.hasSession) {
-      hoverPills.push(`<span class="burn-pill">5h <strong>${fmtTokens(burn.sessionTokens || 0)}</strong></span>`);
-    }
-    hoverPills.push(`<span class="burn-pill">Wk <strong>${fmtTokens(burn.weekTokens || 0)}</strong></span>`);
+    const dayValue = burn.dayTokens;
+    const hoverSummary = dayValue === null || dayValue === undefined
+      ? "No token data for today"
+      : Number(dayValue) === 0
+        ? "No tokens recorded today"
+        : `Today: ${fmtTokens(dayValue)} tokens`;
 
     const badgeCls = (prov.badge === "Primary" || prov.badge === "Org API") ? "acct-tag neutral" : "acct-tag";
     const windows = Array.isArray(prov.windows) ? prov.windows : [];
@@ -2100,19 +2148,19 @@ function renderReport(data, animateChart = false) {
 
     // Burned token stats inside expanded drawer
     const burnCells = [
-      ["Today", fmtTokens(burn.dayTokens || 0)],
-      ...(burn.hasSession ? [["Session (5h)", fmtTokens(burn.sessionTokens || 0)]] : []),
-      ["Weekly", fmtTokens(burn.weekTokens || 0)]
+      ["Today", burn.dayTokens],
+      ...(burn.hasSession ? [["5-hour window", burn.sessionTokens]] : []),
+      [burn.weekBasis === "window" ? "Weekly window" : "Last 7 days", burn.weekTokens]
     ];
-    if (prov.valueUsd !== null && prov.valueUsd !== undefined && Number(prov.valueUsd) > 0) {
-      burnCells.push(["API equiv", fmtMoney(prov.valueUsd, prov.complete !== false, true)]);
-    }
+    const missingBurn = burnCells.some(([, value]) => value === null || value === undefined);
+    const periodLabel = ({today: "Today", week: "Last 7 days", month: "This month", all: "All time"})[state.period] || "Selected period";
+    const hasApiValue = prov.valueUsd !== null && prov.valueUsd !== undefined && Number(prov.valueUsd) > 0;
 
     const chips = [];
     if (Number(prov.tokens || 0) > 0) {
-      chips.push(["Input", prov.input], ["Cached", prov.cached], ["Output", prov.output]);
-      if (Number(prov.writes || 0) > 0) chips.push(["Writes", prov.writes]);
-      if (prov.reasoning !== null && prov.reasoning !== undefined) chips.push(["Reasoning", prov.reasoning]);
+      chips.push(["Fresh input", prov.input], ["Cached input", prov.cached], ["Output", prov.output]);
+      if (Number(prov.writes || 0) > 0) chips.push(["Cache writes", prov.writes]);
+      if (prov.reasoning !== null && prov.reasoning !== undefined) chips.push(["Reasoning (in output)", prov.reasoning]);
     }
 
     const enterStyle = doStagger ? `style="animation-delay:${Math.min(idx * 26, 220)}ms"` : "";
@@ -2139,7 +2187,7 @@ function renderReport(data, animateChart = false) {
                 <span class="provider-sub">${esc(rem.summary || prov.plan || "")}</span>
               </div>
               <div class="sub-hover">
-                <div class="burn-pills">${hoverPills.join("")}</div>
+                <div class="burn-summary">${esc(hoverSummary)}</div>
               </div>
             </div>
           </div>
@@ -2164,19 +2212,23 @@ function renderReport(data, animateChart = false) {
                 ` : `
                   <div class="limit-note">Pay-as-you-go telemetry feed — no fixed subscription cap.</div>
                 `}
-                <div class="drawer-burn-strip" style="${windows.length ? "" : "border-top:none;padding-top:0"}">
+                <div class="burn-section-label">Tokens recorded</div>
+                <div class="drawer-burn-strip">
                   ${burnCells.map(([lbl, val]) => `
                     <div class="burn-stat">
                       <span class="burn-stat-lbl">${esc(lbl)}</span>
-                      <span class="burn-stat-val">${esc(val)}</span>
+                      <span class="burn-stat-val">${esc(fmtTokens(val))}</span>
                     </div>
                   `).join("")}
                 </div>
+                ${missingBurn ? `<div class="burn-note">&#8212; No reading available for this period</div>` : ""}
                 ${chips.length ? `
+                  <div class="burn-section-label">${esc(periodLabel)} breakdown</div>
                   <div class="token-chips">
                     ${chips.map(([lbl, v]) => `<span class="token-chip">${esc(lbl)} <strong>${fmtTokens(v || 0)}</strong></span>`).join("")}
                   </div>
                 ` : ""}
+                ${hasApiValue ? `<div class="api-equivalent">API equivalent (${esc(periodLabel)}) <strong>${esc(fmtMoney(prov.valueUsd, prov.complete !== false, true))}</strong></div>` : ""}
                 ${models.length ? `
                   <div class="model-rows">
                     ${models.map(m => `
@@ -2673,7 +2725,7 @@ function renderSettingsBody() {
     [0.25, "25%"],
     [0.38, "38%"],
     [0.55, "55%"],
-    [0.72, "72%"]
+    [0.70, "70%"]
   ];
 
   body.innerHTML = `
@@ -2688,7 +2740,7 @@ function renderSettingsBody() {
       <div class="toggle-row">
         <div>
           <div class="source-name">Transparent when not hovered</div>
-          <div class="source-meta">Smoothly fade window into background when cursor leaves</div>
+          <div class="source-meta">Fade when the pointer leaves, including while pinned</div>
         </div>
         <button class="switch ${state.autoFade ? "on" : ""}" type="button" onclick="toggleAutoFade()"></button>
       </div>
@@ -2850,10 +2902,39 @@ window.submitJoinPair = async function() {
   }
 };
 
+function updatePinButton() {
+  const button = document.getElementById("pinBtn");
+  const label = state.topmost ? "Unpin window" : "Pin window above other apps";
+  button.classList.toggle("active", state.topmost);
+  button.setAttribute("aria-pressed", String(state.topmost));
+  button.setAttribute("aria-label", label);
+  button.title = label;
+}
+
+let pinUpdatePending = false;
 window.toggleTopmost = async function() {
-  state.topmost = !state.topmost;
-  renderSettingsBody();
-  if (apiAvailable()) await window.pywebview.api.set_topmost(state.topmost);
+  if (pinUpdatePending) return;
+  const desired = !state.topmost;
+  const button = document.getElementById("pinBtn");
+  pinUpdatePending = true;
+  button.disabled = true;
+  try {
+    if (apiAvailable()) {
+      const result = await window.pywebview.api.set_topmost(desired);
+      if (!result || !result.ok) {
+        showToast((result && result.error) || "Could not change the window pin");
+        return;
+      }
+    }
+    state.topmost = desired;
+    updatePinButton();
+    if (state.settingsOpen) renderSettingsBody();
+  } catch (err) {
+    showToast("Could not change the window pin");
+  } finally {
+    pinUpdatePending = false;
+    button.disabled = false;
+  }
 };
 
 window.toggleAutoFade = async function() {
@@ -2884,6 +2965,7 @@ window.resetProviderOrder = async function() {
 
 /* Wire UI Controls */
 document.getElementById("scopeBtn").addEventListener("click", toggleScopePopover);
+document.getElementById("pinBtn").addEventListener("click", window.toggleTopmost);
 document.getElementById("scopeBackdrop").addEventListener("click", toggleScopePopover);
 document.getElementById("refreshBtn").addEventListener("click", () => loadUsage(true, true));
 document.getElementById("settingsBtn").addEventListener("click", () => openSettings("sources"));
@@ -2936,6 +3018,7 @@ async function boot() {
   if (init) {
     state.period = init.period || "today";
     state.topmost = !!init.topmost;
+    updatePinButton();
     state.autoFade = init.autoFade !== undefined ? !!init.autoFade : true;
     state.idleOpacity = Number.isFinite(Number(init.idleOpacity)) ? Number(init.idleOpacity) : 0.38;
     state.providerOrder = Array.isArray(init.providerOrder) ? init.providerOrder : [];
