@@ -97,6 +97,8 @@ def test_managed_frameless_window_minimizes_restores_and_closes():
         assert chrome.get_long(chrome.handle, -16) & 0x00C00000 == 0
         assert chrome.get_long(chrome.handle, -20) & 0x40000  # Taskbar app window.
         assert chrome.get_long(chrome.handle, -20) & 0x80 == 0
+        assert chrome.api.SendMessageW(chrome.handle, 0x85, 1, 0) == 0
+        assert chrome.api.SendMessageW(chrome.handle, 0x86, 1, 0) == 1
         rect = w.RECT()
         assert chrome.api.GetWindowRect(chrome.handle, c.byref(rect))
         point = ((rect.top & 0xFFFF) << 16) | (rect.left & 0xFFFF)

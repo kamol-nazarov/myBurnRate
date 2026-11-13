@@ -200,6 +200,12 @@ class NativeFrame:
     def _procedure(self, handle, message, wparam, lparam):
         old = self._hooks.get(handle)
         try:
+            if message == 0x85:  # WM_NCPAINT: there is no system frame to paint.
+                return 0
+            if message == 0x86:  # WM_NCACTIVATE: allow activation without caption painting.
+                return 1
+            if message == 0x317:  # WM_PRINT can otherwise render a cached classic caption.
+                lparam &= ~0x2  # PRF_NONCLIENT; all visible pixels belong to the client.
             if message == 0x83:  # WM_NCCALCSIZE: the whole window is app content.
                 if (
                     lparam
