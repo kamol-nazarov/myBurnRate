@@ -502,7 +502,7 @@ def test_configured_br_m_admin_token_precedes_machine_token_validation(
 
         fabricated = client.get(
             endpoint,
-            headers={"Authorization": "Bearer br_m_not-a-registered-token"},
+            headers={"Authorization": "Bearer br_m_unregistered-test"},
         )
         assert fabricated.status_code == 401
 

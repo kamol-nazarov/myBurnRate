@@ -1,38 +1,63 @@
-"""BURNRATE's graphite/ember design system for native desktop widgets."""
+"""BURNRATE's Wealthfront-inspired light fintech design system for native desktop widgets."""
 
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
-BG = "#08080a"
-SURFACE = "#111114"
-RAISED = "#19191d"
-HOVER = "#252529"
-LINE = "#29292e"
-TEXT = "#f2f0eb"
-MUTED = "#a6a29c"
-ACCENT = "#ff6b22"
-GREEN = "#5ed3a2"
-WARNING = "#f0b88c"
+from spend_app.provider_logos import ICONS_1X, ICONS_2X, ICONS_15X, resolve_logo_key
+
+# Wealthfront iOS v2026 light fintech palette
+BG = "#f5f5fa"
+SURFACE = "#ffffff"
+RAISED = "#eeedf9"
+HOVER = "#e3e1f5"
+LINE = "#e4e4ee"
+DIVIDER = "#ececf4"
+TEXT = "#18172b"
+MUTED = "#6e6d7e"
+SUBTLE = "#8a899b"
+ACCENT = "#4840bb"
+ACCENT_HOVER = "#3d35a8"
+ACCENT_PRESSED = "#332c91"
+SEGMENT_BG = "#ebeaf5"
+GREEN = "#1f7a63"
+GREEN_BG = "#e6f4f0"
+WARNING = "#9a4d14"
+WARNING_BG = "#fdf1e6"
+
 FONT = "Segoe UI Variable Text" if sys.platform == "win32" else "Helvetica"
 DISPLAY = "Segoe UI Variable Display" if sys.platform == "win32" else FONT
 
 TOOL_COLORS = {
-    "claude-code": "#b596ff",
-    "claude": "#b596ff",
-    "codex": "#7ea6ff",
-    "opencode": "#5ed3a2",
-    "grok": "#5fd0e3",
-    "muse": "#f29bd0",
-    "cursor": "#e3c26b",
-    "zcode": "#f28b82",
-    "antigravity": "#a6e36f",
+    "claude-code": "#d97757",
+    "claude": "#d97757",
+    "anthropic": "#c96442",
+    "codex": "#4840bb",
+    "openai": "#10a37f",
+    "opencode": "#1f7a63",
+    "grok": "#18172b",
+    "xai": "#36344d",
+    "muse": "#0064e0",
+    "cursor": "#5b53d6",
+    "zcode": "#2563eb",
+    "antigravity": "#4285f4",
+    "gemini": "#4285f4",
+    "traycer": "#7c3aed",
+    "openrouter": "#6366f1",
+    "custom": "#8a899b",
 }
 
 
+def tool_color(key: object) -> str:
+    name = str(key or "").strip().lower()
+    if name in TOOL_COLORS:
+        return TOOL_COLORS[name]
+    resolved = resolve_logo_key(name)
+    return TOOL_COLORS.get(resolved, ACCENT)
+
+
 def dark_titlebar(window):
-    """Let Windows draw its own caption/buttons with the matching dark surface."""
+    """Apply Windows 11 light DWM surface, rounded corners, and subtle hairline border."""
     if sys.platform != "win32":
         return
     try:
@@ -44,7 +69,6 @@ def dark_titlebar(window):
         user32.GetParent.argtypes = [wintypes.HWND]
         user32.GetParent.restype = wintypes.HWND
         handle = user32.GetParent(window.winfo_id()) or window.winfo_id()
-        value = ctypes.c_int(1)
         setter = ctypes.windll.dwmapi.DwmSetWindowAttribute
         setter.argtypes = [
             wintypes.HWND,
@@ -52,9 +76,16 @@ def dark_titlebar(window):
             ctypes.c_void_p,
             wintypes.DWORD,
         ]
-        # Windows 10 used 19 before the attribute settled on 20.
-        if setter(handle, 20, ctypes.byref(value), ctypes.sizeof(value)) != 0:
-            setter(handle, 19, ctypes.byref(value), ctypes.sizeof(value))
+        # DWMWA_USE_IMMERSIVE_DARK_MODE = 20 (19 on older Win10): 0 = light surface
+        light_mode = ctypes.c_int(0)
+        if setter(handle, 20, ctypes.byref(light_mode), ctypes.sizeof(light_mode)) != 0:
+            setter(handle, 19, ctypes.byref(light_mode), ctypes.sizeof(light_mode))
+        # DWMWA_WINDOW_CORNER_PREFERENCE = 33 -> DWMWCP_ROUND (2)
+        round_corners = ctypes.c_int(2)
+        setter(handle, 33, ctypes.byref(round_corners), ctypes.sizeof(round_corners))
+        # DWMWA_BORDER_COLOR = 34 -> COLORREF 0x00BBGGRR for #E4E4EE
+        border_color = ctypes.c_int(0x00EEE4E4)
+        setter(handle, 34, ctypes.byref(border_color), ctypes.sizeof(border_color))
     except (OSError, AttributeError):
         pass
 
@@ -62,62 +93,132 @@ def dark_titlebar(window):
 def install(root):
     from tkinter import ttk
 
+    scale = ui_scale(root)
     root.configure(background=BG)
     root.option_add("*TCombobox*Listbox.font", (FONT, 10))
-    root.option_add("*TCombobox*Listbox.background", RAISED)
+    root.option_add("*TCombobox*Listbox.background", SURFACE)
     root.option_add("*TCombobox*Listbox.foreground", TEXT)
-    root.option_add("*TCombobox*Listbox.selectBackground", HOVER)
-    root.option_add("*TCombobox*Listbox.selectForeground", TEXT)
+    root.option_add("*TCombobox*Listbox.selectBackground", RAISED)
+    root.option_add("*TCombobox*Listbox.selectForeground", ACCENT)
     root.option_add("*TCombobox*Listbox.highlightThickness", 0)
+
     style = ttk.Style(root)
-    # Platform themes leave inputs and headers bright on Windows. Clam allows
-    # every native Tk control to share this palette, including Settings.
     style.theme_use("clam")
     style.configure(
         ".", background=BG, foreground=TEXT, font=(FONT, 10), bordercolor=LINE
     )
     style.configure("TFrame", background=BG)
+    style.configure("Card.TFrame", background=SURFACE)
+
+    # Canvas-level labels
     style.configure("TLabel", background=BG, foreground=TEXT)
-    style.configure("Muted.TLabel", foreground=MUTED)
-    style.configure("Caption.TLabel", foreground=MUTED, font=(FONT, 9))
-    style.configure("Title.TLabel", font=(DISPLAY, 21, "bold"))
-    style.configure("Value.TLabel", font=(DISPLAY, 44, "bold"))
-    style.configure("Metric.TLabel", font=(DISPLAY, 18, "bold"))
-    style.configure("Section.TLabel", font=(FONT, 11, "bold"))
-    style.configure("Live.TLabel", foreground=GREEN, font=(FONT, 9))
-    style.configure("Notice.TLabel", foreground=WARNING, font=(FONT, 9))
+    style.configure("Muted.TLabel", background=BG, foreground=MUTED)
+    style.configure("Caption.TLabel", background=BG, foreground=MUTED, font=(FONT, 9))
+    style.configure(
+        "Title.TLabel", background=BG, foreground=TEXT, font=(DISPLAY, 20, "bold")
+    )
+    style.configure(
+        "Section.TLabel", background=BG, foreground=TEXT, font=(FONT, 11, "bold")
+    )
+
+    # Elevated white card labels
+    style.configure("Card.TLabel", background=SURFACE, foreground=TEXT)
+    style.configure(
+        "CardEyebrow.TLabel",
+        background=SURFACE,
+        foreground=SUBTLE,
+        font=(FONT, 9, "bold"),
+    )
+    style.configure(
+        "CardSection.TLabel",
+        background=SURFACE,
+        foreground=TEXT,
+        font=(DISPLAY, 12, "bold"),
+    )
+    style.configure(
+        "CardMuted.TLabel",
+        background=SURFACE,
+        foreground=MUTED,
+        font=(FONT, 10, "bold"),
+    )
+    style.configure(
+        "CardCaption.TLabel",
+        background=SURFACE,
+        foreground=MUTED,
+        font=(FONT, 9),
+    )
+    style.configure(
+        "Value.TLabel",
+        background=SURFACE,
+        foreground=TEXT,
+        font=(DISPLAY, 42, "bold"),
+    )
+    style.configure(
+        "Metric.TLabel",
+        background=SURFACE,
+        foreground=TEXT,
+        font=(DISPLAY, 16, "bold"),
+    )
+
+    # Status pills & notice banner
+    style.configure(
+        "Live.TLabel",
+        background=GREEN_BG,
+        foreground=GREEN,
+        font=(FONT, 9, "bold"),
+        padding=(10, 4),
+    )
+    style.configure(
+        "WarnLive.TLabel",
+        background=WARNING_BG,
+        foreground=WARNING,
+        font=(FONT, 9, "bold"),
+        padding=(10, 4),
+    )
+    style.configure(
+        "Notice.TLabel",
+        background=WARNING_BG,
+        foreground=WARNING,
+        font=(FONT, 9),
+        padding=(12, 8),
+    )
+
+    # Buttons
     style.configure(
         "TButton",
-        background=RAISED,
+        background=SURFACE,
         foreground=TEXT,
         bordercolor=LINE,
-        lightcolor=RAISED,
-        darkcolor=RAISED,
-        padding=(13, 8),
+        lightcolor=SURFACE,
+        darkcolor=SURFACE,
+        padding=(13, 7),
+        font=(FONT, 9, "bold"),
         focuscolor=ACCENT,
         focusthickness=1,
         borderwidth=1,
     )
     style.map(
         "TButton",
-        background=[("disabled", SURFACE), ("pressed", HOVER), ("active", HOVER)],
-        foreground=[("disabled", MUTED)],
-        bordercolor=[("focus", ACCENT), ("active", "#45454b")],
+        background=[("disabled", BG), ("pressed", HOVER), ("active", RAISED)],
+        foreground=[("disabled", SUBTLE), ("active", ACCENT)],
+        bordercolor=[("focus", ACCENT), ("active", "#cbc8ee")],
     )
     style.configure(
         "Quiet.TButton",
-        background=BG,
-        bordercolor=BG,
-        lightcolor=BG,
-        darkcolor=BG,
-        foreground=MUTED,
-        padding=(10, 7),
+        background=SURFACE,
+        bordercolor=LINE,
+        lightcolor=SURFACE,
+        darkcolor=SURFACE,
+        foreground=TEXT,
+        font=(FONT, 9, "bold"),
+        padding=(11, 5),
+        borderwidth=1,
     )
     style.map(
         "Quiet.TButton",
         background=[("active", RAISED), ("pressed", HOVER)],
-        foreground=[("active", TEXT)],
-        bordercolor=[("focus", ACCENT), ("active", RAISED)],
+        foreground=[("active", ACCENT)],
+        bordercolor=[("focus", ACCENT), ("active", "#cbc8ee")],
     )
     style.configure(
         "Window.TButton",
@@ -127,42 +228,60 @@ def install(root):
         lightcolor=BG,
         darkcolor=BG,
         borderwidth=0,
-        padding=(6, 2),
+        padding=(7, 2),
         font=(FONT, 12),
     )
     style.map(
         "Window.TButton",
-        background=[("active", RAISED), ("pressed", HOVER)],
+        background=[("active", SEGMENT_BG), ("pressed", HOVER)],
         foreground=[("active", TEXT)],
-        bordercolor=[("focus", ACCENT), ("active", RAISED)],
+        bordercolor=[("focus", ACCENT), ("active", SEGMENT_BG)],
+    )
+    style.configure(
+        "Close.Window.TButton",
+        background=BG,
+        foreground=MUTED,
+        bordercolor=BG,
+        lightcolor=BG,
+        darkcolor=BG,
+        borderwidth=0,
+        padding=(7, 2),
+        font=(FONT, 12),
     )
     style.map(
         "Close.Window.TButton",
-        background=[("pressed", "#862a2a"), ("active", "#a33636")],
-        foreground=[("active", "#ffffff")],
-        bordercolor=[("focus", ACCENT), ("active", "#a33636")],
+        background=[("pressed", "#c93b3b"), ("active", "#e5484d")],
+        foreground=[("active", "#ffffff"), ("pressed", "#ffffff")],
+        bordercolor=[("focus", ACCENT), ("active", "#e5484d")],
     )
     style.configure(
         "Accent.TButton",
         background=ACCENT,
-        foreground=BG,
+        foreground="#ffffff",
         bordercolor=ACCENT,
         lightcolor=ACCENT,
         darkcolor=ACCENT,
-        font=(FONT, 10, "bold"),
+        font=(FONT, 9, "bold"),
+        padding=(14, 8),
     )
     style.map(
         "Accent.TButton",
-        background=[("active", "#ff8245"), ("pressed", "#e95b15"), ("disabled", HOVER)],
-        foreground=[("disabled", MUTED)],
-        bordercolor=[("focus", TEXT)],
+        background=[
+            ("active", ACCENT_HOVER),
+            ("pressed", ACCENT_PRESSED),
+            ("disabled", SEGMENT_BG),
+        ],
+        foreground=[("disabled", SUBTLE)],
+        bordercolor=[("focus", TEXT), ("active", ACCENT_HOVER)],
     )
+
+    # Wealthfront Governor Bay segmented time-range pills
     style.configure(
         "Segment.TRadiobutton",
-        background=SURFACE,
+        background=SEGMENT_BG,
         foreground=MUTED,
-        padding=(12, 8),
-        font=(FONT, 9),
+        padding=(13, 6),
+        font=(FONT, 9, "bold"),
         focuscolor=ACCENT,
         borderwidth=0,
     )
@@ -188,10 +307,12 @@ def install(root):
     )
     style.map(
         "Segment.TRadiobutton",
-        background=[("selected", "#303035"), ("active", HOVER)],
-        foreground=[("selected", TEXT), ("active", TEXT)],
+        background=[("selected", ACCENT), ("active", HOVER)],
+        foreground=[("selected", "#ffffff"), ("active", TEXT)],
     )
-    style.configure("Segment.TFrame", background=SURFACE)
+    style.configure("Segment.TFrame", background=SEGMENT_BG)
+
+    # Inputs & dropdowns
     style.configure(
         "TCombobox",
         fieldbackground=SURFACE,
@@ -201,8 +322,8 @@ def install(root):
         bordercolor=LINE,
         lightcolor=LINE,
         darkcolor=LINE,
-        padding=(10, 8),
-        arrowsize=12,
+        padding=(10, 6),
+        arrowsize=11,
     )
     style.map(
         "TCombobox",
@@ -210,7 +331,7 @@ def install(root):
         foreground=[("readonly", TEXT)],
         selectbackground=[("readonly", SURFACE)],
         selectforeground=[("readonly", TEXT)],
-        bordercolor=[("focus", ACCENT)],
+        bordercolor=[("focus", ACCENT), ("active", "#cbc8ee")],
     )
     style.configure(
         "TEntry",
@@ -225,58 +346,80 @@ def install(root):
     style.map(
         "TEntry",
         bordercolor=[("focus", ACCENT)],
-        fieldbackground=[("readonly", SURFACE)],
+        fieldbackground=[("readonly", BG)],
     )
     style.configure(
         "TCheckbutton",
-        background=BG,
+        background=SURFACE,
         foreground=TEXT,
-        indicatorbackground=RAISED,
+        indicatorbackground=SURFACE,
         indicatorforeground=ACCENT,
         focuscolor=ACCENT,
         padding=(0, 7),
     )
     style.map(
         "TCheckbutton",
-        background=[("active", BG)],
-        indicatorbackground=[("selected", ACCENT)],
+        background=[("active", SURFACE)],
+        indicatorbackground=[("selected", RAISED)],
     )
+
+    # White card tables with soft lavender active selection
     style.configure(
         "Treeview",
-        background=BG,
-        fieldbackground=BG,
+        background=SURFACE,
+        fieldbackground=SURFACE,
         foreground=TEXT,
         borderwidth=0,
         relief="flat",
-        rowheight=42,
+        rowheight=round(44 * scale),
         font=(FONT, 10),
     )
     style.map(
         "Treeview",
-        background=[("selected", "#30231e")],
+        background=[("selected", RAISED)],
         foreground=[("selected", TEXT)],
     )
     style.configure(
         "Treeview.Heading",
-        background=BG,
-        foreground=MUTED,
+        background=SURFACE,
+        foreground=SUBTLE,
         borderwidth=0,
         relief="flat",
-        font=(FONT, 9),
-        padding=(8, 10),
+        font=(FONT, 8, "bold"),
+        padding=(8, 8),
     )
-    style.map("Treeview.Heading", background=[("active", BG)])
+    style.map("Treeview.Heading", background=[("active", SURFACE)])
     style.layout("Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
-    style.configure("Usage.Treeview", rowheight=46, font=(FONT, 11))
+    style.configure(
+        "Usage.Treeview",
+        background=SURFACE,
+        fieldbackground=SURFACE,
+        foreground=TEXT,
+        rowheight=round(46 * scale),
+        font=(FONT, 10),
+    )
+    style.configure(
+        "Usage.Treeview.Heading",
+        background=SURFACE,
+        foreground=SUBTLE,
+        borderwidth=0,
+        relief="flat",
+        font=(FONT, 8, "bold"),
+        padding=(6, 8),
+    )
+    style.map("Usage.Treeview.Heading", background=[("active", SURFACE)])
+
+    # Scrollbar
     style.configure(
         "Vertical.TScrollbar",
-        background=HOVER,
-        troughcolor=BG,
+        background="#d5d4e4",
+        troughcolor=SURFACE,
         borderwidth=0,
         arrowcolor=MUTED,
-        arrowsize=11,
+        arrowsize=10,
+        width=6,
     )
-    style.map("Vertical.TScrollbar", background=[("active", "#414147")])
+    style.map("Vertical.TScrollbar", background=[("active", "#b4b2cc")])
     style.layout(
         "Vertical.TScrollbar",
         [
@@ -291,7 +434,8 @@ def install(root):
             )
         ],
     )
-    style.configure("Vertical.TScrollbar", width=6)
+
+    # Notebook tabs in Settings
     style.configure(
         "TNotebook",
         background=BG,
@@ -299,13 +443,14 @@ def install(root):
         bordercolor=BG,
         lightcolor=BG,
         darkcolor=BG,
-        tabmargins=(0, 0, 0, 15),
+        tabmargins=(0, 0, 0, 12),
     )
     style.configure(
         "TNotebook.Tab",
-        background=BG,
+        background=SEGMENT_BG,
         foreground=MUTED,
-        padding=(18, 11),
+        padding=(16, 8),
+        font=(FONT, 9, "bold"),
         borderwidth=0,
         bordercolor=BG,
         lightcolor=BG,
@@ -314,15 +459,44 @@ def install(root):
     )
     style.map(
         "TNotebook.Tab",
-        background=[("selected", RAISED), ("active", SURFACE)],
-        foreground=[("selected", TEXT)],
+        background=[("selected", ACCENT), ("active", HOVER)],
+        foreground=[("selected", "#ffffff"), ("active", TEXT)],
     )
+
     style.configure(
-        "TSeparator", background=LINE, lightcolor=LINE, darkcolor=LINE, bordercolor=LINE
+        "TSeparator",
+        background=DIVIDER,
+        lightcolor=DIVIDER,
+        darkcolor=DIVIDER,
+        bordercolor=DIVIDER,
     )
-    style.configure("Treeview", rowheight=round(42 * ui_scale(root)))
-    style.configure("Usage.Treeview", rowheight=round(46 * ui_scale(root)))
     root.after(0, lambda: dark_titlebar(root))
+
+
+def card(parent, *, padding=(18, 16, 18, 16)):
+    """Create an elevated white Wealthfront card with a crisp 1px #E4E4EE border."""
+    import tkinter as tk
+    from tkinter import ttk
+
+    shell = tk.Frame(
+        parent,
+        background=SURFACE,
+        highlightbackground=LINE,
+        highlightcolor=LINE,
+        highlightthickness=1,
+        bd=0,
+    )
+    body = ttk.Frame(shell, style="Card.TFrame", padding=padding)
+    body.pack(fill="both", expand=True)
+    return shell, body
+
+
+def _logo_bucket(scale: float) -> dict[str, str]:
+    if scale >= 1.75:
+        return ICONS_2X
+    if scale >= 1.25:
+        return ICONS_15X
+    return ICONS_1X
 
 
 def brand(parent):
@@ -330,44 +504,17 @@ def brand(parent):
     from tkinter import ttk
 
     row = ttk.Frame(parent)
-    mark = tk.Canvas(row, width=32, height=32, background=BG, highlightthickness=0)
-    mark.create_polygon(
-        6,
-        0,
-        23,
-        0,
-        29,
-        6,
-        29,
-        23,
-        23,
-        29,
-        6,
-        29,
-        0,
-        23,
-        0,
-        6,
-        smooth=True,
-        splinesteps=12,
-        fill=ACCENT,
-        outline="",
-    )
-    mark.create_line(9, 20, 20, 9, fill=BG, width=1.8)
-    mark.create_line(13, 9, 20, 9, 20, 16, fill=BG, width=1.8)
-    resources = Path(__file__).resolve().parents[1]
-    for path in (
-        resources / "32x32.png",
-        resources / "burnrate-assets/32x32.png",
-        resources / "src-tauri/icons/32x32.png",
-    ):
-        if path.is_file():
-            mark.image = tk.PhotoImage(master=parent, file=str(path))
-            mark.delete("all")
-            mark.create_image(0, 0, anchor="nw", image=mark.image)
-            break
-    mark.pack(side="left", padx=(0, 11))
-    ttk.Label(row, text="B U R N R A T E", font=(FONT, 10, "bold")).pack(side="left")
+    bucket = _logo_bucket(ui_scale(parent))
+    image = tk.PhotoImage(master=parent, data=bucket["brand"])
+    mark = ttk.Label(row, image=image)
+    mark.image = image
+    mark.pack(side="left", padx=(0, 9))
+    ttk.Label(
+        row,
+        text="BURNRATE",
+        font=(DISPLAY, 11, "bold"),
+        foreground=TEXT,
+    ).pack(side="left")
     return row
 
 
@@ -391,77 +538,38 @@ def size_window(root, width, height, minimum_width, minimum_height):
 
 
 def notice(parent):
+    import tkinter as tk
     from tkinter import ttk
+
+    shell = tk.Frame(
+        parent,
+        background=WARNING_BG,
+        highlightbackground="#f3d5b5",
+        highlightcolor="#f3d5b5",
+        highlightthickness=1,
+        bd=0,
+    )
 
     class Notice(ttk.Label):
         def configure(self, cnf=None, **kwargs):
             result = super().configure(cnf, **kwargs)
             if "text" in kwargs:
                 if kwargs["text"]:
-                    self.pack(fill="x", pady=(0, 8))
+                    shell.pack(fill="x", pady=(0, 10))
                 else:
-                    self.pack_forget()
+                    shell.pack_forget()
             return result
 
-    return Notice(parent, text="", wraplength=580, style="Notice.TLabel")
+    label = Notice(shell, text="", wraplength=540, style="Notice.TLabel")
+    label.pack(fill="x")
+    return label
 
 
 def tool_icon(root, key):
-    """A tiny vector-like tile, drawn in memory; no image files or web assets."""
+    """Return a crisp, DPI-matched vector-rendered provider brand badge."""
     import tkinter as tk
 
-    name = str(key)
-    family = next(
-        (
-            family
-            for family in TOOL_COLORS
-            if name == family or name.startswith(family + "-")
-        ),
-        "",
-    )
-    color = TOOL_COLORS.get(family, MUTED)
-    image = tk.PhotoImage(master=root, width=40, height=29)
-    base = "#212125"
-    for y in range(29):
-        inset = 4 if y in (0, 28) else 2 if y in (1, 27) else 1 if y in (2, 26) else 0
-        image.put(base, to=(inset, y, 29 - inset, y + 1))
-    # Simple deliberately geometric provider marks keep the native table crisp.
-    pixels = set()
-    if "claude" in str(key):
-        for t in range(-8, 9):
-            pixels.update(
-                ((14 + t, 14), (14, 14 + t), (14 + t, 14 + t), (14 + t, 14 - t))
-            )
-    elif "codex" in str(key):
-        for t in range(7):
-            pixels.update(((8 + t, 8 + t), (8 + t, 20 - t)))
-        pixels.update((x, 21) for x in range(16, 23))
-    elif "opencode" in str(key):
-        for t in range(9, 21):
-            pixels.update(((t, 9), (t, 20), (9, t), (20, t)))
-    elif "muse" in str(key):
-        for y in range(9, 21):
-            pixels.update(((8, y), (21, y)))
-        for t in range(7):
-            pixels.update(((8 + t, 9 + t), (21 - t, 9 + t)))
-    elif "grok" in name:
-        for t in range(9, 21):
-            pixels.update(((t, 9), (t, 20), (9, t)))
-        for t in range(14, 21):
-            pixels.update(((t, 15), (20, t)))
-    elif "zcode" in name:
-        for t in range(9, 21):
-            pixels.update(((t, 9), (t, 20), (29 - t, t)))
-    elif "antigravity" in name:
-        for t in range(13):
-            pixels.update(((14 - t // 2, 8 + t), (14 + t // 2, 8 + t)))
-        pixels.update((x, 16) for x in range(10, 19))
-    else:
-        for t in range(7):
-            pixels.update(
-                ((14 - t, 8 + t), (14 + t, 8 + t), (14 - t, 20 - t), (14 + t, 20 - t))
-            )
-    for x, y in pixels:
-        image.put(color, to=(x, y, x + 1, y + 1))
-    zoom = max(1, round(ui_scale(root)))
-    return image.zoom(zoom) if zoom > 1 else image
+    bucket = _logo_bucket(ui_scale(root))
+    logo_key = resolve_logo_key(key)
+    data = bucket.get(logo_key) or bucket["custom"]
+    return tk.PhotoImage(master=root, data=data)

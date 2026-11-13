@@ -606,3 +606,36 @@ def test_usage_only_scheduler_keeps_collection_jobs_and_omits_dashboard_jobs(
     job_ids = {job.id for job in scheduled.get_jobs()}
     assert {"local-ingest", "provider-admin"} <= job_ids
     assert not {"subscriptions", "quota-poll", "activity"} & job_ids
+
+
+def test_provider_logos_resolve_all_tools_and_admin_sources():
+    from spend_app import native_theme as theme
+    from spend_app.provider_logos import ICONS_1X, ICONS_2X, ICONS_15X, resolve_logo_key
+
+    assert theme.BG == "#f5f5fa"
+    assert theme.SURFACE == "#ffffff"
+    assert theme.ACCENT == "#4840bb"
+
+    expected = {
+        "claude-code": "claude",
+        "claude_local": "claude",
+        "api:anthropic_admin": "anthropic",
+        "codex": "codex",
+        "api:openai_admin": "openai",
+        "opencode": "opencode",
+        "muse": "muse",
+        "grok": "grok",
+        "zcode": "zcode",
+        "antigravity": "antigravity",
+        "cursor": "cursor",
+        "traycer": "traycer",
+        "openrouter": "openrouter",
+        "gemini": "gemini",
+        "unrecognized-source": "custom",
+    }
+    for source_key, logo_key in expected.items():
+        assert resolve_logo_key(source_key) == logo_key
+        assert logo_key in ICONS_1X
+        assert logo_key in ICONS_15X
+        assert logo_key in ICONS_2X
+        assert theme.tool_color(source_key).startswith("#")

@@ -34,6 +34,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     excludes=[
         "tkinter",
+        "webview",
         "pytest",
         "_pytest",
         "IPython",

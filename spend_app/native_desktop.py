@@ -288,6 +288,16 @@ def demo_report(period="today", machine="all") -> dict:
             {"id": "local", "name": "Desktop", "online": True},
             {"id": "example-laptop", "name": "Laptop", "online": True},
         ],
+        "series": [
+            {
+                "label": f"{8 + idx}:00",
+                "bucketUsd": round(127.34 / 10, 2),
+                "cumulativeUsd": round(127.34 * ((idx + 1) / 10) ** 1.18, 2),
+                "tokens": 820_000,
+                "cumulativeTokens": int(8_200_000 * ((idx + 1) / 10)),
+            }
+            for idx in range(10)
+        ],
     }
 
 
@@ -364,15 +374,19 @@ class UsageWindow:
         root.protocol("WM_DELETE_WINDOW", self.close)
         theme.install(root)
         self.chrome = NativeFrame(root)
-        frame = ttk.Frame(root, padding=(28, 24, 28, 18))
+        scale = theme.ui_scale(root)
+
+        frame = ttk.Frame(root, padding=(22, 18, 22, 16))
         frame.pack(fill="both", expand=True)
+
+        # Top navigation bar on Wealthfront grouped canvas (#F5F5FA)
         header = ttk.Frame(frame)
         self.header_frame = header
-        header.pack(fill="x", pady=(0, 12))
+        header.pack(fill="x", pady=(0, 14))
         theme.brand(header).pack(side="left")
         if self.chrome.enabled:
             controls = ttk.Frame(header)
-            controls.pack(side="right", padx=(10, 0))
+            controls.pack(side="right", padx=(8, 0))
             self.minimize_button = ttk.Button(
                 controls,
                 text="−",
@@ -388,21 +402,85 @@ class UsageWindow:
                 style="Close.Window.TButton",
                 command=self.close,
             )
-            self.close_button.pack(side="left", padx=(3, 0))
+            self.close_button.pack(side="left", padx=(2, 0))
+        ttk.Button(
+            header, text="Settings", style="Quiet.TButton", command=self.settings
+        ).pack(side="right", padx=(8, 0))
         self.live_status = ttk.Label(
             header, text="●  Starting tracker", style="Live.TLabel"
         )
         self.live_status.pack(side="right")
-        ttk.Button(
-            header, text="Settings", style="Quiet.TButton", command=self.settings
-        ).pack(side="right", padx=(0, 10))
-        heading = ttk.Frame(frame)
-        self.heading_frame = heading
-        heading.pack(fill="x", pady=(0, 12))
-        ttk.Label(heading, text="Your usage", style="Title.TLabel").pack(side="left")
-        filters = ttk.Frame(frame)
-        filters.pack(fill="x", pady=(0, 18))
-        periods = ttk.Frame(filters, padding=4, style="Segment.TFrame")
+
+        # Elevated white Hero Portfolio Card (#FFFFFF with 1px #E4E4EE border)
+        hero_shell, hero = theme.card(frame, padding=(20, 16, 20, 16))
+        hero_shell.pack(fill="x", pady=(0, 12))
+
+        hero_top = ttk.Frame(hero, style="Card.TFrame")
+        self.heading_frame = hero_top
+        hero_top.pack(fill="x", pady=(0, 6))
+        ttk.Label(
+            hero_top,
+            text="API-EQUIVALENT VALUE",
+            style="CardEyebrow.TLabel",
+        ).pack(side="left")
+        self.machine_picker = ttk.Combobox(
+            hero_top,
+            textvariable=self.computer,
+            values=["All computers"],
+            state="readonly",
+            width=18,
+        )
+        self.machine_picker.pack(side="right")
+        self.machine_picker.bind("<<ComboboxSelected>>", lambda _: self.change_scope())
+
+        value_row = ttk.Frame(hero, style="Card.TFrame")
+        value_row.pack(fill="x", pady=(0, 2))
+        self.value = ttk.Label(value_row, text="Loading…", style="Value.TLabel")
+        self.value.pack(side="left")
+        ttk.Label(value_row, text="USD", style="CardMuted.TLabel").pack(
+            side="left", anchor="s", padx=(10, 0), pady=(0, 10)
+        )
+        self.count = ttk.Label(
+            hero,
+            text="Measured tokens, valued at API rates.",
+            style="CardCaption.TLabel",
+        )
+        self.count.pack(anchor="w")
+
+        # Wealthfront-style proportional provider allocation bar
+        alloc_frame = ttk.Frame(hero, style="Card.TFrame")
+        self.alloc_frame = alloc_frame
+        alloc_frame.pack(fill="x", pady=(12, 4))
+        self.alloc_canvas = tk.Canvas(
+            alloc_frame,
+            height=max(6, round(8 * scale)),
+            background=theme.SURFACE,
+            highlightthickness=0,
+            bd=0,
+        )
+        self.alloc_canvas.pack(fill="x")
+        self.alloc_canvas.bind("<Configure>", lambda _: self._paint_allocation())
+
+        metrics = ttk.Frame(hero, style="Card.TFrame")
+        self.metrics_frame = metrics
+        metrics.pack(fill="x", pady=(10, 4))
+        self.metric_labels = []
+        for index, label in enumerate(
+            ("Recorded tokens", "Active tools", "Computers in view")
+        ):
+            cell = ttk.Frame(metrics, style="Card.TFrame")
+            cell.grid(row=0, column=index, sticky="w")
+            metrics.columnconfigure(index, weight=1, uniform="metrics")
+            number = ttk.Label(cell, text="—", style="Metric.TLabel")
+            number.pack(anchor="w")
+            ttk.Label(cell, text=label, style="CardCaption.TLabel").pack(
+                anchor="w", pady=(2, 0)
+            )
+            self.metric_labels.append(number)
+
+        periods_row = ttk.Frame(hero, style="Card.TFrame")
+        periods_row.pack(fill="x", pady=(12, 0))
+        periods = ttk.Frame(periods_row, padding=3, style="Segment.TFrame")
         periods.pack(side="left")
         for index, (key, label) in enumerate(PERIOD_LABELS.items()):
             ttk.Radiobutton(
@@ -413,90 +491,12 @@ class UsageWindow:
                 command=self.change_scope,
                 style="Segment.TRadiobutton",
             ).grid(row=0, column=index, sticky="nsew")
-        self.machine_picker = ttk.Combobox(
-            filters,
-            textvariable=self.computer,
-            values=["All computers"],
-            state="readonly",
-            width=18,
-        )
-        self.machine_picker.pack(side="right")
-        self.machine_picker.bind("<<ComboboxSelected>>", lambda _: self.change_scope())
-        ttk.Label(frame, text="API-equivalent value", style="Muted.TLabel").pack(
-            anchor="w"
-        )
-        value_row = ttk.Frame(frame)
-        value_row.pack(fill="x", pady=(0, 2))
-        self.value = ttk.Label(value_row, text="Loading…", style="Value.TLabel")
-        self.value.pack(side="left")
-        ttk.Label(value_row, text="USD", style="Muted.TLabel").pack(
-            side="left", anchor="s", padx=(10, 0), pady=(0, 11)
-        )
-        self.count = ttk.Label(
-            frame, text="Measured tokens, valued at API rates.", style="Caption.TLabel"
-        )
-        self.count.pack(anchor="w")
-        metrics = ttk.Frame(frame)
-        self.metrics_frame = metrics
-        metrics.pack(fill="x", pady=(16, 16))
-        self.metric_labels = []
-        for index, label in enumerate(
-            ("Recorded tokens", "Active tools", "Computers in view")
-        ):
-            cell = ttk.Frame(metrics)
-            cell.grid(row=0, column=index, sticky="w")
-            metrics.columnconfigure(index, weight=1, uniform="metrics")
-            number = ttk.Label(cell, text="—", style="Metric.TLabel")
-            number.pack(anchor="w")
-            ttk.Label(cell, text=label, style="Caption.TLabel").pack(
-                anchor="w", pady=(3, 0)
-            )
-            self.metric_labels.append(number)
-        ttk.Separator(frame).pack(fill="x", pady=(0, 10))
+
         notice_row = ttk.Frame(frame)
         notice_row.pack(fill="x")
         self.notice = theme.notice(notice_row)
-        table_frame = ttk.Frame(frame)
-        self.tree = ttk.Treeview(
-            table_frame,
-            columns=("tokens", "value"),
-            style="Usage.Treeview",
-            show="tree headings",
-            selectmode="browse",
-        )
-        self.tree.heading("#0", text="Usage by tool", anchor="w")
-        self.tree.heading("tokens", text="Tokens")
-        self.tree.heading("value", text="API value")
-        self.tree.heading("tokens", anchor="e")
-        self.tree.heading("value", anchor="e")
-        self.tree.column("#0", width=300, minwidth=190)
-        self.tree.column(
-            "tokens",
-            width=round(110 * theme.ui_scale(root)),
-            minwidth=80,
-            anchor="e",
-            stretch=False,
-        )
-        self.tree.column(
-            "value",
-            width=round(110 * theme.ui_scale(root)),
-            minwidth=90,
-            anchor="e",
-            stretch=False,
-        )
-        self.tree.tag_configure("model", foreground=theme.MUTED, font=(theme.FONT, 10))
-        self.tool_icons = {}
-        scroll = ttk.Scrollbar(table_frame, command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scroll.set)
-        scroll.pack(side="right", fill="y")
-        self.tree.pack(fill="both", expand=True)
-        self.tree.bind("<<TreeviewSelect>>", self.selection)
-        self.detail = ttk.Label(
-            frame,
-            text="Expand a tool for model and token details.",
-            wraplength=580,
-            style="Caption.TLabel",
-        )
+
+        # Reserve footer before the expandable Providers Card so small heights never clip Refresh
         bottom = ttk.Frame(frame)
         self.status = ttk.Label(
             bottom, text="Starting tracker…", style="Caption.TLabel"
@@ -506,22 +506,65 @@ class UsageWindow:
             bottom, text="↻  Refresh", command=lambda: self.refresh(restart=True)
         )
         self.refresh_button.pack(side="right", padx=(8, 0))
-        # Reserve the footer before letting the history list consume space.
-        # Otherwise Tk's packing order clips Settings/Refresh at small sizes.
-        bottom.pack(side="bottom", fill="x", pady=(12, 0))
-        ttk.Separator(frame).pack(side="bottom", fill="x", pady=(12, 0))
-        self.detail.pack(side="bottom", fill="x", pady=(10, 0))
+        bottom.pack(side="bottom", fill="x", pady=(10, 0))
+
+        # Elevated white Providers Card (#FFFFFF with 1px #E4E4EE border)
+        providers_shell, providers = theme.card(frame, padding=(16, 12, 16, 12))
+        providers_shell.pack(fill="both", expand=True)
+
+        self.detail = ttk.Label(
+            providers,
+            text="Expand a tool for model and token details.",
+            wraplength=540,
+            style="CardCaption.TLabel",
+        )
+        self.detail.pack(side="bottom", fill="x", pady=(8, 0))
+        ttk.Separator(providers).pack(side="bottom", fill="x", pady=(6, 0))
+
+        table_frame = ttk.Frame(providers, style="Card.TFrame")
+        self.tree = ttk.Treeview(
+            table_frame,
+            columns=("tokens", "value"),
+            style="Usage.Treeview",
+            show="tree headings",
+            selectmode="browse",
+        )
+        self.tree.heading("#0", text="PROVIDERS", anchor="w")
+        self.tree.heading("tokens", text="TOKENS", anchor="e")
+        self.tree.heading("value", text="API VALUE", anchor="e")
+        self.tree.column("#0", width=290, minwidth=185)
+        self.tree.column(
+            "tokens",
+            width=round(108 * scale),
+            minwidth=80,
+            anchor="e",
+            stretch=False,
+        )
+        self.tree.column(
+            "value",
+            width=round(108 * scale),
+            minwidth=90,
+            anchor="e",
+            stretch=False,
+        )
+        self.tree.tag_configure("model", foreground=theme.MUTED, font=(theme.FONT, 9))
+        self.tool_icons = {}
+        scroll = ttk.Scrollbar(table_frame, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        self.tree.pack(fill="both", expand=True)
+        self.tree.bind("<<TreeviewSelect>>", self.selection)
         table_frame.pack(fill="both", expand=True)
 
         def resize(event):
             if event.widget == root:
                 for label in (self.notice, self.detail):
-                    label.configure(wraplength=max(240, event.width - 56))
+                    label.configure(wraplength=max(240, event.width - 84))
                 self._adapt_layout(event.height)
 
         root.bind("<Configure>", resize, add="+")
         self.chrome.drag_region(header)
-        self.chrome.drag_region(heading)
+        self.chrome.drag_region(hero_top)
         root.after(50, self._drain)
         root.after(
             50,
@@ -545,19 +588,25 @@ class UsageWindow:
         if compact == self.compact:
             return
         self.compact = compact
+        alloc = getattr(self, "alloc_frame", None)
         if compact:
-            self.heading_frame.pack_forget()
+            if alloc is not None:
+                alloc.pack_forget()
             self.metrics_frame.pack_forget()
         else:
-            self.heading_frame.pack(fill="x", pady=(0, 12), after=self.header_frame)
-            self.metrics_frame.pack(fill="x", pady=(16, 16), after=self.count)
+            if alloc is not None:
+                alloc.pack(fill="x", pady=(12, 4), after=self.count)
+                self.metrics_frame.pack(fill="x", pady=(10, 4), after=alloc)
+            else:
+                self.metrics_frame.pack(fill="x", pady=(10, 4), after=self.count)
         self._paint_value()
         if self.report is not None:
             self._paint_summary()
+            self._paint_allocation()
 
     def _paint_value(self):
-        base = 32 if self.compact else 44
-        size = max(24, base - max(0, len(self.value_text) - 9) * 2)
+        base = 30 if self.compact else 42
+        size = max(22, base - max(0, len(self.value_text) - 9) * 2)
         self.value.configure(text=self.value_text, font=(theme.DISPLAY, size, "bold"))
 
     def _paint_summary(self):
@@ -572,6 +621,61 @@ class UsageWindow:
             else f"{tokens(data['total'].get('tokens'))} tokens · {len(ordinary)} tools · {computers} computers"
             if self.compact
             else "Measured tokens, valued at API rates."
+        )
+
+    def _paint_allocation(self):
+        canvas = getattr(self, "alloc_canvas", None)
+        if canvas is None or not canvas.winfo_exists():
+            return
+        canvas.delete("all")
+        width = canvas.winfo_width()
+        height = canvas.winfo_height()
+        if width <= 4 or height <= 1:
+            return
+        canvas.create_rectangle(0, 0, width, height, fill=theme.SEGMENT_BG, outline="")
+        if self.report is None:
+            return
+        tools = [
+            item
+            for item in (self.report.get("tools") or [])
+            if not item.get("organization")
+        ] or list(self.report.get("tools") or [])
+        if not tools:
+            return
+        weights = [max(0.0, float(item.get("valueUsd") or 0.0)) for item in tools]
+        if sum(weights) <= 0:
+            weights = [max(0.0, float(item.get("tokens") or 0.0)) for item in tools]
+        total_weight = sum(weights)
+        if total_weight <= 0:
+            return
+        active = [(item, w) for item, w in zip(tools, weights) if w > 0]
+        gap = 2 if len(active) > 1 else 0
+        usable = max(1, width - gap * (len(active) - 1))
+        cursor = 0.0
+        for idx, (item, weight) in enumerate(active):
+            seg_w = (
+                width - round(cursor)
+                if idx == len(active) - 1
+                else max(3, round(usable * (weight / total_weight)))
+            )
+            x0 = round(cursor)
+            x1 = min(width, x0 + seg_w)
+            if x1 > x0:
+                canvas.create_rectangle(
+                    x0,
+                    0,
+                    x1,
+                    height,
+                    fill=theme.tool_color(item.get("key")),
+                    outline="",
+                )
+            cursor = x1 + gap
+
+    def _set_live_status(self, text: str, *, warn: bool = False):
+        self.live_status.configure(
+            text=text,
+            foreground=theme.WARNING if warn else theme.GREEN,
+            style="WarnLive.TLabel" if warn else "Live.TLabel",
         )
 
     def save_preferences(self):
@@ -616,9 +720,7 @@ class UsageWindow:
                             failed(exc)
                         else:
                             self.status.configure(text="Tracker unavailable")
-                            self.live_status.configure(
-                                text="●  Unavailable", foreground=theme.WARNING
-                            )
+                            self._set_live_status("●  Unavailable", warn=True)
                             if self.report is None:
                                 self.value_text = "Unavailable"
                                 self._paint_value()
@@ -645,6 +747,7 @@ class UsageWindow:
         self.items.clear()
         self.value_text = "Loading…"
         self._paint_value()
+        self._paint_allocation()
         self.count.configure(text="Loading the selected usage period")
         for label in self.metric_labels:
             label.configure(text="—")
@@ -682,9 +785,7 @@ class UsageWindow:
         def failed(error):
             if generation == self.generation:
                 self.status.configure(text="Refresh failed")
-                self.live_status.configure(
-                    text="●  Refresh failed", foreground=theme.WARNING
-                )
+                self._set_live_status("●  Refresh failed", warn=True)
                 self.notice.configure(
                     text=str(error)
                     if isinstance(error, DesktopError)
@@ -725,6 +826,7 @@ class UsageWindow:
         self._paint_value()
         ordinary = [item for item in data["tools"] if not item.get("organization")]
         self._paint_summary()
+        self._paint_allocation()
         for label, text in zip(
             self.metric_labels,
             (
@@ -891,17 +993,16 @@ class UsageWindow:
         timezone = self.report.get("timezone")
         self.status.configure(text=fresh + (f" · {timezone}" if timezone else ""))
         scope = self.report.get("scope")
-        self.live_status.configure(
-            text="●  Sample data"
+        warn = scope in {"unavailable", "local-fallback"}
+        self._set_live_status(
+            "●  Sample data"
             if self.demo
             else "●  Hub unavailable"
             if scope == "unavailable"
             else "●  Local copy"
             if scope == "local-fallback"
             else "●  Tracking",
-            foreground=theme.WARNING
-            if scope in {"unavailable", "local-fallback"}
-            else theme.GREEN,
+            warn=warn,
         )
 
     def selection(self, _event=None):
@@ -950,53 +1051,68 @@ class SettingsWindow:
         window.title("BURNRATE Settings")
         window.transient(app.root)
         window.attributes("-topmost", app.topmost.get())
-        theme.size_window(window, 640, 600, 580, 510)
-        header = ttk.Frame(window, padding=(24, 22, 24, 16))
+        theme.size_window(window, 650, 620, 580, 520)
+
+        header = ttk.Frame(window, padding=(24, 20, 24, 14))
         header.pack(fill="x")
         ttk.Label(header, text="Settings", style="Title.TLabel").pack(side="left")
         ttk.Button(
-            header, text="Done", style="Quiet.TButton", command=window.destroy
+            header, text="Done", style="Accent.TButton", command=window.destroy
         ).pack(side="right")
+
         notebook = ttk.Notebook(window)
-        notebook.pack(fill="both", expand=True, padx=24, pady=(0, 24))
-        sources, computers, general = (
-            ttk.Frame(notebook, padding=(0, 8, 0, 0)) for _ in range(3)
+        notebook.pack(fill="both", expand=True, padx=24, pady=(0, 22))
+        sources_tab, computers_tab, general_tab = (
+            ttk.Frame(notebook, padding=(0, 4, 0, 0)) for _ in range(3)
         )
         for label, frame in (
-            ("Sources", sources),
-            ("Computers", computers),
-            ("General", general),
+            ("Sources", sources_tab),
+            ("Computers", computers_tab),
+            ("General", general_tab),
         ):
             notebook.add(frame, text=label)
+
+        sources_shell, sources = theme.card(sources_tab, padding=(18, 16, 18, 16))
+        sources_shell.pack(fill="both", expand=True)
         ttk.Label(
-            sources, text="Usage sources on this computer", style="Section.TLabel"
+            sources, text="USAGE SOURCES ON THIS COMPUTER", style="CardEyebrow.TLabel"
         ).pack(anchor="w", pady=(0, 8))
         listing = ttk.Treeview(
             sources, columns=("state",), show="tree headings", height=8
         )
-        listing.heading("#0", text="Source", anchor="w")
-        listing.heading("state", text="Status", anchor="w")
-        listing.column("#0", width=250)
-        listing.column("state", width=190)
+        listing.heading("#0", text="PROVIDER", anchor="w")
+        listing.heading("state", text="STATUS", anchor="w")
+        listing.column("#0", width=270)
+        listing.column("state", width=180)
         details = ttk.Label(
             sources,
             text="Select a source to change its location or connection.",
-            wraplength=530,
-            style="Caption.TLabel",
+            wraplength=520,
+            style="CardCaption.TLabel",
         )
         rows = {}
         disconnect_change = SourceMutation(app.client)
+
+        computers_shell, computers = theme.card(computers_tab, padding=(18, 16, 18, 16))
+        computers_shell.pack(fill="both", expand=True)
+        ttk.Label(computers, text="PAIRED COMPUTERS", style="CardEyebrow.TLabel").pack(
+            anchor="w", pady=(0, 8)
+        )
         machines = ttk.Treeview(
             computers, columns=("state",), show="tree headings", height=8
         )
-        machines.heading("#0", text="Computer")
-        machines.heading("state", text="Status")
+        machines.heading("#0", text="COMPUTER", anchor="w")
+        machines.heading("state", text="STATUS", anchor="w")
         pair_state = {}
         feedback = ttk.Label(
             computers,
             text="All paired computers contribute to the combined usage view.",
-            wraplength=520,
+            wraplength=510,
+            style="CardCaption.TLabel",
         )
+
+        general_shell, general = theme.card(general_tab, padding=(18, 18, 18, 18))
+        general_shell.pack(fill="both", expand=True)
 
         def failure(exc):
             if window.winfo_exists():
@@ -1032,7 +1148,12 @@ class SettingsWindow:
                         "",
                         "end",
                         text=row["name"],
-                        values=(str(row.get("state") or "Unknown").replace("_", " "),),
+                        values=(
+                            str(row.get("state") or "Unknown")
+                            .replace("_", " ")
+                            .capitalize(),
+                        ),
+                        image=app._tool_image(row["source"]),
                     )
                     rows[key] = row
                 machines.delete(*machines.get_children())
@@ -1083,13 +1204,16 @@ class SettingsWindow:
             change = SourceMutation(app.client)
             dialog.title("Connect " + row["name"])
             dialog.transient(window)
-            form = ttk.Frame(dialog, padding=16)
-            form.pack(fill="both", expand=True)
+            outer = ttk.Frame(dialog, padding=18)
+            outer.pack(fill="both", expand=True)
+            card_shell, form = theme.card(outer, padding=(18, 16, 18, 16))
+            card_shell.pack(fill="both", expand=True)
             api = row.get("kind") == "api"
             ttk.Label(
                 form,
                 text=row.get("credentialHelp") if api else "Usage location",
                 wraplength=480,
+                style="Card.TLabel",
             ).pack(anchor="w")
             text = tk.StringVar(value="" if api else row.get("location", ""))
             entry = ttk.Entry(
@@ -1112,6 +1236,7 @@ class SettingsWindow:
                 form,
                 text="Connecting permits BURNRATE to read usage from this source.",
                 wraplength=480,
+                style="CardCaption.TLabel",
             ).pack(anchor="w", pady=10)
 
             def connect_source():
@@ -1211,7 +1336,7 @@ class SettingsWindow:
                 failed,
             )
 
-        actions = ttk.Frame(sources)
+        actions = ttk.Frame(sources, style="Card.TFrame")
         actions.pack(side="bottom", fill="x")
         ttk.Button(actions, text="Refresh", command=load).pack(side="left")
         ttk.Button(actions, text="Connect / change…", command=configure_source).pack(
@@ -1220,7 +1345,7 @@ class SettingsWindow:
         disconnect_button = ttk.Button(actions, text="Disconnect", command=disconnect)
         disconnect_button.pack(side="right")
         details.pack(side="bottom", fill="x", pady=(8, 12))
-        listing.pack(fill="both", expand=True, pady=8)
+        listing.pack(fill="both", expand=True, pady=6)
 
         pair_pending = [False]
 
@@ -1306,12 +1431,15 @@ class SettingsWindow:
                 dialog.configure(background=theme.BG)
                 dialog.after(0, lambda: theme.dark_titlebar(dialog))
                 dialog.title("Pairing code")
-                body = ttk.Frame(dialog, padding=16)
-                body.pack(fill="both", expand=True)
+                outer = ttk.Frame(dialog, padding=18)
+                outer.pack(fill="both", expand=True)
+                card_shell, body = theme.card(outer, padding=(18, 16, 18, 16))
+                card_shell.pack(fill="both", expand=True)
                 ttk.Label(
                     body,
                     text="Paste this code into BURNRATE on the other computer. Keep it private.",
                     wraplength=460,
+                    style="Card.TLabel",
                 ).pack()
                 text = ttk.Entry(body, width=70)
                 text.insert(0, data["pairingCode"])
@@ -1322,7 +1450,9 @@ class SettingsWindow:
                     dialog.clipboard_clear()
                     dialog.clipboard_append(data["pairingCode"])
 
-                ttk.Button(body, text="Copy code", command=copy_code).pack()
+                ttk.Button(
+                    body, text="Copy code", style="Accent.TButton", command=copy_code
+                ).pack()
                 load()
 
             pairing_busy(True)
@@ -1334,7 +1464,7 @@ class SettingsWindow:
                 pairing_failed,
             )
 
-        pair_actions = ttk.Frame(computers)
+        pair_actions = ttk.Frame(computers, style="Card.TFrame")
         pair_actions.pack(side="bottom", fill="x")
         pair_buttons = [
             ttk.Button(pair_actions, text="Create pairing code…", command=create_code),
@@ -1343,13 +1473,16 @@ class SettingsWindow:
         for button in pair_buttons:
             button.pack(side="left", padx=(0, 8))
         feedback.pack(side="bottom", fill="x", pady=(8, 12))
-        machines.pack(fill="both", expand=True, pady=(0, 12))
+        machines.pack(fill="both", expand=True, pady=(0, 10))
 
         def pin():
             app.root.attributes("-topmost", app.topmost.get())
             app.chrome.refresh()
             app.save_preferences()
 
+        ttk.Label(general, text="WINDOW PREFERENCES", style="CardEyebrow.TLabel").pack(
+            anchor="w", pady=(0, 8)
+        )
         ttk.Checkbutton(
             general, text="Keep usage window on top", variable=app.topmost, command=pin
         ).pack(anchor="w", pady=(0, 14))
@@ -1357,11 +1490,13 @@ class SettingsWindow:
             general,
             text="Collection continues in the background when this window closes. Reopen BURNRATE to see usage.",
             wraplength=500,
+            style="CardCaption.TLabel",
         ).pack(anchor="w")
         if app.demo:
             ttk.Label(
                 general,
                 text="Sample-data demo: connections and computer pairing are disabled.",
+                style="CardCaption.TLabel",
             ).pack(anchor="w", pady=15)
         load()
 
@@ -1381,6 +1516,26 @@ def main(
         load_user_env()
     settings = settings or load_settings()
     port = port if port is not None else int(os.getenv("BURNRATE_PORT", "17331"))
+    if os.getenv("BURNRATE_TK_FALLBACK") != "1":
+        try:
+            from webview.errors import WebViewException
+
+            from spend_app.wealthfront_window import run_webview
+        except ImportError:
+            run_webview = None
+            WebViewException = RuntimeError
+        if run_webview is not None:
+            try:
+                return run_webview(
+                    DemoClient() if demo else NativeClient(settings, port),
+                    preferences=None
+                    if demo
+                    else settings.database_path.parent / "native-window.json",
+                    demo=demo,
+                    smoke_test=smoke_test,
+                )
+            except WebViewException:
+                pass
     if sys.platform == "win32":
         try:
             import ctypes

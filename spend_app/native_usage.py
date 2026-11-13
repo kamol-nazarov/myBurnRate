@@ -86,6 +86,72 @@ def _public(parts: dict) -> dict:
     }
 
 
+def _build_series(
+    samples: list[tuple[datetime, Decimal, int]],
+    *,
+    period: str,
+    start: datetime,
+    now: datetime,
+    timezone: str,
+) -> list[dict]:
+    zone = ZoneInfo(timezone)
+    if period == "all":
+        earliest = min(
+            (when for when, _, _ in samples), default=now - timedelta(days=14)
+        )
+        span_start = min(earliest, now - timedelta(days=1))
+    else:
+        span_start = start
+    total_seconds = max(3600.0, (now - span_start).total_seconds())
+    if period == "today":
+        hours = max(4, int(total_seconds // 3600) + 1)
+        bucket_count = min(24, hours)
+    elif period == "week":
+        bucket_count = 14
+    elif period == "month":
+        days = max(
+            2,
+            (now.astimezone(zone).date() - span_start.astimezone(zone).date()).days + 1,
+        )
+        bucket_count = min(31, max(7, days))
+    else:
+        bucket_count = 20
+
+    step = total_seconds / bucket_count
+    bucket_usd = [Decimal(0) for _ in range(bucket_count)]
+    bucket_tok = [0 for _ in range(bucket_count)]
+    for when, usd, tok in samples:
+        offset = (when - span_start).total_seconds()
+        idx = min(bucket_count - 1, max(0, int(offset / step)))
+        bucket_usd[idx] += usd
+        bucket_tok[idx] += tok
+
+    points: list[dict] = []
+    running_usd = Decimal(0)
+    running_tok = 0
+    for idx in range(bucket_count):
+        point_end = span_start + timedelta(seconds=step * (idx + 1))
+        local_end = point_end.astimezone(zone)
+        if period == "today":
+            label = local_end.strftime("%I:%M %p").lstrip("0")
+        elif period in {"week", "month"}:
+            label = local_end.strftime("%b %d").replace(" 0", " ")
+        else:
+            label = local_end.strftime("%b %d, %Y").replace(" 0", " ")
+        running_usd += bucket_usd[idx]
+        running_tok += bucket_tok[idx]
+        points.append(
+            {
+                "label": label,
+                "bucketUsd": float(bucket_usd[idx]),
+                "cumulativeUsd": float(running_usd),
+                "tokens": bucket_tok[idx],
+                "cumulativeTokens": running_tok,
+            }
+        )
+    return points
+
+
 def _rows(connection, start: datetime, end: datetime, machine: str) -> list[dict]:
     # Existing loaders already preserve identities and half-open UTC ranges.
     priced = aggregate._load_events(connection, start, end, "all", machine)
@@ -124,6 +190,7 @@ def usage_report(
         total, organizations = _empty(), _empty()
         tools: dict[str, dict] = {}
         models: dict[str, dict[str, dict]] = defaultdict(dict)
+        timeline_samples: list[tuple[datetime, Decimal, int]] = []
         for row in rows:
             cached = max(0, int(row.get("cached_input_tokens") or 0))
             inp = max(0, int(row.get("input_tokens") or 0))
@@ -164,6 +231,8 @@ def usage_report(
             _add(group, parts, value)
             _add(detail, parts, value)
             _add(organizations if org else total, parts, value)
+            if not org and when is not None:
+                timeline_samples.append((when, value or Decimal(0), parts["tokens"]))
         result = []
         for tool, parts in tools.items():
             org = tool.startswith("api:")
@@ -197,6 +266,13 @@ def usage_report(
                 item["name"],
             )
         )
+        series = _build_series(
+            timeline_samples,
+            period=period,
+            start=start,
+            now=now,
+            timezone=settings.timezone,
+        )
         return {
             "period": period,
             "periodLabel": PERIODS[period],
@@ -209,6 +285,7 @@ def usage_report(
             "total": _public(total),
             "organizationTotal": _public(organizations),
             "tools": result,
+            "series": series,
         }
 
     report = aggregate._memo("native_usage", key, compute)

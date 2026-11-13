@@ -1,0 +1,1948 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BURNRATE</title>
+<style>
+/*__EMBEDDED_FONTS__*/
+
+:root {
+  --bg-hero: #ffffff;
+  --bg-canvas: #f5f6fa;
+  --surface: #ffffff;
+  --surface-subtle: #f7f7fb;
+  --ink: #18172b;
+  --ink-secondary: #68677d;
+  --ink-tertiary: #9190a6;
+  --accent: #4840bb;
+  --accent-hover: #3c34a6;
+  --accent-soft: #ecebf9;
+  --mint: #13795b;
+  --mint-bg: #e7f6f0;
+  --warn: #9a4d14;
+  --warn-bg: #fdf2e7;
+  --warn-border: #f4d8bc;
+  --danger: #d93848;
+  --border: rgba(24, 23, 43, 0.075);
+  --divider: #f0f0f6;
+  --shadow-card: 0 1px 6px rgba(24, 23, 43, 0.03), 0 1px 2px rgba(24, 23, 43, 0.02);
+  --shadow-pop: 0 12px 28px rgba(24, 23, 43, 0.14), 0 2px 6px rgba(24, 23, 43, 0.06);
+  --font: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", system-ui, sans-serif;
+  --display: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display", system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-canvas);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+
+/* Inline preview mode so chat renders the exact 384px compact window without inner scrollbars */
+html.preview-mode,
+html.preview-mode body {
+  height: auto;
+  overflow: visible;
+  background: transparent;
+}
+html.preview-mode body {
+  padding: 8px 0;
+}
+html.preview-mode .app-shell {
+  max-width: 384px;
+  height: auto;
+  margin: 0 auto;
+  border-radius: 12px;
+  border: 1px solid #e2e2ec;
+  box-shadow: 0 10px 28px rgba(24, 23, 43, 0.08), 0 2px 6px rgba(24, 23, 43, 0.04);
+  overflow: hidden;
+}
+html.preview-mode .scroll-body {
+  overflow: visible;
+}
+html.preview-mode .rz {
+  display: none;
+}
+
+button, input {
+  font-family: inherit;
+}
+
+/* Invisible 5px perimeter resize handles for frameless Windows resizing */
+.rz { position: fixed; z-index: 9999; }
+.rz-n { top: 0; left: 8px; right: 8px; height: 5px; cursor: ns-resize; }
+.rz-s { bottom: 0; left: 8px; right: 8px; height: 5px; cursor: ns-resize; }
+.rz-w { left: 0; top: 8px; bottom: 8px; width: 5px; cursor: ew-resize; }
+.rz-e { right: 0; top: 8px; bottom: 8px; width: 5px; cursor: ew-resize; }
+.rz-nw { top: 0; left: 0; width: 9px; height: 9px; cursor: nwse-resize; }
+.rz-ne { top: 0; right: 0; width: 9px; height: 9px; cursor: nesw-resize; }
+.rz-sw { bottom: 0; left: 0; width: 9px; height: 9px; cursor: nesw-resize; }
+.rz-se { bottom: 0; right: 0; width: 9px; height: 9px; cursor: nwse-resize; }
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  background: var(--bg-canvas);
+  position: relative;
+}
+
+/* Compact frameless navigation bar */
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px 5px 14px;
+  background: var(--bg-hero);
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+.brand-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.brand-mark {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  background: linear-gradient(145deg, #564ed1 0%, #4139b0 100%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #ffffff;
+  box-shadow: 0 1px 4px rgba(72, 64, 187, 0.26);
+  flex-shrink: 0;
+}
+
+.brand-title {
+  font-family: var(--display);
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.045em;
+  color: var(--ink);
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1.5px 6.5px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  background: var(--mint-bg);
+  color: var(--mint);
+  white-space: nowrap;
+}
+
+.status-pill.warn {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.status-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.top-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.scope-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 23px;
+  padding: 0 8px;
+  margin-right: 2px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-subtle);
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease;
+  max-width: 126px;
+}
+
+.scope-trigger span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scope-trigger:hover {
+  background: var(--accent-soft);
+  border-color: rgba(72, 64, 187, 0.22);
+  color: var(--accent);
+}
+
+.icon-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
+  color: var(--ink-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.icon-btn:hover {
+  background: var(--surface-subtle);
+  color: var(--ink);
+}
+
+.icon-btn.close-btn:hover {
+  background: #feecef;
+  color: var(--danger);
+}
+
+.icon-btn.spinning svg {
+  animation: spin 0.75s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Scrollable body */
+.scroll-body {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.scroll-body::-webkit-scrollbar {
+  width: 4px;
+}
+.scroll-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scroll-body::-webkit-scrollbar-thumb {
+  background: rgba(24, 23, 43, 0.14);
+  border-radius: 999px;
+}
+
+/* Compact Wealthfront Hero Section */
+.hero {
+  background: var(--bg-hero);
+  padding: 2px 14px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.hero-inner {
+  max-width: 520px;
+  margin: 0 auto;
+}
+
+.eyebrow {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink-secondary);
+  margin-bottom: 1px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.balance-row {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.balance-value {
+  font-family: var(--display);
+  font-size: 30px;
+  font-weight: 750;
+  letter-spacing: -0.032em;
+  line-height: 1.04;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+  user-select: text;
+}
+
+.subtotal-pill {
+  font-size: 9.5px;
+  font-weight: 600;
+  padding: 1.5px 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  transform: translateY(-3px);
+}
+
+.hero-stats {
+  margin-top: 3px;
+  display: grid;
+  gap: 1px;
+}
+
+.stat-primary {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--mint);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+}
+
+.stat-primary .muted {
+  color: var(--ink-secondary);
+  font-weight: 450;
+}
+
+.stat-secondary {
+  font-size: 10.5px;
+  color: var(--ink-tertiary);
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+}
+
+/* Compact Interactive Area Chart */
+.chart-wrap {
+  position: relative;
+  margin: 5px -4px 3px;
+  height: 68px;
+  cursor: crosshair;
+}
+
+.chart-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  overflow: visible;
+}
+
+/* Compact Segmented Period Pills */
+.period-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 3px;
+  margin-top: 2px;
+}
+
+.period-pill {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--ink-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3.5px 0;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.period-pill:hover {
+  color: var(--ink);
+  background: var(--surface-subtle);
+}
+
+.period-pill.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* Content section on #F5F6FA canvas */
+.section-stack {
+  padding: 8px 10px 10px;
+  display: grid;
+  gap: 7px;
+  max-width: 540px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.notice-banner {
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  color: var(--warn);
+  padding: 6px 10px;
+  border-radius: 10px;
+  font-size: 11px;
+  line-height: 1.35;
+  display: none;
+}
+
+.notice-banner.visible {
+  display: block;
+}
+
+/* Elevated White Wealthfront Card */
+.wf-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+
+.card-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 8px 12px 4px;
+}
+
+.card-title {
+  font-family: var(--display);
+  font-size: 12.5px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+
+.card-subtitle {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+}
+
+/* Compact 2-Line Provider Row */
+.provider-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.provider-item {
+  border-top: 1px solid var(--divider);
+}
+
+.provider-item:first-child {
+  border-top: none;
+}
+
+.provider-row {
+  width: 100%;
+  border: none;
+  background: transparent;
+  padding: 7px 12px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.14s ease;
+}
+
+.provider-row:hover {
+  background: #fafafe;
+}
+
+.logo-badge {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.logo-badge svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
+.provider-main {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 1.5px;
+}
+
+.provider-name-line {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.provider-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.org-tag {
+  font-size: 9px;
+  font-weight: 600;
+  padding: 0.5px 5px;
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--ink-secondary);
+  border: 1px solid var(--border);
+}
+
+.provider-sub-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.share-track {
+  height: 3px;
+  width: 36px;
+  background: #ececf5;
+  border-radius: 999px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.share-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.provider-sub {
+  font-size: 10.5px;
+  color: var(--ink-secondary);
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-right {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+.provider-figures {
+  text-align: right;
+  display: grid;
+  gap: 1px;
+}
+
+.provider-usd {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+}
+
+.provider-models-count {
+  font-size: 10px;
+  color: var(--ink-tertiary);
+}
+
+.chevron {
+  color: var(--ink-tertiary);
+  transition: transform 0.18s ease, color 0.18s ease;
+  display: inline-flex;
+}
+
+.provider-item.open .chevron {
+  transform: rotate(90deg);
+  color: var(--accent);
+}
+
+/* Compact Expanded Model & Token Drawer */
+.model-drawer {
+  display: none;
+  padding: 0 12px 8px 49px;
+}
+
+.provider-item.open .model-drawer {
+  display: block;
+}
+
+.drawer-box {
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 7px 9px;
+  display: grid;
+  gap: 6px;
+}
+
+.token-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.token-chip {
+  font-size: 10px;
+  color: var(--ink-secondary);
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 6px;
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+}
+
+.token-chip strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.model-rows {
+  display: grid;
+  gap: 4px;
+}
+
+.model-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 11px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(24, 23, 43, 0.05);
+}
+
+.model-row:first-child {
+  padding-top: 0;
+  border-top: none;
+}
+
+.model-name {
+  color: var(--ink);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-metrics {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+}
+
+.model-tok {
+  color: var(--ink-tertiary);
+  font-size: 10px;
+}
+
+.model-val {
+  color: var(--ink);
+  font-weight: 600;
+  min-width: 46px;
+  text-align: right;
+}
+
+.empty-state {
+  padding: 18px 14px;
+  text-align: center;
+  color: var(--ink-secondary);
+  font-size: 11.5px;
+}
+
+.empty-state button {
+  margin-top: 8px;
+}
+
+/* Compact Summary Breakdown Strip */
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  padding: 7px 12px;
+  gap: 8px;
+}
+
+.summary-cell {
+  display: grid;
+  gap: 1px;
+}
+
+.summary-label {
+  font-size: 10px;
+  color: var(--ink-tertiary);
+  font-weight: 500;
+}
+
+.summary-val {
+  font-family: var(--display);
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+}
+
+.footer-note {
+  text-align: center;
+  font-size: 10px;
+  color: var(--ink-tertiary);
+  padding: 0 6px 2px;
+}
+
+/* Floating Scope Popover */
+.popover-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: none;
+}
+.popover-backdrop.open { display: block; }
+
+.scope-popover {
+  position: fixed;
+  top: 36px;
+  right: 78px;
+  width: 192px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  box-shadow: var(--shadow-pop);
+  padding: 4px;
+  z-index: 100;
+  display: none;
+}
+.scope-popover.open { display: grid; gap: 1px; }
+
+.scope-opt {
+  border: none;
+  background: transparent;
+  padding: 6px 8px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+}
+.scope-opt:hover { background: var(--surface-subtle); }
+.scope-opt.selected {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+.scope-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--mint);
+  display: inline-block;
+  margin-right: 6px;
+}
+.scope-dot.offline { background: var(--ink-tertiary); }
+
+/* Compact Slide-Over Settings Sheet */
+.settings-sheet {
+  position: fixed;
+  inset: 0;
+  background: var(--bg-canvas);
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  transform: translateX(100%);
+  transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.settings-sheet.open {
+  transform: translateX(0);
+}
+
+.sheet-header {
+  background: var(--surface);
+  padding: 9px 12px 8px 14px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sheet-title {
+  font-family: var(--display);
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.btn-primary {
+  border: none;
+  background: var(--accent);
+  color: #ffffff;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 5px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.14s ease;
+}
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-primary:disabled { opacity: 0.55; cursor: default; }
+
+.btn-secondary {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease;
+}
+.btn-secondary:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: rgba(72, 64, 187, 0.22);
+}
+
+.btn-danger-quiet {
+  border: 1px solid rgba(217, 56, 72, 0.22);
+  background: #fff5f6;
+  color: var(--danger);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.sheet-tabs {
+  display: flex;
+  gap: 5px;
+  padding: 8px 10px 2px;
+}
+
+.sheet-tab {
+  flex: 1;
+  border: none;
+  background: #eaeaf3;
+  color: var(--ink-secondary);
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 5px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.sheet-tab.active {
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.sheet-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 10px 16px;
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.source-row {
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border-top: 1px solid var(--divider);
+}
+.source-row:first-child { border-top: none; }
+
+.source-logo {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.source-logo svg { width: 14px; height: 14px; }
+
+.source-info { flex: 1; min-width: 0; }
+.source-name { font-size: 12px; font-weight: 600; color: var(--ink); }
+.source-meta {
+  font-size: 10.5px;
+  color: var(--ink-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.state-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--ink-secondary);
+}
+.state-badge.ok {
+  background: var(--mint-bg);
+  color: var(--mint);
+}
+
+.inline-editor {
+  padding: 0 12px 10px 49px;
+  display: grid;
+  gap: 6px;
+}
+
+.text-input {
+  width: 100%;
+  border: 1px solid rgba(24, 23, 43, 0.15);
+  border-radius: 8px;
+  padding: 6px 9px;
+  font-size: 11.5px;
+  color: var(--ink);
+  background: #ffffff;
+  user-select: text;
+}
+.text-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2.5px var(--accent-soft);
+}
+
+.editor-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* Compact iOS Toggle Switch */
+.toggle-row {
+  padding: 11px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.switch {
+  position: relative;
+  width: 38px;
+  height: 22px;
+  border-radius: 999px;
+  background: #d8d7e6;
+  border: none;
+  cursor: pointer;
+  transition: background 0.18s ease;
+  flex-shrink: 0;
+}
+.switch.on { background: var(--accent); }
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  transition: transform 0.18s ease;
+}
+.switch.on::after { transform: translateX(16px); }
+
+.toast {
+  position: fixed;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%) translateY(16px);
+  background: #18172b;
+  color: #ffffff;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  z-index: 400;
+  max-width: 90%;
+  text-align: center;
+}
+.toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+</style>
+</head>
+<body>
+
+<!-- Official Vector Provider Brand Symbols -->
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+  <symbol id="codex" viewBox="0 0 24 24"><g fill="currentColor" fill-rule="evenodd"><path clip-rule="evenodd" d="M8.086.457a6.105 6.105 0 013.046-.415c1.333.153 2.521.72 3.564 1.7a.117.117 0 00.107.029c1.408-.346 2.762-.224 4.061.366l.063.03.154.076c1.357.703 2.33 1.77 2.918 3.198.278.679.418 1.388.421 2.126a5.655 5.655 0 01-.18 1.631.167.167 0 00.04.155 5.982 5.982 0 011.578 2.891c.385 1.901-.01 3.615-1.183 5.14l-.182.22a6.063 6.063 0 01-2.934 1.851.162.162 0 00-.108.102c-.255.736-.511 1.364-.987 1.992-1.199 1.582-2.962 2.462-4.948 2.451-1.583-.008-2.986-.587-4.21-1.736a.145.145 0 00-.14-.032c-.518.167-1.04.191-1.604.185a5.924 5.924 0 01-2.595-.622 6.058 6.058 0 01-2.146-1.781c-.203-.269-.404-.522-.551-.821a7.74 7.74 0 01-.495-1.283 6.11 6.11 0 01-.017-3.064.166.166 0 00.008-.074.115.115 0 00-.037-.064 5.958 5.958 0 01-1.38-2.202 5.196 5.196 0 01-.333-1.589 6.915 6.915 0 01.188-2.132c.45-1.484 1.309-2.648 2.577-3.493.282-.188.55-.334.802-.438.286-.12.573-.22.861-.304a.129.129 0 00.087-.087A6.016 6.016 0 015.635 2.31C6.315 1.464 7.132.846 8.086.457zm-.804 7.85a.848.848 0 00-1.473.842l1.694 2.965-1.688 2.848a.849.849 0 001.46.864l1.94-3.272a.849.849 0 00.007-.854l-1.94-3.393zm5.446 6.24a.849.849 0 000 1.695h4.848a.849.849 0 000-1.696h-4.848z"></path></g></symbol>
+  <symbol id="openai" viewBox="0 0 24 24"><g fill="currentColor" fill-rule="evenodd"><path d="M9.205 8.658v-2.26c0-.19.072-.333.238-.428l4.543-2.616c.619-.357 1.356-.523 2.117-.523 2.854 0 4.662 2.212 4.662 4.566 0 .167 0 .357-.024.547l-4.71-2.759a.797.797 0 00-.856 0l-5.97 3.473zm10.609 8.8V12.06c0-.333-.143-.57-.429-.737l-5.97-3.473 1.95-1.118a.433.433 0 01.476 0l4.543 2.617c1.309.76 2.189 2.378 2.189 3.948 0 1.808-1.07 3.473-2.76 4.163zM7.802 12.703l-1.95-1.142c-.167-.095-.239-.238-.239-.428V5.899c0-2.545 1.95-4.472 4.591-4.472 1 0 1.927.333 2.712.928L8.23 5.067c-.285.166-.428.404-.428.737v6.898zM12 15.128l-2.795-1.57v-3.33L12 8.658l2.795 1.57v3.33L12 15.128zm1.796 7.23c-1 0-1.927-.332-2.712-.927l4.686-2.712c.285-.166.428-.404.428-.737v-6.898l1.974 1.142c.167.095.238.238.238.428v5.233c0 2.545-1.974 4.472-4.614 4.472zm-5.637-5.303l-4.544-2.617c-1.308-.761-2.188-2.378-2.188-3.948A4.482 4.482 0 014.21 6.327v5.423c0 .333.143.571.428.738l5.947 3.449-1.95 1.118a.432.432 0 01-.476 0zm-.262 3.9c-2.688 0-4.662-2.021-4.662-4.519 0-.19.024-.38.047-.57l4.686 2.71c.286.167.571.167.856 0l5.97-3.448v2.26c0 .19-.07.333-.237.428l-4.543 2.616c-.619.357-1.356.523-2.117.523zm5.899 2.83a5.947 5.947 0 005.827-4.756C22.287 18.339 24 15.84 24 13.296c0-1.665-.713-3.282-1.998-4.448.119-.5.19-.999.19-1.498 0-3.401-2.759-5.947-5.946-5.947-.642 0-1.26.095-1.88.31A5.962 5.962 0 0010.205 0a5.947 5.947 0 00-5.827 4.757C1.713 5.447 0 7.945 0 10.49c0 1.666.713 3.283 1.998 4.448-.119.5-.19 1-.19 1.499 0 3.401 2.759 5.946 5.946 5.946.642 0 1.26-.095 1.88-.309a5.96 5.96 0 004.162 1.713z"></path></g></symbol>
+  <symbol id="claude" viewBox="0 0 24 24"><g fill="currentColor" fill-rule="evenodd"><path d="M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z"></path></g></symbol>
+  <symbol id="anthropic" viewBox="0 0 24 24"><g fill="currentColor" fill-rule="evenodd"><path d="M13.827 3.52h3.603L24 20h-3.603l-6.57-16.48zm-7.258 0h3.767L16.906 20h-3.674l-1.343-3.461H5.017l-1.344 3.46H0L6.57 3.522zm4.132 9.959L8.453 7.687 6.205 13.48H10.7z"></path></g></symbol>
+  <symbol id="cursor" viewBox="0 0 24 24"><g fill="currentColor" fill-rule="evenodd"><path d="M22.106 5.68L12.5.135a.998.998 0 00-.998 0L1.893 5.68a.84.84 0 00-.419.726v11.186c0 .3.16.577.42.727l9.607 5.547a.999.999 0 00.998 0l9.608-5.547a.84.84 0 00.42-.727V6.407a.84.84 0 00-.42-.726zm-.603 1.176L12.228 22.92c-.063.108-.228.064-.228-.061V12.34a.59.59 0 00-.295-.51l-9.11-5.26c-.107-.062-.063-.228.062-.228h18.55c.264 0 .428.286.296.514z"></path></g></symbol>
+  <symbol id="grok" viewBox="0 0 24 24"><g fill="currentColor" fill-rule="evenodd"><path d="M9.27 15.29l7.978-5.897c.391-.29.95-.177 1.137.272.98 2.369.542 5.215-1.41 7.169-1.951 1.954-4.667 2.382-7.149 1.406l-2.711 1.257c3.889 2.661 8.611 2.003 11.562-.953 2.341-2.344 3.066-5.539 2.388-8.42l.006.007c-.983-4.232.242-5.924 2.75-9.383.06-.082.12-.164.179-.248l-3.301 3.305v-.01L9.267 15.292M7.623 16.723c-2.792-2.67-2.31-6.801.071-9.184 1.761-1.763 4.647-2.483 7.166-1.425l2.705-1.25a7.808 7.808 0 00-1.829-1A8.975 8.975 0 005.984 5.83c-2.533 2.536-3.33 6.436-1.962 9.764 1.022 2.487-.653 4.246-2.34 6.022-.599.63-1.199 1.259-1.682 1.925l7.62-6.815"></path></g></symbol>
+  <symbol id="xai" viewBox="0 0 24 24"><g fill="currentColor" fill-rule="evenodd"><path d="M6.469 8.776L16.512 23h-4.464L2.005 8.776H6.47zm-.004 7.9l2.233 3.164L6.467 23H2l4.465-6.324zM22 2.582V23h-3.659V7.764L22 2.582zM22 1l-9.952 14.095-2.233-3.163L17.533 1H22z"></path></g></symbol>
+  <symbol id="zai" viewBox="0 0 24 24"><g fill="currentColor" fill-rule="evenodd"><path d="M12.105 2L9.927 4.953H.653L2.83 2h9.276zM23.254 19.048L21.078 22h-9.242l2.174-2.952h9.244zM24 2L9.264 22H0L14.736 2H24z"></path></g></symbol>
+  <symbol id="opencode" viewBox="0 0 24 24"><g fill="currentColor" fill-rule="evenodd"><path d="M16 6H8v12h8V6zm4 16H4V2h16v20z"></path></g></symbol>
+  <symbol id="antigravity" viewBox="0 0 24 24"><g fill="currentColor" fill-rule="evenodd"><path d="M21.751 22.607c1.34 1.005 3.35.335 1.508-1.508C17.73 15.74 18.904 1 12.037 1 5.17 1 6.342 15.74.815 21.1c-2.01 2.009.167 2.511 1.507 1.506 5.192-3.517 4.857-9.714 9.715-9.714 4.857 0 4.522 6.197 9.714 9.715z"></path></g></symbol>
+  <symbol id="openrouter" viewBox="0 0 24 24"><g fill="currentColor" fill-rule="evenodd"><path d="M18.654 3.87a5.087 5.087 0 110 10.174L23.7 19.09c.64.641.187 1.737-.72 1.737H8.48a8.479 8.479 0 010-16.958h10.175zM8.479 7.26a5.087 5.087 0 100 10.176 5.087 5.087 0 000-10.175z"></path></g></symbol>
+  <symbol id="meta" viewBox="0 0 24 24"><g fill="currentColor" fill-rule="evenodd"><path d="M6.897 4c1.915 0 3.516.932 5.43 3.376l.282-.373c.19-.246.383-.484.58-.71l.313-.35C14.588 4.788 15.792 4 17.225 4c1.273 0 2.469.557 3.491 1.516l.218.213c1.73 1.765 2.917 4.71 3.053 8.026l.011.392.002.25c0 1.501-.28 2.759-.818 3.7l-.14.23-.108.153c-.301.42-.664.758-1.086 1.009l-.265.142-.087.04a3.493 3.493 0 01-.302.118 4.117 4.117 0 01-1.33.208c-.524 0-.996-.067-1.438-.215-.614-.204-1.163-.56-1.726-1.116l-.227-.235c-.753-.812-1.534-1.976-2.493-3.586l-1.43-2.41-.544-.895-1.766 3.13-.343.592C7.597 19.156 6.227 20 4.356 20c-1.21 0-2.205-.42-2.936-1.182l-.168-.184c-.484-.573-.837-1.311-1.043-2.189l-.067-.32a8.69 8.69 0 01-.136-1.288L0 14.468c.002-.745.06-1.49.174-2.23l.1-.573c.298-1.53.828-2.958 1.536-4.157l.209-.34c1.177-1.83 2.789-3.053 4.615-3.16L6.897 4zm-.033 2.615l-.201.01c-.83.083-1.606.673-2.252 1.577l-.138.199-.01.018c-.67 1.017-1.185 2.378-1.456 3.845l-.004.022a12.591 12.591 0 00-.207 2.254l.002.188c.004.18.017.36.04.54l.043.291c.092.503.257.908.486 1.208l.117.137c.303.323.698.492 1.17.492 1.1 0 1.796-.676 3.696-3.641l2.175-3.4.454-.701-.139-.198C9.11 7.3 8.084 6.616 6.864 6.616zm10.196-.552l-.176.007c-.635.048-1.223.359-1.82.933l-.196.198c-.439.462-.887 1.064-1.367 1.807l.266.398c.18.274.362.56.55.858l.293.475 1.396 2.335.695 1.114c.583.926 1.03 1.6 1.408 2.082l.213.262c.282.326.529.54.777.673l.102.05c.227.1.457.138.718.138.176.002.35-.023.518-.073.338-.104.61-.32.813-.637l.095-.163.077-.162c.194-.459.29-1.06.29-1.785l-.006-.449c-.08-2.871-.938-5.372-2.2-6.798l-.176-.189c-.67-.683-1.444-1.074-2.27-1.074z"></path></g></symbol>
+  <symbol id="gemini" viewBox="0 0 24 24"><g fill="currentColor" fill-rule="evenodd"><path d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z"></path></g></symbol>
+  <symbol id="traycer" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6.4 6.2L17.4 17.2M6.4 10.9L12.8 17.3M17.6 6.2L15 8.75L17.5 11.2"/></g><circle cx="6.3" cy="17.3" r="1.55" fill="currentColor"/></symbol>
+  <symbol id="custom" viewBox="0 0 24 24"><g fill="currentColor" fill-rule="evenodd"><path d="M12 5.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zm0 4.5a2 2 0 100 4 2 2 0 000-4z"/></g></symbol>
+</svg>
+
+<!-- Edge resize zones -->
+<div class="rz rz-n" data-edge="top"></div>
+<div class="rz rz-s" data-edge="bottom"></div>
+<div class="rz rz-w" data-edge="left"></div>
+<div class="rz rz-e" data-edge="right"></div>
+<div class="rz rz-nw" data-edge="topleft"></div>
+<div class="rz rz-ne" data-edge="topright"></div>
+<div class="rz rz-sw" data-edge="bottomleft"></div>
+<div class="rz rz-se" data-edge="bottomright"></div>
+
+<div class="app-shell">
+  <!-- Frameless Header Bar -->
+  <header class="topbar pywebview-drag-region" id="dragHeader">
+    <div class="brand-group">
+      <div class="brand-mark">
+        <svg width="11.5" height="11.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.7" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M7 17L17 7M9 7h8v8"/>
+        </svg>
+      </div>
+      <span class="brand-title">BURNRATE</span>
+      <span class="status-pill" id="liveBadge">
+        <span class="status-dot"></span>
+        <span id="liveText">Live</span>
+      </span>
+    </div>
+
+    <div class="top-actions">
+      <button class="scope-trigger" id="scopeBtn" type="button" title="Select computer scope">
+        <span id="scopeLabel">All computers</span>
+        <svg width="10.5" height="10.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+      <button class="icon-btn" id="refreshBtn" type="button" title="Refresh usage">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/>
+        </svg>
+      </button>
+      <button class="icon-btn" id="settingsBtn" type="button" title="Settings &amp; Sources">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.08a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.08a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.08a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </button>
+      <button class="icon-btn" id="minBtn" type="button" title="Minimize">
+        <svg width="12.5" height="12.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M5 12h14"/></svg>
+      </button>
+      <button class="icon-btn close-btn" id="closeBtn" type="button" title="Close">
+        <svg width="12.5" height="12.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Scrollable Portfolio Feed -->
+  <div class="scroll-body">
+    <section class="hero">
+      <div class="hero-inner">
+        <div class="eyebrow">
+          <span id="heroEyebrow">API-equivalent portfolio value</span>
+        </div>
+        <div class="balance-row">
+          <div class="balance-value" id="heroValue">$0.00</div>
+          <span class="subtotal-pill" id="subtotalPill" style="display:none" title="Some recorded events used models without a configured rate card">Subtotal</span>
+        </div>
+        <div class="hero-stats">
+          <div class="stat-primary">
+            <span id="heroTokens">▲ 0 tokens</span>
+            <span class="muted" id="heroTokensContext">measured at API rates</span>
+          </div>
+          <div class="stat-secondary" id="heroMeta">Starting local tracker…</div>
+        </div>
+
+        <!-- Wealthfront Interactive Purple Curve -->
+        <div class="chart-wrap" id="chartWrap">
+          <svg class="chart-svg" id="chartSvg" preserveAspectRatio="none"></svg>
+        </div>
+
+        <!-- Wealthfront Time-Range Pills -->
+        <div class="period-bar" id="periodBar">
+          <button class="period-pill active" data-period="today" type="button">Today</button>
+          <button class="period-pill" data-period="week" type="button">7D</button>
+          <button class="period-pill" data-period="month" type="button">1M</button>
+          <button class="period-pill" data-period="all" type="button">ALL</button>
+        </div>
+      </div>
+    </section>
+
+    <div class="section-stack">
+      <div class="notice-banner" id="noticeBanner"></div>
+
+      <!-- Providers Holdings Card -->
+      <div class="wf-card">
+        <div class="card-header">
+          <span class="card-title">Providers</span>
+          <span class="card-subtitle">API Value</span>
+        </div>
+        <div class="provider-list" id="providerList">
+          <div class="empty-state">Loading your AI providers…</div>
+        </div>
+      </div>
+
+      <!-- Portfolio Summary Metrics Card -->
+      <div class="wf-card">
+        <div class="summary-grid">
+          <div class="summary-cell">
+            <span class="summary-label">Recorded tokens</span>
+            <span class="summary-val" id="metricTokens">—</span>
+          </div>
+          <div class="summary-cell">
+            <span class="summary-label">Active providers</span>
+            <span class="summary-val" id="metricTools">—</span>
+          </div>
+          <div class="summary-cell">
+            <span class="summary-label">Computers</span>
+            <span class="summary-val" id="metricMachines">—</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="footer-note" id="footerStatus">Measured tokens valued at published API rates</div>
+    </div>
+  </div>
+</div>
+
+<!-- Scope Selector Popover -->
+<div class="popover-backdrop" id="scopeBackdrop"></div>
+<div class="scope-popover" id="scopePopover"></div>
+
+<!-- Slide-over Settings Sheet -->
+<aside class="settings-sheet" id="settingsSheet">
+  <div class="sheet-header pywebview-drag-region">
+    <span class="sheet-title">Settings</span>
+    <button class="btn-primary" id="settingsDoneBtn" type="button">Done</button>
+  </div>
+  <div class="sheet-tabs">
+    <button class="sheet-tab active" data-tab="sources" type="button">Sources</button>
+    <button class="sheet-tab" data-tab="computers" type="button">Computers</button>
+    <button class="sheet-tab" data-tab="general" type="button">General</button>
+  </div>
+  <div class="sheet-body" id="sheetBody"></div>
+</aside>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const BRAND_STYLES = {
+  "claude":      { sym: "claude",      bg: "#d97757", fg: "#ffffff", ring: "none" },
+  "claude-code": { sym: "claude",      bg: "#d97757", fg: "#ffffff", ring: "none" },
+  "claude_local":{ sym: "claude",      bg: "#d97757", fg: "#ffffff", ring: "none" },
+  "anthropic":   { sym: "anthropic",   bg: "#f3efea", fg: "#18172b", ring: "1px solid #e4ded5" },
+  "codex":       { sym: "codex",       bg: "#18172b", fg: "#ffffff", ring: "none" },
+  "codex_local": { sym: "codex",       bg: "#18172b", fg: "#ffffff", ring: "none" },
+  "openai":      { sym: "openai",      bg: "#10a37f", fg: "#ffffff", ring: "none" },
+  "opencode":    { sym: "opencode",    bg: "#e7f6f0", fg: "#13795b", ring: "1px solid #cbece0" },
+  "muse":        { sym: "meta",        bg: "#ebf3ff", fg: "#0064e0", ring: "1px solid #d6e7ff" },
+  "grok":        { sym: "grok",        bg: "#18172b", fg: "#ffffff", ring: "none" },
+  "xai":         { sym: "xai",         bg: "#18172b", fg: "#ffffff", ring: "none" },
+  "zcode":       { sym: "zai",         bg: "#2563eb", fg: "#ffffff", ring: "none" },
+  "zai":         { sym: "zai",         bg: "#2563eb", fg: "#ffffff", ring: "none" },
+  "antigravity": { sym: "antigravity", bg: "#eef4ff", fg: "#2563eb", ring: "1px solid #dce8ff" },
+  "cursor":      { sym: "cursor",      bg: "#222138", fg: "#ffffff", ring: "none" },
+  "traycer":     { sym: "traycer",     bg: "#efeffb", fg: "#4840bb", ring: "1px solid #dfdef7" },
+  "gemini":      { sym: "gemini",      bg: "#eef2ff", fg: "#4f46e5", ring: "1px solid #e0e7ff" },
+  "openrouter":  { sym: "openrouter",  bg: "#f1f0fb", fg: "#4840bb", ring: "1px solid #e2e0f6" },
+  "custom":      { sym: "custom",      bg: "#f1f1f7", fg: "#68677d", ring: "1px solid #e4e4ee" }
+};
+
+function resolveBrand(rawKey) {
+  const k = String(rawKey || "").toLowerCase().trim();
+  if (BRAND_STYLES[k]) return BRAND_STYLES[k];
+  if (k.includes("anthropic")) return BRAND_STYLES["anthropic"];
+  if (k.includes("claude")) return BRAND_STYLES["claude"];
+  if (k.includes("openai")) return BRAND_STYLES["openai"];
+  if (k.includes("codex")) return BRAND_STYLES["codex"];
+  if (k.includes("opencode")) return BRAND_STYLES["opencode"];
+  if (k.includes("muse") || k.includes("meta")) return BRAND_STYLES["muse"];
+  if (k.includes("grok")) return BRAND_STYLES["grok"];
+  if (k.includes("xai")) return BRAND_STYLES["xai"];
+  if (k.includes("zcode") || k.includes("zai")) return BRAND_STYLES["zcode"];
+  if (k.includes("antigravity")) return BRAND_STYLES["antigravity"];
+  if (k.includes("cursor")) return BRAND_STYLES["cursor"];
+  if (k.includes("traycer")) return BRAND_STYLES["traycer"];
+  if (k.includes("gemini")) return BRAND_STYLES["gemini"];
+  if (k.includes("openrouter")) return BRAND_STYLES["openrouter"];
+  return BRAND_STYLES["custom"];
+}
+
+function logoHtml(key, cls = "logo-badge") {
+  const b = resolveBrand(key);
+  return `<span class="${cls}" style="background:${b.bg};color:${b.fg};border:${b.ring}"><svg><use href="#${b.sym}"/></svg></span>`;
+}
+
+function fmtTokens(val) {
+  const n = Number(val);
+  if (!Number.isFinite(n)) return "—";
+  if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(2) + "B";
+  if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(2) + "M";
+  if (Math.abs(n) >= 1e3) return (n / 1e3).toFixed(2) + "K";
+  return Math.round(n).toLocaleString();
+}
+
+function fmtMoney(val, complete = true, cleanHero = false) {
+  if (val === null || val === undefined) return "Unpriced";
+  const n = Number(val);
+  if (!Number.isFinite(n) || n < 0) return "Unpriced";
+  const base = (n > 0 && n < 0.005) ? "<$0.01" : "$" + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  if (complete || cleanHero) return base;
+  return base.startsWith("<") ? "Partial " + base : base;
+}
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+}
+
+const state = {
+  period: "today",
+  machine: "all",
+  topmost: false,
+  demo: false,
+  report: null,
+  expandedTools: new Set(),
+  settingsOpen: false,
+  settingsTab: "sources",
+  settingsData: { connections: [], machines: [], setup: {} },
+  editingSource: null,
+  pairMode: null,
+  generatedCode: null
+};
+
+function showToast(msg) {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.classList.add("show");
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(() => el.classList.remove("show"), 2600);
+}
+
+function apiAvailable() {
+  return window.pywebview && window.pywebview.api;
+}
+
+/* Smooth Catmull-Rom spline SVG generator for Wealthfront area curve */
+function smoothPath(pts) {
+  if (!pts.length) return "";
+  if (pts.length === 1) return `M ${pts[0][0]} ${pts[0][1]}`;
+  let d = `M ${pts[0][0].toFixed(1)} ${pts[0][1].toFixed(1)}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[Math.max(0, i - 1)];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[Math.min(pts.length - 1, i + 2)];
+    const cp1x = p1[0] + (p2[0] - p0[0]) / 6;
+    const cp1y = p1[1] + (p2[1] - p0[1]) / 6;
+    const cp2x = p2[0] - (p3[0] - p1[0]) / 6;
+    const cp2y = p2[1] - (p3[1] - p1[1]) / 6;
+    d += ` C ${cp1x.toFixed(1)} ${cp1y.toFixed(1)}, ${cp2x.toFixed(1)} ${cp2y.toFixed(1)}, ${p2[0].toFixed(1)} ${p2[1].toFixed(1)}`;
+  }
+  return d;
+}
+
+function getSeriesPoints(report) {
+  if (report && Array.isArray(report.series) && report.series.length >= 2) {
+    return report.series;
+  }
+  const totalUsd = Number(report?.total?.valueUsd || 0);
+  const totalTok = Number(report?.total?.tokens || 0);
+  const steps = 12;
+  const out = [];
+  const now = new Date();
+  for (let i = 0; i < steps; i++) {
+    const t = (i + 1) / steps;
+    const ease = 0.06 + 0.94 * Math.pow(t, 1.35) * (0.94 + 0.06 * Math.sin(i * 1.3));
+    const clamped = i === steps - 1 ? 1 : Math.min(0.99, ease);
+    let lbl = report?.periodLabel || "Period";
+    if (state.period === "today") {
+      const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+      const ptDate = new Date(startOfDay.getTime() + (now.getTime() - startOfDay.getTime()) * t);
+      lbl = ptDate.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    } else if (state.period === "week" || state.period === "month") {
+      const daysSpan = state.period === "week" ? 7 : now.getDate();
+      const ptDate = new Date(now.getTime() - (1 - t) * daysSpan * 86400000);
+      lbl = ptDate.toLocaleDateString([], { month: "short", day: "numeric" });
+    }
+    out.push({
+      label: lbl,
+      bucketUsd: totalUsd / steps,
+      cumulativeUsd: totalUsd * clamped,
+      tokens: Math.round(totalTok / steps),
+      cumulativeTokens: Math.round(totalTok * clamped)
+    });
+  }
+  return out;
+}
+
+function renderChart() {
+  const svg = document.getElementById("chartSvg");
+  const wrap = document.getElementById("chartWrap");
+  const w = Math.max(240, wrap.clientWidth || 356);
+  const h = Math.max(58, wrap.clientHeight || 68);
+  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+
+  const series = getSeriesPoints(state.report);
+  const padX = 7;
+  const padTop = 7;
+  const padBot = 7;
+  const plotW = w - padX * 2;
+  const plotH = h - padTop - padBot;
+
+  const vals = series.map(p => Number(p.cumulativeUsd || 0));
+  const maxV = Math.max(...vals, 0.01);
+  const minV = 0;
+
+  const coords = series.map((p, i) => {
+    const x = padX + (series.length === 1 ? plotW : (i / (series.length - 1)) * plotW);
+    const norm = maxV > minV ? (Number(p.cumulativeUsd || 0) - minV) / (maxV - minV) : 0;
+    const y = padTop + plotH * (1 - norm * 0.92);
+    return [x, y, p];
+  });
+
+  const lineD = smoothPath(coords);
+  const last = coords[coords.length - 1];
+  const first = coords[0];
+  const areaD = `${lineD} L ${last[0].toFixed(1)} ${(h - 3).toFixed(1)} L ${first[0].toFixed(1)} ${(h - 3).toFixed(1)} Z`;
+
+  svg.innerHTML = `
+    <defs>
+      <linearGradient id="wfGrad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#4840bb" stop-opacity="0.17"/>
+        <stop offset="100%" stop-color="#4840bb" stop-opacity="0.0"/>
+      </linearGradient>
+    </defs>
+    <line x1="${padX}" y1="${h - 3}" x2="${w - padX}" y2="${h - 3}" stroke="#ececf4" stroke-width="1" stroke-dasharray="3 3"/>
+    <path d="${areaD}" fill="url(#wfGrad)"/>
+    <path d="${lineD}" fill="none" stroke="#4840bb" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle id="endDotHalo" cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="4.8" fill="#4840bb" fill-opacity="0.16"/>
+    <circle id="endDot" cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="3" fill="#4840bb" stroke="#ffffff" stroke-width="1.5"/>
+    <line id="scrubLine" x1="0" y1="${padTop - 3}" x2="0" y2="${h - 3}" stroke="#c9c6ee" stroke-width="1.1" style="display:none"/>
+    <circle id="scrubDot" cx="0" cy="0" r="4" fill="#4840bb" stroke="#ffffff" stroke-width="2" style="display:none"/>
+  `;
+
+  wrap._coords = coords;
+}
+
+function bindChartScrub() {
+  const wrap = document.getElementById("chartWrap");
+  wrap.addEventListener("mousemove", (e) => {
+    const coords = wrap._coords;
+    if (!coords || !coords.length || !state.report) return;
+    const rect = wrap.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    let best = coords[0];
+    let bestDist = Infinity;
+    for (const c of coords) {
+      const d = Math.abs(c[0] - mx);
+      if (d < bestDist) { bestDist = d; best = c; }
+    }
+    const line = document.getElementById("scrubLine");
+    const dot = document.getElementById("scrubDot");
+    if (line && dot) {
+      line.setAttribute("x1", best[0].toFixed(1));
+      line.setAttribute("x2", best[0].toFixed(1));
+      line.style.display = "";
+      dot.setAttribute("cx", best[0].toFixed(1));
+      dot.setAttribute("cy", best[1].toFixed(1));
+      dot.style.display = "";
+    }
+    const pt = best[2];
+    document.getElementById("heroValue").textContent = fmtMoney(pt.cumulativeUsd, true, true);
+    document.getElementById("heroTokens").textContent = `▲ ${fmtTokens(pt.cumulativeTokens)} tokens`;
+    document.getElementById("heroTokensContext").textContent = `through ${pt.label}`;
+  });
+
+  wrap.addEventListener("mouseleave", () => {
+    const line = document.getElementById("scrubLine");
+    const dot = document.getElementById("scrubDot");
+    if (line) line.style.display = "none";
+    if (dot) dot.style.display = "none";
+    if (state.report) paintHeroText(state.report);
+  });
+}
+
+function paintHeroText(data) {
+  const total = data.total || {};
+  const unavailable = data.scope === "unavailable";
+  const hasEvents = Number(total.events || 0) > 0;
+  const heroVal = unavailable
+    ? "Unavailable"
+    : hasEvents
+      ? fmtMoney(total.valueUsd, total.complete !== false, true)
+      : "$0.00";
+  document.getElementById("heroValue").textContent = heroVal;
+  document.getElementById("subtotalPill").style.display = (!unavailable && hasEvents && total.complete === false) ? "" : "none";
+
+  const ordinary = (data.tools || []).filter(t => !t.organization);
+  const machines = data.machines || [];
+  const machineCount = state.machine === "all" ? Math.max(1, machines.length) : 1;
+
+  document.getElementById("heroTokens").textContent = `▲ ${fmtTokens(total.tokens || 0)} tokens`;
+  document.getElementById("heroTokensContext").textContent = `across ${ordinary.length} ${ordinary.length === 1 ? "provider" : "providers"}`;
+
+  let freshness = "Updated just now";
+  if (state.demo) {
+    freshness = "Sample portfolio";
+  } else if (data.generatedAt) {
+    const ageSec = Math.max(0, Math.round((Date.now() - Date.parse(data.generatedAt)) / 1000));
+    if (ageSec >= 60) freshness = `Updated ${Math.floor(ageSec / 60)}m ago`;
+  }
+  const offline = machines.filter(m => m.online === false).length;
+  const syncText = `${machineCount} ${machineCount === 1 ? "computer" : "computers"}${offline ? ` (${offline} offline)` : ""}`;
+  document.getElementById("heroMeta").textContent = `${syncText} · ${freshness}`;
+  document.getElementById("footerStatus").textContent =
+    `Measured tokens valued at published API rates${data.timezone ? " · " + data.timezone : ""}`;
+
+  const warn = data.scope === "unavailable" || data.scope === "local-fallback";
+  const badge = document.getElementById("liveBadge");
+  badge.classList.toggle("warn", warn);
+  document.getElementById("liveText").textContent =
+    state.demo ? "Sample" :
+    data.scope === "unavailable" ? "Offline" :
+    data.scope === "local-fallback" ? "Local copy" : "Live";
+}
+
+function renderReport(data) {
+  state.report = data;
+  paintHeroText(data);
+  renderChart();
+
+  const total = data.total || {};
+  const ordinary = (data.tools || []).filter(t => !t.organization);
+  const machines = data.machines || [];
+  document.getElementById("metricTokens").textContent = fmtTokens(total.tokens || 0);
+  document.getElementById("metricTools").textContent = String(ordinary.length);
+  document.getElementById("metricMachines").textContent = String(state.machine === "all" ? Math.max(1, machines.length) : 1);
+
+  // Notice banner
+  const notices = [];
+  if (data.warning) notices.push(data.warning);
+  if ((data.tools || []).some(t => t.organization)) {
+    notices.push("Organization API feeds carry an Org tag because they can overlap local tool sessions.");
+  }
+  const banner = document.getElementById("noticeBanner");
+  banner.textContent = notices.join(" ");
+  banner.classList.toggle("visible", notices.length > 0);
+
+  // Scope label
+  let scopeName = "All computers";
+  if (state.machine !== "all") {
+    const found = machines.find(m => m.id === state.machine);
+    scopeName = found ? (found.name || found.id) : "Selected computer";
+  }
+  document.getElementById("scopeLabel").textContent = scopeName;
+
+  // Providers list
+  const list = document.getElementById("providerList");
+  const tools = data.tools || [];
+  if (!tools.length) {
+    list.innerHTML = `
+      <div class="empty-state">
+        <div>No recorded usage in this period yet.</div>
+        <button class="btn-secondary" type="button" onclick="openSettings('sources')">Connect a source</button>
+      </div>`;
+    return;
+  }
+
+  const denomUsd = ordinary.reduce((acc, t) => acc + Math.max(0, Number(t.valueUsd || 0)), 0);
+  const denomTok = ordinary.reduce((acc, t) => acc + Math.max(0, Number(t.tokens || 0)), 0);
+
+  list.innerHTML = tools.map(tool => {
+    const key = String(tool.key || "");
+    const isOpen = state.expandedTools.has(key);
+    const usd = Number(tool.valueUsd || 0);
+    const tok = Number(tool.tokens || 0);
+    const pct = tool.organization
+      ? 0
+      : denomUsd > 0
+        ? (usd / denomUsd) * 100
+        : denomTok > 0
+          ? (tok / denomTok) * 100
+          : 0;
+    const shareLabel = tool.organization
+      ? `${fmtTokens(tok)} tok · separate feed`
+      : `${pct >= 1 ? pct.toFixed(0) : pct.toFixed(1)}% · ${fmtTokens(tok)} tok`;
+    const models = tool.models || [];
+    const modelCountText = `${models.length} ${models.length === 1 ? "model" : "models"}${tool.complete === false ? " · sub" : ""}`;
+
+    const chips = [
+      ["Input", tool.input],
+      ["Cached", tool.cached],
+      ["Writes", tool.writes],
+      ["Output", tool.output]
+    ];
+    if (tool.reasoning !== null && tool.reasoning !== undefined) {
+      chips.push(["Reasoning", tool.reasoning]);
+    }
+
+    return `
+      <div class="provider-item ${isOpen ? "open" : ""}" data-key="${esc(key)}">
+        <button class="provider-row" type="button" onclick="toggleProvider('${esc(key)}')">
+          ${logoHtml(key)}
+          <div class="provider-main">
+            <div class="provider-name-line">
+              <span class="provider-name">${esc(tool.name || "Unknown provider")}</span>
+              ${tool.organization ? '<span class="org-tag">Org API</span>' : ''}
+            </div>
+            <div class="provider-sub-line">
+              ${!tool.organization ? `<span class="share-track"><span class="share-fill" style="display:block;width:${Math.min(100, Math.max(4, pct)).toFixed(1)}%"></span></span>` : ""}
+              <span class="provider-sub">${esc(shareLabel)}</span>
+            </div>
+          </div>
+          <div class="provider-right">
+            <div class="provider-figures">
+              <div class="provider-usd">${esc(fmtMoney(tool.valueUsd, tool.complete !== false, true))}</div>
+              <div class="provider-models-count">${esc(modelCountText)}</div>
+            </div>
+            <span class="chevron">
+              <svg width="12.5" height="12.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+            </span>
+          </div>
+        </button>
+        <div class="model-drawer">
+          <div class="drawer-box">
+            <div class="token-chips">
+              ${chips.map(([lbl, v]) => `<span class="token-chip">${lbl} <strong>${fmtTokens(v || 0)}</strong></span>`).join("")}
+            </div>
+            <div class="model-rows">
+              ${models.map(m => `
+                <div class="model-row">
+                  <span class="model-name">${esc(m.name || m.key || "Model")}</span>
+                  <span class="model-metrics">
+                    <span class="model-tok">${fmtTokens(m.tokens || 0)}</span>
+                    <span class="model-val">${esc(fmtMoney(m.valueUsd, m.complete !== false, true))}</span>
+                  </span>
+                </div>
+              `).join("")}
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+window.toggleProvider = function(key) {
+  if (state.expandedTools.has(key)) state.expandedTools.delete(key);
+  else state.expandedTools.add(key);
+  if (state.report) renderReport(state.report);
+};
+
+async function loadUsage(restart = false) {
+  const btn = document.getElementById("refreshBtn");
+  btn.classList.add("spinning");
+  try {
+    if (apiAvailable()) {
+      const res = await window.pywebview.api.fetch_usage(state.period, state.machine, restart);
+      if (res && res.ok) {
+        renderReport(res.report);
+      } else {
+        showToast((res && res.error) || "Could not refresh usage");
+        document.getElementById("liveBadge").classList.add("warn");
+        document.getElementById("liveText").textContent = "Unavailable";
+      }
+    }
+  } catch (err) {
+    showToast("Refresh failed");
+  } finally {
+    btn.classList.remove("spinning");
+  }
+}
+
+/* Scope Popover */
+function toggleScopePopover() {
+  const pop = document.getElementById("scopePopover");
+  const back = document.getElementById("scopeBackdrop");
+  const open = !pop.classList.contains("open");
+  if (!open) {
+    pop.classList.remove("open");
+    back.classList.remove("open");
+    return;
+  }
+  const btnRect = document.getElementById("scopeBtn").getBoundingClientRect();
+  pop.style.top = `${Math.round(btnRect.bottom + 5)}px`;
+  pop.style.right = `${Math.max(10, Math.round(window.innerWidth - btnRect.right))}px`;
+
+  const machines = state.report?.machines || [];
+  const items = [{ id: "all", name: "All computers", online: true }, ...machines];
+  pop.innerHTML = items.map(m => `
+    <button class="scope-opt ${state.machine === m.id ? "selected" : ""}" type="button" onclick="selectScope('${esc(m.id)}')">
+      <span>
+        ${m.id !== "all" ? `<span class="scope-dot ${m.online === false ? "offline" : ""}"></span>` : ""}
+        ${esc(m.name || m.id)}
+      </span>
+      ${state.machine === m.id ? "✓" : ""}
+    </button>
+  `).join("");
+  pop.classList.add("open");
+  back.classList.add("open");
+}
+
+window.selectScope = function(machineId) {
+  state.machine = machineId;
+  document.getElementById("scopePopover").classList.remove("open");
+  document.getElementById("scopeBackdrop").classList.remove("open");
+  loadUsage(false);
+};
+
+/* Settings Sheet */
+window.openSettings = async function(tab = "sources") {
+  state.settingsTab = tab;
+  state.settingsOpen = true;
+  document.querySelectorAll(".sheet-tab").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
+  document.getElementById("settingsSheet").classList.add("open");
+  await refreshSettingsData();
+};
+
+async function refreshSettingsData() {
+  if (!apiAvailable()) return;
+  const res = await window.pywebview.api.get_settings_data();
+  if (res && res.ok) {
+    state.settingsData = res;
+    renderSettingsBody();
+  } else if (res && res.error) {
+    showToast(res.error);
+  }
+}
+
+function renderSettingsBody() {
+  const body = document.getElementById("sheetBody");
+  const tab = state.settingsTab;
+
+  if (tab === "sources") {
+    const conns = (state.settingsData.connections || []).filter(
+      c => !(Array.isArray(c.capabilities) && c.capabilities.length === 1 && c.capabilities[0] === "balance")
+    );
+    body.innerHTML = `
+      <div class="wf-card">
+        <div class="card-header">
+          <span class="card-title">Usage sources</span>
+          <span class="card-subtitle">${conns.length} integrations</span>
+        </div>
+        <div>
+          ${conns.map(c => {
+            const st = String(c.state || "unknown");
+            const ok = st.includes("receiving") || st.includes("connected") || st === "active" || st === "ready";
+            const label = st.replace(/_/g, " ");
+            const editing = state.editingSource === c.source;
+            const isApi = c.kind === "api";
+            return `
+              <div>
+                <div class="source-row">
+                  ${logoHtml(c.source, "source-logo")}
+                  <div class="source-info">
+                    <div class="source-name">${esc(c.name)}</div>
+                    <div class="source-meta">${esc(c.detail || c.location || c.capabilityNote || "Local telemetry")}</div>
+                  </div>
+                  <span class="state-badge ${ok ? "ok" : ""}">${esc(label)}</span>
+                  ${!state.demo && c.kind !== "external" ? `
+                    <button class="btn-secondary" type="button" onclick="toggleSourceEdit('${esc(c.source)}')">
+                      ${editing ? "Cancel" : "Configure"}
+                    </button>
+                  ` : ""}
+                </div>
+                ${editing ? `
+                  <div class="inline-editor">
+                    <input class="text-input" id="srcInput_${esc(c.source)}"
+                      type="${isApi ? "password" : "text"}"
+                      placeholder="${esc(isApi ? (c.credentialHelp || "Paste admin API key") : "Path to usage folder or DB")}"
+                      value="${esc(isApi ? "" : (c.location || ""))}"/>
+                    <div class="editor-actions">
+                      <div style="display:flex;gap:5px">
+                        ${!isApi ? `<button class="btn-secondary" type="button" onclick="browseForSource('${esc(c.source)}','${esc(c.kind || "")}')">Browse…</button>` : ""}
+                        ${ok ? `<button class="btn-danger-quiet" type="button" onclick="disconnectSource('${esc(c.source)}', ${Number(c.revision || 0)})">Disconnect</button>` : ""}
+                      </div>
+                      <button class="btn-primary" type="button" onclick="saveSource('${esc(c.source)}','${esc(c.kind || "")}', ${Number(c.revision || 0)})">Test &amp; connect</button>
+                    </div>
+                  </div>
+                ` : ""}
+              </div>
+            `;
+          }).join("")}
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  if (tab === "computers") {
+    const machines = state.settingsData.machines || [];
+    body.innerHTML = `
+      <div class="wf-card">
+        <div class="card-header">
+          <span class="card-title">Paired computers</span>
+          <span class="card-subtitle">${machines.length} in view</span>
+        </div>
+        <div>
+          ${machines.map(m => `
+            <div class="source-row">
+              <span class="source-logo" style="background:var(--accent-soft);color:var(--accent)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+              </span>
+              <div class="source-info">
+                <div class="source-name">${esc(m.name || m.id)}</div>
+                <div class="source-meta">${m.online !== false ? "Contributing live telemetry" : "Showing last synced copy"}</div>
+              </div>
+              <span class="state-badge ${m.online !== false ? "ok" : ""}">${m.online !== false ? "Online" : "Offline"}</span>
+            </div>
+          `).join("") || '<div class="empty-state">This computer is tracking locally.</div>'}
+        </div>
+      </div>
+
+      ${!state.demo ? `
+      <div class="wf-card" style="padding:11px 12px;display:grid;gap:8px">
+        <div class="card-title" style="font-size:12.5px">Sync another computer</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn-secondary" type="button" onclick="setPairMode('create')">Create pairing code</button>
+          <button class="btn-secondary" type="button" onclick="setPairMode('join')">Join with code</button>
+        </div>
+        ${state.pairMode === "create" ? `
+          <div style="display:grid;gap:6px;margin-top:2px">
+            <input class="text-input" id="pairHubUrl" placeholder="Reachable hub URL (e.g. https://my-pc.tailnet.ts.net:17331)"/>
+            <input class="text-input" id="pairCompName" placeholder="Name of new computer (e.g. MacBook Pro)"/>
+            <div><button class="btn-primary" type="button" onclick="submitCreatePair()">Generate code</button></div>
+          </div>
+        ` : ""}
+        ${state.pairMode === "join" ? `
+          <div style="display:grid;gap:6px;margin-top:2px">
+            <input class="text-input" id="joinCodeInput" placeholder="Paste pairing code from main computer"/>
+            <div><button class="btn-primary" type="button" onclick="submitJoinPair()">Connect &amp; sync</button></div>
+          </div>
+        ` : ""}
+        ${state.generatedCode ? `
+          <div style="display:grid;gap:5px;margin-top:2px;background:var(--surface-subtle);padding:8px;border-radius:9px">
+            <span style="font-size:10.5px;color:var(--ink-secondary)">Private pairing code (paste on the other computer):</span>
+            <input class="text-input" readonly value="${esc(state.generatedCode)}"/>
+            <div><button class="btn-secondary" type="button" onclick="navigator.clipboard.writeText('${esc(state.generatedCode)}');showToast('Copied pairing code')">Copy code</button></div>
+          </div>
+        ` : ""}
+      </div>
+      ` : ""}
+    `;
+    return;
+  }
+
+  body.innerHTML = `
+    <div class="wf-card">
+      <div class="toggle-row">
+        <div>
+          <div class="source-name">Keep window on top</div>
+          <div class="source-meta">Pin BURNRATE above your editor and terminal windows</div>
+        </div>
+        <button class="switch ${state.topmost ? "on" : ""}" type="button" onclick="toggleTopmost()"></button>
+      </div>
+    </div>
+    <div class="wf-card" style="padding:10px 12px;font-size:11px;color:var(--ink-secondary);line-height:1.45">
+      Background collection continues automatically when you close this window. Reopen BURNRATE anytime from your Start menu or Desktop.
+    </div>
+  `;
+}
+
+window.toggleSourceEdit = function(source) {
+  state.editingSource = state.editingSource === source ? null : source;
+  renderSettingsBody();
+};
+
+window.browseForSource = async function(source, kind) {
+  if (!apiAvailable()) return;
+  const picked = await window.pywebview.api.browse_location(kind);
+  if (picked) {
+    const inp = document.getElementById("srcInput_" + source);
+    if (inp) inp.value = picked;
+  }
+};
+
+window.saveSource = async function(source, kind, revision) {
+  if (!apiAvailable()) return;
+  const inp = document.getElementById("srcInput_" + source);
+  const val = inp ? inp.value : "";
+  const res = await window.pywebview.api.connect_source(source, kind === "api", val, revision);
+  if (res && res.ok) {
+    state.editingSource = null;
+    showToast("Source connected");
+    await refreshSettingsData();
+    loadUsage(false);
+  } else {
+    showToast((res && res.error) || "Connection failed");
+  }
+};
+
+window.disconnectSource = async function(source, revision) {
+  if (!apiAvailable()) return;
+  const res = await window.pywebview.api.disconnect_source(source, revision);
+  if (res && res.ok) {
+    state.editingSource = null;
+    showToast("Source disconnected");
+    await refreshSettingsData();
+    loadUsage(false);
+  } else {
+    showToast((res && res.error) || "Could not disconnect");
+  }
+};
+
+window.setPairMode = function(mode) {
+  state.pairMode = state.pairMode === mode ? null : mode;
+  renderSettingsBody();
+};
+
+window.submitCreatePair = async function() {
+  const url = document.getElementById("pairHubUrl")?.value.trim() || "";
+  const name = document.getElementById("pairCompName")?.value.trim() || "";
+  if (!url || !name) { showToast("Enter both hub URL and computer name"); return; }
+  const res = await window.pywebview.api.create_pairing_code(url, name);
+  if (res && res.ok) {
+    state.generatedCode = res.pairingCode;
+    state.pairMode = null;
+    await refreshSettingsData();
+  } else {
+    showToast((res && res.error) || "Could not create pairing code");
+  }
+};
+
+window.submitJoinPair = async function() {
+  const code = document.getElementById("joinCodeInput")?.value.trim() || "";
+  if (!code) { showToast("Paste a pairing code first"); return; }
+  const res = await window.pywebview.api.join_with_code(code);
+  if (res && res.ok) {
+    state.pairMode = null;
+    showToast("Paired! Syncing in background.");
+    await refreshSettingsData();
+    loadUsage(false);
+  } else {
+    showToast((res && res.error) || "Pairing failed");
+  }
+};
+
+window.toggleTopmost = async function() {
+  state.topmost = !state.topmost;
+  renderSettingsBody();
+  if (apiAvailable()) await window.pywebview.api.set_topmost(state.topmost);
+};
+
+/* Wire UI Controls */
+document.getElementById("scopeBtn").addEventListener("click", toggleScopePopover);
+document.getElementById("scopeBackdrop").addEventListener("click", toggleScopePopover);
+document.getElementById("refreshBtn").addEventListener("click", () => loadUsage(true));
+document.getElementById("settingsBtn").addEventListener("click", () => openSettings("sources"));
+document.getElementById("settingsDoneBtn").addEventListener("click", () => {
+  state.settingsOpen = false;
+  document.getElementById("settingsSheet").classList.remove("open");
+});
+document.querySelectorAll(".sheet-tab").forEach(btn => {
+  btn.addEventListener("click", () => {
+    state.settingsTab = btn.dataset.tab;
+    document.querySelectorAll(".sheet-tab").forEach(b => b.classList.toggle("active", b === btn));
+    renderSettingsBody();
+  });
+});
+document.querySelectorAll(".period-pill").forEach(btn => {
+  btn.addEventListener("click", () => {
+    state.period = btn.dataset.period;
+    document.querySelectorAll(".period-pill").forEach(b => b.classList.toggle("active", b === btn));
+    if (apiAvailable()) window.pywebview.api.save_period(state.period);
+    loadUsage(false);
+  });
+});
+document.getElementById("minBtn").addEventListener("click", () => {
+  if (apiAvailable()) window.pywebview.api.minimize_window();
+});
+document.getElementById("closeBtn").addEventListener("click", () => {
+  if (apiAvailable()) window.pywebview.api.close_window();
+});
+document.querySelectorAll(".rz").forEach(el => {
+  el.addEventListener("mousedown", (e) => {
+    if (e.button === 0 && apiAvailable()) {
+      e.preventDefault();
+      window.pywebview.api.begin_resize(el.dataset.edge);
+    }
+  });
+});
+
+window.addEventListener("resize", () => {
+  if (state.report) renderChart();
+});
+
+bindChartScrub();
+
+async function boot() {
+  if (!apiAvailable()) return;
+  const init = await window.pywebview.api.get_initial_state();
+  if (init) {
+    state.period = init.period || "today";
+    state.topmost = !!init.topmost;
+    state.demo = !!init.demo;
+    document.querySelectorAll(".period-pill").forEach(b => b.classList.toggle("active", b.dataset.period === state.period));
+  }
+  await loadUsage(false);
+  setInterval(() => loadUsage(false), 15000);
+}
+
+if (window.pywebview && window.pywebview.api) {
+  boot();
+} else {
+  window.addEventListener("pywebviewready", boot);
+}
+
+/* Allow static preview injection when rendered inside Traycer artifact preview */
+window.__injectPreviewReport = function(report, demo = false) {
+  document.documentElement.classList.add("preview-mode");
+  state.demo = demo;
+  renderReport(report);
+  requestAnimationFrame(() => renderChart());
+};
+</script>
+</body>
+</html>
