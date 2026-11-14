@@ -72,7 +72,7 @@ Please include:
 * any prior attempt to resolve it;
 * how you would like it handled, if you have a preference.
 
-Reports are acknowledged within 5 business days. All complaints will be reviewed and investigated
+We aim to acknowledge reports within 5 business days. All complaints will be reviewed and investigated
 promptly and fairly. All community leaders are obligated to respect the privacy and security of the
 reporter of any incident. Retaliation against anyone who reports a concern or participates in an
 investigation is itself a violation of this Code of Conduct.
