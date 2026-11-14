@@ -49,6 +49,8 @@ class FakeHttpClient:
 
     def post(self, url, **kwargs):
         self.calls.append(("POST", url, kwargs))
+        if url.endswith("/api/auth/bootstrap"):
+            return Response(payload={"sessionToken": "synthetic-owner-session"})
         return self.response
 
 
@@ -108,14 +110,14 @@ def test_native_client_uses_loopback_and_disables_redirects_and_proxy_environmen
     result = client.snapshot("all", "all")
     assert result["tools"] == []
     transport = FakeHttpClient.instances[-1]
-    method, url, kwargs = transport.calls[0]
+    method, url, kwargs = transport.calls[-1]
     assert method == "GET"
     assert url.startswith("http://127.0.0.1:17432/api/spend/usage?")
     assert "period=all" in url and "machine=all" in url
     assert kwargs["headers"] == {
         "Origin": "http://127.0.0.1:17432",
         "X-BURNRATE-Request": "1",
-        "Authorization": "Bearer local-secret",
+        "Authorization": "Bearer synthetic-owner-session",
     }
     assert transport.options["trust_env"] is False
     assert transport.options["follow_redirects"] is False
@@ -181,6 +183,9 @@ def test_machine_bearer_must_be_valid_for_native_usage_endpoint(tmp_path, monkey
         def get(self, url, **kwargs):
             return application.get(url, **kwargs)
 
+        def post(self, url, **kwargs):
+            return application.post(url, **kwargs)
+
     monkeypatch.setattr(desktop.httpx, "Client", lambda **kwargs: LocalClient())
     client = _client(tmp_path)
     try:
@@ -188,7 +193,8 @@ def test_machine_bearer_must_be_valid_for_native_usage_endpoint(tmp_path, monkey
         with pytest.raises(DesktopError, match="authenticate"):
             client.snapshot("all", "all")
         monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", valid_token)
-        assert client.snapshot("all", "all")["scope"] == "all-computers"
+        with pytest.raises(DesktopError, match="authenticate"):
+            client.snapshot("all", "all")
     finally:
         application.close()
 

@@ -438,7 +438,9 @@ def test_setup_wizard_pairing_and_complete(tmp_path: Path) -> None:
     assert pair_data["pairingCode"].startswith("brpair_")
     decoded = decode_pairing_code(pair_data["pairingCode"])
     assert decoded["hubUrl"] == "http://testserver"
-    assert decoded["token"].startswith("br_m_")
+    assert decoded["token"].startswith("br_p_")
+    from spend_app.sync import register_hub_test_client
+    register_hub_test_client("http://testserver", hub_client)
 
     # 4. Seed an event on the Spoke and connect Spoke via pairing code
     initialize(spoke_settings.database_path)
@@ -514,6 +516,16 @@ def test_setup_wizard_pairing_and_complete(tmp_path: Path) -> None:
     from spend_app.sync import register_hub_test_client
 
     register_hub_test_client("http://testserver", hub_client)
+    # Pairing conveys sync only; explicitly sign in to unlock the owner view.
+    from spend_app.auth_model import Principal, create_session
+    from spend_app.setup_wizard import read_setup_state, write_setup_state
+    with connect(hub_settings.database_path) as conn:
+        owner_session = create_session(conn, Principal("owner", "synthetic-owner", "owner"), "Test spoke")
+    with connect(spoke_settings.database_path) as conn:
+        state = read_setup_state(conn)
+        state["spokeConfig"]["ownerSession"] = owner_session["sessionToken"]
+        state["spokeConfig"]["ownerSessionExpiresAt"] = owner_session["expiresAt"]
+        write_setup_state(conn, state)
     spoke_machines = spoke_client.get("/api/machines").json()["machines"]
     spoke_machine_names = {m["name"] for m in spoke_machines}
     assert "Main Workstation" in spoke_machine_names
@@ -802,7 +814,7 @@ def _spoke_with_fake_hub(tmp_path: Path, monkeypatch, payloads: dict[str, dict])
     with connect(database) as connection:
         write_setup_state(
             connection,
-            {"role": "spoke", "spokeConfig": {"enabled": True, "hubUrl": "https://hub.test", "token": "spoke-token"}},
+            {"role": "spoke", "spokeConfig": {"enabled": True, "hubUrl": "https://hub.test", "token": "spoke-token", "ownerSession": "synthetic-owner-session"}},
         )
 
     class FakeResponse:

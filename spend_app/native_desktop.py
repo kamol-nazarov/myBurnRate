@@ -14,6 +14,7 @@ import queue
 import subprocess
 import sys
 import time
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
@@ -93,14 +94,14 @@ class NativeClient:
         self.base_url = f"http://127.0.0.1:{port}"
         self.port = port
         self.process = None
+        self._session_token = None
+        self._auth_lock = threading.Lock()
 
     def request(self, path: str, body: dict | None = None) -> dict:
         if not path.startswith("/api/"):
             raise ValueError("Only local BURNRATE API paths are supported")
         headers = {"Origin": self.base_url, "X-BURNRATE-Request": "1"}
         token = os.getenv("BURNRATE_ACCESS_TOKEN", "").strip()
-        if token:
-            headers["Authorization"] = "Bearer " + token
         try:
             with httpx.Client(
                 timeout=httpx.Timeout(
@@ -119,6 +120,20 @@ class NativeClient:
                 trust_env=False,
                 follow_redirects=False,
             ) as client:
+                if token:
+                    # Exchange recovery authority once; ordinary UI calls use
+                    # an independently expiring and revocable session.
+                    with self._auth_lock:
+                        if self._session_token is None:
+                            bootstrap = client.post(self.base_url + "/api/auth/bootstrap", json={},
+                                                    headers={**headers, "Authorization": "Bearer " + token})
+                            if bootstrap.status_code != 200:
+                                raise DesktopError("BURNRATE could not authenticate this window. Sign in through Owner access.")
+                            data = bootstrap.json()
+                            if not isinstance(data, dict) or not data.get("sessionToken"):
+                                raise DesktopError("The tracker returned an invalid session response.")
+                            self._session_token = data["sessionToken"]
+                    headers["Authorization"] = "Bearer " + self._session_token
                 response = (
                     client.get(self.base_url + path, headers=headers)
                     if body is None
@@ -1225,7 +1240,7 @@ class UsageWindow:
                 if data["tools"]
                 else "No recorded usage in this period. Check Sources in Settings to connect a tool."
             )
-        self.machine_ids = {"All computers": "all"}
+        self.machine_ids = {"This computer" if data.get("scope") == "local-fallback" else "All computers": "all"}
         for machine in data.get("machines") or []:
             label = str(machine.get("name") or machine["id"])
             if label in self.machine_ids:
@@ -1758,7 +1773,7 @@ class SettingsWindow:
                 card_shell.pack(fill="both", expand=True)
                 ttk.Label(
                     body,
-                    text="Paste this code into BURNRATE on the other computer. Keep it private.",
+                    text="Paste this private code on the other computer within 15 minutes. It works once.",
                     wraplength=460,
                     style="Card.TLabel",
                 ).pack()

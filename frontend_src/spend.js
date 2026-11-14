@@ -2103,7 +2103,7 @@ function renderMachines(data) {
     });
     row.insertBefore(root, $("range-switch"));
   }
-  const items = [{id: "all", name: "All computers"}, ...machines];
+  const items = [{id: "all", name: data?.scope === "local-fallback" ? "This computer" : "All computers"}, ...machines];
   reconcileChildren(root, items, item => item.id, () => nodeFrom(`<button type="button" role="radio" data-machine=""></button>`), (node, item) => {
     const on = item.id === (state.machine || "all");
     node.dataset.machine = item.id;
@@ -2331,7 +2331,7 @@ function renderOverview() {
   renderUnitPrice(data);
   renderHeat(data);
   const totals = data.totals || {};
-  $("window-note").textContent = `Usage and value across ${(data.tools || []).length} tools · ${number(totals.records)} records`;
+  $("window-note").textContent = data.warning || `Usage and value across ${(data.tools || []).length} tools · ${number(totals.records)} records`;
   $("range-label").textContent = `${windowLabel(data.window?.key || state.window)} window · ${tokens(totals.tokens)} tokens · ${number(totals.records)} records`;
   const empty = !(data.models || []).length && !(data.tools || []).length;
   $("empty-state").hidden = !empty;

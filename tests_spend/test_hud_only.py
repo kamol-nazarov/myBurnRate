@@ -83,7 +83,7 @@ def _spoke(tmp_path: Path, monkeypatch, hub) -> Settings:
     settings = settings_for(tmp_path)
     with connect(settings.database_path) as connection:
         write_setup_state(connection, {"role": "spoke", "spokeConfig": {
-            "enabled": True, "hubUrl": "https://hub.test", "token": "spoke-token"}})
+            "enabled": True, "hubUrl": "https://hub.test", "token": "spoke-token", "ownerSession": "synthetic-owner-session"}})
     monkeypatch.setitem(sync_module._HUB_TEST_CLIENTS, "https://hub.test", hub)
     sync_module.clear_hub_proxy_cache()
     return settings
@@ -221,6 +221,7 @@ const usd = v => v == null || v === "" ? "—" : "$" + Math.round(Number(v));
 const usd2 = v => v == null || v === "" ? "—" : "$" + Number(v).toFixed(2);
 const tok = v => v == null || v === "" ? "—" : String(v);
 const refreshTip = () => {};
+const renderOwnerScope = () => {};
 const feedHealth = {live: 0, usage: 0, machines: 0, freshness: 0, dataAt: null};
 const noteDataAge = () => {};
 let heldStats%s

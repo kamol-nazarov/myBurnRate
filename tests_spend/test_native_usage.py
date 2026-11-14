@@ -291,7 +291,7 @@ def test_imported_machine_rows_are_in_all_computers_report_and_corrections_inval
     assert revised["total"]["valueUsd"] != all_report["total"]["valueUsd"]
 
 
-def test_usage_api_hub_proxy_uses_machine_bearer_and_spoke_fallback_is_labeled(
+def test_usage_api_hub_proxy_uses_owner_session_and_spoke_fallback_is_labeled(
     tmp_path, monkeypatch
 ):
     from spend_app import sync
@@ -307,6 +307,9 @@ def test_usage_api_hub_proxy_uses_machine_bearer_and_spoke_fallback_is_labeled(
     token = sync.register_machine(
         hub_settings.database_path, name="Spoke", os_name="test"
     )["token"]
+    from spend_app.auth_model import Principal, create_session
+    with connect(hub_settings.database_path) as connection:
+        owner_session = create_session(connection, Principal("owner", "synthetic-owner", "owner"), "Test spoke")
     hub_client = TestClient(create_app(hub_settings, enable_scheduler=False))
     spoke_client = TestClient(create_app(spoke_settings, enable_scheduler=False))
     with connect(spoke_settings.database_path) as connection:
@@ -315,6 +318,8 @@ def test_usage_api_hub_proxy_uses_machine_bearer_and_spoke_fallback_is_labeled(
         state["spokeConfig"] = {
             "hubUrl": "https://hub.invalid",
             "token": token,
+            "ownerSession": owner_session["sessionToken"],
+            "ownerSessionExpiresAt": owner_session["expiresAt"],
             "enabled": True,
         }
         state["account"] = {"machineId": "machine-test"}
@@ -337,7 +342,7 @@ def test_usage_api_hub_proxy_uses_machine_bearer_and_spoke_fallback_is_labeled(
         "/api/spend/usage", params={"period": "all", "machine": "all"}
     )
     assert response.status_code == 200, response.text
-    assert recording_hub.headers == [{"Authorization": f"Bearer {token}"}]
+    assert recording_hub.headers == [{"Authorization": "Bearer " + owner_session["sessionToken"]}]
     assert response.json()["scope"] == "all-computers"
     assert response.json()["total"]["events"] == 1
 
@@ -389,8 +394,8 @@ def test_pairing_code_fallback_uses_own_id_and_excludes_stale_hub_rows(
             json={"hubUrl": hub_url, "name": "Travel computer"},
         )
         assert paired.status_code == 200, paired.text
-        paired_id = paired.json()["machine"]["id"]
         code = paired.json()["pairingCode"]
+        monkeypatch.setitem(sync._HUB_TEST_CLIENTS, hub_url, TestClient(hub_app, base_url=hub_url))
 
         now = datetime.now(UTC)
         with connect(spoke_settings.database_path) as connection:
@@ -438,7 +443,8 @@ def test_pairing_code_fallback_uses_own_id_and_excludes_stale_hub_rows(
         assert connected.status_code == 200, connected.text
         with connect(spoke_settings.database_path) as connection:
             setup = read_setup_state(connection)
-        assert setup["account"]["machineId"] == paired_id
+        paired_id = setup["account"]["machineId"]
+        assert paired_id
 
         class OfflineHub:
             def get(self, *args, **kwargs):
@@ -509,7 +515,9 @@ def test_configured_br_m_admin_token_precedes_machine_token_validation(
         valid = client.get(
             endpoint, headers={"Authorization": f"Bearer {registration['token']}"}
         )
-        assert valid.status_code == 200, valid.text
+        assert valid.status_code == 403, valid.text
+        own = client.get("/api/spend/usage", params={"machine": registration["machine"]["id"]}, headers={"Authorization": "Bearer " + registration["token"]})
+        assert own.status_code == 200
 
         revoke_machine(settings.database_path, machine_id=registration["machine"]["id"])
         revoked = client.get(

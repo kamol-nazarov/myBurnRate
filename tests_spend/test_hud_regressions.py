@@ -96,6 +96,7 @@ def test_successful_unavailable_usage_clears_held_values_and_preserves_zero():
     block = _block("        let heldStats", "        let noticeTimer")
     result = _node("""
 let selectedMachine = 'all', usageView = null, windowTokens = {};
+const renderOwnerScope = () => {};
 const stats = {};
 const $ = () => ({textContent: ''});
 const setStat = (id, value) => {stats[id] = value;};

@@ -12,25 +12,16 @@ from spend_app.connections import Conflict, Service
 from spend_app.connection_paths import LocationError
 
 
-_SPOKE_READ_PATHS = {
+_MACHINE_READ_PATHS = {
     "/api/spend/usage",
     "/api/spend/summary",
-    "/api/spend/nav",
     "/api/spend/entity",
-    "/api/spend/limits",
-    "/api/spend/hud",
-    "/api/spend/hud/usage",
-    "/api/spend/share/week",
-    "/api/spend/freshness",
-    "/api/subscriptions",
-    "/api/subscriptions/value",
-    "/api/machines",
-    "/api/onboarding",
 }
 
 _PUBLIC_ACCOUNT_PATHS = {
     "/api/account/register",
     "/api/account/login",
+    "/api/pairing/redeem",
 }
 
 _TEST_HOSTS = {"testserver", "test"}
@@ -83,26 +74,24 @@ def _bearer_matches(request, token: str) -> bool:
     return hmac.compare_digest(auth[7:].strip(), token)
 
 
-def _cookie_matches(request, token: str) -> bool:
-    cookie_token = (getattr(request, "cookies", None) or {}).get("burnrate_access", "")
-    return bool(token and cookie_token and hmac.compare_digest(cookie_token, token))
-
-
 def access_allowed(
     request,
     token,
     *,
     central: bool | None = None,
     machine_id: str | None = None,
+    principal=None,
 ):
-    """The API boundary.
-
-    - A machine token is accepted only on the spoke routes after its own
-      validation (``machine_id`` is set by the middleware).
-    - A hub with no admin token fails closed: anonymous requests are denied.
-    - Loopback/local installs keep their anonymous convenience, protected by
-      the Host guard and the mutation origin checks.
-    """
+    """Permission boundary after credential validation. Unknown roles deny."""
+    from spend_app.auth_model import Principal
+    if principal is None:
+        principal = getattr(getattr(request, "state", None), "principal", None)
+    if principal is None:
+        # Standalone routers can supply their explicit legacy bearer. The app
+        # always supplies the validated principal, including unauthenticated.
+        principal = (Principal("machine", machine_id) if machine_id else
+                     Principal("owner", "break-glass", "owner", via="break-glass")
+                     if isinstance(token, str) and _bearer_matches(request, token) else Principal())
     if request.url.path in _PUBLIC_ACCOUNT_PATHS:
         return True
     if not request.url.path.startswith("/api/"):
@@ -110,22 +99,20 @@ def access_allowed(
     if central is None:
         central = central_server()
     method = getattr(request, "method", "GET")
-    if machine_id:
-        if request.url.path in {"/api/sync/push", "/api/account/subscriptions"}:
-            return True
+    if principal.kind == "machine":
+        if request.url.path in {"/api/sync/push", "/api/auth/machine/rotate"}:
+            return method == "POST"
         if request.url.path == "/api/machines":
             # The route allows a machine to rename or revoke only itself.
             return method in {"GET", "HEAD"} or method == "POST"
-        if method in {"GET", "HEAD"} and request.url.path in _SPOKE_READ_PATHS:
-            return True
+        if method in {"GET", "HEAD"} and request.url.path in _MACHINE_READ_PATHS:
+            return request.query_params.getlist("machine") == [principal.id]
         return False
+    if principal.kind == "owner":
+        permission = "hub.read" if method in {"GET", "HEAD"} else "admin.write"
+        return principal.permits(permission)
     if not token:
         return not central
-    if _bearer_matches(request, token):
-        return True
-    if _cookie_matches(request, token):
-        # Cookies are ambient credentials: mutations must prove same-origin.
-        return trusted(request, mutation=method not in {"GET", "HEAD"})
     return False
 
 

@@ -784,6 +784,8 @@ def initialize(path: Path) -> None:
     retire_cursor_usage(path)
     dedupe_grok_calls(path)
     retire_muse_rollup_events(path)
+    from spend_app.auth_model import ensure_schema
+    ensure_schema(path)
 
 
 def ensure_usage_change_journal(path: Path) -> None:

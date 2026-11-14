@@ -544,11 +544,13 @@ def _main() -> int:
 
         initialize(settings.database_path)
         if args.machines_command == "register":
-            out = register_machine(settings.database_path, name=args.name, os_name=args.os)
+            from spend_app.auth_model import Principal
+            out = register_machine(settings.database_path, name=args.name, os_name=args.os, actor=Principal("system", "local-cli"))
             print(json.dumps(out, indent=2))
             return 0
         if args.machines_command == "revoke":
-            out = revoke_machine(settings.database_path, machine_id=args.id)
+            from spend_app.auth_model import Principal
+            out = revoke_machine(settings.database_path, machine_id=args.id, actor=Principal("system", "local-cli"))
             print(json.dumps(out, indent=2))
             return 0
         with connect(settings.database_path) as connection:

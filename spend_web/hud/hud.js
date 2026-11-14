@@ -600,10 +600,23 @@
           return Math.round(ms / 86400000) + "d ago";
         }
 
+        let ownerScoped = false;
+        function renderOwnerScope(data) {
+          ownerScoped = ["local-fallback", "unavailable"].includes(data.scope);
+          $("hud-owner-scope").hidden = !ownerScoped;
+          if (selectedMachine === "all") $("hud-machine-label").textContent = ownerScoped ? "This computer" : "All computers";
+        }
+        for (const id of ["hud-owner-signin", "hud-owner-access"]) {
+          $(id)?.addEventListener("click", async event => {
+            event.preventDefault();
+            const handled = await tauriInvoke("show_dashboard", {path: "/auth"});
+            if (handled === null) window.open("/auth", "burnrate-owner");
+          });
+        }
         function renderMachines(machines) {
           const host = $("hud-machines");
           const list = Array.isArray(machines) ? machines : [];
-          const selectedName = selectedMachine === "all" ? "All computers"
+          const selectedName = selectedMachine === "all" ? (ownerScoped ? "This computer" : "All computers")
             : list.find(item => item.id === selectedMachine)?.name || (selectedMachine === "local" ? "This computer" : selectedMachine);
           if ($("hud-machine-label")) $("hud-machine-label").textContent = selectedName;
           $("hud-computers-foot").textContent =
@@ -1308,6 +1321,7 @@
 
         let heldStats = {day: "", byMachine: {}};
         function renderUsage(data) {
+          renderOwnerScope(data);
           const nav = data.navigation || {};
           const totals = data.totals || {};
           $("hud-date").textContent = "Today · " + new Date().toLocaleDateString("en-US", {
@@ -1524,6 +1538,7 @@
         }
 
         function renderSummary(data) {
+          renderOwnerScope(data);
           statusView.summary = data.status || "live";
           statusView.failing = data.failingSource || "";
           statusView.offline = false;

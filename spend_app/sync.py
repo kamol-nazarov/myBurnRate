@@ -199,115 +199,121 @@ def list_machines(
                 "online": online,
                 "lastSeenAt": last_seen_iso,
                 "eventsPushed": int(rec.get("events_pushed") or 0),
+                "expiresAt": rec.get("expires_at"),
+                "rotationRequired": bool(rec.get("rotation_required")),
             }
         )
     return items
 
 
-def register_or_reconnect_machine(
-    database_path: Path,
-    *,
-    name: str,
-    os_name: str = "",
-    now: datetime | None = None,
-) -> dict:
+def _register_in_connection(connection, *, name, os_name="", now=None, reconnect=False, machine_id=None):
+    from spend_app.auth_model import MACHINE_DAYS, moment, stamp
     clean_name = (name or "").strip()
     if not clean_name or len(clean_name) > 64:
         raise ValueError("Machine name must be between 1 and 64 characters.")
-    stamp = ((now or datetime.now(UTC)).astimezone(UTC)).isoformat().replace("+00:00", "Z")
-    initialize(database_path)
-    with connect(database_path) as connection:
-        state = _read_state(connection)
-        matched_id = None
-        for existing_id, rec in state["machines"].items():
-            if not isinstance(rec, dict) or rec.get("revoked"):
-                continue
-            if str(rec.get("name") or "").strip().lower() == clean_name.lower():
-                matched_id = existing_id
-                break
-        if matched_id is None:
-            base = _slugify(clean_name)
-            matched_id = f"{base}-{secrets.token_hex(2)}"
-            while matched_id in state["machines"] or matched_id in {"local", "all"}:
-                matched_id = f"{base}-{secrets.token_hex(2)}"
-        token = f"br_m_{matched_id}_{secrets.token_urlsafe(24)}"
-        prev = state["machines"].get(matched_id) if isinstance(state["machines"].get(matched_id), dict) else {}
-        state["machines"][matched_id] = {
-            "id": matched_id,
-            "name": clean_name,
-            "os": (os_name or prev.get("os") or "").strip()[:32],
-            "token_hash": _token_hash(token),
-            "created_at": prev.get("created_at") or stamp,
-            "last_seen_at": stamp,
-            "events_pushed": int(prev.get("events_pushed") or 0),
-        }
-        _write_state(connection, state)
-        machines = list_machines(connection, now=now)
+    state = _read_state(connection)
+    matched_id = machine_id
+    if matched_id is not None and matched_id not in state["machines"]:
+        raise ValueError("Unknown machine.")
+    if matched_id is None and reconnect:
+        matched_id = next((mid for mid, rec in state["machines"].items()
+                           if isinstance(rec, dict) and str(rec.get("name", "")).lower() == clean_name.lower()), None)
+    if matched_id is None:
+        matched_id = f"machine-{secrets.token_hex(8)}"
+        while matched_id in state["machines"] or matched_id in {"local", "all"}:
+            matched_id = f"machine-{secrets.token_hex(8)}"
+    token = f"br_m_{matched_id}_{secrets.token_urlsafe(32)}"
+    prev = state["machines"].get(matched_id) or {}
+    state["machines"][matched_id] = {
+        "id": matched_id, "name": clean_name, "os": (os_name or prev.get("os") or "").strip()[:32],
+        "token_hash": _token_hash(token), "created_at": stamp(now),
+        "registered_at": prev.get("registered_at") or prev.get("created_at") or stamp(now),
+        "expires_at": stamp(moment(now) + timedelta(days=MACHINE_DAYS)), "last_used_at": None,
+        "rotation_required": False, "last_seen_at": stamp(now),
+        "events_pushed": int(prev.get("events_pushed") or 0),
+    }
+    _write_state(connection, state)
+    machines = list_machines(connection, now=now)
     created = next(item for item in machines if item["id"] == matched_id)
-    STREAM_BROKER.publish({"type": "machines", "machineId": matched_id, "at": stamp})
-    return {"machine": created, "token": token, "machines": machines}
+    return {"machine": created, "token": token, "machines": machines,
+            "expiresAt": state["machines"][matched_id]["expires_at"]}
 
 
-def register_machine(
-    database_path: Path,
-    *,
-    name: str,
-    os_name: str = "",
-    now: datetime | None = None,
-) -> dict:
-    clean_name = (name or "").strip()
-    if not clean_name or len(clean_name) > 64:
-        raise ValueError("Machine name must be between 1 and 64 characters.")
-    stamp = ((now or datetime.now(UTC)).astimezone(UTC)).isoformat().replace("+00:00", "Z")
+def register_or_reconnect_machine(database_path: Path, *, name: str, os_name: str = "", now=None, actor=None) -> dict:
     initialize(database_path)
     with connect(database_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        result = _register_in_connection(connection, name=name, os_name=os_name, now=now, reconnect=True)
+        if actor:
+            from spend_app.auth_model import audit
+            audit(connection, actor, "machine.register", result["machine"]["id"], now=now)
+    STREAM_BROKER.publish({"type": "machines", "machineId": result["machine"]["id"], "at": utc_now()})
+    return result
+
+
+def register_machine(database_path: Path, *, name: str, os_name: str = "", now=None, actor=None) -> dict:
+    initialize(database_path)
+    with connect(database_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        result = _register_in_connection(connection, name=name, os_name=os_name, now=now)
+        if actor:
+            from spend_app.auth_model import audit
+            audit(connection, actor, "machine.register", result["machine"]["id"], now=now)
+    STREAM_BROKER.publish({"type": "machines", "machineId": result["machine"]["id"], "at": utc_now()})
+    return result
+
+
+def rotate_machine_token(database_path: Path, token: str, *, now=None, actor=None) -> dict | None:
+    from spend_app.auth_model import moment, parse
+    with connect(database_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
         state = _read_state(connection)
-        base = _slugify(clean_name)
-        machine_id = f"{base}-{secrets.token_hex(2)}"
-        while machine_id in state["machines"] or machine_id in {"local", "all"}:
-            machine_id = f"{base}-{secrets.token_hex(2)}"
-        token = f"br_m_{machine_id}_{secrets.token_urlsafe(24)}"
-        state["machines"][machine_id] = {
-            "id": machine_id,
-            "name": clean_name,
-            "os": (os_name or "").strip()[:32],
-            "token_hash": _token_hash(token),
-            "created_at": stamp,
-            "last_seen_at": None,
-            "events_pushed": 0,
-        }
-        _write_state(connection, state)
-        machines = list_machines(connection, now=now)
-    created = next(item for item in machines if item["id"] == machine_id)
-    STREAM_BROKER.publish({"type": "machines", "machineId": machine_id, "at": stamp})
-    return {"machine": created, "token": token, "machines": machines}
+        for mid, rec in state["machines"].items():
+            if (rec.get("revoked") or not rec.get("token_hash") or not parse(rec.get("expires_at"))
+                    or parse(rec["expires_at"]) <= moment(now)
+                    or not hmac.compare_digest(_token_hash(token), rec["token_hash"])):
+                continue
+            result = _register_in_connection(connection, name=rec["name"], os_name=rec.get("os", ""),
+                                             machine_id=mid, now=now)
+            if actor:
+                from spend_app.auth_model import audit
+                audit(connection, actor, "machine.rotate", mid, now=now)
+            return result
+    return None
 
 
 def revoke_machine(
-    database_path: Path, *, machine_id: str, now: datetime | None = None
+    database_path: Path, *, machine_id: str, now: datetime | None = None, actor=None
 ) -> dict:
     if not machine_id or machine_id in {"local", "all"}:
         raise ValueError("Cannot revoke the local hub machine.")
     initialize(database_path)
     with connect(database_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
         state = _read_state(connection)
         if machine_id not in state["machines"]:
             raise ValueError(f"Unknown machine: {machine_id}")
-        del state["machines"][machine_id]
+        state["machines"][machine_id].update(revoked=True, revoked_at=utc_now(), token_hash="")
+        connection.execute("UPDATE pairing_grants SET used_at=? WHERE machine_id=? AND used_at IS NULL",
+                           (utc_now(), machine_id))
         _write_state(connection, state)
+        if actor:
+            from spend_app.auth_model import audit
+            audit(connection, actor, "machine.revoke", machine_id, now=now)
         machines = list_machines(connection, now=now)
     STREAM_BROKER.publish({"type": "machines", "machineId": machine_id, "at": utc_now()})
     return {"machines": machines}
 
 
 def rename_machine(
-    database_path: Path, *, machine_id: str, name: str, now: datetime | None = None
+    database_path: Path, *, machine_id: str, name: str, now: datetime | None = None, actor=None
 ) -> dict:
     clean_name = (name or "").strip()
     if not clean_name or len(clean_name) > 64:
         raise ValueError("Machine name must be between 1 and 64 characters.")
     initialize(database_path)
     with connect(database_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
         state = _read_state(connection)
         if machine_id == "local":
             state["hub_name"] = clean_name
@@ -316,28 +322,33 @@ def rename_machine(
         else:
             raise ValueError(f"Unknown machine: {machine_id}")
         _write_state(connection, state)
+        if actor:
+            from spend_app.auth_model import audit
+            audit(connection, actor, "machine.rename", machine_id, now=now)
         machines = list_machines(connection, now=now)
     STREAM_BROKER.publish({"type": "machines", "machineId": machine_id, "at": utc_now()})
     return {"machines": machines}
 
 
-def authenticate_machine_token(database_path: Path, token: str) -> str | None:
+def authenticate_machine_token(database_path: Path, token: str, *, now=None) -> str | None:
+    from spend_app.auth_model import moment, parse, stamp
     raw = (token or "").strip()
     if not raw.startswith("br_m_"):
         return None
     digest = _token_hash(raw)
-    try:
-        with connect(database_path) as connection:
-            state = _read_state(connection)
-    except Exception:
-        return None
-    for machine_id, rec in state["machines"].items():
-        if not isinstance(rec, dict) or rec.get("revoked"):
-            continue
-        expected = str(rec.get("token_hash") or "")
-        if expected and hmac.compare_digest(digest, expected):
-            _MACHINE_LAST_SEEN_MEM[machine_id] = datetime.now(UTC).isoformat().replace("+00:00", "Z")
-            return machine_id
+    with connect(database_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        state = _read_state(connection)
+        for machine_id, rec in state["machines"].items():
+            if not isinstance(rec, dict) or rec.get("revoked"):
+                continue
+            expected = str(rec.get("token_hash") or "")
+            expires = parse(rec.get("expires_at"))
+            if expected and hmac.compare_digest(digest, expected) and expires and expires > moment(now):
+                rec["last_used_at"] = stamp(now)
+                _write_state(connection, state)
+                _MACHINE_LAST_SEEN_MEM[machine_id] = stamp(now)
+                return machine_id
     return None
 
 
@@ -981,13 +992,50 @@ def read_sync_cursor(database_path: Path, hub_url: str) -> dict:
         return {"usage_id": 0, "unpriced_id": 0}
 
 
-def write_sync_cursor(database_path: Path, hub_url: str, cursor: dict) -> None:
+_ANY_GENERATION = object()
+
+
+def write_sync_cursor(database_path: Path, hub_url: str, cursor: dict, *, expected_generation=_ANY_GENERATION) -> None:
     with connect(database_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        if expected_generation is not _ANY_GENERATION:
+            row = connection.execute("SELECT value FROM app_meta WHERE key=?", (_cursor_key(hub_url),)).fetchone()
+            current = json.loads(row[0]) if row else {}
+            if current.get("generation") != expected_generation:
+                raise RuntimeError("Pairing changed; retry sync with the current configuration.")
         connection.execute(
             "INSERT INTO app_meta(key, value) VALUES(?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (_cursor_key(hub_url), json.dumps(cursor)),
         )
+
+
+def prepare_pairing_sync(database_path: Path, hub_url: str, token: str) -> str:
+    """Seed a fresh receiver from current rows without weakening journal order.
+
+    Compacting acknowledged changes must not discard the initial snapshot.
+    A generation and credential hash fence both in-flight and queued old pushes.
+    """
+    initialize(database_path)
+    with connect(database_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        for table in ("usage_events", "unpriced_usage_events"):
+            connection.execute(f"INSERT INTO usage_changes(raw_id) SELECT raw_id FROM {table} "
+                               "WHERE raw_id NOT LIKE 'm:%' ORDER BY id")
+        cursor = {"generation": secrets.token_hex(16), "credential_hash": _token_hash(token)}
+        connection.execute("INSERT INTO app_meta(key,value) VALUES(?,?) "
+                           "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                           (_cursor_key(hub_url), json.dumps(cursor)))
+    return cursor["generation"]
+
+
+def rotate_spoke_sync_credential(connection, hub_url: str, token: str) -> None:
+    row = connection.execute("SELECT value FROM app_meta WHERE key=?", (_cursor_key(hub_url),)).fetchone()
+    cursor = json.loads(row[0]) if row else {}
+    cursor.update(generation=secrets.token_hex(16), credential_hash=_token_hash(token))
+    connection.execute("INSERT INTO app_meta(key,value) VALUES(?,?) "
+                       "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                       (_cursor_key(hub_url), json.dumps(cursor)))
 
 
 def sync_once(
@@ -1026,6 +1074,9 @@ def sync_once(
             pass
 
     cursor = read_sync_cursor(settings.database_path, hub_url)
+    generation = cursor.get("generation")
+    if cursor.get("credential_hash") and not hmac.compare_digest(cursor["credential_hash"], _token_hash(token.strip())):
+        raise RuntimeError("Pairing changed; retry sync with the current configuration.")
     total_written = 0
     total_skipped = 0
     last_result: dict = {"ok": True, "eventsWritten": 0}
@@ -1042,6 +1093,9 @@ def sync_once(
             batch, next_cursor = export_sync_batch(
                 settings.database_path, cursor=cursor, limit=batch_limit
             )
+            for key in ("generation", "credential_hash"):
+                if key in cursor:
+                    next_cursor[key] = cursor[key]
             if machine_name:
                 batch["machine"]["name"] = machine_name
             if batch_idx > 0:
@@ -1065,7 +1119,7 @@ def sync_once(
                 if batch["usageChanges"]["changes"]:
                     last_result = {**last_result, "usageChangesPending": True,
                                    "warning": "Upgrade the hub to synchronize usage corrections and deletions."}
-            write_sync_cursor(settings.database_path, hub_url, next_cursor)
+            write_sync_cursor(settings.database_path, hub_url, next_cursor, expected_generation=generation)
             if type(acknowledged) is int and acknowledged > 0:
                 try:
                     from spend_app.db import prune_usage_changes
@@ -1091,7 +1145,8 @@ def sync_once(
 
         with httpx.Client(timeout=30.0, trust_env=False) as http:
             _run_batches(http.post)
-    return {**last_result, "eventsWritten": total_written, "cursor": cursor,
+    return {**last_result, "eventsWritten": total_written,
+            "cursor": {key: value for key, value in cursor.items() if key != "credential_hash"},
             **({"usageChangesSkipped": total_skipped,
                 "invalidUsageWarning": "Some usage observations have invalid timestamps and were not synchronized."}
                if total_skipped else {})}
@@ -1158,7 +1213,9 @@ def post_to_configured_hub(
     if not spoke.get("enabled"):
         return None
     hub_url = str(spoke.get("hubUrl") or "").strip().rstrip("/")
-    token = str(spoke.get("token") or "").strip()
+    token = str(spoke.get("ownerSession") or "").strip()
+    if path == "/api/machines" and not token:
+        token = str(spoke.get("token") or "").strip()
     if not hub_url or not token:
         if strict:
             raise HubMutationError("Reconnect this computer to its hub before saving plans.")
@@ -1460,12 +1517,18 @@ def fetch_from_configured_hub(
     if not spoke.get("enabled"):
         return None
     hub_url = str(spoke.get("hubUrl") or "").strip().rstrip("/")
-    token = str(spoke.get("token") or "").strip()
+    from spend_app.auth_model import digest, moment, parse
+    token = str(spoke.get("ownerSession") or "").strip()
+    expiry = parse(spoke.get("ownerSessionExpiresAt"))
+    if expiry is not None and expiry <= moment():
+        return None
+    if digest(token) in _HUB_REJECTED_CREDENTIALS:
+        return None
     if not hub_url or not token:
         return None
 
     clean_params = {k: str(v) for k, v in (params or {}).items() if v is not None}
-    cache_key = (hub_url, path, tuple(sorted(clean_params.items())))
+    cache_key = (hub_url, path, tuple(sorted(clean_params.items())), digest(token))
 
     def read() -> dict | None:
         return _read_hub_copy(cache_key, hub_url, token, path, clean_params, timeout=read_timeout)
@@ -1485,8 +1548,13 @@ def fetch_from_configured_hub(
         return None
     data = read()
     if data is None:
+        if digest(token) in _HUB_REJECTED_CREDENTIALS:
+            return None
         return _hub_copy_for_display(settings, cached[1]) if cached else None
     return _hub_copy_for_display(settings, data)
+
+
+_HUB_REJECTED_CREDENTIALS: set[str] = set()
 
 
 def _read_hub_copy(cache_key: tuple, hub_url: str, token: str, path: str, params: dict,
@@ -1501,6 +1569,15 @@ def _read_hub_copy(cache_key: tuple, hub_url: str, token: str, path: str, params
 
             with httpx.Client(timeout=timeout, trust_env=False) as http:
                 response = http.get(f"{hub_url}{path}", params=params, headers=headers)
+        if response.status_code in {401, 403}:
+            from spend_app.auth_model import digest
+            key = digest(token)
+            with _HUB_PROXY_LOCK:
+                _HUB_REJECTED_CREDENTIALS.add(key)
+                for old_key in list(_HUB_PROXY_CACHE):
+                    if len(old_key) > 3 and old_key[3] == key:
+                        _HUB_PROXY_CACHE.pop(old_key, None)
+            return None
         if response.status_code != 200:
             return None
         data = response.json()
@@ -1561,7 +1638,11 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
     router = APIRouter()
 
     @router.get("/api/machines")
-    def get_machines():
+    def get_machines(request: Request):
+        if request.state.principal.kind == "machine":
+            with connect(settings.database_path) as connection:
+                machines = [m for m in list_machines(connection) if m["id"] == request.state.principal.id]
+            return JSONResponse({"machines": machines})
         hub_data = fetch_from_configured_hub(settings, "/api/machines")
         if hub_data is not None and isinstance(hub_data.get("machines"), list):
             return JSONResponse(hub_data, headers={"Cache-Control": "no-store"})
@@ -1572,10 +1653,16 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
     @router.post("/api/machines")
     async def mutate_machines(request: Request):
         try:
-            body = await request.json()
+            from spend_app.setup_wizard import _bounded_json
+            body = await _bounded_json(request)
             if not isinstance(body, dict):
                 raise ValueError("Expected a JSON object.")
             action = str(body.get("action") or "register").strip().lower()
+            request.state.audit_action = "machine." + (action if action in {"register", "rename", "revoke"} else "change")
+            if action in {"rename", "revoke"}:
+                with connect(settings.database_path) as connection:
+                    if str(body.get("id") or "") in _read_state(connection)["machines"]:
+                        request.state.audit_target = str(body["id"])
             if getattr(request.state, "auth_kind", "anonymous") == "machine":
                 own_id = getattr(request.state, "machine_id", None)
                 if action not in {"rename", "revoke"} or str(body.get("id") or "") != str(own_id):
@@ -1592,24 +1679,35 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
                     settings.database_path,
                     name=str(body.get("name") or ""),
                     os_name=str(body.get("os") or ""),
+                    actor=request.state.principal,
                 )
+                request.state.audit_target = result["machine"]["id"]
                 origin = f"{request.url.scheme}://{request.headers.get('host', '127.0.0.1:17331')}"
                 result["syncCommand"] = (
                     f"python -m spend_app sync --hub {origin} --token {result['token']}"
                 )
+                request.state.audit_recorded = True
                 return JSONResponse(result, headers={"Cache-Control": "no-store"})
             if action == "revoke":
                 result = revoke_machine(
                     settings.database_path,
                     machine_id=str(body.get("id") or ""),
+                    actor=request.state.principal,
                 )
+                if request.state.principal.kind == "machine":
+                    result["machines"] = []
+                request.state.audit_recorded = True
                 return JSONResponse(result, headers={"Cache-Control": "no-store"})
             if action == "rename":
                 result = rename_machine(
                     settings.database_path,
                     machine_id=str(body.get("id") or ""),
+                    actor=request.state.principal,
                     name=str(body.get("name") or ""),
                 )
+                if request.state.principal.kind == "machine":
+                    result["machines"] = [m for m in result["machines"] if m["id"] == request.state.principal.id]
+                request.state.audit_recorded = True
                 return JSONResponse(result, headers={"Cache-Control": "no-store"})
             return JSONResponse({"error": "Unsupported machine action."}, status_code=422)
         except ValueError as exc:
@@ -1662,12 +1760,29 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
         if not machine_id:
             return JSONResponse({"error": "Invalid or revoked machine token."}, status_code=401)
         try:
-            raw = await request.body()
-            if len(raw) > 8 * 1024 * 1024:
-                return JSONResponse({"error": "Sync payload too large."}, status_code=413)
+            raw = bytearray()
+            async for chunk in request.stream():
+                if len(raw) + len(chunk) > 8 * 1024 * 1024:
+                    return JSONResponse({"error": "Sync payload too large."}, status_code=413)
+                raw.extend(chunk)
             body = json.loads(raw)
             if not isinstance(body, dict):
                 raise ValueError("Expected a JSON object.")
+            claimed = str(body.get("machineId") or (body.get("machine") or {}).get("id") or machine_id)
+            if claimed != machine_id:
+                return JSONResponse({"error": "Cannot push as another machine."}, status_code=403)
+
+            def foreign_identifier(value, key=""):
+                if isinstance(value, dict):
+                    return any(foreign_identifier(item, field) for field, item in value.items())
+                if isinstance(value, list):
+                    return any(foreign_identifier(item, key) for item in value)
+                return (key in {"id", "raw_id", "session_id", "sessionId", "machineId"}
+                        and isinstance(value, str) and value.startswith("m:")
+                        and row_machine_id(value) != machine_id)
+
+            if foreign_identifier(body):
+                return JSONResponse({"error": "Cannot write another machine's identifiers."}, status_code=403)
             from starlette.concurrency import run_in_threadpool
 
             result = await run_in_threadpool(

@@ -682,6 +682,7 @@ HUD_TEMPLATE = r"""<!doctype html>
       </p>
       <button type="button" class="hud-update" id="hud-update" hidden></button>
       <p class="hud-notice" id="hud-notice" role="status" hidden></p>
+      <p class="hud-notice" id="hud-owner-scope" role="status" hidden><span>Showing this computer only. </span><a href="/auth" id="hud-owner-signin">Sign in for All computers</a></p>
 
       <section class="hero" id="hud-stat-today" aria-label="API-rate spend today">
         <strong id="hud-today">—</strong>
@@ -693,6 +694,7 @@ HUD_TEMPLATE = r"""<!doctype html>
         <div class="hud-context-panel">
           <button type="button" class="density-btn" id="hud-density-btn" aria-pressed="false" aria-label="Use comfortable spacing">Compact</button>
           <div id="hud-machines" role="radiogroup" aria-label="Computer filter"></div>
+          <a href="/auth" id="hud-owner-access">Owner access and sessions</a>
         </div>
       </details>
       <button type="button" class="attention-trigger" id="hud-mini-alert" aria-expanded="false" aria-controls="hud-attention-panel" hidden>1 source needs attention</button>

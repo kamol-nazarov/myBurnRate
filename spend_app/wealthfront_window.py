@@ -1072,6 +1072,16 @@ class DesktopBridge:
         self._service_alerts = (time.monotonic(), owned)
         return owned
 
+    def open_owner_access(self) -> dict:
+        """Open the fixed local credential UI without a token in its URL."""
+        if self._demo:
+            return {"ok": False, "error": "Owner access is disabled in demo mode."}
+        base = getattr(self._client, "base_url", "")
+        parsed = urlsplit(base)
+        if parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or parsed.path:
+            return {"ok": False, "error": "Local tracker address unavailable."}
+        return {"ok": open_in_browser(base + "/auth")}
+
     def open_external(self, url: str) -> dict:
         """Open a pinned-repository https URL in the default browser."""
         if self._smoke_test:

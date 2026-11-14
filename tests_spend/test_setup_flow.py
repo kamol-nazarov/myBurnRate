@@ -237,8 +237,13 @@ def test_the_hub_applies_a_plan_change_forwarded_by_a_spoke(client: TestClient, 
     response = client.post("/api/account/subscriptions", headers={"Authorization": f"Bearer {token}"}, json={
         "action": "plan", "operation": "end", "request_id": "spoke-end-muse", "plan_id": plan["id"],
         "expected_version": plan["version"], "end_date": "2026-10-26"})
+    assert response.status_code == 403
+    session = client.post("/api/account/register", json={"username": "owner", "password": "synthetic-long-password", "sessionOnly": True}).json()["sessionToken"]
+    response = client.post("/api/account/subscriptions", headers={"Authorization": f"Bearer {session}"}, json={
+        "action": "plan", "operation": "end", "request_id": "spoke-end-muse", "plan_id": plan["id"],
+        "expected_version": plan["version"], "end_date": "2026-10-26"})
     assert response.status_code == 200, response.text
-    assert client.get("/api/subscriptions").json()["plans"][0]["end_date"] == "2026-10-26"
+    assert client.get("/api/subscriptions", headers={"Authorization": f"Bearer {session}"}).json()["plans"][0]["end_date"] == "2026-10-26"
 
 
 def test_a_hub_with_an_account_accepts_no_new_ones(client: TestClient, monkeypatch) -> None:

@@ -188,6 +188,8 @@ def public_setup_state(state: dict) -> dict:
         f"{raw_token[:12]}…{raw_token[-4:]}" if len(raw_token) > 18 else ("configured" if raw_token else "")
     )
     spoke.pop("token", None)
+    spoke["hasOwnerSession"] = bool(spoke.pop("ownerSession", None))
+    spoke["tokenPreview"] = "configured" if raw_token else ""
     return {**state, "spokeConfig": spoke}
 
 
@@ -439,7 +441,7 @@ def encode_pairing_code(
     hub_name: str,
 ) -> str:
     payload = {
-        "v": 1,
+        "v": 2,
         "hubUrl": hub_url.strip().rstrip("/"),
         "token": token.strip(),
         "machineId": machine_id,
@@ -455,6 +457,8 @@ def decode_pairing_code(code: str) -> dict:
     clean = (code or "").strip()
     if not clean.startswith(PAIRING_PREFIX):
         raise ValueError("Pairing code must start with 'brpair_'.")
+    if len(clean) > 8192:
+        raise ValueError("Pairing code too large.")
     b64 = clean[len(PAIRING_PREFIX) :]
     padding = "=" * ((4 - len(b64) % 4) % 4)
     try:
@@ -464,6 +468,8 @@ def decode_pairing_code(code: str) -> dict:
         raise ValueError("Invalid pairing code format.") from exc
     if not isinstance(data, dict) or not data.get("hubUrl") or not data.get("token"):
         raise ValueError("Pairing code is missing hubUrl or token.")
+    if data.get("v") != 2 or not str(data.get("token", "")).startswith("br_p_"):
+        raise ValueError("Create a fresh single-use pairing code on the upgraded hub.")
     return data
 
 
@@ -576,7 +582,10 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
         # next HUD poll to wait on the Hub and then fall back to this computer.
         expire_hub_proxy_cache()
         with connect(settings.database_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
             latest = read_setup_state(connection)
+            if latest["spokeConfig"].get("token") != token or latest["spokeConfig"].get("hubUrl") != hub_url:
+                return {"ok": False, "error": "Pairing changed; retry sync with the current configuration."}
             latest["spokeConfig"]["lastSyncAt"] = utc_now()
             latest["spokeConfig"]["lastSyncError"] = None
             if isinstance(result.get("machineId"), str) and result["machineId"]:
@@ -589,7 +598,10 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
         return result
     except Exception as exc:
         with connect(settings.database_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
             latest = read_setup_state(connection)
+            if latest["spokeConfig"].get("token") != token or latest["spokeConfig"].get("hubUrl") != hub_url:
+                return {"ok": False, "error": "Pairing changed; retry sync with the current configuration."}
             latest["spokeConfig"]["lastSyncError"] = str(exc)[:240]
             write_setup_state(connection, latest)
         return {"ok": False, "error": str(exc)}
@@ -685,7 +697,7 @@ def _call_central_server_account(
             if res.status_code >= 400:
                 err_msg = data.get("error") if isinstance(data, dict) else None
                 raise ValueError(err_msg or f"Server returned HTTP {res.status_code}")
-            if not isinstance(data, dict) or not data.get("token"):
+            if not isinstance(data, dict) or not (data.get("token") or data.get("sessionToken")):
                 raise ValueError("Invalid response from central account server.")
             return base_url, data
         except ValueError:
@@ -807,7 +819,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
         import uuid as _uuid
 
         try:
-            body = await request.json()
+            body = await _bounded_json(request)
             plan_id, version, fix = body.get("planId"), body.get("version"), body.get("fix")
             if type(plan_id) is not int or type(version) is not int or fix not in {"end", "link"}:
                 raise ValueError("Choose a plan and a fix.")
@@ -864,7 +876,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
         if refused:
             return refused
         try:
-            body = await request.json()
+            body = await _bounded_json(request)
             switches = body.get("switches") if isinstance(body, dict) else None
             if not isinstance(switches, dict) or not switches:
                 raise ValueError("Choose at least one setting to change.")
@@ -891,7 +903,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
         from spend_app.notify import save_kinds
 
         try:
-            body = await request.json()
+            body = await _bounded_json(request)
             kinds = body.get("kinds") if isinstance(body, dict) else None
             if not isinstance(kinds, dict) or not kinds:
                 raise ValueError("Choose a notification to change.")
@@ -969,8 +981,12 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             user_key = username.lower()
             initialize(settings.database_path)
             with connect(settings.database_path) as connection:
+                connection.execute("BEGIN IMMEDIATE")
                 accounts = _read_accounts(connection)
                 existing_user = accounts["users"].get(user_key)
+                local_setup = read_setup_state(connection)
+                if local_setup.get("role") == "spoke" and local_setup["spokeConfig"].get("enabled"):
+                    return JSONResponse({"error": "Create the owner account on your hub, then sign in on this computer."}, status_code=403)
                 if isinstance(existing_user, dict):
                     iterations = _account_iterations(existing_user)
                     if not _verify_password(
@@ -1011,9 +1027,18 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                                 {"error": _setup_token_required_message()},
                                 status_code=403,
                             )
+                    elif first_account:
+                        protected = bool(os.getenv("BURNRATE_ACCESS_TOKEN", "").strip() or connection.execute(
+                            "SELECT 1 FROM app_meta WHERE key='auth.break_glass.v1'"
+                        ).fetchone())
+                        if (protected and not request.state.principal.permits("credentials.manage")
+                                and not _setup_token_allowed(request, body)):
+                            return JSONResponse({"error": "Bootstrap authorization required."}, status_code=403)
                     salt_hex, hash_hex = _hash_password(password)
                     accounts["users"][user_key] = {
                         "username": username,
+                        "id": secrets.token_hex(16),
+                        "role": "owner",
                         "salt": salt_hex,
                         "passwordHash": hash_hex,
                         "iterations": PBKDF2_ITERATIONS,
@@ -1029,16 +1054,30 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     custom_plans,
                 )
                 plans_out = effective_terms(connection)
+                from spend_app.auth_model import Principal, create_session
+                rec = accounts["users"][user_key]
+                if rec.get("role", "owner") != "owner":
+                    return JSONResponse({"error": "Role is not enabled."}, status_code=403)
+                rec.setdefault("id", secrets.token_hex(16))
+                actor = Principal("owner", rec["id"], "owner")
+                request.state.principal = actor
+                session = create_session(connection, actor, str(body.get("deviceLabel") or computer_name))
 
+            if body.get("sessionOnly"):
+                from spend_app.auth_model import set_session_cookie
+                return set_session_cookie(JSONResponse({"ok": True, **session}), request, session)
             reg = register_or_reconnect_machine(
                 settings.database_path,
                 name=computer_name,
                 os_name=os_name,
+                actor=actor,
             )
+            from spend_app.auth_model import set_session_cookie
             aggregate.reset_memo()
-            return JSONResponse(
+            return set_session_cookie(JSONResponse(
                 {
                     "ok": True,
+                    **session,
                     "account": {"username": username},
                     "addedPlans": added_plans,
                     "machine": reg["machine"],
@@ -1047,7 +1086,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     "subscriptions": plans_out,
                 },
                 headers={"Cache-Control": "no-store"},
-            )
+            ), request, session)
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=422)
 
@@ -1079,6 +1118,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             user_key = username.lower()
             initialize(settings.database_path)
             with connect(settings.database_path) as connection:
+                connection.execute("BEGIN IMMEDIATE")
                 accounts = _read_accounts(connection)
                 user_rec = accounts["users"].get(user_key)
                 if not isinstance(user_rec, dict):
@@ -1127,16 +1167,30 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                         custom_plans,
                     )
                 plans_out = effective_terms(connection)
+                from spend_app.auth_model import Principal, create_session
+                rec = accounts["users"][user_key]
+                if rec.get("role", "owner") != "owner":
+                    return JSONResponse({"error": "Role is not enabled."}, status_code=403)
+                rec.setdefault("id", secrets.token_hex(16))
+                actor = Principal("owner", rec["id"], "owner")
+                request.state.principal = actor
+                session = create_session(connection, actor, str(body.get("deviceLabel") or computer_name))
 
+            if body.get("sessionOnly"):
+                from spend_app.auth_model import set_session_cookie
+                return set_session_cookie(JSONResponse({"ok": True, **session}), request, session)
             reg = register_or_reconnect_machine(
                 settings.database_path,
                 name=computer_name,
                 os_name=os_name,
+                actor=actor,
             )
+            from spend_app.auth_model import set_session_cookie
             aggregate.reset_memo()
-            return JSONResponse(
+            return set_session_cookie(JSONResponse(
                 {
                     "ok": True,
+                    **session,
                     "account": {"username": display_username},
                     "machine": reg["machine"],
                     "token": reg["token"],
@@ -1144,19 +1198,16 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     "subscriptions": plans_out,
                 },
                 headers={"Cache-Control": "no-store"},
-            )
+            ), request, session)
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=422)
 
     @router.post("/api/account/subscriptions")
     async def central_account_subscriptions(request: Request):
-        auth = request.headers.get("authorization", "")
-        token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
-        machine_id = authenticate_machine_token(settings.database_path, token)
-        if not machine_id:
-            return JSONResponse({"error": "Invalid or revoked machine token."}, status_code=401)
+        if not request.state.principal.permits("admin.write"):
+            return JSONResponse({"error": "Owner session required to change plans."}, status_code=403)
         try:
-            body = await request.json()
+            body = await _bounded_json(request)
             if not isinstance(body, dict):
                 raise ValueError("Expected a JSON object.")
             now_local = datetime.now(UTC).astimezone(ZoneInfo(settings.timezone)).date()
@@ -1183,13 +1234,94 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
         except (PlanError, ValueError) as exc:
             return JSONResponse({"error": str(exc)}, status_code=422)
 
+    @router.post("/api/pairing/redeem")
+    async def redeem_pairing(request: Request):
+        from spend_app.pairing import redeem, hub_origin
+        try:
+            body = await _bounded_json(request)
+            return redeem(settings.database_path, request.state.principal, str(body.get("pairingCode") or ""),
+                          hub_origin(f"{request.url.scheme}://{request.headers.get('host', '')}"))
+        except ValueError:
+            return JSONResponse({"error": "Invalid pairing request."}, status_code=403)
+
+    @router.post("/api/setup/owner-session")
+    async def spoke_owner_session(request: Request):
+        refused = _setup_request_refused(request)
+        if refused:
+            return refused
+        try:
+            body = await _bounded_json(request)
+            with connect(settings.database_path) as connection:
+                state = read_setup_state(connection)
+            spoke = state["spokeConfig"]
+            if state.get("role") != "spoke" or not spoke.get("enabled"):
+                return JSONResponse({"error": "Pair this computer first."}, status_code=409)
+            _, remote = _call_central_server_account(spoke["hubUrl"], "/api/account/login", {
+                "username": str(body.get("username") or ""), "password": str(body.get("password") or ""),
+                "sessionOnly": True, "deviceLabel": state.get("computerName") or "Paired computer",
+            })
+            with connect(settings.database_path) as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                state = read_setup_state(connection)
+                if state["spokeConfig"].get("hubUrl") != spoke.get("hubUrl"):
+                    return JSONResponse({"error": "Hub changed during sign-in. Retry on the selected hub."}, status_code=409)
+                state["spokeConfig"]["ownerSession"] = remote["sessionToken"]
+                state["spokeConfig"]["ownerSessionExpiresAt"] = remote["expiresAt"]
+                write_setup_state(connection, state)
+            clear_hub_proxy_cache()
+            return {"ok": True, "expiresAt": remote["expiresAt"]}
+        except ValueError:
+            return JSONResponse({"error": "Sign-in failed. Check your hub and credentials."}, status_code=401)
+
+    @router.post("/api/setup/rotate-machine")
+    async def spoke_rotate_machine(request: Request):
+        refused = _setup_request_refused(request)
+        if refused:
+            return refused
+        with connect(settings.database_path) as connection:
+            state = read_setup_state(connection)
+        spoke = state["spokeConfig"]
+        if state.get("role") != "spoke" or not spoke.get("enabled"):
+            return JSONResponse({"error": "Pair this computer first."}, status_code=409)
+        headers = {"Authorization": "Bearer " + str(spoke.get("token") or "")}
+        hub_url = spoke["hubUrl"]
+        from spend_app.sync import read_sync_cursor
+        prior_generation = read_sync_cursor(settings.database_path, hub_url).get("generation")
+        client = _HUB_TEST_CLIENTS.get(hub_url)
+        try:
+            if client is not None:
+                response = client.post("/api/auth/machine/rotate", json={}, headers=headers)
+            else:
+                import httpx
+                with httpx.Client(timeout=8, trust_env=False) as http:
+                    response = http.post(hub_url + "/api/auth/machine/rotate", json={}, headers=headers)
+            if response.status_code != 200:
+                return JSONResponse({"error": "Rotation refused. Re-pair expired or revoked computers."}, status_code=response.status_code)
+            replacement = response.json()
+            with connect(settings.database_path) as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                current = read_setup_state(connection)
+                from spend_app.sync import _cursor_key
+                row = connection.execute("SELECT value FROM app_meta WHERE key=?", (_cursor_key(hub_url),)).fetchone()
+                generation = json.loads(row[0]).get("generation") if row else None
+                if current["spokeConfig"].get("token") != spoke.get("token") or generation != prior_generation:
+                    return JSONResponse({"error": "Pairing changed during rotation. Re-pair this computer."}, status_code=409)
+                current["spokeConfig"]["token"] = replacement["token"]
+                current["spokeConfig"]["tokenExpiresAt"] = replacement["expiresAt"]
+                from spend_app.sync import rotate_spoke_sync_credential
+                rotate_spoke_sync_credential(connection, hub_url, replacement["token"])
+                write_setup_state(connection, current)
+            return {"ok": True, "expiresAt": replacement["expiresAt"]}
+        except (ValueError, OSError):
+            return JSONResponse({"error": "Could not rotate the token. Re-pair if the reply was lost."}, status_code=503)
+
     @router.post("/api/setup/account")
     async def setup_connect_account(request: Request):
         refused = _setup_request_refused(request)
         if refused:
             return refused
         try:
-            body = await request.json()
+            body = await _bounded_json(request)
             if not isinstance(body, dict):
                 raise ValueError("Expected a JSON object.")
             mode = str(body.get("mode") or "login").strip().lower()
@@ -1230,29 +1362,55 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 "customPlans": custom_plans,
                 "setupToken": setup_token,
             }
+            with connect(settings.database_path) as connection:
+                previous = read_setup_state(connection)
+            previous_spoke = previous["spokeConfig"]
+            reuse_machine = (mode == "login" and previous.get("role") == "spoke"
+                            and previous_spoke.get("enabled")
+                            and str(previous_spoke.get("hubUrl") or "").rstrip("/") == server_url.rstrip("/"))
+            if reuse_machine:
+                remote_payload["sessionOnly"] = True
             working_url, remote_data = _call_central_server_account(server_url, endpoint, remote_payload)
-            token = str(remote_data["token"]).strip()
-            machine = remote_data.get("machine") or {}
+            token = str(remote_data.get("token") or (previous_spoke.get("token") if reuse_machine else "") or "").strip()
+            machine = remote_data.get("machine") or ({"id": previous["account"].get("machineId")} if reuse_machine else {})
             remote_subs = remote_data.get("subscriptions") if isinstance(remote_data.get("subscriptions"), list) else []
             account_info = remote_data.get("account") if isinstance(remote_data.get("account"), dict) else {"username": username}
 
+            account_generation = None
+            if not reuse_machine:
+                from spend_app.sync import prepare_pairing_sync
+                account_generation = prepare_pairing_sync(settings.database_path, working_url, token)
             sync_result = None
             if test_sync:
                 sync_client = _HUB_TEST_CLIENTS.get(working_url)
-                sync_result = sync_once(
-                    settings,
-                    pricing,
-                    hub_url=working_url,
-                    token=token,
-                    machine_name=computer_name,
-                    collect_local=False,
-                    client=sync_client,
-                )
+                try:
+                    sync_result = sync_once(
+                        settings,
+                        pricing,
+                        hub_url=working_url,
+                        token=token,
+                        machine_name=computer_name,
+                        collect_local=False,
+                        client=sync_client,
+                    )
+                except Exception:
+                    # Owner credentials have already been verified. Keep the
+                    # session usable independently from a failed first push.
+                    sync_result = {"ok": False, "error": "Signed in; machine sync is unavailable. Retry, rotate or re-pair this computer."}
 
             initialize(settings.database_path)
             with connect(settings.database_path) as connection:
-                _sync_plans_into_local_db(connection, settings.timezone, remote_subs)
+                connection.execute("BEGIN IMMEDIATE")
                 state = read_setup_state(connection)
+                if (state["spokeConfig"].get("token") != previous_spoke.get("token")
+                        or state["spokeConfig"].get("hubUrl") != previous_spoke.get("hubUrl")):
+                    return JSONResponse({"error": "Pairing changed during sign-in. Retry."}, status_code=409)
+                if account_generation:
+                    from spend_app.sync import _cursor_key
+                    row = connection.execute("SELECT value FROM app_meta WHERE key=?", (_cursor_key(working_url),)).fetchone()
+                    if not row or json.loads(row[0]).get("generation") != account_generation:
+                        return JSONResponse({"error": "Pairing changed during sign-in. Retry."}, status_code=409)
+                _sync_plans_into_local_db(connection, settings.timezone, remote_subs)
                 state["role"] = "spoke"
                 state["computerName"] = computer_name
                 state["account"] = {
@@ -1264,9 +1422,11 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 state["spokeConfig"] = {
                     "hubUrl": working_url,
                     "token": token,
+                    "ownerSession": str(remote_data.get("sessionToken") or ""),
+                    "ownerSessionExpiresAt": remote_data.get("expiresAt"),
                     "enabled": True,
-                    "lastSyncAt": utc_now() if sync_result else state["spokeConfig"].get("lastSyncAt"),
-                    "lastSyncError": None,
+                    "lastSyncAt": utc_now() if sync_result and sync_result.get("ok") else state["spokeConfig"].get("lastSyncAt"),
+                    "lastSyncError": sync_result.get("error") if sync_result and not sync_result.get("ok") else None,
                     "usageChangesPending": bool((sync_result or {}).get("usageChangesPending")),
                     "eventsPushed": int((sync_result or {}).get("eventsWritten") or 0),
                 }
@@ -1318,7 +1478,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
         if refused:
             return refused
         try:
-            body = await request.json()
+            body = await _bounded_json(request)
             if not isinstance(body, dict):
                 raise ValueError("Expected a JSON object.")
             remote_name = str(body.get("name") or body.get("remoteName") or "Remote Computer").strip()
@@ -1327,25 +1487,10 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 or body.get("hubHost")
                 or f"{request.url.scheme}://{request.headers.get('host', '127.0.0.1:17331')}"
             ).strip().rstrip("/")
-            ensure_tailscale_hub_proxy(int(getattr(settings, "port", 17331)))
-            reg = register_machine(
-                settings.database_path,
-                name=remote_name,
-                os_name=str(body.get("os") or ""),
-            )
-            with connect(settings.database_path) as connection:
-                state = read_setup_state(connection)
-            pairing_code = encode_pairing_code(
-                hub_url=hub_url,
-                token=reg["token"],
-                machine_id=reg["machine"]["id"],
-                machine_name=reg["machine"]["name"],
-                hub_name=state.get("computerName") or _default_computer_name(),
-            )
-            reg["ok"] = True
-            reg["hubUrl"] = hub_url
-            reg["pairingCode"] = pairing_code
-            reg["syncCommand"] = f"python -m spend_app sync --hub {hub_url} --token {reg['token']}"
+            from spend_app.pairing import issue
+            reg = issue(settings.database_path, request.state.principal, hub_url=hub_url,
+                        name=remote_name, os_name=str(body.get("os") or ""),
+                        machine_id=str(body.get("machineId") or "") or None)
             return JSONResponse(reg, headers={"Cache-Control": "no-store"})
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=422)
@@ -1356,7 +1501,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
         if refused:
             return refused
         try:
-            body = await request.json()
+            body = await _bounded_json(request)
             if not isinstance(body, dict):
                 raise ValueError("Expected a JSON object.")
             pairing_code = str(body.get("pairingCode") or "").strip()
@@ -1364,7 +1509,10 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             if pairing_code:
                 decoded = decode_pairing_code(pairing_code)
                 hub_url = str(decoded["hubUrl"]).strip().rstrip("/")
-                token = str(decoded["token"]).strip()
+                from spend_app.pairing import exchange_remote
+                redeemed = exchange_remote(hub_url, pairing_code)
+                token = str(redeemed["token"]).strip()
+                decoded["machineId"] = redeemed["machine"]["id"]
                 default_name = str(decoded.get("machineName") or "")
                 paired_id = str(decoded.get("machineId") or "")
             else:
@@ -1380,31 +1528,61 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             )
             test_sync = bool(body.get("testSync", True))
             sync_result = None
+            # A pairing may replace the machine identity on the same hub. Its
+            # new receiver has no knowledge of this spoke's previous cursor.
+            # Re-send a snapshot; ordinary sign-in/rotation keeps the cursor.
+            from spend_app.sync import prepare_pairing_sync, read_sync_cursor, write_sync_cursor
+            previous_cursor = read_sync_cursor(settings.database_path, hub_url)
+            pairing_generation = prepare_pairing_sync(settings.database_path, hub_url, token)
             if test_sync:
-                sync_result = sync_once(
-                    settings,
-                    pricing,
-                    hub_url=hub_url,
-                    token=token,
-                    machine_name=computer_name,
-                    collect_local=False,
-                    client=_HUB_TEST_CLIENTS.get(hub_url),
-                )
+                try:
+                    sync_result = sync_once(
+                        settings,
+                        pricing,
+                        hub_url=hub_url,
+                        token=token,
+                        machine_name=computer_name,
+                        collect_local=False,
+                        client=_HUB_TEST_CLIENTS.get(hub_url),
+                    )
+                except Exception:
+                    if not pairing_code:
+                        # A bad pasted token must not strand a working spoke.
+                        try:
+                            write_sync_cursor(settings.database_path, hub_url, previous_cursor,
+                                              expected_generation=pairing_generation)
+                        except RuntimeError:
+                            pass  # A newer pairing owns the cursor now.
+                        raise
+                    # Redemption already authenticated/minted this credential
+                    # and can have revoked the old one. Save the new credential
+                    # coherently; a transient first-push failure can retry.
+                    sync_result = {"ok": False, "error": "Paired; initial sync was unavailable. Background sync will retry."}
                 paired_id = str((sync_result or {}).get("machineId") or paired_id)
             initialize(settings.database_path)
             with connect(settings.database_path) as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                from spend_app.sync import _cursor_key
+                row = connection.execute("SELECT value FROM app_meta WHERE key=?", (_cursor_key(hub_url),)).fetchone()
+                if not row or json.loads(row[0]).get("generation") != pairing_generation:
+                    return JSONResponse({"error": "Pairing changed during connection. Create a fresh code."}, status_code=409)
                 state = read_setup_state(connection)
                 state["role"] = "spoke"
                 state["computerName"] = computer_name
                 state["account"] = {**state.get("account", {}), "machineId": paired_id, "serverUrl": hub_url}
+                previous_spoke = state["spokeConfig"]
+                owner_session = ({key: previous_spoke[key] for key in ("ownerSession", "ownerSessionExpiresAt")
+                                  if key in previous_spoke}
+                                 if str(previous_spoke.get("hubUrl") or "").rstrip("/") == hub_url else {})
                 state["spokeConfig"] = {
                     "hubUrl": hub_url,
                     "token": token,
                     "enabled": True,
-                    "lastSyncAt": utc_now() if sync_result else state["spokeConfig"].get("lastSyncAt"),
-                    "lastSyncError": None,
+                    "lastSyncAt": utc_now() if sync_result and sync_result.get("ok") else state["spokeConfig"].get("lastSyncAt"),
+                    "lastSyncError": sync_result.get("error") if sync_result and not sync_result.get("ok") else None,
                     "usageChangesPending": bool((sync_result or {}).get("usageChangesPending")),
                     "eventsPushed": int((sync_result or {}).get("eventsWritten") or 0),
+                    **owner_session,
                 }
                 saved = write_setup_state(connection, state)
             rename_machine(settings.database_path, machine_id="local", name=computer_name)
@@ -1426,7 +1604,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
         if refused:
             return refused
         try:
-            body = await request.json()
+            body = await _bounded_json(request)
             if not isinstance(body, dict):
                 raise ValueError("Expected a JSON object.")
             initialize(settings.database_path)

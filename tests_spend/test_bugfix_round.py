@@ -190,12 +190,17 @@ def paired_clients(tmp_path, monkeypatch):
     token = sync.register_machine(hub.database_path, name="Laptop", os_name="win32")[
         "token"
     ]
+    from spend_app.auth_model import Principal, create_session
+    with connect(hub.database_path) as connection:
+        owner_session = create_session(connection, Principal("owner", "synthetic-owner", "owner"), "Test spoke")
     with connect(spoke.database_path) as connection:
         state = read_setup_state(connection)
         state["role"] = "spoke"
         state["spokeConfig"] = {
             "hubUrl": "https://hub.example.invalid",
             "token": token,
+            "ownerSession": owner_session["sessionToken"],
+            "ownerSessionExpiresAt": owner_session["expiresAt"],
             "enabled": True,
         }
         write_setup_state(connection, state)

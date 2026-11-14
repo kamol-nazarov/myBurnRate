@@ -283,6 +283,8 @@ def create_app(
     app.include_router(forecast_router(settings))
     from spend_app.sync import sync_router
     app.include_router(sync_router(settings, pricing))
+    from spend_app.auth_api import auth_router
+    app.include_router(auth_router(settings))
     from spend_app.setup_wizard import setup_router
     app.include_router(setup_router(settings, pricing, collect_now=collect_now))
     app.state._resource_stack = resource_stack
@@ -332,60 +334,110 @@ def create_app(
     from spend_app.connection_api import central_server
 
     _central = central_server()
+    with connect(settings.database_path) as connection:
+        _protected = bool(_access_token or connection.execute(
+            "SELECT 1 FROM app_meta WHERE key='auth.break_glass.v1'"
+        ).fetchone())
 
     @app.middleware("http")
     async def access_boundary(request, call_next):
-        import hmac as _hmac
-        from spend_app.connection_api import access_allowed, csrf_mutation_allowed, trusted
-
+        from spend_app.auth_model import (
+            COOKIE, Principal, authenticate_session, audit, break_glass_matches,
+            create_session, owner_id, scoped_machine_read, set_session_cookie,
+        )
+        from spend_app.connection_api import (
+            _MACHINE_READ_PATHS, access_allowed, csrf_mutation_allowed, host_allowed, trusted,
+        )
+        if not host_allowed(request.headers.get("host", "")):
+            return boundary_error(403, "Request rejected: unrecognized Host header.")
         auth = request.headers.get("authorization", "")
-        admin_bearer = bool(
-            _access_token
-            and auth.startswith("Bearer ")
-            and _hmac.compare_digest(auth[7:].strip(), _access_token)
-        )
-        machine_id = None
-        if auth.startswith("Bearer br_m_") and not admin_bearer:
-            from spend_app.sync import authenticate_machine_token
+        bearer = auth[7:].strip() if auth.startswith("Bearer ") else ""
+        cookie = request.cookies.get(COOKIE, "")
+        principal = Principal()
+        request.state.principal = principal
+        request.state.machine_id = None
 
-            machine_id = await asyncio.to_thread(
-                authenticate_machine_token, settings.database_path, auth[7:].strip()
-            )
-            if not machine_id:
-                return boundary_error(401, "Invalid or revoked machine token.")
-        bearer_ok = bool(admin_bearer or machine_id)
+        async def recorded(response):
+            path = request.url.path
+            action = None
+            if request.method == "POST":
+                if path in {"/api/account/login", "/api/account/register"}:
+                    action = "login" if path.endswith("login") else "account.register"
+                elif path.startswith("/api/setup/"):
+                    action = "setup.change"
+                elif path == "/api/machines":
+                    action = getattr(request.state, "audit_action", "machine.change")
+                elif path == "/api/auth/machine/rotate":
+                    action = "machine.rotate"
+                elif path in {"/api/auth/logout", "/api/auth/sessions/revoke"}:
+                    action = "session.revoke"
+                elif path == "/api/auth/rotate":
+                    action = "token.rotate"
+                elif path == "/api/auth/session/rotate" and response.status_code >= 400:
+                    action = "session.rotate"
+                elif path == "/api/auth/bootstrap" and response.status_code >= 400:
+                    action = "login"
+            if getattr(request.state, "audit_recorded", False):
+                action = None
+            if action:
+                with connect(settings.database_path) as connection:
+                    audit(connection, request.state.principal, action,
+                          getattr(request.state, "audit_target", "setup" if action == "setup.change" else path),
+                          "success" if response.status_code < 400 else "failure")
+            return response
+
+        if bearer:
+            if await asyncio.to_thread(break_glass_matches, settings.database_path, bearer, _access_token):
+                automation = os.getenv("BURNRATE_ALLOW_ADMIN_BEARER", "1").lower() in {"1", "true", "yes"}
+                if automation or request.url.path in {"/api/auth/bootstrap", "/api/auth/rotate"}:
+                    principal = Principal("owner", "break-glass", "owner", via="break-glass")
+            elif bearer.startswith("br_m_"):
+                from spend_app.sync import authenticate_machine_token
+                mid = await asyncio.to_thread(authenticate_machine_token, settings.database_path, bearer)
+                if mid:
+                    principal = Principal("machine", mid, via="bearer")
+            elif bearer.startswith("br_s_"):
+                principal = await asyncio.to_thread(authenticate_session, settings.database_path, bearer)
+            if not principal or principal.kind == "unauthenticated":
+                return await recorded(boundary_error(401, "Invalid, expired or revoked credential."))
+        elif cookie:
+            principal = await asyncio.to_thread(authenticate_session, settings.database_path, cookie, via="cookie")
+            if not principal:
+                # Login remains available when a browser's previous session expires.
+                if request.url.path not in {"/api/account/login", "/api/account/register"} and request.url.path.startswith("/api/"):
+                    return await recorded(boundary_error(401, "Session expired or revoked. Sign in again."))
+                principal = Principal()
+        request.state.principal = principal
+        request.state.machine_id = principal.id if principal.kind == "machine" else None
+        request.state.auth_kind = "machine" if principal.kind == "machine" else principal.kind
+        bearer_ok = principal.via in {"bearer", "break-glass"}
         if not csrf_mutation_allowed(request, bearer_ok=bearer_ok):
-            return boundary_error(403, "Request rejected: use the configured BURNRATE origin.")
-        if not access_allowed(
-            request,
-            _access_token,
-            central=_central,
-            machine_id=machine_id,
-        ):
-            return boundary_error(401, "Authentication required for the API")
-        cookie = (request.cookies or {}).get("burnrate_access", "")
-        cookie_admin = bool(
-            _access_token and cookie and _hmac.compare_digest(cookie, _access_token)
-        )
-        request.state.auth_kind = (
-            "admin" if (admin_bearer or cookie_admin) else ("machine" if machine_id else "anonymous")
-        )
-        request.state.machine_id = machine_id
+            return await recorded(boundary_error(403, "Request rejected: use the configured BURNRATE origin."))
+        if (principal.via == "cookie" and request.method not in {"GET", "HEAD", "OPTIONS"}
+                and request.url.path not in {"/api/account/login", "/api/account/register"}
+                and (not trusted(request) or urlsplit(request.headers.get("origin", "")).scheme != request.url.scheme)):
+            return await recorded(boundary_error(403, "Cookie mutations require the same origin."))
+        protected = _protected
+        if not protected:
+            with connect(settings.database_path) as connection:
+                protected = bool(connection.execute("SELECT 1 FROM app_meta WHERE key='auth.break_glass.v1'").fetchone())
+        if not access_allowed(request, protected, central=_central, principal=principal):
+            return await recorded(boundary_error(403 if principal.kind != "unauthenticated" else 401,
+                                                 "Permission denied." if principal.kind != "unauthenticated" else "Authentication required for the API"))
+        if principal.kind == "machine" and request.method in {"GET", "HEAD"} and request.url.path in _MACHINE_READ_PATHS:
+            data = await asyncio.to_thread(scoped_machine_read, settings, pricing, principal, request)
+            return JSONResponse(data, headers={"Cache-Control": "no-store"})
         response = await call_next(request)
-        if _access_token and request.method == "GET" and request.url.path in {"/", "/hud", "/setup"}:
-            query_tok = request.query_params.get("token", "").strip()
-            bearer_tok = auth[7:].strip() if auth.startswith("Bearer ") else ""
-            candidate = query_tok or bearer_tok
-            if candidate and _hmac.compare_digest(candidate, _access_token) and trusted(request, mutation=False):
-                response.set_cookie(
-                    "burnrate_access",
-                    _access_token,
-                    httponly=True,
-                    samesite="strict",
-                    path="/api",
-                    secure=request.url.scheme == "https",
-                )
-        return response
+        if request.method == "GET" and request.url.path in {"/", "/hud", "/setup"}:
+            candidate = request.query_params.get("token", "").strip()
+            if candidate and trusted(request, mutation=False) and await asyncio.to_thread(
+                    break_glass_matches, settings.database_path, candidate, _access_token):
+                with connect(settings.database_path) as connection:
+                    actor = Principal("owner", "break-glass", "owner", via="break-glass")
+                    data = create_session(connection, actor, "Bootstrap browser", subject_id=owner_id(connection))
+                    audit(connection, actor, "login", "bootstrap")
+                set_session_cookie(response, request, data)
+        return await recorded(response)
 
     @app.exception_handler(ValueError)
     async def value_error_handler(_request, exc: ValueError):
@@ -418,7 +470,8 @@ def create_app(
         )
         if hub_data is not None:
             return hub_data
-        return aggregate_summary_cached(
+        local_machine, scope = _hud_fallback_scope(machine)
+        return {**aggregate_summary_cached(
             database_path=settings.database_path,
             pricing=pricing,
             window_key=resolved,
@@ -427,8 +480,8 @@ def create_app(
             cache_threshold=settings.cache_hit_threshold,
             cadence_seconds=settings.local_ingest_interval_seconds,
             now=slot_now(),
-            machine=machine,
-        )
+            machine=local_machine,
+        ), **scope}
 
 
     @app.get("/api/spend/summary")
@@ -480,7 +533,7 @@ def create_app(
             return {**report, "machine": machine, "machines": machines,
                     "scope": "local-fallback" if own_selected else "unavailable",
                     "warning": (
-                        "Hub unavailable or needs an update. Showing this computer's recorded usage only."
+                        "Showing this computer's recorded usage only. Sign in at /auth for All computers; your hub may also be offline."
                         if own_selected else "This computer's history is unavailable until the hub reconnects."
                     )}
         return usage_report(settings, pricing, now=slot_now(), period=period, machine=machine)
@@ -508,7 +561,8 @@ def create_app(
         )
         if hub_data is not None:
             return hub_data
-        return aggregate_entity(
+        local_machine, scope = _hud_fallback_scope(machine)
+        return {**aggregate_entity(
             database_path=settings.database_path,
             pricing=pricing,
             kind=kind,
@@ -517,8 +571,8 @@ def create_app(
             timezone=settings.timezone,
             cache_threshold=settings.cache_hit_threshold,
             now=slot_now(),
-            machine=machine,
-        )
+            machine=local_machine,
+        ), **scope}
 
     @app.get("/api/spend/health")
     def spend_health(request: Request) -> dict:
@@ -542,6 +596,20 @@ def create_app(
         return report(settings, history_active=collecting if scheduler else True,
                       include_history=view != "hud" or collecting)
 
+    def _hud_fallback_scope(machine):
+        from spend_app.setup_wizard import read_setup_state
+        with connect(settings.database_path) as connection:
+            setup = read_setup_state(connection)
+        if setup.get("role") != "spoke" or not setup["spokeConfig"].get("enabled"):
+            return machine, {}
+        own = str(setup.get("account", {}).get("machineId") or "")
+        own_selected = machine in {"", "all", "local", own}
+        return ("local" if own_selected else "_unavailable"), {
+            "scope": "local-fallback" if own_selected else "unavailable",
+            "warning": "Showing this computer only. Sign in for All computers, or reconnect your hub.",
+            "authUrl": "/auth",
+        }
+
     def _spend_hud_live_sync(machine: str = Query(default="all")) -> dict:
         from spend_app.hud_data import live_snapshot
         from spend_app.sync import fetch_from_configured_hub
@@ -552,7 +620,8 @@ def create_app(
                                         stale_seconds=HUD_HUB_STALE_SECONDS)
         if hub is not None:
             return _stamp_hub_age(hub, now=current_now())
-        return live_snapshot(settings, now=current_now(), machine=machine)
+        local_machine, scope = _hud_fallback_scope(machine)
+        return {**live_snapshot(settings, now=current_now(), machine=local_machine), **scope}
 
 
     @app.get("/api/spend/hud")
@@ -571,8 +640,9 @@ def create_app(
                                         read_timeout=HUD_USAGE_HUB_READ_TIMEOUT)
         if hub is not None:
             return _stamp_hub_age(hub, now=current_now(), stamp=hub.get("historyUpdatedAt"))
-        return recorded_usage(settings, pricing, now=current_now(),
-                              machine=local_usage_machine(settings, machine))
+        local_machine, scope = _hud_fallback_scope(machine)
+        return {**recorded_usage(settings, pricing, now=current_now(),
+                                machine=local_usage_machine(settings, local_machine)), **scope}
 
 
     @app.get("/api/spend/hud/usage")
@@ -587,7 +657,8 @@ def create_app(
         hub = fetch_from_configured_hub(settings, "/api/spend/share/week", {"machine": machine})
         if hub is not None and "usd" in hub:
             return hub
-        return week_card(settings, pricing, now=current_now(), machine=local_usage_machine(settings, machine))
+        local_machine, scope = _hud_fallback_scope(machine)
+        return {**week_card(settings, pricing, now=current_now(), machine=local_usage_machine(settings, local_machine)), **scope}
 
     @app.get("/api/onboarding")
     def onboarding():

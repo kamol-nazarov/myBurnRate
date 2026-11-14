@@ -2967,7 +2967,7 @@ function renderReport(data, animateChart = false) {
   banner.textContent = notices.join(" ");
   banner.classList.toggle("visible", notices.length > 0);
 
-  let scopeName = "All computers";
+  let scopeName = data.scope === "local-fallback" ? "This computer" : "All computers";
   if (state.machine !== "all") {
     const found = machines.find(m => m.id === state.machine);
     scopeName = found ? (found.name || found.id) : "Selected computer";
@@ -3959,7 +3959,8 @@ function paintSettingsBody() {
     const defaultHubUrl = account.serverUrl || spoke.hubUrl || state.settingsData.centralServerUrl || "";
     const defaultUser = account.username || "";
     const defaultComp = setup.computerName || "";
-    const showAccountForm = !state.demo && (!hubConnected || state.accountFormOpen);
+    const ownerSignedIn = !!spoke.hasOwnerSession && (!spoke.ownerSessionExpiresAt || Date.parse(spoke.ownerSessionExpiresAt) > Date.now());
+    const showAccountForm = !state.demo && (!ownerSignedIn || state.accountFormOpen);
 
     body.innerHTML = `
       ${!state.demo ? `
@@ -3967,7 +3968,7 @@ function paintSettingsBody() {
         <div class="card-header">
           <span class="card-title">Central Hub account</span>
           <span class="state-badge ${hubConnected ? (syncErr ? "warn" : "ok") : ""}">
-            ${hubConnected ? (syncErr ? "Sync issue" : "Connected") : "Not signed in"}
+            ${hubConnected ? (syncErr ? "Sync issue" : ownerSignedIn ? "Owner signed in" : "Sync only") : "Not signed in"}
           </span>
         </div>
         ${hubConnected ? `
@@ -3980,7 +3981,7 @@ function paintSettingsBody() {
               <div class="source-meta" title="${esc(spoke.hubUrl)}">${esc(spoke.hubUrl)}${defaultComp ? " · " + esc(defaultComp) : ""}</div>
             </div>
             <button class="btn-secondary" id="accountToggleBtn" type="button" onclick="toggleAccountForm()">
-              ${state.accountFormOpen ? "Cancel" : "Reconnect"}
+              ${state.accountFormOpen ? "Cancel" : ownerSignedIn ? "Reconnect" : "Sign in"}
             </button>
           </div>
           ${syncErr ? `<div style="padding:0 12px 9px;font-size:10.5px;color:var(--warn)">${esc(syncErr)}</div>` : ""}
@@ -3989,6 +3990,7 @@ function paintSettingsBody() {
             Sign in to your VPS hub so this computer counts toward <strong>All computers</strong> automatically.
           </div>
         `}
+        <div style="padding:8px 12px"><button class="btn-secondary" type="button" onclick="openOwnerAccess()">Owner access and sessions…</button></div>
         ${showAccountForm ? `
           <form class="hub-form" autocomplete="off" novalidate onsubmit="event.preventDefault();submitHubAccount()" style="padding:4px 12px 11px;display:grid;gap:6px;border-top:${hubConnected ? "1px solid var(--divider)" : "none"}">
             <div style="display:flex;gap:5px">
@@ -4172,6 +4174,11 @@ window.disconnectSource = async function(source, revision) {
   } else {
     showToast((res && res.error) || "Could not disconnect");
   }
+};
+
+window.openOwnerAccess = async function() {
+  const result = await window.pywebview?.api?.open_owner_access();
+  if (!result?.ok) showToast(result?.error || "Open /auth on your local tracker for owner access.");
 };
 
 window.toggleAccountForm = function() {

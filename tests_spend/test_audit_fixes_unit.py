@@ -78,7 +78,7 @@ def test_csrf_and_dns_rebinding_guard_blocks_untrusted_mutations(tmp_path: Path,
         assert trusted_req.json()["ok"] is True
 
 
-def test_spoke_token_allows_hud_reads_and_sse_cookie_is_scoped(tmp_path: Path, monkeypatch) -> None:
+def test_spoke_hud_reads_require_owner_session_and_cookie_is_scoped(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "hub-secret-token-123")
     settings = _make_settings(tmp_path)
     initialize(settings.database_path)
@@ -95,10 +95,10 @@ def test_spoke_token_allows_hud_reads_and_sse_cookie_is_scoped(tmp_path: Path, m
             "/api/spend/freshness",
         ):
             res = client.get(path, headers=spoke_headers)
-            assert res.status_code == 200, f"{path} failed with {res.status_code}"
+            assert res.status_code == 403, f"{path} leaked with {res.status_code}"
 
         denied = client.get("/api/connections", headers=spoke_headers)
-        assert denied.status_code == 401
+        assert denied.status_code == 403
 
         hud_res = client.get("/hud?token=hub-secret-token-123")
         assert hud_res.status_code == 200
@@ -112,7 +112,7 @@ def test_spoke_token_allows_hud_reads_and_sse_cookie_is_scoped(tmp_path: Path, m
         headers={"host": "127.0.0.1:17331"},
         cookies={"burnrate_access": "hub-secret-token-123"},
     )
-    assert access_allowed(fake_stream_req, "hub-secret-token-123") is True
+    assert access_allowed(fake_stream_req, "hub-secret-token-123") is False  # Static cookies were retired.
 
     fake_untrusted_host = SimpleNamespace(
         method="GET",
