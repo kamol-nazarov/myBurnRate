@@ -11,6 +11,8 @@ from urllib.parse import quote, unquote
 PROVIDER_PREFIX = "opencode-provider:"
 ZAI_PLAN_PROVIDER = "zai-coding-plan"
 GO_PROVIDER = "opencode-go"
+# Legacy cumulative rows prove the provider, but not which Console profile.
+UNSCOPED_GO_TOOL = PROVIDER_PREFIX + GO_PROVIDER
 
 
 def tool_key_for_provider(provider: str) -> str:
@@ -28,6 +30,7 @@ def provider_tool_name(key: str) -> str | None:
     label = {
         "isoquant": "Isoquant", "openai": "OpenAI", "anthropic": "Anthropic",
         "openrouter": "OpenRouter", "deepseek": "DeepSeek", "unknown": "Unknown provider",
+        GO_PROVIDER: "Go (profile unknown)",
     }.get(provider.lower(), provider)
     return "OpenCode · " + label
 

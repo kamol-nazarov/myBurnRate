@@ -402,3 +402,184 @@ def test_global_retag_rolls_back_then_retries_across_sources(tmp_path, monkeypat
         assert gaps[raw].pop("tool_key") == tool
         assert original_gaps[raw].pop("tool_key") == "opencode"
         assert gaps[raw] == original_gaps[raw]
+
+
+def _seed_coarse(db, raw_id, session, tool="opencode", provider=None):
+    from spend_app.adapters.opencode_local import DELTA_ISSUE
+    from spend_app.db import UsageEvent, record_coverage_gap, upsert_usage_event, write_opencode_progress
+    stamp = "2025-10-01T00:00:00Z"
+    event = UsageEvent(source="opencode_local", tool_key=tool, model_key="opencode:model",
+                       occurred_at=stamp, session_id=session, project="fixture", input_tokens=120,
+                       cached_input_tokens=20, cache_write_tokens=4, cache_write_1h_tokens=0,
+                       output_tokens=30, reasoning_tokens=3, cost_usd=0.123,
+                       computed_cost_usd=0.456, raw_id=raw_id, ingested_at=stamp, is_exact=False)
+    upsert_usage_event(db, event)
+    record_coverage_gap(db, raw_id=raw_id, source=event.source, tool_key=tool,
+                        model_key=event.model_key, occurred_at=stamp, issue=DELTA_ISSUE)
+    if provider is not None:
+        write_opencode_progress(db, session_id=session, provider_id=provider,
+                                input_tokens=100, cached_input_tokens=20, cache_write_tokens=4,
+                                output_tokens=30, reasoning_tokens=3, cost_usd=0.123,
+                                model_id="model", observed_at=stamp)
+
+
+def _coarse_state(db, raw_id):
+    return (dict(db.execute("SELECT * FROM usage_events WHERE raw_id=?", (raw_id,)).fetchone()),
+            dict(db.execute("SELECT * FROM coverage_gap_events WHERE raw_id=?", (raw_id,)).fetchone()))
+
+
+def _assert_only_tool_changed(before, after, expected):
+    for old, new in zip(before, after):
+        old, new = dict(old), dict(new)
+        old.pop("tool_key")
+        assert new.pop("tool_key") == expected
+        assert old == new
+
+
+@pytest.mark.parametrize("first", ["isoquant", "other"])
+@pytest.mark.parametrize("exact_only", [False, True])
+def test_legacy_proof_survives_provider_switch_and_snapshot_order(tmp_path, first, exact_only):
+    from spend_app.adapters.opencode_granular import reattribute_cumulative
+    dest = tmp_path / "usage.db"
+    initialize(dest)
+    session = "switched"
+    raw = stable_id("opencode-local", session, "isoquant") if exact_only else "coarse-delta"
+    with connect(dest) as db:
+        _seed_coarse(db, raw, session, provider=None if exact_only else "isoquant")
+        before = _coarse_state(db, raw)
+        order = [first, "other" if first == "isoquant" else "isoquant"]
+        snapshots = [SimpleNamespace(session_id=session, provider_id=provider) for provider in order]
+        if exact_only:
+            reattribute_cumulative(db, snapshots)
+        else:
+            for snapshot in snapshots:
+                reattribute_cumulative(db, [snapshot])
+        after = _coarse_state(db, raw)
+    _assert_only_tool_changed(before, after, "opencode-provider:isoquant")
+
+
+@pytest.mark.parametrize("first", ["go-one", "go-two"])
+def test_legacy_go_profiles_migrate_to_usage_only_without_quota_inference(tmp_path, first):
+    from spend_app.adapters.opencode_granular import reattribute_cumulative
+    from spend_app.db import TOOL_KEY_OVERRIDES
+    from spend_app.opencode_providers import UNSCOPED_GO_TOOL
+    dest = tmp_path / "usage.db"
+    initialize(dest)
+    with connect(dest) as db:
+        _seed_coarse(db, "legacy-one", "go-one", provider="opencode-go")
+        _seed_coarse(db, "legacy-two", "go-two", provider="opencode-go")
+        _seed_coarse(db, "already-primary", "old-primary", tool="opencode-go")
+        _seed_coarse(db, "already-profile", "old-profile", tool="opencode-go-go2")
+        before = {raw: _coarse_state(db, raw) for raw in ("legacy-one", "legacy-two", "already-primary", "already-profile")}
+        token = TOOL_KEY_OVERRIDES.set({"opencode-go": "opencode-go-go2"})
+        try:
+            reattribute_cumulative(db, [SimpleNamespace(session_id=first, provider_id="opencode-go")])
+        finally:
+            TOOL_KEY_OVERRIDES.reset(token)
+        after = {raw: _coarse_state(db, raw) for raw in before}
+    for raw in ("legacy-one", "legacy-two"):
+        _assert_only_tool_changed(before[raw], after[raw], UNSCOPED_GO_TOOL)
+    assert after["already-primary"] == before["already-primary"]
+    assert after["already-profile"] == before["already-profile"]
+    assert UNSCOPED_GO_TOOL == "opencode-provider:opencode-go"
+    report = {"tools": [{"key": UNSCOPED_GO_TOOL, "name": UNSCOPED_GO_TOOL, "tokens": 360, "models": []}]}
+    hud = {"capacity": [{"providerKey": "opencode-go", "title": "Go primary", "rows": []},
+                        {"providerKey": "opencode-go-go2", "title": "Go second", "rows": []}]}
+    rows = {row["key"]: row for row in merge_provider_entries(report, hud, {}, report, report)}
+    row = rows[UNSCOPED_GO_TOOL]
+    assert row["name"] == "OpenCode · Go (profile unknown)"
+    assert row["plan"] == "Recorded usage" and row["isPayg"] is False and row["windows"] == []
+    assert row["tokens"] == 360
+    assert rows["opencode-go"]["tokens"] == rows["opencode-go-go2"]["tokens"] == 0
+
+
+def test_go_reconciliation_honors_active_profile_override(tmp_path):
+    from spend_app.adapters.opencode_granular import reconcile_messages
+    from spend_app.db import TOOL_KEY_OVERRIDES
+    dest = tmp_path / "usage.db"
+    initialize(dest)
+    fine = schema.parse_message(message("opencode-go"))
+    with connect(dest) as db:
+        _seed_coarse(db, "go-delta", "session", provider="opencode-go")
+        before = _coarse_state(db, "go-delta")
+        token = TOOL_KEY_OVERRIDES.set({"opencode-go": "opencode-go-go2"})
+        try:
+            issues = []
+            output = reconcile_messages(db, [fine], issues)
+        finally:
+            TOOL_KEY_OVERRIDES.reset(token)
+        after = _coarse_state(db, "go-delta")
+    assert not issues
+    assert [row.raw_id for row in output] == [fine.row.raw_id]
+    _assert_only_tool_changed(before, after, "opencode-go-go2")
+
+
+def test_new_go_message_still_uses_active_profile_override(tmp_path):
+    from spend_app.adapters.common import persist_rows
+    from spend_app.db import TOOL_KEY_OVERRIDES
+    dest = tmp_path / "usage.db"
+    initialize(dest)
+    fine = schema.parse_message(message("opencode-go"))
+    token = TOOL_KEY_OVERRIDES.set({"opencode-go": "opencode-go-go2"})
+    try:
+        persist_rows(database_path=dest, pricing=PricingEngine.load(ROOT / "pricing"),
+                     source="opencode_local", usage_rows=[fine.row])
+    finally:
+        TOOL_KEY_OVERRIDES.reset(token)
+    with connect(dest) as db:
+        row = db.execute("SELECT tool_key FROM unpriced_usage_events WHERE raw_id=?", (fine.row.raw_id,)).fetchone()
+    assert row[0] == "opencode-go-go2"
+
+
+@pytest.mark.parametrize("has_message", [False, True])
+def test_ingest_refines_unscoped_go_only_with_profile_message(tmp_path, monkeypatch, has_message):
+    from spend_app.adapters import opencode_granular as granular
+    from spend_app.db import TOOL_KEY_OVERRIDES
+    from spend_app.opencode_providers import UNSCOPED_GO_TOOL
+
+    source, dest = tmp_path / "source.db", tmp_path / "usage.db"
+    stamp = int(datetime(2025, 10, 1, tzinfo=UTC).timestamp() * 1000)
+    with sqlite3.connect(source) as db:
+        db.execute("CREATE TABLE session(id TEXT,project_id TEXT,directory TEXT,path TEXT,model TEXT,cost REAL,tokens_input INTEGER,tokens_output INTEGER,tokens_reasoning INTEGER,tokens_cache_read INTEGER,tokens_cache_write INTEGER,time_updated INTEGER)")
+        db.execute("INSERT INTO session VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", ("session", None, None, None, json.dumps({"id": "model", "providerID": "opencode-go"}), 0.123, 100, 30, 3, 20, 4, stamp))
+        db.execute("CREATE TABLE message(id TEXT, session_id TEXT, data TEXT)")
+        if has_message:
+            db.execute("INSERT INTO message VALUES(?,?,?)", ("same", "session", json.dumps(message("opencode-go"))))
+    initialize(dest)
+    with connect(dest) as db:
+        _seed_coarse(db, "legacy-go", "session", provider="opencode-go")
+        before = _coarse_state(db, "legacy-go")
+    calls = []
+    original_reattribute = granular._reattribute_event
+
+    def observe(db, raw_id, tool):
+        calls.append((raw_id, tool))
+        return original_reattribute(db, raw_id, tool)
+
+    monkeypatch.setattr(granular, "_reattribute_event", observe)
+    token = TOOL_KEY_OVERRIDES.set({"opencode-go": "opencode-go-go2"})
+    try:
+        pricing = PricingEngine.load(ROOT / "pricing")
+        first = ingest(database_path=dest, pricing=pricing, source_database=source)
+        second = ingest(database_path=dest, pricing=pricing, source_database=source)
+    finally:
+        TOOL_KEY_OVERRIDES.reset(token)
+    assert first["status"] in {"success", "partial"}
+    assert second.get("eventsWritten", 0) == second.get("unpricedEventsWritten", 0) == 0
+    expected_tool = "opencode-go-go2" if has_message else UNSCOPED_GO_TOOL
+    with connect(dest) as db:
+        after = _coarse_state(db, "legacy-go")
+        events = [dict(row) for table in ("usage_events", "unpriced_usage_events")
+                  for row in db.execute(f"SELECT * FROM {table}")]
+    _assert_only_tool_changed(before, after, expected_tool)
+    assert calls == ([('legacy-go', UNSCOPED_GO_TOOL), ('legacy-go', 'opencode-go-go2')]
+                     if has_message else [('legacy-go', UNSCOPED_GO_TOOL)])
+    assert len(events) == (2 if has_message else 1)
+    assert len({event["raw_id"] for event in events}) == len(events)
+    assert sum(event["input_tokens"] + event["cache_write_tokens"] + event["output_tokens"] for event in events) == (175 if has_message else 154)
+    if has_message:
+        assert {event["tool_key"] for event in events} == {"opencode-go-go2"}
+    else:
+        report = {"tools": [{"key": UNSCOPED_GO_TOOL, "name": UNSCOPED_GO_TOOL, "tokens": 154, "models": []}]}
+        row = next(row for row in merge_provider_entries(report) if row["key"] == UNSCOPED_GO_TOOL)
+        assert row["plan"] == "Recorded usage" and row["isPayg"] is False and row["windows"] == []

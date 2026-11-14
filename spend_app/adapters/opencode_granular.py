@@ -9,8 +9,8 @@ from spend_app.adapters.local_common import parse_iso_time, sqlite_read_only
 from spend_app.adapters.opencode_schema import merge_messages, parse_message, read_messages, recognize, schema_columns
 from spend_app.adapters.usage_repair import COUNTS, coarse_remainder, delete_event, read_meta, write_meta
 from spend_app.connection_paths import confined, opencode_files
-from spend_app.db import connect
-from spend_app.opencode_providers import tool_key_for_provider
+from spend_app.db import TOOL_KEY_OVERRIDES, connect
+from spend_app.opencode_providers import GO_PROVIDER, UNSCOPED_GO_TOOL, tool_key_for_provider
 
 
 CUMULATIVE_PROVIDER_RETAG = "opencode.providers.retag:v1"
@@ -72,6 +72,10 @@ def reconcile_messages(connection, messages, issues):
         grouped.setdefault((message.row.session_id, message.provider), []).append(message)
     outputs = []
     for (session, provider), group in grouped.items():
+        tool = tool_key_for_provider(provider)
+        # These messages belong to the currently collected profile. Apply its
+        # lane here too: metadata-only repairs bypass persist_rows' override.
+        tool = (TOOL_KEY_OVERRIDES.get() or {}).get(tool, tool)
         key = "opencode.granular.v1:" + stable_id(session, provider)
         state = read_meta(connection, key, {"revisions": {}, "allocations": {}})
         providers = [row[0] for row in connection.execute("SELECT provider_id FROM opencode_session_progress WHERE session_id=?", (session,))]
@@ -104,7 +108,7 @@ def reconcile_messages(connection, messages, issues):
             outputs.append(message.row)
         for record in sorted(records, key=lambda row: (row["occurred_at"], row["raw_id"])):
             original = row_from_record(record)
-            coarse = replace(original, tool_key=tool_key_for_provider(provider))
+            coarse = replace(original, tool_key=tool)
             residual, allocations = coarse_remainder(coarse, accepted, state["allocations"])
             state["allocations"] = allocations
             if residual != coarse:
@@ -133,6 +137,8 @@ def reattribute_cumulative(connection, snapshots):
     leave the rest explicitly unattributed. Already attributed history stays
     with its provider when the session later switches. Read each table once,
     rather than scanning unpriced history separately for every session.
+    Legacy Go history has no profile proof at this stage, so it stays outside
+    quota lanes; matching message records can refine it onto a profile later.
     """
     from spend_app.adapters.opencode_local import BASELINE_ISSUE, DELTA_ISSUE
     if not snapshots or read_meta(connection, CUMULATIVE_PROVIDER_RETAG, False):
@@ -142,11 +148,12 @@ def reattribute_cumulative(connection, snapshots):
         "SELECT session_id,provider_id FROM opencode_session_progress"
     ):
         providers.setdefault(session, set()).add(provider)
+    candidates = {session: set(known) for session, known in providers.items()}
     for snapshot in snapshots:
-        providers.setdefault(snapshot.session_id, set()).add(snapshot.provider_id)
+        candidates.setdefault(snapshot.session_id, set()).add(snapshot.provider_id)
     legacy_ids = {
         stable_id("opencode-local", session, provider): provider
-        for session, known in providers.items() for provider in known
+        for session, known in candidates.items() for provider in known
     }
     for table in ("usage_events", "unpriced_usage_events"):
         rows = connection.execute(
@@ -156,10 +163,13 @@ def reattribute_cumulative(connection, snapshots):
         ).fetchall()
         for raw_id, session, issue in rows:
             known = providers.get(session)
-            if not known or (raw_id not in legacy_ids and issue not in {BASELINE_ISSUE, DELTA_ISSUE}):
+            explicit = legacy_ids.get(raw_id)
+            if not explicit and (not known or issue not in {BASELINE_ISSUE, DELTA_ISSUE}):
                 continue
-            provider = legacy_ids.get(raw_id) or (next(iter(known)) if len(known) == 1 else "unknown")
-            tool = tool_key_for_provider(provider)
+            provider = explicit or (next(iter(known)) if len(known) == 1 else "unknown")
+            # This scan spans all stores. The active profile's override cannot
+            # prove which account owns another store's legacy Go history.
+            tool = UNSCOPED_GO_TOOL if provider == GO_PROVIDER else tool_key_for_provider(provider)
             if tool != "opencode":
                 _reattribute_event(connection, raw_id, tool)
     write_meta(connection, CUMULATIVE_PROVIDER_RETAG, True)

@@ -169,6 +169,10 @@ counts and stay unpriced; published model rates still represent API-equivalent v
 Isoquant invoice. The existing Traycer mirror exclusion still prevents double-counting.
 The cumulative-history reassignment runs once; changing a session's provider keeps previously
 attributed history with its original provider.
+Legacy cumulative Go history whose matching message records are unavailable cannot prove which
+Console profile paid for it. It appears as **OpenCode · Go (profile unknown)** with its counts and
+value intact, outside the plan rows. Matching message records let the collector refine that history
+onto the source profile's plan row. Newly recorded Go usage keeps its profile's existing plan row.
 
 ### Pay-as-you-go balances
 

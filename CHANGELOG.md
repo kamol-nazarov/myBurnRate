@@ -16,6 +16,9 @@ This project is licensed under Apache-2.0.
   in place; ambiguous legacy provider attribution stays explicit, and unpriced tokens remain counted.
   Provider rows have stable chart colors, retain Grok route evidence, and preserve earlier attribution
   when a session switches provider. The cumulative-history backfill runs once.
+  Legacy Go totals without matching message evidence stay on a recorded-usage row; matching messages
+  refine them onto the source profile's plan. Provider switches before upgrade retain the stored
+  historical provider.
 
 ### Security
 
