@@ -136,7 +136,7 @@ jobs:
             Copy-Item $archive.FullName (Join-Path $out $name)
           }
           Get-ChildItem $out | Format-Table Name, Length
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         id: upload
         with:
           name: bundle-${{ matrix.name }}
@@ -188,7 +188,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force to-sign | Out-Null
           Copy-Item "packaging/build/$env:INSTALLER" to-sign/
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         id: unsigned
         with:
           name: native-windows-unsigned-installer
@@ -231,7 +231,7 @@ jobs:
       # it against the key pinned in the app, exactly as an installed copy will.
       - name: Check the update signature names this file and verifies
         run: python packaging/verify_native_release.py "native-release/$env:INSTALLER"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-windows
           path: native-release/*
@@ -255,7 +255,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force to-sign | Out-Null
           Copy-Item unsigned/*-setup.exe to-sign/
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         id: unsigned
         with:
           name: windows-unsigned-installer
@@ -289,7 +289,7 @@ jobs:
           npm exec --prefix tools/tauri -- tauri signer sign $installer.FullName
           Copy-Item signed/* unsigned/ -Force
           Get-ChildItem unsigned | Format-Table Name, Length
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: bundle-windows-signed
           path: unsigned/*
