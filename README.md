@@ -332,9 +332,11 @@ Dependency audits, a secret scan and a hermetic test suite run on every push.
 
 ## License
 
-[Apache License 2.0](LICENSE). The project is free to use, modify and redistribute, including
-commercially, under the terms of that license. Third-party notices, bundled fonts and provider
-trademarks are listed in [NOTICE](NOTICE).
+[Apache License 2.0](LICENSE). Use, modify and redistribute it freely, including in commercial and
+closed-source products, provided you retain the license and [NOTICE](NOTICE) files and state
+significant changes. The license includes an express patent grant and comes with no warranty.
+
+Third-party notices, bundled fonts and provider trademarks are listed in [NOTICE](NOTICE).
 
 myBurnRate is not affiliated with, endorsed by or sponsored by OpenAI, Anthropic, Cursor, xAI,
 Google, Z.AI, OpenRouter, DeepSeek, Requesty, Traycer, Muse or their products. Product and provider
