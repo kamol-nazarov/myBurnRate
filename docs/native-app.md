@@ -65,12 +65,50 @@ the frozen executable. This is the supported source-install route when a local
 security product blocks an unsigned development bundle; keep the security product
 enabled rather than adding an exclusion or restoring a quarantined executable.
 
-## Build a portable app
+## Install and update
+
+Releases carry `myBurnRate_<version>_x64-setup.exe`. It installs for the current user
+only (no administrator prompt) into `%LOCALAPPDATA%\Programs\BURNRATE`, adds Start Menu and
+Desktop shortcuts named **myBurnRate**, and registers its own entry (**myBurnRate**) in Windows' installed
+apps, separate from the older Tauri app's. `/S` installs silently. Your data stays in
+`%LOCALAPPDATA%\BURNRATE`, which installing and updating never write; uninstalling removes only
+the program and shortcuts, and offers (unticked, interactive only) to delete that data too.
+
+An installed copy (the installer leaves a `BURNRATE.installed` file beside `BURNRATE.exe`) can
+update itself. About a minute after it starts, then daily, it reads
+`https://github.com/kamol-nazarov/myBurnRate/releases/latest/download/native-latest.json`;
+**Settings -> General -> Check for updates** does it on demand. **Install & restart** downloads the
+installer into `%LOCALAPPDATA%\BURNRATE\updates`, verifies it and runs it silently
+(`/S /UPDATE`), and the new version opens. A portable or source copy only shows a link to the
+release page. The feed's single Windows entry is `{url, signature, sha256, size}`; the app
+accepts it only if:
+
+- the URL is `https://github.com/kamol-nazarov/myBurnRate/releases/download/v<version>/myBurnRate_<version>_x64-setup.exe`
+  (redirects may only go to GitHub's release-asset hosts, over https);
+- the download is at most 300 MiB with exactly the feed's size and SHA-256;
+- its minisign signature verifies against the update key built into the app, the same key as the
+  Tauri updater's, and the signed `file:` field is exactly that installer name, so a signed Tauri
+  installer or an older native build cannot be substituted;
+- the version is strictly newer than the running one (prereleases sort below their release);
+- when the running `BURNRATE.exe` is Authenticode-signed, the installer is validly signed by the
+  same publisher (a secondary check: the minisign signature is the primary one).
+
+Nothing is run unless every check passed, and a file that fails one is deleted. Set
+`BURNRATE_NO_UPDATE_CHECK=1` to turn all update checks off; see the
+[privacy notes](privacy.md#update-checks-native-app) for exactly what is sent.
+
+## Build the portable app and installer
 
 ```powershell
 python -m pip install pyinstaller
-python packaging/build_native.py
+python packaging/build_native.py                      # portable zip, plus the installer if NSIS is installed
+python packaging/build_native.py --require-installer  # fail instead of skipping the installer
 ```
+
+The installer is `packaging/build/myBurnRate_<version>_x64-setup.exe`, built with
+[NSIS](https://nsis.sourceforge.io/) (`makensis` on `PATH`, or `BURNRATE_MAKENSIS`). Both
+`BURNRATE.exe` and the installer are Authenticode-signed when signing is configured; see
+[code signing](code-signing.md#signing-a-local-native-build). Otherwise the build says it is unsigned.
 
 The windowless executable is `packaging/build/native/BURNRATE/BURNRATE.exe` on
 Windows. Keep its `_internal` folder beside it. The portable archive is
@@ -82,7 +120,8 @@ renders sample data and closes without reading provider sources.
 isolated temporary home, verifies process ownership and real desktop IPC, and
 cleans up only that test process.
 
-The native build has a separate CI job and portable artifact. Published Tauri
-installers and their update feed remain the previous release path until a native
-release is explicitly prepared. The existing hub and spoke data protocol is
+The native build has its own CI job, which builds the portable zip and the installer on
+every push. A version tag's release workflow also publishes the native installer, its update
+signature and `native-latest.json` beside the Tauri files (the Tauri updater's `latest.json` is
+unchanged and ignores the native installer). The existing hub and spoke data protocol is
 retained. Update the hub's code too to serve the new `/api/spend/usage` projection.

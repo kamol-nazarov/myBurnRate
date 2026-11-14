@@ -44,7 +44,7 @@ Traycer CLI (`profile-rate-limits`, `agent list`) is a local process spawn, not 
 
 ## Network
 
-Default: none.
+Default: none, apart from the installed native app's update check (see [Update checks](#update-checks-native-app)).
 
 Opt-in destinations are HTTPS only, host-allowlisted, timed out, and not inference completions:
 
@@ -59,6 +59,30 @@ Opt-in destinations are HTTPS only, host-allowlisted, timed out, and not inferen
 Empty admin keys skip with a named reason, exit 0, and never log the key. Credential-bearing HTTP clients set `trust_env=False` so `HTTP_PROXY` cannot redirect secrets.
 
 BURNRATE does not post prompts or chat completions to a model endpoint.
+
+## Update checks (native app)
+
+The native Windows app can look for a newer version. It is the one request BURNRATE makes by
+itself that is not to a provider or a hub you set up:
+
+- **Who checks, and when.** Only a copy installed with `myBurnRate_<version>_x64-setup.exe`
+  checks on its own: once about a minute after it starts, then once a day. A portable zip, a
+  source install, `--demo` and the smoke test never contact GitHub unless you press
+  **Check for updates** in Settings -> General.
+- **What is sent.** A plain HTTPS `GET` to
+  `https://github.com/kamol-nazarov/myBurnRate/releases/latest/download/native-latest.json`,
+  which GitHub redirects to its release-asset host. The request carries no usage data and no
+  identifier beyond the `User-Agent` header `BURNRATE/<app version>`; GitHub sees your IP address
+  as it does for any web request.
+- **Installing is a separate step.** Nothing is downloaded or run until you click **Install &
+  restart**. The installer comes from the same repository's release page, and is checked
+  (size, SHA-256, a signature against a key built into the app, and for a signed app the
+  publisher's Authenticode signature) before it is started.
+- **Turn it off.** Set the environment variable `BURNRATE_NO_UPDATE_CHECK=1`. The app then never
+  contacts GitHub for updates, automatic or manual, and the button reports that nothing is
+  available.
+
+The older Tauri desktop app has its own check; see [code signing](code-signing.md#privacy).
 
 ## Bind and browser
 

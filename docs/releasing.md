@@ -29,9 +29,15 @@ maintainer's computer, so every download traces back to a tagged commit.
 5. The release workflow:
    - checks that the tag matches the versions in the code;
    - builds and update-signs the Windows, macOS and Linux bundles;
+   - builds the native Windows app's installer
+     (`myBurnRate_<version>_x64-setup.exe`), has SignPath sign it when
+     configured, then makes its update signature for those final bytes and
+     checks that the `.sig` names exactly that file and verifies against the
+     key pinned in the app;
    - code-signs the Windows installer through SignPath when signing is set
      up (see [code signing](code-signing.md)), which needs an approver;
-   - writes `latest.json` and `SHA256SUMS` and attests the build provenance;
+   - writes `latest.json` (Tauri), `native-latest.json` (native) and
+     `SHA256SUMS` and attests the build provenance;
    - creates a **draft** release with the wheel and sdist.
 6. Check the draft and publish it as the latest release. Installed apps find
    the update within about six hours, or at once from the tray's **Check for
@@ -58,6 +64,17 @@ password are the repository secrets `TAURI_SIGNING_PRIVATE_KEY` and
 
 Keep an offline backup of the private key: if it is lost, installed apps
 cannot verify any later update, and people would have to reinstall.
+
+The native app (`spend_app/native_update.py`) pins the same public key, and a test asserts that
+the constant equals `plugins.updater.pubkey`, so rotating the key means changing both together.
+It reads `native-latest.json`
+(`{version, notes, pub_date, platforms: {"windows-x86_64": {url, signature, sha256, size}}}`)
+from the release marked Latest, and accepts an installer only when its signature, size, SHA-256,
+file name and version all match (see [native app](native-app.md#install-and-update)). The
+signature records the installer's file name, so the workflow signs the installer under its final
+name and the file must not be renamed afterwards. The native installer is deliberately kept out
+of `latest.json` and the Scoop and winget manifests. The release's `publish` job needs the native
+job to succeed, so a release is never missing its native feed.
 
 Verify a download with:
 

@@ -16,6 +16,24 @@ This project is licensed under Apache-2.0.
   connections and computer pairing use native Settings dialogs. A portable
   Windows build and CI smoke checks exercise both the interface and collector.
 
+- Dark and System themes for the native window, a guided first-run screen that
+  finds local tools and takes an API key in place, keyboard navigation with
+  focus rings and Alt+Up/Down row reordering, and reduced-motion support.
+- The native window remembers its position and size, and closing it keeps
+  BURNRATE in the notification area, with Show, Refresh, Settings and Quit on
+  the tray icon. The tray warns when a prepaid balance runs low; plan-limit
+  alerts still come from the background service, and one Settings switch
+  controls both.
+- A per-user Windows installer for the native app (`myBurnRate_<version>_x64-setup.exe`)
+  with in-app updates: an installed copy checks `native-latest.json` on GitHub
+  once after it starts and then daily, and installs only after you click, once the
+  download's size, SHA-256, update signature and (for a signed app) publisher
+  match. Portable and source copies never check on their own, and
+  `BURNRATE_NO_UPDATE_CHECK=1` turns every check off. See the privacy notes.
+- Optional Authenticode signing for local native builds through `BURNRATE_SIGN_*`
+  environment variables, and a native release job that signs the installer through
+  SignPath when it is configured.
+
 ### Fixed
 
 - Reject invalid and revoked machine bearer tokens, preserve pairing identity

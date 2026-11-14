@@ -26,7 +26,8 @@ DESCRIPTION = ("Local-first AI coding-agent usage, plan meters and API-equivalen
 
 
 def installer(directory: Path) -> Path:
-    found = sorted(directory.glob("*_x64-setup.exe"))
+    # The native app's installer (myBurnRate_<v>_x64-setup.exe) is a separate product.
+    found = sorted(f for f in directory.glob("*_x64-setup.exe") if not f.name.startswith(("myBurnRate_", "BURNRATE-native_")))
     if len(found) != 1:
         raise SystemExit(f"Expected one Windows installer in {directory}, found {len(found)}")
     return found[0]

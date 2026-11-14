@@ -27,10 +27,16 @@ jobs:
         run: ./.github/scripts/assert-no-provider-env.ps1
       - name: Install native build tools
         run: python -m pip install -e ".[dev]" pyinstaller
-      - name: Verify native accounting and client
-        run: python -m pytest tests_spend/test_native_usage.py tests_spend/test_native_desktop.py tests_spend/test_native_frame.py -q
-      - name: Build portable native app
-        run: python packaging/build_native.py
+      - name: Verify native accounting, client and updater
+        run: python -m pytest tests_spend/test_native_usage.py tests_spend/test_native_desktop.py tests_spend/test_native_frame.py tests_spend/test_native_update.py tests_spend/test_packaging.py -q
+      - name: Ensure NSIS is available
+        run: |
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue) -and -not (Test-Path "${env:ProgramFiles(x86)}\NSIS\makensis.exe")) {
+            choco install nsis -y --no-progress
+          }
+      # Unsigned here: only the release workflow signs, and only from a version tag.
+      - name: Build portable native app and installer
+        run: python packaging/build_native.py --require-installer
       - name: Run frozen native widget smoke test
         run: |
           $app = Join-Path $PWD 'packaging/build/native/BURNRATE/BURNRATE.exe'
@@ -45,4 +51,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: BURNRATE-native-windows
-          path: packaging/build/BURNRATE-native.zip
+          path: |
+            packaging/build/BURNRATE-native.zip
+            packaging/build/myBurnRate_*_x64-setup.exe

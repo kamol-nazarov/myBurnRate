@@ -1,9 +1,44 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme-pref="system">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>BURNRATE</title>
+<script>
+/* Resolve the theme before first paint. The host rewrites the pref attribute on <html>;
+   "system" follows the OS live. Everything else keys off html[data-theme]. */
+(function () {
+  var root = document.documentElement;
+  var query = null;
+  try { query = window.matchMedia("(prefers-color-scheme: dark)"); } catch (e) {}
+  var listeners = [];
+  function resolve(pref) {
+    if (pref === "dark" || pref === "light") return pref;
+    return query && query.matches ? "dark" : "light";
+  }
+  function apply(pref) {
+    if (pref !== "dark" && pref !== "light" && pref !== "system") pref = "system";
+    root.dataset.themePref = pref;
+    var next = resolve(pref);
+    var changed = root.dataset.theme !== next;
+    root.dataset.theme = next;
+    if (changed) listeners.forEach(function (fn) { try { fn(next); } catch (e) {} });
+    return next;
+  }
+  window.burnrateTheme = {
+    apply: apply,
+    pref: function () { return root.dataset.themePref || "system"; },
+    onChange: function (fn) { listeners.push(fn); }
+  };
+  apply(root.dataset.themePref);
+  if (query) {
+    var follow = function () { if (window.burnrateTheme.pref() === "system") apply("system"); };
+    if (query.addEventListener) query.addEventListener("change", follow);
+    else if (query.addListener) query.addListener(follow);
+  }
+})();
+</script>
 <style>
 /*__EMBEDDED_FONTS__*/
 
@@ -12,27 +47,127 @@
   --bg-canvas: #f5f6fa;
   --surface: #ffffff;
   --surface-subtle: #f7f7fb;
+  --surface-raised: #ffffff;
   --ink: #18172b;
   --ink-secondary: #68677d;
   --ink-tertiary: #9190a6;
   --accent: #4840bb;
   --accent-hover: #3c34a6;
   --accent-soft: #ecebf9;
+  --accent-border: rgba(72, 64, 187, 0.22);
+  --on-accent: #ffffff;
+  --focus-ring: #4840bb;
   --mint: #13795b;
   --mint-bg: #e7f6f0;
   --warn: #b45309;
   --warn-bg: #fdf3e7;
   --warn-border: #f4d8bc;
+  --amber: #d97706;
   --danger: #d93848;
   --danger-bg: #feecef;
+  --danger-border: rgba(217, 56, 72, 0.22);
+  --danger-quiet-bg: #fff5f6;
   --border: rgba(24, 23, 43, 0.075);
+  --border-input: rgba(24, 23, 43, 0.15);
   --divider: #f0f0f6;
+  --hair-faint: rgba(24, 23, 43, 0.04);
+  --hair: rgba(24, 23, 43, 0.05);
+  --hair-strong: rgba(24, 23, 43, 0.06);
+  --row-hover: #f9f9fe;
+  --input-bg: #ffffff;
+  --track: #ececf5;
+  --track-strong: #e7e7f2;
+  --track-muted: #c7c6d8;
+  --tab-bg: #eaeaf3;
+  --switch-off: #d8d7e6;
+  --switch-knob: #ffffff;
+  --knob-shadow: rgba(0, 0, 0, 0.2);
+  --scroll-thumb: rgba(24, 23, 43, 0.14);
+  --live: #16a34a;
+  --live-ring: rgba(22, 163, 74, 0.18);
+  --brand-1: #564ed1;
+  --brand-2: #4139b0;
+  --brand-ink: #ffffff;
+  --toast-bg: #18172b;
+  --toast-fg: #ffffff;
+  --toast-ring: transparent;
+  --chart-line: #4840bb;
+  --chart-fill-top: 0.17;
+  --chart-grid: #ececf4;
+  --chart-scrub: #c9c6ee;
+  --preview-border: #e2e2ec;
   --shadow-card: 0 1px 6px rgba(24, 23, 43, 0.03), 0 1px 2px rgba(24, 23, 43, 0.02);
   --shadow-pop: 0 12px 28px rgba(24, 23, 43, 0.14), 0 2px 6px rgba(24, 23, 43, 0.06);
   --shadow-drag: 0 14px 32px rgba(24, 23, 43, 0.16), 0 3px 8px rgba(72, 64, 187, 0.10);
+  --shadow-brand: 0 1px 4px rgba(72, 64, 187, 0.26);
+  --shadow-indicator: 0 1px 2px rgba(72, 64, 187, 0.08);
+  --shadow-preview: 0 10px 28px rgba(24, 23, 43, 0.08), 0 2px 6px rgba(24, 23, 43, 0.04);
   --spring: cubic-bezier(0.22, 1, 0.36, 1);
   --font: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", system-ui, sans-serif;
   --display: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display", system-ui, sans-serif;
+}
+
+/* Obsidian dark: deep blue-black canvas, raised slate surfaces, soft lavender accent. */
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-hero: #14161d;
+  --bg-canvas: #101117;
+  --surface: #181a22;
+  --surface-subtle: #1e2029;
+  --surface-raised: #242733;
+  --ink: #e7e8f1;
+  --ink-secondary: #a2a5ba;
+  --ink-tertiary: #8589a0;
+  --accent: #8f88f5;
+  --accent-hover: #a8a2f8;
+  --accent-soft: #26274a;
+  --accent-border: rgba(143, 136, 245, 0.34);
+  --on-accent: #12131a;
+  --focus-ring: #a8a2f8;
+  --mint: #5ccba3;
+  --mint-bg: #16302a;
+  --warn: #e2a75b;
+  --warn-bg: #2b2318;
+  --warn-border: #473822;
+  --amber: #e0a24a;
+  --danger: #f07a86;
+  --danger-bg: #331b22;
+  --danger-border: rgba(240, 122, 134, 0.32);
+  --danger-quiet-bg: #2a1a20;
+  --border: rgba(255, 255, 255, 0.075);
+  --border-input: rgba(255, 255, 255, 0.15);
+  --divider: #232530;
+  --hair-faint: rgba(255, 255, 255, 0.04);
+  --hair: rgba(255, 255, 255, 0.055);
+  --hair-strong: rgba(255, 255, 255, 0.07);
+  --row-hover: #1c1e27;
+  --input-bg: #12131a;
+  --track: #2a2d3a;
+  --track-strong: #2c2f3d;
+  --track-muted: #4c5066;
+  --tab-bg: #232631;
+  --switch-off: #3b3e50;
+  --switch-knob: #f1f1f8;
+  --knob-shadow: rgba(0, 0, 0, 0.45);
+  --scroll-thumb: rgba(255, 255, 255, 0.14);
+  --live: #36c27a;
+  --live-ring: rgba(54, 194, 122, 0.28);
+  --brand-1: #7a72ee;
+  --brand-2: #5c54d6;
+  --toast-bg: #2c2f3e;
+  --toast-fg: #e7e8f1;
+  --toast-ring: rgba(255, 255, 255, 0.09);
+  --chart-line: #8f88f5;
+  --chart-fill-top: 0.24;
+  --chart-grid: #272a37;
+  --chart-scrub: #4b4985;
+  --preview-border: #2a2d3a;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-pop: 0 12px 28px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.3);
+  --shadow-drag: 0 14px 32px rgba(0, 0, 0, 0.55), 0 3px 8px rgba(0, 0, 0, 0.3);
+  --shadow-brand: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-indicator: none;
+  --shadow-preview: 0 10px 28px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.3);
 }
 
 * {
@@ -74,8 +209,8 @@ html.preview-mode .app-shell {
   height: auto;
   margin: 0 auto;
   border-radius: 12px;
-  border: 1px solid #e2e2ec;
-  box-shadow: 0 10px 28px rgba(24, 23, 43, 0.08), 0 2px 6px rgba(24, 23, 43, 0.04);
+  border: 1px solid var(--preview-border);
+  box-shadow: var(--shadow-preview);
   overflow: hidden;
 }
 html.preview-mode .scroll-body {
@@ -133,12 +268,12 @@ button, input {
   width: 20px;
   height: 20px;
   border-radius: 6px;
-  background: linear-gradient(145deg, #564ed1 0%, #4139b0 100%);
+  background: linear-gradient(145deg, var(--brand-1) 0%, var(--brand-2) 100%);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #ffffff;
-  box-shadow: 0 1px 4px rgba(72, 64, 187, 0.26);
+  color: var(--brand-ink);
+  box-shadow: var(--shadow-brand);
   flex-shrink: 0;
   transition: transform 0.22s var(--spring);
 }
@@ -160,7 +295,7 @@ button, input {
   gap: 4px;
   padding: 1.5px 6.5px;
   border-radius: 999px;
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 600;
   background: var(--mint-bg);
   color: var(--mint);
@@ -224,7 +359,7 @@ button, input {
 
 .scope-trigger:hover {
   background: var(--accent-soft);
-  border-color: rgba(72, 64, 187, 0.22);
+  border-color: var(--accent-border);
   color: var(--accent);
 }
 .scope-trigger:active {
@@ -244,6 +379,7 @@ button, input {
 }
 
 .icon-btn {
+  position: relative;
   width: 24px;
   height: 24px;
   border-radius: 999px;
@@ -300,7 +436,7 @@ button, input {
   background: transparent;
 }
 .scroll-body::-webkit-scrollbar-thumb {
-  background: rgba(24, 23, 43, 0.14);
+  background: var(--scroll-thumb);
   border-radius: 999px;
 }
 
@@ -346,7 +482,7 @@ button, input {
 }
 
 .subtotal-pill {
-  font-size: 9.5px;
+  font-size: 10.5px;
   font-weight: 600;
   padding: 1.5px 6px;
   border-radius: 999px;
@@ -440,7 +576,7 @@ button, input {
   width: calc((100% - 10px) / 4);
   border-radius: 999px;
   background: var(--accent-soft);
-  box-shadow: 0 1px 2px rgba(72, 64, 187, 0.08);
+  box-shadow: var(--shadow-indicator);
   transition: transform 0.26s var(--spring);
   pointer-events: none;
   z-index: 0;
@@ -468,7 +604,7 @@ button, input {
   color: var(--accent);
 }
 
-/* Content section on #F5F6FA canvas */
+/* Content section on the canvas surface */
 .section-stack {
   padding: 8px 10px 10px;
   display: grid;
@@ -524,13 +660,13 @@ button, input {
 }
 
 .card-hint {
-  font-size: 9.5px;
+  font-size: 10.5px;
   font-weight: 500;
   color: var(--ink-tertiary);
 }
 
 .card-subtitle {
-  font-size: 9.5px;
+  font-size: 10.5px;
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -569,7 +705,7 @@ button, input {
   border-radius: 11px;
   border-top-color: transparent;
   box-shadow: var(--shadow-drag);
-  background: #ffffff;
+  background: var(--surface-raised);
 }
 
 .provider-row {
@@ -587,7 +723,7 @@ button, input {
 }
 
 body:not(.dragging-active) .provider-row:hover {
-  background: #f9f9fe;
+  background: var(--row-hover);
 }
 
 .drag-grip {
@@ -643,9 +779,9 @@ body:not(.dragging-active) .provider-row:hover .logo-badge {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #16a34a;
-  border: 1.6px solid #ffffff;
-  box-shadow: 0 0 0 1px rgba(22, 163, 74, 0.18);
+  background: var(--live);
+  border: 1.6px solid var(--surface);
+  box-shadow: 0 0 0 1px var(--live-ring);
 }
 
 .provider-main {
@@ -672,7 +808,7 @@ body:not(.dragging-active) .provider-row:hover .logo-badge {
 }
 
 .acct-tag {
-  font-size: 9px;
+  font-size: 10.5px;
   font-weight: 650;
   padding: 0.5px 5.5px;
   border-radius: 999px;
@@ -731,7 +867,7 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
 .rem-track {
   height: 3.5px;
   width: 38px;
-  background: #ececf5;
+  background: var(--track);
   border-radius: 999px;
   overflow: hidden;
   flex-shrink: 0;
@@ -745,12 +881,12 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
   transition: width 0.42s var(--spring), background-color 0.25s ease;
 }
 .rem-fill.tone-mint { background: var(--mint); }
-.rem-fill.tone-warn { background: #d97706; }
+.rem-fill.tone-warn { background: var(--amber); }
 .rem-fill.tone-danger { background: var(--danger); }
-.rem-fill.tone-muted { background: #c7c6d8; }
+.rem-fill.tone-muted { background: var(--track-muted); }
 
 .provider-sub {
-  font-size: 10.3px;
+  font-size: 10.5px;
   color: var(--ink-secondary);
   font-variant-numeric: tabular-nums lining-nums;
   font-feature-settings: "tnum" 1, "lnum" 1;
@@ -765,7 +901,7 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--ink-secondary);
-  font-size: 10.3px;
+  font-size: 10.5px;
   font-variant-numeric: tabular-nums lining-nums;
   font-feature-settings: "tnum" 1, "lnum" 1;
 }
@@ -798,7 +934,7 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
 .provider-rem.tone-muted { color: var(--ink-secondary); font-weight: 620; }
 
 .provider-rem-sub {
-  font-size: 9.8px;
+  font-size: 10.5px;
   color: var(--ink-tertiary);
   font-variant-numeric: tabular-nums lining-nums;
   font-feature-settings: "tnum" 1, "lnum" 1;
@@ -867,7 +1003,7 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
   gap: 3px;
   min-width: 0;
   padding-top: 5px;
-  border-top: 1px solid rgba(24, 23, 43, 0.05);
+  border-top: 1px solid var(--hair);
 }
 .limit-row:first-child {
   padding-top: 0;
@@ -905,7 +1041,7 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
 .limit-val .used-muted {
   color: var(--ink-secondary);
   font-weight: 450;
-  font-size: 9.8px;
+  font-size: 10.5px;
 }
 
 .limit-meta {
@@ -915,7 +1051,7 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
   flex-wrap: wrap;
   min-width: 0;
   color: var(--ink-secondary);
-  font-size: 9.8px;
+  font-size: 10.5px;
   font-variant-numeric: tabular-nums lining-nums;
 }
 .limit-used {
@@ -926,7 +1062,7 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
 .limit-bar-track {
   height: 4.5px;
   width: 100%;
-  background: #e7e7f2;
+  background: var(--track-strong);
   border-radius: 999px;
   overflow: hidden;
 }
@@ -939,11 +1075,11 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
   transition: width 0.42s var(--spring);
 }
 .limit-bar-fill.tone-mint { background: var(--mint); }
-.limit-bar-fill.tone-warn { background: #d97706; }
+.limit-bar-fill.tone-warn { background: var(--amber); }
 .limit-bar-fill.tone-danger { background: var(--danger); }
 
 .limit-note {
-  font-size: 9.8px;
+  font-size: 10.5px;
   color: var(--ink-secondary);
   line-height: 1.3;
 }
@@ -956,7 +1092,7 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
 }
 
 .burn-stat {
-  background: #ffffff;
+  background: var(--surface-raised);
   border: 1px solid var(--border);
   border-radius: 7px;
   padding: 4px 6px;
@@ -966,7 +1102,8 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
 }
 
 .burn-stat-lbl {
-  font-size: 9px;
+  white-space: nowrap;
+  font-size: 10.5px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.03em;
@@ -983,12 +1120,12 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
 
 .burn-section-label, .burn-note, .api-equivalent {
   color: var(--ink-secondary);
-  font-size: 10px;
+  font-size: 10.5px;
 }
 .burn-section-label {
   font-weight: 650;
   padding-top: 6px;
-  border-top: 1px solid rgba(24, 23, 43, 0.06);
+  border-top: 1px solid var(--hair-strong);
 }
 .api-equivalent strong { color: var(--ink); }
 
@@ -999,9 +1136,9 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
 }
 
 .token-chip {
-  font-size: 9.8px;
+  font-size: 10.5px;
   color: var(--ink-secondary);
-  background: #ffffff;
+  background: var(--surface-raised);
   border: 1px solid var(--border);
   border-radius: 999px;
   padding: 1px 6px;
@@ -1018,7 +1155,7 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
   display: grid;
   gap: 4px;
   padding-top: 4px;
-  border-top: 1px solid rgba(24, 23, 43, 0.05);
+  border-top: 1px solid var(--hair);
 }
 
 .model-row {
@@ -1028,7 +1165,7 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
   gap: 6px;
   font-size: 10.8px;
   padding-top: 3px;
-  border-top: 1px solid rgba(24, 23, 43, 0.04);
+  border-top: 1px solid var(--hair-faint);
 }
 
 .model-row:first-child {
@@ -1056,7 +1193,7 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
 
 .model-tok {
   color: var(--ink-tertiary);
-  font-size: 10px;
+  font-size: 10.5px;
 }
 
 .model-val {
@@ -1091,7 +1228,7 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
 }
 
 .summary-label {
-  font-size: 10px;
+  font-size: 10.5px;
   color: var(--ink-tertiary);
   font-weight: 500;
 }
@@ -1107,7 +1244,7 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
 
 .footer-note {
   text-align: center;
-  font-size: 10px;
+  font-size: 10.5px;
   color: var(--ink-tertiary);
   padding: 0 6px 2px;
 }
@@ -1138,12 +1275,15 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
   transform: scale(0.95) translateY(-4px);
   transform-origin: top right;
   pointer-events: none;
-  transition: opacity 0.16s ease, transform 0.2s var(--spring);
+  visibility: hidden;
+  transition: opacity 0.16s ease, transform 0.2s var(--spring), visibility 0s linear 0.2s;
 }
 .scope-popover.open {
   opacity: 1;
   transform: scale(1) translateY(0);
   pointer-events: auto;
+  visibility: visible;
+  transition: opacity 0.16s ease, transform 0.2s var(--spring), visibility 0s;
 }
 
 .scope-opt {
@@ -1187,10 +1327,13 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
   display: flex;
   flex-direction: column;
   transform: translateX(100%);
-  transition: transform 0.28s var(--spring);
+  visibility: hidden;
+  transition: transform 0.28s var(--spring), visibility 0s linear 0.28s;
 }
 .settings-sheet.open {
   transform: translateX(0);
+  visibility: visible;
+  transition: transform 0.28s var(--spring), visibility 0s;
 }
 
 .sheet-header {
@@ -1212,7 +1355,7 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
 .btn-primary {
   border: none;
   background: var(--accent);
-  color: #ffffff;
+  color: var(--on-accent);
   font-size: 11.5px;
   font-weight: 600;
   padding: 5px 12px;
@@ -1239,12 +1382,12 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
 .btn-secondary.active {
   background: var(--accent-soft);
   color: var(--accent);
-  border-color: rgba(72, 64, 187, 0.22);
+  border-color: var(--accent-border);
 }
 
 .btn-danger-quiet {
-  border: 1px solid rgba(217, 56, 72, 0.22);
-  background: #fff5f6;
+  border: 1px solid var(--danger-border);
+  background: var(--danger-quiet-bg);
   color: var(--danger);
   font-size: 11px;
   font-weight: 600;
@@ -1262,7 +1405,7 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
 .sheet-tab {
   flex: 1;
   border: none;
-  background: #eaeaf3;
+  background: var(--tab-bg);
   color: var(--ink-secondary);
   font-size: 11.5px;
   font-weight: 600;
@@ -1273,7 +1416,7 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
 }
 .sheet-tab.active {
   background: var(--accent);
-  color: #ffffff;
+  color: var(--on-accent);
 }
 
 .sheet-body {
@@ -1316,7 +1459,7 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
 }
 
 .state-badge {
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 600;
   padding: 2px 7px;
   border-radius: 999px;
@@ -1341,16 +1484,15 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
 
 .text-input {
   width: 100%;
-  border: 1px solid rgba(24, 23, 43, 0.15);
+  border: 1px solid var(--border-input);
   border-radius: 8px;
   padding: 6px 9px;
   font-size: 11.5px;
   color: var(--ink);
-  background: #ffffff;
+  background: var(--input-bg);
   user-select: text;
 }
 .text-input:focus {
-  outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 2.5px var(--accent-soft);
 }
@@ -1374,12 +1516,14 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
 }
 .toggle-row:first-child { border-top: none; }
 
+.toggle-row.wrap { flex-wrap: wrap; }
+
 .switch {
   position: relative;
   width: 38px;
   height: 22px;
   border-radius: 999px;
-  background: #d8d7e6;
+  background: var(--switch-off);
   border: none;
   cursor: pointer;
   transition: background 0.2s var(--spring);
@@ -1394,8 +1538,8 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  background: #ffffff;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  background: var(--switch-knob);
+  box-shadow: 0 1px 3px var(--knob-shadow);
   transition: transform 0.22s var(--spring);
 }
 .switch.on::after { transform: translateX(16px); }
@@ -1418,8 +1562,9 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
   bottom: 12px;
   left: 50%;
   transform: translateX(-50%) translateY(16px);
-  background: #18172b;
-  color: #ffffff;
+  background: var(--toast-bg);
+  color: var(--toast-fg);
+  box-shadow: 0 0 0 1px var(--toast-ring);
   padding: 6px 12px;
   border-radius: 999px;
   font-size: 11px;
@@ -1434,6 +1579,286 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
 .toast.show {
   opacity: 1;
   transform: translateX(-50%) translateY(0);
+}
+
+/* Chart marks pick their colour from tokens so both themes share one render */
+.ch-line { stroke: var(--chart-line); }
+.ch-dot { fill: var(--chart-line); }
+.ch-dot-ring { stroke: var(--bg-hero); }
+.ch-grid { stroke: var(--chart-grid); }
+.ch-flat { opacity: 0.5; }
+.ch-scrub { stroke: var(--chart-scrub); }
+.ch-fill-top { stop-color: var(--chart-line); stop-opacity: var(--chart-fill-top); }
+.ch-fill-bottom { stop-color: var(--chart-line); stop-opacity: 0; }
+
+/* Provider badges: logoHtml() supplies a light and a dark palette per brand */
+.brand-chip { background: var(--bl-bg); color: var(--bl-fg); border: var(--bl-ring); }
+html[data-theme="dark"] .brand-chip { background: var(--bd-bg); color: var(--bd-fg); border: var(--bd-ring); }
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Keyboard focus: an accent ring on every control, never after a mouse click */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+input:focus-visible { outline-offset: 1px; }
+.provider-row:focus-visible,
+.scope-opt:focus-visible,
+.ob-row:focus-visible {
+  outline-offset: -2px;
+  border-radius: 10px;
+}
+.sheet-tab:focus-visible,
+.period-pill:focus-visible { outline-offset: 0; }
+.provider-row:focus-visible .drag-grip {
+  opacity: 0.65;
+  transform: translateX(0);
+}
+.provider-row:focus-visible .sub-default {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+.provider-row:focus-visible .sub-hover {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.update-dot {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 1.5px solid var(--bg-hero);
+  display: none;
+}
+.icon-btn.has-update .update-dot { display: block; }
+
+.state-badge.accent {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.setting-note {
+  font-size: 11px;
+  color: var(--ink-secondary);
+  line-height: 1.45;
+}
+.setting-note.err { color: var(--danger); }
+.update-block {
+  padding: 11px 12px;
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid var(--divider);
+}
+.update-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.update-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  color: var(--ink-secondary);
+}
+.update-bar {
+  width: 48px;
+  height: 3.5px;
+  border-radius: 999px;
+  background: var(--track);
+  overflow: hidden;
+}
+.update-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+.update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+a.btn-secondary,
+a.btn-primary {
+  text-decoration: none;
+  display: inline-block;
+}
+
+/* Guided first-run state (replaces the bare empty list) */
+.ob {
+  padding: 14px 12px 12px;
+  display: grid;
+  gap: 14px;
+}
+.ob-hero {
+  display: grid;
+  justify-items: center;
+  text-align: center;
+  gap: 5px;
+  padding: 2px 6px 0;
+}
+.ob-mark {
+  width: 40px;
+  height: 40px;
+  border-radius: 13px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  display: grid;
+  place-items: center;
+  margin-bottom: 3px;
+}
+.ob-title {
+  font-family: var(--display);
+  font-size: 14.5px;
+  font-weight: 700;
+  letter-spacing: -0.012em;
+  color: var(--ink);
+}
+.ob-lede {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--ink-secondary);
+  max-width: 290px;
+}
+.ob-group { display: grid; gap: 6px; min-width: 0; }
+.ob-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 2px;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+}
+.ob-label .ob-count {
+  letter-spacing: 0;
+  text-transform: none;
+  font-weight: 600;
+  color: var(--ink-secondary);
+}
+.ob-list {
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.ob-item + .ob-item { border-top: 1px solid var(--divider); }
+.ob-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  min-width: 0;
+}
+button.ob-row { cursor: pointer; transition: background 0.16s ease; }
+button.ob-row:hover { background: var(--row-hover); }
+.ob-row .source-info { min-width: 0; }
+.ob-row.is-missing .source-logo { opacity: 0.45; }
+.ob-row.is-missing .source-name { color: var(--ink-secondary); }
+.ob-cta {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+}
+.ob-row .chevron { transition: transform 0.2s var(--spring), color 0.18s ease; }
+.ob-item.open .ob-row .chevron { transform: rotate(90deg); color: var(--accent); }
+.ob-panel {
+  padding: 0 10px 10px 47px;
+  display: grid;
+  gap: 6px;
+}
+.ob-panel[hidden] { display: none; }
+form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
+.ob-help { font-size: 10.5px; line-height: 1.4; color: var(--ink-secondary); }
+.ob-error {
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-radius: 8px;
+  padding: 5px 8px;
+}
+.ob-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.ob-foot {
+  text-align: center;
+  font-size: 11px;
+  color: var(--ink-secondary);
+  line-height: 1.5;
+}
+.ob-link {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 600;
+  padding: 1px 3px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.ob-link:hover { text-decoration: underline; }
+.ob-loading {
+  padding: 10px;
+  font-size: 11px;
+  color: var(--ink-secondary);
+}
+
+.ob-row .source-meta { white-space: normal; overflow: visible; text-overflow: clip; }
+
+/* Narrow window (min width is 336px; 304px is the floor we still fit): give the figures room
+   instead of truncating names, and let the account tag wrap under the name. */
+@media (max-width: 340px) {
+  .card-hint { display: none; }
+  .provider-row { gap: 6px; position: relative; }
+  .drag-grip { position: absolute; left: 0; top: 50%; margin-top: -11px; width: 7px; }
+  .provider-name-line { flex-wrap: wrap; row-gap: 1px; }
+  .provider-name { max-width: 100%; }
+  .rem-track { width: 28px; }
+  .sub-default, .sub-hover { gap: 5px; }
+  .summary-grid { gap: 6px; padding: 7px 10px; }
+}
+@media (max-width: 324px) {
+  .rem-track { display: none; }
+}
+
+/* Reduced motion: no loops, no slides or springs; hero and chart snap */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+  .toast, .drawer-collapse { transition: opacity 80ms linear !important; }
+  .icon-btn.spinning svg { opacity: 0.4; }
 }
 </style>
 </head>
@@ -1469,7 +1894,7 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
 <div class="rz rz-sw" data-edge="bottomleft"></div>
 <div class="rz rz-se" data-edge="bottomright"></div>
 
-<div class="app-shell">
+<div class="app-shell" id="appShell">
   <!-- Frameless Header Bar -->
   <header class="topbar pywebview-drag-region" id="dragHeader">
     <div class="brand-group">
@@ -1485,29 +1910,30 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
       </span>
     </div>
 
-    <button class="scope-trigger" id="scopeBtn" type="button" title="Select computer scope">
+    <button class="scope-trigger" id="scopeBtn" type="button" title="Select computer scope" aria-label="Computer scope" aria-haspopup="menu" aria-expanded="false" aria-controls="scopePopover">
       <span id="scopeLabel">All computers</span>
-      <svg width="10.5" height="10.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+      <svg width="10.5" height="10.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
     </button>
 
     <div class="top-actions">
       <button class="icon-btn pin-btn" id="pinBtn" type="button" aria-label="Pin window above other apps" aria-pressed="false" title="Pin window above other apps">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6l-1 5 3 3v2H7v-2l3-3-1-5ZM12 13v8"/></svg>
       </button>
-      <button class="icon-btn" id="refreshBtn" type="button" title="Refresh usage &amp; live limits">
+      <button class="icon-btn" id="refreshBtn" type="button" title="Refresh usage &amp; live limits" aria-label="Refresh usage and live limits">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
           <path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/>
         </svg>
       </button>
-      <button class="icon-btn" id="settingsBtn" type="button" title="Settings &amp; Sources">
+      <button class="icon-btn" id="settingsBtn" type="button" title="Settings &amp; Sources" aria-label="Settings and sources" aria-haspopup="dialog">
+        <span class="update-dot" id="updateDot" aria-hidden="true"></span>
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.08a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.08a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.08a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
         </svg>
       </button>
-      <button class="icon-btn" id="minBtn" type="button" title="Minimize">
+      <button class="icon-btn" id="minBtn" type="button" title="Minimize" aria-label="Minimize window">
         <svg width="12.5" height="12.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M5 12h14"/></svg>
       </button>
-      <button class="icon-btn close-btn" id="closeBtn" type="button" title="Close">
+      <button class="icon-btn close-btn" id="closeBtn" type="button" title="Close" aria-label="Close window">
         <svg width="12.5" height="12.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
       </button>
     </div>
@@ -1552,13 +1978,13 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
       <div class="notice-banner" id="noticeBanner"></div>
 
       <!-- Providers Holdings Card -->
-      <div class="wf-card">
+      <div class="wf-card" id="providersCard">
         <div class="card-header">
           <div class="card-title-wrap">
-            <span class="card-title">Providers</span>
-            <span class="card-hint">drag to sort · click for limits</span>
+            <span class="card-title" id="providersTitle">Providers</span>
+            <span class="card-hint" id="providersHint" title="Focus a row and press Alt+Up or Alt+Down to move it">drag to sort · click for limits</span>
           </div>
-          <span class="card-subtitle">Remaining</span>
+          <span class="card-subtitle" id="providersSub">Remaining</span>
         </div>
         <div class="provider-list" id="providerList">
           <div class="empty-state">Loading your AI providers…</div>
@@ -1590,49 +2016,53 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
 
 <!-- Scope Selector Popover -->
 <div class="popover-backdrop" id="scopeBackdrop"></div>
-<div class="scope-popover" id="scopePopover"></div>
+<div class="scope-popover" id="scopePopover" role="menu" aria-label="Computer scope" inert></div>
 
 <!-- Slide-over Settings Sheet -->
-<aside class="settings-sheet" id="settingsSheet">
+<aside class="settings-sheet" id="settingsSheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle" inert>
   <div class="sheet-header pywebview-drag-region">
-    <span class="sheet-title">Settings</span>
+    <span class="sheet-title" id="sheetTitle">Settings</span>
     <button class="btn-primary" id="settingsDoneBtn" type="button">Done</button>
   </div>
-  <div class="sheet-tabs">
-    <button class="sheet-tab active" data-tab="sources" type="button">Sources</button>
-    <button class="sheet-tab" data-tab="computers" type="button">Computers</button>
-    <button class="sheet-tab" data-tab="general" type="button">General</button>
+  <div class="sheet-tabs" role="tablist" aria-label="Settings sections">
+    <button class="sheet-tab active" data-tab="sources" type="button" role="tab" aria-selected="true">Sources</button>
+    <button class="sheet-tab" data-tab="computers" type="button" role="tab" aria-selected="false" tabindex="-1">Computers</button>
+    <button class="sheet-tab" data-tab="general" type="button" role="tab" aria-selected="false" tabindex="-1">General</button>
   </div>
   <div class="sheet-body" id="sheetBody"></div>
 </aside>
 
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<div class="sr-only" id="liveRegion" role="status" aria-live="polite"></div>
 
 <script>
 const PERIOD_INDEX = { today: 0, week: 1, month: 2, all: 3 };
 
+/* Per brand: symbol, light chip (bg, fg, ring), dark chip (bg, fg, ring).
+   Saturated brand fills stay put in dark; near-black and pale tints are re-toned so nothing vanishes or glares. */
+const MONO_DARK = ["#2c2e3b", "#e7e6f2", "1px solid #3f4254"];
 const BRAND_STYLES = {
-  "claude":       { sym: "claude",      bg: "#d97757", fg: "#ffffff", ring: "none" },
-  "claude-code":  { sym: "claude",      bg: "#d97757", fg: "#ffffff", ring: "none" },
-  "claude_local": { sym: "claude",      bg: "#d97757", fg: "#ffffff", ring: "none" },
-  "anthropic":    { sym: "anthropic",   bg: "#f3efea", fg: "#18172b", ring: "1px solid #e4ded5" },
-  "codex":        { sym: "codex",       bg: "#18172b", fg: "#ffffff", ring: "none" },
-  "codex_local":  { sym: "codex",       bg: "#18172b", fg: "#ffffff", ring: "none" },
-  "openai":       { sym: "openai",      bg: "#10a37f", fg: "#ffffff", ring: "none" },
-  "opencode-go":  { sym: "opencode",    bg: "#e7f6f0", fg: "#13795b", ring: "1px solid #cbece0" },
-  "opencode":     { sym: "zai",         bg: "#eef4ff", fg: "#2563eb", ring: "1px solid #d7e6ff" },
-  "muse":         { sym: "meta",        bg: "#ebf3ff", fg: "#0064e0", ring: "1px solid #d6e7ff" },
-  "grok":         { sym: "grok",        bg: "#18172b", fg: "#ffffff", ring: "none" },
-  "xai":          { sym: "xai",         bg: "#18172b", fg: "#ffffff", ring: "none" },
-  "zcode":        { sym: "zai",         bg: "#2563eb", fg: "#ffffff", ring: "none" },
-  "zai":          { sym: "zai",         bg: "#2563eb", fg: "#ffffff", ring: "none" },
-  "antigravity":  { sym: "antigravity", bg: "#eef4ff", fg: "#2563eb", ring: "1px solid #dce8ff" },
-  "cursor":       { sym: "cursor",      bg: "#222138", fg: "#ffffff", ring: "none" },
-  "traycer":      { sym: "traycer",     bg: "#efeffb", fg: "#4840bb", ring: "1px solid #dfdef7" },
-  "gemini":       { sym: "gemini",      bg: "#eef2ff", fg: "#4f46e5", ring: "1px solid #e0e7ff" },
-  "openrouter":   { sym: "openrouter",  bg: "#f1f0fb", fg: "#4840bb", ring: "1px solid #e2e0f6" },
-  "deepseek":     { sym: "deepseek",    bg: "#eef2ff", fg: "#4d6bfe", ring: "1px solid #dbe4ff" },
-  "custom":       { sym: "custom",      bg: "#f1f1f7", fg: "#68677d", ring: "1px solid #e4e4ee" }
+  "claude":       { sym: "claude",      light: ["#d97757", "#ffffff", "none"], dark: ["#d97757", "#ffffff", "none"] },
+  "claude-code":  { sym: "claude",      light: ["#d97757", "#ffffff", "none"], dark: ["#d97757", "#ffffff", "none"] },
+  "claude_local": { sym: "claude",      light: ["#d97757", "#ffffff", "none"], dark: ["#d97757", "#ffffff", "none"] },
+  "anthropic":    { sym: "anthropic",   light: ["#f3efea", "#18172b", "1px solid #e4ded5"], dark: ["#2b2824", "#ece4da", "1px solid #403a33"] },
+  "codex":        { sym: "codex",       light: ["#18172b", "#ffffff", "none"], dark: MONO_DARK },
+  "codex_local":  { sym: "codex",       light: ["#18172b", "#ffffff", "none"], dark: MONO_DARK },
+  "openai":       { sym: "openai",      light: ["#10a37f", "#ffffff", "none"], dark: ["#10a37f", "#ffffff", "none"] },
+  "opencode-go":  { sym: "opencode",    light: ["#e7f6f0", "#13795b", "1px solid #cbece0"], dark: ["#17302a", "#5fd3a8", "1px solid #23463d"] },
+  "opencode":     { sym: "zai",         light: ["#eef4ff", "#2563eb", "1px solid #d7e6ff"], dark: ["#1a2640", "#7fa8ff", "1px solid #28365a"] },
+  "muse":         { sym: "meta",        light: ["#ebf3ff", "#0064e0", "1px solid #d6e7ff"], dark: ["#17283f", "#6fb0ff", "1px solid #24395a"] },
+  "grok":         { sym: "grok",        light: ["#18172b", "#ffffff", "none"], dark: MONO_DARK },
+  "xai":          { sym: "xai",         light: ["#18172b", "#ffffff", "none"], dark: MONO_DARK },
+  "zcode":        { sym: "zai",         light: ["#2563eb", "#ffffff", "none"], dark: ["#2563eb", "#ffffff", "none"] },
+  "zai":          { sym: "zai",         light: ["#2563eb", "#ffffff", "none"], dark: ["#2563eb", "#ffffff", "none"] },
+  "antigravity":  { sym: "antigravity", light: ["#eef4ff", "#2563eb", "1px solid #dce8ff"], dark: ["#1a2640", "#7fa8ff", "1px solid #28365a"] },
+  "cursor":       { sym: "cursor",      light: ["#222138", "#ffffff", "none"], dark: ["#323445", "#e7e6f2", "1px solid #444759"] },
+  "traycer":      { sym: "traycer",     light: ["#efeffb", "#4840bb", "1px solid #dfdef7"], dark: ["#25264a", "#a9a4ff", "1px solid #34366a"] },
+  "gemini":       { sym: "gemini",      light: ["#eef2ff", "#4f46e5", "1px solid #e0e7ff"], dark: ["#22244a", "#9aa0ff", "1px solid #33366a"] },
+  "openrouter":   { sym: "openrouter",  light: ["#f1f0fb", "#4840bb", "1px solid #e2e0f6"], dark: ["#262846", "#aaa6ff", "1px solid #363968"] },
+  "deepseek":     { sym: "deepseek",    light: ["#eef2ff", "#4d6bfe", "1px solid #dbe4ff"], dark: ["#1d2750", "#8ea4ff", "1px solid #2e3a70"] },
+  "custom":       { sym: "custom",      light: ["#f1f1f7", "#68677d", "1px solid #e4e4ee"], dark: ["#262833", "#9b9db2", "1px solid #363948"] }
 };
 
 function resolveBrand(rawKey) {
@@ -1659,8 +2089,11 @@ function resolveBrand(rawKey) {
 
 function logoHtml(key, cls = "logo-badge", inUse = false) {
   const b = resolveBrand(key);
-  const pip = inUse ? '<span class="live-pip" title="Active right now"></span>' : '';
-  return `<span class="${cls}" style="background:${b.bg};color:${b.fg};border:${b.ring}"><svg><use href="#${b.sym}"/></svg>${pip}</span>`;
+  const pip = inUse ? '<span class="live-pip"></span>' : '';
+  const [lbg, lfg, lring] = b.light;
+  const [dbg, dfg, dring] = b.dark;
+  const vars = `--bl-bg:${lbg};--bl-fg:${lfg};--bl-ring:${lring};--bd-bg:${dbg};--bd-fg:${dfg};--bd-ring:${dring}`;
+  return `<span class="${cls} brand-chip" style="${vars}" aria-hidden="true"><svg><use href="#${b.sym}"/></svg>${pip}</span>`;
 }
 
 function fmtTokens(val) {
@@ -1724,6 +2157,14 @@ const state = {
   suppressNextClick: false,
   settingsOpen: false,
   settingsTab: "sources",
+  theme: window.burnrateTheme ? window.burnrateTheme.pref() : "system",
+  closeToTray: false,
+  lowQuotaAlerts: false,
+  trayAvailable: false,
+  version: "",
+  update: null,
+  updateInfo: null,
+  updateCheck: { status: "idle", error: "" },
   settingsData: { connections: [], machines: [], setup: {}, centralServerUrl: "" },
   editingSource: null,
   accountFormOpen: false,
@@ -1755,8 +2196,23 @@ function showToast(msg) {
   showToast._t = setTimeout(() => el.classList.remove("show"), 2600);
 }
 
+function announce(msg) {
+  const el = document.getElementById("liveRegion");
+  if (!el) return;
+  el.textContent = "";
+  setTimeout(() => { el.textContent = msg; }, 30);
+}
+
 function apiAvailable() {
   return window.pywebview && window.pywebview.api;
+}
+
+function apiHas(name) {
+  return !!(apiAvailable() && typeof window.pywebview.api[name] === "function");
+}
+
+function prefersReducedMotion() {
+  try { return window.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (e) { return false; }
 }
 
 /* Smooth animated hero number counter */
@@ -1770,7 +2226,7 @@ function animateHeroNumber(targetVal, hasEvents, unavailable) {
   }
   const end = hasEvents && Number.isFinite(Number(targetVal)) ? Math.max(0, Number(targetVal)) : 0;
   const start = Number.isFinite(state.displayedUsd) ? state.displayedUsd : end;
-  if (Math.abs(end - start) < 0.01) {
+  if (prefersReducedMotion() || Math.abs(end - start) < 0.01) {
     state.displayedUsd = end;
     el.textContent = fmtMoney(end, true, true);
     return;
@@ -1846,6 +2302,13 @@ function getSeriesPoints(report) {
   return out;
 }
 
+/* No recorded usage at all: nothing to plot, so draw an honest flat baseline instead of a synthetic climb. */
+function reportIsEmpty(data) {
+  if (!data || data.scope === "unavailable") return false;
+  const total = data.total || {};
+  return Number(total.events || 0) === 0 && Number(total.tokens || 0) === 0 && Number(total.valueUsd || 0) === 0;
+}
+
 function renderChart(animate = false) {
   const svg = document.getElementById("chartSvg");
   const wrap = document.getElementById("chartWrap");
@@ -1853,7 +2316,8 @@ function renderChart(animate = false) {
   const h = Math.max(54, wrap.clientHeight || 64);
   svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
 
-  const series = getSeriesPoints(state.report);
+  const flat = reportIsEmpty(state.report);
+  const series = flat ? [{ cumulativeUsd: 0 }, { cumulativeUsd: 0 }] : getSeriesPoints(state.report);
   const padX = 7;
   const padTop = 7;
   const padBot = 7;
@@ -1876,22 +2340,33 @@ function renderChart(animate = false) {
   const first = coords[0];
   const areaD = `${lineD} L ${last[0].toFixed(1)} ${(h - 3).toFixed(1)} L ${first[0].toFixed(1)} ${(h - 3).toFixed(1)} Z`;
 
+  if (flat) {
+    svg.innerHTML = `
+      <line x1="${padX}" y1="${h - 3}" x2="${w - padX}" y2="${h - 3}" class="ch-grid" stroke-width="1" stroke-dasharray="3 3"/>
+      <line x1="${padX}" y1="${(h - padBot).toFixed(1)}" x2="${w - padX}" y2="${(h - padBot).toFixed(1)}" class="ch-line ch-flat" stroke-width="2" stroke-linecap="round"/>
+      <line id="scrubLine" x1="0" y1="0" x2="0" y2="0" style="display:none"/>
+      <circle id="scrubDot" cx="0" cy="0" r="0" style="display:none"/>
+    `;
+    wrap._coords = [];
+    return;
+  }
+
   svg.innerHTML = `
     <defs>
       <linearGradient id="wfGrad" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0%" stop-color="#4840bb" stop-opacity="0.17"/>
-        <stop offset="100%" stop-color="#4840bb" stop-opacity="0.0"/>
+        <stop offset="0%" class="ch-fill-top"/>
+        <stop offset="100%" class="ch-fill-bottom"/>
       </linearGradient>
     </defs>
-    <line x1="${padX}" y1="${h - 3}" x2="${w - padX}" y2="${h - 3}" stroke="#ececf4" stroke-width="1" stroke-dasharray="3 3"/>
-    <g class="${animate ? "chart-line-anim" : ""}">
+    <line x1="${padX}" y1="${h - 3}" x2="${w - padX}" y2="${h - 3}" class="ch-grid" stroke-width="1" stroke-dasharray="3 3"/>
+    <g class="${animate && !prefersReducedMotion() ? "chart-line-anim" : ""}">
       <path d="${areaD}" fill="url(#wfGrad)"/>
-      <path d="${lineD}" fill="none" stroke="#4840bb" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="${lineD}" class="ch-line" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
     </g>
-    <circle id="endDotHalo" class="halo-pulse" cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="5.2" fill="#4840bb"/>
-    <circle id="endDot" cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="3" fill="#4840bb" stroke="#ffffff" stroke-width="1.5"/>
-    <line id="scrubLine" x1="0" y1="${padTop - 3}" x2="0" y2="${h - 3}" stroke="#c9c6ee" stroke-width="1.1" style="display:none"/>
-    <circle id="scrubDot" cx="0" cy="0" r="4" fill="#4840bb" stroke="#ffffff" stroke-width="2" style="display:none"/>
+    <circle id="endDotHalo" class="halo-pulse ch-dot" cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="5.2"/>
+    <circle id="endDot" cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="3" class="ch-dot ch-dot-ring" stroke-width="1.5"/>
+    <line id="scrubLine" x1="0" y1="${padTop - 3}" x2="0" y2="${h - 3}" class="ch-scrub" stroke-width="1.1" style="display:none"/>
+    <circle id="scrubDot" cx="0" cy="0" r="4" class="ch-dot ch-dot-ring" stroke-width="2" style="display:none"/>
   `;
 
   wrap._coords = coords;
@@ -1997,8 +2472,13 @@ function paintHeroText(data, animate = true) {
   const machines = data.machines || [];
   const machineCount = state.machine === "all" ? Math.max(1, machines.length) : 1;
 
-  document.getElementById("heroTokens").textContent = `▲ ${fmtTokens(total.tokens || 0)} tokens`;
-  document.getElementById("heroTokensContext").textContent = `across ${providers.length} ${providers.length === 1 ? "provider" : "providers"}`;
+  if (reportIsEmpty(data)) {
+    document.getElementById("heroTokens").textContent = providers.length ? "No usage recorded this period" : "No usage recorded yet";
+    document.getElementById("heroTokensContext").textContent = "";
+  } else {
+    document.getElementById("heroTokens").textContent = `▲ ${fmtTokens(total.tokens || 0)} tokens`;
+    document.getElementById("heroTokensContext").textContent = `across ${providers.length} ${providers.length === 1 ? "provider" : "providers"}`;
+  }
 
   let freshness = "Updated just now";
   if (state.demo) {
@@ -2113,17 +2593,15 @@ function renderReport(data, animateChart = false) {
   if (dragState.active) return;
 
   const list = document.getElementById("providerList");
+  setOnboardingChrome(!providers.length);
   if (!providers.length) {
-    list.innerHTML = `
-      <div class="empty-state">
-        <div>No AI providers connected yet.</div>
-        <button class="btn-secondary" type="button" onclick="openSettings('sources')">Connect a source</button>
-      </div>`;
+    renderOnboarding();
     return;
   }
 
   const doStagger = state.firstRender;
   state.firstRender = false;
+  const focusedKey = list.contains(document.activeElement) ? document.activeElement.dataset.rowKey : null;
 
   list.innerHTML = providers.map((prov, idx) => {
     const key = String(prov.key || "");
@@ -2149,8 +2627,8 @@ function renderReport(data, animateChart = false) {
     // Burned token stats inside expanded drawer
     const burnCells = [
       ["Today", burn.dayTokens],
-      ...(burn.hasSession ? [["5-hour window", burn.sessionTokens]] : []),
-      [burn.weekBasis === "window" ? "Weekly window" : "Last 7 days", burn.weekTokens]
+      ...(burn.hasSession ? [["5-hour", burn.sessionTokens, "5-hour window"]] : []),
+      [burn.weekBasis === "window" ? "Weekly" : "7 days", burn.weekTokens, burn.weekBasis === "window" ? "Weekly window" : "Last 7 days"]
     ];
     const missingBurn = burnCells.some(([, value]) => value === null || value === undefined);
     const periodLabel = ({today: "Today", week: "Last 7 days", month: "This month", all: "All time"})[state.period] || "Selected period";
@@ -2167,8 +2645,8 @@ function renderReport(data, animateChart = false) {
 
     return `
       <div class="provider-item ${isOpen ? "open" : ""} ${doStagger ? "enter-anim" : ""}" data-key="${esc(key)}" ${enterStyle}>
-        <button class="provider-row" type="button" data-row-key="${esc(key)}">
-          <span class="drag-grip" title="Drag to reorder">
+        <button class="provider-row" type="button" data-row-key="${esc(key)}" aria-expanded="${isOpen}" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown">
+          <span class="drag-grip" title="Drag to reorder" aria-hidden="true">
             <svg width="9" height="13" viewBox="0 0 10 16" fill="currentColor">
               <circle cx="3" cy="3" r="1.25"/><circle cx="7" cy="3" r="1.25"/>
               <circle cx="3" cy="8" r="1.25"/><circle cx="7" cy="8" r="1.25"/>
@@ -2179,6 +2657,7 @@ function renderReport(data, animateChart = false) {
           <div class="provider-main">
             <div class="provider-name-line">
               <span class="provider-name">${esc(prov.name || "Unknown provider")}</span>
+              ${prov.inUse ? '<span class="sr-only">Active now</span>' : ""}
               ${prov.badge ? `<span class="${badgeCls}">${esc(prov.badge)}</span>` : ""}
             </div>
             <div class="provider-sub-slot">
@@ -2196,7 +2675,7 @@ function renderReport(data, animateChart = false) {
               <div class="provider-rem tone-${esc(tone)}">${esc(rem.headline || "—")}</div>
               <div class="provider-rem-sub">${esc(rightSub)}</div>
             </div>
-            <span class="chevron">
+            <span class="chevron" aria-hidden="true">
               <svg width="12.5" height="12.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
             </span>
           </div>
@@ -2214,8 +2693,8 @@ function renderReport(data, animateChart = false) {
                 `}
                 <div class="burn-section-label">Tokens recorded</div>
                 <div class="drawer-burn-strip">
-                  ${burnCells.map(([lbl, val]) => `
-                    <div class="burn-stat">
+                  ${burnCells.map(([lbl, val, full]) => `
+                    <div class="burn-stat" title="${esc(full || lbl)}">
                       <span class="burn-stat-lbl">${esc(lbl)}</span>
                       <span class="burn-stat-val">${esc(fmtTokens(val))}</span>
                     </div>
@@ -2249,6 +2728,261 @@ function renderReport(data, animateChart = false) {
       </div>
     `;
   }).join("");
+
+  if (focusedKey) {
+    const again = Array.from(list.querySelectorAll(".provider-row")).find(el => el.dataset.rowKey === focusedKey);
+    if (again) again.focus();
+  }
+}
+
+/* ---------- Guided first run: shown instead of the provider list when nothing is connected ---------- */
+const ONBOARD_STALE_MS = 8000;
+const ONBOARD_RETRY_MS = 30000;
+state.onboarding = { status: "idle", data: null, fetching: false, fetchedAt: 0, sig: "", expanded: null, busy: false, error: "", draft: { source: "", value: "" } };
+
+function setOnboardingChrome(on) {
+  document.getElementById("providersCard").classList.toggle("is-onboarding", on);
+  document.getElementById("providersTitle").textContent = on ? "Get started" : "Providers";
+  document.getElementById("providersHint").hidden = on;
+  document.getElementById("providersSub").hidden = on;
+  document.getElementById("footerStatus").hidden = on;
+}
+
+async function loadOnboarding() {
+  const ob = state.onboarding;
+  if (ob.fetching) return;
+  if (!apiHas("get_onboarding_data")) {
+    ob.status = "failed";
+    ob.fetchedAt = Date.now() + 1e12;
+    return;
+  }
+  ob.fetching = true;
+  let next = null;
+  try {
+    const res = await window.pywebview.api.get_onboarding_data();
+    if (res && res.ok && (Array.isArray(res.tools) || Array.isArray(res.apiSources))) next = res;
+  } catch (err) { next = null; }
+  ob.fetching = false;
+  ob.fetchedAt = Date.now();
+  const sig = next ? JSON.stringify(next) : "";
+  const changed = ob.status !== (next ? "ready" : "failed") || sig !== ob.sig;
+  ob.data = next;
+  ob.sig = sig;
+  ob.status = next ? "ready" : "failed";
+  const stillEmpty = !state.report || !getNormalizedProviders(state.report).length;
+  if (changed && stillEmpty) rebuildOnboarding();
+}
+
+function renderOnboarding() {
+  const ob = state.onboarding;
+  const age = Date.now() - ob.fetchedAt;
+  if (ob.status === "idle") {
+    ob.status = "loading";
+    loadOnboarding();
+  } else if (ob.status === "ready" && !ob.expanded && !ob.busy && age > ONBOARD_STALE_MS) {
+    loadOnboarding();
+  } else if (ob.status === "failed" && age > ONBOARD_RETRY_MS) {
+    loadOnboarding();
+  }
+  if ((ob.expanded || ob.busy) && document.querySelector("#providerList .ob")) return;
+  rebuildOnboarding();
+}
+
+const OB_CHEVRON = '<span class="chevron" aria-hidden="true"><svg width="12.5" height="12.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg></span>';
+
+function onboardingFallbackHtml() {
+  return `
+    <div class="empty-state">
+      <div>No AI providers connected yet.</div>
+      <button class="btn-secondary" type="button" onclick="openSettings('sources')">Connect a source</button>
+    </div>`;
+}
+
+function onboardingHtml() {
+  const ob = state.onboarding;
+  const hero = `
+    <div class="ob-hero">
+      <span class="ob-mark" aria-hidden="true">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.6-3.6"/></svg>
+      </span>
+      <div class="ob-title">Let&#8217;s find your AI usage</div>
+      <div class="ob-lede">BURNRATE reads usage from the AI tools on this computer, and can follow API balances too.</div>
+    </div>`;
+  if (ob.status !== "ready" || !ob.data) {
+    return `<div class="ob">${hero}<div class="ob-loading" role="status">Looking for AI tools on this computer…</div></div>`;
+  }
+  const d = ob.data;
+  const tools = Array.isArray(d.tools) ? d.tools : [];
+  const apis = Array.isArray(d.apiSources) ? d.apiSources : [];
+  const found = tools.filter(t => t.detected || t.active).length;
+
+  const toolRows = tools.map(t => {
+    const st = t.active ? ["Tracking", "ok"] : t.detected ? ["Detected", "accent"] : ["Not found", ""];
+    const fallback = t.active ? "Usage is being recorded" : t.detected ? "Installed on this computer" : "Not found on this computer";
+    return `
+      <div class="ob-item">
+        <div class="ob-row ${t.detected || t.active ? "" : "is-missing"}">
+          ${logoHtml(t.brand || t.source, "source-logo")}
+          <div class="source-info">
+            <div class="source-name">${esc(t.name || t.source)}</div>
+            <div class="source-meta">${esc(t.detail || fallback)}</div>
+          </div>
+          <span class="state-badge ${st[1]}">${st[0]}</span>
+        </div>
+      </div>`;
+  }).join("");
+
+  const apiRows = apis.map(a => {
+    const src = esc(a.source);
+    const open = ob.expanded === a.source;
+    const draft = ob.draft.source === a.source ? ob.draft.value : "";
+    if (a.connected) {
+      return `
+        <div class="ob-item">
+          <div class="ob-row">
+            ${logoHtml(a.brand || a.source, "source-logo")}
+            <div class="source-info">
+              <div class="source-name">${esc(a.name || a.source)}</div>
+              <div class="source-meta">API balance</div>
+            </div>
+            <span class="state-badge ok">Connected</span>
+          </div>
+        </div>`;
+    }
+    return `
+      <div class="ob-item ${open ? "open" : ""}">
+        <button class="ob-row" type="button" data-ob-toggle="${src}" aria-expanded="${open}" aria-controls="obPanel_${src}">
+          ${logoHtml(a.brand || a.source, "source-logo")}
+          <div class="source-info">
+            <div class="source-name">${esc(a.name || a.source)}</div>
+            <div class="source-meta">API balance</div>
+          </div>
+          <span class="ob-cta">${open ? "Cancel" : "Add key"}</span>
+          ${OB_CHEVRON}
+        </button>
+        <form class="ob-panel" id="obPanel_${src}" data-ob-form="${src}" autocomplete="off" novalidate ${open ? "" : "hidden"}>
+          <div class="ob-help" id="obHelp_${src}">${esc(a.credentialHelp || "Paste an API or management key")}</div>
+          <input class="text-input ob-key" id="obKey_${src}" type="password" autocomplete="new-password" spellcheck="false"
+            aria-label="${esc(a.name || a.source)} API key" aria-describedby="obHelp_${src}" placeholder="Paste API key" value="${esc(draft)}"/>
+          ${open && ob.error ? `<div class="ob-error" role="alert">${esc(ob.error)}</div>` : ""}
+          <div class="ob-actions">
+            <button class="btn-primary" type="submit" data-ob-connect="${src}" ${ob.busy ? "disabled" : ""}>${ob.busy ? "Testing…" : "Test &amp; connect"}</button>
+          </div>
+        </form>
+      </div>`;
+  }).join("");
+
+  const hub = d.hubConnected
+    ? `Hub connected. <button class="ob-link" type="button" data-ob-hub>Manage</button>`
+    : `Using BURNRATE on another computer? <button class="ob-link" type="button" data-ob-hub>Sign in to your hub</button>`;
+
+  return `
+    <div class="ob">
+      ${hero}
+      ${tools.length ? `
+        <div class="ob-group">
+          <div class="ob-label"><span>Found on this computer</span><span class="ob-count">${found} detected</span></div>
+          <div class="ob-list">${toolRows}</div>
+        </div>` : ""}
+      ${apis.length ? `
+        <div class="ob-group">
+          <div class="ob-label"><span>Add an API balance</span></div>
+          <div class="ob-list">${apiRows}</div>
+        </div>` : ""}
+      <div class="ob-foot">${hub}</div>
+    </div>`;
+}
+
+function rebuildOnboarding() {
+  const ob = state.onboarding;
+  const list = document.getElementById("providerList");
+  if (!list) return;
+  const active = document.activeElement;
+  let refocus = null;
+  if (list.contains(active)) {
+    if (active.dataset.obToggle) refocus = `[data-ob-toggle="${CSS.escape(active.dataset.obToggle)}"]`;
+    else if (active.dataset.obConnect) refocus = `[data-ob-connect="${CSS.escape(active.dataset.obConnect)}"]`;
+    else if (active.dataset.obHub !== undefined) refocus = "[data-ob-hub]";
+    else if (active.id) refocus = "#" + CSS.escape(active.id);
+  }
+  const typing = list.querySelector(".ob-key");
+  if (typing && ob.expanded && typing.id === "obKey_" + ob.expanded) ob.draft = { source: ob.expanded, value: typing.value };
+  list.innerHTML = ob.status === "failed" ? onboardingFallbackHtml() : onboardingHtml();
+  if (refocus) {
+    const el = list.querySelector(refocus);
+    if (el && !el.disabled) {
+      el.focus();
+      if (el.classList.contains("ob-key")) el.setSelectionRange(el.value.length, el.value.length);
+    }
+  }
+}
+
+function toggleOnboardingSource(source) {
+  const ob = state.onboarding;
+  ob.expanded = ob.expanded === source ? null : source;
+  ob.error = "";
+  ob.draft = { source: "", value: "" };
+  rebuildOnboarding();
+  if (ob.expanded) document.getElementById("obKey_" + ob.expanded)?.focus();
+  else focusOnboardingToggle(source);
+}
+
+function focusOnboardingToggle(source) {
+  document.querySelector(`#providerList [data-ob-toggle="${CSS.escape(source)}"]`)?.focus();
+}
+
+async function connectOnboardingSource(source) {
+  const ob = state.onboarding;
+  if (ob.busy || !ob.data) return;
+  const input = document.getElementById("obKey_" + source);
+  const key = input ? input.value.trim() : "";
+  const entry = (ob.data.apiSources || []).find(a => a.source === source) || {};
+  if (!key) {
+    ob.error = "Paste your key first.";
+    rebuildOnboarding();
+    document.getElementById("obKey_" + source)?.focus();
+    return;
+  }
+  ob.busy = true;
+  ob.error = "";
+  ob.draft = { source, value: key };
+  rebuildOnboarding();
+  let res = null;
+  try {
+    res = await window.pywebview.api.connect_source(source, true, key, entry.revision ?? 0);
+  } catch (err) {
+    res = { ok: false, error: "Could not reach BURNRATE to test that key." };
+  }
+  ob.busy = false;
+  if (res && res.ok) {
+    ob.expanded = null;
+    ob.error = "";
+    ob.draft = { source: "", value: "" };
+    ob.status = "idle";
+    showToast(`${entry.name || "Source"} connected`);
+    announce(`${entry.name || "Source"} connected`);
+    await loadUsage(true, false);
+  } else {
+    ob.error = (res && res.error) || "That key was not accepted.";
+    rebuildOnboarding();
+    const field = document.getElementById("obKey_" + source);
+    if (field) field.focus();
+  }
+}
+
+function bindOnboarding() {
+  const list = document.getElementById("providerList");
+  list.addEventListener("click", (e) => {
+    const toggle = e.target.closest("[data-ob-toggle]");
+    if (toggle) { toggleOnboardingSource(toggle.dataset.obToggle); return; }
+    if (e.target.closest("[data-ob-hub]")) openSettings("computers");
+  });
+  list.addEventListener("submit", (e) => {
+    const form = e.target.closest("[data-ob-form]");
+    if (!form) return;
+    e.preventDefault();
+    connectOnboardingSource(form.dataset.obForm);
+  });
 }
 
 /* Smooth in-place expand/collapse without destroying DOM */
@@ -2263,6 +2997,8 @@ function toggleProviderByKey(key) {
     state.expandedTools.add(key);
     if (item) item.classList.add("open");
   }
+  const row = item && item.querySelector(".provider-row");
+  if (row) row.setAttribute("aria-expanded", String(state.expandedTools.has(key)));
 }
 
 /* Tactile Pointer Drag-and-Drop with Real-Time FLIP Sibling Glide */
@@ -2279,9 +3015,50 @@ const dragState = {
   autoScrollRaf: 0
 };
 
+/* Read the DOM order back into state and persist it (shared by drag and Alt+Arrow). */
+function commitProviderOrder() {
+  const list = document.getElementById("providerList");
+  const newOrder = Array.from(list.querySelectorAll(".provider-item"))
+    .map(el => el.dataset.key)
+    .filter(Boolean);
+  state.providerOrder = newOrder;
+  if (state.report && Array.isArray(state.report.providers)) {
+    const idxMap = new Map(newOrder.map((k, i) => [k, i]));
+    state.report.providers.sort((a, b) => (idxMap.get(a.key) ?? 999) - (idxMap.get(b.key) ?? 999));
+  }
+  if (apiAvailable() && window.pywebview.api.save_provider_order) {
+    window.pywebview.api.save_provider_order(newOrder);
+  }
+  return newOrder;
+}
+
+function moveProviderByKeyboard(row, dir) {
+  const item = row.closest(".provider-item");
+  const list = document.getElementById("providerList");
+  if (!item || !list) return;
+  const sibling = dir < 0 ? item.previousElementSibling : item.nextElementSibling;
+  if (!sibling || !sibling.classList.contains("provider-item")) return;
+  const oldTop = sibling.getBoundingClientRect().top;
+  if (dir < 0) list.insertBefore(item, sibling);
+  else list.insertBefore(sibling, item);
+  if (!prefersReducedMotion()) animateFlipSibling(sibling, oldTop);
+  row.focus({ focusVisible: true });
+  const order = commitProviderOrder();
+  const name = item.querySelector(".provider-name")?.textContent || "Provider";
+  announce(`${name} moved to position ${order.indexOf(item.dataset.key) + 1} of ${order.length}`);
+}
+
 function bindProviderInteractions() {
   const list = document.getElementById("providerList");
   const scroller = document.getElementById("scrollBody");
+
+  list.addEventListener("keydown", (e) => {
+    if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+    const row = e.target.closest(".provider-row");
+    if (!row) return;
+    e.preventDefault();
+    moveProviderByKeyboard(row, e.key === "ArrowUp" ? -1 : 1);
+  });
 
   list.addEventListener("click", (e) => {
     const row = e.target.closest(".provider-row");
@@ -2364,17 +3141,7 @@ function bindProviderInteractions() {
       item.style.transform = "";
     }, 230);
 
-    const newOrder = Array.from(list.querySelectorAll(".provider-item"))
-      .map(el => el.dataset.key)
-      .filter(Boolean);
-    state.providerOrder = newOrder;
-    if (state.report && Array.isArray(state.report.providers)) {
-      const idxMap = new Map(newOrder.map((k, i) => [k, i]));
-      state.report.providers.sort((a, b) => (idxMap.get(a.key) ?? 999) - (idxMap.get(b.key) ?? 999));
-    }
-    if (apiAvailable() && window.pywebview.api.save_provider_order) {
-      window.pywebview.api.save_provider_order(newOrder);
-    }
+    commitProviderOrder();
     syncUiBusy();
     setTimeout(() => { state.suppressNextClick = false; }, 60);
   }
@@ -2489,14 +3256,24 @@ async function loadUsage(restart = false, animateChart = false) {
 }
 
 /* Scope Popover */
+function closeScopePopover(returnFocus = true) {
+  const pop = document.getElementById("scopePopover");
+  if (!pop.classList.contains("open")) return false;
+  pop.classList.remove("open");
+  document.getElementById("scopeBackdrop").classList.remove("open");
+  pop.inert = true;
+  const trigger = document.getElementById("scopeBtn");
+  trigger.setAttribute("aria-expanded", "false");
+  syncUiBusy();
+  if (returnFocus) trigger.focus();
+  return true;
+}
+
 function toggleScopePopover() {
   const pop = document.getElementById("scopePopover");
   const back = document.getElementById("scopeBackdrop");
-  const open = !pop.classList.contains("open");
-  if (!open) {
-    pop.classList.remove("open");
-    back.classList.remove("open");
-    syncUiBusy();
+  if (pop.classList.contains("open")) {
+    closeScopePopover(true);
     return;
   }
   const btnRect = document.getElementById("scopeBtn").getBoundingClientRect();
@@ -2506,37 +3283,81 @@ function toggleScopePopover() {
   const machines = state.report?.machines || [];
   const items = [{ id: "all", name: "All computers", online: true }, ...machines];
   pop.innerHTML = items.map(m => `
-    <button class="scope-opt ${state.machine === m.id ? "selected" : ""}" type="button" onclick="selectScope('${esc(m.id)}')">
+    <button class="scope-opt ${state.machine === m.id ? "selected" : ""}" type="button" role="menuitemradio" aria-checked="${state.machine === m.id}" onclick="selectScope('${esc(m.id)}')">
       <span>
-        ${m.id !== "all" ? `<span class="scope-dot ${m.online === false ? "offline" : ""}"></span>` : ""}
+        ${m.id !== "all" ? `<span class="scope-dot ${m.online === false ? "offline" : ""}" aria-hidden="true"></span>` : ""}
         ${esc(m.name || m.id)}
       </span>
-      ${state.machine === m.id ? "✓" : ""}
+      ${state.machine === m.id ? '<span aria-hidden="true">✓</span>' : ""}
     </button>
   `).join("");
+  pop.inert = false;
   pop.classList.add("open");
   back.classList.add("open");
+  document.getElementById("scopeBtn").setAttribute("aria-expanded", "true");
   syncUiBusy();
+  (pop.querySelector(".scope-opt.selected") || pop.querySelector(".scope-opt"))?.focus();
 }
+
+document.getElementById("scopePopover").addEventListener("keydown", (e) => {
+  const opts = Array.from(document.querySelectorAll("#scopePopover .scope-opt"));
+  const at = opts.indexOf(document.activeElement);
+  let next = -1;
+  if (e.key === "ArrowDown") next = (at + 1) % opts.length;
+  else if (e.key === "ArrowUp") next = (at - 1 + opts.length) % opts.length;
+  else if (e.key === "Home") next = 0;
+  else if (e.key === "End") next = opts.length - 1;
+  else if (e.key === "Tab") { e.preventDefault(); closeScopePopover(true); return; }
+  if (next >= 0) {
+    e.preventDefault();
+    opts[next].focus();
+  }
+});
 
 window.selectScope = function(machineId) {
   state.machine = machineId;
-  document.getElementById("scopePopover").classList.remove("open");
-  document.getElementById("scopeBackdrop").classList.remove("open");
-  syncUiBusy();
+  closeScopePopover(true);
   loadUsage(false, true);
 };
 
 /* Settings Sheet */
 window.openSettings = async function(tab = "sources") {
-  state.settingsTab = tab;
+  closeScopePopover(false);
+  const sheet = document.getElementById("settingsSheet");
+  const wasOpen = state.settingsOpen;
   state.settingsOpen = true;
   syncUiBusy();
-  document.querySelectorAll(".sheet-tab").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
-  document.getElementById("settingsSheet").classList.add("open");
-  renderSettingsBody();
+  setSettingsTab(tab, false);
+  sheet.inert = false;
+  document.getElementById("appShell").inert = true;
+  sheet.classList.add("open");
+  if (!wasOpen) {
+    (sheet.querySelector(".sheet-tab.active") || document.getElementById("settingsDoneBtn")).focus();
+  }
   await refreshSettingsData();
 };
+
+window.closeSettings = function(returnFocus = true) {
+  if (!state.settingsOpen) return;
+  state.settingsOpen = false;
+  const sheet = document.getElementById("settingsSheet");
+  sheet.classList.remove("open");
+  sheet.inert = true;
+  document.getElementById("appShell").inert = false;
+  syncUiBusy();
+  if (returnFocus) document.getElementById("settingsBtn").focus();
+};
+
+function setSettingsTab(tab, rerender = true) {
+  state.settingsTab = tab;
+  document.querySelectorAll(".sheet-tab").forEach(b => {
+    const on = b.dataset.tab === tab;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-selected", String(on));
+    b.tabIndex = on ? 0 : -1;
+  });
+  if (rerender || state.settingsOpen) renderSettingsBody();
+}
 
 async function refreshSettingsData() {
   if (!apiAvailable()) return;
@@ -2550,6 +3371,86 @@ async function refreshSettingsData() {
 }
 
 function renderSettingsBody() {
+  const body = document.getElementById("sheetBody");
+  const active = document.activeElement;
+  let focusId = null;
+  let focusIdx = -1;
+  if (body.contains(active)) {
+    if (active.id) focusId = active.id;
+    else focusIdx = Array.from(body.querySelectorAll("button, input, a")).indexOf(active);
+  }
+  paintSettingsBody();
+  let target = null;
+  if (focusId) target = document.getElementById(focusId);
+  else if (focusIdx >= 0) target = body.querySelectorAll("button, input, a")[focusIdx];
+  if (target && state.settingsOpen) target.focus();
+}
+
+function switchRow(id, title, desc, on, handler) {
+  return `
+    <div class="toggle-row">
+      <div>
+        <div class="source-name" id="${id}Label">${title}</div>
+        <div class="source-meta" id="${id}Desc">${desc}</div>
+      </div>
+      <button class="switch ${on ? "on" : ""}" id="${id}" type="button" role="switch" aria-checked="${on ? "true" : "false"}" aria-labelledby="${id}Label" aria-describedby="${id}Desc" onclick="${handler}"></button>
+    </div>`;
+}
+
+function updateProgressHtml(progress) {
+  if (!progress) return "";
+  const phase = String(progress.phase || "Working").replace(/^./, c => c.toUpperCase());
+  const pct = Number(progress.percent);
+  if (progress.percent === null || progress.percent === undefined || !Number.isFinite(pct)) {
+    return `<span class="update-progress" role="status">${esc(phase)}\u2026</span>`;
+  }
+  const clamped = Math.max(0, Math.min(100, Math.round(pct)));
+  return `<span class="update-progress" role="status">${esc(phase)} ${clamped}%<span class="update-bar" aria-hidden="true"><span style="width:${clamped}%"></span></span></span>`;
+}
+
+function updatesHtml() {
+  const u = state.update || {};
+  const info = state.updateInfo;
+  const chk = state.updateCheck;
+  const kind = u.kind || "";
+  const kindLabel = ({ installer: "Installed app", portable: "Portable copy", source: "Source install" })[kind] || "";
+  const ver = state.version || u.current || "";
+  const canCheck = apiHas("check_for_update");
+  const busy = chk.status === "checking" || chk.status === "installing" || chk.status === "restarting";
+  let body = "";
+  if (chk.error) body += `<div class="setting-note err" role="alert">${esc(chk.error)}</div>`;
+  if (chk.status === "restarting") {
+    body += `<div class="setting-note" role="status">Restarting BURNRATE to finish the update\u2026</div>`;
+  } else if (info && info.available) {
+    const notes = String(info.notes || "").trim();
+    body += `
+      <div class="update-actions">
+        <span class="source-name">Version ${esc(info.version || "")} available</span>
+        ${info.canInstall
+          ? `<button class="btn-primary" id="updInstallBtn" type="button" onclick="installUpdate()" ${busy ? "disabled" : ""}>${chk.status === "installing" ? "Installing\u2026" : "Install &amp; restart"}</button>${updateProgressHtml(info.progress)}`
+          : (info.pageUrl ? `<a class="btn-secondary" id="updPageLink" href="${esc(info.pageUrl)}" target="_blank" rel="noopener" onclick="return openUpdatePage(this.href)">Open download page</a>` : "")}
+      </div>
+      ${notes ? `<div class="setting-note">${esc(notes.length > 280 ? notes.slice(0, 277) + "\u2026" : notes)}</div>` : ""}`;
+  } else if (chk.status === "done" && !chk.error) {
+    body += `<div class="setting-note" role="status">You&#8217;re up to date.</div>`;
+  }
+  if (kind === "source") {
+    body += `<div class="setting-note">This copy updates through pip or git.</div>`;
+  }
+  return `
+    <div class="update-block">
+      <div class="update-head">
+        <div>
+          <div class="source-name">Updates</div>
+          <div class="source-meta">${ver ? `Version ${esc(ver)}` : "Version unknown"}${kindLabel ? ` &middot; ${kindLabel}` : ""}</div>
+        </div>
+        ${canCheck ? `<button class="btn-secondary" id="updCheckBtn" type="button" onclick="checkForUpdates()" ${busy ? "disabled" : ""}>${chk.status === "checking" ? "Checking\u2026" : "Check for updates"}</button>` : ""}
+      </div>
+      ${body}
+    </div>`;
+}
+
+function paintSettingsBody() {
   const body = document.getElementById("sheetBody");
   const tab = state.settingsTab;
 
@@ -2578,15 +3479,15 @@ function renderSettingsBody() {
                   </div>
                   <span class="state-badge ${ok ? "ok" : ""}">${esc(label)}</span>
                   ${!state.demo && c.kind !== "external" ? `
-                    <button class="btn-secondary" type="button" onclick="toggleSourceEdit('${esc(c.source)}')">
+                    <button class="btn-secondary" id="cfg_${esc(c.source)}" type="button" aria-expanded="${editing}" aria-label="${editing ? "Cancel editing" : "Configure"} ${esc(c.name)}" onclick="toggleSourceEdit('${esc(c.source)}')">
                       ${editing ? "Cancel" : "Configure"}
                     </button>
                   ` : ""}
                 </div>
                 ${editing ? `
-                  <div class="inline-editor">
+                  <form class="inline-editor" autocomplete="off" novalidate onsubmit="event.preventDefault();saveSource('${esc(c.source)}','${esc(c.kind || "")}', ${Number(c.revision || 0)})">
                     <input class="text-input" id="srcInput_${esc(c.source)}"
-                      type="${isApi ? "password" : "text"}"
+                      type="${isApi ? "password" : "text"}" autocomplete="${isApi ? "new-password" : "off"}" spellcheck="false"
                       placeholder="${esc(isApi ? (c.credentialHelp || "Paste API or management key") : "Path to usage folder or DB")}"
                       value="${esc(isApi ? "" : (c.location || ""))}"/>
                     <div class="editor-actions">
@@ -2594,9 +3495,9 @@ function renderSettingsBody() {
                         ${!isApi ? `<button class="btn-secondary" type="button" onclick="browseForSource('${esc(c.source)}','${esc(c.kind || "")}')">Browse…</button>` : ""}
                         ${ok ? `<button class="btn-danger-quiet" type="button" onclick="disconnectSource('${esc(c.source)}', ${Number(c.revision || 0)})">Disconnect</button>` : ""}
                       </div>
-                      <button class="btn-primary" type="button" onclick="saveSource('${esc(c.source)}','${esc(c.kind || "")}', ${Number(c.revision || 0)})">Test &amp; connect</button>
+                      <button class="btn-primary" type="submit">Test &amp; connect</button>
                     </div>
-                  </div>
+                  </form>
                 ` : ""}
               </div>
             `;
@@ -2637,7 +3538,7 @@ function renderSettingsBody() {
               <div class="source-name">${esc(account.username || "Paired spoke")}</div>
               <div class="source-meta" title="${esc(spoke.hubUrl)}">${esc(spoke.hubUrl)}${defaultComp ? " · " + esc(defaultComp) : ""}</div>
             </div>
-            <button class="btn-secondary" type="button" onclick="toggleAccountForm()">
+            <button class="btn-secondary" id="accountToggleBtn" type="button" onclick="toggleAccountForm()">
               ${state.accountFormOpen ? "Cancel" : "Reconnect"}
             </button>
           </div>
@@ -2648,21 +3549,21 @@ function renderSettingsBody() {
           </div>
         `}
         ${showAccountForm ? `
-          <div style="padding:4px 12px 11px;display:grid;gap:6px;border-top:${hubConnected ? "1px solid var(--divider)" : "none"}">
+          <form class="hub-form" autocomplete="off" novalidate onsubmit="event.preventDefault();submitHubAccount()" style="padding:4px 12px 11px;display:grid;gap:6px;border-top:${hubConnected ? "1px solid var(--divider)" : "none"}">
             <div style="display:flex;gap:5px">
-              <button class="btn-secondary ${state.accountAuthMode === "login" ? "active" : ""}" type="button" onclick="setAccountAuthMode('login')">Sign in</button>
-              <button class="btn-secondary ${state.accountAuthMode === "register" ? "active" : ""}" type="button" onclick="setAccountAuthMode('register')">Create hub account</button>
+              <button class="btn-secondary ${state.accountAuthMode === "login" ? "active" : ""}" id="authMode_login" type="button" aria-pressed="${state.accountAuthMode === "login"}" onclick="setAccountAuthMode('login')">Sign in</button>
+              <button class="btn-secondary ${state.accountAuthMode === "register" ? "active" : ""}" id="authMode_register" type="button" aria-pressed="${state.accountAuthMode === "register"}" onclick="setAccountAuthMode('register')">Create hub account</button>
             </div>
-            <input class="text-input" id="hubAccountUrl" placeholder="VPS Hub URL (e.g. https://your-hub.ts.net:8449)" value="${esc(defaultHubUrl)}"/>
-            <input class="text-input" id="hubAccountUser" placeholder="Account email or username" value="${esc(defaultUser)}"/>
-            <input class="text-input" id="hubAccountPass" type="password" placeholder="Account password" onkeydown="if(event.key==='Enter')submitHubAccount()"/>
-            <input class="text-input" id="hubAccountComp" placeholder="This computer's name (e.g. Laptop)" value="${esc(defaultComp)}" onkeydown="if(event.key==='Enter')submitHubAccount()"/>
+            <input class="text-input" id="hubAccountUrl" type="url" autocomplete="off" spellcheck="false" placeholder="VPS Hub URL (e.g. https://your-hub.ts.net:8449)" value="${esc(defaultHubUrl)}"/>
+            <input class="text-input" id="hubAccountUser" autocomplete="off" spellcheck="false" placeholder="Account email or username" value="${esc(defaultUser)}"/>
+            <input class="text-input" id="hubAccountPass" type="password" autocomplete="new-password" placeholder="Account password"/>
+            <input class="text-input" id="hubAccountComp" placeholder="This computer's name (e.g. Laptop)" value="${esc(defaultComp)}" autocomplete="off"/>
             <div style="display:flex;justify-content:flex-end">
-              <button class="btn-primary" id="hubSignInBtn" type="button" onclick="submitHubAccount()" ${state.accountBusy ? "disabled" : ""}>
+              <button class="btn-primary" id="hubSignInBtn" type="submit" ${state.accountBusy ? "disabled" : ""}>
                 ${state.accountBusy ? "Connecting…" : (state.accountAuthMode === "register" ? "Create account &amp; sync" : "Sign in &amp; sync")}
               </button>
             </div>
-          </div>
+          </form>
         ` : ""}
       </div>
       ` : ""}
@@ -2692,21 +3593,21 @@ function renderSettingsBody() {
       <div class="wf-card" style="padding:11px 12px;display:grid;gap:8px">
         <div class="card-title" style="font-size:12.5px">Pairing code (passwordless)</div>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
-          <button class="btn-secondary ${state.pairMode === "create" ? "active" : ""}" type="button" onclick="setPairMode('create')">Create pairing code</button>
-          <button class="btn-secondary ${state.pairMode === "join" ? "active" : ""}" type="button" onclick="setPairMode('join')">Join with code</button>
+          <button class="btn-secondary ${state.pairMode === "create" ? "active" : ""}" id="pairBtn_create" type="button" aria-pressed="${state.pairMode === "create"}" onclick="setPairMode('create')">Create pairing code</button>
+          <button class="btn-secondary ${state.pairMode === "join" ? "active" : ""}" id="pairBtn_join" type="button" aria-pressed="${state.pairMode === "join"}" onclick="setPairMode('join')">Join with code</button>
         </div>
         ${state.pairMode === "create" ? `
-          <div style="display:grid;gap:6px;margin-top:2px">
+          <form autocomplete="off" novalidate onsubmit="event.preventDefault();submitCreatePair()" style="display:grid;gap:6px;margin-top:2px">
             <input class="text-input" id="pairHubUrl" placeholder="Reachable hub URL (e.g. https://your-hub.ts.net:8449)" value="${esc(defaultHubUrl)}"/>
             <input class="text-input" id="pairCompName" placeholder="Name of new computer (e.g. MacBook Pro)"/>
-            <div><button class="btn-primary" type="button" onclick="submitCreatePair()">Generate code</button></div>
-          </div>
+            <div><button class="btn-primary" type="submit">Generate code</button></div>
+          </form>
         ` : ""}
         ${state.pairMode === "join" ? `
-          <div style="display:grid;gap:6px;margin-top:2px">
-            <input class="text-input" id="joinCodeInput" placeholder="Paste pairing code from hub"/>
-            <div><button class="btn-primary" type="button" onclick="submitJoinPair()">Connect &amp; sync</button></div>
-          </div>
+          <form autocomplete="off" novalidate onsubmit="event.preventDefault();submitJoinPair()" style="display:grid;gap:6px;margin-top:2px">
+            <input class="text-input" id="joinCodeInput" autocomplete="off" spellcheck="false" placeholder="Paste pairing code from hub"/>
+            <div><button class="btn-primary" type="submit">Connect &amp; sync</button></div>
+          </form>
         ` : ""}
         ${state.generatedCode ? `
           <div style="display:grid;gap:5px;margin-top:2px;background:var(--surface-subtle);padding:8px;border-radius:9px">
@@ -2727,45 +3628,64 @@ function renderSettingsBody() {
     [0.55, "55%"],
     [0.70, "70%"]
   ];
+  const themes = [["system", "System"], ["light", "Light"], ["dark", "Dark"]];
+  const pref = state.theme;
+  const showTray = state.trayAvailable && apiHas("set_close_to_tray");
+  const showAlerts = apiHas("set_low_quota_alerts");
+  const showQuit = state.trayAvailable && apiHas("quit_app");
+  const showUpdates = !!(state.update || state.version || apiHas("check_for_update"));
 
   body.innerHTML = `
     <div class="wf-card">
-      <div class="toggle-row">
+      <div class="toggle-row wrap">
         <div>
-          <div class="source-name">Keep window on top</div>
-          <div class="source-meta">Pin BURNRATE above your editor and terminal windows</div>
+          <div class="source-name" id="themeLabel">Theme</div>
+          <div class="source-meta">System follows your Windows setting</div>
         </div>
-        <button class="switch ${state.topmost ? "on" : ""}" type="button" onclick="toggleTopmost()"></button>
-      </div>
-      <div class="toggle-row">
-        <div>
-          <div class="source-name">Transparent when not hovered</div>
-          <div class="source-meta">Fade when the pointer leaves, including while pinned</div>
+        <div class="opacity-pills" role="radiogroup" aria-labelledby="themeLabel">
+          ${themes.map(([val, lbl]) => `
+            <button class="btn-secondary ${pref === val ? "active" : ""}" id="theme_${val}" type="button" role="radio" aria-checked="${pref === val}" tabindex="${pref === val ? 0 : -1}" onclick="selectTheme('${val}')">${lbl}</button>
+          `).join("")}
         </div>
-        <button class="switch ${state.autoFade ? "on" : ""}" type="button" onclick="toggleAutoFade()"></button>
       </div>
+      ${switchRow("sw_topmost", "Keep window on top", "Pin BURNRATE above your editor and terminal windows", state.topmost, "toggleTopmost()")}
+      ${switchRow("sw_autofade", "Transparent when not hovered", "Fade when the pointer leaves, including while pinned", state.autoFade, "toggleAutoFade()")}
       ${state.autoFade ? `
         <div class="opacity-presets">
-          <span class="source-meta">Idle opacity</span>
-          <div class="opacity-pills">
+          <span class="source-meta" id="idleOpacityLabel">Idle opacity</span>
+          <div class="opacity-pills" role="group" aria-labelledby="idleOpacityLabel">
             ${presets.map(([val, lbl]) => `
-              <button class="btn-secondary ${Math.abs(state.idleOpacity - val) < 0.05 ? "active" : ""}" type="button" onclick="selectIdleOpacity(${val})">${lbl}</button>
+              <button class="btn-secondary ${Math.abs(state.idleOpacity - val) < 0.05 ? "active" : ""}" id="opacity_${Math.round(val * 100)}" type="button" aria-pressed="${Math.abs(state.idleOpacity - val) < 0.05}" onclick="selectIdleOpacity(${val})">${lbl}</button>
             `).join("")}
           </div>
         </div>
       ` : ""}
+      ${showTray ? switchRow("sw_tray", "Keep running in the tray when closed", "Closing the window hides BURNRATE instead of quitting", state.closeToTray, "toggleCloseToTray()") : ""}
+      ${showAlerts ? switchRow("sw_alerts", "Low-quota notifications", "Warn when a plan or balance is about to run out", state.lowQuotaAlerts, "toggleLowQuotaAlerts()") : ""}
       ${state.providerOrder.length ? `
         <div class="toggle-row">
           <div>
             <div class="source-name">Custom provider order</div>
             <div class="source-meta">Providers are sorted in your custom drag-and-drop order</div>
           </div>
-          <button class="btn-secondary" type="button" onclick="resetProviderOrder()">Reset</button>
+          <button class="btn-secondary" id="resetOrderBtn" type="button" onclick="resetProviderOrder()">Reset</button>
+        </div>
+      ` : ""}
+      ${showUpdates ? updatesHtml() : ""}
+      ${showQuit ? `
+        <div class="toggle-row">
+          <div>
+            <div class="source-name">Quit BURNRATE</div>
+            <div class="source-meta">Exit completely, including the tray icon</div>
+          </div>
+          <button class="btn-danger-quiet" id="quitBtn" type="button" onclick="quitApp()">Quit</button>
         </div>
       ` : ""}
     </div>
     <div class="wf-card" style="padding:10px 12px;font-size:11px;color:var(--ink-secondary);line-height:1.45">
-      Background collection and live quota polling continue automatically when you close this window.
+      ${state.trayAvailable && state.closeToTray
+        ? "Closing this window keeps BURNRATE in the tray. Background collection and live quota polling continue automatically; use Quit to exit."
+        : "Background collection and live quota polling continue automatically when you close this window."}
     </div>
   `;
 }
@@ -2937,6 +3857,98 @@ window.toggleTopmost = async function() {
   }
 };
 
+window.selectTheme = async function(pref) {
+  if (pref !== "system" && pref !== "light" && pref !== "dark") return;
+  state.theme = pref;
+  window.burnrateTheme.apply(pref);
+  renderSettingsBody();
+  if (apiHas("set_theme")) {
+    try { await window.pywebview.api.set_theme(pref); } catch (err) { showToast("Could not save the theme"); }
+  }
+};
+
+async function toggleHostFlag(stateKey, method, resultKey, failMessage) {
+  if (!apiHas(method)) return;
+  const desired = !state[stateKey];
+  state[stateKey] = desired;
+  renderSettingsBody();
+  let res = null;
+  try { res = await window.pywebview.api[method](desired); } catch (err) { res = null; }
+  if (res && res.ok) {
+    state[stateKey] = res[resultKey] !== undefined ? !!res[resultKey] : desired;
+  } else {
+    state[stateKey] = !desired;
+    showToast((res && res.error) || failMessage);
+  }
+  renderSettingsBody();
+}
+window.toggleCloseToTray = () => toggleHostFlag("closeToTray", "set_close_to_tray", "closeToTray", "Could not change tray behavior");
+window.toggleLowQuotaAlerts = () => toggleHostFlag("lowQuotaAlerts", "set_low_quota_alerts", "lowQuotaAlerts", "Could not change notifications");
+
+window.quitApp = function() {
+  if (apiHas("quit_app")) window.pywebview.api.quit_app();
+};
+
+function normalizeUpdate(res) {
+  return {
+    current: res.current || "",
+    available: !!res.available,
+    version: res.version || "",
+    notes: res.notes || "",
+    pageUrl: res.pageUrl || "",
+    canInstall: !!res.canInstall,
+    progress: res.progress && typeof res.progress === "object" ? res.progress : null
+  };
+}
+
+function updateGearDot() {
+  const has = !!(state.updateInfo && state.updateInfo.available);
+  const btn = document.getElementById("settingsBtn");
+  btn.classList.toggle("has-update", has);
+  btn.setAttribute("aria-label", has ? "Settings and sources, update available" : "Settings and sources");
+}
+
+window.checkForUpdates = async function() {
+  if (!apiHas("check_for_update") || state.updateCheck.status === "checking") return;
+  state.updateCheck = { status: "checking", error: "" };
+  renderSettingsBody();
+  try {
+    const res = await window.pywebview.api.check_for_update();
+    if (res && res.ok) {
+      state.updateInfo = normalizeUpdate(res);
+      state.updateCheck = { status: "done", error: "" };
+    } else {
+      state.updateCheck = { status: "done", error: (res && res.error) || "Could not check for updates." };
+    }
+  } catch (err) {
+    state.updateCheck = { status: "done", error: "Could not check for updates." };
+  }
+  updateGearDot();
+  renderSettingsBody();
+};
+
+window.installUpdate = async function() {
+  if (!apiHas("install_update") || state.updateCheck.status === "installing") return;
+  state.updateCheck = { status: "installing", error: "" };
+  renderSettingsBody();
+  let res = null;
+  try { res = await window.pywebview.api.install_update(); } catch (err) { res = null; }
+  if (res && res.ok) {
+    state.updateCheck = { status: "restarting", error: "" };
+  } else {
+    state.updateCheck = { status: "done", error: (res && res.error) || "The update could not be installed." };
+  }
+  renderSettingsBody();
+};
+
+window.openUpdatePage = function(url) {
+  if (apiHas("open_external")) {
+    window.pywebview.api.open_external(url);
+    return false;
+  }
+  return true;
+};
+
 window.toggleAutoFade = async function() {
   state.autoFade = !state.autoFade;
   renderSettingsBody();
@@ -2966,20 +3978,75 @@ window.resetProviderOrder = async function() {
 /* Wire UI Controls */
 document.getElementById("scopeBtn").addEventListener("click", toggleScopePopover);
 document.getElementById("pinBtn").addEventListener("click", window.toggleTopmost);
-document.getElementById("scopeBackdrop").addEventListener("click", toggleScopePopover);
+document.getElementById("scopeBackdrop").addEventListener("click", () => closeScopePopover(true));
 document.getElementById("refreshBtn").addEventListener("click", () => loadUsage(true, true));
 document.getElementById("settingsBtn").addEventListener("click", () => openSettings("sources"));
-document.getElementById("settingsDoneBtn").addEventListener("click", () => {
-  state.settingsOpen = false;
-  document.getElementById("settingsSheet").classList.remove("open");
-  syncUiBusy();
-});
+document.getElementById("settingsDoneBtn").addEventListener("click", () => closeSettings(true));
 document.querySelectorAll(".sheet-tab").forEach(btn => {
-  btn.addEventListener("click", () => {
-    state.settingsTab = btn.dataset.tab;
-    document.querySelectorAll(".sheet-tab").forEach(b => b.classList.toggle("active", b === btn));
-    renderSettingsBody();
-  });
+  btn.addEventListener("click", () => setSettingsTab(btn.dataset.tab));
+});
+document.querySelector(".sheet-tabs").addEventListener("keydown", (e) => {
+  const tabs = Array.from(document.querySelectorAll(".sheet-tab"));
+  const at = tabs.indexOf(document.activeElement);
+  if (at < 0) return;
+  let next = -1;
+  if (e.key === "ArrowRight") next = (at + 1) % tabs.length;
+  else if (e.key === "ArrowLeft") next = (at - 1 + tabs.length) % tabs.length;
+  else if (e.key === "Home") next = 0;
+  else if (e.key === "End") next = tabs.length - 1;
+  if (next < 0) return;
+  e.preventDefault();
+  setSettingsTab(tabs[next].dataset.tab);
+  tabs[next].focus();
+});
+document.getElementById("sheetBody").addEventListener("keydown", (e) => {
+  const group = e.target.closest && e.target.closest('[role="radiogroup"]');
+  if (!group || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) return;
+  const radios = Array.from(group.querySelectorAll('[role="radio"]'));
+  const at = radios.indexOf(document.activeElement);
+  if (at < 0) return;
+  e.preventDefault();
+  const step = (e.key === "ArrowRight" || e.key === "ArrowDown") ? 1 : -1;
+  const nextRadio = radios[(at + step + radios.length) % radios.length];
+  nextRadio.focus();
+  nextRadio.click();
+});
+
+/* Escape closes the topmost layer: scope menu, then an open editor or form, then the settings sheet. */
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (closeScopePopover(true)) { e.preventDefault(); return; }
+  if (state.settingsOpen) {
+    e.preventDefault();
+    if (state.editingSource) {
+      const src = state.editingSource;
+      state.editingSource = null;
+      renderSettingsBody();
+      document.getElementById("cfg_" + src)?.focus();
+    } else if (state.accountFormOpen) {
+      state.accountFormOpen = false;
+      renderSettingsBody();
+      document.getElementById("accountToggleBtn")?.focus();
+    } else if (state.pairMode) {
+      const mode = state.pairMode;
+      state.pairMode = null;
+      renderSettingsBody();
+      document.getElementById("pairBtn_" + mode)?.focus();
+    } else {
+      closeSettings(true);
+    }
+    return;
+  }
+  const ob = state.onboarding;
+  if (ob && ob.expanded) {
+    e.preventDefault();
+    const src = ob.expanded;
+    ob.expanded = null;
+    ob.error = "";
+    ob.draft = { source: "", value: "" };
+    rebuildOnboarding();
+    focusOnboardingToggle(src);
+  }
 });
 document.querySelectorAll(".period-pill").forEach(btn => {
   btn.addEventListener("click", () => {
@@ -3011,6 +4078,28 @@ window.addEventListener("resize", () => {
 
 bindChartScrub();
 bindProviderInteractions();
+bindOnboarding();
+
+/* Theme: the head script resolved it before first paint; tell the host whenever the resolved value changes. */
+function reportEffectiveTheme() {
+  if (apiHas("report_effective_theme")) {
+    try { window.pywebview.api.report_effective_theme(document.documentElement.dataset.theme === "dark"); } catch (err) {}
+  }
+}
+window.burnrateTheme.onChange(reportEffectiveTheme);
+
+/* Entry points for the native host */
+window.burnrateHost = {
+  refresh() { return loadUsage(true, false); },
+  openSettings(tab) { return window.openSettings(["sources", "computers", "general"].includes(tab) ? tab : "sources"); },
+  notify(message) { if (message) showToast(String(message)); },
+  setUpdate(info) {
+    if (!info || typeof info !== "object") return;
+    state.updateInfo = normalizeUpdate(info);
+    updateGearDot();
+    if (state.settingsOpen && state.settingsTab === "general") renderSettingsBody();
+  }
+};
 
 async function boot() {
   if (!apiAvailable()) return;
@@ -3023,9 +4112,19 @@ async function boot() {
     state.idleOpacity = Number.isFinite(Number(init.idleOpacity)) ? Number(init.idleOpacity) : 0.38;
     state.providerOrder = Array.isArray(init.providerOrder) ? init.providerOrder : [];
     state.demo = !!init.demo;
+    if (init.theme === "system" || init.theme === "light" || init.theme === "dark") {
+      state.theme = init.theme;
+      window.burnrateTheme.apply(init.theme);
+    }
+    state.closeToTray = !!init.closeToTray;
+    state.lowQuotaAlerts = !!init.lowQuotaAlerts;
+    state.trayAvailable = !!init.trayAvailable;
+    state.version = init.version ? String(init.version) : "";
+    state.update = init.update && typeof init.update === "object" ? init.update : null;
     document.querySelectorAll(".period-pill").forEach(b => b.classList.toggle("active", b.dataset.period === state.period));
     updatePeriodIndicator();
   }
+  reportEffectiveTheme();
   await loadUsage(false, true);
   setInterval(() => loadUsage(false, false), 15000);
 }

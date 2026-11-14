@@ -13,6 +13,7 @@ from spend_app.native_desktop import DemoClient
 from spend_app.wealthfront_window import load_ui_html, merge_provider_entries
 from tests_spend.browser_runtime import CHROME
 from tests_spend.test_frontend_viewports import _chrome_dump, _probe
+from tests_spend.test_wealthfront_ui import build_page, probe
 
 pytestmark = pytest.mark.browser
 
@@ -114,3 +115,99 @@ document.querySelector('#native').addEventListener('load', async () => {
     finally:
         server.shutdown()
         server.server_close()
+
+
+FIT_PROBE = """
+await until(() => document.querySelector('.provider-row'));
+document.querySelector('.provider-row').click();            // keep one drawer open while measuring
+await wait(40);
+const out = [];
+const clipped = (el) => el.scrollWidth > el.clientWidth + 1;
+for (const width of [304, 320, 336, 364, 380, 480]) {
+  await setWidth(width);
+  const issues = [];
+  const scroller = document.getElementById('scrollBody');
+  if (scroller.scrollWidth > scroller.clientWidth + 1) issues.push('page-hscroll');
+  if (document.documentElement.scrollWidth > window.innerWidth) issues.push('document-hscroll');
+  const card = document.getElementById('providersCard').getBoundingClientRect();
+
+  // provider rows
+  document.querySelectorAll('.provider-row').forEach((row) => {
+    const key = row.dataset.rowKey;
+    const rect = row.getBoundingClientRect();
+    const main = row.querySelector('.provider-main').getBoundingClientRect();
+    const right = row.querySelector('.provider-right').getBoundingClientRect();
+    if (main.right > right.left + 1) issues.push('row-overlap:' + key);
+    if (rect.right > card.right + 1 || right.right > rect.right + 1) issues.push('row-overflow:' + key);
+    for (const sel of ['.provider-rem', '.provider-rem-sub', '.provider-name', '.provider-sub']) {
+      const el = row.querySelector(sel);
+      if (el && clipped(el)) issues.push('clipped:' + sel + ':' + key);
+    }
+    row.querySelectorAll('.provider-name-line > *').forEach((el) => {
+      if (el.getBoundingClientRect().right > main.right + 1) issues.push('name-line:' + key);
+    });
+    const nameBox = row.querySelector('.provider-name').getBoundingClientRect();
+    const tagBox = row.querySelector('.acct-tag');
+    if (tagBox) {
+      const t = tagBox.getBoundingClientRect();
+      const sameLine = t.top < nameBox.bottom - 2 && t.bottom > nameBox.top + 2;
+      if (sameLine && t.left < nameBox.right - 1) issues.push('name-tag-overlap:' + key);
+    }
+  });
+
+  // hero
+  const hero = document.querySelector('.hero-inner').getBoundingClientRect();
+  for (const sel of ['.balance-value', '#heroTokens', '#heroTokensContext', '#heroMeta', '#subtotalPill']) {
+    const el = document.querySelector(sel);
+    if (!el || el.offsetParent === null) continue;
+    if (el.getBoundingClientRect().right > hero.right + 1) issues.push('hero-overflow:' + sel);
+    if (clipped(el)) issues.push('hero-clipped:' + sel);
+  }
+  const period = [...document.querySelectorAll('.period-pill')];
+  if (period.some(clipped)) issues.push('period-clipped');
+  const brand = document.querySelector('.brand-group').getBoundingClientRect();
+  const actions = document.querySelector('.top-actions').getBoundingClientRect();
+  const sameRow = brand.top < actions.bottom && brand.bottom > actions.top;
+  if ((sameRow && brand.right > actions.left + 1) || actions.right > window.innerWidth + 1) issues.push('topbar');
+
+  // summary strip
+  const cells = [...document.querySelectorAll('.summary-cell')];
+  cells.forEach((cell, i) => {
+    const r = cell.getBoundingClientRect();
+    for (const el of cell.children) {
+      if (clipped(el) || el.getBoundingClientRect().right > r.right + 1) issues.push('summary-clipped:' + i);
+    }
+    const next = cells[i + 1];
+    if (next && r.right > next.getBoundingClientRect().left + 1) issues.push('summary-overlap:' + i);
+  });
+  const stripCard = document.querySelector('.summary-grid').getBoundingClientRect();
+  if (cells[cells.length - 1].getBoundingClientRect().right > stripCard.right + 1) issues.push('summary-overflow');
+
+  // the token tiles keep their labels on one line and stay the same height
+  const tiles = [...document.querySelectorAll('.provider-item.open .burn-stat')];
+  if (tiles.length < 2) issues.push('no-tiles');
+  tiles.forEach((tile) => {
+    const label = tile.querySelector('.burn-stat-lbl');
+    if (label.getBoundingClientRect().height > 18 || clipped(label)) issues.push('tile-label-wraps');
+  });
+  if (new Set(tiles.map((t) => Math.round(t.getBoundingClientRect().height))).size > 1) issues.push('tiles-uneven');
+
+  // the open drawer still fits inside its card
+  const box = document.querySelector('.provider-item.open .drawer-box');
+  if (box && box.getBoundingClientRect().right > card.right + 1) issues.push('drawer-overflow');
+
+  out.push({ width, actual: window.innerWidth, issues });
+}
+report({ out, tokens: document.querySelector('#metricTokens').textContent });
+"""
+
+
+@pytest.mark.parametrize("pref", ["light", "dark"])
+def test_native_rows_hero_and_summary_fit_at_compact_widths(tmp_path, pref):
+    if not CHROME.exists():
+        pytest.skip("Google Chrome is needed for native layout evidence")
+    html = build_page(pref=pref, probe=FIT_PROBE, extra_css="*{animation:none!important;transition:none!important}")
+    report = probe(html, 380, tmp_path, height=800)
+    for case in report["out"]:
+        assert case["actual"] == case["width"], case
+        assert case["issues"] == [], case
