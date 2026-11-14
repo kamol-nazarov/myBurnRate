@@ -31,9 +31,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.fixture(autouse=True)
 def _clean_throttle():
+    from spend_app import setup_wizard
+
     auth_throttle.reset()
+    setup_wizard._GLOBAL_THROTTLE.reset()
     yield
     auth_throttle.reset()
+    setup_wizard._GLOBAL_THROTTLE.reset()
 
 
 def _settings(tmp_path: Path, name: str = "hub.db") -> Settings:
@@ -371,6 +375,45 @@ def test_throttle_expires_and_success_clears_failures() -> None:
     assert throttle.fail("k", now=clock + 7) == 0
     throttle.succeed("k")
     assert throttle.retry_after("k", now=clock + 7) == 0
+
+
+def test_global_login_budget_applies_across_usernames(tmp_path, monkeypatch) -> None:
+    from spend_app import setup_wizard
+
+    monkeypatch.setattr(
+        setup_wizard,
+        "_GLOBAL_THROTTLE",
+        auth_throttle.Throttle(window=60, max_failures=2, lockout=60),
+    )
+    monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
+    monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "admin-secret")
+    settings = _settings(tmp_path)
+    app = create_app(settings=settings, enable_scheduler=False)
+    headers = {"Content-Type": "application/json", "X-BURNRATE-Request": "1"}
+    with TestClient(app, base_url="http://127.0.0.1:17331") as client:
+        for username in ("one", "two", "three"):
+            response = client.post(
+                "/api/account/login",
+                headers=headers,
+                json={"username": username, "password": "wrong-password"},
+            )
+        assert response.status_code == 429
+
+
+def test_anonymous_account_bodies_are_bounded(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
+    monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "admin-secret")
+    settings = _settings(tmp_path)
+    app = create_app(settings=settings, enable_scheduler=False)
+    with TestClient(app, base_url="http://127.0.0.1:17331") as client:
+        oversized = b'{"username":"a","password":"b","padding":"' + b"x" * 70000 + b'"}'
+        response = client.post(
+            "/api/account/login",
+            headers={"Content-Type": "application/json"},
+            content=oversized,
+        )
+        assert response.status_code == 422
+        assert response.json()["error"] == "Request too large."
 
 
 def test_rust_audit_policy_and_zip_removal_are_committed() -> None:

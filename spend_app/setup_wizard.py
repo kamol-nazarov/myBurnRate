@@ -250,12 +250,37 @@ def _client_key(request: Request, username: str, database_path: Path | None = No
     return f"{scope}|{username.strip().lower()}|{host}"
 
 
+_GLOBAL_THROTTLE = auth_throttle.Throttle(window=5 * 60, max_failures=30, lockout=5 * 60)
+
+
+def _global_key(database_path: Path | None) -> str:
+    return f"{database_path or ''}|global"
+
+
 def _throttled(retry_after: int) -> JSONResponse:
     return JSONResponse(
         {"error": "Too many attempts. Try again later."},
         status_code=429,
         headers={"Retry-After": str(max(1, retry_after)), "Cache-Control": "no-store"},
     )
+
+
+async def _bounded_json(request: Request, limit: int = 65536) -> dict:
+    """Read a small JSON object without letting an anonymous body exhaust memory."""
+    declared = request.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > limit:
+        raise ValueError("Request too large.")
+    chunks = bytearray()
+    async for chunk in request.stream():
+        if len(chunks) + len(chunk) > limit:
+            raise ValueError("Request too large.")
+        chunks.extend(chunk)
+    value = json.loads(
+        chunks, parse_constant=lambda _: (_ for _ in ()).throw(ValueError())
+    )
+    if not isinstance(value, dict):
+        raise ValueError("Expected a JSON object.")
+    return value
 
 
 def _setup_token_allowed(request: Request, body: dict) -> bool:
@@ -898,7 +923,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
     @router.post("/api/account/register")
     async def central_account_register(request: Request):
         try:
-            body = await request.json()
+            body = await _bounded_json(request)
             if not isinstance(body, dict):
                 raise ValueError("Expected a JSON object.")
             username = str(body.get("username") or "").strip()
@@ -914,6 +939,10 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 raise ValueError(f"Password must be at least {MIN_PASSWORD_LENGTH} characters.")
 
             key = _client_key(request, username, settings.database_path)
+            global_key = _global_key(settings.database_path)
+            retry = _GLOBAL_THROTTLE.retry_after(global_key)
+            if retry:
+                return _throttled(retry)
             retry = auth_throttle.retry_after(key)
             if retry:
                 return _throttled(retry)
@@ -931,9 +960,10 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                         str(existing_user.get("passwordHash") or ""),
                         iterations,
                     ):
+                        global_retry = _GLOBAL_THROTTLE.fail(global_key)
                         retry = auth_throttle.fail(key)
-                        if retry:
-                            return _throttled(retry)
+                        if global_retry or retry:
+                            return _throttled(max(global_retry, retry))
                         return JSONResponse(
                             {"error": "Invalid username or password."},
                             status_code=401,
@@ -1005,7 +1035,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
     @router.post("/api/account/login")
     async def central_account_login(request: Request):
         try:
-            body = await request.json()
+            body = await _bounded_json(request)
             if not isinstance(body, dict):
                 raise ValueError("Expected a JSON object.")
             username = str(body.get("username") or "").strip()
@@ -1019,6 +1049,10 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 raise ValueError("Enter your account username and password.")
 
             key = _client_key(request, username, settings.database_path)
+            global_key = _global_key(settings.database_path)
+            retry = _GLOBAL_THROTTLE.retry_after(global_key)
+            if retry:
+                return _throttled(retry)
             retry = auth_throttle.retry_after(key)
             if retry:
                 return _throttled(retry)
@@ -1032,9 +1066,10 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     # Spend the KDF before the generic answer so an unknown
                     # username is not measurably cheaper than a wrong password.
                     _verify_password(password, "00" * 16, "00" * 32, PBKDF2_ITERATIONS)
+                    global_retry = _GLOBAL_THROTTLE.fail(global_key)
                     retry = auth_throttle.fail(key)
-                    if retry:
-                        return _throttled(retry)
+                    if global_retry or retry:
+                        return _throttled(max(global_retry, retry))
                     return JSONResponse(
                         {"error": "Invalid username or password."},
                         status_code=401,
@@ -1046,9 +1081,10 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     str(user_rec.get("passwordHash") or ""),
                     iterations,
                 ):
+                    global_retry = _GLOBAL_THROTTLE.fail(global_key)
                     retry = auth_throttle.fail(key)
-                    if retry:
-                        return _throttled(retry)
+                    if global_retry or retry:
+                        return _throttled(max(global_retry, retry))
                     return JSONResponse(
                         {"error": "Invalid username or password."},
                         status_code=401,
