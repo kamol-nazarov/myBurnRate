@@ -131,7 +131,11 @@ def main():
             with urlopen(base + "/hud") as response:
                 html = response.read().decode()
             assert '"/api/spend/hud?machine="' in html
-            assets = re.findall(r'(?:src|href)="(/[^"#]+)', html)
+            # Navigation links (including owner sign-in) are HTML pages, not
+            # static assets. Exercise them separately from scripts/styles/icons.
+            assets = re.findall(
+                r'<(?:script|link|img|source)\b[^>]*(?:src|href)="(/[^"#]+)', html
+            )
             assert "/favicon.svg" in assets
             for asset in assets:
                 with urlopen(base + asset) as response:
@@ -144,6 +148,12 @@ def main():
                         else "image/svg+xml"
                     )
                     assert expected in response.headers["Content-Type"], asset
+            if not args.private_source:
+                assert 'href="/auth"' in html
+                with urlopen(base + "/auth") as response:
+                    assert response.status == 200
+                    assert "text/html" in response.headers["Content-Type"]
+                    assert "/api/setup/owner-session" in response.read().decode()
             for endpoint in (
                 "/api/spend",
                 "/api/spend/summary?window=1d",

@@ -540,8 +540,10 @@ def test_central_server_account_login_subscriptions_and_multi_computer_sync(
     from spend_app.db import upsert_quota
     from spend_app.setup_wizard import maybe_run_configured_spoke_sync
     from spend_app.sync import register_hub_test_client
+    from spend_app import sync
 
     aggregate.reset_memo()
+    monkeypatch.setattr(sync, "_default_hub_name", lambda: "Synthetic Hub")
     monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
     monkeypatch.setenv("BURNRATE_SETUP_TOKEN", "setup-secret")
 
@@ -668,8 +670,11 @@ def test_central_server_account_login_subscriptions_and_multi_computer_sync(
     laptop_summary = laptop_client.get("/api/spend/summary?window=1d").json()
     assert laptop_summary["totals"]["records"] == 2
     assert laptop_summary["totals"]["tokens"] == 30_000
-    machine_names = [m["name"] for m in laptop_summary["machines"]]
-    assert set(machine_names) == {"MyDesktop", "MacBook Pro"}
+    machines = laptop_summary["machines"]
+    assert [m["name"] for m in machines if m["isLocal"]] == ["Synthetic Hub"]
+    paired = [m for m in machines if not m["isLocal"]]
+    assert sorted(m["name"] for m in paired) == ["MacBook Pro", "MyDesktop"]
+    assert len({m["id"] for m in paired}) == 2
 
     laptop_subs = laptop_client.get("/api/subscriptions").json()
     assert len(laptop_subs["plans"]) == 3
