@@ -20,6 +20,7 @@ from tests_spend.browser_runtime import CHROME
 from tests_spend.test_frontend_viewports import _probe
 
 THEME_ATTR = 'data-theme-pref="system"'
+REDUCE_MEDIA = "@media (prefers-reduced-motion: reduce)"
 
 
 def demo_report(period: str = "today") -> dict:
@@ -110,6 +111,24 @@ DEFAULT_ONBOARDING = {
 # replace or delete methods before the page boots.
 STUB = """<script>
 window.__calls = [];
+/* Pin the media queries the page reads so no test depends on the OS this runs on (a CI runner with
+   animations off reports prefers-reduced-motion: reduce; a developer machine may be in dark mode). */
+(function () {
+  var ENV = %(env)s;
+  var real = window.matchMedia.bind(window);
+  function fake(q, matches) {
+    return { matches: matches, media: q, onchange: null, addEventListener: function () {}, removeEventListener: function () {},
+             addListener: function () {}, removeListener: function () {}, dispatchEvent: function () { return false; } };
+  }
+  window.matchMedia = function (q) {
+    var s = String(q);
+    if (ENV.reduce !== null && /prefers-reduced-motion/.test(s)) return fake(s, /: *reduce/.test(s) ? ENV.reduce : !ENV.reduce);
+    if (ENV.dark !== null && /prefers-color-scheme/.test(s)) return fake(s, /: *dark/.test(s) ? ENV.dark : !ENV.dark);
+    if (/forced-colors/.test(s)) return fake(s, !/: *active/.test(s));
+    if (/prefers-contrast/.test(s)) return fake(s, /: *no-preference/.test(s));
+    return real(q);
+  };
+})();
 (function () {
   var REPORT = %(report)s, INIT = %(init)s, ONB = %(onboarding)s, SETTINGS = %(settings)s;
   var api = {
@@ -154,9 +173,28 @@ def build_page(
     api_js: str = "",
     probe: str = "",
     extra_css: str = "",
+    motion: str | None = "no-preference",
+    color_scheme: str | None = "light",
 ) -> str:
+    """The page as the host serves it, with the environment pinned.
+
+    ``motion`` is "no-preference" or "reduce" (both the JS media queries and the stylesheet's
+    reduced-motion block follow it, whatever the OS says), or ``None`` to leave it to the browser.
+    ``color_scheme`` ("light" or "dark") is what ``prefers-color-scheme`` reports; ``None`` leaves it alone.
+    """
     html = load_ui_html()
     assert html.count(THEME_ATTR) == 1, "theme attribute must appear exactly once"
+    assert html.count(REDUCE_MEDIA) == 1, (
+        "the reduced-motion block must exist exactly once"
+    )
+    if motion == "no-preference":
+        html = html.replace(REDUCE_MEDIA, "@media not all", 1)
+    elif motion == "reduce":
+        html = html.replace(REDUCE_MEDIA, "@media all", 1)
+    env = {
+        "reduce": None if motion is None else motion == "reduce",
+        "dark": None if color_scheme is None else color_scheme == "dark",
+    }
     html = html.replace(THEME_ATTR, f'data-theme-pref="{pref}"', 1)
     stub = STUB % {
         "report": json.dumps(report if report is not None else demo_report()),
@@ -175,6 +213,7 @@ def build_page(
             }
         ),
         "api_js": api_js,
+        "env": json.dumps(env),
     }
     html = html.replace("<head>", "<head>" + stub, 1)
     tail = ""
@@ -287,6 +326,11 @@ def run_chrome(
         f"--window-size={max(width, 500)},{height}",
         f"--virtual-time-budget={budget_ms}",
         "--force-device-scale-factor=1",
+        "--lang=en-US",
+        "--disable-features=ForcedColors",
+        # BURNRATE_TEST_CHROME_FLAGS imitates an unfriendly host (for example
+        # --force-prefers-reduced-motion); the pinned page must not care.
+        *os.environ.get("BURNRATE_TEST_CHROME_FLAGS", "").split(),
         *flags,
     ]
     if screenshot is not None:
@@ -936,7 +980,8 @@ report(out);
 @needs_chrome
 @browser
 def test_reduced_motion_removes_loops_springs_and_counting(tmp_path):
-    html = build_page(pref="light", probe=REDUCED_PROBE)
+    # The real media query, driven by the browser flag: motion=None leaves it to Chrome.
+    html = build_page(pref="light", probe=REDUCED_PROBE, motion=None)
     r = probe(
         html, 380, tmp_path, height=700, flags=("--force-prefers-reduced-motion",)
     )
@@ -955,11 +1000,55 @@ def test_reduced_motion_removes_loops_springs_and_counting(tmp_path):
 
 @needs_chrome
 @browser
-def test_motion_stays_when_not_reduced(tmp_path):
+@pytest.mark.parametrize(
+    "host_flags",
+    [(), ("--force-prefers-reduced-motion",)],
+    ids=["host-default", "host-reports-reduce"],
+)
+def test_motion_stays_when_not_reduced(tmp_path, host_flags):
+    # The second case is the CI runner: Windows with animations off reports "reduce" by default.
+    # The page is pinned to no-preference, so loops must still run, whatever the browser says.
     html = build_page(pref="light", probe=REDUCED_PROBE)
-    r = probe(html, 380, tmp_path, height=700)
+    r = probe(html, 380, tmp_path, height=700, flags=host_flags)
     assert r["reduced"] is False
     assert r["dot"] != "none" and r["halo"] != "none"
+    assert r["sheetTransition"] != "0s"
+
+
+@needs_chrome
+@browser
+def test_the_motion_check_fails_if_reduced_css_applied_to_everyone(tmp_path):
+    # Same probe, but with the reduced-motion block forced on for everybody: what the test above would
+    # see if that CSS were applied unconditionally. It must be visibly different.
+    html = build_page(pref="light", probe=REDUCED_PROBE, motion="reduce")
+    r = probe(html, 380, tmp_path, height=700)
+    assert r["reduced"] is True
+    assert (r["dot"], r["halo"]) == ("none", "none") and r["sheetTransition"] == "0s"
+
+
+@needs_chrome
+@browser
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+def test_system_theme_uses_the_pinned_scheme_not_the_hosts(tmp_path, scheme):
+    probe_js = """
+    await until(() => document.querySelector('.provider-row'));
+    report({ theme: document.documentElement.dataset.theme,
+             dark: matchMedia('(prefers-color-scheme: dark)').matches,
+             forced: matchMedia('(forced-colors: active)').matches,
+             contrast: matchMedia('(prefers-contrast: more)').matches });
+    """
+    r = probe(
+        build_page(pref="system", probe=probe_js, color_scheme=scheme),
+        380,
+        tmp_path,
+        height=600,
+    )
+    assert r == {
+        "theme": scheme,
+        "dark": scheme == "dark",
+        "forced": False,
+        "contrast": False,
+    }
 
 
 HOST_PROBE = """

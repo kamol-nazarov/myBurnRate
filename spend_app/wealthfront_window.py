@@ -898,7 +898,9 @@ class DesktopBridge:
         self._client = client
         self._preferences = preferences
         self._smoke_test = smoke_test
-        self._service_alerts: tuple[float, bool] = (0.0, False)
+        # (checked_at, owned); None = never checked. A 0.0 timestamp would
+        # read as fresh on a machine that booted within the recheck window.
+        self._service_alerts: tuple[float, bool] | None = None
         self._last_update_info: dict | None = None
         self._prefs: PreferenceStore = store_for(preferences)
         self._demo = demo
@@ -1042,7 +1044,7 @@ class DesktopBridge:
                         }
                     },
                 )
-                self._service_alerts = (0.0, self._service_alerts[1])
+                self._service_alerts = None  # force a re-ask
             except Exception:
                 LOGGER.debug("Service notification mirror skipped", exc_info=True)
         return {"ok": True, "lowQuotaAlerts": self._low_quota_alerts}
@@ -1056,9 +1058,12 @@ class DesktopBridge:
         """
         if self._demo:
             return False
-        checked_at, owned = self._service_alerts
-        if time.monotonic() - checked_at < SERVICE_ALERT_RECHECK_SECONDS:
-            return owned
+        cached = self._service_alerts
+        if (
+            cached is not None
+            and time.monotonic() - cached[0] < SERVICE_ALERT_RECHECK_SECONDS
+        ):
+            return cached[1]
         try:
             data = self._client.request("/api/setup/notifications")
             owned = bool(isinstance(data, dict) and data.get("available") is True)

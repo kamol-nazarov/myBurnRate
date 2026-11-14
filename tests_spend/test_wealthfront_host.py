@@ -597,10 +597,10 @@ def test_service_ownership_is_checked_cached_and_falls_back_on_failure():
     assert bridge.service_owns_plan_alerts() is True
     assert bridge.service_owns_plan_alerts() is True
     assert len([c for c in client.calls if c[0] == "/api/setup/notifications"]) == 1
-    bridge._service_alerts = (0.0, True)  # cache expired: asked again
+    bridge._service_alerts = None  # cache expired: asked again
     client.notifications = {"available": False, "kinds": []}
     assert bridge.service_owns_plan_alerts() is False
-    bridge._service_alerts = (0.0, True)
+    bridge._service_alerts = None
     client.notifications = DesktopError("offline")
     assert bridge.service_owns_plan_alerts() is False
     assert DesktopBridge(client, demo=True).service_owns_plan_alerts() is False
@@ -1473,3 +1473,30 @@ def test_quitting_is_set_before_every_destroy(tmp_path, monkeypatch):
     _, host = make_hint_host(tmp_path)
     host.shutdown()
     assert host.quitting is True and host.can_hide_to_tray() is False
+
+
+def test_service_ownership_cache_is_not_fooled_by_a_freshly_booted_clock(
+    monkeypatch, tmp_path
+):
+    """time.monotonic() counts from boot: right after boot a 0.0 'never checked'
+    sentinel would look fresh and wrongly claim the service owns nothing."""
+    monkeypatch.setattr(host_module.time, "monotonic", lambda: 12.0)
+    client = AlertClient({"available": True, "kinds": []})
+    bridge = DesktopBridge(client, preferences=tmp_path / "p.json")
+    assert bridge.service_owns_plan_alerts() is True  # first call asks the service
+    asked = [c for c in client.calls if c[0] == "/api/setup/notifications"]
+    assert len(asked) == 1
+    assert bridge.service_owns_plan_alerts() is True  # now genuinely cached
+    assert len([c for c in client.calls if c[1] is None]) == 1
+
+    # Invalidation after the mirror forces a re-ask even at a tiny clock value.
+    client.notifications = {"available": False, "kinds": []}
+    bridge.set_low_quota_alerts(False)
+    assert bridge.service_owns_plan_alerts() is False
+    gets = [c for c in client.calls if c == ("/api/setup/notifications", None)]
+    assert len(gets) == 2
+
+    # The re-asked answer is cached again.
+    monkeypatch.setattr(host_module.time, "monotonic", lambda: 13.0)
+    client.request = lambda path, body=None: pytest.fail("cache should answer")
+    assert bridge.service_owns_plan_alerts() is False
