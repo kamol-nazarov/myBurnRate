@@ -51,7 +51,7 @@ Use HTTPS or a protected loopback tunnel; do not put credentials in URLs or shel
 
 - **Update:** the reference compose file pins both images by digest. Set
   `BURNRATE_HUB_IMAGE` to the new `tag@sha256:...` from the release
-  (`docker buildx imagetools inspect ghcr.io/kamol-nazarov/myburnrate-hub:0.5.6`
+  (`docker buildx imagetools inspect ghcr.io/kamol-nazarov/myburnrate-hub:0.5.7`
   prints it), then `docker compose pull && docker compose up -d`.
 - **Back up:** copy `spend.db` out of the `hub-data` volume, for example with
   `docker compose cp hub:/data/spend.db ./spend-backup.db`.
