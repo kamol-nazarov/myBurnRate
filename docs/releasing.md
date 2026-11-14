@@ -27,9 +27,6 @@ maintainer's computer, so every download traces back to a tagged commit.
    - `spend_app/__init__.py`;
    - `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock` and
      `src-tauri/tauri.conf.json`;
-   - the pinned hub image in `deploy/hub/compose.yaml` (the new
-     `tag@sha256:...` printed by
-     `docker buildx imagetools inspect ghcr.io/kamol-nazarov/myburnrate-hub:<version>`);
    - the current-release line and release-notes link in the README.
 3. Write `docs/releases/RELEASE-<version>.md` (it becomes the release notes)
    and move the changelog's `[Unreleased]` entries under the new version.
@@ -54,6 +51,11 @@ maintainer's computer, so every download traces back to a tagged commit.
    updates**.
 8. Move `prod` to the release: `git push origin v<version>^{commit}:refs/heads/prod`
    (a fast-forward; it fails rather than rewrite history).
+   Once the tag's Hub image build has passed, verify its digest with
+   `docker buildx imagetools inspect ghcr.io/kamol-nazarov/myburnrate-hub:<version>`
+   and pin that `tag@sha256:...` in `deploy/hub/compose.yaml`. Commit this release metadata
+   on `main` and fast-forward `prod` to it; keep the published tag unchanged. The image's
+   digest is available only after its tag build, so do not guess it before tagging.
 9. Command-line installs:
    - **Scoop** needs nothing more. The release carries `myburnrate.json`, so
      `scoop install https://github.com/kamol-nazarov/myBurnRate/releases/latest/download/myburnrate.json`
