@@ -42,10 +42,12 @@ Use HTTPS or a protected loopback tunnel; do not put credentials in URLs or shel
    For a revoked/expired computer, create a fresh code with its machine ID or existing name.
 4. On a paired computer, open `/auth` and sign in once for **All computers**. Pairing alone shows
    its own recorded usage. Owner sessions expire in 30 days; sync tokens expire in 90 days.
-5. Set `BURNRATE_ALLOW_ADMIN_BEARER=0` when automation no longer needs the static bearer.
+5. The static bearer is restricted to bootstrap and rotation by default. Set
+   `BURNRATE_ALLOW_ADMIN_BEARER=1` only while automation still needs it for other API calls.
    `/auth` can revoke device sessions and rotate credentials. Credential rotation stores only the
    replacement hash in SQLite; save the returned credential securely. Updating only the old
-   environment value does not override that hash.
+   environment value does not override that hash. Break-glass rotation happens on the hub, never
+   from a paired computer.
 
 - **Update:** the reference compose file pins both images by digest. Set
   `BURNRATE_HUB_IMAGE` to the new `tag@sha256:...` from the release
@@ -93,11 +95,12 @@ of it for HTTPS.
 `burnrate hub update --ssh <host>` updates a git-checkout hub from your own
 computer: it requires a clean checkout, fast-forwards it, installs its Python
 dependencies, checks the installed trust bundle, and runs an installed host
-security gate before restarting the service. It checks the public
-`/healthz?supervisor=1` endpoint and reads the installed build over SSH, so the
-post-restart check needs no API credential. The helper shipped in 0.5.6 still
-checks `/api/spend` anonymously and can report a 401 after a successful restart;
-use the corrected helper for subsequent updates.
+security gate before restarting the service. It checks the public `/healthz`
+liveness endpoint and reads the installed build over SSH, so the post-restart
+check needs no API credential; the detailed `?supervisor=1` response is
+owner-only on a hub. The helper shipped in 0.5.6 still checks `/api/spend`
+anonymously and can report a 401 after a successful restart; use the corrected
+helper for subsequent updates.
 Keep `BURNRATE_SUMMARY_PREWARM=0` on the central hub so background ingestion
 does not compete with bounded interactive reads. Source, trust failures, or
 unreviewed host drift stop the update before restart. Make a verified database

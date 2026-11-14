@@ -9,6 +9,24 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+### Security
+
+- **Paired-computer session management now requires a local sign-in.** The spoke's loopback API
+  previously relayed hub session listing, revocation, rotation and sign-out using the stored owner
+  session without checking the caller. A new `burnrate_local` HttpOnly cookie, issued when the owner
+  signs in on the spoke, gates those routes; break-glass rotation is refused on a spoke and must be
+  done on the hub. Anonymous local requests now get 401.
+- **The static bearer is restricted by default.** `BURNRATE_ALLOW_ADMIN_BEARER` now defaults to `0`,
+  so `BURNRATE_ACCESS_TOKEN` only works on `/api/auth/bootstrap` and `/api/auth/rotate` unless
+  automation explicitly opts in with `1`.
+- **Desktop launch checks resist local tampering.** PowerShell is resolved by absolute system path
+  instead of `PATH`/CWD, and the binary is held without write or delete sharing across the
+  signature check and launch.
+- **Machine registration no longer prints a token on a command line.** The suggested sync command
+  uses `--token-file`; the token is still shown once in the response.
+- **Hub shell pages redirect anonymous visitors to `/auth`,** and `/healthz?supervisor=1` is
+  owner-only on a hub. Liveness stays public for the watchdog and `burnrate hub update`.
+
 ### Fixed
 
 - `burnrate hub update` checks public service health after restart and reads the installed

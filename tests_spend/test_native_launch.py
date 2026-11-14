@@ -5,7 +5,10 @@ the policy is tested without a Windows shell or a signed binary.
 """
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+
+import pytest
 
 from spend_app import native_launch
 from spend_app.config import Settings
@@ -62,6 +65,35 @@ def test_a_failed_probe_is_unknown_and_fails_closed_in_strict_mode(tmp_path, mon
     assert native_launch.evaluate(tmp_path / "burnrate-desktop.exe") == (True, "unknown")
     monkeypatch.setenv(native_launch.REQUIRE_SIGNED_ENV, "1")
     assert native_launch.evaluate(tmp_path / "burnrate-desktop.exe") == (False, "unknown")
+
+
+def test_powershell_resolution_uses_an_absolute_system_path(tmp_path, monkeypatch) -> None:
+    system_root = tmp_path / "Windows"
+    shell = system_root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    shell.parent.mkdir(parents=True)
+    shell.write_bytes(b"MZ")
+    monkeypatch.setattr(native_launch.sys, "platform", "win32")
+    monkeypatch.setenv("SystemRoot", str(system_root))
+    monkeypatch.setenv("ProgramFiles", str(tmp_path / "Program Files"))
+    resolved = native_launch._powershell()
+    assert resolved == str(shell)
+    assert Path(resolved).is_absolute()
+    source = Path(native_launch.__file__).read_text(encoding="utf-8")
+    assert "shutil.which" not in source
+
+
+def test_locked_binary_denies_write_and_delete_until_released(tmp_path) -> None:
+    if sys.platform != "win32":
+        pytest.skip("Windows share-mode lock")
+    binary = tmp_path / "burnrate-desktop.exe"
+    binary.write_bytes(b"MZ")
+    with native_launch.locked_binary(binary):
+        with pytest.raises(PermissionError):
+            binary.write_bytes(b"tampered")
+        with pytest.raises(PermissionError):
+            binary.unlink()
+    binary.write_bytes(b"released")
+    assert binary.read_bytes() == b"released"
 
 
 def test_publisher_allowlist_can_be_extended(tmp_path, monkeypatch) -> None:

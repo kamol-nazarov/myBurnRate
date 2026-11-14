@@ -61,7 +61,10 @@ def test_machine_registry_lifecycle_and_token_auth(tmp_path: Path, monkeypatch) 
     machine_id = reg_body["machine"]["id"]
     token = reg_body["token"]
     assert token.startswith(f"br_m_{machine_id}_")
-    assert "--token" in reg_body["syncCommand"]
+    assert "--token-file" in reg_body["syncCommand"]
+    assert "--token " not in reg_body["syncCommand"]
+    assert token not in reg_body["syncCommand"]
+    assert reg_body["syncHint"]
     assert len(reg_body["machines"]) == 2
 
     # /api/sync/push accepts the machine bearer token even when BURNRATE_ACCESS_TOKEN is set

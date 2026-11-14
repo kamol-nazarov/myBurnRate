@@ -133,9 +133,10 @@ updates also request immediate spoke sync using the configured pricing engine;
 follow-up failures produce sanitized log warnings.
 
 Native supervision uses a bounded `/healthz?supervisor=1` probe with application
-identity, process ID and collection progress. It preserves startup grace and a
-restart budget, and restarts only its owned service. An open TCP port alone is
-not application health; unrelated listeners are left untouched.
+identity, process ID and collection progress. The detailed response is
+owner-only on a hub; the local watchdog keeps using it on loopback. It preserves
+startup grace and a restart budget, and restarts only its owned service. An open
+TCP port alone is not application health; unrelated listeners are left untouched.
 
 Cursor is no longer collected or counted. Cursor usage duplicates SuperGrok usage, so it is not counted: on first start each database (this computer's and the Hub's) removes its recorded Cursor rows after saving a verified backup to `backups/pre-cursor-removal-*.db`, and a Hub drops Cursor rows pushed by computers still on an older version.
 

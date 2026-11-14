@@ -234,7 +234,7 @@ burnrate serve [--host H] [--port P]        local service and optional dashboard
 burnrate demo [--no-browser]                sample data in a temporary folder
 burnrate init                               create the database
 burnrate doctor                             check Python, data, pricing, assets, loopback bind
-burnrate sync --hub URL --token br_m_...    push this computer's usage to a hub
+burnrate sync --hub URL --token-file PATH  push this computer's usage to a hub
 burnrate machines list|register|revoke      manage paired computers on a hub
 burnrate subscription add|list|apply        effective-dated plans
 burnrate backfill                           advanced historical import

@@ -15,7 +15,7 @@ from spend_app.pricing import PricingEngine
 ROOT = Path(__file__).resolve().parents[1]
 HUB = "http://hub.test"
 PASSWORD = "synthetic-password-long"
-UI = {"X-BURNRATE-Request": "1"}
+UI = {"Origin": "http://testserver", "X-BURNRATE-Request": "1"}
 ADMIN = {**UI, "Authorization": "Bearer synthetic-admin"}
 
 
@@ -87,6 +87,42 @@ def sign_in(client):
                            json={"username": "owner", "password": PASSWORD})
     assert response.status_code == 200, response.text
     return response
+
+
+def test_spoke_local_session_gates_hub_owner_actions(pair):
+    hs, hub, ss, spoke = pair
+    anonymous = TestClient(spoke.app, base_url="http://testserver")
+    for method, path, body, expected in (
+        ("GET", "/api/auth/sessions", None, 401),
+        ("POST", "/api/auth/sessions/revoke", {"id": "unknown"}, 401),
+        ("POST", "/api/auth/logout", {}, 401),
+        ("POST", "/api/auth/session/rotate", {}, 401),
+        ("POST", "/api/auth/rotate", {}, 403),
+    ):
+        response = (anonymous.get(path, headers=UI) if method == "GET"
+                    else anonymous.post(path, headers=UI, json=body))
+        assert response.status_code == expected, (path, response.status_code, response.text)
+        assert "br_bg_" not in response.text and "br_s_" not in response.text
+
+    signed = sign_in(spoke)
+    assert auth_model.LOCAL_COOKIE in spoke.cookies
+    local_cookie = signed.headers.get("set-cookie", "").lower()
+    assert "httponly" in local_cookie and "samesite=lax" in local_cookie and "path=/api" in local_cookie
+
+    # Break-glass rotation is never relayed from a paired computer.
+    blocked = spoke.post("/api/auth/rotate", headers=UI, json={})
+    assert blocked.status_code == 403
+    assert "br_bg_" not in blocked.text and "token" not in blocked.text
+    with connect(hs.database_path) as conn:
+        assert conn.execute("SELECT 1 FROM app_meta WHERE key='auth.break_glass.v1'").fetchone() is None
+
+    listed = spoke.get("/api/auth/sessions")
+    assert listed.status_code == 200 and listed.json()["sessions"]
+
+    logged_out = spoke.post("/api/auth/logout", headers=UI, json={})
+    assert logged_out.status_code == 200
+    assert not state(ss).get("ownerSession")
+    assert spoke.get("/api/auth/sessions", headers=UI).status_code == 401
 
 
 def test_paired_spoke_owner_signin_logout_and_machine_sync(pair):

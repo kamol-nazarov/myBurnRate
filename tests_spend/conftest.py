@@ -70,6 +70,16 @@ def pytest_ignore_collect(collection_path, config) -> bool | None:
 
 
 @pytest.fixture(autouse=True)
+def _legacy_bearer_for_hermetic_tests(monkeypatch):
+    """Keep pre-0.5.7 admin-automation behavior for tests that use the bearer.
+
+    Production defaults the static bearer off; a dedicated test removes this
+    variable to assert the current default.
+    """
+    monkeypatch.setenv("BURNRATE_ALLOW_ADMIN_BEARER", "1")
+
+
+@pytest.fixture(autouse=True)
 def _test_allowed_hosts(monkeypatch):
     """Fake hub hostnames used by hermetic sync tests are explicitly trusted.
 

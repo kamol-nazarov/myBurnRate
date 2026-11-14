@@ -7,7 +7,8 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from spend_app.auth_model import (
-    COOKIE, Principal, audit, create_session, digest, owner_id, revoke_session, set_session_cookie,
+    COOKIE, LOCAL_COOKIE, Principal, audit, authenticate_local_session, clear_local_cookie,
+    create_session, digest, owner_id, revoke_local_session, revoke_session, set_session_cookie,
 )
 from spend_app.db import connect
 
@@ -44,20 +45,57 @@ def auth_router(settings):
         except HubMutationError as exc:
             return JSONResponse({"error": str(exc)}, status_code=exc.status_code)
 
+    def spoke_enabled() -> bool:
+        from spend_app.setup_wizard import read_setup_state
+        with connect(settings.database_path) as connection:
+            state = read_setup_state(connection)
+        return state.get("role") == "spoke" and bool(state["spokeConfig"].get("enabled"))
+
+    def local_sid(request: Request) -> str | None:
+        return authenticate_local_session(
+            settings.database_path, request.cookies.get(LOCAL_COOKIE, "")
+        )
+
+    def local_guard(request: Request, *, mutation: bool = False):
+        """On a spoke, hub credential management needs a local sign-in.
+
+        The spoke's own API is loopback-anonymous by design; without this gate
+        an unauthenticated local caller could relay through the stored hub
+        owner session. Hubs keep using the normal principal checks.
+        """
+        if not spoke_enabled():
+            return None
+        if not local_sid(request):
+            return JSONResponse(
+                {"error": "Sign in on this computer before managing hub sessions."},
+                status_code=401,
+            )
+        if mutation:
+            from spend_app.connection_api import trusted
+            if not trusted(request):
+                return JSONResponse(
+                    {"error": "Request rejected: use this computer's BURNRATE origin."},
+                    status_code=403,
+                )
+        return None
+
     @router.get("/api/auth/context")
-    def context():
+    def context(request: Request):
         from spend_app.setup_wizard import _read_accounts, read_setup_state
         with connect(settings.database_path) as connection:
             state = read_setup_state(connection)
             has_owner = bool(_read_accounts(connection)["users"])
-        return {"spoke": state.get("role") == "spoke" and bool(state["spokeConfig"].get("enabled")), "hasOwner": has_owner}
+        spoke = state.get("role") == "spoke" and bool(state["spokeConfig"].get("enabled"))
+        return {"spoke": spoke, "hasOwner": has_owner,
+                "localSession": bool(spoke and local_sid(request))}
 
     @router.get("/auth")
-    def page():
+    def page(request: Request):
         from spend_app.auth_page import AUTH_HTML
-        state = context()
+        state = context(request)
         html = AUTH_HTML.replace('data-spoke="false"', 'data-spoke="' + str(state["spoke"]).lower() + '"')
         html = html.replace('data-owner="false"', 'data-owner="' + str(state["hasOwner"]).lower() + '"')
+        html = html.replace('data-local="false"', 'data-local="' + str(state["localSession"]).lower() + '"')
         return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
     @router.post("/api/auth/bootstrap")
@@ -72,9 +110,14 @@ def auth_router(settings):
 
     @router.get("/api/auth/sessions")
     def sessions(request: Request):
+        guard = local_guard(request)
+        if guard:
+            return guard
         forwarded = relay("/api/auth/sessions")
         if forwarded is not None:
             return forwarded
+        if spoke_enabled():
+            return JSONResponse({"error": "Sign in to your hub for owner access."}, status_code=401)
         if not request.state.principal.permits("credentials.manage"):
             return JSONResponse({"error": "Owner session required."}, status_code=403)
         with connect(settings.database_path) as connection:
@@ -87,6 +130,9 @@ def auth_router(settings):
     async def revoke(request: Request):
         from spend_app.setup_wizard import _bounded_json
         body = await _bounded_json(request)
+        guard = local_guard(request, mutation=True)
+        if guard:
+            return guard
         forwarded = relay("/api/auth/sessions/revoke", body)
         if forwarded is not None:
             return forwarded
@@ -103,19 +149,30 @@ def auth_router(settings):
 
     @router.post("/api/auth/logout")
     def logout(request: Request):
+        guard = local_guard(request, mutation=True)
+        if guard:
+            return guard
         forwarded = relay("/api/auth/logout", {})
         if forwarded is not None:
+            sid = local_sid(request)
+            if sid:
+                with connect(settings.database_path) as connection:
+                    revoke_local_session(connection, sid)
+            clear_local_cookie(forwarded)
             return forwarded
         actor = request.state.principal
         with connect(settings.database_path) as connection:
             if actor.session_id:
                 request.state.audit_recorded = revoke_session(connection, actor, actor.session_id)
         response = JSONResponse({"ok": True})
-        response.delete_cookie(COOKIE, path="/api")
+        response.delete_cookie(COOKIE, path="/")
         return response
 
     @router.post("/api/auth/session/rotate")
     def rotate_session(request: Request):
+        guard = local_guard(request, mutation=True)
+        if guard:
+            return guard
         forwarded = relay("/api/auth/session/rotate", {})
         if forwarded is not None:
             return forwarded
@@ -132,6 +189,13 @@ def auth_router(settings):
 
     @router.post("/api/auth/rotate")
     def rotate_credentials(request: Request):
+        # The break-glass credential is hub authority; a paired computer must
+        # never relay it. Rotate it on the hub's own /auth page.
+        if spoke_enabled():
+            return JSONResponse(
+                {"error": "Rotate the break-glass credential on the hub, not from a paired computer."},
+                status_code=403,
+            )
         forwarded = relay("/api/auth/rotate", {})
         if forwarded is not None:
             return forwarded
@@ -157,6 +221,12 @@ def auth_router(settings):
 
     @router.get("/api/auth/audit")
     def audit_log(request: Request):
+        guard = local_guard(request)
+        if guard:
+            return guard
+        forwarded = relay("/api/auth/audit")
+        if forwarded is not None:
+            return forwarded
         if not request.state.principal.permits("credentials.manage"):
             return JSONResponse({"error": "Owner session required."}, status_code=403)
         with connect(settings.database_path) as connection:
