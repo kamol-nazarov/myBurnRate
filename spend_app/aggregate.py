@@ -20,6 +20,7 @@ from spend_app.capacity_forecast import alert_fingerprint, apply_balance_runway,
 from spend_app.quotas import REQUIRED_LIMITS, split_quota_label
 from spend_app.subscriptions import daily_cost
 from spend_app.plan_service import effective_terms
+from spend_app.opencode_providers import provider_tool_color, provider_tool_name
 
 
 CENTS = Decimal("0.01")
@@ -1515,11 +1516,11 @@ def _attach_observed_grok_routes(capacity: list[dict], connection) -> None:
         """
         SELECT MAX(occurred_at) FROM (
             SELECT occurred_at FROM usage_events
-            WHERE source='opencode_local' AND tool_key='opencode'
+            WHERE source='opencode_local'
               AND lower(model_key) LIKE 'opencode:grok%'
             UNION ALL
             SELECT occurred_at FROM unpriced_usage_events
-            WHERE source='opencode_local' AND tool_key='opencode'
+            WHERE source='opencode_local'
               AND lower(model_key) LIKE 'opencode:grok%'
         )
         """
@@ -1539,7 +1540,6 @@ def tool_name(key: str) -> str:
     """A tool's display name, including an extra profile's ("Claude Code · Work")."""
     if key in TOOL_NAMES:
         return TOOL_NAMES[key]
-    from spend_app.opencode_providers import provider_tool_name
     opencode_name = provider_tool_name(key)
     if opencode_name:
         return opencode_name
@@ -1547,8 +1547,9 @@ def tool_name(key: str) -> str:
 
 
 def tool_color(key: str) -> str:
-    if key.startswith("opencode-provider:"):
-        return TOOL_COLORS["opencode"]
+    opencode_color = provider_tool_color(key)
+    if opencode_color:
+        return opencode_color
     base = next((name for name in ("claude-code", "opencode-go") if key.startswith(name + "-")), key)
     return TOOL_COLORS.get(key) or TOOL_COLORS.get(base) or "#78a8f8"
 
@@ -1612,7 +1613,7 @@ def providers_in_use(connection, now: datetime) -> set[str]:
             # Grok used through OpenCode keeps the Grok Build card for its
             # route note (_attach_observed_grok_routes).
             if provider == "grok" and connection.execute(
-                f"SELECT 1 FROM {table} WHERE source='opencode_local' AND tool_key='opencode' "
+                f"SELECT 1 FROM {table} WHERE source='opencode_local' "
                 "AND lower(model_key) LIKE 'opencode:grok%' AND occurred_epoch_us >= ? LIMIT 1", (since,)
             ).fetchone():
                 keys.add(provider)

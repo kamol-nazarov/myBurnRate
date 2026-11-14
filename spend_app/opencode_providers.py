@@ -4,6 +4,8 @@ Only the Z.AI coding-plan provider belongs to the existing Z.AI quota lane.
 Every other provider gets a usage-only row; a shared model name does not prove
 that two requests drew from the same subscription or allowance.
 """
+import colorsys
+import hashlib
 from urllib.parse import quote, unquote
 
 PROVIDER_PREFIX = "opencode-provider:"
@@ -28,3 +30,14 @@ def provider_tool_name(key: str) -> str | None:
         "openrouter": "OpenRouter", "deepseek": "DeepSeek", "unknown": "Unknown provider",
     }.get(provider.lower(), provider)
     return "OpenCode · " + label
+
+
+def provider_tool_color(key: str) -> str | None:
+    """Stable chart swatches for provider rows, shared by web and native UI."""
+    if not key.startswith(PROVIDER_PREFIX):
+        return None
+    digest = hashlib.sha256(key.encode("utf-8")).digest()
+    # Leave the Z.AI lane's green band out of this palette.
+    hue = (190 + int.from_bytes(digest[:2], "big") % 300) % 360
+    rgb = colorsys.hls_to_rgb(hue / 360, 0.48, 0.65)
+    return "#" + "".join(f"{round(channel * 255):02x}" for channel in rgb)

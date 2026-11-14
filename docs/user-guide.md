@@ -167,6 +167,8 @@ evidence is unambiguous; otherwise it appears as **OpenCode · Unknown provider*
 rows, with no inferred provider allowance or balance. Unknown model prices retain their token
 counts and stay unpriced; published model rates still represent API-equivalent value, not an
 Isoquant invoice. The existing Traycer mirror exclusion still prevents double-counting.
+The cumulative-history reassignment runs once; changing a session's provider keeps previously
+attributed history with its original provider.
 
 ### Pay-as-you-go balances
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 
 from spend_app.provider_logos import ICONS_1X, ICONS_2X, ICONS_15X, resolve_logo_key
+from spend_app.opencode_providers import provider_tool_color
 
 # Wealthfront iOS v2026 light fintech palette
 BG = "#f5f5fa"
@@ -49,6 +50,9 @@ TOOL_COLORS = {
 
 
 def tool_color(key: object) -> str:
+    opencode_color = provider_tool_color(str(key or "").strip())
+    if opencode_color:
+        return opencode_color
     name = str(key or "").strip().lower()
     if name in TOOL_COLORS:
         return TOOL_COLORS[name]

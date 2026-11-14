@@ -29,6 +29,7 @@ from spend_app.native_desktop import (
 from spend_app.native_links import is_allowed_external_url
 from spend_app.native_onboarding import build_onboarding_data
 from spend_app.native_prefs import PreferenceStore, store_for
+from spend_app.opencode_providers import provider_tool_name
 from spend_app.native_tray import TrayController, run_on_ui
 
 LOGGER = logging.getLogger(__name__)
@@ -526,7 +527,6 @@ def merge_provider_entries(
         if key in consumed_usage_keys:
             continue
         opencode_provider = key.startswith("opencode-provider:")
-        from spend_app.opencode_providers import provider_tool_name
         name = provider_tool_name(key) or str(tool.get("name") or key)
         today_value = (today_tools.get(key) or {}).get("tokens")
         week_value = (week_tools.get(key) or {}).get("tokens")

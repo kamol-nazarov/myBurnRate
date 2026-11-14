@@ -13,6 +13,9 @@ from spend_app.db import connect
 from spend_app.opencode_providers import tool_key_for_provider
 
 
+CUMULATIVE_PROVIDER_RETAG = "opencode.providers.retag:v1"
+
+
 def row_from_record(record):
     values = {field.name: record[field.name] for field in fields(UsageRow) if field.name in record}
     values["occurred_at"] = parse_iso_time(values["occurred_at"])
@@ -123,29 +126,43 @@ def _reattribute_event(connection, raw_id, tool):
 
 
 def reattribute_cumulative(connection, snapshots):
-    """Move proven coarse history to its provider without adding another event.
+    """Reassign legacy coarse history once, in the ingestion transaction.
 
     A legacy per-session watermark can prove a single provider. With multiple
     historical providers, only a provider-specific legacy event ID is proof;
-    leave the rest explicitly unattributed rather than assigning a quota plan.
+    leave the rest explicitly unattributed. Already attributed history stays
+    with its provider when the session later switches. Read each table once,
+    rather than scanning unpriced history separately for every session.
     """
     from spend_app.adapters.opencode_local import BASELINE_ISSUE, DELTA_ISSUE
+    if not snapshots or read_meta(connection, CUMULATIVE_PROVIDER_RETAG, False):
+        return
+    providers = {}
+    for session, provider in connection.execute(
+        "SELECT session_id,provider_id FROM opencode_session_progress"
+    ):
+        providers.setdefault(session, set()).add(provider)
     for snapshot in snapshots:
-        session, provider = snapshot.session_id, snapshot.provider_id
-        known = {row[0] for row in connection.execute(
-            "SELECT provider_id FROM opencode_session_progress WHERE session_id=?", (session,))}
-        legacy_id = stable_id("opencode-local", session, provider)
-        for table in ("usage_events", "unpriced_usage_events"):
-            rows = connection.execute(
-                f"SELECT e.raw_id,e.tool_key FROM {table} e LEFT JOIN coverage_gap_events g ON g.raw_id=e.raw_id "
-                "WHERE e.source='opencode_local' AND e.session_id=? "
-                "AND (e.raw_id=? OR g.issue IN (?,?))",
-                (session, legacy_id, BASELINE_ISSUE, DELTA_ISSUE)).fetchall()
-            for row in rows:
-                proven = row[0] == legacy_id or known == {provider}
-                tool = tool_key_for_provider(provider if proven else "unknown")
-                if row[1] != tool:
-                    _reattribute_event(connection, row[0], tool)
+        providers.setdefault(snapshot.session_id, set()).add(snapshot.provider_id)
+    legacy_ids = {
+        stable_id("opencode-local", session, provider): provider
+        for session, known in providers.items() for provider in known
+    }
+    for table in ("usage_events", "unpriced_usage_events"):
+        rows = connection.execute(
+            f"SELECT e.raw_id,e.session_id,g.issue FROM {table} e "
+            "LEFT JOIN coverage_gap_events g ON g.raw_id=e.raw_id "
+            "WHERE e.source='opencode_local' AND e.tool_key='opencode'"
+        ).fetchall()
+        for raw_id, session, issue in rows:
+            known = providers.get(session)
+            if not known or (raw_id not in legacy_ids and issue not in {BASELINE_ISSUE, DELTA_ISSUE}):
+                continue
+            provider = legacy_ids.get(raw_id) or (next(iter(known)) if len(known) == 1 else "unknown")
+            tool = tool_key_for_provider(provider)
+            if tool != "opencode":
+                _reattribute_event(connection, raw_id, tool)
+    write_meta(connection, CUMULATIVE_PROVIDER_RETAG, True)
 
 
 def reconcile_cumulative(connection, rows, snapshots, issues=None, deferred=None):

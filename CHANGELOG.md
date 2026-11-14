@@ -14,6 +14,8 @@ This project is licensed under Apache-2.0.
 - OpenCode provider rows: Isoquant and other custom providers now have separate usage rows,
   alongside the existing Z.AI and OpenCode Go plan rows. Historical message events are reassigned
   in place; ambiguous legacy provider attribution stays explicit, and unpriced tokens remain counted.
+  Provider rows have stable chart colors, retain Grok route evidence, and preserve earlier attribution
+  when a session switches provider. The cumulative-history backfill runs once.
 
 ### Security
 
