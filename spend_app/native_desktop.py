@@ -279,6 +279,10 @@ def demo_report(period="today", machine="all") -> dict:
         }
         row["models"] = [{**row, "key": key + ":sample", "name": "Example model"}]
         rows.append(row)
+    # Sample spans and a $200/month plan set give a plausible same-span ratio.
+    span_hours = {"today": 10.0, "week": 168.0, "month": 312.0, "all": 1440.0}[period]
+    accrued = round(200 / 30 * span_hours / 24, 2)
+    now = datetime.now(UTC)
     return {
         "period": period,
         "periodLabel": PERIOD_LABELS[period],
@@ -292,22 +296,58 @@ def demo_report(period="today", machine="all") -> dict:
         },
         "tools": rows,
         "timezone": "UTC",
-        "generatedAt": datetime.now(UTC).isoformat(),
+        "generatedAt": now.isoformat(),
+        "activeFrom": (now - timedelta(hours=span_hours)).isoformat(),
+        "rate": {
+            "perHourUsd": round(127.34 / span_hours, 4),
+            "perDayUsd": round(127.34 / span_hours * 24, 2),
+            "spanHours": span_hours,
+            "complete": True,
+        },
+        "plans": {
+            "accruedUsd": accrued,
+            "multiple": round(127.34 / accrued, 2),
+            "basis": "ratio",
+            "method": "Sample plan cost accrued over the same span.",
+        },
         "machines": [
             {"id": "local", "name": "Desktop", "online": True},
             {"id": "example-laptop", "name": "Laptop", "online": True},
         ],
-        "series": [
-            {
-                "label": f"{8 + idx}:00",
-                "bucketUsd": round(127.34 / 10, 2),
-                "cumulativeUsd": round(127.34 * ((idx + 1) / 10) ** 1.18, 2),
-                "tokens": 820_000,
-                "cumulativeTokens": int(8_200_000 * ((idx + 1) / 10)),
-            }
-            for idx in range(10)
-        ],
+        "series": _demo_series(now, span_hours, period),
     }
+
+
+def _demo_series(now: datetime, span_hours: float, period: str) -> list[dict]:
+    # Uneven sample buckets that still sum exactly to the demo total.
+    weights = (2, 5, 9, 14, 6, 3, 11, 16, 12, 8, 4, 10)
+    scale = sum(weights)
+    step = span_hours / len(weights)
+    points, running_usd, running_tok = [], 0.0, 0
+    for idx, weight in enumerate(weights):
+        bucket_usd = round(127.34 * weight / scale, 2)
+        bucket_tok = int(8_200_000 * weight / scale)
+        if idx == len(weights) - 1:
+            bucket_usd = round(127.34 - running_usd, 2)
+            bucket_tok = 8_200_000 - running_tok
+        running_usd = round(running_usd + bucket_usd, 2)
+        running_tok += bucket_tok
+        end = now - timedelta(hours=step * (len(weights) - idx - 1))
+        label = (
+            end.strftime("%I:%M %p").lstrip("0")
+            if period == "today"
+            else end.strftime("%b %d").replace(" 0", " ")
+        )
+        points.append(
+            {
+                "label": label,
+                "bucketUsd": bucket_usd,
+                "cumulativeUsd": running_usd,
+                "tokens": bucket_tok,
+                "cumulativeTokens": running_tok,
+            }
+        )
+    return points
 
 
 def demo_hud() -> dict:

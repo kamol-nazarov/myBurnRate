@@ -273,6 +273,8 @@ def usage_report(
             now=now,
             timezone=settings.timezone,
         )
+        earliest = min((when for when, _, _ in timeline_samples), default=None)
+        active_from = earliest if period == "all" else start
         return {
             "period": period,
             "periodLabel": PERIODS[period],
@@ -286,7 +288,63 @@ def usage_report(
             "organizationTotal": _public(organizations),
             "tools": result,
             "series": series,
+            "activeFrom": iso_utc(active_from) if active_from is not None else None,
+            "rate": _burn_rate(total, active_from, now),
         }
 
     report = aggregate._memo("native_usage", key, compute)
-    return {**report, "machines": machines}
+    plans = _plan_comparison(settings, report, now=now, machine=machine)
+    return {**report, "machines": machines, "plans": plans}
+
+
+def _burn_rate(total: dict, active_from: datetime | None, now: datetime) -> dict:
+    """Average reference value per hour and per day across the shown span.
+
+    The span is the period itself (or first recorded use for All time), with a
+    one-hour floor so an early-morning Today does not explode the rate. No
+    priced usage stays unknown rather than becoming a measured zero rate.
+    """
+    complete = total["unpricedEvents"] == 0
+    if active_from is None or not total["pricedEvents"]:
+        rate_known = complete and total["events"] == 0 and active_from is not None
+        zero = 0.0 if rate_known else None
+        return {"perHourUsd": zero, "perDayUsd": zero, "spanHours": None, "complete": complete}
+    seconds = max(3600.0, (now - active_from).total_seconds())
+    value = total["knownValue"]
+    hours = Decimal(str(seconds)) / Decimal(3600)
+    return {
+        "perHourUsd": float(value / hours),
+        "perDayUsd": float(value / hours * 24),
+        "spanHours": float(hours),
+        "complete": complete,
+    }
+
+
+def _plan_comparison(settings, report: dict, *, now: datetime, machine: str) -> dict | None:
+    """Reference value versus configured plan accrual over the SAME span.
+
+    Plans are account-wide, so a single-computer view has no fair denominator
+    and returns None. The ratio reuses the month-to-date rules: complete usage
+    is a ratio, partly priced usage is a lower bound, otherwise unavailable.
+    """
+    if machine != "all" or not report.get("activeFrom"):
+        return None
+    active_from = parse_utc(report["activeFrom"])
+    if active_from is None:
+        return None
+    local_today = now.astimezone(ZoneInfo(settings.timezone)).date()
+    with connect(settings.database_path) as connection:
+        accrual, _ = aggregate._subscription_cost(
+            connection, active_from, now, settings.timezone, cap_date=local_today
+        )
+    total = report.get("total") or {}
+    usage = Decimal(str(total.get("valueUsd") or 0))
+    _, basis, multiple = aggregate.plan_value_comparison(
+        usage, complete=bool(total.get("complete", True)), accrual_to_date=accrual
+    )
+    return {
+        "accruedUsd": float(accrual),
+        "multiple": multiple,
+        "basis": basis,
+        "method": "Reference value versus configured plan cost accrued over the same span.",
+    }

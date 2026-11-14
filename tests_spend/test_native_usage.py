@@ -518,3 +518,67 @@ def test_configured_br_m_admin_token_precedes_machine_token_validation(
         assert revoked.status_code == 401
     finally:
         client.close()
+
+
+def test_burn_rate_and_plan_multiple_use_the_same_span(tmp_path):
+    import pytest
+
+    from spend_app import aggregate
+    from spend_app.plan_service import apply_mutation
+
+    settings = make_settings(tmp_path / "rate.db")
+    initialize(settings.database_path)
+    now = datetime(2026, 11, 13, 15, tzinfo=UTC)
+    with connect(settings.database_path) as connection:
+        _priced(connection, raw_id="r1", occurred_at=now - timedelta(minutes=30))
+        apply_mutation(
+            connection,
+            {
+                "operation": "add",
+                "request_id": "rate-plan-1",
+                "values": {
+                    "name": "Synthetic",
+                    "tool_key": "codex",
+                    "amount_usd": "300",
+                    "cadence": "monthly",
+                    "start_date": "2026-11-01",
+                    "end_date": None,
+                },
+            },
+            now.date(),
+        )
+
+    report = usage_report(settings, PRICING, now=now, period="today")
+    value = report["total"]["valueUsd"]
+    start = period_start("today", now, settings.timezone)
+    hours = max(1.0, (now - start).total_seconds() / 3600)
+    assert report["activeFrom"] == _stamp(start)
+    assert report["rate"]["perHourUsd"] == pytest.approx(value / hours)
+    assert report["rate"]["perDayUsd"] == pytest.approx(value / hours * 24)
+    assert report["rate"]["complete"] is True
+
+    with connect(settings.database_path) as connection:
+        accrued, _ = aggregate._subscription_cost(connection, start, now, settings.timezone, cap_date=now.date())
+    plans = report["plans"]
+    assert plans["accruedUsd"] == pytest.approx(float(accrued)) and plans["accruedUsd"] > 0
+    assert plans["basis"] == "ratio"
+    assert plans["multiple"] == pytest.approx(value / float(accrued))
+    # Plans are account-wide: one computer's usage has no fair denominator.
+    assert usage_report(settings, PRICING, now=now, period="today", machine="local")["plans"] is None
+    # Value never absorbs plan cost.
+    assert value < 1
+
+
+def test_burn_rate_is_a_measured_zero_only_when_nothing_was_recorded(tmp_path):
+    settings = make_settings(tmp_path / "zero.db")
+    initialize(settings.database_path)
+    now = datetime(2026, 11, 13, 15, tzinfo=UTC)
+    empty = usage_report(settings, PRICING, now=now, period="today")
+    assert empty["rate"]["perHourUsd"] == 0.0 and empty["rate"]["perDayUsd"] == 0.0
+    assert usage_report(settings, PRICING, now=now, period="all")["rate"]["perDayUsd"] is None
+    assert empty["plans"]["multiple"] is None and empty["plans"]["accruedUsd"] == 0
+
+    with connect(settings.database_path) as connection:
+        _unpriced(connection, raw_id="u1", occurred_at=now - timedelta(minutes=5))
+    unknown = usage_report(settings, PRICING, now=now, period="today")
+    assert unknown["rate"]["perHourUsd"] is None and unknown["rate"]["complete"] is False

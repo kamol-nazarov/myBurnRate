@@ -31,9 +31,19 @@ and reopen the new application so it can start the matching backend.
 
 ## Everyday use
 
-- Choose **Today**, **7 days**, **This month**, or **All time**.
+- Choose **Today**, **7 days**, **Month** (this calendar month), or **All**.
 - The large number is the recorded usage's **API-equivalent value**. Subscription
   fees, balances, provider-reported charges, and quota percentages are excluded.
+  Until the first report arrives the hero shows a loading placeholder, never `$0.00`.
+- The chart shows value per interval as bars, with the running total as a line.
+  Hover it, or focus it and use the arrow keys, to see the total through an
+  interval and what that interval added. If the hub sends no timeline (an older
+  hub), the chart says so rather than drawing a shape.
+- The strip under the list shows the **burn rate** (average value per hour for
+  Today, per day otherwise), the **cache hit** share of prompt tokens, and
+  **value vs plans**: the API-equivalent value divided by your configured plan
+  cost over the same span. Plans are account-wide, so that ratio appears only for
+  **All computers**. Unknown figures stay a dash.
 - The list shows token counts and reference value by tool. Expand a tool for its
   models; selecting a row shows fresh input, cached input, writes, output, and
   reasoning detail when recorded. Reasoning is not added to output a second time.

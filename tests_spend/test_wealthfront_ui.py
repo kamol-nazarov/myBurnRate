@@ -1393,3 +1393,120 @@ def test_secret_fields_are_in_forms_and_never_offered_for_saving(tmp_path):
     assert (
         o["inForm"] is True and o["autocomplete"] == "new-password" and o["calls"] == 1
     )
+
+SCOPE_MENU_PROBE = """
+await until(() => document.querySelector('.provider-row'));
+const out = {};
+for (const w of [336, 380, 520]) {
+  await setWidth(w);
+  document.getElementById('scopeBtn').click();
+  await wait(40);
+  const pop = document.getElementById('scopePopover').getBoundingClientRect();
+  const btn = document.getElementById('scopeBtn').getBoundingClientRect();
+  out[w] = { left: Math.round(pop.left), right: Math.round(pop.right), view: document.documentElement.clientWidth,
+             below: pop.top >= btn.bottom, items: document.querySelectorAll('#scopePopover .scope-opt').length };
+  closeScopePopover(false);
+  await wait(20);
+}
+report(out);
+"""
+
+
+@needs_chrome
+@browser
+def test_scope_menu_stays_inside_the_window_at_every_width(tmp_path):
+    # Below 410px the scope trigger wraps to the left of a second row; the menu
+    # used to stay right-anchored there and spill past the window's left edge.
+    report = demo_report()
+    report["machines"] = [
+        {"id": "local", "name": "Desktop", "online": True},
+        {"id": "a-much-longer-computer-name", "name": "Studio workstation", "online": False},
+    ]
+    html = build_page(pref="light", report=report, probe=SCOPE_MENU_PROBE, extra_css=FAST)
+    r = probe(html, 520, tmp_path, height=700, name="scopemenu")
+    for width, box in r.items():
+        assert box["items"] >= 3, (width, box)
+        assert box["below"], (width, box)
+        assert box["left"] >= 0, (width, box)
+        assert box["right"] <= box["view"], (width, box)
+
+
+# ---- review fixes: loading, timeline honesty, summary strip, keyboard scrub ----------
+
+LOADING_PROBE = """
+await wait(400);
+const hero = document.getElementById('heroSection');
+report({ value: document.getElementById('heroValue').textContent, loading: hero.classList.contains('is-loading'),
+         busy: hero.getAttribute('aria-busy'), tokens: document.getElementById('heroTokens').textContent });
+"""
+
+
+@needs_chrome
+@browser
+def test_hero_shows_a_skeleton_not_a_measured_zero_while_loading(tmp_path):
+    pending = "api.fetch_usage = function () { return new Promise(function () {}); };"
+    r = probe(build_page(pref="light", probe=LOADING_PROBE, api_js=pending, extra_css=FAST), 380, tmp_path, height=700)
+    assert r["value"] != "$0.00" and r["loading"] is True and r["busy"] == "true"
+    assert "0 tokens" not in r["tokens"]
+    failed = "api.fetch_usage = async function () { return { ok: false, error: 'Tracker offline' }; };"
+    f = probe(build_page(pref="light", probe=LOADING_PROBE, api_js=failed, extra_css=FAST), 380, tmp_path, height=700)
+    assert f["value"] == "Unavailable" and f["loading"] is False and f["busy"] is None
+
+
+NO_SERIES_PROBE = """
+await until(() => document.querySelector('.provider-row'));
+await wait(60);
+const wrap = document.getElementById('chartWrap');
+report({ noSeries: wrap.classList.contains('no-series'),
+         label: getComputedStyle(document.getElementById('chartEmpty')).display,
+         paths: document.querySelectorAll('#chartSvg path').length, bars: document.querySelectorAll('#chartSvg .ch-bar').length,
+         axis: document.getElementById('chartAxisStart').textContent + document.getElementById('chartAxisEnd').textContent });
+"""
+
+
+@needs_chrome
+@browser
+def test_missing_timeline_is_labelled_instead_of_invented(tmp_path):
+    report = demo_report()
+    report.pop("series")  # an older hub sends no timeline
+    r = probe(build_page(pref="light", report=report, probe=NO_SERIES_PROBE, extra_css=FAST), 380, tmp_path, height=700)
+    assert r == {"noSeries": True, "label": "flex", "paths": 0, "bars": 0, "axis": ""}
+
+
+SUMMARY_PROBE = """
+await until(() => document.querySelector('.provider-row'));
+await wait(60);
+const text = (id) => document.getElementById(id).textContent;
+const out = { rate: text('metricRate'), rateNote: text('metricRateNote'), cache: text('metricCache'),
+              plans: text('metricPlans'), plansNote: text('metricPlansNote'),
+              periods: [...document.querySelectorAll('.period-pill')].map(b => b.textContent.trim()),
+              eyebrow: text('heroEyebrow'), tokens: text('heroTokens'),
+              bars: document.querySelectorAll('#chartSvg .ch-bar').length,
+              axis: [text('chartAxisStart'), text('chartAxisEnd')] };
+const wrap = document.getElementById('chartWrap');
+wrap.focus();
+wrap.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
+out.homeCtx = text('heroTokensContext');
+out.homeOn = [...document.querySelectorAll('#chartSvg .ch-bar')].findIndex(b => b.classList.contains('on'));
+wrap.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+out.nextOn = [...document.querySelectorAll('#chartSvg .ch-bar')].findIndex(b => b.classList.contains('on'));
+wrap.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+out.afterEsc = { on: document.querySelectorAll('#chartSvg .ch-bar.on').length, ctx: text('heroTokensContext'), focus: document.activeElement.id };
+report(out);
+"""
+
+
+@needs_chrome
+@browser
+def test_summary_strip_period_labels_and_keyboard_scrub(tmp_path):
+    r = probe(build_page(pref="light", probe=SUMMARY_PROBE, extra_css=FAST), 380, tmp_path, height=800)
+    assert r["rate"] == "$12.73" and r["rateNote"] == "per hour"
+    assert r["cache"] == "56%"
+    assert r["plans"].endswith("\u00d7") and r["plansNote"] == "of plan cost"
+    assert r["periods"] == ["Today", "7 days", "Month", "All"]
+    assert r["eyebrow"] == "API-equivalent value" and not r["tokens"].startswith("\u25b2")
+    assert r["bars"] == 12 and r["axis"][0] and r["axis"][1] == "Now"
+    assert r["homeCtx"].startswith("through ") and "(+$" in r["homeCtx"] and r["homeOn"] == 0
+    assert r["nextOn"] == 1
+    assert r["afterEsc"]["on"] == 0 and r["afterEsc"]["ctx"].startswith("across ")
+    assert r["afterEsc"]["focus"] == "chartWrap"  # Escape only ended the scrub

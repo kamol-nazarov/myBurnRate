@@ -95,6 +95,7 @@
   --chart-fill-top: 0.17;
   --chart-grid: #ececf4;
   --chart-scrub: #c9c6ee;
+  --chart-bar-opacity: 0.18;
   --preview-border: #e2e2ec;
   --shadow-card: 0 1px 6px rgba(24, 23, 43, 0.03), 0 1px 2px rgba(24, 23, 43, 0.02);
   --shadow-pop: 0 12px 28px rgba(24, 23, 43, 0.14), 0 2px 6px rgba(24, 23, 43, 0.06);
@@ -161,6 +162,7 @@ html[data-theme="dark"] {
   --chart-fill-top: 0.24;
   --chart-grid: #272a37;
   --chart-scrub: #4b4985;
+  --chart-bar-opacity: 0.32;
   --preview-border: #2a2d3a;
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-pop: 0 12px 28px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.3);
@@ -301,6 +303,12 @@ button, input {
   color: var(--mint);
   white-space: nowrap;
   transition: background 0.2s ease, color 0.2s ease;
+}
+
+/* Before the first report the status is unknown, not live */
+.status-pill.pending {
+  background: var(--surface-subtle);
+  color: var(--ink-secondary);
 }
 
 .status-pill.warn {
@@ -500,7 +508,7 @@ button, input {
 .stat-primary {
   font-size: 11.5px;
   font-weight: 600;
-  color: var(--mint);
+  color: var(--ink);
   display: flex;
   align-items: center;
   gap: 5px;
@@ -520,12 +528,55 @@ button, input {
   font-feature-settings: "tnum" 1, "lnum" 1;
 }
 
-/* Compact Interactive Area Chart */
+/* Loading is not a measured zero: hold a skeleton until the first report arrives */
+.hero.is-loading .balance-value,
+.hero.is-loading .stat-primary,
+.hero.is-loading .stat-secondary {
+  color: transparent;
+  background: var(--track);
+  border-radius: 7px;
+  width: max-content;
+  animation: skeletonPulse 1.2s ease-in-out infinite;
+}
+.hero.is-loading .balance-value { min-width: 132px; }
+.hero.is-loading .stat-primary { min-width: 176px; }
+.hero.is-loading .stat-secondary { min-width: 124px; }
+.hero.is-loading .stat-primary * { visibility: hidden; }
+
+@keyframes skeletonPulse {
+  50% { opacity: 0.5; }
+}
+
+/* Per-interval bars with the running total drawn over them */
 .chart-wrap {
   position: relative;
-  margin: 5px -4px 3px;
+  margin: 5px -4px 0;
   height: 64px;
   cursor: crosshair;
+  border-radius: 6px;
+}
+.chart-wrap.no-series { cursor: default; }
+
+.chart-empty {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--ink-tertiary);
+  pointer-events: none;
+}
+.chart-wrap.no-series .chart-empty { display: flex; }
+
+.chart-axis {
+  display: flex;
+  justify-content: space-between;
+  padding: 1px 3px 2px;
+  min-height: 16px;
+  font-size: 10.5px;
+  color: var(--ink-tertiary);
+  font-variant-numeric: tabular-nums lining-nums;
 }
 
 .chart-svg {
@@ -1225,6 +1276,7 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
 .summary-cell {
   display: grid;
   gap: 1px;
+  min-width: 0;
 }
 
 .summary-label {
@@ -1240,6 +1292,14 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
   color: var(--ink);
   font-variant-numeric: tabular-nums lining-nums;
   font-feature-settings: "tnum" 1, "lnum" 1;
+}
+
+.summary-note {
+  font-size: 10.5px;
+  color: var(--ink-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .footer-note {
@@ -1588,6 +1648,8 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
 .ch-grid { stroke: var(--chart-grid); }
 .ch-flat { opacity: 0.5; }
 .ch-scrub { stroke: var(--chart-scrub); }
+.ch-bar { fill: var(--chart-line); opacity: var(--chart-bar-opacity); transition: opacity 0.12s ease; }
+.ch-bar.on { opacity: 0.62; }
 .ch-fill-top { stop-color: var(--chart-line); stop-opacity: var(--chart-fill-top); }
 .ch-fill-bottom { stop-color: var(--chart-line); stop-opacity: 0; }
 
@@ -1904,9 +1966,9 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
         </svg>
       </div>
       <span class="brand-title">BURNRATE</span>
-      <span class="status-pill" id="liveBadge">
+      <span class="status-pill pending" id="liveBadge">
         <span class="status-dot"></span>
-        <span id="liveText">Live</span>
+        <span id="liveText">Connecting</span>
       </span>
     </div>
 
@@ -1939,37 +2001,39 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
     </div>
   </header>
 
-  <!-- Main Scrollable Portfolio Feed -->
+  <!-- Main scrollable feed -->
   <div class="scroll-body" id="scrollBody">
-    <section class="hero">
+    <section class="hero is-loading" id="heroSection" aria-busy="true">
       <div class="hero-inner">
         <div class="eyebrow">
-          <span id="heroEyebrow">API-equivalent portfolio value</span>
+          <span id="heroEyebrow">API-equivalent value</span>
         </div>
         <div class="balance-row">
-          <div class="balance-value" id="heroValue">$0.00</div>
+          <div class="balance-value" id="heroValue">—</div>
           <span class="subtotal-pill" id="subtotalPill" style="display:none" title="Some recorded events used models without a configured rate card">Subtotal</span>
         </div>
         <div class="hero-stats">
           <div class="stat-primary">
-            <span id="heroTokens">▲ 0 tokens</span>
-            <span class="muted" id="heroTokensContext">measured at API rates</span>
+            <span id="heroTokens">Loading usage…</span>
+            <span class="muted" id="heroTokensContext"></span>
           </div>
           <div class="stat-secondary" id="heroMeta">Starting local tracker…</div>
         </div>
 
-        <!-- Wealthfront Interactive Purple Curve -->
-        <div class="chart-wrap" id="chartWrap">
-          <svg class="chart-svg" id="chartSvg" preserveAspectRatio="none"></svg>
+        <!-- Spend per interval (bars) and running total (line) -->
+        <div class="chart-wrap" id="chartWrap" tabindex="0" role="group" aria-label="Usage timeline. Use the left and right arrow keys to inspect each interval.">
+          <svg class="chart-svg" id="chartSvg" preserveAspectRatio="none" aria-hidden="true"></svg>
+          <div class="chart-empty" id="chartEmpty">No timeline for this range</div>
         </div>
+        <div class="chart-axis" aria-hidden="true"><span id="chartAxisStart"></span><span id="chartAxisEnd"></span></div>
 
         <!-- Wealthfront Time-Range Pills -->
         <div class="period-bar" id="periodBar">
           <div class="period-indicator" id="periodIndicator"></div>
           <button class="period-pill active" data-period="today" type="button">Today</button>
-          <button class="period-pill" data-period="week" type="button">7D</button>
-          <button class="period-pill" data-period="month" type="button">1M</button>
-          <button class="period-pill" data-period="all" type="button">ALL</button>
+          <button class="period-pill" data-period="week" type="button">7 days</button>
+          <button class="period-pill" data-period="month" type="button" title="This calendar month">Month</button>
+          <button class="period-pill" data-period="all" type="button">All</button>
         </div>
       </div>
     </section>
@@ -1991,20 +2055,23 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
         </div>
       </div>
 
-      <!-- Portfolio Summary Metrics Card -->
+      <!-- Rate, cache and plan summary -->
       <div class="wf-card">
         <div class="summary-grid">
-          <div class="summary-cell">
-            <span class="summary-label">Recorded tokens</span>
-            <span class="summary-val" id="metricTokens">—</span>
+          <div class="summary-cell" title="Average API-equivalent value across the shown period">
+            <span class="summary-label">Burn rate</span>
+            <span class="summary-val" id="metricRate">—</span>
+            <span class="summary-note" id="metricRateNote">per day</span>
           </div>
-          <div class="summary-cell">
-            <span class="summary-label">Tracked lanes</span>
-            <span class="summary-val" id="metricTools">—</span>
+          <div class="summary-cell" title="Share of prompt tokens served from cache (cached, fresh and cache writes)">
+            <span class="summary-label">Cache hit</span>
+            <span class="summary-val" id="metricCache">—</span>
+            <span class="summary-note" id="metricCacheNote">of input</span>
           </div>
-          <div class="summary-cell">
-            <span class="summary-label">Computers</span>
-            <span class="summary-val" id="metricMachines">—</span>
+          <div class="summary-cell" id="metricPlansCell" title="API-equivalent value versus your configured plan cost over the same span">
+            <span class="summary-label">Value vs plans</span>
+            <span class="summary-val" id="metricPlans">—</span>
+            <span class="summary-note" id="metricPlansNote">of plan cost</span>
           </div>
         </div>
       </div>
@@ -2268,38 +2335,13 @@ function smoothPath(pts) {
   return d;
 }
 
+/* Only a timeline the tracker measured is drawn. An older hub that sends no
+   series gets an explicit "No timeline" state rather than an invented curve. */
 function getSeriesPoints(report) {
   if (report && Array.isArray(report.series) && report.series.length >= 2) {
     return report.series;
   }
-  const totalUsd = Number(report?.total?.valueUsd || 0);
-  const totalTok = Number(report?.total?.tokens || 0);
-  const steps = 12;
-  const out = [];
-  const now = new Date();
-  for (let i = 0; i < steps; i++) {
-    const t = (i + 1) / steps;
-    const ease = 0.06 + 0.94 * Math.pow(t, 1.35) * (0.94 + 0.06 * Math.sin(i * 1.3));
-    const clamped = i === steps - 1 ? 1 : Math.min(0.99, ease);
-    let lbl = report?.periodLabel || "Period";
-    if (state.period === "today") {
-      const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
-      const ptDate = new Date(startOfDay.getTime() + (now.getTime() - startOfDay.getTime()) * t);
-      lbl = ptDate.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-    } else if (state.period === "week" || state.period === "month") {
-      const daysSpan = state.period === "week" ? 7 : now.getDate();
-      const ptDate = new Date(now.getTime() - (1 - t) * daysSpan * 86400000);
-      lbl = ptDate.toLocaleDateString([], { month: "short", day: "numeric" });
-    }
-    out.push({
-      label: lbl,
-      bucketUsd: totalUsd / steps,
-      cumulativeUsd: totalUsd * clamped,
-      tokens: Math.round(totalTok / steps),
-      cumulativeTokens: Math.round(totalTok * clamped)
-    });
-  }
-  return out;
+  return [];
 }
 
 /* No recorded usage at all: nothing to plot, so draw an honest flat baseline instead of a synthetic climb. */
@@ -2317,7 +2359,20 @@ function renderChart(animate = false) {
   svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
 
   const flat = reportIsEmpty(state.report);
-  const series = flat ? [{ cumulativeUsd: 0 }, { cumulativeUsd: 0 }] : getSeriesPoints(state.report);
+  const measured = flat ? [] : getSeriesPoints(state.report);
+  const noSeries = !flat && !!state.report && state.report.scope !== "unavailable" && measured.length < 2;
+  wrap.classList.toggle("no-series", noSeries);
+  paintChartAxis(measured);
+  if (!flat && measured.length < 2) {
+    svg.innerHTML = `
+      <line x1="7" y1="${h - 3}" x2="${w - 7}" y2="${h - 3}" class="ch-grid" stroke-width="1" stroke-dasharray="3 3"/>
+      <line id="scrubLine" x1="0" y1="0" x2="0" y2="0" style="display:none"/>
+      <circle id="scrubDot" cx="0" cy="0" r="0" style="display:none"/>
+    `;
+    wrap._coords = [];
+    return;
+  }
+  const series = flat ? [{ cumulativeUsd: 0 }, { cumulativeUsd: 0 }] : measured;
   const padX = 7;
   const padTop = 7;
   const padBot = 7;
@@ -2328,17 +2383,25 @@ function renderChart(animate = false) {
   const maxV = Math.max(...vals, 0.01);
   const minV = 0;
 
+  // Points sit at bar centres so the running-total line lines up with its interval.
+  const slot = plotW / series.length;
   const coords = series.map((p, i) => {
-    const x = padX + (series.length === 1 ? plotW : (i / (series.length - 1)) * plotW);
+    const x = padX + slot * (i + 0.5);
     const norm = maxV > minV ? (Number(p.cumulativeUsd || 0) - minV) / (maxV - minV) : 0;
     const y = padTop + plotH * (1 - norm * 0.92);
-    return [x, y, p];
+    return [x, y, p, i];
   });
 
   const lineD = smoothPath(coords);
   const last = coords[coords.length - 1];
-  const first = coords[0];
-  const areaD = `${lineD} L ${last[0].toFixed(1)} ${(h - 3).toFixed(1)} L ${first[0].toFixed(1)} ${(h - 3).toFixed(1)} Z`;
+  const buckets = series.map(p => Math.max(0, Number(p.bucketUsd || 0)));
+  const maxB = Math.max(...buckets, 0);
+  const barW = Math.max(1.5, slot * 0.58);
+  const bars = maxB > 0 ? buckets.map((v, i) => {
+    const bh = Math.max(v > 0 ? 1.5 : 0, (v / maxB) * plotH * 0.92);
+    const x = padX + slot * i + (slot - barW) / 2;
+    return `<rect class="ch-bar" x="${x.toFixed(1)}" y="${(h - 3 - bh).toFixed(1)}" width="${barW.toFixed(1)}" height="${bh.toFixed(1)}" rx="1.5"/>`;
+  }).join("") : "";
 
   if (flat) {
     svg.innerHTML = `
@@ -2352,15 +2415,9 @@ function renderChart(animate = false) {
   }
 
   svg.innerHTML = `
-    <defs>
-      <linearGradient id="wfGrad" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0%" class="ch-fill-top"/>
-        <stop offset="100%" class="ch-fill-bottom"/>
-      </linearGradient>
-    </defs>
     <line x1="${padX}" y1="${h - 3}" x2="${w - padX}" y2="${h - 3}" class="ch-grid" stroke-width="1" stroke-dasharray="3 3"/>
     <g class="${animate && !prefersReducedMotion() ? "chart-line-anim" : ""}">
-      <path d="${areaD}" fill="url(#wfGrad)"/>
+      ${bars}
       <path d="${lineD}" class="ch-line" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
     </g>
     <circle id="endDotHalo" class="halo-pulse ch-dot" cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="5.2"/>
@@ -2370,44 +2427,101 @@ function renderChart(animate = false) {
   `;
 
   wrap._coords = coords;
+  if (wrap._scrubIdx !== null && wrap._scrubIdx !== undefined) scrubTo(wrap._scrubIdx);
+}
+
+function axisStartLabel(report, series) {
+  const iso = report?.activeFrom || (state.period !== "all" ? report?.from : null);
+  const t = iso ? Date.parse(iso) : NaN;
+  if (Number.isFinite(t) && new Date(t).getUTCFullYear() >= 2000) {
+    const opts = state.period === "today" ? { hour: "numeric", minute: "2-digit" } : { month: "short", day: "numeric" };
+    try {
+      return new Date(t).toLocaleString([], { ...opts, timeZone: report.timezone || undefined });
+    } catch (e) {
+      return new Date(t).toLocaleString([], opts);
+    }
+  }
+  return series.length ? String(series[0].label || "") : "";
+}
+
+function paintChartAxis(series) {
+  const start = document.getElementById("chartAxisStart");
+  const end = document.getElementById("chartAxisEnd");
+  if (!start || !end) return;
+  const show = series.length >= 2;
+  start.textContent = show ? axisStartLabel(state.report, series) : "";
+  end.textContent = show ? "Now" : "";
+}
+
+/* Inspect one interval: the hero shows the running total through it and what it added. */
+function scrubTo(idx) {
+  const wrap = document.getElementById("chartWrap");
+  const coords = wrap._coords;
+  if (!coords || !coords.length || !state.report) return false;
+  idx = Math.max(0, Math.min(coords.length - 1, idx));
+  wrap._scrubIdx = idx;
+  const best = coords[idx];
+  const line = document.getElementById("scrubLine");
+  const dot = document.getElementById("scrubDot");
+  if (line && dot) {
+    line.setAttribute("x1", best[0].toFixed(1));
+    line.setAttribute("x2", best[0].toFixed(1));
+    line.style.display = "";
+    dot.setAttribute("cx", best[0].toFixed(1));
+    dot.setAttribute("cy", best[1].toFixed(1));
+    dot.style.display = "";
+  }
+  document.querySelectorAll("#chartSvg .ch-bar").forEach((b, i) => b.classList.toggle("on", i === idx));
+  const pt = best[2];
+  cancelAnimationFrame(heroAnimId);
+  document.getElementById("heroValue").textContent = fmtMoney(pt.cumulativeUsd, true, true);
+  document.getElementById("heroTokens").textContent = `${fmtTokens(pt.cumulativeTokens)} tokens`;
+  const added = pt.bucketUsd === null || pt.bucketUsd === undefined ? "" : ` (+${fmtMoney(Math.max(0, Number(pt.bucketUsd)), true, true)})`;
+  document.getElementById("heroTokensContext").textContent = `through ${pt.label}${added}`;
+  return true;
+}
+
+function endScrub() {
+  const wrap = document.getElementById("chartWrap");
+  if (wrap._scrubIdx === null || wrap._scrubIdx === undefined) return false;
+  wrap._scrubIdx = null;
+  const line = document.getElementById("scrubLine");
+  const dot = document.getElementById("scrubDot");
+  if (line) line.style.display = "none";
+  if (dot) dot.style.display = "none";
+  document.querySelectorAll("#chartSvg .ch-bar.on").forEach(b => b.classList.remove("on"));
+  if (state.report) paintHeroText(state.report, false);
+  return true;
 }
 
 function bindChartScrub() {
   const wrap = document.getElementById("chartWrap");
+  wrap._scrubIdx = null;
   wrap.addEventListener("mousemove", (e) => {
     const coords = wrap._coords;
-    if (!coords || !coords.length || !state.report) return;
-    const rect = wrap.getBoundingClientRect();
-    const mx = e.clientX - rect.left;
-    let best = coords[0];
+    if (!coords || !coords.length) return;
+    const mx = e.clientX - wrap.getBoundingClientRect().left;
+    let bestIdx = 0;
     let bestDist = Infinity;
-    for (const c of coords) {
+    coords.forEach((c, i) => {
       const d = Math.abs(c[0] - mx);
-      if (d < bestDist) { bestDist = d; best = c; }
-    }
-    const line = document.getElementById("scrubLine");
-    const dot = document.getElementById("scrubDot");
-    if (line && dot) {
-      line.setAttribute("x1", best[0].toFixed(1));
-      line.setAttribute("x2", best[0].toFixed(1));
-      line.style.display = "";
-      dot.setAttribute("cx", best[0].toFixed(1));
-      dot.setAttribute("cy", best[1].toFixed(1));
-      dot.style.display = "";
-    }
-    const pt = best[2];
-    cancelAnimationFrame(heroAnimId);
-    document.getElementById("heroValue").textContent = fmtMoney(pt.cumulativeUsd, true, true);
-    document.getElementById("heroTokens").textContent = `▲ ${fmtTokens(pt.cumulativeTokens)} tokens`;
-    document.getElementById("heroTokensContext").textContent = `through ${pt.label}`;
+      if (d < bestDist) { bestDist = d; bestIdx = i; }
+    });
+    scrubTo(bestIdx);
   });
-
-  wrap.addEventListener("mouseleave", () => {
-    const line = document.getElementById("scrubLine");
-    const dot = document.getElementById("scrubDot");
-    if (line) line.style.display = "none";
-    if (dot) dot.style.display = "none";
-    if (state.report) paintHeroText(state.report, false);
+  wrap.addEventListener("mouseleave", () => { if (document.activeElement !== wrap) endScrub(); });
+  wrap.addEventListener("blur", endScrub);
+  wrap.addEventListener("keydown", (e) => {
+    const coords = wrap._coords;
+    if (!coords || !coords.length) return;
+    const cur = wrap._scrubIdx;
+    let next = null;
+    if (e.key === "ArrowLeft") next = cur === null || cur === undefined ? coords.length - 1 : cur - 1;
+    else if (e.key === "ArrowRight") next = cur === null || cur === undefined ? coords.length - 1 : cur + 1;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = coords.length - 1;
+    else if (e.key === "Escape" && endScrub()) { e.preventDefault(); e.stopPropagation(); return; }
+    if (next !== null) { e.preventDefault(); scrubTo(next); }
   });
 }
 
@@ -2454,6 +2568,9 @@ function getNormalizedProviders(data) {
 }
 
 function paintHeroText(data, animate = true) {
+  const heroSection = document.getElementById("heroSection");
+  heroSection.classList.remove("is-loading");
+  heroSection.removeAttribute("aria-busy");
   const total = data.total || {};
   const unavailable = data.scope === "unavailable";
   const hasEvents = Number(total.events || 0) > 0;
@@ -2476,13 +2593,13 @@ function paintHeroText(data, animate = true) {
     document.getElementById("heroTokens").textContent = providers.length ? "No usage recorded this period" : "No usage recorded yet";
     document.getElementById("heroTokensContext").textContent = "";
   } else {
-    document.getElementById("heroTokens").textContent = `▲ ${fmtTokens(total.tokens || 0)} tokens`;
+    document.getElementById("heroTokens").textContent = `${fmtTokens(total.tokens || 0)} tokens`;
     document.getElementById("heroTokensContext").textContent = `across ${providers.length} ${providers.length === 1 ? "provider" : "providers"}`;
   }
 
   let freshness = "Updated just now";
   if (state.demo) {
-    freshness = "Sample portfolio";
+    freshness = "Sample data";
   } else if (data.generatedAt) {
     const ageSec = Math.max(0, Math.round((Date.now() - Date.parse(data.generatedAt)) / 1000));
     if (ageSec >= 60) freshness = `Updated ${Math.floor(ageSec / 60)}m ago`;
@@ -2495,6 +2612,7 @@ function paintHeroText(data, animate = true) {
 
   const warn = data.scope === "unavailable" || data.scope === "local-fallback";
   const badge = document.getElementById("liveBadge");
+  badge.classList.remove("pending");
   badge.classList.toggle("warn", warn);
   document.getElementById("liveText").textContent =
     state.demo ? "Sample" :
@@ -2560,6 +2678,43 @@ function renderWindowItem(w) {
   `;
 }
 
+function fmtMultiple(n) {
+  return n >= 10 ? `${Math.round(n)}×` : `${n.toFixed(1)}×`;
+}
+
+/* Burn rate, cache hit and value vs plans. Unknown stays a dash, never a zero. */
+function paintSummary(data) {
+  const set = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
+  const hourly = state.period === "today";
+  const rate = data.rate || null;
+  const perVal = rate ? (hourly ? rate.perHourUsd : rate.perDayUsd) : null;
+  const rateKnown = perVal !== null && perVal !== undefined && Number.isFinite(Number(perVal));
+  set("metricRate", rateKnown ? fmtMoney(Number(perVal), true, true) + (rate.complete === false ? "+" : "") : "—");
+  set("metricRateNote", hourly ? "per hour" : "per day");
+
+  let cached = 0, fresh = 0, writes = 0;
+  (data.tools || []).filter(t => !t.organization).forEach(t => {
+    cached += Math.max(0, Number(t.cached || 0));
+    fresh += Math.max(0, Number(t.input || 0));
+    writes += Math.max(0, Number(t.writes || 0));
+  });
+  const prompt = cached + fresh + writes;
+  set("metricCache", prompt > 0 ? `${Math.round((cached / prompt) * 100)}%` : "—");
+  set("metricCacheNote", "of input");
+
+  const plans = data.plans || null;
+  if (state.machine !== "all") {
+    set("metricPlans", "—");
+    set("metricPlansNote", "all computers");
+  } else if (plans && plans.multiple !== null && plans.multiple !== undefined && Number.isFinite(Number(plans.multiple))) {
+    set("metricPlans", fmtMultiple(Number(plans.multiple)) + (plans.basis === "lower_bound" ? "+" : ""));
+    set("metricPlansNote", "of plan cost");
+  } else {
+    set("metricPlans", "—");
+    set("metricPlansNote", plans && Number(plans.accruedUsd) === 0 ? "no plans set" : "no plan data");
+  }
+}
+
 function renderReport(data, animateChart = false) {
   state.report = data;
   paintHeroText(data, true);
@@ -2569,9 +2724,7 @@ function renderReport(data, animateChart = false) {
   const providers = getNormalizedProviders(data);
   const ordinary = providers.filter(p => !p.organization);
   const machines = data.machines || [];
-  document.getElementById("metricTokens").textContent = fmtTokens(total.tokens || 0);
-  document.getElementById("metricTools").textContent = String(ordinary.length);
-  document.getElementById("metricMachines").textContent = String(state.machine === "all" ? Math.max(1, machines.length) : 1);
+  paintSummary(data);
 
   const notices = [];
   if (data.warning) notices.push(data.warning);
@@ -3234,6 +3387,17 @@ function startDragAutoScroll() {
   dragState.autoScrollRaf = requestAnimationFrame(tick);
 }
 
+function showFirstLoadFailure() {
+  if (state.report) return;
+  const heroSection = document.getElementById("heroSection");
+  heroSection.classList.remove("is-loading");
+  heroSection.removeAttribute("aria-busy");
+  document.getElementById("heroValue").textContent = "Unavailable";
+  document.getElementById("heroTokens").textContent = "Usage could not be loaded";
+  document.getElementById("heroTokensContext").textContent = "";
+  document.getElementById("heroMeta").textContent = "Press refresh to try again";
+}
+
 async function loadUsage(restart = false, animateChart = false) {
   const btn = document.getElementById("refreshBtn");
   btn.classList.add("spinning");
@@ -3244,12 +3408,15 @@ async function loadUsage(restart = false, animateChart = false) {
         renderReport(res.report, animateChart);
       } else {
         showToast((res && res.error) || "Could not refresh usage");
+        document.getElementById("liveBadge").classList.remove("pending");
         document.getElementById("liveBadge").classList.add("warn");
         document.getElementById("liveText").textContent = "Unavailable";
+        showFirstLoadFailure();
       }
     }
   } catch (err) {
     showToast("Refresh failed");
+    showFirstLoadFailure();
   } finally {
     btn.classList.remove("spinning");
   }
@@ -3269,6 +3436,25 @@ function closeScopePopover(returnFocus = true) {
   return true;
 }
 
+/* Anchor the menu to whichever edge of the trigger keeps it on screen. In the
+   narrow layout the trigger wraps to the left of a second row, so right-edge
+   anchoring would push the 194px menu past the window's left edge. */
+function positionScopePopover() {
+  const pop = document.getElementById("scopePopover");
+  const btnRect = document.getElementById("scopeBtn").getBoundingClientRect();
+  const margin = 8;
+  const viewW = document.documentElement.clientWidth || window.innerWidth;
+  const width = Math.min(194, viewW - margin * 2);
+  const alignLeft = btnRect.left + btnRect.width / 2 < viewW / 2;
+  const preferred = alignLeft ? btnRect.left : btnRect.right - width;
+  const left = Math.max(margin, Math.min(Math.round(preferred), viewW - width - margin));
+  pop.style.width = `${width}px`;
+  pop.style.top = `${Math.round(btnRect.bottom + 5)}px`;
+  pop.style.left = `${left}px`;
+  pop.style.right = "auto";
+  pop.style.transformOrigin = alignLeft ? "top left" : "top right";
+}
+
 function toggleScopePopover() {
   const pop = document.getElementById("scopePopover");
   const back = document.getElementById("scopeBackdrop");
@@ -3276,9 +3462,7 @@ function toggleScopePopover() {
     closeScopePopover(true);
     return;
   }
-  const btnRect = document.getElementById("scopeBtn").getBoundingClientRect();
-  pop.style.top = `${Math.round(btnRect.bottom + 5)}px`;
-  pop.style.right = `${Math.max(10, Math.round(window.innerWidth - btnRect.right))}px`;
+  positionScopePopover();
 
   const machines = state.report?.machines || [];
   const items = [{ id: "all", name: "All computers", online: true }, ...machines];
@@ -4074,6 +4258,7 @@ document.querySelectorAll(".rz").forEach(el => {
 
 window.addEventListener("resize", () => {
   if (state.report) renderChart(false);
+  if (document.getElementById("scopePopover").classList.contains("open")) positionScopePopover();
 });
 
 bindChartScrub();

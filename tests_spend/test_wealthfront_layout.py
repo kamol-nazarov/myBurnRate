@@ -198,7 +198,7 @@ for (const width of [304, 320, 336, 364, 380, 480]) {
 
   out.push({ width, actual: window.innerWidth, issues });
 }
-report({ out, tokens: document.querySelector('#metricTokens').textContent });
+report({ out, tokens: document.querySelector('#metricRate').textContent });
 """
 
 
