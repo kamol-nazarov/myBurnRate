@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Private security report
-    url: https://docs.github.com/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities/privately-reporting-a-security-vulnerability
-    about: Report vulnerabilities privately (GitHub private advisory). Do not open a public issue and do not paste .env files, API keys, prompts, or telemetry dumps.
+    url: https://github.com/kamol-nazarov/myBurnRate/security/advisories/new
+    about: Report vulnerabilities privately through GitHub's advisory channel. Never open a public issue with secrets, .env files, API keys, prompts or telemetry dumps.
+  - name: Report a conduct concern
+    url: https://github.com/kamol-nazarov/myBurnRate/security/advisories/new
+    about: Start the title with "Conduct:" to reach the maintainers privately. Read CODE_OF_CONDUCT.md first.

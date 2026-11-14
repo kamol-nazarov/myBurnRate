@@ -1,6 +1,6 @@
 # Running from source and development
 
-Most people should install a release instead; see [Download](../README.md#download). Running from a
+Most people should install a release instead; see [Install](../README.md#install). Running from a
 clone is for development, or for a Windows computer where you want the PowerShell service scripts.
 
 ## Install from a clone (Windows)

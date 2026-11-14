@@ -6,12 +6,14 @@ maintainer's computer, so every download traces back to a tagged commit.
 
 ## Branches
 
-- **`prod`** is the default branch. It always points at the latest published
-  release, so the repository's front page, the README and the links in release
-  notes describe what people actually download.
+- **`prod`** is the default branch. It always contains the latest published
+  release, and may also carry documentation-only commits that change no
+  shipped code, so the repository's front page, the README and the links in
+  release notes describe what people actually download.
 - **`main`** collects finished work. Feature branches merge into `main`;
   releases are tagged from it.
-- `prod` only moves forward, to a published release tag (step 7 below).
+- `prod` only moves forward: to a published release tag (step 7 below), or to a
+  documentation or metadata commit that changes no shipped code.
 
 ## Steps
 
