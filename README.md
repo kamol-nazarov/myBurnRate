@@ -312,7 +312,9 @@ x86-64; the Python package runs on any OS with CPython 3.12.
 
 - **Questions and reproducible bugs:** open an [issue](https://github.com/kamol-nazarov/myBurnRate/issues)
   using the template. Redact paths, hostnames and keys.
-- **Security:** follow [SECURITY.md](SECURITY.md) and use a private advisory.
+- **Security:** report privately through
+  [GitHub security advisories](https://github.com/kamol-nazarov/myBurnRate/security/advisories/new).
+  See [SECURITY.md](SECURITY.md) for scope, targets and safe harbor.
 - **Conduct:** see [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 ## Code signing and supply chain

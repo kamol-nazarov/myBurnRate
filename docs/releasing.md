@@ -22,7 +22,7 @@ maintainer's computer, so every download traces back to a tagged commit.
    - `spend_app/__init__.py`;
    - `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock` and
      `src-tauri/tauri.conf.json`;
-   - the version line in the README.
+   - the current-release line and release-notes link in the README.
 2. Write `docs/releases/RELEASE-<version>.md` (it becomes the release notes)
    and move the changelog's `[Unreleased]` entries under the new version.
 3. Commit, push, and wait for CI and the Desktop workflow to pass.
