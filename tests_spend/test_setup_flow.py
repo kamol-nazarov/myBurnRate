@@ -286,7 +286,7 @@ def test_hub_update_runs_the_deploy_steps_and_refuses_odd_arguments() -> None:
     assert "tk-security-preflight burnrate" in command
     assert "curl --fail" in command
     assert "checkout -f" not in command
-    assert lines[-1] == "Hub now runs 0.3.0-beta.18+abc123."
+    assert lines[-1] == "Hub is healthy; installed build 0.3.0-beta.18+abc123."
     calls.clear()
     assert update_hub(ssh="my-hub; rm -rf /", path="/opt/burnrate", service="burnrate-hub", branch="main",
                       run=lambda step, **kwargs: calls.append(step), echo=lines.append) == 2

@@ -2,9 +2,9 @@
 
 The Hub is a git checkout run by systemd. Updating means fast-forwarding it to
 its tracked branch (or, with ``--push-local``, to this checkout's commit) and
-restarting the service, then reading back the build it reports. Nothing here
-runs from the web UI: deploying code to another machine stays a deliberate
-command its owner types.
+restarting the service, checking its health, and reading the installed build.
+Nothing here runs from the web UI: deploying code to another machine stays a
+deliberate command its owner types.
 """
 
 from __future__ import annotations
@@ -16,6 +16,17 @@ import shlex
 import subprocess
 
 _SAFE = re.compile(r"[A-Za-z0-9_.@:/+-]+")
+
+_VERIFY_HEALTH = """import json
+import sys
+from spend_app import __version__
+from spend_app.build import build_id
+
+health = json.loads(sys.argv[1])
+if not isinstance(health, dict) or health.get("status") != "ok" or health.get("application") != "burnrate":
+    raise SystemExit("Hub health check did not report a healthy BURNRATE service.")
+print(json.dumps({"version": __version__, "build": build_id()}))
+"""
 
 
 def update_hub(*, ssh: str, path: str, service: str, branch: str, push_local: bool = False,
@@ -39,7 +50,12 @@ def update_hub(*, ssh: str, path: str, service: str, branch: str, push_local: bo
     remote += " && .venv/bin/python -m pip install --require-hashes -r requirements-build.txt && .venv/bin/python -m pip install --no-deps --no-build-isolation . && .venv/bin/python -m pip check"
     remote += " && .venv/bin/python -I -B scripts/verify-runtime.py"
     remote += " && (test ! -x /usr/local/sbin/tk-security-preflight || sudo /usr/local/sbin/tk-security-preflight burnrate)"
-    remote += f" && sudo systemctl restart {service} && sleep 4 && curl --fail -s http://127.0.0.1:{port}/api/spend"
+    # Health is public even on a protected hub. Read build metadata over the
+    # already-authorized SSH connection instead of passing an API credential.
+    health_url = shlex.quote(f"http://127.0.0.1:{port}/healthz?supervisor=1")
+    remote += f" && sudo systemctl restart {service} && sleep 4"
+    remote += f" && health_json=$(curl --fail --silent --show-error --max-time 10 {health_url})"
+    remote += f' && .venv/bin/python -I -B -c {shlex.quote(_VERIFY_HEALTH)} "$health_json"'
     steps.append(["ssh", ssh, remote])
     output = ""
     for step in steps:
@@ -56,7 +72,7 @@ def update_hub(*, ssh: str, path: str, service: str, branch: str, push_local: bo
         return 0
     try:
         reported = json.loads(output.strip().splitlines()[-1])
-        echo(f"Hub now runs {reported.get('build') or reported.get('version')}.")
+        echo(f"Hub is healthy; installed build {reported.get('build') or reported.get('version')}.")
     except (ValueError, IndexError, AttributeError):
         echo("Hub restarted; it did not report its build yet. Check it again in a minute.")
     return 0

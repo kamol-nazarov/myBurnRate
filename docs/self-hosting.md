@@ -93,7 +93,11 @@ of it for HTTPS.
 `burnrate hub update --ssh <host>` updates a git-checkout hub from your own
 computer: it requires a clean checkout, fast-forwards it, installs its Python
 dependencies, checks the installed trust bundle, and runs an installed host
-security gate before restarting the service and printing the hub's build.
+security gate before restarting the service. It checks the public
+`/healthz?supervisor=1` endpoint and reads the installed build over SSH, so the
+post-restart check needs no API credential. The helper shipped in 0.5.6 still
+checks `/api/spend` anonymously and can report a 401 after a successful restart;
+use the corrected helper for subsequent updates.
 Keep `BURNRATE_SUMMARY_PREWARM=0` on the central hub so background ingestion
 does not compete with bounded interactive reads. Source, trust failures, or
 unreviewed host drift stop the update before restart. Make a verified database

@@ -9,6 +9,11 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- `burnrate hub update` checks public service health after restart and reads the installed
+  build over SSH, avoiding a false update failure from the protected `/api/spend` endpoint.
+
 ## [0.5.6] - 2026-11-14
 
 ### Added
