@@ -9,6 +9,18 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+### Changed
+
+- Rewrote the README for the 0.5.5 native app: public installers, current
+  provider coverage, the exact/derived/unavailable accuracy model, privacy
+  guarantees and supply-chain verification.
+- Replaced the beta-era security policy with a supported-version table, private
+  advisory intake, response targets, scope and the invariants the product
+  relies on.
+- Modernized `CONTRIBUTING.md` for the native window, the three-OS CI matrix and
+  the UI/layout guardrails, aligned the Code of Conduct's enforcement channel,
+  and completed the Apache-2.0 appendix copyright line.
+
 ## [0.5.5] - 2026-11-14
 
 ### Added
