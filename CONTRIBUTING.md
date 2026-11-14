@@ -127,6 +127,10 @@ uv export --frozen --extra dev --no-emit-project --format requirements.txt -o re
 uv export --frozen --extra dev --extra build --no-emit-project --format requirements.txt -o requirements-ci.txt
 ```
 
+The development and build extras also lock Hatchling's `editables` helper: CI installs the project
+with `--no-build-isolation -e .`, so a clean runner must already have that build dependency.
+It is not a runtime dependency.
+
 Commit all four files with any dependency change. GitHub Actions are pinned to
 commit SHAs; Dependabot proposes updates for Actions, pip, Cargo and npm.
 
