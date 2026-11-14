@@ -1,7 +1,7 @@
 ; BURNRATE native app: per-user installer for the PyInstaller bundle.
 ;
 ; Build (packaging/build_native.py does this when makensis is available):
-;   makensis /DVERSION=0.5.3 /DVI_VERSION=0.5.3.0 /DSOURCE_DIR=<bundle folder> /DICON=<icon.ico> ^
+;   makensis /DVERSION=<x.y.z> /DVI_VERSION=<x.y.z.0> /DSOURCE_DIR=<bundle folder> /DICON=<icon.ico> ^
 ;            /DOUTFILE=<installer.exe> packaging/burnrate-native.nsi
 ;
 ; Two folders, never mixed up:

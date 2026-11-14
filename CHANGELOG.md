@@ -9,13 +9,26 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-11-13
+
 ### Added
 
-- A native desktop usage app with graphite styling, measured token breakdowns,
-  API-equivalent pricing, and filters for period and paired computer. Source
-  connections and computer pairing use native Settings dialogs. A portable
+- A native desktop usage window for Windows. It shows API-equivalent value and
+  recorded tokens for today, the last 7 days, this month or all time, with a
+  provider logo, a drawer of limits and token detail per tool, a chart, and a
+  filter for each paired computer. It is frameless, with its own minimize and
+  close buttons and resize edges, and uses the embedded Plus Jakarta Sans font.
+  Source connections and computer pairing are in its Settings. A portable
   Windows build and CI smoke checks exercise both the interface and collector.
-
+- Remaining usage, not just usage. Each row shows what is left of a plan window
+  or prepaid balance. Several accounts of one tool (for example two Claude Code
+  profiles) are separate rows with their own tag. Hovering a row shows that
+  day's token burn, rows can be dragged into your own order, and the window can
+  fade when the pointer leaves it, with pinning on top kept independent of the
+  fade.
+- Sign in to a hub from Settings -> Computers: enter the hub address, your
+  account and this computer's name, and the computer joins "All computers"
+  without a pairing code.
 - Dark and System themes for the native window, a guided first-run screen that
   finds local tools and takes an API key in place, keyboard navigation with
   focus rings and Alt+Up/Down row reordering, and reduced-motion support.
@@ -33,6 +46,24 @@ This project is licensed under Apache-2.0.
 - Optional Authenticode signing for local native builds through `BURNRATE_SIGN_*`
   environment variables, and a native release job that signs the installer through
   SignPath when it is configured.
+- Gemini 4 Carbon (Antigravity, every effort level) is priced: $2.00 input,
+  $0.10 cached input and $10.00 output per million tokens until 1 December 2026,
+  then $4.00, $0.20 and $20.00.
+
+### Changed
+
+- The hub bounds its expensive reads. The summary and HUD endpoints run on one
+  dedicated worker and answer 503 with `Retry-After` when it is busy, so health
+  checks stay responsive while a large read is running. `burnrate hub update`
+  now needs a clean checkout, installs the Python dependencies, checks the
+  installed certificate bundle and runs a host security gate before it restarts
+  the service. Keep `BURNRATE_SUMMARY_PREWARM=0` on the central hub.
+- Tauri command permissions, an app-wide CSRF and DNS-rebinding guard, a single
+  rotating service log, SQLite retention pruning, and a lighter start (the HUD
+  starts alone and the main window loads only when opened) from the security
+  and resource audit.
+- The native app uses distinct marks for ZCode and Antigravity.
+- Python installs and source distributions now include the native app's icons.
 
 ### Fixed
 
@@ -43,6 +74,25 @@ This project is licensed under Apache-2.0.
   settled history after unrelated recent activity or empty synchronization runs.
 - Preserve hub errors when changing plans from a paired computer. Correct plan
   boundaries, quarterly costs, telemetry timestamps, and invalid pricing inputs.
+- A paired computer can edit and add plans that live only on the hub, forwards
+  the hub's rejection or conflict instead of saving locally, and fails an
+  offline save without writing anything. A correction preview comes from the hub.
+- A quarterly plan accrues its exact calendar quarter, and the preview of a
+  plan term that has not ended respects the plan's end date.
+- Timestamps outside the valid range are quarantined, telemetry without a time
+  zone is read as UTC, price cards with non-finite rates are rejected, an
+  explicit free one-hour cache-write rate is respected, and negative usage is
+  quarantined without losing the valid rows beside it.
+- An ingestion source that keeps failing no longer loses the record of its last
+  success to retention pruning. A settled model correction moves tokens to the
+  right meter in the HUD.
+- Muse tokens are no longer counted twice, and an idle Muse weekly window is
+  informational until Muse is used again.
+- On Windows the single-instance lock is scoped to each desktop, and clicking
+  the shortcut brings an open BURNRATE window forward.
+- The native window keeps "unavailable" when it is resized, waits for a cold
+  full-history read before declaring a hub unavailable, and no longer lets
+  Windows repaint a caption over the frameless window.
 
 ## [0.5.3] - 2026-10-28
 
