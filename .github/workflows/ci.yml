@@ -126,7 +126,7 @@ jobs:
           uv export --frozen --extra dev --no-emit-project --format requirements.txt -o requirements-dev.txt
           uv export --frozen --extra dev --extra build --no-emit-project --format requirements.txt -o requirements-ci.txt
           git diff --exit-code -- requirements-build.txt requirements-dev.txt requirements-ci.txt
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "20"
       - name: npm audit (asset tooling and Tauri CLI)
@@ -179,7 +179,7 @@ jobs:
           python-version: "3.12"
 
       - name: Set up Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "20"
 
