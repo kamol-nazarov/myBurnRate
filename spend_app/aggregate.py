@@ -1539,10 +1539,16 @@ def tool_name(key: str) -> str:
     """A tool's display name, including an extra profile's ("Claude Code · Work")."""
     if key in TOOL_NAMES:
         return TOOL_NAMES[key]
+    from spend_app.opencode_providers import provider_tool_name
+    opencode_name = provider_tool_name(key)
+    if opencode_name:
+        return opencode_name
     return (provider_meta(key) or {}).get("providerName") or key
 
 
 def tool_color(key: str) -> str:
+    if key.startswith("opencode-provider:"):
+        return TOOL_COLORS["opencode"]
     base = next((name for name in ("claude-code", "opencode-go") if key.startswith(name + "-")), key)
     return TOOL_COLORS.get(key) or TOOL_COLORS.get(base) or "#78a8f8"
 

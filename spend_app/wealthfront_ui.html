@@ -3074,7 +3074,7 @@ function renderReport(data, animateChart = false) {
                     ${windows.map(renderWindowItem).join("")}
                   </div>
                 ` : `
-                  <div class="limit-note">Pay-as-you-go telemetry feed — no fixed subscription cap.</div>
+                  <div class="limit-note">${key.startsWith("opencode-provider:") ? "Usage recorded by OpenCode. No provider allowance is connected." : "Pay-as-you-go telemetry feed — no fixed subscription cap."}</div>
                 `}
                 <div class="burn-section-label">Tokens recorded</div>
                 <div class="drawer-burn-strip">

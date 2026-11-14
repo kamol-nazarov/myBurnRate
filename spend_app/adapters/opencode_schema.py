@@ -11,12 +11,12 @@ from dataclasses import dataclass, replace
 
 from spend_app.adapters.common import UsageRow, stable_id
 from spend_app.adapters.local_common import parse_millis, positive_cost, project_name
+from spend_app.opencode_providers import GO_PROVIDER, tool_key_for_provider
 
-PARSER_VERSION = "opencode-message-v1"
+PARSER_VERSION = "opencode-message-providers-v2"
 # OpenCode Go is its own subscription (not the Z.AI plan the "opencode" tool
 # stands for). It bills reasoning on top of the reported output tokens: the
 # recorded cost reproduces exactly from published rates only that way.
-GO_PROVIDER = "opencode-go"
 # Providers whose reasoning tokens OpenCode stores apart from output and bills
 # on top of it. For the DeepSeek API, OpenCode's recorded cost reproduces from
 # DeepSeek's published rates only with reasoning added (every step with
@@ -112,8 +112,9 @@ def parse_message(data, *, row_id=None, session_id=None, role=None, format="json
     unknown = max(0, (total or 0) - fresh - read - write - output) if not complete else 0
     path = data.get("path")
     project = project_name(path["root"]) if isinstance(path, dict) and isinstance(path.get("root"), str) else None
-    tool = GO_PROVIDER if go else "opencode"
-    row = UsageRow(source="opencode_local", tool_key=tool, model_key=tool + ":" + model_id.strip().lower(), occurred_at=when,
+    tool = tool_key_for_provider(provider)
+    model_namespace = GO_PROVIDER if go else "opencode"
+    row = UsageRow(source="opencode_local", tool_key=tool, model_key=model_namespace + ":" + model_id.strip().lower(), occurred_at=when,
                    session_id=session, project=project, input_tokens=fresh + read, cached_input_tokens=read,
                    cache_write_tokens=write, cache_write_1h_tokens=0, output_tokens=output, reasoning_tokens=reasoning,
                    cost_usd=positive_cost(data.get("cost")), raw_id=stable_id("opencode-message", provider, message_id),

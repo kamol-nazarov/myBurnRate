@@ -46,6 +46,7 @@ from spend_app.db import (
     write_opencode_progress,
 )
 from spend_app.pricing import PricingEngine
+from spend_app.opencode_providers import tool_key_for_provider
 
 
 SOURCE = "opencode_local"
@@ -167,7 +168,7 @@ def parse_database(path: Path) -> list[UsageRow]:
 def _snapshot_row(snapshot: SessionSnapshot) -> UsageRow:
     return UsageRow(
         source=SOURCE,
-        tool_key="opencode",
+        tool_key=tool_key_for_provider(snapshot.provider_id),
         model_key=canonical_model(snapshot.model_id),
         occurred_at=snapshot.observed_at,
         session_id=snapshot.session_id,
@@ -216,7 +217,7 @@ def plan_rows(
             rows.append(
                 UsageRow(
                     source=SOURCE,
-                    tool_key="opencode",
+                    tool_key=tool_key_for_provider(snapshot.provider_id),
                     model_key=canonical_model(snapshot.model_id),
                     occurred_at=snapshot.observed_at,
                     session_id=snapshot.session_id,
@@ -260,7 +261,7 @@ def plan_rows(
                     rows.append(
                         UsageRow(
                             source=SOURCE,
-                            tool_key="opencode",
+                            tool_key=tool_key_for_provider(snapshot.provider_id),
                             model_key=canonical_model(snapshot.model_id),
                             occurred_at=snapshot.observed_at,
                             session_id=snapshot.session_id,
@@ -331,7 +332,8 @@ def _ingest_cumulative(*, database_path: Path, pricing: PricingEngine, source_da
     deferred = set()
 
     def prepare(connection, prepared_rows):
-        from spend_app.adapters.opencode_granular import reconcile_cumulative
+        from spend_app.adapters.opencode_granular import reconcile_cumulative, reattribute_cumulative
+        reattribute_cumulative(connection, snapshots)
         result = reconcile_cumulative(connection, prepared_rows, snapshots, issues, deferred)
         accepted_ids.intersection_update(row.raw_id for row in result)
         return result

@@ -154,6 +154,20 @@ A second OpenCode profile is OpenCode started with `XDG_DATA_HOME` pointing at i
 - The lane uses only that profile's own stored key, under the same `BURNRATE_ENABLE_OPENCODE_GO_QUOTA` switch and cadence as the default Go lane. The key is never shown or stored by BURNRATE.
 - The profile's own sessions are counted too, recorded under the card's key (`opencode-go-2`), so its card gets its own burn rate and run-out forecast. Extra Claude accounts work the same way from their `projects` folder.
 
+### OpenCode provider rows
+
+OpenCode usage is grouped by the provider recorded on each request. Isoquant appears as
+**OpenCode · Isoquant**; other custom providers get their own rows. Z.AI coding-plan usage stays
+on the Z.AI row, and OpenCode Go keeps its existing plan and profile rows. A shared model name
+does not put usage from different providers onto the same plan.
+
+The next collection pass reassigns existing message history without adding duplicate events or
+changing its token totals. Older cumulative history is reassigned only when the stored provider
+evidence is unambiguous; otherwise it appears as **OpenCode · Unknown provider**. These are usage
+rows, with no inferred provider allowance or balance. Unknown model prices retain their token
+counts and stay unpriced; published model rates still represent API-equivalent value, not an
+Isoquant invoice. The existing Traycer mirror exclusion still prevents double-counting.
+
 ### Pay-as-you-go balances
 
 OpenRouter and DeepSeek show the money left on the account. Connect each one in **Connections → Add provider API**; the key is stored in your system's credential store.

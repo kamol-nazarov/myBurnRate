@@ -9,6 +9,12 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+### Added
+
+- OpenCode provider rows: Isoquant and other custom providers now have separate usage rows,
+  alongside the existing Z.AI and OpenCode Go plan rows. Historical message events are reassigned
+  in place; ambiguous legacy provider attribution stays explicit, and unpriced tokens remain counted.
+
 ### Security
 
 - **Authorization model replaced (V2-M01, V2-M02, V2-L05).** Explicit owner/machine/anonymous

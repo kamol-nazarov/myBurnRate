@@ -10,6 +10,7 @@ from spend_app.adapters.opencode_schema import merge_messages, parse_message, re
 from spend_app.adapters.usage_repair import COUNTS, coarse_remainder, delete_event, read_meta, write_meta
 from spend_app.connection_paths import confined, opencode_files
 from spend_app.db import connect
+from spend_app.opencode_providers import tool_key_for_provider
 
 
 def row_from_record(record):
@@ -99,7 +100,8 @@ def reconcile_messages(connection, messages, issues):
                 state.setdefault("starts", {})[message.row.raw_id] = message.started_at.isoformat()
             outputs.append(message.row)
         for record in sorted(records, key=lambda row: (row["occurred_at"], row["raw_id"])):
-            coarse = row_from_record(record)
+            original = row_from_record(record)
+            coarse = replace(original, tool_key=tool_key_for_provider(provider))
             residual, allocations = coarse_remainder(coarse, accepted, state["allocations"])
             state["allocations"] = allocations
             if residual != coarse:
@@ -108,8 +110,42 @@ def reconcile_messages(connection, messages, issues):
                     outputs.append(residual)
                     # Keep its coarse provenance after replacement.
                     connection.execute("INSERT OR REPLACE INTO coverage_gap_events(raw_id,source,tool_key,model_key,occurred_at,issue) VALUES(?,?,?,?,?,?)", (residual.raw_id, residual.source, residual.tool_key, residual.model_key, residual.occurred_at.isoformat(), BASELINE_ISSUE))
+            elif coarse.tool_key != original.tool_key:
+                _reattribute_event(connection, coarse.raw_id, coarse.tool_key)
         write_meta(connection, key, state)
     return outputs
+
+
+def _reattribute_event(connection, raw_id, tool):
+    for table in ("usage_events", "unpriced_usage_events"):
+        connection.execute(f"UPDATE {table} SET tool_key=? WHERE raw_id=?", (tool, raw_id))
+    connection.execute("UPDATE coverage_gap_events SET tool_key=? WHERE raw_id=?", (tool, raw_id))
+
+
+def reattribute_cumulative(connection, snapshots):
+    """Move proven coarse history to its provider without adding another event.
+
+    A legacy per-session watermark can prove a single provider. With multiple
+    historical providers, only a provider-specific legacy event ID is proof;
+    leave the rest explicitly unattributed rather than assigning a quota plan.
+    """
+    from spend_app.adapters.opencode_local import BASELINE_ISSUE, DELTA_ISSUE
+    for snapshot in snapshots:
+        session, provider = snapshot.session_id, snapshot.provider_id
+        known = {row[0] for row in connection.execute(
+            "SELECT provider_id FROM opencode_session_progress WHERE session_id=?", (session,))}
+        legacy_id = stable_id("opencode-local", session, provider)
+        for table in ("usage_events", "unpriced_usage_events"):
+            rows = connection.execute(
+                f"SELECT e.raw_id,e.tool_key FROM {table} e LEFT JOIN coverage_gap_events g ON g.raw_id=e.raw_id "
+                "WHERE e.source='opencode_local' AND e.session_id=? "
+                "AND (e.raw_id=? OR g.issue IN (?,?))",
+                (session, legacy_id, BASELINE_ISSUE, DELTA_ISSUE)).fetchall()
+            for row in rows:
+                proven = row[0] == legacy_id or known == {provider}
+                tool = tool_key_for_provider(provider if proven else "unknown")
+                if row[1] != tool:
+                    _reattribute_event(connection, row[0], tool)
 
 
 def reconcile_cumulative(connection, rows, snapshots, issues=None, deferred=None):
@@ -199,7 +235,8 @@ def _session_fingerprints(messages, pricing, snapshots: dict | None = None) -> d
     grouped = {}
     for message in messages:
         grouped.setdefault(message.row.session_id, []).append(message)
-    prices = _pricing_digest(pricing)
+    from spend_app.adapters.opencode_schema import PARSER_VERSION
+    prices = _pricing_digest(pricing) + ":" + PARSER_VERSION
     fingerprints = {}
     for session, group in grouped.items():
         digest = hashlib.blake2b(prices.encode("utf-8"), digest_size=16)

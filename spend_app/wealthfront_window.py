@@ -161,6 +161,8 @@ def _default_provider_rank(key: str) -> tuple[int, str]:
         return (21, k)
     if k == "opencode":
         return (22, k)
+    if k.startswith("opencode-provider:"):
+        return (23, k)
     if k == "codex":
         return (30, k)
     if k == "antigravity":
@@ -523,6 +525,9 @@ def merge_provider_entries(
     for key, tool in period_tools.items():
         if key in consumed_usage_keys:
             continue
+        opencode_provider = key.startswith("opencode-provider:")
+        from spend_app.opencode_providers import provider_tool_name
+        name = provider_tool_name(key) or str(tool.get("name") or key)
         today_value = (today_tools.get(key) or {}).get("tokens")
         week_value = (week_tools.get(key) or {}).get("tokens")
         day_tok = int(today_value) if isinstance(today_value, (int, float)) else None
@@ -533,11 +538,11 @@ def merge_provider_entries(
         providers.append(
             {
                 "key": key,
-                "name": str(tool.get("name") or key),
+                "name": name,
                 "badge": "Org API" if tool.get("organization") else "",
-                "plan": "API",
+                "plan": "Recorded usage" if opencode_provider else "API",
                 "inUse": False,
-                "isPayg": True,
+                "isPayg": not opencode_provider,
                 "fundsRemainingUsd": None,
                 "organization": bool(tool.get("organization")),
                 "remaining": {

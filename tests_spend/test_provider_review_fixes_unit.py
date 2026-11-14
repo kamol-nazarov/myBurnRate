@@ -259,6 +259,9 @@ def test_r4_additive_and_missing_components(components, expected, complete):
 
 
 def test_r2_deferred_checkpoint_does_not_advance_logical_or_path_progress(monkeypatch):
+    # Provider backfill has separate real-SQLite coverage; this boundary fake
+    # isolates whether deferred reconciliation advances either checkpoint.
+    monkeypatch.setattr("spend_app.adapters.opencode_granular.reattribute_cumulative", lambda *_: None)
     from contextlib import nullcontext
     from pathlib import Path
     from unittest.mock import Mock
