@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 from contextlib import contextmanager, closing
@@ -324,6 +325,11 @@ def utc_now() -> str:
 def connect(path: Path) -> Iterator[sqlite3.Connection]:
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path, timeout=30)
+    if os.name != "nt" and str(path) != ":memory:":
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA journal_mode=WAL")
     connection.execute("PRAGMA synchronous=NORMAL")

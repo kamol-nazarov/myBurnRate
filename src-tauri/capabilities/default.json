@@ -5,10 +5,10 @@
   "windows": ["main", "hud"],
   "remote": {
     "urls": [
-      "http://127.0.0.1:*",
-      "http://127.0.0.1:*/*",
-      "http://localhost:*",
-      "http://localhost:*/*"
+      "http://127.0.0.1:17331",
+      "http://127.0.0.1:17331/*",
+      "http://localhost:17331",
+      "http://localhost:17331/*"
     ]
   },
   "permissions": [

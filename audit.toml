@@ -1,0 +1,11 @@
+# Cargo audit policy.
+#
+# These are warnings, not exploitable vulnerabilities in the shipped Windows
+# application. Both come from Tauri's Linux GTK dependency graph; the Windows
+# build and the update path do not use them. Revisit when Tauri moves to
+# gtk-rs 0.20 and a maintained proc-macro-error replacement.
+[advisories]
+ignore = [
+    "RUSTSEC-2024-0370", # proc-macro-error is unmaintained; no fixed release exists
+    "RUSTSEC-2024-0429", # glib 0.18 VariantStrIter unsoundness; pinned by Tauri's GTK stack
+]

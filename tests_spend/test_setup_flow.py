@@ -75,9 +75,9 @@ def test_set_up_later_stops_the_wizard_opening_on_every_launch(client: TestClien
 
 def test_signing_in_never_creates_an_account(client: TestClient) -> None:
     unknown = client.post("/api/account/login", json={"username": "alex", "password": "long-enough-1"})
-    assert unknown.status_code == 401 and "no account named alex" in unknown.json()["error"].lower()
+    assert unknown.status_code == 401 and "invalid username or password" in unknown.json()["error"].lower()
     short = client.post("/api/account/register", json={"username": "alex", "password": "short"})
-    assert short.status_code == 422 and "8 characters" in short.json()["error"]
+    assert short.status_code == 422 and "12 characters" in short.json()["error"]
     assert client.post("/api/account/register", json={"username": "alex", "password": "long-enough-1"}).status_code == 200
     assert client.post("/api/account/login", json={"username": "alex", "password": "long-enough-1"}).status_code == 200
     assert client.post("/api/account/login", json={"username": "alex", "password": "wrong-password"}).status_code == 401
@@ -86,7 +86,7 @@ def test_signing_in_never_creates_an_account(client: TestClient) -> None:
 def test_registering_from_the_wizard_checks_the_password_before_calling_the_hub(client: TestClient) -> None:
     response = client.post("/api/setup/account", headers=SETUP, json={
         "mode": "register", "username": "alex", "password": "short", "serverUrl": "https://unreachable.invalid"})
-    assert response.status_code == 422 and "8 characters" in response.json()["error"]
+    assert response.status_code == 422 and "12 characters" in response.json()["error"]
 
 
 def test_consent_switches_apply_now_and_are_saved(client: TestClient, tmp_path: Path, monkeypatch) -> None:
@@ -276,7 +276,7 @@ def test_hub_update_runs_the_deploy_steps_and_refuses_odd_arguments() -> None:
     command = calls[0][2]
     assert 'test -z "$(git status --porcelain)"' in command
     assert "git merge --ff-only origin/main" in command
-    assert command.index("pip install .") < command.index("scripts/verify-runtime.py") < command.index("systemctl restart")
+    assert command.index("pip install --require-hashes") < command.index("scripts/verify-runtime.py") < command.index("systemctl restart")
     assert "pip check" in command
     assert "tk-security-preflight burnrate" in command
     assert "curl --fail" in command

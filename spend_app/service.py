@@ -60,6 +60,12 @@ def pid_file() -> Path:
 def ensure_directories() -> None:
     run_dir().mkdir(parents=True, exist_ok=True)
     log_dir().mkdir(parents=True, exist_ok=True)
+    if os.name != "nt":
+        for folder in (data_root(), run_dir(), log_dir()):
+            try:
+                os.chmod(folder, 0o700)
+            except OSError:
+                pass
 
 
 def is_loopback(host: str) -> bool:
@@ -203,6 +209,14 @@ def serve(
 
     load_user_env()
     log_path = configure_logging()
+    if (
+        os.getenv("BURNRATE_CENTRAL_SERVER", "").strip().lower() in {"1", "true", "yes"}
+        and not os.getenv("BURNRATE_ACCESS_TOKEN", "").strip()
+    ):
+        logging.warning(
+            "Central server has no BURNRATE_ACCESS_TOKEN: anonymous API access is denied "
+            "until an admin token is configured."
+        )
     mutex = acquire_mutex(mutex_name())
     if mutex is False:
         logging.info("BURNRATE dashboard already running (mutex %s held)", mutex_name())

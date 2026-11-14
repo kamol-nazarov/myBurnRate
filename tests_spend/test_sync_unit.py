@@ -531,6 +531,7 @@ def test_central_server_account_login_subscriptions_and_multi_computer_sync(
 
     aggregate.reset_memo()
     monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
+    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", "setup-secret")
 
     central_settings = _make_settings(tmp_path / "hub")
     desktop_settings = _make_settings(tmp_path / "mydesktop")
@@ -538,6 +539,8 @@ def test_central_server_account_login_subscriptions_and_multi_computer_sync(
     pricing = PricingEngine.load(central_settings.pricing_path)
 
     central_client = TestClient(create_app(central_settings, enable_scheduler=False))
+    # The hub fails closed without an admin token; spokes are ordinary installs.
+    monkeypatch.delenv("BURNRATE_CENTRAL_SERVER")
     desktop_client = TestClient(create_app(desktop_settings, enable_scheduler=False))
     laptop_client = TestClient(create_app(laptop_settings, enable_scheduler=False))
 
@@ -593,6 +596,7 @@ def test_central_server_account_login_subscriptions_and_multi_computer_sync(
             "password": "secret-password",
             "computerName": "MyDesktop",
             "serverUrl": central_url,
+            "setupToken": "setup-secret",
             "presetKeys": ["claude_max", "grok_super"],
             "customPlans": [
                 {"tool_key": "opencode", "name": "Z.AI Coding Plan", "amount_usd": 10.0, "cadence": "monthly"}

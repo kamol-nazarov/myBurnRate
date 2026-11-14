@@ -115,6 +115,21 @@ python scripts/preview-hud.py
 Node is a development tool only; Python installs use the committed assets. Keep existing public IDs
 and CSS classes unless a change requires otherwise, and update the contract tests with them.
 
+### Dependency locks
+
+`uv.lock` is the source of truth. CI verifies it with `uv lock --check`, and the
+release, native and container builds install the hash-locked exports:
+
+```powershell
+uv lock
+uv export --frozen --no-dev --extra build --no-emit-project --format requirements.txt -o requirements-build.txt
+uv export --frozen --extra dev --no-emit-project --format requirements.txt -o requirements-dev.txt
+uv export --frozen --extra dev --extra build --no-emit-project --format requirements.txt -o requirements-ci.txt
+```
+
+Commit all four files with any dependency change. GitHub Actions are pinned to
+commit SHAs; Dependabot proposes updates for Actions, pip, Cargo and npm.
+
 ## Privacy rules
 
 myBurnRate stores usage metadata only. A contribution must not introduce real telemetry, prompts,

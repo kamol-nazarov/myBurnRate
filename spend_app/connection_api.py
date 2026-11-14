@@ -33,53 +33,114 @@ _PUBLIC_ACCOUNT_PATHS = {
     "/api/account/login",
 }
 
+_TEST_HOSTS = {"testserver", "test"}
 
-def access_allowed(request, token):
-    """The existing API-wide bearer boundary, shared with the application."""
+
+def central_server() -> bool:
+    """True on a self-hosted hub (the deployment that needs authentication)."""
+    return os.getenv("BURNRATE_CENTRAL_SERVER", "").strip().lower() in {"1", "true", "yes"}
+
+
+def test_hosts_allowed() -> bool:
+    """Test hostnames are accepted only while a test suite is running."""
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return True
+    return os.getenv("BURNRATE_TEST_HOSTS", "").strip().lower() in {"1", "true", "yes"}
+
+
+def allowed_hosts() -> set[str]:
+    hosts = {"127.0.0.1", "localhost", "::1"}
+    hosts.update(
+        s.strip().lower()
+        for s in os.getenv("BURNRATE_ALLOWED_HOSTS", "").split(",")
+        if s.strip()
+    )
+    if test_hosts_allowed():
+        hosts.update(_TEST_HOSTS)
+    return hosts
+
+
+def host_allowed(host: str) -> bool:
+    """Exact Host allowlist, shared by reads, writes and the cookie path."""
+    try:
+        parsed = urlsplit("//" + (host or ""))
+    except ValueError:
+        return False
+    return bool(
+        parsed.hostname in allowed_hosts()
+        and not parsed.username
+        and not parsed.password
+        and not parsed.path
+        and not parsed.query
+        and not parsed.fragment
+    )
+
+
+def _bearer_matches(request, token: str) -> bool:
+    auth = request.headers.get("authorization", "")
+    if not token or not auth.startswith("Bearer "):
+        return False
+    return hmac.compare_digest(auth[7:].strip(), token)
+
+
+def _cookie_matches(request, token: str) -> bool:
+    cookie_token = (getattr(request, "cookies", None) or {}).get("burnrate_access", "")
+    return bool(token and cookie_token and hmac.compare_digest(cookie_token, token))
+
+
+def access_allowed(
+    request,
+    token,
+    *,
+    central: bool | None = None,
+    machine_id: str | None = None,
+):
+    """The API boundary.
+
+    - A machine token is accepted only on the spoke routes after its own
+      validation (``machine_id`` is set by the middleware).
+    - A hub with no admin token fails closed: anonymous requests are denied.
+    - Loopback/local installs keep their anonymous convenience, protected by
+      the Host guard and the mutation origin checks.
+    """
     if request.url.path in _PUBLIC_ACCOUNT_PATHS:
         return True
+    if not request.url.path.startswith("/api/"):
+        return True
+    if central is None:
+        central = central_server()
     method = getattr(request, "method", "GET")
-    auth = request.headers.get("authorization", "")
-    if auth.startswith("Bearer br_m_"):
-        if request.url.path in {"/api/sync/push", "/api/account/subscriptions", "/api/machines"}:
+    if machine_id:
+        if request.url.path in {"/api/sync/push", "/api/account/subscriptions"}:
             return True
-        if method == "GET" and request.url.path in _SPOKE_READ_PATHS:
+        if request.url.path == "/api/machines":
+            return method in {"GET", "HEAD"}
+        if method in {"GET", "HEAD"} and request.url.path in _SPOKE_READ_PATHS:
             return True
-    if not token or not request.url.path.startswith("/api/"):
+        return False
+    if not token:
+        return not central
+    if _bearer_matches(request, token):
         return True
-    if auth.startswith("Bearer ") and hmac.compare_digest(auth[7:].strip(), token):
-        return True
-    cookies = getattr(request, "cookies", None) or {}
-    cookie_token = cookies.get("burnrate_access", "")
-    if cookie_token and hmac.compare_digest(cookie_token, token) and method in {"GET", "HEAD"}:
-        return trusted(request, mutation=False)
+    if _cookie_matches(request, token):
+        # Cookies are ambient credentials: mutations must prove same-origin.
+        return trusted(request, mutation=method not in {"GET", "HEAD"})
     return False
 
 
-def csrf_mutation_allowed(request) -> bool:
+def csrf_mutation_allowed(request, *, bearer_ok: bool = False) -> bool:
     """Reject cross-origin CSRF and DNS-rebinding mutations across all /api/* routes."""
     if getattr(request, "method", "GET") in {"GET", "HEAD", "OPTIONS"} or not request.url.path.startswith("/api/"):
         return True
     if request.url.path in _PUBLIC_ACCOUNT_PATHS:
         return True
-    if request.headers.get("authorization", "").startswith("Bearer "):
+    if bearer_ok:
         return True
     host = request.headers.get("host", "")
-    allowed_hosts = {"127.0.0.1", "localhost", "::1", "testserver", "test"} | {
-        s.strip().lower() for s in os.getenv("BURNRATE_ALLOWED_HOSTS", "").split(",") if s.strip()
-    }
+    if not host_allowed(host):
+        return False
     allowed_origins = {s.strip() for s in os.getenv("BURNRATE_ALLOWED_ORIGINS", "").split(",") if s.strip()}
     try:
-        parsed_host = urlsplit("//" + host)
-        if (
-            parsed_host.hostname not in allowed_hosts
-            or parsed_host.username
-            or parsed_host.password
-            or parsed_host.path
-            or parsed_host.query
-            or parsed_host.fragment
-        ):
-            return False
         fetch_site = request.headers.get("sec-fetch-site", "").strip().lower()
         if fetch_site in {"cross-site", "same-site"}:
             return False
@@ -100,12 +161,10 @@ def csrf_mutation_allowed(request) -> bool:
 
 def trusted(request, mutation=True):
     host = request.headers.get("host", "")
-    allowed = {"127.0.0.1", "localhost", "::1"} | {s.strip().lower() for s in os.getenv("BURNRATE_ALLOWED_HOSTS", "").split(",") if s.strip()}
+    if not host_allowed(host):
+        return False
     origins = {s.strip() for s in os.getenv("BURNRATE_ALLOWED_ORIGINS", "").split(",") if s.strip()}
     try:
-        parsed = urlsplit("//" + host)
-        if parsed.hostname not in allowed or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment:
-            return False
         origin_text = request.headers.get("origin", "")
         if not origin_text and not mutation:
             return request.headers.get("sec-fetch-site", "same-origin") in {"same-origin", "none"}

@@ -36,7 +36,7 @@ def update_hub(*, ssh: str, path: str, service: str, branch: str, push_local: bo
         remote = f'cd {path} && test -z "$(git status --porcelain)" && git fetch origin && git checkout {branch} && git merge --ff-only origin/{branch}'
     # Updating source alone leaves the old dependency/trust bundle installed.
     # Stop before restart unless both the installed package and host guard pass.
-    remote += " && .venv/bin/python -m pip install . && .venv/bin/python -m pip check"
+    remote += " && .venv/bin/python -m pip install --require-hashes -r requirements-build.txt && .venv/bin/python -m pip install --no-deps --no-build-isolation . && .venv/bin/python -m pip check"
     remote += " && .venv/bin/python -I -B scripts/verify-runtime.py"
     remote += " && (test ! -x /usr/local/sbin/tk-security-preflight || sudo /usr/local/sbin/tk-security-preflight burnrate)"
     remote += f" && sudo systemctl restart {service} && sleep 4 && curl --fail -s http://127.0.0.1:{port}/api/spend"

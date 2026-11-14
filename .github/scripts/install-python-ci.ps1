@@ -1,29 +1,15 @@
 # Install BURNRATE Python deps for CI. No provider keys. Repo-local only.
+# Dependencies come from the hash-locked exports of uv.lock; the project itself
+# is installed with --no-deps so nothing resolves outside the lock.
 $ErrorActionPreference = "Stop"
 
-python -m pip install --upgrade pip
+if (-not (Test-Path -LiteralPath "requirements-dev.txt")) {
+    Write-Error "requirements-dev.txt is missing; run: uv lock then uv export --frozen --extra dev"
+    exit 1
+}
+
+python -m pip install --require-hashes -r requirements-dev.txt
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-$installed = $false
-if (Test-Path -LiteralPath "pyproject.toml") {
-    python -m pip install -e ".[dev]"
-    if ($LASTEXITCODE -eq 0) {
-        $installed = $true
-    }
-    else {
-        Write-Host "pip install -e .[dev] failed; trying -e . without extras"
-        python -m pip install -e .
-        if ($LASTEXITCODE -eq 0) { $installed = $true }
-    }
-}
-if (-not $installed) {
-    if (-not (Test-Path -LiteralPath "requirements-spend.txt")) {
-        Write-Error "No pyproject.toml extra and no requirements-spend.txt"
-        exit 1
-    }
-    python -m pip install -r requirements-spend.txt
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-}
-
-python -m pip install pytest ruff pip-audit
+python -m pip install --no-deps --no-build-isolation -e .
 exit $LASTEXITCODE

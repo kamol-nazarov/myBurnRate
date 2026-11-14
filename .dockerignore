@@ -3,6 +3,7 @@
 !README.md
 !LICENSE
 !NOTICE
+!requirements-build.txt
 !spend_app/**
 !spend_web/**
 !pricing/**

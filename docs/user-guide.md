@@ -53,7 +53,8 @@ BURNRATE supports single-account, self-hosted multi-computer synchronization wit
    - A hub account works too: choose **Account** under **Join my hub**. Signing in never creates an account; use **Create an account instead** (at least 8 characters).
    - Or run the lightweight CLI sync agent directly:
      ```powershell
-     burnrate sync --hub http://<hub-ip>:17331 --token br_m_<id>_<secret>
+     burnrate sync --hub http://<hub-ip>:17331 --token-file <path-to-token>
+    # Or set BURNRATE_SYNC_TOKEN in the service environment.
      ```
 3. **Filtering by computer:** once two or more computers are registered, a computer switcher (`All computers` + each machine name) appears in the dashboard and the Sidecar HUD.
 

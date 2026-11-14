@@ -17,7 +17,12 @@ def attention_router(settings, pricing, *, service=None, token=None):
 
     @router.get("/api/attention")
     def read(request: Request, detail: bool = True):
-        if not access_allowed(request, token):
+        if not access_allowed(
+            request,
+            token,
+            central=os.getenv("BURNRATE_CENTRAL_SERVER", "").strip().lower() in {"1", "true", "yes"},
+            machine_id=getattr(request.state, "machine_id", None),
+        ):
             return JSONResponse({"error": "Authentication required"}, status_code=401)
         try:
             return JSONResponse(service.read(detail), headers={"Cache-Control": "no-store"})
@@ -26,7 +31,12 @@ def attention_router(settings, pricing, *, service=None, token=None):
 
     @router.post("/api/attention")
     async def update(request: Request):
-        if not access_allowed(request, token):
+        if not access_allowed(
+            request,
+            token,
+            central=os.getenv("BURNRATE_CENTRAL_SERVER", "").strip().lower() in {"1", "true", "yes"},
+            machine_id=getattr(request.state, "machine_id", None),
+        ):
             return JSONResponse({"error": "Authentication required"}, status_code=401)
         try:
             body = await payload(request)

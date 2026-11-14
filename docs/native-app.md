@@ -20,7 +20,9 @@ burnrate desktop --demo
 local tracker port; otherwise `BURNRATE_PORT` or `17331` is used. The app starts its
 local background tracker when none is running. It leaves unrelated listeners alone.
 If an older tracker is already running, stop it with the existing lifecycle scripts
-and reopen the new application so it can start the matching backend.
+and reopen the new application so it can start the matching backend. The Tauri HUD
+shell grants its commands only to `http://127.0.0.1:17331`; a custom port uses the
+native desktop window.
 
 ## Everyday use
 
@@ -103,7 +105,7 @@ Nothing is run unless every check passed, and a file that fails one is deleted. 
 ## Build the portable app and installer
 
 ```powershell
-python -m pip install pyinstaller
+python -m pip install pyinstaller==6.22.3
 python packaging/build_native.py                      # portable zip, plus the installer if NSIS is installed
 python packaging/build_native.py --require-installer  # fail instead of skipping the installer
 ```

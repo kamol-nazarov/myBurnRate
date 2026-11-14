@@ -66,6 +66,20 @@ try {
     }
 
     Write-Host "SHA-256 verified ($($ActualSha.Substring(0, 12))...). Installing per-user..." -ForegroundColor Green
+    $sigUrl = $ExpectedUrl + '.sig'
+    $SigPath = Join-Path $WorkDir ($ExpectedName + '.sig')
+    Invoke-WebRequest -Uri $sigUrl -OutFile $SigPath -UseBasicParsing -TimeoutSec 30
+
+    $VerifierPath = Join-Path $PSScriptRoot 'minisign-verify.ps1'
+    if (-not (Test-Path -LiteralPath $VerifierPath)) {
+        $VerifierPath = Join-Path $WorkDir 'minisign-verify.ps1'
+        $VerifierUrl = "https://raw.githubusercontent.com/$Repo/prod/scripts/minisign-verify.ps1"
+        Invoke-WebRequest -Uri $VerifierUrl -OutFile $VerifierPath -UseBasicParsing -TimeoutSec 30
+    }
+    . $VerifierPath
+    Test-MinisignFile -Path $InstallerPath -SignaturePath $SigPath -ExpectedFile $ExpectedName
+    Write-Host 'Minisign signature verified against the pinned update key.' -ForegroundColor Green
+
     $Proc = Start-Process -FilePath $InstallerPath -ArgumentList @('/S') -Wait -PassThru
     if ($Proc.ExitCode -ne 0) {
         throw "Installer exited with code $($Proc.ExitCode)."

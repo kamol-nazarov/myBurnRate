@@ -9,7 +9,8 @@ import re
 
 _CREDENTIAL_SHAPED = re.compile(
     r"(?i)(bearer\s+)\S+|(basic\s+)\S+|(sk-[a-z0-9_-]{8,})|(x-api-key\s*[:=]\s*)\S+|"
-    r"(eyJ[A-Za-z0-9_-]{10,}\.)|(gh[pousr]_[A-Za-z0-9]{20,})|([A-Fa-f0-9]{32,})"
+    r"(eyJ[A-Za-z0-9_-]{10,}\.)|(gh[pousr]_[A-Za-z0-9]{20,})|([A-Fa-f0-9]{32,})|"
+    r"(br_m_[A-Za-z0-9_-]{8,})|(brpair_[A-Za-z0-9_=-]{8,})"
 )
 _MAX_REASON = 240
 

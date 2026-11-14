@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from spend_app import aggregate
+from spend_app import aggregate, auth_throttle
 from spend_app.config import dashboard_enabled
 from spend_app.db import connect, initialize, utc_now
 from spend_app.diagnostics import detect_local_sources
@@ -46,6 +46,9 @@ from spend_app.sync import (
 SETUP_META_KEY = "app_setup.v1"
 ACCOUNTS_META_KEY = "accounts.v1"
 PAIRING_PREFIX = "brpair_"
+SETUP_TOKEN_ENV = "BURNRATE_SETUP_TOKEN"
+PBKDF2_ITERATIONS = 600_000
+LEGACY_PBKDF2_ITERATIONS = 120_000
 
 # No built-in hub: a computer joins the hub its owner names (pairing code,
 # saved account, or BURNRATE_CENTRAL_SERVER_URL).
@@ -85,7 +88,7 @@ SUBSCRIPTION_PRESETS = (
     {"key": "google_ai_pro", "tool_key": "antigravity", "name": "Google AI Pro", "amount_usd": 19.99, "cadence": "monthly", "badge": "Google"},
     {"key": "muse_power", "tool_key": "muse", "name": "Muse Code Power Usage", "amount_usd": 0.0, "cadence": "monthly", "badge": "Meta"},
 )
-MIN_PASSWORD_LENGTH = 8
+MIN_PASSWORD_LENGTH = 12
 
 
 def _default_computer_name() -> str:
@@ -211,17 +214,70 @@ def _write_accounts(connection, data: dict) -> None:
     )
 
 
-def _hash_password(password: str, salt_hex: str | None = None) -> tuple[str, str]:
+def _hash_password(
+    password: str,
+    salt_hex: str | None = None,
+    iterations: int = PBKDF2_ITERATIONS,
+) -> tuple[str, str]:
     salt = bytes.fromhex(salt_hex) if salt_hex else secrets.token_bytes(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 120_000)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, int(iterations))
     return salt.hex(), digest.hex()
 
 
-def _verify_password(password: str, salt_hex: str, expected_hash_hex: str) -> bool:
+def _verify_password(
+    password: str,
+    salt_hex: str,
+    expected_hash_hex: str,
+    iterations: int = LEGACY_PBKDF2_ITERATIONS,
+) -> bool:
     if not salt_hex or not expected_hash_hex:
         return False
-    _, actual_hex = _hash_password(password, salt_hex)
+    _, actual_hex = _hash_password(password, salt_hex, iterations)
     return hmac.compare_digest(actual_hex, expected_hash_hex)
+
+
+def _account_iterations(record: dict) -> int:
+    try:
+        value = int(record.get("iterations") or LEGACY_PBKDF2_ITERATIONS)
+    except (TypeError, ValueError):
+        return LEGACY_PBKDF2_ITERATIONS
+    return max(LEGACY_PBKDF2_ITERATIONS, value)
+
+
+def _client_key(request: Request, username: str, database_path: Path | None = None) -> str:
+    host = getattr(getattr(request, "client", None), "host", "") or "local"
+    scope = str(database_path) if database_path is not None else ""
+    return f"{scope}|{username.strip().lower()}|{host}"
+
+
+def _throttled(retry_after: int) -> JSONResponse:
+    return JSONResponse(
+        {"error": "Too many attempts. Try again later."},
+        status_code=429,
+        headers={"Retry-After": str(max(1, retry_after)), "Cache-Control": "no-store"},
+    )
+
+
+def _setup_token_allowed(request: Request, body: dict) -> bool:
+    expected = os.getenv(SETUP_TOKEN_ENV, "").strip()
+    if not expected:
+        return False
+    supplied = (
+        request.headers.get("x-burnrate-setup-token", "")
+        or str(body.get("setupToken") or "")
+    ).strip()
+    return bool(supplied) and hmac.compare_digest(supplied, expected)
+
+
+def _setup_token_required_message() -> str:
+    return (
+        "This hub requires a one-time setup token to create its first account. "
+        f"Set {SETUP_TOKEN_ENV} on the hub, then enter it here."
+    )
+
+
+def central_server_for_accounts() -> bool:
+    return os.getenv("BURNRATE_CENTRAL_SERVER", "").strip().lower() in {"1", "true", "yes"}
 
 
 def _apply_subscription_presets_and_custom(
@@ -857,21 +913,40 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             if len(password) < MIN_PASSWORD_LENGTH:
                 raise ValueError(f"Password must be at least {MIN_PASSWORD_LENGTH} characters.")
 
+            key = _client_key(request, username, settings.database_path)
+            retry = auth_throttle.retry_after(key)
+            if retry:
+                return _throttled(retry)
+
             user_key = username.lower()
             initialize(settings.database_path)
             with connect(settings.database_path) as connection:
                 accounts = _read_accounts(connection)
                 existing_user = accounts["users"].get(user_key)
                 if isinstance(existing_user, dict):
+                    iterations = _account_iterations(existing_user)
                     if not _verify_password(
                         password,
                         str(existing_user.get("salt") or ""),
                         str(existing_user.get("passwordHash") or ""),
+                        iterations,
                     ):
+                        retry = auth_throttle.fail(key)
+                        if retry:
+                            return _throttled(retry)
                         return JSONResponse(
-                            {"error": "Account already exists with a different password. Sign in instead."},
+                            {"error": "Invalid username or password."},
                             status_code=401,
                         )
+                    if iterations < PBKDF2_ITERATIONS:
+                        salt_hex, hash_hex = _hash_password(password, iterations=PBKDF2_ITERATIONS)
+                        existing_user.update(
+                            salt=salt_hex,
+                            passwordHash=hash_hex,
+                            iterations=PBKDF2_ITERATIONS,
+                        )
+                        _write_accounts(connection, accounts)
+                    auth_throttle.succeed(key)
                 else:
                     allow = os.getenv(ALLOW_REGISTRATION_ENV, "").strip().lower() in {"1", "true", "yes"}
                     if accounts["users"] and not allow:
@@ -880,14 +955,23 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                                       "account, or join with a pairing code created on the hub."},
                             status_code=403,
                         )
+                    first_account = not accounts["users"]
+                    if first_account and central_server_for_accounts():
+                        if not _setup_token_allowed(request, body):
+                            return JSONResponse(
+                                {"error": _setup_token_required_message()},
+                                status_code=403,
+                            )
                     salt_hex, hash_hex = _hash_password(password)
                     accounts["users"][user_key] = {
                         "username": username,
                         "salt": salt_hex,
                         "passwordHash": hash_hex,
+                        "iterations": PBKDF2_ITERATIONS,
                         "createdAt": utc_now(),
                     }
                     _write_accounts(connection, accounts)
+                    auth_throttle.succeed(key)
 
                 added_plans = _apply_subscription_presets_and_custom(
                     connection,
@@ -934,28 +1018,51 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             if not username or not password:
                 raise ValueError("Enter your account username and password.")
 
+            key = _client_key(request, username, settings.database_path)
+            retry = auth_throttle.retry_after(key)
+            if retry:
+                return _throttled(retry)
+
             user_key = username.lower()
             initialize(settings.database_path)
             with connect(settings.database_path) as connection:
                 accounts = _read_accounts(connection)
                 user_rec = accounts["users"].get(user_key)
                 if not isinstance(user_rec, dict):
-                    # A typo must not quietly create a second, empty account.
+                    # Spend the KDF before the generic answer so an unknown
+                    # username is not measurably cheaper than a wrong password.
+                    _verify_password(password, "00" * 16, "00" * 32, PBKDF2_ITERATIONS)
+                    retry = auth_throttle.fail(key)
+                    if retry:
+                        return _throttled(retry)
                     return JSONResponse(
-                        {"error": f"There is no account named {username} on this server. Check the spelling, or choose Create account."},
+                        {"error": "Invalid username or password."},
                         status_code=401,
                     )
-                else:
-                    if not _verify_password(
-                        password,
-                        str(user_rec.get("salt") or ""),
-                        str(user_rec.get("passwordHash") or ""),
-                    ):
-                        return JSONResponse(
-                            {"error": "Invalid username or password."},
-                            status_code=401,
-                        )
-                    display_username = str(user_rec.get("username") or username)
+                iterations = _account_iterations(user_rec)
+                if not _verify_password(
+                    password,
+                    str(user_rec.get("salt") or ""),
+                    str(user_rec.get("passwordHash") or ""),
+                    iterations,
+                ):
+                    retry = auth_throttle.fail(key)
+                    if retry:
+                        return _throttled(retry)
+                    return JSONResponse(
+                        {"error": "Invalid username or password."},
+                        status_code=401,
+                    )
+                display_username = str(user_rec.get("username") or username)
+                if iterations < PBKDF2_ITERATIONS:
+                    salt_hex, hash_hex = _hash_password(password, iterations=PBKDF2_ITERATIONS)
+                    user_rec.update(
+                        salt=salt_hex,
+                        passwordHash=hash_hex,
+                        iterations=PBKDF2_ITERATIONS,
+                    )
+                    _write_accounts(connection, accounts)
+                auth_throttle.succeed(key)
 
                 if preset_keys or custom_plans:
                     _apply_subscription_presets_and_custom(
@@ -1041,6 +1148,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 raise ValueError(f"Choose a password of at least {MIN_PASSWORD_LENGTH} characters.")
             computer_name = str(body.get("computerName") or "").strip() or _default_computer_name()
             server_url = str(body.get("serverUrl") or "").strip() or default_central_server_url()
+            setup_token = str(body.get("setupToken") or "").strip()
             preset_keys = [str(k) for k in (body.get("presetKeys") or []) if k]
             custom_plans = list(body.get("customPlans")) if isinstance(body.get("customPlans"), list) else []
             test_sync = bool(body.get("testSync", True))
@@ -1065,6 +1173,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 "os": sys.platform,
                 "presetKeys": preset_keys,
                 "customPlans": custom_plans,
+                "setupToken": setup_token,
             }
             working_url, remote_data = _call_central_server_account(server_url, endpoint, remote_payload)
             token = str(remote_data["token"]).strip()
@@ -2038,6 +2147,11 @@ SETUP_WIZARD_HTML = """<!doctype html>
                 <input id="wiz-password-confirm" type="password" class="text-input" autocomplete="new-password">
                 <span class="hint" id="wiz-password-hint"></span>
               </div>
+              <div class="field-group" id="wiz-setup-token-group" hidden>
+                <label for="wiz-setup-token">Hub setup token</label>
+                <input id="wiz-setup-token" type="password" class="text-input" autocomplete="off">
+                <span class="hint">Only for the first account on a new hub. The hub operator sets BURNRATE_SETUP_TOKEN.</span>
+              </div>
               <button type="button" class="link-btn" id="wiz-auth-switch">Create an account instead</button>
               <details class="advanced-server">
                 <summary>Hub address: <code id="wiz-server-label"></code></summary>
@@ -2295,9 +2409,10 @@ SETUP_WIZARD_HTML = """<!doctype html>
           $("wiz-join-code").hidden = joinMode !== "code";
           $("wiz-join-account").hidden = joinMode !== "account";
           $("wiz-confirm-group").hidden = authMode !== "register";
+          $("wiz-setup-token-group").hidden = authMode !== "register";
           $("wiz-password").autocomplete = authMode === "register" ? "new-password" : "current-password";
           $("wiz-auth-switch").textContent = authMode === "register" ? "I already have an account" : "Create an account instead";
-          $("wiz-password-hint").textContent = "At least " + (stateData?.minPasswordLength || 8) + " characters.";
+          $("wiz-password-hint").textContent = "At least " + (stateData?.minPasswordLength || 12) + " characters.";
           $("wiz-server-label").textContent = $("wiz-server-url").value || "";
           const leaving = connected && changingRole && role !== "spoke";
           banner("wiz-role-warning", "err", leaving ? "When you finish, this computer stops sending its usage to " + spoke.hubUrl + "." : "");
@@ -2347,7 +2462,7 @@ SETUP_WIZARD_HTML = """<!doctype html>
           } else {
             const username = $("wiz-username").value.trim();
             const password = $("wiz-password").value;
-            const minimum = stateData?.minPasswordLength || 8;
+            const minimum = stateData?.minPasswordLength || 12;
             if (!username || !password) {
               banner("wiz-step1-status", "err", "Enter your username and password.");
               return false;
@@ -2365,7 +2480,8 @@ SETUP_WIZARD_HTML = """<!doctype html>
             banner("wiz-step1-status", "", authMode === "register" ? "Creating your account…" : "Signing in…");
             const res = await api("/api/setup/account", "POST", {
               mode: authMode, username, password, computerName,
-              serverUrl: $("wiz-server-url").value.trim(), testSync: false
+              serverUrl: $("wiz-server-url").value.trim(), testSync: false,
+              setupToken: $("wiz-setup-token").value.trim()
             });
             stateData.setup = res.setup;
           }

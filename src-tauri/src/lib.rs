@@ -504,8 +504,10 @@ impl BackendSupervisor {
         if self.stopping() {
             return;
         }
-        let args = ["sync", "--hub", hub_url.as_str(), "--token", token.as_str(), "--interval", "5"];
-        if let Ok(child) = ManagedChild::spawn(&mut backend.command("spend_app", &args)) {
+        let args = ["sync", "--hub", hub_url.as_str(), "--interval", "5"];
+        let mut command = backend.command("spend_app", &args);
+        command.env("BURNRATE_SYNC_TOKEN", &token);
+        if let Ok(child) = ManagedChild::spawn(&mut command) {
             *guard = Some(child);
         }
     }

@@ -293,24 +293,50 @@ def create_app(
             response.headers["Cache-Control"] = "no-store"
         return response
 
+    def boundary_error(status: int, message: str, *, retry_after: str | None = None) -> JSONResponse:
+        """Boundary rejections still carry the security headers."""
+        headers = {
+            "X-Content-Type-Options": "nosniff",
+            "Referrer-Policy": "no-referrer",
+            "X-Frame-Options": "DENY",
+            "Content-Security-Policy": _content_security_policy(),
+            "Cache-Control": "no-store",
+        }
+        if retry_after is not None:
+            headers["Retry-After"] = retry_after
+        return JSONResponse({"error": message}, status_code=status, headers=headers)
+
+    @app.middleware("http")
+    async def host_boundary(request, call_next):
+        """Exact Host allowlist for reads and writes (DNS-rebinding defence)."""
+        from spend_app.connection_api import host_allowed
+
+        if not host_allowed(request.headers.get("host", "")):
+            return boundary_error(403, "Request rejected: unrecognized Host header.")
+        return await call_next(request)
+
     # Explicit application boundary (Release A A13): when BURNRATE_ACCESS_TOKEN
     # is configured, every /api read and write requires it as a bearer token.
     # The default remains loopback-only with no token; a request claiming a
-    # trusted Host is never authentication by itself.
+    # trusted Host is never authentication by itself. A central server without
+    # a token fails closed instead of serving anonymous reads.
     _access_token = os.getenv("BURNRATE_ACCESS_TOKEN", "").strip()
+    from spend_app.connection_api import central_server
+
+    _central = central_server()
 
     @app.middleware("http")
     async def access_boundary(request, call_next):
         import hmac as _hmac
         from spend_app.connection_api import access_allowed, csrf_mutation_allowed, trusted
 
-        if not csrf_mutation_allowed(request):
-            return JSONResponse({"error": "Request rejected: use the configured BURNRATE origin."}, status_code=403)
-        if not access_allowed(request, _access_token):
-            return JSONResponse({"error": "Authentication required for the API"}, status_code=401)
         auth = request.headers.get("authorization", "")
-        admin_bearer = bool(_access_token and auth.startswith("Bearer ")
-                            and _hmac.compare_digest(auth[7:].strip(), _access_token))
+        admin_bearer = bool(
+            _access_token
+            and auth.startswith("Bearer ")
+            and _hmac.compare_digest(auth[7:].strip(), _access_token)
+        )
+        machine_id = None
         if auth.startswith("Bearer br_m_") and not admin_bearer:
             from spend_app.sync import authenticate_machine_token
 
@@ -318,7 +344,25 @@ def create_app(
                 authenticate_machine_token, settings.database_path, auth[7:].strip()
             )
             if not machine_id:
-                return JSONResponse({"error": "Invalid or revoked machine token."}, status_code=401)
+                return boundary_error(401, "Invalid or revoked machine token.")
+        bearer_ok = bool(admin_bearer or machine_id)
+        if not csrf_mutation_allowed(request, bearer_ok=bearer_ok):
+            return boundary_error(403, "Request rejected: use the configured BURNRATE origin.")
+        if not access_allowed(
+            request,
+            _access_token,
+            central=_central,
+            machine_id=machine_id,
+        ):
+            return boundary_error(401, "Authentication required for the API")
+        cookie = (request.cookies or {}).get("burnrate_access", "")
+        cookie_admin = bool(
+            _access_token and cookie and _hmac.compare_digest(cookie, _access_token)
+        )
+        request.state.auth_kind = (
+            "admin" if (admin_bearer or cookie_admin) else ("machine" if machine_id else "anonymous")
+        )
+        request.state.machine_id = machine_id
         response = await call_next(request)
         if _access_token and request.method == "GET" and request.url.path in {"/", "/hud", "/setup"}:
             query_tok = request.query_params.get("token", "").strip()

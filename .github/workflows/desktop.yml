@@ -44,25 +44,28 @@ jobs:
         shell: pwsh
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "20"
 
+      - name: Install pinned Tauri CLI
+        run: npm ci --prefix tools/tauri --no-audit --no-fund
+
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable 2026-11-14
 
       - name: Cache Rust builds
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: src-tauri
 
@@ -75,15 +78,15 @@ jobs:
 
       - name: Build the frozen service
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install . pyinstaller
+          python -m pip install --require-hashes -r requirements-build.txt
+          python -m pip install --no-deps --no-build-isolation -e .
           python packaging/build_service.py
 
       - name: Smoke-test the frozen service
         run: ./.github/scripts/smoke-service.ps1
 
       - name: Build the desktop bundle
-        run: npx -y @tauri-apps/cli@2 build --bundles ${{ matrix.bundles }} --config src-tauri/tauri.ci.conf.json
+        run: npm exec --prefix tools/tauri -- tauri build --bundles ${{ matrix.bundles }} --config src-tauri/tauri.ci.conf.json
 
       - name: Smoke-test the Windows installer
         if: runner.os == 'Windows'
@@ -115,7 +118,7 @@ jobs:
           kill %1 || true
 
       - name: Upload the bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: desktop-${{ matrix.name }}
           retention-days: 7

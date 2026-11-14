@@ -69,6 +69,28 @@ def pytest_ignore_collect(collection_path, config) -> bool | None:
     return None
 
 
+@pytest.fixture(autouse=True)
+def _test_allowed_hosts(monkeypatch):
+    """Fake hub hostnames used by hermetic sync tests are explicitly trusted.
+
+    The production allowlist stays loopback-only; a test that probes an
+    untrusted host (for example ``attacker.invalid``) must still be refused.
+    """
+    monkeypatch.setenv(
+        "BURNRATE_ALLOWED_HOSTS",
+        ",".join(
+            (
+                "hub.test",
+                "hub.invalid",
+                "hub.example.invalid",
+                "pairing-hub.invalid",
+                "vps-hub.tailnet.ts.net",
+                "dashboard.example.invalid",
+            )
+        ),
+    )
+
+
 @pytest.fixture
 def frozen_clock(monkeypatch):
     """Opt-in freeze of spend_app datetime.now to FROZEN_NOW."""

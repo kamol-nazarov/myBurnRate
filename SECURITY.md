@@ -109,7 +109,8 @@ computer.
 These are invariants, not aspirations. A change that breaks one is a security bug.
 
 - **Loopback by default.** The service binds `127.0.0.1:17331`. There is no built-in remote access,
-  no cloud account and no relay.
+  no cloud account and no relay. A hub (`BURNRATE_CENTRAL_SERVER=1`) fails closed without
+  `BURNRATE_ACCESS_TOKEN`; creating its first account also requires `BURNRATE_SETUP_TOKEN`.
 - **Read-only harness access.** Another tool's SQLite database is opened with `mode=ro` and
   `PRAGMA query_only=ON`; JSONL and log files are opened for reading. myBurnRate never writes another
   tool's files and never reads, reuses or refreshes Claude's sign-in.
@@ -119,6 +120,9 @@ These are invariants, not aspirations. A change that breaks one is a security bu
 - **Credentials stay out of SQLite and API responses.** Optional provider keys live in Windows
   Credential Manager, the macOS Keychain or the Secret Service. Credential-shaped strings are
   stripped before ingest errors are written.
+- **Machine tokens are write-scoped, not read-isolated.** A machine token can push only as its own
+  machine, but the hub is single-owner: its read routes cover every machine on that hub. Treat a
+  machine token as a hub read credential as well as a sync credential.
 - **Allowlisted network egress.** Credential-bearing HTTP clients use an explicit host allowlist,
   HTTPS only, timeouts, and `trust_env=False` so `HTTP_PROXY` cannot redirect secrets. Meters that
   reuse a key another tool stores are on by default with a switch; every other provider call needs a
@@ -127,8 +131,8 @@ These are invariants, not aspirations. A change that breaks one is a security bu
   SHA-256, signer and version all match the pinned expectations, and failed downloads are deleted.
 - **Reproducible releases.** Artifacts are built on GitHub Actions from a tagged commit, listed in
   `SHA256SUMS`, and carry build provenance attestations.
-- **Continuous checks.** CI runs a hermetic test suite on Windows, macOS and Linux, a dependency
-  audit, and a secret scan on every push.
+- **Continuous checks.** CI runs a hermetic test suite on Windows, macOS and Linux, Python, Rust and
+  npm dependency audits, and a secret scan on every push.
 
 ## If a secret is exposed
 

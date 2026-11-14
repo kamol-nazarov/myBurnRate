@@ -3998,6 +3998,7 @@ function paintSettingsBody() {
             <input class="text-input" id="hubAccountUrl" type="url" autocomplete="off" spellcheck="false" placeholder="VPS Hub URL (e.g. https://your-hub.ts.net:8449)" value="${esc(defaultHubUrl)}"/>
             <input class="text-input" id="hubAccountUser" autocomplete="off" spellcheck="false" placeholder="Account email or username" value="${esc(defaultUser)}"/>
             <input class="text-input" id="hubAccountPass" type="password" autocomplete="new-password" placeholder="Account password"/>
+            ${state.accountAuthMode === "register" ? `<input class="text-input" id="hubAccountSetupToken" type="password" autocomplete="off" placeholder="Hub setup token (first account only)"/>` : ""}
             <input class="text-input" id="hubAccountComp" placeholder="This computer's name (e.g. Laptop)" value="${esc(defaultComp)}" autocomplete="off"/>
             <div style="display:flex;justify-content:flex-end">
               <button class="btn-primary" id="hubSignInBtn" type="submit" ${state.accountBusy ? "disabled" : ""}>
@@ -4188,6 +4189,7 @@ window.submitHubAccount = async function() {
   const serverUrl = document.getElementById("hubAccountUrl")?.value.trim() || "";
   const username = document.getElementById("hubAccountUser")?.value.trim() || "";
   const password = document.getElementById("hubAccountPass")?.value || "";
+  const setupToken = document.getElementById("hubAccountSetupToken")?.value || "";
   const computerName = document.getElementById("hubAccountComp")?.value.trim() || "";
   if (!serverUrl) { showToast("Enter your VPS hub URL"); return; }
   if (!username || !password) { showToast("Enter your account username and password"); return; }
@@ -4204,7 +4206,8 @@ window.submitHubAccount = async function() {
       username,
       password,
       computerName,
-      state.accountAuthMode
+      state.accountAuthMode,
+      setupToken
     );
     if (res && res.ok) {
       state.accountBusy = false;

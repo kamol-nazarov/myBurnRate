@@ -12,23 +12,28 @@ maintainer's computer, so every download traces back to a tagged commit.
   release notes describe what people actually download.
 - **`main`** collects finished work. Feature branches merge into `main`;
   releases are tagged from it.
-- `prod` only moves forward: to a published release tag (step 7 below), or to a
+- `prod` only moves forward: to a published release tag (step 8 below), or to a
   documentation or metadata commit that changes no shipped code.
 
 ## Steps
 
-1. Bump the version in these files:
+1. If dependencies changed, refresh `uv.lock` and the three hash-locked
+   exports (`requirements-build.txt`, `requirements-dev.txt`,
+   `requirements-ci.txt`) with `uv lock` and `uv export --frozen` (see
+   [contributing](../CONTRIBUTING.md#dependency-locks)). CI refuses a stale
+   lock.
+2. Bump the version in these files:
    - `pyproject.toml` (PEP 440, for example `0.4.0b2`);
    - `spend_app/__init__.py`;
    - `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock` and
      `src-tauri/tauri.conf.json`;
    - the current-release line and release-notes link in the README.
-2. Write `docs/releases/RELEASE-<version>.md` (it becomes the release notes)
+3. Write `docs/releases/RELEASE-<version>.md` (it becomes the release notes)
    and move the changelog's `[Unreleased]` entries under the new version.
-3. Commit, push, and wait for CI and the Desktop workflow to pass.
-4. Tag and push: `git tag -a v<version> -m "BURNRATE v<version>"` then
+4. Commit, push, and wait for CI and the Desktop workflow to pass.
+5. Tag and push: `git tag -a v<version> -m "BURNRATE v<version>"` then
    `git push origin v<version>`.
-5. The release workflow:
+6. The release workflow:
    - checks that the tag matches the versions in the code;
    - builds and update-signs the Windows, macOS and Linux bundles;
    - builds the native Windows app's installer
@@ -41,12 +46,12 @@ maintainer's computer, so every download traces back to a tagged commit.
    - writes `latest.json` (Tauri), `native-latest.json` (native) and
      `SHA256SUMS` and attests the build provenance;
    - creates a **draft** release with the wheel and sdist.
-6. Check the draft and publish it as the latest release. Installed apps find
+7. Check the draft and publish it as the latest release. Installed apps find
    the update within about six hours, or at once from the tray's **Check for
    updates**.
-7. Move `prod` to the release: `git push origin v<version>^{commit}:refs/heads/prod`
+8. Move `prod` to the release: `git push origin v<version>^{commit}:refs/heads/prod`
    (a fast-forward; it fails rather than rewrite history).
-8. Command-line installs:
+9. Command-line installs:
    - **Scoop** needs nothing more. The release carries `myburnrate.json`, so
      `scoop install https://github.com/kamol-nazarov/myBurnRate/releases/latest/download/myburnrate.json`
      installs the latest release.

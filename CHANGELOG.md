@@ -9,6 +9,34 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+### Security
+
+- **Hub authentication now fails closed.** With `BURNRATE_CENTRAL_SERVER=1`,
+  every API read and write requires `BURNRATE_ACCESS_TOKEN` (or a valid machine
+  token on spoke routes). The Docker reference deployment requires the token,
+  sets `BURNRATE_ALLOWED_HOSTS`/`BURNRATE_ALLOWED_ORIGINS`, and documents the
+  admin cookie flow.
+- **First-account takeover fixed.** Creating the first account on a hub also
+  requires `BURNRATE_SETUP_TOKEN`; registration and login are rate-limited and
+  answer unknown users and wrong passwords identically. Passwords now use
+  PBKDF2-SHA256 at 600,000 iterations with transparent migration from 120,000.
+- **Reads are Host-checked.** An exact Host allowlist now covers GETs and pages,
+  closing the DNS-rebinding read path; test hostnames are accepted only under
+  pytest.
+- **Bearer handling fixed.** Any `Authorization: Bearer` value no longer skips
+  the origin/CSRF guard; only an authenticated admin or machine token does.
+- **Supply chain.** GitHub Actions are pinned to commit SHAs, the Tauri CLI and
+  PyInstaller are pinned, Python dependencies install from hash-locked exports
+  of `uv.lock`, and CI adds `cargo audit`/`npm audit` with Cargo and npm
+  Dependabot coverage.
+- **Installer verification.** The one-line installer now verifies the
+  installer's Ed25519 minisign signature against the pinned update key in
+  addition to its SHA-256.
+- **Desktop and tokens.** The Tauri shell has a concrete CSP and grants commands
+  only on port 17331; sync tokens can come from a file or environment instead of
+  a command line. POSIX data, `.env` and database files are private, and
+  `br_m_`/`brpair_` values are redacted from copied diagnostics.
+
 ### Changed
 
 - Rewrote the README for the 0.5.5 native app: public installers, current

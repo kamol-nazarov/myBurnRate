@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 import sys
 from datetime import UTC, date, datetime, timedelta
@@ -218,6 +219,23 @@ def _cmd_doctor(settings: Settings) -> int:
     return 0 if payload["ok"] else 1
 
 
+def _resolve_sync_token(token: str | None, token_file: str | None) -> str:
+    """Prefer a file or the environment so the token stays out of process lists."""
+    if token and token.strip():
+        return token.strip()
+    env_token = os.getenv("BURNRATE_SYNC_TOKEN", "").strip()
+    if env_token:
+        return env_token
+    if token_file:
+        try:
+            value = Path(token_file).read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise ValueError(f"Could not read the token file: {exc}") from None
+        if value:
+            return value
+    return ""
+
+
 def _cmd_serve(host: str, port: int) -> int:
     try:
         host = require_loopback_host(host)
@@ -309,7 +327,8 @@ def _main() -> int:
         help="Stream local usage and agent activity from this computer to a BURNRATE hub",
     )
     sync_parser.add_argument("--hub", required=True, help="Hub base URL (e.g. http://100.x.y.z:17331)")
-    sync_parser.add_argument("--token", required=True, help="Machine bearer token (br_m_...)")
+    sync_parser.add_argument("--token", help="Machine bearer token (br_m_...); prefer --token-file or BURNRATE_SYNC_TOKEN")
+    sync_parser.add_argument("--token-file", help="Read the machine bearer token from this file")
     sync_parser.add_argument("--name", help="Optional display name override for this computer")
     sync_parser.add_argument("--interval", type=float, default=5.0, help="Sync interval in seconds")
     sync_parser.add_argument("--once", action="store_true", help="Push a single sync batch and exit")
@@ -328,7 +347,8 @@ def _main() -> int:
         help="Open the compact native usage application",
     )
     desktop_parser.add_argument("--hub", help="Optional remote hub URL to sync local telemetry to")
-    desktop_parser.add_argument("--token", help="Optional machine bearer token for remote hub sync")
+    desktop_parser.add_argument("--token", help="Optional machine bearer token for remote hub sync; prefer --token-file")
+    desktop_parser.add_argument("--token-file", help="Read the machine bearer token from this file")
     desktop_parser.add_argument("--check-only", action="store_true", help="Verify native widget support and exit")
     desktop_parser.add_argument("--demo", action="store_true", help="Show sample data without starting collection")
     desktop_parser.add_argument("--port", type=int, help="Local tracker port (default: BURNRATE_PORT or 17331)")
@@ -538,6 +558,27 @@ def _main() -> int:
         import time as _time
         from spend_app.sync import sync_once
 
+        try:
+            token = _resolve_sync_token(args.token, args.token_file)
+        except ValueError as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}), file=sys.stderr)
+            return 2
+        if not token:
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": "Provide --token-file, BURNRATE_SYNC_TOKEN, or --token.",
+                    }
+                ),
+                file=sys.stderr,
+            )
+            return 2
+        if args.token and not args.token_file:
+            print(
+                "Warning: --token is visible in process listings; prefer --token-file or BURNRATE_SYNC_TOKEN.",
+                file=sys.stderr,
+            )
         pricing = PricingEngine.load(settings.pricing_path)
         while True:
             try:
@@ -545,7 +586,7 @@ def _main() -> int:
                     settings,
                     pricing,
                     hub_url=args.hub,
-                    token=args.token,
+                    token=token,
                     machine_name=args.name,
                 )
                 print(json.dumps(out), flush=True)
@@ -566,16 +607,21 @@ def _main() -> int:
                 return 2
             print(json.dumps({"ok": True, "interface": "native", "toolkit": "ttk", "tkVersion": TkVersion}))
             return 0
-        if not args.demo and (args.hub or args.token):
-            if not args.hub or not args.token:
-                print(json.dumps({"error": "Provide both --hub and --token, or pair in Settings."}))
+        if not args.demo and (args.hub or args.token or args.token_file):
+            try:
+                token = _resolve_sync_token(args.token, args.token_file)
+            except ValueError as exc:
+                print(json.dumps({"error": str(exc)}))
+                return 2
+            if not args.hub or not token:
+                print(json.dumps({"error": "Provide both --hub and a token (file or environment), or pair in Settings."}))
                 return 2
             from spend_app.setup_wizard import read_setup_state, write_setup_state
             initialize(settings.database_path)
             with connect(settings.database_path) as connection:
                 state = read_setup_state(connection)
                 state["role"] = "spoke"
-                state["spokeConfig"].update(hubUrl=args.hub, token=args.token, enabled=True)
+                state["spokeConfig"].update(hubUrl=args.hub, token=token, enabled=True)
                 write_setup_state(connection, state)
         from spend_app.native_desktop import main as native_main
         return native_main(settings, demo=args.demo, port=args.port, smoke_test=args.smoke_test)

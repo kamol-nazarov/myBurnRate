@@ -46,7 +46,8 @@ irm https://raw.githubusercontent.com/kamol-nazarov/myBurnRate/prod/scripts/inst
 ```
 
 The script reads `native-latest.json` from the latest GitHub Release, checks the release URL, the
-installer's byte size and its SHA-256 digest, then runs the per-user installer silently. myBurnRate
+installer's byte size, its SHA-256 digest and its Ed25519 minisign signature against the pinned
+update key, then runs the per-user installer silently. myBurnRate
 lands in `%LOCALAPPDATA%\Programs\BURNRATE` with Start Menu and Desktop shortcuts, and opens on its
 first-run screen. Your data lives separately in `%LOCALAPPDATA%\BURNRATE`.
 
@@ -277,7 +278,7 @@ python -m pytest
 Build the portable native bundle, and the NSIS installer when `makensis` is on `PATH`:
 
 ```powershell
-python -m pip install pyinstaller
+python -m pip install pyinstaller==6.22.3
 python packaging/build_native.py                    # portable zip; installer only if makensis exists
 python packaging/build_native.py --require-installer  # fail instead of skipping the installer
 ```
@@ -330,7 +331,7 @@ the network, is in [docs/code-signing.md](docs/code-signing.md).
 
 Releases are built only on GitHub Actions from a tagged commit, carry a `SHA256SUMS` file, and are
 attested with build provenance. In-app updates are verified against an Ed25519 key pinned in the app.
-Dependency audits, a secret scan and a hermetic test suite run on every push.
+Dependency audits for Python, Rust and npm, a secret scan and a hermetic test suite run on every push.
 
 ## License
 

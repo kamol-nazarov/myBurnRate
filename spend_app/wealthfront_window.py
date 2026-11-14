@@ -1481,6 +1481,7 @@ class DesktopBridge:
         password: str,
         computer_name: str = "",
         mode: str = "login",
+        setup_token: str = "",
     ) -> dict:
         if self._demo:
             return {"ok": False, "error": "Hub sign-in is disabled in demo mode."}
@@ -1513,6 +1514,7 @@ class DesktopBridge:
                     "password": password,
                     "computerName": clean_comp,
                     "testSync": True,
+                    "setupToken": (setup_token or "").strip(),
                 },
             )
             try:

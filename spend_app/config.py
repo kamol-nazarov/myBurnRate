@@ -125,6 +125,12 @@ def load_user_env() -> None:
             )
         except OSError:
             pass
+    if os.name != "nt":
+        try:
+            os.chmod(env_file.parent, 0o700)
+            os.chmod(env_file, 0o600)
+        except OSError:
+            pass
     load_dotenv(env_file, override=False)
     for key in (
         "BURNRATE_ENABLE_ZAI_QUOTA",
