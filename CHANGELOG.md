@@ -9,6 +9,8 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-11-14
+
 ### Added
 
 - OpenCode provider rows: Isoquant and other custom providers now have separate usage rows,

@@ -15,7 +15,7 @@ code or responses are ever stored.
 [![Python 3.12](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)](pyproject.toml)
 [![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-4c566a)](#install)
 
-> **Current release:** `v0.5.5` · [Release notes](docs/releases/RELEASE-0.5.5.md) · [Changelog](CHANGELOG.md)
+> **Current release:** `v0.5.6` · [Release notes](docs/releases/RELEASE-0.5.6.md) · [Changelog](CHANGELOG.md)
 
 <p align="center">
   <img src="docs/images/native-desktop.png" width="760" alt="The myBurnRate desktop window in Light and Dark themes: API-equivalent value for today, an interactive usage timeline, two-column provider tiles, and an expanded limit and token breakdown">
