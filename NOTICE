@@ -39,11 +39,11 @@ is a vector trace of the mark Traycer publishes. Meta and Muse Code are
 trademarks of Meta Platforms. Every logo remains the trademark of its owner and
 is shown only to identify the provider whose usage is displayed.
 
-spend_app/fonts/plus-jakarta-sans-latin.woff2 bundles Plus Jakarta Sans
-(Copyright 2020 The Plus Jakarta Sans Project Authors, licensed under the SIL
-Open Font License, Version 1.1; see spend_app/fonts/OFL-Attribution.txt) for
-offline native desktop rendering. Neither the native app nor the web dashboard
-loads fonts from Google Fonts or any external CDN.
+spend_app/fonts/manrope-latin.woff2 bundles Manrope (Copyright 2018 The Manrope
+Project Authors, licensed under the SIL Open Font License, Version 1.1; see
+spend_app/fonts/OFL-Attribution.txt) for offline native desktop rendering.
+Neither the native app nor the web dashboard loads fonts from Google Fonts or
+any external CDN.
 
 Grafana is not part of BURNRATE. This distribution does not include
 Grafana binaries, Grafana source, Prometheus, or the OpenTelemetry

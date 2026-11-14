@@ -1243,7 +1243,7 @@ SMOKE_PROBE = """
 await until(() => document.querySelectorAll('#providerList .provider-item').length >= 8);
 await document.fonts.ready;
 report({ items: document.querySelectorAll('#providerList .provider-item').length, hero: document.getElementById('heroValue').textContent,
-         font: document.fonts.check('700 30px "Plus Jakarta Sans"') });
+         font: document.fonts.check('700 30px "Manrope"') });
 """
 
 
@@ -1510,3 +1510,46 @@ def test_summary_strip_period_labels_and_keyboard_scrub(tmp_path):
     assert r["nextOn"] == 1
     assert r["afterEsc"]["on"] == 0 and r["afterEsc"]["ctx"].startswith("across ")
     assert r["afterEsc"]["focus"] == "chartWrap"  # Escape only ended the scrub
+
+
+GRID_PROBE = """
+await until(() => document.querySelectorAll('#providerList .provider-item').length >= 4);
+await wait(60);
+const items = () => [...document.querySelectorAll('#providerList .provider-item')];
+const r0 = items()[0].getBoundingClientRect();
+const r1 = items()[1].getBoundingClientRect();
+const heroRect = document.getElementById('heroSection').getBoundingClientRect();
+const sumRect = document.querySelector('.hero-summary').getBoundingClientRect();
+const provRect = document.getElementById('providersCard').getBoundingClientRect();
+items()[0].querySelector('.provider-row').click();
+await wait(60);
+const openRect = items()[0].getBoundingClientRect();
+const wasOpen = items()[0].classList.contains('open');
+items()[0].querySelector('.provider-row').click();
+await wait(40);
+await setWidth(320);
+await wait(40);
+const n0 = items()[0].getBoundingClientRect();
+const n1 = items()[1].getBoundingClientRect();
+report({
+  twoCol: Math.abs(r0.top - r1.top) <= 1 && r1.left > r0.right,
+  pairedHeight: Math.abs(r0.height - r1.height) <= 1,
+  summaryInHero: sumRect.top > heroRect.top && sumRect.bottom <= heroRect.bottom && sumRect.bottom < provRect.top,
+  openSpansFull: wasOpen && openRect.width > r0.width * 1.8,
+  narrowStacks: n1.top > n0.bottom && document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+});
+"""
+
+
+@needs_chrome
+@browser
+def test_two_column_grid_expands_full_width_and_stacks_narrow(tmp_path):
+    r = probe(build_page(pref="light", probe=GRID_PROBE, extra_css=FAST), 380, tmp_path, height=800)
+    assert r == {
+        "twoCol": True,
+        "pairedHeight": True,
+        "summaryInHero": True,
+        "openSpansFull": True,
+        "narrowStacks": True,
+    }
+

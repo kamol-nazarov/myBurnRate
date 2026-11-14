@@ -637,7 +637,7 @@ def apply_theme_pref(html: str, theme_pref: str) -> str:
 
 
 def load_ui_html(theme_pref: str = "system") -> str:
-    """Load wealthfront_ui.html with offline Plus Jakarta Sans variable font embedded.
+    """Load wealthfront_ui.html with offline Manrope variable font embedded.
 
     ``theme_pref`` replaces the page's ``data-theme-pref="system"`` attribute so
     the saved choice is applied before first paint. A page without it is served
@@ -646,11 +646,11 @@ def load_ui_html(theme_pref: str = "system") -> str:
     html_path = Path(__file__).with_name("wealthfront_ui.html")
     html = html_path.read_text(encoding="utf-8")
     html = apply_theme_pref(html, theme_pref)
-    font_path = Path(__file__).parent / "fonts" / "plus-jakarta-sans-latin.woff2"
+    font_path = Path(__file__).parent / "fonts" / "manrope-latin.woff2"
     if font_path.is_file():
         b64 = base64.b64encode(font_path.read_bytes()).decode("ascii")
         font_css = (
-            '@font-face{font-family:"Plus Jakarta Sans";font-style:normal;'
+            '@font-face{font-family:"Manrope";font-style:normal;'
             "font-weight:200 800;font-display:block;"
             f'src:url("data:font/woff2;base64,{b64}") format("woff2");}}'
         )

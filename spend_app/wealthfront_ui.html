@@ -79,6 +79,10 @@
   --track-strong: #e7e7f2;
   --track-muted: #c7c6d8;
   --tab-bg: #eaeaf3;
+  --seg-bg: #ededf4;
+  --seg-thumb: #ffffff;
+  --seg-border: rgba(24, 23, 43, 0.08);
+  --seg-shadow: 0 1px 3px rgba(24, 23, 43, 0.09), 0 1px 1px rgba(24, 23, 43, 0.05);
   --switch-off: #d8d7e6;
   --switch-knob: #ffffff;
   --knob-shadow: rgba(0, 0, 0, 0.2);
@@ -104,8 +108,8 @@
   --shadow-indicator: 0 1px 2px rgba(72, 64, 187, 0.08);
   --shadow-preview: 0 10px 28px rgba(24, 23, 43, 0.08), 0 2px 6px rgba(24, 23, 43, 0.04);
   --spring: cubic-bezier(0.22, 1, 0.36, 1);
-  --font: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", system-ui, sans-serif;
-  --display: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display", system-ui, sans-serif;
+  --font: "Manrope", -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", system-ui, sans-serif;
+  --display: "Manrope", -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display", system-ui, sans-serif;
 }
 
 /* Obsidian dark: deep blue-black canvas, raised slate surfaces, soft lavender accent. */
@@ -147,6 +151,10 @@ html[data-theme="dark"] {
   --track-strong: #2c2f3d;
   --track-muted: #4c5066;
   --tab-bg: #232631;
+  --seg-bg: #1c1e28;
+  --seg-thumb: #2a2d3c;
+  --seg-border: rgba(255, 255, 255, 0.10);
+  --seg-shadow: 0 1px 3px rgba(0, 0, 0, 0.42);
   --switch-off: #3b3e50;
   --switch-knob: #f1f1f8;
   --knob-shadow: rgba(0, 0, 0, 0.45);
@@ -342,21 +350,28 @@ button, input {
   justify-self: end;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  height: 23px;
-  padding: 0 8px;
+  gap: 4.5px;
+  height: 22px;
+  padding: 0 7px;
   margin-right: 2px;
-  border-radius: 999px;
+  border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--surface-subtle);
   color: var(--ink);
   font-size: 11px;
   font-weight: 600;
+  line-height: 1;
   cursor: pointer;
   transition: background 0.18s var(--spring), border-color 0.18s ease, color 0.18s ease, transform 0.16s var(--spring);
-  width: 100%;
-  max-width: 126px;
+  width: auto;
+  max-width: 100%;
   min-width: 0;
+}
+
+.scope-trigger svg {
+  flex-shrink: 0;
+  color: var(--ink-secondary);
+  transition: color 0.18s ease, transform 0.18s var(--spring);
 }
 
 .scope-trigger span {
@@ -365,13 +380,21 @@ button, input {
   white-space: nowrap;
 }
 
-.scope-trigger:hover {
-  background: var(--accent-soft);
-  border-color: var(--accent-border);
-  color: var(--accent);
+.scope-trigger:hover,
+.scope-trigger[aria-expanded="true"] {
+  background: var(--surface-raised);
+  border-color: var(--border-input);
+  color: var(--ink);
+}
+.scope-trigger:hover svg,
+.scope-trigger[aria-expanded="true"] svg {
+  color: var(--ink);
+}
+.scope-trigger[aria-expanded="true"] .scope-caret {
+  transform: rotate(180deg);
 }
 .scope-trigger:active {
-  transform: scale(0.97);
+  transform: scale(0.98);
 }
 
 @media (max-width: 410px) {
@@ -383,6 +406,7 @@ button, input {
   .scope-trigger {
     justify-self: start;
     margin-right: 0;
+    max-width: 200px;
   }
 }
 
@@ -451,13 +475,25 @@ button, input {
 /* Compact Wealthfront Hero Section */
 .hero {
   background: var(--bg-hero);
-  padding: 2px 14px 10px;
+  padding: 2px 14px 9px;
   border-bottom: 1px solid var(--border);
 }
 
 .hero-inner {
   max-width: 520px;
   margin: 0 auto;
+}
+
+.hero-top-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 134px;
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 6px;
+}
+
+.hero-main {
+  min-width: 0;
 }
 
 .eyebrow {
@@ -473,16 +509,16 @@ button, input {
 .balance-row {
   display: flex;
   align-items: baseline;
-  gap: 7px;
+  gap: 6px;
   flex-wrap: wrap;
 }
 
 .balance-value {
   font-family: var(--display);
-  font-size: 30px;
+  font-size: 26px;
   font-weight: 750;
   letter-spacing: -0.032em;
-  line-height: 1.04;
+  line-height: 1.05;
   color: var(--ink);
   font-variant-numeric: tabular-nums lining-nums;
   font-feature-settings: "tnum" 1, "lnum" 1;
@@ -496,22 +532,23 @@ button, input {
   border-radius: 999px;
   background: var(--accent-soft);
   color: var(--accent);
-  transform: translateY(-3px);
+  transform: translateY(-2px);
 }
 
 .hero-stats {
-  margin-top: 3px;
+  margin-top: 2px;
   display: grid;
   gap: 1px;
 }
 
 .stat-primary {
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--ink);
   display: flex;
   align-items: center;
-  gap: 5px;
+  flex-wrap: wrap;
+  gap: 1px 5px;
   font-variant-numeric: tabular-nums lining-nums;
   font-feature-settings: "tnum" 1, "lnum" 1;
 }
@@ -531,16 +568,18 @@ button, input {
 /* Loading is not a measured zero: hold a skeleton until the first report arrives */
 .hero.is-loading .balance-value,
 .hero.is-loading .stat-primary,
-.hero.is-loading .stat-secondary {
+.hero.is-loading .stat-secondary,
+.hero.is-loading .hero-summary .summary-val {
   color: transparent;
   background: var(--track);
   border-radius: 7px;
   width: max-content;
   animation: skeletonPulse 1.2s ease-in-out infinite;
 }
-.hero.is-loading .balance-value { min-width: 132px; }
-.hero.is-loading .stat-primary { min-width: 176px; }
-.hero.is-loading .stat-secondary { min-width: 124px; }
+.hero.is-loading .balance-value { min-width: 108px; }
+.hero.is-loading .stat-primary { min-width: 138px; }
+.hero.is-loading .stat-secondary { min-width: 104px; }
+.hero.is-loading .hero-summary .summary-val { min-width: 44px; border-radius: 5px; }
 .hero.is-loading .stat-primary * { visibility: hidden; }
 
 @keyframes skeletonPulse {
@@ -548,10 +587,16 @@ button, input {
 }
 
 /* Per-interval bars with the running total drawn over them */
+.hero-mini-chart {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
 .chart-wrap {
   position: relative;
-  margin: 5px -4px 0;
-  height: 64px;
+  margin: 0;
+  height: 44px;
   cursor: crosshair;
   border-radius: 6px;
 }
@@ -563,7 +608,10 @@ button, input {
   display: none;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
+  text-align: center;
+  padding: 0 4px;
+  line-height: 1.2;
+  font-size: 10.5px;
   color: var(--ink-tertiary);
   pointer-events: none;
 }
@@ -572,8 +620,8 @@ button, input {
 .chart-axis {
   display: flex;
   justify-content: space-between;
-  padding: 1px 3px 2px;
-  min-height: 16px;
+  padding: 0 1px;
+  min-height: 14px;
   font-size: 10.5px;
   color: var(--ink-tertiary);
   font-variant-numeric: tabular-nums lining-nums;
@@ -606,7 +654,7 @@ button, input {
   50% { transform: scale(1.38); opacity: 0.08; }
 }
 
-/* Compact Segmented Period Pills with Sliding Active Indicator */
+/* Compact Segmented Period Control with Sliding Active Thumb */
 .period-bar {
   position: relative;
   display: grid;
@@ -615,8 +663,9 @@ button, input {
   gap: 2px;
   margin-top: 2px;
   padding: 2px;
-  border-radius: 999px;
-  background: var(--surface-subtle);
+  border-radius: 7.5px;
+  background: var(--seg-bg);
+  border: 1px solid var(--border);
 }
 
 .period-indicator {
@@ -625,10 +674,11 @@ button, input {
   bottom: 2px;
   left: 2px;
   width: calc((100% - 10px) / 4);
-  border-radius: 999px;
-  background: var(--accent-soft);
-  box-shadow: var(--shadow-indicator);
-  transition: transform 0.26s var(--spring);
+  border-radius: 5.5px;
+  background: var(--seg-thumb);
+  border: 1px solid var(--seg-border);
+  box-shadow: var(--seg-shadow);
+  transition: transform 0.24s var(--spring);
   pointer-events: none;
   z-index: 0;
 }
@@ -640,9 +690,9 @@ button, input {
   background: transparent;
   color: var(--ink-secondary);
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 560;
   padding: 3.5px 0;
-  border-radius: 999px;
+  border-radius: 5.5px;
   cursor: pointer;
   transition: color 0.18s ease;
 }
@@ -652,7 +702,8 @@ button, input {
 }
 
 .period-pill.active {
-  color: var(--accent);
+  color: var(--ink);
+  font-weight: 660;
 }
 
 /* Content section on the canvas surface */
@@ -724,22 +775,78 @@ button, input {
   color: var(--ink-tertiary);
 }
 
-/* Compact Reorderable Provider List */
+/* Two-Column Reorderable Provider Tile Grid */
+.providers-section {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.providers-section > .card-header {
+  padding: 0 2px;
+}
+
+.providers-section.is-onboarding {
+  display: block;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+
+.providers-section.is-onboarding > .card-header {
+  padding: 8px 12px 4px;
+}
+
 .provider-list {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-flow: row dense;
+  gap: 6px;
   position: relative;
+}
+
+.providers-section.is-onboarding .provider-list {
+  display: block;
+}
+
+.provider-list > .empty-state {
+  grid-column: 1 / -1;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  box-shadow: var(--shadow-card);
+}
+
+.providers-section.is-onboarding .provider-list > .empty-state {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
 }
 
 .provider-item {
-  border-top: 1px solid var(--divider);
   background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  box-shadow: var(--shadow-card);
   position: relative;
   will-change: transform;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
-.provider-item:first-child {
-  border-top: none;
+body:not(.dragging-active) .provider-item:hover {
+  border-color: var(--accent-border);
+}
+
+.provider-item.open {
+  grid-column: 1 / -1;
+  border-color: var(--accent-border);
 }
 
 .provider-item.enter-anim {
@@ -754,38 +861,92 @@ button, input {
 .provider-item.dragging {
   z-index: 45;
   border-radius: 11px;
-  border-top-color: transparent;
+  border-color: var(--accent-border);
   box-shadow: var(--shadow-drag);
   background: var(--surface-raised);
 }
 
 .provider-row {
+  position: relative;
   width: 100%;
+  flex: 1;
   border: none;
   background: transparent;
-  padding: 7.5px 11px 7.5px 7px;
-  display: flex;
-  align-items: center;
-  gap: 7px;
+  padding: 8px 9px;
+  display: grid;
+  grid-template-rows: 1fr auto auto auto;
+  gap: 5px;
   text-align: left;
   cursor: pointer;
   transition: background 0.18s ease;
   touch-action: none;
 }
 
+.provider-item.open > .provider-row {
+  padding: 9px 11px 7px;
+}
+
 body:not(.dragging-active) .provider-row:hover {
   background: var(--row-hover);
 }
 
+.tile-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+
+.tile-ident {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 4px;
+}
+
+.tile-affordance {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 2px;
+  border-radius: 6px;
+  background: var(--surface);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.16s ease, background 0.18s ease;
+}
+
+body:not(.dragging-active) .provider-row:hover .tile-affordance {
+  background: var(--row-hover);
+  opacity: 0.92;
+}
+
+.provider-row:focus-visible .tile-affordance,
+.provider-item.dragging .tile-affordance {
+  opacity: 0.95;
+}
+
+.provider-item.open .tile-affordance {
+  position: static;
+  margin-left: auto;
+  flex-shrink: 0;
+  opacity: 0.95;
+}
+
 .drag-grip {
-  width: 11px;
-  height: 22px;
+  width: 10px;
+  height: 15px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   color: var(--ink-tertiary);
   opacity: 0;
-  transform: translateX(-2px);
+  transform: translateX(-1px);
   transition: opacity 0.18s ease, transform 0.18s var(--spring), color 0.16s ease;
   cursor: grab;
   flex-shrink: 0;
@@ -796,14 +957,11 @@ body:not(.dragging-active) .provider-row:hover .drag-grip,
   opacity: 0.65;
   transform: translateX(0);
 }
-.drag-grip:hover {
-  opacity: 1 !important;
-  color: var(--accent);
-}
 
 .logo-badge {
-  width: 28px;
-  height: 28px;
+  width: 22px;
+  height: 22px;
+  margin-top: 0.5px;
   border-radius: 50%;
   display: inline-flex;
   align-items: center;
@@ -813,49 +971,52 @@ body:not(.dragging-active) .provider-row:hover .drag-grip,
   transition: transform 0.22s var(--spring);
 }
 
+.provider-item.open .logo-badge {
+  width: 26px;
+  height: 26px;
+  margin-top: 0;
+}
+
 body:not(.dragging-active) .provider-row:hover .logo-badge {
   transform: scale(1.05);
 }
 
 .logo-badge svg {
-  width: 14px;
-  height: 14px;
+  width: 11.5px;
+  height: 11.5px;
   display: block;
+}
+
+.provider-item.open .logo-badge svg {
+  width: 13.5px;
+  height: 13.5px;
 }
 
 .live-pip {
   position: absolute;
   right: -1px;
   bottom: -1px;
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: var(--live);
-  border: 1.6px solid var(--surface);
+  border: 1.5px solid var(--surface);
   box-shadow: 0 0 0 1px var(--live-ring);
 }
 
-.provider-main {
-  flex: 1;
-  min-width: 0;
-  display: grid;
-  gap: 2px;
-}
-
-.provider-name-line {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  min-width: 0;
-}
-
 .provider-name {
-  font-size: 12.5px;
-  font-weight: 600;
+  font-size: 11.5px;
+  font-weight: 650;
+  line-height: 1.22;
   color: var(--ink);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: 100%;
+}
+
+.provider-item.open .provider-name {
+  font-size: 12.5px;
 }
 
 .acct-tag {
@@ -875,7 +1036,15 @@ body:not(.dragging-active) .provider-row:hover .logo-badge {
   border: 1px solid var(--border);
 }
 
-/* Smooth Dual-Layer Sub-Slot: Remaining Bar (default) <-> Burned Tokens (hover) */
+.tile-figures {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px;
+  min-width: 0;
+}
+
+/* Smooth Dual-Layer Sub-Slot: Default summary <-> Burned Tokens (hover/focus) */
 .provider-sub-slot {
   position: relative;
   height: 15px;
@@ -917,11 +1086,15 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
 
 .rem-track {
   height: 3.5px;
-  width: 38px;
+  width: 100%;
   background: var(--track);
   border-radius: 999px;
   overflow: hidden;
   flex-shrink: 0;
+}
+
+.rem-track.rem-track-idle {
+  background: transparent;
 }
 
 .rem-fill {
@@ -957,21 +1130,8 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
   font-feature-settings: "tnum" 1, "lnum" 1;
 }
 
-.provider-right {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  flex-shrink: 0;
-}
-
-.provider-figures {
-  text-align: right;
-  display: grid;
-  gap: 1px;
-}
-
 .provider-rem {
-  font-size: 12.8px;
+  font-size: 12.5px;
   font-weight: 720;
   letter-spacing: -0.015em;
   color: var(--ink);
@@ -990,6 +1150,9 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
   font-variant-numeric: tabular-nums lining-nums;
   font-feature-settings: "tnum" 1, "lnum" 1;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .chevron {
@@ -1023,7 +1186,7 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
 
 .model-drawer {
   min-width: 0;
-  padding: 0 11px 9px 26px;
+  padding: 0 9px 9px;
 }
 
 .drawer-box {
@@ -1169,7 +1332,7 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
   font-feature-settings: "tnum" 1, "lnum" 1;
 }
 
-.burn-section-label, .burn-note, .api-equivalent {
+.burn-section-label, .burn-note {
   color: var(--ink-secondary);
   font-size: 10.5px;
 }
@@ -1178,28 +1341,72 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
   padding-top: 6px;
   border-top: 1px solid var(--hair-strong);
 }
-.api-equivalent strong { color: var(--ink); }
 
-.token-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
-.token-chip {
-  font-size: 10.5px;
-  color: var(--ink-secondary);
+.breakdown-box {
   background: var(--surface-raised);
   border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 1px 6px;
+  border-radius: 7px;
+  padding: 6px 8px;
+  display: grid;
+  gap: 5px;
+}
+
+.breakdown-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 3.5px 12px;
+}
+
+@media (max-width: 350px) {
+  .breakdown-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.breakdown-cell {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 10.8px;
+  min-width: 0;
+}
+
+.breakdown-lbl {
+  color: var(--ink-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.breakdown-val {
+  color: var(--ink);
+  font-weight: 640;
+  white-space: nowrap;
   font-variant-numeric: tabular-nums lining-nums;
   font-feature-settings: "tnum" 1, "lnum" 1;
 }
 
-.token-chip strong {
+.api-equivalent {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10.8px;
+  color: var(--ink-secondary);
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+}
+
+.api-equivalent.has-sep {
+  padding-top: 5px;
+  border-top: 1px solid var(--hair-strong);
+}
+
+.api-equivalent strong {
   color: var(--ink);
-  font-weight: 600;
+  font-weight: 680;
+  white-space: nowrap;
 }
 
 .model-rows {
@@ -1268,9 +1475,16 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
 /* Compact Summary Breakdown Strip */
 .summary-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   padding: 7px 12px;
   gap: 8px;
+}
+
+.summary-grid.hero-summary {
+  margin-top: 7px;
+  padding: 6px 0 0;
+  border-top: 1px solid var(--divider);
+  gap: 6px;
 }
 
 .summary-cell {
@@ -1896,20 +2110,24 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
 
 .ob-row .source-meta { white-space: normal; overflow: visible; text-overflow: clip; }
 
-/* Narrow window (min width is 336px; 304px is the floor we still fit): give the figures room
-   instead of truncating names, and let the account tag wrap under the name. */
-@media (max-width: 340px) {
+/* Narrow window (min width is 336px; 304px is the floor we still fit): shrink the mini chart
+   and stack into a single column at or below 350px so no provider subtitle ever clips. */
+@media (max-width: 350px) {
   .card-hint { display: none; }
-  .provider-row { gap: 6px; position: relative; }
-  .drag-grip { position: absolute; left: 0; top: 50%; margin-top: -11px; width: 7px; }
-  .provider-name-line { flex-wrap: wrap; row-gap: 1px; }
-  .provider-name { max-width: 100%; }
-  .rem-track { width: 28px; }
-  .sub-default, .sub-hover { gap: 5px; }
-  .summary-grid { gap: 6px; padding: 7px 10px; }
+  .hero-top-split {
+    grid-template-columns: minmax(0, 1fr) 114px;
+    gap: 8px;
+  }
+  .balance-value { font-size: 24px; }
+  .provider-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
-@media (max-width: 324px) {
-  .rem-track { display: none; }
+@media (max-width: 320px) {
+  .hero-top-split {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 5px;
+  }
 }
 
 /* Reduced motion: no loops, no slides or springs; hero and chart snap */
@@ -1973,8 +2191,9 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
     </div>
 
     <button class="scope-trigger" id="scopeBtn" type="button" title="Select computer scope" aria-label="Computer scope" aria-haspopup="menu" aria-expanded="false" aria-controls="scopePopover">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
       <span id="scopeLabel">All computers</span>
-      <svg width="10.5" height="10.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+      <svg class="scope-caret" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
     </button>
 
     <div class="top-actions">
@@ -2005,27 +2224,33 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
   <div class="scroll-body" id="scrollBody">
     <section class="hero is-loading" id="heroSection" aria-busy="true">
       <div class="hero-inner">
-        <div class="eyebrow">
-          <span id="heroEyebrow">API-equivalent value</span>
-        </div>
-        <div class="balance-row">
-          <div class="balance-value" id="heroValue">—</div>
-          <span class="subtotal-pill" id="subtotalPill" style="display:none" title="Some recorded events used models without a configured rate card">Subtotal</span>
-        </div>
-        <div class="hero-stats">
-          <div class="stat-primary">
-            <span id="heroTokens">Loading usage…</span>
-            <span class="muted" id="heroTokensContext"></span>
+        <div class="hero-top-split">
+          <div class="hero-main">
+            <div class="eyebrow">
+              <span id="heroEyebrow">API-equivalent value</span>
+            </div>
+            <div class="balance-row">
+              <div class="balance-value" id="heroValue">—</div>
+              <span class="subtotal-pill" id="subtotalPill" style="display:none" title="Some recorded events used models without a configured rate card">Subtotal</span>
+            </div>
+            <div class="hero-stats">
+              <div class="stat-primary">
+                <span id="heroTokens">Loading usage…</span>
+                <span class="muted" id="heroTokensContext"></span>
+              </div>
+              <div class="stat-secondary" id="heroMeta">Starting local tracker…</div>
+            </div>
           </div>
-          <div class="stat-secondary" id="heroMeta">Starting local tracker…</div>
-        </div>
 
-        <!-- Spend per interval (bars) and running total (line) -->
-        <div class="chart-wrap" id="chartWrap" tabindex="0" role="group" aria-label="Usage timeline. Use the left and right arrow keys to inspect each interval.">
-          <svg class="chart-svg" id="chartSvg" preserveAspectRatio="none" aria-hidden="true"></svg>
-          <div class="chart-empty" id="chartEmpty">No timeline for this range</div>
+          <!-- Spend per interval (bars) and running total (line) -->
+          <div class="hero-mini-chart">
+            <div class="chart-wrap" id="chartWrap" tabindex="0" role="group" aria-label="Usage timeline. Use the left and right arrow keys to inspect each interval.">
+              <svg class="chart-svg" id="chartSvg" aria-hidden="true"></svg>
+              <div class="chart-empty" id="chartEmpty">No timeline</div>
+            </div>
+            <div class="chart-axis" aria-hidden="true"><span id="chartAxisStart"></span><span id="chartAxisEnd"></span></div>
+          </div>
         </div>
-        <div class="chart-axis" aria-hidden="true"><span id="chartAxisStart"></span><span id="chartAxisEnd"></span></div>
 
         <!-- Wealthfront Time-Range Pills -->
         <div class="period-bar" id="periodBar">
@@ -2035,29 +2260,9 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
           <button class="period-pill" data-period="month" type="button" title="This calendar month">Month</button>
           <button class="period-pill" data-period="all" type="button">All</button>
         </div>
-      </div>
-    </section>
 
-    <div class="section-stack">
-      <div class="notice-banner" id="noticeBanner"></div>
-
-      <!-- Providers Holdings Card -->
-      <div class="wf-card" id="providersCard">
-        <div class="card-header">
-          <div class="card-title-wrap">
-            <span class="card-title" id="providersTitle">Providers</span>
-            <span class="card-hint" id="providersHint" title="Focus a row and press Alt+Up or Alt+Down to move it">drag to sort · click for limits</span>
-          </div>
-          <span class="card-subtitle" id="providersSub">Remaining</span>
-        </div>
-        <div class="provider-list" id="providerList">
-          <div class="empty-state">Loading your AI providers…</div>
-        </div>
-      </div>
-
-      <!-- Rate, cache and plan summary -->
-      <div class="wf-card">
-        <div class="summary-grid">
+        <!-- Rate, cache and plan summary -->
+        <div class="summary-grid hero-summary">
           <div class="summary-cell" title="Average API-equivalent value across the shown period">
             <span class="summary-label">Burn rate</span>
             <span class="summary-val" id="metricRate">—</span>
@@ -2073,6 +2278,24 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
             <span class="summary-val" id="metricPlans">—</span>
             <span class="summary-note" id="metricPlansNote">of plan cost</span>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="section-stack">
+      <div class="notice-banner" id="noticeBanner"></div>
+
+      <!-- Providers Holdings Grid -->
+      <div class="providers-section" id="providersCard">
+        <div class="card-header">
+          <div class="card-title-wrap">
+            <span class="card-title" id="providersTitle">Providers</span>
+            <span class="card-hint" id="providersHint" title="Focus a row and press Alt+Up or Alt+Down to move it">drag to sort · click for limits</span>
+          </div>
+          <span class="card-subtitle" id="providersSub">Remaining</span>
+        </div>
+        <div class="provider-list" id="providerList">
+          <div class="empty-state">Loading your AI providers…</div>
         </div>
       </div>
 
@@ -2354,8 +2577,8 @@ function reportIsEmpty(data) {
 function renderChart(animate = false) {
   const svg = document.getElementById("chartSvg");
   const wrap = document.getElementById("chartWrap");
-  const w = Math.max(240, wrap.clientWidth || 356);
-  const h = Math.max(54, wrap.clientHeight || 64);
+  const w = Math.max(104, wrap.clientWidth || 134);
+  const h = Math.max(38, wrap.clientHeight || 44);
   svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
 
   const flat = reportIsEmpty(state.report);
@@ -2365,7 +2588,7 @@ function renderChart(animate = false) {
   paintChartAxis(measured);
   if (!flat && measured.length < 2) {
     svg.innerHTML = `
-      <line x1="7" y1="${h - 3}" x2="${w - 7}" y2="${h - 3}" class="ch-grid" stroke-width="1" stroke-dasharray="3 3"/>
+      <line x1="5" y1="${h - 3}" x2="${w - 5}" y2="${h - 3}" class="ch-grid" stroke-width="1" stroke-dasharray="2.5 2.5"/>
       <line id="scrubLine" x1="0" y1="0" x2="0" y2="0" style="display:none"/>
       <circle id="scrubDot" cx="0" cy="0" r="0" style="display:none"/>
     `;
@@ -2373,9 +2596,9 @@ function renderChart(animate = false) {
     return;
   }
   const series = flat ? [{ cumulativeUsd: 0 }, { cumulativeUsd: 0 }] : measured;
-  const padX = 7;
-  const padTop = 7;
-  const padBot = 7;
+  const padX = 5;
+  const padTop = 5;
+  const padBot = 5;
   const plotW = w - padX * 2;
   const plotH = h - padTop - padBot;
 
@@ -2393,7 +2616,9 @@ function renderChart(animate = false) {
   });
 
   const lineD = smoothPath(coords);
+  const first = coords[0];
   const last = coords[coords.length - 1];
+  const areaD = `${lineD} L ${last[0].toFixed(1)} ${(h - 3).toFixed(1)} L ${first[0].toFixed(1)} ${(h - 3).toFixed(1)} Z`;
   const buckets = series.map(p => Math.max(0, Number(p.bucketUsd || 0)));
   const maxB = Math.max(...buckets, 0);
   const barW = Math.max(1.5, slot * 0.58);
@@ -2405,7 +2630,7 @@ function renderChart(animate = false) {
 
   if (flat) {
     svg.innerHTML = `
-      <line x1="${padX}" y1="${h - 3}" x2="${w - padX}" y2="${h - 3}" class="ch-grid" stroke-width="1" stroke-dasharray="3 3"/>
+      <line x1="${padX}" y1="${h - 3}" x2="${w - padX}" y2="${h - 3}" class="ch-grid" stroke-width="1" stroke-dasharray="2.5 2.5"/>
       <line x1="${padX}" y1="${(h - padBot).toFixed(1)}" x2="${w - padX}" y2="${(h - padBot).toFixed(1)}" class="ch-line ch-flat" stroke-width="2" stroke-linecap="round"/>
       <line id="scrubLine" x1="0" y1="0" x2="0" y2="0" style="display:none"/>
       <circle id="scrubDot" cx="0" cy="0" r="0" style="display:none"/>
@@ -2415,15 +2640,22 @@ function renderChart(animate = false) {
   }
 
   svg.innerHTML = `
-    <line x1="${padX}" y1="${h - 3}" x2="${w - padX}" y2="${h - 3}" class="ch-grid" stroke-width="1" stroke-dasharray="3 3"/>
+    <defs>
+      <linearGradient id="heroAreaGrad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" class="ch-fill-top"/>
+        <stop offset="100%" class="ch-fill-bottom"/>
+      </linearGradient>
+    </defs>
+    <line x1="${padX}" y1="${h - 3}" x2="${w - padX}" y2="${h - 3}" class="ch-grid" stroke-width="1" stroke-dasharray="2.5 2.5"/>
     <g class="${animate && !prefersReducedMotion() ? "chart-line-anim" : ""}">
       ${bars}
-      <path d="${lineD}" class="ch-line" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="${areaD}" fill="url(#heroAreaGrad)"/>
+      <path d="${lineD}" class="ch-line" fill="none" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"/>
     </g>
-    <circle id="endDotHalo" class="halo-pulse ch-dot" cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="5.2"/>
-    <circle id="endDot" cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="3" class="ch-dot ch-dot-ring" stroke-width="1.5"/>
-    <line id="scrubLine" x1="0" y1="${padTop - 3}" x2="0" y2="${h - 3}" class="ch-scrub" stroke-width="1.1" style="display:none"/>
-    <circle id="scrubDot" cx="0" cy="0" r="4" class="ch-dot ch-dot-ring" stroke-width="2" style="display:none"/>
+    <circle id="endDotHalo" class="halo-pulse ch-dot" cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="4.8"/>
+    <circle id="endDot" cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="2.8" class="ch-dot ch-dot-ring" stroke-width="1.5"/>
+    <line id="scrubLine" x1="0" y1="${padTop - 2}" x2="0" y2="${h - 3}" class="ch-scrub" stroke-width="1.1" style="display:none"/>
+    <circle id="scrubDot" cx="0" cy="0" r="3.6" class="ch-dot ch-dot-ring" stroke-width="1.8" style="display:none"/>
   `;
 
   wrap._coords = coords;
@@ -2791,7 +3023,7 @@ function renderReport(data, animateChart = false) {
     if (Number(prov.tokens || 0) > 0) {
       chips.push(["Fresh input", prov.input], ["Cached input", prov.cached], ["Output", prov.output]);
       if (Number(prov.writes || 0) > 0) chips.push(["Cache writes", prov.writes]);
-      if (prov.reasoning !== null && prov.reasoning !== undefined) chips.push(["Reasoning (in output)", prov.reasoning]);
+      if (prov.reasoning !== null && prov.reasoning !== undefined) chips.push(["Reasoning", prov.reasoning, "Reasoning tokens (included in output)"]);
     }
 
     const enterStyle = doStagger ? `style="animation-delay:${Math.min(idx * 26, 220)}ms"` : "";
@@ -2799,38 +3031,38 @@ function renderReport(data, animateChart = false) {
     return `
       <div class="provider-item ${isOpen ? "open" : ""} ${doStagger ? "enter-anim" : ""}" data-key="${esc(key)}" ${enterStyle}>
         <button class="provider-row" type="button" data-row-key="${esc(key)}" aria-expanded="${isOpen}" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown">
-          <span class="drag-grip" title="Drag to reorder" aria-hidden="true">
-            <svg width="9" height="13" viewBox="0 0 10 16" fill="currentColor">
-              <circle cx="3" cy="3" r="1.25"/><circle cx="7" cy="3" r="1.25"/>
-              <circle cx="3" cy="8" r="1.25"/><circle cx="7" cy="8" r="1.25"/>
-              <circle cx="3" cy="13" r="1.25"/><circle cx="7" cy="13" r="1.25"/>
-            </svg>
-          </span>
-          ${logoHtml(key, "logo-badge", !!prov.inUse)}
-          <div class="provider-main">
-            <div class="provider-name-line">
+          <div class="tile-top">
+            ${logoHtml(key, "logo-badge", !!prov.inUse)}
+            <div class="tile-ident">
               <span class="provider-name">${esc(prov.name || "Unknown provider")}</span>
               ${prov.inUse ? '<span class="sr-only">Active now</span>' : ""}
               ${prov.badge ? `<span class="${badgeCls}">${esc(prov.badge)}</span>` : ""}
             </div>
-            <div class="provider-sub-slot">
-              <div class="sub-default">
-                ${rem.kind !== "idle" ? `<span class="rem-track"><span class="rem-fill tone-${esc(tone)}" style="width:${barPct.toFixed(1)}%"></span></span>` : ""}
-                <span class="provider-sub">${esc(rem.summary || prov.plan || "")}</span>
-              </div>
-              <div class="sub-hover">
-                <div class="burn-summary">${esc(hoverSummary)}</div>
-              </div>
-            </div>
-          </div>
-          <div class="provider-right">
-            <div class="provider-figures">
-              <div class="provider-rem tone-${esc(tone)}">${esc(rem.headline || "—")}</div>
-              <div class="provider-rem-sub">${esc(rightSub)}</div>
-            </div>
-            <span class="chevron" aria-hidden="true">
-              <svg width="12.5" height="12.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+            <span class="tile-affordance" aria-hidden="true">
+              <span class="drag-grip" title="Drag to reorder">
+                <svg width="8" height="12" viewBox="0 0 10 16" fill="currentColor">
+                  <circle cx="3" cy="3" r="1.25"/><circle cx="7" cy="3" r="1.25"/>
+                  <circle cx="3" cy="8" r="1.25"/><circle cx="7" cy="8" r="1.25"/>
+                  <circle cx="3" cy="13" r="1.25"/><circle cx="7" cy="13" r="1.25"/>
+                </svg>
+              </span>
+              <span class="chevron">
+                <svg width="11.5" height="11.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+              </span>
             </span>
+          </div>
+          <div class="tile-figures">
+            <span class="provider-rem tone-${esc(tone)}">${esc(rem.headline || "—")}</span>
+            <span class="provider-rem-sub">${esc(rightSub)}</span>
+          </div>
+          ${rem.kind !== "idle" ? `<div class="rem-track"><span class="rem-fill tone-${esc(tone)}" style="width:${barPct.toFixed(1)}%"></span></div>` : `<div class="rem-track rem-track-idle" aria-hidden="true"></div>`}
+          <div class="provider-sub-slot">
+            <div class="sub-default">
+              <span class="provider-sub">${esc(rem.summary || prov.plan || "")}</span>
+            </div>
+            <div class="sub-hover">
+              <div class="burn-summary">${esc(hoverSummary)}</div>
+            </div>
           </div>
         </button>
         <div class="drawer-collapse">
@@ -2854,13 +3086,27 @@ function renderReport(data, animateChart = false) {
                   `).join("")}
                 </div>
                 ${missingBurn ? `<div class="burn-note">&#8212; No reading available for this period</div>` : ""}
-                ${chips.length ? `
+                ${(chips.length || hasApiValue) ? `
                   <div class="burn-section-label">${esc(periodLabel)} breakdown</div>
-                  <div class="token-chips">
-                    ${chips.map(([lbl, v]) => `<span class="token-chip">${esc(lbl)} <strong>${fmtTokens(v || 0)}</strong></span>`).join("")}
+                  <div class="breakdown-box">
+                    ${chips.length ? `
+                      <div class="breakdown-grid">
+                        ${chips.map(([lbl, v, tip]) => `
+                          <div class="breakdown-cell"${tip ? ` title="${esc(tip)}"` : ""}>
+                            <span class="breakdown-lbl">${esc(lbl)}</span>
+                            <strong class="breakdown-val">${fmtTokens(v || 0)}</strong>
+                          </div>
+                        `).join("")}
+                      </div>
+                    ` : ""}
+                    ${hasApiValue ? `
+                      <div class="api-equivalent${chips.length ? " has-sep" : ""}">
+                        <span>API equivalent (${esc(periodLabel)})</span>
+                        <strong>${esc(fmtMoney(prov.valueUsd, prov.complete !== false, true))}</strong>
+                      </div>
+                    ` : ""}
                   </div>
                 ` : ""}
-                ${hasApiValue ? `<div class="api-equivalent">API equivalent (${esc(periodLabel)}) <strong>${esc(fmtMoney(prov.valueUsd, prov.complete !== false, true))}</strong></div>` : ""}
                 ${models.length ? `
                   <div class="model-rows">
                     ${models.map(m => `
@@ -3154,14 +3400,16 @@ function toggleProviderByKey(key) {
   if (row) row.setAttribute("aria-expanded", String(state.expandedTools.has(key)));
 }
 
-/* Tactile Pointer Drag-and-Drop with Real-Time FLIP Sibling Glide */
+/* Tactile 2D Pointer Drag-and-Drop with Real-Time FLIP Sibling Glide */
 const dragState = {
   pointerId: null,
   item: null,
   row: null,
   startX: 0,
   startY: 0,
+  anchorX: 0,
   anchorY: 0,
+  lastClientX: 0,
   lastClientY: 0,
   scrollStart: 0,
   active: false,
@@ -3191,10 +3439,10 @@ function moveProviderByKeyboard(row, dir) {
   if (!item || !list) return;
   const sibling = dir < 0 ? item.previousElementSibling : item.nextElementSibling;
   if (!sibling || !sibling.classList.contains("provider-item")) return;
-  const oldTop = sibling.getBoundingClientRect().top;
+  const oldRect = sibling.getBoundingClientRect();
   if (dir < 0) list.insertBefore(item, sibling);
   else list.insertBefore(sibling, item);
-  if (!prefersReducedMotion()) animateFlipSibling(sibling, oldTop);
+  if (!prefersReducedMotion()) animateFlipSibling(sibling, oldRect.left, oldRect.top);
   row.focus({ focusVisible: true });
   const order = commitProviderOrder();
   const name = item.querySelector(".provider-name")?.textContent || "Provider";
@@ -3206,11 +3454,12 @@ function bindProviderInteractions() {
   const scroller = document.getElementById("scrollBody");
 
   list.addEventListener("keydown", (e) => {
-    if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+    if (!e.altKey || !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) return;
     const row = e.target.closest(".provider-row");
     if (!row) return;
     e.preventDefault();
-    moveProviderByKeyboard(row, e.key === "ArrowUp" ? -1 : 1);
+    const dir = (e.key === "ArrowUp" || e.key === "ArrowLeft") ? -1 : 1;
+    moveProviderByKeyboard(row, dir);
   });
 
   list.addEventListener("click", (e) => {
@@ -3237,7 +3486,9 @@ function bindProviderInteractions() {
     dragState.row = row;
     dragState.startX = e.clientX;
     dragState.startY = e.clientY;
+    dragState.anchorX = e.clientX;
     dragState.anchorY = e.clientY;
+    dragState.lastClientX = e.clientX;
     dragState.lastClientY = e.clientY;
     dragState.scrollStart = scroller.scrollTop;
     dragState.active = false;
@@ -3249,12 +3500,9 @@ function bindProviderInteractions() {
     const dxRaw = e.clientX - dragState.startX;
 
     if (!dragState.active) {
-      if (Math.abs(dyRaw) < 6) return;
-      if (Math.abs(dxRaw) > Math.abs(dyRaw) * 1.4) {
-        cancelDragPointer();
-        return;
-      }
+      if (Math.hypot(dxRaw, dyRaw) < 6) return;
       dragState.active = true;
+      dragState.anchorX = e.clientX;
       dragState.anchorY = e.clientY;
       dragState.scrollStart = scroller.scrollTop;
       state.suppressNextClick = true;
@@ -3268,6 +3516,7 @@ function bindProviderInteractions() {
     }
 
     e.preventDefault();
+    dragState.lastClientX = e.clientX;
     dragState.lastClientY = e.clientY;
     updateDraggedPosition();
   }, { passive: false });
@@ -3299,14 +3548,6 @@ function bindProviderInteractions() {
     setTimeout(() => { state.suppressNextClick = false; }, 60);
   }
 
-  function cancelDragPointer() {
-    cancelAnimationFrame(dragState.autoScrollRaf);
-    dragState.pointerId = null;
-    dragState.item = null;
-    dragState.row = null;
-    dragState.active = false;
-  }
-
   window.addEventListener("pointerup", finishDrag);
   window.addEventListener("pointercancel", finishDrag);
 }
@@ -3318,50 +3559,66 @@ function updateDraggedPosition() {
   const scroller = document.getElementById("scrollBody");
 
   const scrollDelta = scroller.scrollTop - dragState.scrollStart;
+  let offsetX = dragState.lastClientX - dragState.anchorX;
   let offsetY = (dragState.lastClientY - dragState.anchorY) + scrollDelta;
-  item.style.transform = `translate3d(0, ${offsetY.toFixed(1)}px, 0) scale(1.012)`;
+  item.style.transform = `translate3d(${offsetX.toFixed(1)}px, ${offsetY.toFixed(1)}px, 0) scale(1.02)`;
 
-  const itemRect = item.getBoundingClientRect();
-  const itemCenter = itemRect.top + itemRect.height / 2;
+  const px = dragState.lastClientX;
+  const py = dragState.lastClientY;
+  const items = Array.from(list.querySelectorAll(".provider-item"));
+  const fromIdx = items.indexOf(item);
+  if (fromIdx < 0) return;
 
-  const prev = item.previousElementSibling;
-  if (prev && prev.classList.contains("provider-item")) {
-    const prevRect = prev.getBoundingClientRect();
-    if (itemCenter < prevRect.top + prevRect.height * 0.52) {
-      const beforeTop = prevRect.top;
-      const itemBeforeTop = item.offsetTop;
-      list.insertBefore(item, prev);
-      const layoutShift = item.offsetTop - itemBeforeTop;
-      dragState.anchorY += layoutShift;
-      offsetY = (dragState.lastClientY - dragState.anchorY) + scrollDelta;
-      item.style.transform = `translate3d(0, ${offsetY.toFixed(1)}px, 0) scale(1.012)`;
-      animateFlipSibling(prev, beforeTop);
-      return;
+  let target = null;
+  let toIdx = -1;
+  for (let i = 0; i < items.length; i++) {
+    const el = items[i];
+    if (el === item) continue;
+    const r = el.getBoundingClientRect();
+    const mx = r.width * 0.12;
+    const my = r.height * 0.12;
+    if (px >= r.left + mx && px <= r.right - mx && py >= r.top + my && py <= r.bottom - my) {
+      target = el;
+      toIdx = i;
+      break;
     }
   }
+  if (!target || toIdx < 0) return;
 
-  const next = item.nextElementSibling;
-  if (next && next.classList.contains("provider-item")) {
-    const nextRect = next.getBoundingClientRect();
-    if (itemCenter > nextRect.top + nextRect.height * 0.48) {
-      const beforeTop = nextRect.top;
-      const itemBeforeTop = item.offsetTop;
-      list.insertBefore(next, item);
-      const layoutShift = item.offsetTop - itemBeforeTop;
-      dragState.anchorY += layoutShift;
-      offsetY = (dragState.lastClientY - dragState.anchorY) + scrollDelta;
-      item.style.transform = `translate3d(0, ${offsetY.toFixed(1)}px, 0) scale(1.012)`;
-      animateFlipSibling(next, beforeTop);
+  const beforeRects = new Map();
+  items.forEach(el => {
+    if (el !== item) {
+      const r = el.getBoundingClientRect();
+      beforeRects.set(el, { left: r.left, top: r.top });
     }
+  });
+  const itemBeforeLeft = item.offsetLeft;
+  const itemBeforeTop = item.offsetTop;
+
+  if (fromIdx < toIdx) {
+    list.insertBefore(item, target.nextElementSibling);
+  } else {
+    list.insertBefore(item, target);
+  }
+
+  dragState.anchorX += item.offsetLeft - itemBeforeLeft;
+  dragState.anchorY += item.offsetTop - itemBeforeTop;
+  offsetX = dragState.lastClientX - dragState.anchorX;
+  offsetY = (dragState.lastClientY - dragState.anchorY) + scrollDelta;
+  item.style.transform = `translate3d(${offsetX.toFixed(1)}px, ${offsetY.toFixed(1)}px, 0) scale(1.02)`;
+
+  if (!prefersReducedMotion()) {
+    beforeRects.forEach((oldPos, el) => animateFlipSibling(el, oldPos.left, oldPos.top));
   }
 }
 
-function animateFlipSibling(el, oldTop) {
-  const newTop = el.getBoundingClientRect().top;
-  const delta = oldTop - newTop;
-  if (Math.abs(delta) < 1) return;
+function animateFlipSibling(el, oldLeft, oldTop) {
+  const rect = el.getBoundingClientRect();
+  const dx = oldLeft - rect.left;
+  const dy = oldTop - rect.top;
+  if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
   el.style.transition = "none";
-  el.style.transform = `translate3d(0, ${delta.toFixed(1)}px, 0)`;
+  el.style.transform = `translate3d(${dx.toFixed(1)}px, ${dy.toFixed(1)}px, 0)`;
   requestAnimationFrame(() => {
     el.style.transition = "transform 0.22s cubic-bezier(0.22, 1, 0.36, 1)";
     el.style.transform = "translate3d(0, 0, 0)";

@@ -77,7 +77,7 @@ document.querySelector('#native').addEventListener('load', async () => {
     cases.push({width, actualWidth:frame.contentWindow.innerWidth, clipped, overlap,
       drawerFits:bounds.right <= frame.contentWindow.innerWidth});
   }
-  const result = {fontLoaded:doc.fonts.check('600 11px "Plus Jakarta Sans"'), cases,
+  const result = {fontLoaded:doc.fonts.check('600 11px "Manrope"'), cases,
     titles:[...doc.querySelectorAll('.limit-title')].map(el => el.textContent.trim()),
     values:[...doc.querySelectorAll('.limit-val')].map(el => el.textContent.trim())};
   document.title = 'PROBE:' + JSON.stringify(result);
@@ -131,20 +131,24 @@ for (const width of [304, 320, 336, 364, 380, 480]) {
   if (document.documentElement.scrollWidth > window.innerWidth) issues.push('document-hscroll');
   const card = document.getElementById('providersCard').getBoundingClientRect();
 
-  // provider rows
+  // provider tiles
   document.querySelectorAll('.provider-row').forEach((row) => {
     const key = row.dataset.rowKey;
     const rect = row.getBoundingClientRect();
-    const main = row.querySelector('.provider-main').getBoundingClientRect();
-    const right = row.querySelector('.provider-right').getBoundingClientRect();
-    if (main.right > right.left + 1) issues.push('row-overlap:' + key);
-    if (rect.right > card.right + 1 || right.right > rect.right + 1) issues.push('row-overflow:' + key);
+    const ident = row.querySelector('.tile-ident').getBoundingClientRect();
+    const afford = row.querySelector('.tile-affordance');
+    if (afford && parseFloat(getComputedStyle(afford).opacity) > 0) {
+      const ar = afford.getBoundingClientRect();
+      if (ident.right > ar.left + 1) issues.push('row-overlap:' + key);
+      if (ar.right > rect.right + 1) issues.push('afford-overflow:' + key);
+    }
+    if (rect.right > card.right + 1) issues.push('row-overflow:' + key);
     for (const sel of ['.provider-rem', '.provider-rem-sub', '.provider-name', '.provider-sub']) {
       const el = row.querySelector(sel);
       if (el && clipped(el)) issues.push('clipped:' + sel + ':' + key);
     }
-    row.querySelectorAll('.provider-name-line > *').forEach((el) => {
-      if (el.getBoundingClientRect().right > main.right + 1) issues.push('name-line:' + key);
+    row.querySelectorAll('.tile-name-wrap > *').forEach((el) => {
+      if (el.getBoundingClientRect().right > ident.right + 1) issues.push('name-line:' + key);
     });
     const nameBox = row.querySelector('.provider-name').getBoundingClientRect();
     const tagBox = row.querySelector('.acct-tag');
@@ -157,6 +161,11 @@ for (const width of [304, 320, 336, 364, 380, 480]) {
 
   // hero
   const hero = document.querySelector('.hero-inner').getBoundingClientRect();
+  const heroMain = document.querySelector('.hero-main').getBoundingClientRect();
+  const miniChart = document.querySelector('.hero-mini-chart').getBoundingClientRect();
+  const splitSameRow = miniChart.top < heroMain.bottom - 2 && miniChart.bottom > heroMain.top + 2;
+  if (splitSameRow && heroMain.right > miniChart.left + 1) issues.push('hero-split-overlap');
+  if (miniChart.right > hero.right + 1) issues.push('hero-chart-overflow');
   for (const sel of ['.balance-value', '#heroTokens', '#heroTokensContext', '#heroMeta', '#subtotalPill']) {
     const el = document.querySelector(sel);
     if (!el || el.offsetParent === null) continue;

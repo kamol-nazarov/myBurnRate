@@ -1,1 +1,1 @@
-﻿Plus Jakarta Sans Variable (Copyright 2020 Tokotype, https://github.com/tokotype/PlusJakartaSans) - Licensed under the SIL Open Font License, Version 1.1 (https://openfontlicense.org).
+﻿Manrope Variable (Copyright 2018 The Manrope Project Authors, https://github.com/sharanda/manrope) - Licensed under the SIL Open Font License, Version 1.1 (https://openfontlicense.org).
