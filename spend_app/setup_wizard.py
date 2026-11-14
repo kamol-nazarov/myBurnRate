@@ -305,6 +305,25 @@ def central_server_for_accounts() -> bool:
     return os.getenv("BURNRATE_CENTRAL_SERVER", "").strip().lower() in {"1", "true", "yes"}
 
 
+def setup_token_warning(connection) -> str | None:
+    """Warn when the one-time setup token outlives the account it protects.
+
+    The token is only consulted while the hub has no account, so a hub that
+    already has one is not made weaker by a lingering value. It is still a
+    secret sitting in the environment for no reason; say so once at startup.
+    """
+    if not os.getenv(SETUP_TOKEN_ENV, "").strip():
+        return None
+    if not central_server_for_accounts():
+        return None
+    if not _read_accounts(connection).get("users"):
+        return None
+    return (
+        f"{SETUP_TOKEN_ENV} is still set, but this hub already has an owner account, "
+        "so the token is ignored. Remove it from the environment."
+    )
+
+
 def _apply_subscription_presets_and_custom(
     connection,
     timezone_name: str,

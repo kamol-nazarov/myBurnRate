@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 
 import hashlib
+import logging
 import os
 import time
 from contextlib import ExitStack, asynccontextmanager
@@ -15,9 +16,10 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from starlette.middleware.gzip import GZipMiddleware
 
-from spend_app.bounded_reads import BoundedReadExecutor, ReadCapacityExceeded
 from spend_app import __version__
+from spend_app.bounded_reads import BoundedReadExecutor, ReadCapacityExceeded
 from spend_app.build import build_id
+from spend_app.native_launch import evaluate as evaluate_native_binary
 
 
 ASSET_IMMUTABLE_CACHE = "public, max-age=31536000, immutable"
@@ -181,6 +183,13 @@ def create_app(
 ) -> FastAPI:
     settings = settings or load_settings()
     initialize(settings.database_path)
+    from spend_app.db import connect
+    from spend_app.setup_wizard import setup_token_warning
+
+    with connect(settings.database_path) as connection:
+        stale_setup_token = setup_token_warning(connection)
+    if stale_setup_token:
+        logging.getLogger("burnrate.setup").warning(stale_setup_token)
     pricing = PricingEngine.load(settings.pricing_path)
     bounded_reads = BoundedReadExecutor(max_workers=1)
 
@@ -223,7 +232,6 @@ def create_app(
         if request.headers.get("x-burnrate-view") == "dashboard":
             request_collection()
     from spend_app.diagnostics import detect_local_sources, source_reports
-    from spend_app.db import connect
 
     def source_guidance():
         presence = {}
@@ -747,6 +755,9 @@ def create_app(
             except Exception:
                 pass
         if exe_path is not None:
+            trusted, signature = await asyncio.to_thread(evaluate_native_binary, exe_path)
+            if not trusted:
+                return {"ok": False, "reason": "untrusted_binary", "signature": signature}
             try:
                 si = None
                 if sys.platform == "win32":
@@ -761,7 +772,8 @@ def create_app(
                     stderr=subprocess.DEVNULL,
                     startupinfo=si,
                 )
-                return {"ok": True, "pinned": True, "launchedNative": True, "exe": str(exe_path)}
+                return {"ok": True, "pinned": True, "launchedNative": True,
+                        "exe": str(exe_path), "signature": signature}
             except Exception as exc:
                 return {"ok": False, "error": str(exc)}
         return {"ok": False, "reason": "native_not_available"}

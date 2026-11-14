@@ -48,6 +48,8 @@ Optional keys in `.env` (all empty by default — copy `.env.example` to `.env` 
 | `SPEND_PRICING_PATH` | YAML cards (packaged default) |
 | `SPEND_TIMEZONE` | IANA zone for midnight and windows (default `UTC`) |
 | `BURNRATE_ENABLE_DASHBOARD` | Set to `1` to serve the full dashboard at `/` (off by default; the HUD is the product) |
+| `BURNRATE_REQUIRE_SIGNED_NATIVE` | Set to `1` to refuse the HUD's native-window launch unless the desktop binary carries a valid Authenticode signature from an allowed publisher |
+| `BURNRATE_NATIVE_PUBLISHERS` | Comma-separated certificate-subject substrings allowed to sign the desktop binary (default `SignPath Foundation`, `myBurnRate`) |
 
 Fresh `burnrate init` does **not** seed plan prices automatically. You can pick plans interactively in the **Setup Wizard (`/setup`)**, in the dashboard's **Plans & Value** dialog (when the dashboard is enabled), or via the CLI:
 

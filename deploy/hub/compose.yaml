@@ -8,7 +8,10 @@
 
 services:
   hub:
-    image: ghcr.io/kamol-nazarov/myburnrate-hub:${BURNRATE_VERSION:-latest}
+    # Pinned by digest so a mutable tag cannot change under an existing
+    # deployment. To upgrade, set BURNRATE_HUB_IMAGE to the new
+    # "tag@sha256:..." published with the release.
+    image: ${BURNRATE_HUB_IMAGE:-ghcr.io/kamol-nazarov/myburnrate-hub:0.5.5@sha256:6a3f8c04e59483b111684654f0d37e795d34f53ef028af6aa49e9fb67bf1e67a}
     restart: unless-stopped
     environment:
       BURNRATE_CENTRAL_SERVER: "1"
@@ -33,7 +36,7 @@ services:
       - "443:443/udp"
 
   caddy:
-    image: caddy:2
+    image: caddy:2.11.9@sha256:4e2425f6009577e7c651010f16679c28f7d12df3e7b1914f941a7a3370746b3c
     restart: unless-stopped
     network_mode: "service:hub"
     depends_on:

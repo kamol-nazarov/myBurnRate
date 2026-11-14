@@ -129,6 +129,11 @@ These are invariants, not aspirations. A change that breaks one is a security bu
   key the user adds. There is no inference proxy.
 - **Update verification before execution.** A native update is rejected unless the URL, byte size,
   SHA-256, signer and version all match the pinned expectations, and failed downloads are deleted.
+- **Checked desktop launch.** `/api/hud/native` only starts a fixed-path binary after an Authenticode
+  check. A valid signature from an unknown publisher, or a signature that no longer matches the file,
+  is refused. Unsigned release builds are allowed while signing is pending and reported in the
+  response; set `BURNRATE_REQUIRE_SIGNED_NATIVE=1` to refuse them, and
+  `BURNRATE_NATIVE_PUBLISHERS` to change the allowed signer names.
 - **Reproducible releases.** Artifacts are built on GitHub Actions from a tagged commit, listed in
   `SHA256SUMS`, and carry build provenance attestations.
 - **Continuous checks.** CI runs a hermetic test suite on Windows, macOS and Linux, Python, Rust and

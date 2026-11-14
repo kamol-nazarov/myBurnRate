@@ -275,6 +275,10 @@ def test_desktop_shell_and_supply_chain_inputs_are_pinned() -> None:
     compose = (ROOT / "deploy" / "hub" / "compose.yaml").read_text(encoding="utf-8")
     assert "BURNRATE_ACCESS_TOKEN" in compose
     assert "BURNRATE_ALLOWED_HOSTS" in compose
+    assert re.search(r"myburnrate-hub:\d+\.\d+\.\d+@sha256:[0-9a-f]{64}", compose)
+    assert re.search(r"caddy:\d+\.\d+\.\d+@sha256:[0-9a-f]{64}", compose)
+    prices = (ROOT / ".github" / "workflows" / "prices.yml").read_text(encoding="utf-8")
+    assert "--require-hashes" in prices and "requirements-build.txt" in prices
 
 
 def test_installer_verifies_the_minisign_signature() -> None:

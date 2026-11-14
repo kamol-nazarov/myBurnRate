@@ -47,8 +47,10 @@ Then:
 4. Remove `BURNRATE_SETUP_TOKEN` from the environment once the owner exists
    (or keep it; it is only consulted while the hub has no account).
 
-- **Update:** `docker compose pull && docker compose up -d`. Pin a version
-  with `BURNRATE_VERSION=0.4.0-beta.2`.
+- **Update:** the reference compose file pins both images by digest. Set
+  `BURNRATE_HUB_IMAGE` to the new `tag@sha256:...` from the release
+  (`docker buildx imagetools inspect ghcr.io/kamol-nazarov/myburnrate-hub:0.5.6`
+  prints it), then `docker compose pull && docker compose up -d`.
 - **Back up:** copy `spend.db` out of the `hub-data` volume, for example with
   `docker compose cp hub:/data/spend.db ./spend-backup.db`.
 - **Logs:** `docker compose logs -f hub`.

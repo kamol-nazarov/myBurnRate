@@ -27,6 +27,9 @@ maintainer's computer, so every download traces back to a tagged commit.
    - `spend_app/__init__.py`;
    - `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock` and
      `src-tauri/tauri.conf.json`;
+   - the pinned hub image in `deploy/hub/compose.yaml` (the new
+     `tag@sha256:...` printed by
+     `docker buildx imagetools inspect ghcr.io/kamol-nazarov/myburnrate-hub:<version>`);
    - the current-release line and release-notes link in the README.
 3. Write `docs/releases/RELEASE-<version>.md` (it becomes the release notes)
    and move the changelog's `[Unreleased]` entries under the new version.

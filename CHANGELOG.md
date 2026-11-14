@@ -36,6 +36,12 @@ This project is licensed under Apache-2.0.
   only on port 17331; sync tokens can come from a file or environment instead of
   a command line. POSIX data, `.env` and database files are private, and
   `br_m_`/`brpair_` values are redacted from copied diagnostics.
+- **Low-finding hardening.** `/api/hud/native` verifies the desktop binary's
+  Authenticode signature and publisher before launching it, and
+  `BURNRATE_REQUIRE_SIGNED_NATIVE=1` refuses unsigned builds. The reference
+  compose file pins the hub and Caddy images by digest, the weekly price job
+  installs from the hash-locked export, and a hub that already has an owner
+  warns when `BURNRATE_SETUP_TOKEN` is still set.
 
 ### Changed
 
