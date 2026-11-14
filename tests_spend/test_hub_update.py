@@ -41,18 +41,17 @@ def test_generated_probe_works_on_a_protected_hub(tmp_path, monkeypatch):
     url = re.search(r"http://127\.0\.0\.1:[0-9]+/[^'\s)]+", command).group()
     target = urlsplit(url)
     assert client.get("/api/spend").status_code == 401
-    response = client.get(target.path + "?" + target.query)
+    response = client.get(target.path)
     assert response.status_code == 200
-    assert response.json()["status"] == "ok" and response.json()["application"] == "burnrate"
+    assert response.json()["status"] == "ok"
     assert "synthetic-secret" not in command
 
 
 @pytest.mark.parametrize("payload,valid", [
-    ('{"status":"ok","application":"burnrate"}', True),
+    ('{"status":"ok"}', True),
     ("not JSON", False),
-    ('{"status":"error","application":"burnrate"}', False),
-    ('{"status":"ok","application":"other"}', False),
-    ('[]', False),
+    ('{"status":"error"}', False),
+    ("[]", False),
 ])
 def test_generated_verifier_process(payload, valid):
     command = generated_command()

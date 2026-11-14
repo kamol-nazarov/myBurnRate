@@ -13,13 +13,14 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from starlette.middleware.gzip import GZipMiddleware
 
 from spend_app import __version__
 from spend_app.bounded_reads import BoundedReadExecutor, ReadCapacityExceeded
 from spend_app.build import build_id
 from spend_app.native_launch import evaluate as evaluate_native_binary
+from spend_app.native_launch import locked_binary
 
 
 ASSET_IMMUTABLE_CACHE = "public, max-age=31536000, immutable"
@@ -388,7 +389,7 @@ def create_app(
 
         if bearer:
             if await asyncio.to_thread(break_glass_matches, settings.database_path, bearer, _access_token):
-                automation = os.getenv("BURNRATE_ALLOW_ADMIN_BEARER", "1").lower() in {"1", "true", "yes"}
+                automation = os.getenv("BURNRATE_ALLOW_ADMIN_BEARER", "0").lower() in {"1", "true", "yes"}
                 if automation or request.url.path in {"/api/auth/bootstrap", "/api/auth/rotate"}:
                     principal = Principal("owner", "break-glass", "owner", via="break-glass")
             elif bearer.startswith("br_m_"):
@@ -410,6 +411,13 @@ def create_app(
         request.state.principal = principal
         request.state.machine_id = principal.id if principal.kind == "machine" else None
         request.state.auth_kind = "machine" if principal.kind == "machine" else principal.kind
+        if (_central and principal.kind == "unauthenticated" and request.method == "GET"
+                and request.url.path in {"/", "/hud", "/setup"}
+                and not request.query_params.get("token", "").strip()):
+            # The shells carry no data, but a hub should not hand them to an
+            # anonymous visitor. /auth is the public entry point; the ?token
+            # exchange still needs the page it lands on.
+            return await recorded(RedirectResponse("/auth", status_code=303))
         bearer_ok = principal.via in {"bearer", "break-glass"}
         if not csrf_mutation_allowed(request, bearer_ok=bearer_ok):
             return await recorded(boundary_error(403, "Request rejected: use the configured BURNRATE origin."))
@@ -745,9 +753,12 @@ def create_app(
         }
 
     @app.get("/healthz")
-    async def healthz(supervisor: bool = False) -> dict:
+    async def healthz(request: Request, supervisor: bool = False) -> dict:
         if not supervisor:
             return {"status": "ok"}
+        if _central and not request.state.principal.permits("hub.read"):
+            # Liveness stays public; process and ingest detail is owner-only on a hub.
+            raise HTTPException(status_code=401, detail="Authentication required for supervisor health")
         from spend_app.freshness import heartbeat
 
         return {"status": "ok", "application": "burnrate", "pid": os.getpid(),
@@ -826,25 +837,30 @@ def create_app(
             except Exception:
                 pass
         if exe_path is not None:
-            trusted, signature = await asyncio.to_thread(evaluate_native_binary, exe_path)
-            if not trusted:
-                return {"ok": False, "reason": "untrusted_binary", "signature": signature}
             try:
-                si = None
-                if sys.platform == "win32":
-                    si = subprocess.STARTUPINFO()
-                    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                    si.wShowWindow = 5
-                subprocess.Popen(
-                    [str(exe_path)],
-                    cwd=str(repo_root),
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    startupinfo=si,
-                )
-                return {"ok": True, "pinned": True, "launchedNative": True,
-                        "exe": str(exe_path), "signature": signature}
+                # Hold the file without write sharing so the binary checked
+                # below is the binary CreateProcess runs.
+                with locked_binary(exe_path):
+                    trusted, signature = await asyncio.to_thread(evaluate_native_binary, exe_path)
+                    if not trusted:
+                        return {"ok": False, "reason": "untrusted_binary", "signature": signature}
+                    si = None
+                    if sys.platform == "win32":
+                        si = subprocess.STARTUPINFO()
+                        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                        si.wShowWindow = 5
+                    subprocess.Popen(
+                        [str(exe_path)],
+                        cwd=str(repo_root),
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        startupinfo=si,
+                    )
+                    return {"ok": True, "pinned": True, "launchedNative": True,
+                            "exe": str(exe_path), "signature": signature}
+            except OSError as exc:
+                return {"ok": False, "reason": "binary_busy", "error": str(exc)}
             except Exception as exc:
                 return {"ok": False, "error": str(exc)}
         return {"ok": False, "reason": "native_not_available"}

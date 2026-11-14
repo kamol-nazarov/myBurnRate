@@ -233,6 +233,8 @@ def test_machine_and_pairing_tokens_are_redacted() -> None:
 
     machine = sanitize_reason("failed with br_m_abc-123_abcdefghijklmnop")
     assert "br_m_" not in machine and "[redacted]" in machine
+    local_session = sanitize_reason("cookie br_l_abc-123_abcdefghijklmnop")
+    assert "br_l_" not in local_session and "[redacted]" in local_session
     pairing = redact("code brpair_eyJodWJVcmwiOiJ4In0=")
     assert "brpair_" not in pairing and "[redacted]" in pairing
 

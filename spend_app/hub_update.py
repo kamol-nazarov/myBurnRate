@@ -23,7 +23,7 @@ from spend_app import __version__
 from spend_app.build import build_id
 
 health = json.loads(sys.argv[1])
-if not isinstance(health, dict) or health.get("status") != "ok" or health.get("application") != "burnrate":
+if not isinstance(health, dict) or health.get("status") != "ok":
     raise SystemExit("Hub health check did not report a healthy BURNRATE service.")
 print(json.dumps({"version": __version__, "build": build_id()}))
 """
@@ -50,9 +50,9 @@ def update_hub(*, ssh: str, path: str, service: str, branch: str, push_local: bo
     remote += " && .venv/bin/python -m pip install --require-hashes -r requirements-build.txt && .venv/bin/python -m pip install --no-deps --no-build-isolation . && .venv/bin/python -m pip check"
     remote += " && .venv/bin/python -I -B scripts/verify-runtime.py"
     remote += " && (test ! -x /usr/local/sbin/tk-security-preflight || sudo /usr/local/sbin/tk-security-preflight burnrate)"
-    # Health is public even on a protected hub. Read build metadata over the
+    # Liveness is public even on a protected hub. Read build metadata over the
     # already-authorized SSH connection instead of passing an API credential.
-    health_url = shlex.quote(f"http://127.0.0.1:{port}/healthz?supervisor=1")
+    health_url = shlex.quote(f"http://127.0.0.1:{port}/healthz")
     remote += f" && sudo systemctl restart {service} && sleep 4"
     remote += f" && health_json=$(curl --fail --silent --show-error --max-time 10 {health_url})"
     remote += f' && .venv/bin/python -I -B -c {shlex.quote(_VERIFY_HEALTH)} "$health_json"'

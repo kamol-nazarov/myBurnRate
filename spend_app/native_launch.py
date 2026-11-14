@@ -20,9 +20,9 @@ import base64
 import json
 import logging
 import os
-import shutil
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 LOG = logging.getLogger("burnrate.native_launch")
@@ -43,6 +43,45 @@ UNKNOWN = "unknown"
 BLOCKED_ALWAYS = frozenset({FOREIGN, TAMPERED})
 
 
+@contextmanager
+def locked_binary(path: Path):
+    """Hold the executable without write/delete sharing across verify and launch.
+
+    Windows only; a no-op elsewhere. ``CreateFileW`` with ``FILE_SHARE_READ``
+    denies other processes write or delete access, so the file cannot be
+    swapped between the Authenticode check and ``CreateProcess``.
+    """
+    if sys.platform != "win32":
+        yield
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    generic_read = 0x80000000
+    share_read = 0x00000001
+    open_existing = 3
+    attribute_normal = 0x80
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create = kernel32.CreateFileW
+    create.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    ]
+    create.restype = wintypes.HANDLE
+    close = kernel32.CloseHandle
+    close.argtypes = [wintypes.HANDLE]
+    close.restype = wintypes.BOOL
+    handle = create(
+        str(path), generic_read, share_read, None, open_existing, attribute_normal, None,
+    )
+    if handle in (None, -1, ctypes.c_void_p(-1).value):
+        raise OSError(ctypes.get_last_error(), "Could not lock the desktop binary for verification")
+    try:
+        yield
+    finally:
+        close(handle)
+
+
 def _truthy(value: str | None) -> bool:
     return (value or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -54,9 +93,16 @@ def _publishers() -> tuple[str, ...]:
 
 
 def _powershell() -> str | None:
+    """Resolve PowerShell by absolute OS path, never through PATH or the CWD."""
     if sys.platform != "win32":
         return None
-    return shutil.which("powershell") or shutil.which("pwsh")
+    candidates = [
+        Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe",
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+        / "PowerShell" / "7" / "pwsh.exe",
+    ]
+    return next((str(candidate) for candidate in candidates if candidate.is_file()), None)
 
 
 def _authenticode(path: Path) -> tuple[str, str]:

@@ -31,7 +31,7 @@ def hub(tmp_path, monkeypatch):
     monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "synthetic-break-glass")
     monkeypatch.setenv("BURNRATE_SETUP_TOKEN", "synthetic-setup")
-    monkeypatch.delenv("BURNRATE_ALLOW_ADMIN_BEARER", raising=False)
+    monkeypatch.setenv("BURNRATE_ALLOW_ADMIN_BEARER", "1")
     auth_throttle.reset()
     setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
@@ -116,7 +116,7 @@ def test_login_cookie_foreign_origin_logout_and_reuse(hub):
     login = client.post("/api/account/login", json={"username": "synthetic-owner", "password": PASSWORD, "sessionOnly": True})
     assert login.status_code == 200
     cookie = login.headers["set-cookie"].lower()
-    assert "httponly" in cookie and "samesite=lax" in cookie and "path=/api" in cookie
+    assert "httponly" in cookie and "samesite=lax" in cookie and "path=/" in cookie
     token = login.json()["sessionToken"]
     assert token != "synthetic-break-glass" and len(token) >= 43
     assert client.post("/api/machines", headers={"Origin": "https://foreign.invalid"}, json={"name": "No"}).status_code == 403
@@ -146,6 +146,41 @@ def test_session_expiry_revocation_rotation_and_future_roles(hub):
         connection.execute("UPDATE owner_sessions SET expires_at=? WHERE id=?", (auth.stamp(auth.moment() - timedelta(seconds=1)), login["sessionId"]))
     assert client.get("/api/machines").status_code == 401
     assert not auth.Principal("owner", "future", "member").permits("hub.read")
+
+
+def test_static_bearer_is_restricted_unless_opted_in(hub, monkeypatch):
+    _, client = hub
+    monkeypatch.delenv("BURNRATE_ALLOW_ADMIN_BEARER", raising=False)
+    assert client.get("/api/machines", headers=ADMIN).status_code == 401
+    assert client.post("/api/auth/bootstrap", headers=ADMIN).status_code == 200
+
+
+def test_last_used_updates_are_throttled(tmp_path):
+    path = tmp_path / "throttle.db"
+    initialize(path)
+    first_moment = auth.moment()
+    with connect(path) as connection:
+        created = auth.create_session(
+            connection, auth.Principal("owner", "subject", "owner"), "Synthetic", now=first_moment
+        )
+    token = created["sessionToken"]
+    assert auth.authenticate_session(path, token, now=first_moment) is not None
+    with connect(path) as connection:
+        first = connection.execute(
+            "SELECT last_used_at FROM owner_sessions WHERE id=?", (created["sessionId"],)
+        ).fetchone()[0]
+    assert auth.authenticate_session(path, token, now=first_moment + timedelta(seconds=30))
+    with connect(path) as connection:
+        second = connection.execute(
+            "SELECT last_used_at FROM owner_sessions WHERE id=?", (created["sessionId"],)
+        ).fetchone()[0]
+    assert second == first
+    assert auth.authenticate_session(path, token, now=first_moment + timedelta(seconds=61))
+    with connect(path) as connection:
+        third = connection.execute(
+            "SELECT last_used_at FROM owner_sessions WHERE id=?", (created["sessionId"],)
+        ).fetchone()[0]
+    assert third != first
 
 
 def test_break_glass_bootstrap_automation_opt_out_and_rotation(hub, monkeypatch):

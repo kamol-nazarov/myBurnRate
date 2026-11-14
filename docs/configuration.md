@@ -39,9 +39,9 @@ Optional keys in `.env` (all empty by default — copy `.env.example` to `.env` 
 | `BURNRATE_ENABLE_OPENCODE_GO_QUOTA` | OpenCode Go usage reads using OpenCode's stored Console key. On by default in the desktop service, which sets it to `1` on first start; setup's **What we found** step shows it as a switch that writes `1`/`0` to the per-user `.env`. Unset (off) for the CLI |
 | `DEEPSEEK_BALANCE_KEY` | DeepSeek key for the balance card (prefer connecting it in setup's **Plans & balances**) |
 | `BURNRATE_ACCESS_TOKEN` | Bootstrap/break-glass credential and explicitly configured legacy bearer automation. Normal UI uses a 30-day owner session at `/auth`. Rotation persists only a hash and invalidates the old environment value |
-| `BURNRATE_ALLOW_ADMIN_BEARER` | `0` restricts the static credential to `/api/auth/bootstrap` and `/api/auth/rotate`; default `1` preserves automation when `BURNRATE_ACCESS_TOKEN` is explicitly configured |
+| `BURNRATE_ALLOW_ADMIN_BEARER` | Default `0` restricts the static credential to `/api/auth/bootstrap` and `/api/auth/rotate`. Set `1` only when automation must use the static bearer for other API calls |
 | `BURNRATE_SETUP_TOKEN` | One-time token required to create the first account on a hub |
-| `BURNRATE_ALLOW_REGISTRATION` | Set to `1` on a hub to accept new accounts after the first (off: computers join with pairing codes) |
+| `BURNRATE_ALLOW_REGISTRATION` | Set to `1` on a hub to accept new accounts after the first. A new account is another **owner** with full credential control; turn it off immediately after use (off: computers join with pairing codes) |
 | `BURNRATE_CENTRAL_SERVER_URL` | Default hub address offered when signing in (no built-in hub) |
 | `BURNRATE_HUB_SSH` / `BURNRATE_HUB_PATH` / `BURNRATE_HUB_SERVICE` | Defaults for `burnrate hub update` |
 | `BURNRATE_DESKTOP_NOTIFICATIONS` | Desktop notifications from the desktop service; `0` turns them off (the CLI never sends them) |

@@ -131,14 +131,19 @@ These are invariants, not aspirations. A change that breaks one is a security bu
 - **Expiring owner sessions.** Normal browser access uses independent **30-day** sessions, generated
   from 32 random bytes, hashed on the hub, with device label, creation/last-use/expiry and revocation.
   The `burnrate_access` cookie contains the session, never the static bearer; it is HttpOnly,
-  SameSite=Lax, scoped to `/api`, Secure on HTTPS. Cookie mutations require the same origin.
+  SameSite=Lax, Secure on HTTPS. Cookie mutations require the same origin.
   `/auth` provides sign-in, session listing/revocation, logout and credential rotation.
+- **Spoke session management.** A paired computer's loopback API is anonymous for local data, but
+  hub session listing, revocation, rotation and sign-out require a separate local sign-in cookie
+  (`burnrate_local`, HttpOnly, SameSite=Lax, scoped to `/api`). Break-glass rotation is refused on a
+  spoke and must happen on the hub. A local caller without that cookie gets 401.
 - **Break-glass deprecation.** `BURNRATE_ACCESS_TOKEN` is for recovery/bootstrap and explicitly
-  configured automation, not normal UI authentication. Configuring this environment value preserves
-  legacy bearer automation; set `BURNRATE_ALLOW_ADMIN_BEARER=0` to restrict it to session bootstrap
-  and credential rotation. `/api/auth/rotate` replaces it with a hash persisted in SQLite; the old
+  configured automation, not normal UI authentication. By default it is accepted only on
+  `/api/auth/bootstrap` and `/api/auth/rotate`; set `BURNRATE_ALLOW_ADMIN_BEARER=1` to restore legacy
+  bearer automation. `/api/auth/rotate` replaces it with a hash persisted in SQLite; the old
   environment value cannot regain access on restart. The replacement is returned once. The old
   `?token=` entry point is deprecated and exchanges it for an expiring session, never a static cookie.
+  A paired computer never relays break-glass rotation; do it on the hub.
 - **Single-use pairing.** Codes expire after **15 minutes**, are bound to the issuing hub origin/Host
   and exchange once, transactionally, for a 90-day machine token. Codes contain an invitation secret,
   never a machine token. Owners can re-pair by machine ID (including expired/revoked machines), or

@@ -345,8 +345,10 @@ def authenticate_machine_token(database_path: Path, token: str, *, now=None) -> 
             expected = str(rec.get("token_hash") or "")
             expires = parse(rec.get("expires_at"))
             if expected and hmac.compare_digest(digest, expected) and expires and expires > moment(now):
-                rec["last_used_at"] = stamp(now)
-                _write_state(connection, state)
+                last = parse(rec.get("last_used_at"))
+                if last is None or (moment(now) - last) >= timedelta(seconds=60):
+                    rec["last_used_at"] = stamp(now)
+                    _write_state(connection, state)
                 _MACHINE_LAST_SEEN_MEM[machine_id] = stamp(now)
                 return machine_id
     return None
@@ -1684,7 +1686,10 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
                 request.state.audit_target = result["machine"]["id"]
                 origin = f"{request.url.scheme}://{request.headers.get('host', '127.0.0.1:17331')}"
                 result["syncCommand"] = (
-                    f"python -m spend_app sync --hub {origin} --token {result['token']}"
+                    f"python -m spend_app sync --hub {origin} --token-file <path-to-token-file>"
+                )
+                result["syncHint"] = (
+                    "Write the token to a private file first; the token is shown once in this response."
                 )
                 request.state.audit_recorded = True
                 return JSONResponse(result, headers={"Cache-Control": "no-store"})
