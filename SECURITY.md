@@ -59,7 +59,7 @@ project.
 
 ### Safe harbor
 
-We consider good-faith security research authorised when you:
+We consider good-faith security research authorized when you:
 
 - test only against your own installation, your own hub, or a copy you control;
 - avoid accessing, modifying or exfiltrating another person's data;
@@ -67,15 +67,15 @@ We consider good-faith security research authorised when you:
 - give us reasonable time to fix the issue before publishing.
 
 We will not pursue legal action for research conducted under those conditions. This statement does
-not authorise testing of third-party services, provider APIs, GitHub infrastructure, or anyone else's
+not authorize testing of third-party services, provider APIs, GitHub infrastructure, or anyone else's
 computer.
 
 ## Scope
 
 ### In scope
 
-- The local HTTP service and API on `127.0.0.1` (authentication, authorisation, CSRF and
-  DNS-rebinding defences, path handling, injection).
+- The local HTTP service and API on `127.0.0.1` (authentication, authorization, CSRF and
+  DNS-rebinding defenses, path handling, injection).
 - The native desktop window: the WebView2/pywebview JavaScript bridge, local file loading, theme and
   settings persistence, and the Tauri shell's command permissions and CSP.
 - Hub and spoke: pairing codes, machine bearer tokens, account authentication, sync ingestion,
@@ -92,7 +92,7 @@ computer.
 
 - Provider outages, billing disputes, rate-limit policy, account suspension and terms-of-service
   matters.
-- Breakage caused by an undocumented provider format changing. Those readers are labelled
+- Breakage caused by an undocumented provider format changing. Those readers are labeled
   experimental; report the compatibility break as a normal bug. Report it as security only if it
   leaks data or crosses another boundary above.
 - Deployments you exposed yourself by binding to a non-loopback address or by putting a proxy,
@@ -119,9 +119,10 @@ These are invariants, not aspirations. A change that breaks one is a security bu
 - **Credentials stay out of SQLite and API responses.** Optional provider keys live in Windows
   Credential Manager, the macOS Keychain or the Secret Service. Credential-shaped strings are
   stripped before ingest errors are written.
-- **Allowlisted, opt-in network egress.** Credential-bearing HTTP clients use an explicit host
-  allowlist, HTTPS only, timeouts, and `trust_env=False` so `HTTP_PROXY` cannot redirect secrets.
-  There is no inference proxy.
+- **Allowlisted network egress.** Credential-bearing HTTP clients use an explicit host allowlist,
+  HTTPS only, timeouts, and `trust_env=False` so `HTTP_PROXY` cannot redirect secrets. Meters that
+  reuse a key another tool stores are on by default with a switch; every other provider call needs a
+  key the user adds. There is no inference proxy.
 - **Update verification before execution.** A native update is rejected unless the URL, byte size,
   SHA-256, signer and version all match the pinned expectations, and failed downloads are deleted.
 - **Reproducible releases.** Artifacts are built on GitHub Actions from a tagged commit, listed in

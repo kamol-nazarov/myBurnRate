@@ -15,11 +15,11 @@ prompt, a live database or a personal path.
 
 - **Small fixes** — typos, docs, a broken selector, a clipped layout — can go straight to a pull
   request.
-- **Anything behavioural** — a new provider, a pricing rule, a schema change, a new setting — open an
+- **Anything behavioral** — a new provider, a pricing rule, a schema change, a new setting — open an
   issue first so the approach is agreed before you invest in it.
 - **Version numbers, release notes and tags** belong to maintainers. Do not bump the version or edit
   `CHANGELOG.md`'s released sections in a pull request.
-- **One logical change per pull request.** Do not mix formatting churn with behaviour.
+- **One logical change per pull request.** Do not mix formatting churn with behavior.
 
 ## Development setup
 

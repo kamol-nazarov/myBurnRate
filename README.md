@@ -115,7 +115,7 @@ no font or asset requests to a CDN.
   single machine.
 - **Multiple accounts.** Separate Claude Code profiles and OpenCode accounts appear as their own
   tagged tiles instead of being merged.
-- **Themes and window behaviour.** Light, Dark and System themes, always-on-top pinning, optional
+- **Themes and window behavior.** Light, Dark and System themes, always-on-top pinning, optional
   transparency when the pointer leaves the window, a saved window position, and a notification-area
   icon. Closing the window keeps collection running; reopen it from the tray or the Start Menu.
 - **Accessible by default.** Keyboard navigation with visible focus rings, reduced-motion support,
@@ -306,7 +306,7 @@ installer, update feed and signing. Contributions are welcome; start with
 ## Project status and support
 
 myBurnRate is actively developed and free to use. The current stable line is `0.5.x`; undocumented
-provider readers are labelled experimental and can change without a major version bump. Supported
+provider readers are labeled experimental and can change without a major version bump. Supported
 platforms for the packaged apps are Windows 10/11 (x64), macOS 11+ on Apple Silicon, and Linux
 x86-64; the Python package runs on any OS with CPython 3.12.
 
