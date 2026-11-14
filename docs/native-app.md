@@ -1,13 +1,6 @@
 # Native usage application
 
-BURNRATE's native interface is one small desktop window built with Tk/ttk controls.
-It opens directly, without a browser or embedded web renderer.
-The graphite and ember palette, Segoe typography, period segments, tool marks,
-and matching Settings controls use BURNRATE's existing visual identity. Initial
-window sizing adapts to display scaling; the usage list scrolls at smaller sizes.
-On Windows, the app draws directly without a system title bar or border. Drag its
-header to move it, resize from an edge, and use the small minimize/close controls
-in the header. Taskbar restore and Alt+F4 continue to work.
+BURNRATE's native desktop window (`myBurnRate`) renders a compact, frameless Windows interface using Edge WebView2 (with an automatic Tk/ttk fallback when WebView2 is unavailable) and an offline-embedded **Manrope** variable font. Light, Dark, and System themes, a split hero with an interactive interval timeline, a tactile segmented period bar, an inline summary strip, and a two-column grid of provider tiles that expand full-width for window meters and token breakdowns keep ten or more tools scannable without scrolling. On Windows, drag the header to move the window, resize from any edge, and use the header's pin, refresh, settings, minimize, and close controls. Taskbar restore, system tray mode, and Alt+F4 work out of the box.
 
 ## Open it
 

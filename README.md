@@ -1,69 +1,47 @@
 # BURNRATE
 
-**A small native app for AI usage and API-equivalent pricing.**
-
-The new desktop interface shows usage from all your paired computers in one
-compact window: a total at API rates, token counts, and a tool/model breakdown.
-It uses native desktop widgets and preserves the existing readers, history,
-pricing cards, and background synchronization.
-
-```powershell
-python -m pip install -e ".[dev]"  # Python 3.12 with Tcl/Tk
-burnrate desktop                 # Native usage app
-burnrate desktop --demo          # Sample data, no collection
-```
-
-Build a portable executable with `python packaging/build_native.py` after
-installing PyInstaller. See [native app](docs/native-app.md) for setup, pairing,
-data semantics, upgrade notes, and the build path. Published installers still
-use the previous HUD until the native release is prepared.
-
-<details>
-<summary>Previous HUD releases and documentation</summary>
+**Local-first AI coding usage, plan limits, and API-equivalent pricing in one compact desktop window.**
 
 BURNRATE reads the usage your coding tools already record on your computer (Claude Code, Codex,
-OpenCode, Grok Build, Antigravity and more), prices it at published API rates, and shows it beside
-your plans' limits in a small window that stays on top. It runs on your computer. There is no
-account, no cloud and no analytics.
+OpenCode, Grok Build, Google Antigravity, Muse Code, and more), prices it at published API rates,
+and shows what is left of each plan window or prepaid balance. Everything runs locally on
+`127.0.0.1` — no cloud account, no proxy, and no analytics.
 
 [![CI](https://github.com/kamol-nazarov/myBurnRate/actions/workflows/ci.yml/badge.svg)](https://github.com/kamol-nazarov/myBurnRate/actions/workflows/ci.yml)
-[![Latest release](https://img.shields.io/github/v/release/kamol-nazarov/myBurnRate?include_prereleases&label=release)](https://github.com/kamol-nazarov/myBurnRate/releases)
+[![Latest release](https://img.shields.io/github/v/release/kamol-nazarov/myBurnRate?include_prereleases&label=release)](https://github.com/kamol-nazarov/myBurnRate/releases/latest)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 <p align="center">
-  <img src="docs/images/hud.png" width="380" alt="The BURNRATE HUD: $24.69 of usage today, a burn rate of $25 a day, 95% cache hit, and meters for Claude, OpenCode Go, Codex and Grok plans">
+  <img src="docs/images/native-desktop.png" width="760" alt="The myBurnRate native desktop window in Light and Dark themes: $127.34 API-equivalent value today, compact usage timeline, two-column provider tiles, and an expanded limit and token breakdown drawer">
 </p>
 
-<p align="center"><sub>Screenshots use the made-up data from <code>burnrate demo</code>.</sub></p>
+<p align="center"><sub>Screenshots use synthetic sample data from <code>burnrate desktop --demo</code>.</sub></p>
 
-## What it shows
+## Install
 
-- **Today's usage at API rates**, with your burn rate per day, cache hit rate and tokens.
-- **Every plan window** (5-hour, weekly, monthly) with the share used, an even-pace mark and the time
-  until it resets, fullest first. A desktop notification warns you before a plan runs out.
-- **Cost per repository**: today's value split by the repository each session ran in.
-- **A weekly card** to share: the last seven days against what your plans cost.
-- **All your computers in one view**: pair a laptop with your desktop, or run a small hub on a server.
-- **Pay-as-you-go balances** (OpenRouter, DeepSeek) with how many days they last at your current spend.
+### Windows 10 or 11 (Native Desktop App — Recommended)
 
-<p align="center">
-  <img src="docs/images/week-card.png" width="600" alt="A weekly card: $165 of AI coding at published API rates on $93 of plans, 1.8 times the plan cost, with the top tools">
-</p>
+Install **myBurnRate** for your user account (no administrator rights required) with one PowerShell command — it checks `native-latest.json`, verifies the installer's SHA-256 hash, installs to `%LOCALAPPDATA%\Programs\BURNRATE`, adds Start Menu and Desktop shortcuts, and opens the app:
 
-## Download
+```powershell
+irm https://raw.githubusercontent.com/kamol-nazarov/myBurnRate/prod/scripts/install-native.ps1 | iex
+```
 
-Get the newest version from **[Releases](https://github.com/kamol-nazarov/myBurnRate/releases)**.
+Or download **`myBurnRate_0.5.5_x64-setup.exe`** directly from **[Latest Release](https://github.com/kamol-nazarov/myBurnRate/releases/latest)**. Installed copies check for updates and offer one-click **Install & restart** inside **Settings → General**.
 
-| System | File |
-| --- | --- |
-| Windows 10 or 11 (64-bit) | `BURNRATE_<version>_x64-setup.exe` |
-| macOS 11 or later (Apple Silicon) | `BURNRATE_<version>_aarch64.dmg` |
-| Linux (x86-64) | `BURNRATE_<version>_amd64.AppImage` or `.deb` |
+### All platforms & installers
 
-The Windows installer needs no administrator rights. The app updates itself: it checks for a new
-version every few hours and offers it in the HUD and the tray menu.
+Get every release bundle from **[Releases](https://github.com/kamol-nazarov/myBurnRate/releases/latest)**:
 
-On Windows you can also install from the command line with [Scoop](https://scoop.sh):
+| System | File | Notes |
+| --- | --- | --- |
+| Windows 10 or 11 (64-bit) | `myBurnRate_<version>_x64-setup.exe` | **Native desktop window** (Light & Dark themes, 2-column provider tiles, tray mode, verified in-app updates). |
+| Windows 10 or 11 (64-bit) | `BURNRATE_<version>_x64-setup.exe` | Sidecar HUD & full web dashboard (`scoop install` also installs this edition). |
+| macOS 11 or later (Apple Silicon) | `BURNRATE_<version>_aarch64.dmg` | Sidecar HUD & full web dashboard. |
+| Linux (x86-64) | `BURNRATE_<version>_amd64.AppImage` or `.deb` | Sidecar HUD & full web dashboard. |
+| Python 3.12 (Windows / macOS / Linux) | `burnrate-<version>-py3-none-any.whl` | CLI, background service (`burnrate serve`), and `burnrate desktop`. |
+
+On Windows you can also install the HUD edition with [Scoop](https://scoop.sh):
 
 ```powershell
 scoop install https://github.com/kamol-nazarov/myBurnRate/releases/latest/download/myburnrate.json
@@ -85,17 +63,26 @@ Every release file is built on GitHub Actions from a tagged commit, with a
 [build provenance record](https://github.com/kamol-nazarov/myBurnRate/attestations) and a
 `SHA256SUMS` file.
 
+## What it shows
+
+- **Today's usage at API rates**, with an interactive timeline, burn rate, cache hit rate, and value vs. plan cost.
+- **Every plan window** (5-hour, weekly, monthly) with remaining share, reset countdown, and low-quota alerts.
+- **Compact two-column provider tiles** that expand full-width for detailed window meters, recorded tokens, input/cache/output/reasoning breakdown, and per-model spend — reorderable via drag-and-drop or `Alt+Arrow`.
+- **Multiple accounts per tool**: separate Claude Code profiles or OpenCode accounts appear as distinct tagged tiles.
+- **All your computers in one view**: pair a laptop with your desktop, or sign in to a self-hosted hub from **Settings → Computers**.
+- **Pay-as-you-go balances** (OpenRouter, DeepSeek) alongside subscription tools.
+
+<p align="center">
+  <img src="docs/images/week-card.png" width="600" alt="A weekly card: $165 of AI coding at published API rates on $93 of plans, 1.8 times the plan cost, with the top tools">
+</p>
+
 ## Get started
 
-1. **Install and open BURNRATE.** Setup opens on first launch.
-2. **Choose how this computer works:** on its own, joined to your hub, or as the hub. Setup lists each
-   tool it found, whether its usage and plan meter are being read, and what to do about anything
-   missing.
-3. **Add your plans and finish.** Plans are suggested from what your meters report; check each price.
-   The HUD then stays on top of your other windows, and the tray icon opens setup, the HUD and updates.
+1. **Install and open myBurnRate.** On first launch, it detects the AI coding tools already on your computer.
+2. **Connect optional balances or a multi-computer hub** in **Settings → Sources** and **Settings → Computers**.
+3. **Pin or tuck into the tray:** pin the window above other apps, let it gently fade when idle, or close it to the notification area while background tracking continues.
 
-Want to look around first? Run `burnrate demo` from a [source install](docs/development.md) to open
-the HUD with a month of made-up data.
+Want to try it with sample data first? From a [source install](docs/development.md), run `burnrate desktop --demo` (or `burnrate demo` for the HUD).
 
 ## Supported tools
 
@@ -114,7 +101,7 @@ the HUD with a month of made-up data.
 
 Several of these read undocumented files or endpoints and are marked experimental; each can fail on
 its own without affecting the others. Extra Claude Code accounts and OpenCode profiles appear as their
-own lanes. Details for every source: [providers](docs/providers.md).
+own tiles. Details for every source: [providers](docs/providers.md).
 
 ## Privacy
 
@@ -123,7 +110,7 @@ own lanes. Details for every source: [providers](docs/providers.md).
   sign-in.
 - Its database holds numbers: times, model names, token counts, project folder names and plan
   readings. It never stores prompts, responses, code or tool output.
-- Network calls are few and named. The app checks GitHub for updates. The Z.AI and OpenCode Go
+- Network calls are few and named. Installed copies check GitHub Releases for updates (`BURNRATE_NO_UPDATE_CHECK=1` disables all update checks). The Z.AI and OpenCode Go
   meters (on by default, with a switch in setup) use the key those tools already store and contact
   only their own provider. OpenRouter, DeepSeek and the admin APIs run only with a key you add. Only a
   hub you set up receives your usage.
@@ -132,9 +119,7 @@ Read the [privacy notes](docs/privacy.md) for every file and host.
 
 ## More than one computer
 
-Make one computer the hub in setup, then join each other computer with a pairing code it creates.
-The HUD then has a switcher for **All** and each computer. To run the hub on a server instead, there is
-a [Docker image with HTTPS](docs/self-hosting.md).
+Sign in to a hub from **Settings → Computers** (or join with a pairing code) so **All computers** combines usage across your desktop and laptop while letting you filter to any single machine. To run a hub on your own server, use the [Docker setup with HTTPS](docs/self-hosting.md) (`ghcr.io/kamol-nazarov/myburnrate-hub`).
 
 ## Code signing policy
 
@@ -142,7 +127,7 @@ Free code signing provided by [SignPath.io](https://about.signpath.io/), certifi
 [SignPath Foundation](https://signpath.org/). The application is pending; until it is approved,
 Windows installers are unsigned.
 
-Only the Windows installer built by this repository's release workflow is signed, and each signing
+Only the Windows installers built by this repository's release workflow are signed, and each signing
 request is approved by hand. Committers, reviewers and approvers:
 [kamol-nazarov](https://github.com/kamol-nazarov). The full policy, including what the app sends over
 the network, is in [docs/code-signing.md](docs/code-signing.md).
@@ -152,15 +137,17 @@ the network, is in [docs/code-signing.md](docs/code-signing.md).
 ```powershell
 git clone https://github.com/kamol-nazarov/myBurnRate.git
 cd myBurnRate
-python -m pip install -e ".[dev]"   # Python 3.12
-burnrate demo                       # or: burnrate serve
+python -m pip install -e ".[dev]"          # Python 3.12
+burnrate desktop                           # Native desktop window (or --demo)
+python packaging/build_native.py           # Build portable zip + NSIS installer
 ```
 
-Tests, the desktop app, the Windows service scripts and the front-end build are covered in
+Tests, the native desktop app ([native-app.md](docs/native-app.md)), the Windows service scripts and the front-end build are covered in
 [development](docs/development.md). Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Documentation
 
+- [Native desktop app](docs/native-app.md): everyday use, per-user installer, verified in-app updates, and building from source
 - [User guide](docs/user-guide.md): setup, notifications, several computers, the dashboard, and what
   the numbers mean
 - [Configuration and command line](docs/configuration.md)
@@ -175,5 +162,3 @@ Tests, the desktop app, the Windows service scripts and the front-end build are 
 
 BURNRATE is not affiliated with OpenAI, Anthropic, xAI, Google, Z.AI, OpenRouter, DeepSeek, Traycer,
 Muse or their products. Trademarks belong to their owners.
-
-</details>

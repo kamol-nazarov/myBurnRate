@@ -18,6 +18,7 @@ COPY pyproject.toml README.md LICENSE NOTICE ./
 COPY spend_app ./spend_app
 COPY spend_web ./spend_web
 COPY pricing ./pricing
+COPY src-tauri/icons ./src-tauri/icons
 RUN pip install . \
     && python -c "from importlib.metadata import version; assert tuple(map(int, version('certifi').split('.'))) >= (2026, 10, 23); from spend_app.bounded_reads import BoundedReadExecutor" \
     && useradd --system --uid 10001 --home-dir /data --shell /usr/sbin/nologin burnrate \

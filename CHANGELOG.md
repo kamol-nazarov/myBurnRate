@@ -9,6 +9,39 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-11-14
+
+### Added
+
+- `scripts/install-native.ps1`: a one-line per-user Windows PowerShell installer
+  (`irm https://raw.githubusercontent.com/kamol-nazarov/myBurnRate/prod/scripts/install-native.ps1 | iex`)
+  that fetches `native-latest.json` from the latest GitHub Release, validates the
+  release URL, byte size and SHA-256 digest before running anything, installs into
+  `%LOCALAPPDATA%\Programs\BURNRATE`, and launches `myBurnRate`.
+
+### Changed
+
+- Redesigned the native desktop window for higher density and calmer scanning:
+  a compact split hero pairing the API-equivalent figure with an inline interval
+  timeline, an integrated three-column summary strip (`Burn rate`, `Cache hit`,
+  `Value vs plans`), a tactile segmented period control (`Today`, `7 days`,
+  `Month`, `All`), a compact computer-scope selector, and a two-column provider
+  tile grid that expands full-width for window meters and an aligned two-column
+  token breakdown ledger (`Alt+Arrow` and 2D pointer drag-and-drop supported,
+  stacking cleanly to one column at narrow widths).
+- Switched the native desktop window's offline embedded variable font to
+  **Manrope** (`spend_app/fonts/manrope-latin.woff2`, SIL OFL 1.1).
+- Updated `README.md` and `docs/native-app.md` with direct public release
+  install instructions and screenshots for the published native installer.
+
+### Fixed
+
+- Kept the computer-scope popover inside narrow viewports and ensured hero,
+  timeline, and summary metrics distinguish measured zero from missing history.
+- Included `src-tauri/icons` in `.dockerignore` and `Dockerfile` so the
+  multi-arch `ghcr.io/kamol-nazarov/myburnrate-hub` container image builds
+  cleanly on release tags.
+
 ## [0.5.4] - 2026-11-13
 
 ### Added
