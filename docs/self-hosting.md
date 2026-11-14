@@ -30,22 +30,22 @@ docker compose up -d
 - **`caddy`** shares the hub's network, gets a Let's Encrypt certificate for
   your domain, and forwards to the hub.
 
-The hub refuses anonymous API access. `BURNRATE_ACCESS_TOKEN` is required,
-`BURNRATE_ALLOWED_HOSTS` is set to the public domain, and the first account
-also needs `BURNRATE_SETUP_TOKEN`. Keep both tokens private; anyone with the
-access token can read every computer's usage.
+The hub refuses anonymous API access. Set a strong `BURNRATE_ACCESS_TOKEN` for bootstrap/recovery,
+`BURNRATE_ALLOWED_HOSTS` to the public domain, and `BURNRATE_SETUP_TOKEN` for the first account.
+Use HTTPS or a protected loopback tunnel; do not put credentials in URLs or shell history.
 
-Then:
-
-1. Open `https://burnrate.example.com/?token=<BURNRATE_ACCESS_TOKEN>` once to
-   set the admin cookie, and bookmark the URL without the token afterwards.
-2. Open setup, choose **Join my hub**, and create the first account with the
-   setup token. That account is the owner.
-3. On each other computer, open setup and choose **Join my hub** with a pairing
-   code made on the hub; set `BURNRATE_ALLOW_REGISTRATION=1` only while adding
-   another account.
-4. Remove `BURNRATE_SETUP_TOKEN` from the environment once the owner exists
-   (or keep it; it is only consulted while the hub has no account).
+1. Open `/auth`, expand **Recovery and automation**, and create a recovery session with the
+   break-glass credential. The browser receives an expiring HttpOnly session cookie.
+2. At `/auth`, expand **Create the first owner account** and use the setup token. Existing owners simply sign in at `/auth`;
+   the setup token is never needed again. Remove it from the environment afterwards.
+3. Create a pairing code for each computer. It expires in 15 minutes and can be redeemed once.
+   For a revoked/expired computer, create a fresh code with its machine ID or existing name.
+4. On a paired computer, open `/auth` and sign in once for **All computers**. Pairing alone shows
+   its own recorded usage. Owner sessions expire in 30 days; sync tokens expire in 90 days.
+5. Set `BURNRATE_ALLOW_ADMIN_BEARER=0` when automation no longer needs the static bearer.
+   `/auth` can revoke device sessions and rotate credentials. Credential rotation stores only the
+   replacement hash in SQLite; save the returned credential securely. Updating only the old
+   environment value does not override that hash.
 
 - **Update:** the reference compose file pins both images by digest. Set
   `BURNRATE_HUB_IMAGE` to the new `tag@sha256:...` from the release
@@ -100,3 +100,30 @@ unreviewed host drift stop the update before restart. Make a verified database
 backup before an authorized update; never overwrite local changes to bypass
 the clean-checkout gate. Set its defaults with `BURNRATE_HUB_SSH`, `BURNRATE_HUB_PATH`,
 `BURNRATE_HUB_SERVICE` and `BURNRATE_HUB_BRANCH`.
+
+## Auth model upgrade and rollback
+
+Before an authorized upgrade, stop the hub and make a consistent offline backup of the SQLite
+file and its configuration (or use SQLite's backup API while running). Retain the pre-upgrade
+application revision. Never copy only a live WAL database file and assume it is a complete backup.
+No upgrade is performed by this change or its tests.
+
+On first start the additive auth tables and legacy metadata migration commit atomically. A second
+start does not change migrated metadata or add a second migration audit row. Existing machine
+hashes keep working for pushes until `created_at + 180 days`; old tokens are flagged for rotation.
+Expired older tokens must be re-paired. Existing account passwords still work and need no setup
+token. Old pairing codes carrying machine tokens are refused by the new redemption flow; an
+already-extracted legacy machine token is subject to the migrated expiry and new read scope.
+
+Run synthetic checks before rollout, then check anonymous reads return 401, own-machine reads
+work, aggregate machine reads return 403 and an owner session sees all expected computers.
+Review the newest 500 audit rows at `GET /api/auth/audit` using an owner session; archive the
+append-only database through your backup policy. There is no automatic retention deletion.
+
+Rollback requires stopping the upgraded hub, preserving its database as evidence, restoring the
+complete pre-upgrade database/configuration snapshot, and running the previous application.
+Do not rely on old code to enforce new expiry or read isolation merely because it ignores additive
+tables. Sessions and rotations issued after the snapshot are lost. A restored snapshot may revive
+old machine/break-glass credentials: rotate the recovered break-glass credential and re-pair
+machines before network access. Rolling back restores the old single-owner security limitations;
+prefer a forward fix. No destructive down-migration is provided.

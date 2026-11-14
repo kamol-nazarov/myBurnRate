@@ -11,11 +11,22 @@ This project is licensed under Apache-2.0.
 
 ### Security
 
+- **Authorization model replaced (V2-M01, V2-M02, V2-L05).** Explicit owner/machine/anonymous
+  principals; isolated own-machine usage reads; hashed 90-day machine tokens and one-time refresh;
+  hashed 30-day owner sessions with HttpOnly SameSite=Lax cookies, device labels, revocation and
+  credential controls at `/auth`; 15-minute, Host-bound, one-use pairing invitations; append-only
+  admin audit. Spokes use a separate owner session for All computers and show scoped usage when
+  owner access ends. Legacy machine records migrate once to creation + 180-day expiry and require
+  rotation. Existing owners keep their passwords without repeating the setup-token step.
+- **Static bearer deprecated for the UI.** `BURNRATE_ACCESS_TOKEN` remains break-glass and explicitly
+  configured legacy automation; `BURNRATE_ALLOW_ADMIN_BEARER=0` limits it to bootstrap/rotation.
+  Credential rotation persists a replacement hash, so the old environment value cannot revive.
+
 - **Hub authentication now fails closed.** With `BURNRATE_CENTRAL_SERVER=1`,
-  every API read and write requires `BURNRATE_ACCESS_TOKEN` (or a valid machine
-  token on spoke routes). The Docker reference deployment requires the token,
+  every API read and write requires a valid principal (owner session, explicitly configured
+  bearer automation, or a scoped machine token). The Docker reference deployment requires the token,
   sets `BURNRATE_ALLOWED_HOSTS`/`BURNRATE_ALLOWED_ORIGINS`, and documents the
-  admin cookie flow.
+  owner session flow.
 - **First-account takeover fixed.** Creating the first account on a hub also
   requires `BURNRATE_SETUP_TOKEN`; registration and login are rate-limited and
   answer unknown users and wrong passwords identically. Passwords now use

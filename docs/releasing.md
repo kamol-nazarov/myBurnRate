@@ -90,3 +90,14 @@ Verify a download with:
 
 - `gh attestation verify <file> --repo kamol-nazarov/myBurnRate`; or
 - `sha256sum -c SHA256SUMS`.
+
+## Auth model migration gate
+
+Before releasing the auth-model change, run all synthetic auth/migration/spoke regressions and the
+existing hardening/launch tests on Windows, macOS and Linux. No runtime dependency was added.
+Communicate the fixed 90-day machine / 30-day owner / 15-minute invitation lifetimes, one-time
+`created_at + 180 days` legacy grace, the new `/auth` controls and optional
+`BURNRATE_ALLOW_ADMIN_BEARER=0`. Preserve a consistent pre-upgrade SQLite/config backup before
+any deployment. See [upgrade and rollback](self-hosting.md#auth-model-upgrade-and-rollback): an old
+binary does not enforce the new scope/expiry, and restoring a backup may revive old credentials.
+The old `?token=` bootstrap is deprecated; it now issues a session cookie, never a static cookie.

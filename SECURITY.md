@@ -109,20 +109,54 @@ computer.
 These are invariants, not aspirations. A change that breaks one is a security bug.
 
 - **Loopback by default.** The service binds `127.0.0.1:17331`. There is no built-in remote access,
-  no cloud account and no relay. A hub (`BURNRATE_CENTRAL_SERVER=1`) fails closed without
-  `BURNRATE_ACCESS_TOKEN`; creating its first account also requires `BURNRATE_SETUP_TOKEN`.
+  no cloud account and no relay. A hub (`BURNRATE_CENTRAL_SERVER=1`) denies anonymous API access;
+  creating its first account requires `BURNRATE_SETUP_TOKEN`. Existing owners sign in without it.
 - **Read-only harness access.** Another tool's SQLite database is opened with `mode=ro` and
   `PRAGMA query_only=ON`; JSONL and log files are opened for reading. myBurnRate never writes another
   tool's files and never reads, reuses or refreshes Claude's sign-in.
 - **No conversation content.** Prompts, responses, reasoning text, diffs, attachments, code, tool
   arguments and tool results are parsed in memory where a format requires it and then discarded.
   Only metadata is persisted.
-- **Credentials stay out of SQLite and API responses.** Optional provider keys live in Windows
+- **Provider credentials stay out of SQLite and API responses.** Optional provider keys live in Windows
   Credential Manager, the macOS Keychain or the Secret Service. Credential-shaped strings are
   stripped before ingest errors are written.
-- **Machine tokens are write-scoped, not read-isolated.** A machine token can push only as its own
-  machine, but the hub is single-owner: its read routes cover every machine on that hub. Treat a
-  machine token as a hub read credential as well as a sync credential.
+- **Explicit principals.** Owner, machine and unauthenticated requests share a default-deny permission
+  boundary. The only enabled human role is `owner`; future roles require an explicit permission set.
+- **Machine tokens are read-isolated and expire.** Machine tokens push only as themselves and read
+  only an own-machine usage projection (`usage`, `summary`, `entity` with one exact `machine` ID)
+  and their own registry entry. They cannot read hub aggregates, plans, accounts or settings.
+  New tokens expire after **90 days**, record creation/last use/expiry, and store only SHA-256 hashes
+  on the hub. Refresh requires the current unexpired token, succeeds once and invalidates it.
+  Expired/revoked/unknown credentials get 401; authenticated scope violations get 403.
+- **Expiring owner sessions.** Normal browser access uses independent **30-day** sessions, generated
+  from 32 random bytes, hashed on the hub, with device label, creation/last-use/expiry and revocation.
+  The `burnrate_access` cookie contains the session, never the static bearer; it is HttpOnly,
+  SameSite=Lax, scoped to `/api`, Secure on HTTPS. Cookie mutations require the same origin.
+  `/auth` provides sign-in, session listing/revocation, logout and credential rotation.
+- **Break-glass deprecation.** `BURNRATE_ACCESS_TOKEN` is for recovery/bootstrap and explicitly
+  configured automation, not normal UI authentication. Configuring this environment value preserves
+  legacy bearer automation; set `BURNRATE_ALLOW_ADMIN_BEARER=0` to restrict it to session bootstrap
+  and credential rotation. `/api/auth/rotate` replaces it with a hash persisted in SQLite; the old
+  environment value cannot regain access on restart. The replacement is returned once. The old
+  `?token=` entry point is deprecated and exchanges it for an expiring session, never a static cookie.
+- **Single-use pairing.** Codes expire after **15 minutes**, are bound to the issuing hub origin/Host
+  and exchange once, transactionally, for a 90-day machine token. Codes contain an invitation secret,
+  never a machine token. Owners can re-pair by machine ID (including expired/revoked machines), or
+  matching name, without editing SQLite. A lost rotation/redemption response requires re-pairing.
+- **Admin audit.** `admin_audit` records actor type/ID, fixed action, target ID, outcome and UTC time
+  for login, sessions, machine management, pairing, setup/registration and credential rotation.
+  SQLite triggers reject UPDATE/DELETE. Tokens, hashes, passwords, pairing codes, labels, request
+  bodies and conversation content are never audit payloads. This is a local append-only record,
+  not a tamper-proof external ledger against a database administrator.
+- **Owner view on spokes.** Pairing grants sync and own-machine reads. For All computers, the owner
+  signs in once on each spoke; a separate revocable owner session is saved in the spoke's private
+  SQLite configuration and used as a bearer to the hub. The hub stores its hash. On sign-out,
+  expiry or rejected access, show this computer's recorded usage and a sign-in notice. A freshly
+  cached view can persist until its normal one-second TTL; authentication rejection purges that
+  credential's cache instead of serving stale aggregate data. Offline cached owner data is valid
+  only until the session's known expiry. Protect the spoke's OS account and private data directory.
+  A stolen active machine token can refresh itself until revoked; expiry bounds inactive leakage,
+  not an active token thief. Revoke the computer after exposure. Monitor audit-table disk growth.
 - **Allowlisted network egress.** Credential-bearing HTTP clients use an explicit host allowlist,
   HTTPS only, timeouts, and `trust_env=False` so `HTTP_PROXY` cannot redirect secrets. Meters that
   reuse a key another tool stores are on by default with a switch; every other provider call needs a

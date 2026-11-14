@@ -214,8 +214,10 @@ account.
 2. **Join from every other computer.** Open **Settings → Computers** and paste the pairing code under
    **Join with code**, or sign in to your hub account with the hub address, account and computer
    name.
-3. **Select the scope.** Choose **All computers**, or one machine, from the scope control in the
-   desktop window.
+3. **Sign in for All computers.** Open `/auth` (or **Owner access** in the dashboard) on each paired
+   computer and sign in to the owner account. Its separate, revocable 30-day session authorizes
+   the aggregate view. Without it, usage stays scoped to this computer with a sign-in notice.
+   Pairing codes last 15 minutes and work once; machine tokens expire in 90 days.
 
 The hub is also available as a container image, `ghcr.io/kamol-nazarov/myburnrate-hub`, built for
 x86-64 and ARM. The [self-hosting guide](docs/self-hosting.md) covers Docker with automatic HTTPS,

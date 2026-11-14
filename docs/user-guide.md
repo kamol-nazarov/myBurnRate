@@ -48,15 +48,26 @@ The first collection runs in the background while you go through the steps; the 
 
 BURNRATE supports single-account, self-hosted multi-computer synchronization without any external cloud service:
 
-1. **On your hub computer:** open setup, choose **Make this the hub**, pick the address your other computers can reach (Tailscale or LAN), name the other computer and click **Create pairing code**. The code contains a key for this hub; share it only with your own computers.
+1. **On your hub computer:** open setup, choose **Make this the hub**, pick the address your other computers can reach (Tailscale or LAN), name the other computer and click **Create pairing code**. The invitation expires in 15 minutes and works once. It yields a 90-day sync token for that computer; share it only with your own computers.
 2. **On the other computer:** install BURNRATE, open setup, choose **Join my hub** and paste the code. Its background scheduler then pushes usage, sessions and live agents to the hub every ingest cycle.
-   - A hub account works too: choose **Account** under **Join my hub**. Signing in never creates an account; use **Create an account instead** (at least 8 characters).
+   - A hub account works too: choose **Account** under **Join my hub**. Signing in never creates an account; use **Create an account instead** (at least 12 characters).
    - Or run the lightweight CLI sync agent directly:
      ```powershell
      burnrate sync --hub http://<hub-ip>:17331 --token-file <path-to-token>
     # Or set BURNRATE_SYNC_TOKEN in the service environment.
      ```
-3. **Filtering by computer:** once two or more computers are registered, a computer switcher (`All computers` + each machine name) appears in the dashboard and the Sidecar HUD.
+3. **All computers:** sign in at `/auth` on the paired computer, or use **Account** in setup. The
+   spoke stores a separate 30-day owner session for the shared view. Pairing alone shows this
+   computer's recorded usage; an expired/revoked owner session shows a sign-in notice. Re-signing
+   in on an already paired computer preserves its sync identity and cursor.
+4. **Credential management:** `/auth` lists device sessions and lets the owner revoke them or sign
+   out. Sign-out removes owner access while sync continues with its own token. Rotate this
+   computer's machine token before 90 days; if expired or revoked, ask the hub for a fresh pairing
+   code using the same computer name or machine ID. Rotation invalidates the old token immediately.
+   A code already redeemed keeps its new sync credential if the first push is temporarily unavailable;
+   background sync retries and Settings reports the sync error. A bad pasted token preserves the
+   prior working connection. If a rotation reply is lost, re-pair. Recovery credentials are shown once when rotated: save the
+   replacement securely, and never paste it into logs or bug reports.
 
 ## The HUD and the dashboard
 

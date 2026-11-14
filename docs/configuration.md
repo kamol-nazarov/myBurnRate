@@ -38,7 +38,8 @@ Optional keys in `.env` (all empty by default — copy `.env.example` to `.env` 
 | `BURNRATE_ENABLE_ZAI_QUOTA` | Z.AI credit reads using a stored Coding Plan key. On by default in the desktop service, which sets it to `1` on first start; setup's **What we found** step shows it as a switch that writes `1`/`0` to the per-user `.env`. Unset (off) for the CLI |
 | `BURNRATE_ENABLE_OPENCODE_GO_QUOTA` | OpenCode Go usage reads using OpenCode's stored Console key. On by default in the desktop service, which sets it to `1` on first start; setup's **What we found** step shows it as a switch that writes `1`/`0` to the per-user `.env`. Unset (off) for the CLI |
 | `DEEPSEEK_BALANCE_KEY` | DeepSeek key for the balance card (prefer connecting it in setup's **Plans & balances**) |
-| `BURNRATE_ACCESS_TOKEN` | Hub admin token. Required when `BURNRATE_CENTRAL_SERVER=1`; every API read/write needs it (or a valid machine token for spoke routes). Open `/?token=<value>` once to set the browser cookie |
+| `BURNRATE_ACCESS_TOKEN` | Bootstrap/break-glass credential and explicitly configured legacy bearer automation. Normal UI uses a 30-day owner session at `/auth`. Rotation persists only a hash and invalidates the old environment value |
+| `BURNRATE_ALLOW_ADMIN_BEARER` | `0` restricts the static credential to `/api/auth/bootstrap` and `/api/auth/rotate`; default `1` preserves automation when `BURNRATE_ACCESS_TOKEN` is explicitly configured |
 | `BURNRATE_SETUP_TOKEN` | One-time token required to create the first account on a hub |
 | `BURNRATE_ALLOW_REGISTRATION` | Set to `1` on a hub to accept new accounts after the first (off: computers join with pairing codes) |
 | `BURNRATE_CENTRAL_SERVER_URL` | Default hub address offered when signing in (no built-in hub) |
@@ -66,3 +67,21 @@ BURNRATE no longer collects Cursor usage or polls Cursor quota. Cursor usage dup
 
 BURNRATE never turns on Tailscale, Serve or Funnel. To reach the HUD from your tailnet, see
 [Optional Tailscale Serve](tailscale.md).
+
+## Hub authentication migration
+
+No new dependency is required. Sessions last 30 days; machine tokens last 90 days; pairing invitations
+last 15 minutes and redeem once at the exact hub origin. These durations are fixed policy constants.
+`machines.v1` and `accounts.v1` migrate automatically, in one transaction with marker `auth_model.v1`.
+Legacy machine hashes are retained; expiry is the original `created_at` plus 180 days (not 180 days
+from upgrade), with `rotation_required=true`. A token already older than that needs re-pairing.
+Account password hashes and creation dates stay intact; stable IDs and owner roles are added.
+
+The hub never asks an existing owner for the setup token again. Old 0.5.5 spokes can still push
+with unexpired migrated tokens, but must upgrade/sign in for hub-wide reads. `/auth` on a spoke
+stores a separate owner session server-side; it is excluded from public setup state and diagnostics.
+Use **Rotate this computer's token** before machine expiry; after expiry use a fresh pairing code.
+Explicit re-pairing resends a usage snapshot so a replacement machine identity never reuses the old
+sync cursor. Same-hub re-pairing keeps a separate owner session; sign-in and token rotation keep
+the machine cursor intact.
+See [self-hosting](self-hosting.md#auth-model-upgrade-and-rollback) for backups and rollback.
