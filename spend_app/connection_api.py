@@ -114,7 +114,8 @@ def access_allowed(
         if request.url.path in {"/api/sync/push", "/api/account/subscriptions"}:
             return True
         if request.url.path == "/api/machines":
-            return method in {"GET", "HEAD"}
+            # The route allows a machine to rename or revoke only itself.
+            return method in {"GET", "HEAD"} or method == "POST"
         if method in {"GET", "HEAD"} and request.url.path in _SPOKE_READ_PATHS:
             return True
         return False

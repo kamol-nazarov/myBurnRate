@@ -1571,16 +1571,18 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
 
     @router.post("/api/machines")
     async def mutate_machines(request: Request):
-        if getattr(request.state, "auth_kind", "anonymous") == "machine":
-            return JSONResponse(
-                {"error": "Machine tokens cannot register, rename or revoke machines."},
-                status_code=403,
-            )
         try:
             body = await request.json()
             if not isinstance(body, dict):
                 raise ValueError("Expected a JSON object.")
             action = str(body.get("action") or "register").strip().lower()
+            if getattr(request.state, "auth_kind", "anonymous") == "machine":
+                own_id = getattr(request.state, "machine_id", None)
+                if action not in {"rename", "revoke"} or str(body.get("id") or "") != str(own_id):
+                    return JSONResponse(
+                        {"error": "A machine token can only rename or revoke its own machine."},
+                        status_code=403,
+                    )
             if action in {"revoke", "rename"}:
                 hub_res = post_to_configured_hub(settings, "/api/machines", body)
                 if isinstance(hub_res, dict) and isinstance(hub_res.get("machines"), list):

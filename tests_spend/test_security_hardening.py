@@ -400,6 +400,40 @@ def test_global_login_budget_applies_across_usernames(tmp_path, monkeypatch) -> 
         assert response.status_code == 429
 
 
+def test_machine_token_can_only_manage_itself(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
+    monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "admin-secret")
+    settings = _settings(tmp_path)
+    initialize(settings.database_path)
+    own = register_machine(settings.database_path, name="OwnLaptop")
+    other = register_machine(settings.database_path, name="OtherLaptop")
+    app = create_app(settings=settings, enable_scheduler=False)
+    headers = {
+        "Authorization": f"Bearer {own['token']}",
+        "X-BURNRATE-Request": "1",
+        "Content-Type": "application/json",
+    }
+    with TestClient(app, base_url="http://127.0.0.1:17331") as client:
+        renamed = client.post(
+            "/api/machines",
+            headers=headers,
+            json={"action": "rename", "id": own["machine"]["id"], "name": "Renamed"},
+        )
+        assert renamed.status_code == 200
+        foreign = client.post(
+            "/api/machines",
+            headers=headers,
+            json={"action": "rename", "id": other["machine"]["id"], "name": "Nope"},
+        )
+        assert foreign.status_code == 403
+        created = client.post(
+            "/api/machines",
+            headers=headers,
+            json={"action": "register", "name": "Intruder"},
+        )
+        assert created.status_code == 403
+
+
 def test_anonymous_account_bodies_are_bounded(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "admin-secret")
