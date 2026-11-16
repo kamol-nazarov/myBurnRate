@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 from datetime import UTC, datetime
+from urllib.parse import quote
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -1783,11 +1784,11 @@ def test_whitespace_only_line_over_limit_preserves_crossline_pending(tmp_path: P
     spaces_line = " " * 8193
     payload = f"password:\n{spaces_line}\nAb9SensitiveValue"
     cleaned = redact(payload)
-    assert cleaned == f"password:\n{spaces_line}\n[redacted]"
+    assert cleaned == "password:\n\n[redacted]"
     assert "Ab9SensitiveValue" not in cleaned
 
-    assert source_evidence.sanitize_reason(payload) == "password:"
-    assert source_evidence.source_reason_text(payload) == "password:"
+    assert source_evidence.sanitize_reason(payload) == "password: [redacted]"
+    assert source_evidence.source_reason_text(payload) == "password: [redacted]"
 
     settings = _settings(tmp_path, "blank_over_limit.db")
     initialize(settings.database_path)
@@ -1839,3 +1840,195 @@ def test_lone_surrogates_never_raise_and_redact_across_sinks(tmp_path: Path) -> 
     assert "password=[redacted]" in report
     assert "Ab9" not in report
     assert "SensitiveValue" not in report
+
+
+_ALL_27_FIELD_NAMES = (
+    "api_key",
+    "api-key",
+    "apikey",
+    "access_key",
+    "access-key",
+    "accesskey",
+    "access_token",
+    "access-token",
+    "accesstoken",
+    "refresh_token",
+    "refresh-token",
+    "refreshtoken",
+    "client_secret",
+    "client-secret",
+    "clientsecret",
+    "session_key",
+    "session-key",
+    "sessionkey",
+    "x-api-key",
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "pwd",
+    "authorization",
+    "set-cookie",
+    "cookie",
+)
+
+
+def _pct_layers(text_value: str, layers: int) -> str:
+    out = text_value
+    for _ in range(layers):
+        out = quote(out, safe="")
+    return out
+
+
+def test_escaped_single_quote_and_unified_key_grammar_matrix(tmp_path: Path) -> None:
+    # Full 648-variant escaped-single-quote empty-key matrix:
+    # 27 key spellings * 2 separators (:, =) * 3 line endings (LF, CRLF, CR) * 4 percent-encoding layers (0..3)
+    for key in _ALL_27_FIELD_NAMES:
+        escaped_sq = f"\\'{key}\\'"
+        for sep in (":", "="):
+            for nl in ("\n", "\r\n", "\r"):
+                for layers in range(4):
+                    raw = _pct_layers(f"{escaped_sq}{sep}{nl}Ab9SensitiveValue", layers)
+                    cleaned = redact(raw)
+                    assert "[redacted]" in cleaned, (key, sep, repr(nl), layers, cleaned)
+                    assert "Ab9SensitiveValue" not in cleaned, (key, sep, repr(nl), layers, cleaned)
+
+    # All 5 key forms (bare, double, single, escaped-double, escaped-single) stay aligned
+    # across same-line quoted/unquoted, empty-key pending, and key-only pending.
+    for key in _ALL_27_FIELD_NAMES:
+        for key_form in (key, f'"{key}"', f"'{key}'", f'\\"{key}\\"', f"\\'{key}\\'"):
+            for sample in (
+                f"{key_form}:Ab9SensitiveValue",
+                f"{key_form}=Ab9SensitiveValue",
+                f'{key_form}: "Ab9SensitiveValue"',
+                f"{key_form}: 'Ab9SensitiveValue'",
+                f'{key_form}: \\"Ab9SensitiveValue\\"',
+                f"{key_form}: \\'Ab9SensitiveValue\\'",
+                f"{key_form}:\nAb9SensitiveValue",
+                f"{key_form}\n:\nAb9SensitiveValue",
+                f"{key_form}\n=\nAb9SensitiveValue",
+            ):
+                cleaned = redact(sample)
+                assert "[redacted]" in cleaned, (sample, cleaned)
+                assert "Ab9SensitiveValue" not in cleaned, (sample, cleaned)
+
+    # Unclosed quotes ending in backslash also scrub without leaking
+    for sample in (
+        'password="Ab9SensitiveValue\\',
+        "password='Ab9SensitiveValue\\",
+        r'password=\"Ab9SensitiveValue' + "\\",
+        r"password=\'Ab9SensitiveValue" + "\\",
+    ):
+        cleaned = redact(sample)
+        assert "[redacted]" in cleaned, (sample, cleaned)
+        assert "Ab9SensitiveValue" not in cleaned, (sample, cleaned)
+
+    # Verify representative escaped-single-quote variants across LF/CRLF/CR & 0..3 layers
+    # through redact, IngestRun.finish, and support_report.build_report.
+    settings = _settings(tmp_path, "escaped_sq_sinks.db")
+    initialize(settings.database_path)
+    sink_cases = [
+        ("same_line_escaped_sq", r"{\'password\': \'Ab9SensitiveValue\', \'keep\': \'ok\'}"),
+        ("lf_layer0", r"\'password\':" + "\nAb9SensitiveValue"),
+        ("crlf_layer1", _pct_layers(r"\'token\':" + "\r\nAb9SensitiveValue", 1)),
+        ("cr_layer2", _pct_layers(r"\'api_key\':" + "\rAb9SensitiveValue", 2)),
+        ("lf_layer3", _pct_layers(r"\'authorization\':" + "\nAb9SensitiveValue", 3)),
+    ]
+    with connect(settings.database_path) as conn:
+        for label, payload in sink_cases:
+            assert "Ab9SensitiveValue" not in redact(payload), label
+            run = IngestRun.start(conn, label)
+            run.finish(status="failed", error=payload)
+            stored = conn.execute(
+                "SELECT error FROM ingest_runs WHERE id=?", (run.id,)
+            ).fetchone()[0]
+            assert "[redacted]" in stored, (label, stored)
+            assert "Ab9SensitiveValue" not in stored, (label, stored)
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "dashboard.log").write_text(
+        "\n".join(payload for _, payload in sink_cases) + "\n",
+        encoding="utf-8",
+    )
+    report = support_report.build_report(settings, log_dir=logs)
+    assert "Ab9SensitiveValue" not in report
+    assert "[redacted]" in report
+
+
+THREE_LINE_SPLIT_TEMPLATES: list[tuple[str, str]] = [
+    ("json_double_quoted_3line", '"password"{nl}:{nl}"Ab9SensitiveValue"'),
+    ("json_obj_double_quoted_3line", '{{"password"{nl}:{nl}"Ab9SensitiveValue"}}'),
+    ("json_escaped_sq_3line", r"\'password\'{nl}:{nl}\'Ab9SensitiveValue\'"),
+    ("bare_eq_3line", "password{nl}={nl}Ab9SensitiveValue"),
+    ("bare_colon_3line_trailing_comma", "password{nl}: ,{nl}Ab9SensitiveValue"),
+    ("bare_eq_3line_trailing_brace", "password{nl}=}}{nl}Ab9SensitiveValue"),
+    ("json_double_quoted_with_blank_lines", '"password"{nl}{nl}:{nl}  {nl}"Ab9SensitiveValue"'),
+    ("bare_eq_with_blank_lines", "password{nl}   {nl}={nl}{nl}Ab9SensitiveValue"),
+]
+
+
+@pytest.mark.parametrize("case_id,template", THREE_LINE_SPLIT_TEMPLATES)
+@pytest.mark.parametrize("nl", ["\n", "\r\n", "\r"], ids=["LF", "CRLF", "CR"])
+@pytest.mark.parametrize("layers", [0, 1, 2, 3], ids=["pct0", "pct1", "pct2", "pct3"])
+def test_three_line_key_separator_value_splits_across_sinks(
+    case_id: str, template: str, nl: str, layers: int, tmp_path: Path
+) -> None:
+    raw = _pct_layers(template.format(nl=nl), layers)
+    cleaned = redact(raw)
+    assert "[redacted]" in cleaned, (case_id, repr(nl), layers, cleaned)
+    assert "Ab9SensitiveValue" not in cleaned, (case_id, repr(nl), layers, cleaned)
+
+    settings = _settings(tmp_path, "three_line.db")
+    initialize(settings.database_path)
+    with connect(settings.database_path) as conn:
+        run = IngestRun.start(conn, "codex_local")
+        run.finish(status="failed", error=raw)
+        stored = conn.execute(
+            "SELECT error FROM ingest_runs WHERE id=?", (run.id,)
+        ).fetchone()[0]
+    assert "[redacted]" in stored
+    assert "Ab9SensitiveValue" not in stored
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    # Write raw UTF-8 bytes so CRLF/CR line endings are preserved on disk as well
+    (logs / "dashboard.log").write_bytes((raw + "\n").encode("utf-8"))
+    report = support_report.build_report(settings, log_dir=logs)
+    assert "[redacted]" in report
+    assert "Ab9SensitiveValue" not in report
+
+
+def test_blank_line_byte_budget_and_collapse(tmp_path: Path) -> None:
+    huge_spaces = " " * 300000
+    cleaned_spaces = redact(huge_spaces)
+    assert len(cleaned_spaces) <= 256 * 1024
+    assert cleaned_spaces == ""
+
+    # Multiple blank lines within 8192 chars count toward the 256 KiB budget
+    many_blank_lines = ((" " * 8000) + "\n") * 40 + "Ab9SensitiveValue"
+    cleaned_many_blanks = redact(many_blank_lines)
+    assert len(cleaned_many_blanks.encode("utf-8")) <= 256 * 1024
+    assert cleaned_many_blanks.endswith("\n[truncated]")
+    assert "Ab9SensitiveValue" not in cleaned_many_blanks
+
+    # Blank line > 8192 chars collapses to empty line without clearing pending
+    payload = "password:\n" + (" " * 9000) + "\nAb9SensitiveValue"
+    assert redact(payload) == "password:\n\n[redacted]"
+
+    settings = _settings(tmp_path, "blank_budget.db")
+    initialize(settings.database_path)
+    with connect(settings.database_path) as conn:
+        run = IngestRun.start(conn, "codex_local")
+        run.finish(status="failed", error=payload)
+        stored = conn.execute(
+            "SELECT error FROM ingest_runs WHERE id=?", (run.id,)
+        ).fetchone()[0]
+    assert stored == "password:\n\n[redacted]"
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "dashboard.log").write_text(payload + "\n", encoding="utf-8")
+    report = support_report.build_report(settings, log_dir=logs)
+    assert "Ab9SensitiveValue" not in report
+    assert "password:\n\n[redacted]" in report

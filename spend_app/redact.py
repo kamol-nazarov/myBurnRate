@@ -16,6 +16,16 @@ _FIELD_NAMES = (
     r"token|secret|password|passwd|pwd|authorization|set-cookie|cookie|session[_-]?key|x-api-key"
 )
 
+# Single key grammar shared by same-line field matchers, empty-key pending, and
+# key-only pending matchers: bare, "...", '...', \"...\", and \'...\'.
+_FIELD_KEY = (
+    rf'(?:\\"(?:{_FIELD_NAMES})\\"'
+    rf"|\\'(?:{_FIELD_NAMES})\\'"
+    rf'|"(?:{_FIELD_NAMES})"'
+    rf"|'(?:{_FIELD_NAMES})'"
+    rf'|\b(?:{_FIELD_NAMES})\b)'
+)
+
 # Per-line secret-field matchers (never cross line boundaries; cross-line values
 # are handled by the explicit line-level state machine in redact()).
 _HEADER_TO_EOL = re.compile(
@@ -24,14 +34,19 @@ _HEADER_TO_EOL = re.compile(
 
 # Capture prefix+separator separately from the closing quote so replacements
 # preserve surrounding quotes/JSON structure while removing the entire value.
-_SECRET_FIELD_QUOTED_ESCAPED = re.compile(
-    rf'(?i)(\b(?:{_FIELD_NAMES})\b(?:\\?["\'])?[^\S\r\n]*[:=][^\S\r\n]*\\")(?:\\\\\\"|\\\\|\\[^"\r\n]|[^\\"\r\n])*(\\"|$)'
+# Disjoint body alternatives prevent backtracking on unclosed quotes; trailing
+# lone backslash at EOL is also consumed so unclosed quotes never leak.
+_SECRET_FIELD_QUOTED_ESCAPED_DOUBLE = re.compile(
+    rf'(?i)({_FIELD_KEY}[^\S\r\n]*[:=][^\S\r\n]*\\")(?:[^\\"\r\n]+|\\\\\\"|\\\\|\\[^\\"\r\n])*(\\"|\\?$)'
+)
+_SECRET_FIELD_QUOTED_ESCAPED_SINGLE = re.compile(
+    rf"(?i)({_FIELD_KEY}[^\S\r\n]*[:=][^\S\r\n]*\\')(?:[^\\'\r\n]+|\\\\\\'|\\\\|\\[^\\'\r\n])*(\\'|\\?$)"
 )
 _SECRET_FIELD_QUOTED_DOUBLE = re.compile(
-    rf'(?i)(\b(?:{_FIELD_NAMES})\b["\']?[^\S\r\n]*[:=][^\S\r\n]*")(?:\\.|[^"\\\r\n])*("|$)'
+    rf'(?i)({_FIELD_KEY}[^\S\r\n]*[:=][^\S\r\n]*")(?:[^"\\\r\n]+|\\.)*("|\\?$)'
 )
 _SECRET_FIELD_QUOTED_SINGLE = re.compile(
-    rf"(?i)(\b(?:{_FIELD_NAMES})\b[\"']?[^\S\r\n]*[:=][^\S\r\n]*')(?:\\.|[^'\\\r\n])*('|$)"
+    rf"(?i)({_FIELD_KEY}[^\S\r\n]*[:=][^\S\r\n]*')(?:[^'\\\r\n]+|\\.)*('|\\?$)"
 )
 
 # Unquoted field values:
@@ -81,21 +96,20 @@ _SAFE_TRAILING_PUNCT_CHARS = ".,;:!?)]"
 _CLAUSE_DELIM_CHARS = ",;}{\"'"
 
 _SECRET_FIELD_UNQUOTED = re.compile(
-    rf"(?i)(\b(?:{_FIELD_NAMES})\b[\"']?)"
-    r"([^\S\r\n]*[:=][^\S\r\n]*)"
+    rf"(?i)({_FIELD_KEY})([^\S\r\n]*[:=][^\S\r\n]*)"
     r"(?!\\?[\"'])"
     r"((?:(?:bearer|basic)[^\S\r\n]+)?[^\s\"',;}{]+)"
 )
 
 # Cross-line pending-state matchers (evaluated on a small trailing window of the
 # whitespace-trimmed raw line):
-# - empty secret field ending in ':' or '=' (e.g. 'password:', '"password":', 'token=')
-# - key-only line, quoted or bare (e.g. '"password"', '{"password"', 'password')
+# - empty secret field ending in ':' or '=' (e.g. 'password:', '"password":', '\'password\':', 'token=')
+# - key-only line using the same _FIELD_KEY grammar (e.g. '"password"', '{"password"', 'password')
+# - separator-only line under pending (':' or '=', optionally with whitespace and trailing comma/brace)
 # - line ending with auth scheme 'Bearer' or 'Basic' (case-insensitive)
-_TRAILING_FIELD_KEY = re.compile(
-    rf'(?i)(?:\\"(?:{_FIELD_NAMES})\\"|"(?:{_FIELD_NAMES})"|\'(?:{_FIELD_NAMES})\'|\b(?:{_FIELD_NAMES})\b)$'
-)
+_TRAILING_FIELD_KEY = re.compile(rf"(?i){_FIELD_KEY}$")
 _TRAILING_SCHEME = re.compile(r"(?i)\b(?:bearer|basic)$")
+_SEPARATOR_ONLY_LINE = re.compile(r"^[^\S\r\n]*[:=][^\S\r\n]*[,}]?[^\S\r\n]*$")
 
 _URL_USERINFO = re.compile(r"(://)[^\s/:@]+:[^\s/:@]+(@)")
 
@@ -117,6 +131,13 @@ _CREDENTIAL_TOKENS = re.compile(
 _EMAIL = re.compile(r"(?i)[A-Z0-9._%+-]{1,64}@[A-Z0-9.-]{1,253}\.[A-Z]{2,63}")
 _USER_DIR = re.compile(r"(?i)([A-Z]:[\\/]+Users[\\/]+)[^\\/\s\"']+")
 _UNIX_HOME = re.compile(r"(/(?:home|Users)/)[^/\s\"']+")
+
+
+def _replace_quoted_secret(match: re.Match[str]) -> str:
+    closing = match.group(2)
+    if closing == "\\":
+        closing = ""
+    return f"{match.group(1)}[redacted]{closing}"
 
 
 def _replace_unquoted_secret(match: re.Match[str]) -> str:
@@ -166,12 +187,12 @@ def _line_sets_pending(line: str) -> bool:
 
     if tail[-1] in ":=":
         head = tail[:-1].rstrip()
-        return bool(_TRAILING_FIELD_KEY.search(head[-32:]))
+        return bool(_TRAILING_FIELD_KEY.search(head[-64:]))
 
     if _TRAILING_SCHEME.search(tail[-16:]):
         return True
 
-    window = tail[-32:]
+    window = tail[-64:]
     match = _TRAILING_FIELD_KEY.search(window)
     if not match:
         return False
@@ -185,9 +206,10 @@ def _redact_line(line: str, home_forms: list[str]) -> str:
         line = re.sub(re.escape(form), "~", line, flags=re.IGNORECASE)
 
     line = _URL_USERINFO.sub(r"\1[redacted]\2", line)
-    line = _SECRET_FIELD_QUOTED_ESCAPED.sub(lambda m: m.group(1) + "[redacted]" + m.group(2), line)
-    line = _SECRET_FIELD_QUOTED_DOUBLE.sub(lambda m: m.group(1) + "[redacted]" + m.group(2), line)
-    line = _SECRET_FIELD_QUOTED_SINGLE.sub(lambda m: m.group(1) + "[redacted]" + m.group(2), line)
+    line = _SECRET_FIELD_QUOTED_ESCAPED_DOUBLE.sub(_replace_quoted_secret, line)
+    line = _SECRET_FIELD_QUOTED_ESCAPED_SINGLE.sub(_replace_quoted_secret, line)
+    line = _SECRET_FIELD_QUOTED_DOUBLE.sub(_replace_quoted_secret, line)
+    line = _SECRET_FIELD_QUOTED_SINGLE.sub(_replace_quoted_secret, line)
     line = _HEADER_TO_EOL.sub(lambda m: m.group(0)[: m.start(1) - m.start(0)] + m.group(1) + "[redacted]", line)
     line = _SECRET_FIELD_UNQUOTED.sub(_replace_unquoted_secret, line)
     line = _CREDENTIAL_TOKENS.sub("[redacted]", line)
@@ -256,7 +278,9 @@ def redact(
         total_bytes += line_bytes + sep_bytes
 
         if not line.strip():
-            scrubbed_line = line
+            scrubbed_line = "" if len(line) > _MAX_LINE_CHARS else line
+        elif expect_crossline_secret and _SEPARATOR_ONLY_LINE.match(line):
+            scrubbed_line = line.strip() if len(line) > _MAX_LINE_CHARS else line
         else:
             next_pending = _line_sets_pending(line)
             if len(line) > _MAX_LINE_CHARS:
