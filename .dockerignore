@@ -7,6 +7,6 @@
 !spend_app/**
 !spend_web/**
 !pricing/**
-!src-tauri/icons/**
+!assets/icons/**
 **/__pycache__
 **/*.pyc

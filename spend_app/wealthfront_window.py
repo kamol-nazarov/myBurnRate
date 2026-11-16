@@ -1910,7 +1910,7 @@ def _find_icon() -> Path | None:
     for candidate in (
         resource_root / "burnrate.ico",
         resource_root / "burnrate-assets" / "burnrate.ico",
-        resource_root / "src-tauri" / "icons" / "icon.ico",
+        resource_root / "assets" / "icons" / "icon.ico",
     ):
         if candidate.is_file():
             return candidate

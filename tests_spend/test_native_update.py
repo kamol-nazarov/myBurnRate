@@ -12,6 +12,7 @@ import hashlib
 import inspect
 import itertools
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -228,18 +229,16 @@ def test_ed25519_rejects_non_canonical_s_and_bad_encodings():
 # ---------------------------------------------------------------------------------------
 
 
-def test_pinned_key_matches_tauri_conf_and_parses():
-    conf = json.loads(
-        (ROOT / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8")
-    )
-    assert nu.PUBLIC_KEY_B64 == conf["plugins"]["updater"]["pubkey"]
+def test_pinned_key_matches_powershell_verifier_and_parses():
+    ps_text = (ROOT / "scripts" / "minisign-verify.ps1").read_text(encoding="utf-8")
+    match = re.search(r"\$MinisignPublicKey\s*=\s*'([^']+)'", ps_text)
+    assert match is not None
+    assert nu.PUBLIC_KEY_B64 == match.group(1)
     key = nu.parse_public_key(nu.PUBLIC_KEY_B64)
     assert len(key.key) == 32 and key.key_id[::-1].hex().upper() == "5CACF4C15C1FCD6D"
     assert nu.FEED_URL == (
         "https://github.com/kamol-nazarov/myBurnRate/releases/latest/download/native-latest.json"
     )
-    endpoint = conf["plugins"]["updater"]["endpoints"][0]
-    assert endpoint.rsplit("/", 1)[0] == nu.FEED_URL.rsplit("/", 1)[0]
 
 
 @pytest.mark.parametrize("alg", [b"ED", b"Ed"])
@@ -1333,22 +1332,6 @@ def test_installer_name_is_defined_identically_in_both_places():
         assert feed.native_installer_name(version) == nu.installer_name(version)
 
 
-def test_native_installer_never_enters_the_tauri_feed(tmp_path):
-    feed = _load("make_latest_json")
-    tauri, native = _signed_release_dir(tmp_path)
-    latest = feed.build_feed(tmp_path, tag="v0.6.0", repo="o/r")
-    assert latest["platforms"]["windows-x86_64"]["url"].endswith(tauri.name)
-    assert native.name not in json.dumps(latest)
-    manifests = _load("render_manifests")
-    assert (
-        manifests.installer(tmp_path).name == tauri.name
-    )  # still exactly one installer
-    native.unlink()
-    native.with_name(native.name + ".sig").unlink()
-    again = feed.build_feed(tmp_path, tag="v0.6.0", repo="o/r")
-    assert again["platforms"] == latest["platforms"]
-
-
 def test_native_feed_describes_the_installer_and_is_parseable_by_the_app(tmp_path):
     feed = _load("make_latest_json")
     _, native = _signed_release_dir(tmp_path)
@@ -1724,29 +1707,6 @@ def test_installer_name_is_one_definition_and_disjoint_from_the_tauri_installer(
     assert fnmatch.fnmatch(tauri, "*_x64-setup.exe")
     assert not tauri.casefold().startswith(nu.INSTALLER_PREFIX.casefold())
     assert not nu.installer_name("0.6.0").casefold().startswith("burnrate_")
-
-
-def test_tauri_feed_and_manifests_take_only_the_tauri_installer_in_both_directions(
-    tmp_path,
-):
-    feed = _load("make_latest_json")
-    manifests = _load("render_manifests")
-    tauri, native = _signed_release_dir(tmp_path)
-    assert (tauri.name, native.name) == (
-        "BURNRATE_0.6.0_x64-setup.exe",
-        "myBurnRate_0.6.0_x64-setup.exe",
-    )
-    latest = feed.build_feed(tmp_path, tag="v0.6.0", repo="o/r")
-    assert list(latest["platforms"]) == ["windows-x86_64"]
-    assert latest["platforms"]["windows-x86_64"]["url"].endswith(
-        "/BURNRATE_0.6.0_x64-setup.exe"
-    )
-    assert manifests.installer(tmp_path).name == tauri.name
-    native_feed = feed.build_native_feed(tmp_path, tag="v0.6.0", repo="o/r")
-    assert native_feed["platforms"]["windows-x86_64"]["url"].endswith(
-        "/myBurnRate_0.6.0_x64-setup.exe"
-    )
-    assert "BURNRATE_0.6.0" not in json.dumps(native_feed)
 
 
 def test_the_tauri_installers_signature_is_rejected_for_the_native_name(tmp_path):

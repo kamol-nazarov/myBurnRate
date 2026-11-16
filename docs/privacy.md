@@ -82,7 +82,6 @@ itself that is not to a provider or a hub you set up:
   contacts GitHub for updates, automatic or manual, and the button reports that nothing is
   available.
 
-The older Tauri desktop app has its own check; see [code signing](code-signing.md#privacy).
 
 ## Bind and browser
 

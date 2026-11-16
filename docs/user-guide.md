@@ -15,7 +15,6 @@ multiple computers work, and what the numbers mean.
 - **Cost per repository**: the HUD lists today's value by the repository each session ran in, worktrees included.
 - **Weekly card**: the share button copies the last seven days as an image (value, plans, tokens, cache hit, top tools; never repository names).
 - **Single-Account Multi-Computer Sync**: Pair laptops and secondary desktops to your primary Hub using a 1-click `brpair_...` pairing code. Spokes automatically push incremental token usage, sessions, and live agent state into your Hub database.
-- **Native Desktop App (`src-tauri/`)**: Tauri v2 desktop wrapper with system tray menu (`Toggle Sidecar HUD`, `Toggle HUD Always on Top`, `Run Setup Wizard…`, `Quit BURNRATE`); its main window opens only for setup and automatic background process supervision.
 
 ## Reading and arranging the HUD
 
@@ -28,7 +27,7 @@ multiple computers work, and what the numbers mean.
 
 ## First-run setup
 
-The desktop app opens setup on first launch. Open it again any time with the gear button on the HUD, **Run Setup Wizard…** in the tray menu, or [http://127.0.0.1:17331/setup](http://127.0.0.1:17331/setup). **Set up later** closes it until you open it yourself.
+The native app opens its first-run setup screen on launch. You can also open setup in a browser at [http://127.0.0.1:17331/setup](http://127.0.0.1:17331/setup). **Set up later** closes it until you open it yourself.
 
 1. **This computer** — name it, then choose how it works:
    - **Just this computer:** usage stays here; no account.

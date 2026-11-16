@@ -1,7 +1,13 @@
-"""The frozen service the desktop app ships (packaging/)."""
+"""The frozen native app the installer ships (packaging/)."""
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import importlib.util
+import json
+import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -33,64 +39,58 @@ def test_another_data_root_gets_its_own_service_mutex(tmp_path: Path, monkeypatc
 
 def test_the_spec_ships_what_the_service_reads() -> None:
     root = Path(__file__).resolve().parents[1]
-    spec = (root / "packaging" / "burnrate-service.spec").read_text(encoding="utf-8")
-    for needed in ('"pricing"', 'collect_data_files("spend_web")', 'collect_data_files("tzdata")',
-                   'copy_metadata("APScheduler")', 'console=False'):
+    spec = (root / "packaging" / "burnrate-native.spec").read_text(encoding="utf-8")
+    for needed in (
+        '"pricing"',
+        'collect_data_files("spend_web")',
+        'collect_data_files("tzdata")',
+        'copy_metadata("APScheduler")',
+        "console=False",
+        "assets",
+    ):
         assert needed in spec
-    entry = (root / "packaging" / "burnrate_service.py").read_text(encoding="utf-8")
+    entry = (root / "packaging" / "burnrate_native.py").read_text(encoding="utf-8")
     assert "multiprocessing.freeze_support()" in entry
 
 
 def test_the_update_feed_points_each_platform_at_its_signed_bundle(tmp_path: Path) -> None:
-    import importlib.util
-    from datetime import UTC, datetime
-
     root = Path(__file__).resolve().parents[1]
     spec = importlib.util.spec_from_file_location("make_latest_json", root / "packaging" / "make_latest_json.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    for name in ("BURNRATE_0.5.0_x64-setup.exe", "BURNRATE_0.5.0_aarch64.app.tar.gz", "BURNRATE_0.5.0_amd64.AppImage"):
-        (tmp_path / name).write_bytes(b"bundle")
-        (tmp_path / (name + ".sig")).write_text(f"sig-of-{name}\n", encoding="utf-8")
-    (tmp_path / "BURNRATE_0.5.0_aarch64.dmg").write_bytes(b"not an update bundle")
-    feed = module.build_feed(tmp_path, tag="v0.5.0", repo="owner/repo", now=datetime(2026, 11, 1, tzinfo=UTC))
+
+    name = "myBurnRate_0.5.0_x64-setup.exe"
+    installer = tmp_path / name
+    installer.write_bytes(b"bundle")
+    sig_text = base64.b64encode(
+        (
+            "untrusted comment: signature from tauri secret key\n"
+            "RUR0\n"
+            f"trusted comment: timestamp:1\tfile:{name}\n"
+            "AAAA\n"
+        ).encode("utf-8")
+    ).decode("ascii")
+    (tmp_path / (name + ".sig")).write_text(sig_text + "\n", encoding="utf-8")
+
+    feed = module.build_native_feed(tmp_path, tag="v0.5.0", repo="owner/repo", now=datetime(2026, 11, 1, tzinfo=UTC))
     assert feed["version"] == "0.5.0" and feed["pub_date"] == "2026-11-01T00:00:00Z"
-    assert set(feed["platforms"]) == {"windows-x86_64", "darwin-aarch64", "linux-x86_64"}
+    assert set(feed["platforms"]) == {"windows-x86_64"}
     windows = feed["platforms"]["windows-x86_64"]
-    assert windows["url"] == "https://github.com/owner/repo/releases/download/v0.5.0/BURNRATE_0.5.0_x64-setup.exe"
-    assert windows["signature"] == "sig-of-BURNRATE_0.5.0_x64-setup.exe"
-    (tmp_path / "BURNRATE_0.5.0_amd64.AppImage.sig").unlink()
-    with pytest.raises(SystemExit, match="no update signature"):
-        module.build_feed(tmp_path, tag="v0.5.0", repo="owner/repo")
+    assert windows["url"] == f"https://github.com/owner/repo/releases/download/v0.5.0/{name}"
+    assert windows["signature"] == sig_text
+    assert windows["sha256"] == hashlib.sha256(b"bundle").hexdigest()
+    assert windows["size"] == len(b"bundle")
 
-
-def test_scoop_and_winget_manifests_name_the_installer_and_its_hash(tmp_path: Path) -> None:
-    import hashlib
-    import importlib.util
-    import json
-    import sys
-    import zipfile
-
-    root = Path(__file__).resolve().parents[1]
-    spec = importlib.util.spec_from_file_location("render_manifests", root / "packaging" / "render_manifests.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    setup = tmp_path / "BURNRATE_0.5.0_x64-setup.exe"
-    setup.write_bytes(b"installer bytes")
-    digest = hashlib.sha256(b"installer bytes").hexdigest()
     argv = sys.argv
-    sys.argv = ["render_manifests", "--tag", "v0.5.0", "--repo", "owner/repo", "--dir", str(tmp_path)]
+    sys.argv = ["make_latest_json", "--native", "--tag", "v0.5.0", "--repo", "owner/repo", "--dir", str(tmp_path)]
     try:
         assert module.main() == 0
     finally:
         sys.argv = argv
-    scoop = json.loads((tmp_path / "myburnrate.json").read_text(encoding="utf-8"))
-    url = "https://github.com/owner/repo/releases/download/v0.5.0/BURNRATE_0.5.0_x64-setup.exe"
-    assert scoop["version"] == "0.5.0" and scoop["architecture"]["64bit"] == {"url": url + "#/setup.exe", "hash": digest}
-    assert scoop["installer"]["args"] == ["/S", "/D=$dir"] and scoop["uninstaller"]["file"] == "uninstall.exe"
-    with zipfile.ZipFile(tmp_path / "winget-manifests-0.5.0.zip") as bundle:
-        installer = bundle.read("KamolNazarov.myBurnRate.installer.yaml").decode()
-        assert set(bundle.namelist()) == {"KamolNazarov.myBurnRate.yaml", "KamolNazarov.myBurnRate.installer.yaml",
-                                          "KamolNazarov.myBurnRate.locale.en-US.yaml"}
-    assert f"InstallerUrl: {url}" in installer and f"InstallerSha256: {digest.upper()}" in installer
-    assert "InstallerType: nullsoft" in installer and "Scope: user" in installer
+    written = json.loads((tmp_path / "native-latest.json").read_text(encoding="utf-8"))
+    assert written["version"] == "0.5.0"
+    assert written["platforms"]["windows-x86_64"] == windows
+
+    (tmp_path / (name + ".sig")).unlink()
+    with pytest.raises(SystemExit, match="no update signature"):
+        module.build_native_feed(tmp_path, tag="v0.5.0", repo="owner/repo")

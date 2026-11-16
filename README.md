@@ -61,28 +61,13 @@ updates** does it on demand, and **Install & restart** applies a verified update
 | System | Download | What it is |
 | --- | --- | --- |
 | Windows 10 or 11 (64-bit) | `myBurnRate_<version>_x64-setup.exe` | **Native desktop window.** Light, Dark and System themes, tray mode, verified in-app updates. Installs per user. |
-| Windows 10 or 11 (64-bit) | `BURNRATE_<version>_x64-setup.exe` | Sidecar HUD and full web dashboard. This is also what Scoop installs. |
-| macOS 11 or later (Apple Silicon) | `BURNRATE_<version>_aarch64.dmg` | Sidecar HUD and full web dashboard. |
-| Linux (x86-64) | `BURNRATE_<version>_amd64.AppImage` or `.deb` | Sidecar HUD and full web dashboard. |
 | Python 3.12 (any OS) | `burnrate-<version>-py3-none-any.whl` | Command line, background service (`burnrate serve`) and `burnrate desktop`. |
-
-With [Scoop](https://scoop.sh) on Windows:
-
-```powershell
-scoop install https://github.com/kamol-nazarov/myBurnRate/releases/latest/download/myburnrate.json
-```
-
-A winget package (`KamolNazarov.myBurnRate`) follows once the installer is Authenticode-signed.
 
 **First launch**
 
-- **Windows:** the installers are not yet Authenticode-signed while the SignPath Foundation
+- **Windows:** the installer is not yet Authenticode-signed while the SignPath Foundation
   application is pending, so SmartScreen may show "Windows protected your PC". Choose **More info**
   and then **Run anyway**. Verify the download first if you prefer (see below).
-- **macOS:** the app is not notarized. Open **System Settings → Privacy & Security** and choose
-  **Open Anyway** next to BURNRATE, or run `xattr -dr com.apple.quarantine /Applications/BURNRATE.app`
-  once.
-- **Linux:** make the AppImage executable with `chmod +x BURNRATE_*.AppImage`, or install the `.deb`.
 
 **Verify a download**
 
@@ -257,7 +242,6 @@ including `BURNRATE_ENABLE_DASHBOARD`, `SPEND_DATABASE_PATH`, `SPEND_TIMEZONE` a
 
 - **Native app:** use **Settings → General → Check for updates**, or let it check on its own. Updates
   never touch `%LOCALAPPDATA%\BURNRATE`.
-- **HUD edition:** click the update bar in the HUD or choose **Check for updates** from the tray.
 - **Python installs:** `python -m pip install --upgrade burnrate`.
 - **Self-hosted hub:** `burnrate hub update`, or pull a newer container tag.
 - **Uninstall:** remove **myBurnRate** from Windows' installed apps. The uninstaller removes the
@@ -309,9 +293,7 @@ installer, update feed and signing. Contributions are welcome; start with
 ## Project status and support
 
 myBurnRate is actively developed and free to use. The current stable line is `0.5.x`; undocumented
-provider readers are labeled experimental and can change without a major version bump. Supported
-platforms for the packaged apps are Windows 10/11 (x64), macOS 11+ on Apple Silicon, and Linux
-x86-64; the Python package runs on any OS with CPython 3.12.
+provider readers are labeled experimental and can change without a major version bump. The packaged native installer targets Windows 10/11 (x64); the Python package runs on any OS with CPython 3.12.
 
 - **Questions and reproducible bugs:** open an [issue](https://github.com/kamol-nazarov/myBurnRate/issues)
   using the template. Redact paths, hostnames and keys.
@@ -333,7 +315,7 @@ the network, is in [docs/code-signing.md](docs/code-signing.md).
 
 Releases are built only on GitHub Actions from a tagged commit, carry a `SHA256SUMS` file, and are
 attested with build provenance. In-app updates are verified against an Ed25519 key pinned in the app.
-Dependency audits for Python, Rust and npm, a secret scan and a hermetic test suite run on every push.
+Dependency audits for Python and npm, a secret scan and a hermetic test suite run on every push.
 
 ## License
 

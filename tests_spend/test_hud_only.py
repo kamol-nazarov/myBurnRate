@@ -46,7 +46,6 @@ def test_root_opens_the_hud_when_the_dashboard_is_off(tmp_path, monkeypatch):
         page = client.get(route)
         assert page.status_code == 200
         assert 'location.replace("/hud")' in page.text
-        assert 'invoke("hide_main")' in page.text
         assert "spend.js" not in page.text
     assert '<html lang="en" data-dashboard="off">' in client.get("/hud").text
     setup_page = client.get("/setup").text

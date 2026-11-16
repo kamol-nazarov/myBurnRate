@@ -59,18 +59,6 @@ jobs:
             --ignore=tests_spend/test_performance_phase2.py `
             -m "not real_db and not browser"
 
-  native-tests:
-    name: Native supervisor regressions
-    runs-on: windows-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable 2026-11-14
-      - name: Test owned-process supervision
-        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib supervisor_tests
-
   lint:
     name: Python correctness and product lint
     runs-on: windows-latest
@@ -108,7 +96,7 @@ jobs:
           python -m ruff format --check spend_app/plan_service.py spend_app/product_api.py spend_app/subscription_schema.py spend_app/diagnostics.py tests_spend/test_plan_management.py tests_spend/test_onboarding.py tests_spend/test_product_browser_plans.py tests_spend/test_product_browser_setup.py scripts/validate-browser.py scripts/smoke-install.py
 
   supply-chain:
-    name: supply chain (lock, Rust, npm)
+    name: supply chain (lock, npm)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -129,15 +117,10 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "20"
-      - name: npm audit (asset tooling and Tauri CLI)
+      - name: npm audit (asset tooling and updater signer CLI)
         run: |
           npm audit --prefix scripts/asset-tools --audit-level=high
           npm audit --prefix tools/tauri --audit-level=high
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable 2026-11-14
-      - name: Rust advisory audit
-        run: |
-          cargo install cargo-audit --locked
-          cargo audit --file src-tauri/Cargo.lock
 
   pip-audit:
     name: pip-audit
