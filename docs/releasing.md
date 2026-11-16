@@ -10,10 +10,12 @@ maintainer's computer, so every download traces back to a tagged commit.
   release, and may also carry documentation-only commits that change no
   shipped code, so the repository's front page, the README and the links in
   release notes describe what people actually download.
-- **`main`** collects finished work. Feature branches merge into `main`;
-  releases are tagged from it.
+- **`release/<version>`** collects the work for one release, for example
+  `release/0.5.8`. Cut it from `prod`; feature and fix branches merge into it,
+  and the release is tagged from it. There is no long-lived `main` branch.
 - `prod` only moves forward: to a published release tag (step 8 below), or to a
-  documentation or metadata commit that changes no shipped code.
+  documentation or metadata commit that changes no shipped code. A release
+  branch merges into `prod` only once its release is ready.
 
 ## Steps
 
@@ -30,8 +32,10 @@ maintainer's computer, so every download traces back to a tagged commit.
    - the current-release line and release-notes link in the README.
 3. Write `docs/releases/RELEASE-<version>.md` (it becomes the release notes)
    and move the changelog's `[Unreleased]` entries under the new version.
-4. Commit, push, and wait for CI and the Desktop workflow to pass.
-5. Tag and push: `git tag -a v<version> -m "BURNRATE v<version>"` then
+4. Commit on `release/<version>`, push it, and wait for CI and the Desktop
+   workflow to pass.
+5. Tag the release branch and push the tag:
+   `git tag -a v<version> -m "BURNRATE v<version>"` then
    `git push origin v<version>`.
 6. The release workflow:
    - checks that the tag matches the versions in the code;
@@ -54,7 +58,7 @@ maintainer's computer, so every download traces back to a tagged commit.
    Once the tag's Hub image build has passed, verify its digest with
    `docker buildx imagetools inspect ghcr.io/kamol-nazarov/myburnrate-hub:<version>`
    and pin that `tag@sha256:...` in `deploy/hub/compose.yaml`. Commit this release metadata
-   on `main` and fast-forward `prod` to it; keep the published tag unchanged. The image's
+   on `release/<version>` and fast-forward `prod` to it; keep the published tag unchanged. The image's
    digest is available only after its tag build, so do not guess it before tagging.
 9. Command-line installs:
    - **Scoop** needs nothing more. The release carries `myburnrate.json`, so

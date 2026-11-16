@@ -6,7 +6,7 @@ name: Desktop
 
 "on":
   push:
-    branches: [main, "release/**", "feat/**"]
+    branches: ["release/**", "feat/**"]
   pull_request:
   workflow_dispatch:
 
