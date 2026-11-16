@@ -1640,3 +1640,204 @@ def test_connect_requires_existing_nondefault_profile(
         generated = ps.profile_key_for_folder(prov, home / "some-folder")
         assert generated != "default"
         assert generated not in set(ps.DEFAULT_TOOL_KEYS.values())
+
+def test_default_record_at_custom_claude_folder_uses_its_identity(
+    client: TestClient, settings: Settings, isolated_env: Path
+):
+    home = isolated_env
+    (home / ".claude").mkdir(parents=True, exist_ok=True)
+    (home / ".claude.json").write_text(
+        json.dumps({"oauthAccount": {"accountUuid": "personal-A", "organizationRateLimitTier": "default_claude_max_20x"}}),
+        encoding="utf-8",
+    )
+    custom = _make_claude_folder(home / ".claude-custom")
+    (custom / ".claude.json").write_text(
+        json.dumps({"oauthAccount": {"accountUuid": "work-B", "organizationRateLimitTier": "default_claude_pro"}}),
+        encoding="utf-8",
+    )
+
+    service = c.Service(settings)
+    service.mutate(
+        {
+            "source": "claude_local",
+            "operation": "connect",
+            "location": str(custom),
+            "revision": 0,
+            "requestId": str(uuid4()),
+        }
+    )
+
+    rec = c.Store(settings.database_path).read()["profiles"]["claude_local"]["default"]
+    assert rec["accountDigest"] == _sha256("work-B"), rec
+    assert rec["plan"] == "Claude Pro"
+
+    # GET /api/connections reflects custom folder's plan and keeps personal-A separate
+    claude_row = next(r for r in client.get("/api/connections").json()["connections"] if r["source"] == "claude_local")
+    by_key = {p["key"]: p for p in claude_row["profiles"]}
+    assert by_key["default"]["plan"] == "Claude Pro"
+    assert by_key["default"]["sharesLimitsWith"] is None
+
+    # Adding another folder signed in to personal-A succeeds because default is on work-B
+    personal_extra = _make_claude_folder(
+        home / ".claude-personal-copy", account_uuid="personal-A", plan="max"
+    )
+    res = client.post(
+        "/api/connections",
+        json={
+            "source": "claude_local",
+            "operation": "add_profile",
+            "location": str(personal_extra),
+            "name": "Personal Copy",
+            "requestId": str(uuid4()),
+        },
+        headers=API_HEADERS,
+    )
+    assert res.status_code == 200
+
+
+def test_duplicate_of_custom_default_account_is_refused(
+    client: TestClient, settings: Settings, isolated_env: Path
+):
+    home = isolated_env
+    (home / ".claude").mkdir(parents=True, exist_ok=True)
+    (home / ".claude.json").write_text(
+        json.dumps({"oauthAccount": {"accountUuid": "personal-A"}}),
+        encoding="utf-8",
+    )
+    custom = _make_claude_folder(home / ".claude-custom", account_uuid="work-B")
+    other = _make_claude_folder(home / ".claude-other", account_uuid="work-B")
+
+    service = c.Service(settings)
+    service.mutate(
+        {
+            "source": "claude_local",
+            "operation": "connect",
+            "location": str(custom),
+            "revision": 0,
+            "requestId": str(uuid4()),
+        }
+    )
+
+    with pytest.raises(c.Conflict):
+        service.mutate(
+            {
+                "source": "claude_local",
+                "operation": "add_profile",
+                "location": str(other),
+                "name": "Other",
+                "requestId": str(uuid4()),
+            }
+        )
+
+    r_dup = client.post(
+        "/api/connections",
+        json={
+            "source": "claude_local",
+            "operation": "add_profile",
+            "location": str(other),
+            "name": "Other",
+            "requestId": str(uuid4()),
+        },
+        headers=API_HEADERS,
+    )
+    assert r_dup.status_code == 409
+
+
+def test_warm_digest_cache_cannot_bypass_write_check(
+    client: TestClient, settings: Settings, isolated_env: Path
+):
+    home = isolated_env
+    work = _make_codex_folder(home / ".codex-work", account_id="account-A")
+    other = _make_codex_folder(home / ".codex-other", account_id="account-B")
+
+    service = c.Service(settings)
+    service.mutate(
+        {
+            "source": "codex_local",
+            "operation": "add_profile",
+            "location": str(work),
+            "name": "Work",
+            "requestId": str(uuid4()),
+        }
+    )
+
+    # Warm the 60s digest cache with account-A via GET
+    assert client.get("/api/connections").status_code == 200
+
+    # Switch Work's auth.json to account-B while cache for `work` is still warm
+    (work / "auth.json").write_text(
+        json.dumps({"tokens": {"account_id": "account-B"}}), encoding="utf-8"
+    )
+    assert profile_detect.current_account_digest("codex_local", work) == _sha256("account-A")
+
+    # Write path must bypass warm digest cache and reject adding other (account-B)
+    r_dup = client.post(
+        "/api/connections",
+        json={
+            "source": "codex_local",
+            "operation": "add_profile",
+            "location": str(other),
+            "name": "Other",
+            "requestId": str(uuid4()),
+        },
+        headers=API_HEADERS,
+    )
+    assert r_dup.status_code == 409
+
+
+def test_retargeted_root_keeps_stored_digest_on_get(
+    client: TestClient, settings: Settings, isolated_env: Path, tmp_path: Path
+):
+    import os
+    import subprocess
+    from spend_app import connection_paths
+
+    if os.name != "nt":
+        pytest.skip("Windows junctions require os.name == 'nt'")
+
+    home = isolated_env
+    work = _make_codex_folder(home / ".codex-work", account_id="account-A")
+    other = _make_codex_folder(home / ".codex-other", account_id="account-B")
+
+    service = c.Service(settings)
+    work_key = service.mutate(
+        {
+            "source": "codex_local",
+            "operation": "add_profile",
+            "location": str(work),
+            "name": "Work",
+            "requestId": str(uuid4()),
+        }
+    )["connection"]["key"]
+    other_key = service.mutate(
+        {
+            "source": "codex_local",
+            "operation": "add_profile",
+            "location": str(other),
+            "name": "Other",
+            "requestId": str(uuid4()),
+        }
+    )["connection"]["key"]
+
+    evil_target = _make_codex_folder(tmp_path / "evil-target", account_id="account-B")
+    moved = tmp_path / "work-moved"
+    work.rename(moved)
+    res = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(work), str(evil_target)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if res.returncode != 0 or not connection_paths.is_junction(work):
+        pytest.skip("Windows junction creation not supported here")
+
+    profile_detect.reset_cache()
+    assert profile_detect.current_account_digest("codex_local", work / "sessions") is None
+
+    codex_row = next(r for r in client.get("/api/connections").json()["connections"] if r["source"] == "codex_local")
+    by_key = {p["key"]: p for p in codex_row["profiles"]}
+    assert by_key[work_key]["sharesLimitsWith"] is None
+    assert by_key[other_key]["sharesLimitsWith"] is None
+    stored = c.Store(settings.database_path).read()["profiles"]["codex_local"][work_key]
+    assert stored["accountDigest"] == _sha256("account-A")
+

@@ -922,3 +922,87 @@ def test_current_account_digest_reads_live_identity_caches_60s_and_checks_safety
     _write_codex_auth(targets / "codex-junc", account_id="codex-junc")
     _make_junction(home / ".codex-junc", targets / "codex-junc")
     assert profile_detect.current_account_digest("codex_local", home / ".codex-junc", home=home, environ=env) is None
+
+def test_current_account_digest_claude_default_vs_custom_folder(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    (home / ".claude" / "projects").mkdir(parents=True)
+    _write_claude_state(home, "personal-A", tier="default_claude_max_20x")
+
+    custom = home / ".claude-custom"
+    (custom / "projects").mkdir(parents=True)
+    _write_claude_state(custom, "work-B", tier="default_claude_pro")
+
+    # Even when caller passes is_default=True, a custom folder uses its own .claude.json
+    assert profile_detect.current_account_digest(
+        "claude_local", custom, is_default=True, home=home, environ={}
+    ) == _sha256("work-B")
+    assert profile_detect.current_account_digest(
+        "claude_local", custom / "projects", is_default=True, home=home, environ={}
+    ) == _sha256("work-B")
+
+    # Physical default directory uses primary_state_path even if is_default=False
+    assert profile_detect.current_account_digest(
+        "claude_local", home / ".claude", is_default=False, home=home, environ={}
+    ) == _sha256("personal-A")
+
+    # CLAUDE_CONFIG_DIR redirects which directory counts as physical default
+    env = {"CLAUDE_CONFIG_DIR": str(custom)}
+    assert profile_detect.current_account_digest(
+        "claude_local", custom, is_default=True, home=home, environ=env
+    ) == _sha256("work-B")
+    assert profile_detect.current_account_digest(
+        "claude_local", home / ".claude", is_default=False, home=home, environ=env
+    ) is None
+
+    # OpenCode: OPENCODE_API_KEY does not leak onto a custom DB when is_default=True
+    xdg = tmp_path / "xdg"
+    _write_opencode_db(xdg / "opencode" / "opencode.db", None)
+    custom_oc = _write_opencode_db(tmp_path / ".opencode-custom" / "opencode.db", None)
+    oc_env = {"XDG_DATA_HOME": str(xdg), "OPENCODE_API_KEY": "env-only-key"}
+    assert profile_detect.current_account_digest(
+        "opencode_local", custom_oc, is_default=True, home=home, environ=oc_env
+    ) is None
+
+
+def test_current_account_digest_retargeted_root_returns_none(tmp_path: Path, monkeypatch) -> None:
+    home = tmp_path / "home"
+    targets = tmp_path / "targets"
+
+    # Cross-platform check via monkeypatched _resolve mismatch
+    claude_dir = home / ".claude-retarget"
+    (claude_dir / "projects").mkdir(parents=True)
+    _write_claude_state(claude_dir, "acct-real")
+    real_resolve = profile_detect._resolve
+    monkeypatch.setattr(
+        profile_detect,
+        "_resolve",
+        lambda path, strict=True: targets / "moved"
+        if identity(path) == identity(claude_dir / "projects")
+        else real_resolve(path, strict=strict),
+    )
+    assert profile_detect.current_account_digest(
+        "claude_local", claude_dir / "projects", home=home, environ={}
+    ) is None
+    monkeypatch.undo()
+
+    # Real Windows junction retarget check (even with warm cache)
+    codex_work = home / ".codex-work"
+    (codex_work / "sessions").mkdir(parents=True)
+    _write_codex_auth(codex_work, account_id="cx-orig")
+    assert profile_detect.current_account_digest(
+        "codex_local", codex_work / "sessions", home=home, environ={}
+    ) == _sha256("cx-orig")
+
+    (targets / "evil" / "sessions").mkdir(parents=True)
+    _write_codex_auth(targets / "evil", account_id="cx-evil")
+    moved = tmp_path / "moved-codex"
+    codex_work.rename(moved)
+    _make_junction(codex_work, targets / "evil")
+
+    assert profile_detect.current_account_digest(
+        "codex_local", codex_work / "sessions", home=home, environ={}
+    ) is None
+    assert profile_detect.current_account_digest(
+        "codex_local", codex_work / "sessions", home=home, environ={}, use_cache=False
+    ) is None
+
