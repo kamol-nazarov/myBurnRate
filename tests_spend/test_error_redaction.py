@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from datetime import UTC, datetime
 from urllib.parse import quote
@@ -39,6 +40,7 @@ from spend_app.db import (
 from spend_app.ingest import IngestRun
 from spend_app.pricing import PricingEngine
 from spend_app.providers import ProviderSpec
+import spend_app.redact as redact_module
 from spend_app.redact import redact
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -2032,3 +2034,66 @@ def test_blank_line_byte_budget_and_collapse(tmp_path: Path) -> None:
     report = support_report.build_report(settings, log_dir=logs)
     assert "Ab9SensitiveValue" not in report
     assert "password:\n\n[redacted]" in report
+
+
+def test_regex_pathological_inputs_and_reviewer_timing_guards() -> None:
+    patterns = [
+        (name, obj)
+        for name, obj in vars(redact_module).items()
+        if isinstance(obj, re.Pattern)
+    ]
+    assert len(patterns) >= 13
+
+    # Reviewer exact regression cases
+    t0 = time.perf_counter()
+    escaped_dq_unclosed = redact('password=\\"' + ("Z" * 28) + '"')
+    dt = time.perf_counter() - t0
+    assert dt < 0.5, f"Reviewer escaped-quote case took {dt:.3f}s"
+    assert ("Z" * 28) not in escaped_dq_unclosed
+    assert "[redacted]" in escaped_dq_unclosed
+
+    t0 = time.perf_counter()
+    long_sep_line = redact("password\n:" + (" " * 24000) + "x")
+    dt = time.perf_counter() - t0
+    assert dt < 0.5, f"Reviewer separator-only case took {dt:.3f}s"
+    assert long_sep_line == "password\n[line omitted]"
+
+    t0 = time.perf_counter()
+    long_blank_after_sep = redact("password\n:\n" + (" " * 24000) + "\nAb9SensitiveValue")
+    dt = time.perf_counter() - t0
+    assert dt < 0.5, f"Long blank after separator took {dt:.3f}s"
+    assert long_blank_after_sep == "password\n:\n\n[redacted]"
+
+    def _payloads(run: str) -> tuple[str, ...]:
+        return (
+            run,
+            "password=" + run,
+            "password:" + run,
+            'password="' + run + "'",
+            "password='" + run + '"',
+            'password=\\"' + run + '"',
+            "password=\\'" + run + "'",
+            'password=\\"' + run + "'",
+            "password=\\'" + run + '"',
+            "password\n:" + run + "x",
+            "a@" + run,
+        )
+
+    specials = ("\\", '"', "'", ":", "=", ",", "}", ")", ".", "@", " ", "Z")
+    for ch in specials:
+        run_30k = ch * 30_000
+        run_8k = ch * 8_000
+        payloads_30k = _payloads(run_30k)
+
+        for name, pattern in patterns:
+            for payload in payloads_30k:
+                t0 = time.perf_counter()
+                pattern.search(payload)
+                dt = time.perf_counter() - t0
+                assert dt < 0.5, f"{name} took {dt:.3f}s on ch={ch!r} sample={payload[:32]!r}"
+
+        for payload in payloads_30k + _payloads(run_8k):
+            t0 = time.perf_counter()
+            redact(payload)
+            dt = time.perf_counter() - t0
+            assert dt < 0.5, f"redact() took {dt:.3f}s on len={len(payload)} ch={ch!r} sample={payload[:32]!r}"

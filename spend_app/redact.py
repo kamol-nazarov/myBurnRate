@@ -34,19 +34,20 @@ _HEADER_TO_EOL = re.compile(
 
 # Capture prefix+separator separately from the closing quote so replacements
 # preserve surrounding quotes/JSON structure while removing the entire value.
-# Disjoint body alternatives prevent backtracking on unclosed quotes; trailing
-# lone backslash at EOL is also consumed so unclosed quotes never leak.
+# Disjoint single/two-character alternatives with bounded repetition prevent
+# backtracking on unclosed or mismatched quotes; trailing lone backslash at EOL
+# is also consumed so unclosed quotes never leak.
 _SECRET_FIELD_QUOTED_ESCAPED_DOUBLE = re.compile(
-    rf'(?i)({_FIELD_KEY}[^\S\r\n]*[:=][^\S\r\n]*\\")(?:[^\\"\r\n]+|\\\\\\"|\\\\|\\[^\\"\r\n])*(\\"|\\?$)'
+    rf'(?i)({_FIELD_KEY}[^\S\r\n]*[:=][^\S\r\n]*\\")(?:[^\\\r\n]|\\[^"\r\n]){{0,8192}}(\\"|\\?$)'
 )
 _SECRET_FIELD_QUOTED_ESCAPED_SINGLE = re.compile(
-    rf"(?i)({_FIELD_KEY}[^\S\r\n]*[:=][^\S\r\n]*\\')(?:[^\\'\r\n]+|\\\\\\'|\\\\|\\[^\\'\r\n])*(\\'|\\?$)"
+    rf"(?i)({_FIELD_KEY}[^\S\r\n]*[:=][^\S\r\n]*\\')(?:[^\\\r\n]|\\[^'\r\n]){{0,8192}}(\\'|\\?$)"
 )
 _SECRET_FIELD_QUOTED_DOUBLE = re.compile(
-    rf'(?i)({_FIELD_KEY}[^\S\r\n]*[:=][^\S\r\n]*")(?:[^"\\\r\n]+|\\.)*("|\\?$)'
+    rf'(?i)({_FIELD_KEY}[^\S\r\n]*[:=][^\S\r\n]*")(?:[^"\\\r\n]|\\[^\r\n]){{0,8192}}("|\\?$)'
 )
 _SECRET_FIELD_QUOTED_SINGLE = re.compile(
-    rf"(?i)({_FIELD_KEY}[^\S\r\n]*[:=][^\S\r\n]*')(?:[^'\\\r\n]+|\\.)*('|\\?$)"
+    rf"(?i)({_FIELD_KEY}[^\S\r\n]*[:=][^\S\r\n]*')(?:[^'\\\r\n]|\\[^\r\n]){{0,8192}}('|\\?$)"
 )
 
 # Unquoted field values:
@@ -105,11 +106,9 @@ _SECRET_FIELD_UNQUOTED = re.compile(
 # whitespace-trimmed raw line):
 # - empty secret field ending in ':' or '=' (e.g. 'password:', '"password":', '\'password\':', 'token=')
 # - key-only line using the same _FIELD_KEY grammar (e.g. '"password"', '{"password"', 'password')
-# - separator-only line under pending (':' or '=', optionally with whitespace and trailing comma/brace)
 # - line ending with auth scheme 'Bearer' or 'Basic' (case-insensitive)
 _TRAILING_FIELD_KEY = re.compile(rf"(?i){_FIELD_KEY}$")
 _TRAILING_SCHEME = re.compile(r"(?i)\b(?:bearer|basic)$")
-_SEPARATOR_ONLY_LINE = re.compile(r"^[^\S\r\n]*[:=][^\S\r\n]*[,}]?[^\S\r\n]*$")
 
 _URL_USERINFO = re.compile(r"(://)[^\s/:@]+:[^\s/:@]+(@)")
 
@@ -201,6 +200,15 @@ def _line_sets_pending(line: str) -> bool:
     return not prefix or prefix.endswith(("{", ","))
 
 
+def _is_separator_only_line(line: str) -> bool:
+    """Return True if a non-blank line is ':' or '=', optionally followed by ',' or '}' and whitespace."""
+    s = line.strip()
+    if not s or s[0] not in ":=":
+        return False
+    rest = s[1:].strip()
+    return rest in ("", ",", "}")
+
+
 def _redact_line(line: str, home_forms: list[str]) -> str:
     for form in home_forms:
         line = re.sub(re.escape(form), "~", line, flags=re.IGNORECASE)
@@ -279,13 +287,14 @@ def redact(
 
         if not line.strip():
             scrubbed_line = "" if len(line) > _MAX_LINE_CHARS else line
-        elif expect_crossline_secret and _SEPARATOR_ONLY_LINE.match(line):
-            scrubbed_line = line.strip() if len(line) > _MAX_LINE_CHARS else line
+        elif len(line) > _MAX_LINE_CHARS:
+            expect_crossline_secret = _line_sets_pending(line)
+            scrubbed_line = "[line omitted]"
+        elif expect_crossline_secret and _is_separator_only_line(line):
+            scrubbed_line = line
         else:
             next_pending = _line_sets_pending(line)
-            if len(line) > _MAX_LINE_CHARS:
-                scrubbed_line = "[line omitted]"
-            elif expect_crossline_secret:
+            if expect_crossline_secret:
                 scrubbed_line = "[redacted]"
             else:
                 scrubbed_line = _redact_line(line, home_forms)
