@@ -37,7 +37,7 @@ def parse(value):
     try:
         result = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
         return result.replace(tzinfo=UTC) if result.tzinfo is None else result.astimezone(UTC)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
         return None
 
 
@@ -96,6 +96,9 @@ def ensure_schema(path):
             "BEGIN SELECT RAISE(ABORT, 'admin audit is append-only'); END",
         ):
             connection.execute(sql)
+        grant_cols = {row[1] for row in connection.execute("PRAGMA table_info(pairing_grants)")}
+        if grant_cols and "by_name" not in grant_cols:
+            connection.execute("ALTER TABLE pairing_grants ADD COLUMN by_name INTEGER NOT NULL DEFAULT 0")
         if connection.execute("SELECT 1 FROM app_meta WHERE key=?", (MARKER,)).fetchone():
             row = connection.execute("SELECT value FROM app_meta WHERE key='machines.v1'").fetchone()
             if row:
@@ -120,7 +123,7 @@ def ensure_schema(path):
             "last_used_at TEXT, expires_at TEXT NOT NULL, revoked_at TEXT, device_label TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS pairing_grants (id TEXT PRIMARY KEY, secret_hash TEXT NOT NULL, "
             "hub_origin TEXT NOT NULL, machine_id TEXT, machine_name TEXT NOT NULL, os_name TEXT NOT NULL, "
-            "created_at TEXT NOT NULL, expires_at TEXT NOT NULL, used_at TEXT)",
+            "created_at TEXT NOT NULL, expires_at TEXT NOT NULL, used_at TEXT, by_name INTEGER NOT NULL DEFAULT 0)",
         ):
             connection.execute(sql)
         changed = False
