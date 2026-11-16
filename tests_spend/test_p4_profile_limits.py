@@ -1992,3 +1992,211 @@ def test_ascii_case_and_dotdot_aliases_are_consistent(tmp_path: Path) -> None:
     distinct = tmp_path / "Unrelated"
     distinct.mkdir()
     assert codex_quota.unresolved_scope(root) != codex_quota.unresolved_scope(distinct)
+
+
+class _CloudStat:
+    """Stat result mimicking a non-name-surrogate OneDrive cloud placeholder."""
+
+    def __init__(self, real) -> None:
+        self.real = real
+        import stat
+        self.st_file_attributes = real.st_file_attributes | stat.FILE_ATTRIBUTE_REPARSE_POINT
+        self.st_reparse_tag = 0x9000001A  # IO_REPARSE_TAG_CLOUD
+
+    def __getattr__(self, name):
+        return getattr(self.real, name)
+
+
+def test_unchanged_cloud_ancestor_is_not_a_location_change(tmp_path: Path, monkeypatch) -> None:
+    from uuid import uuid4
+    from spend_app import connection_paths as cp, connections, profile_detect, quotas
+    from spend_app.adapters import profiles_local
+    from spend_app.config import Settings
+    from spend_app.pricing import PricingEngine
+    from spend_app.providers import REGISTRY
+    from tests_spend.test_p3_profile_collection import _write_claude_transcript
+
+    hermetic = tmp_path / "hermetic"
+    hermetic.mkdir()
+    monkeypatch.setenv("HOME", str(hermetic))
+    monkeypatch.setenv("USERPROFILE", str(hermetic))
+    _isolate_default_poll_sources(tmp_path, monkeypatch)
+    monkeypatch.setattr(claude_accounts, "extra_accounts", lambda: ())
+    monkeypatch.setattr(opencode_profiles, "extra_profiles", lambda: ())
+    profile_detect.reset_cache()
+
+    settings = Settings(
+        database_path=tmp_path / "spend.db",
+        pricing_path=Path(__file__).resolve().parents[1] / "pricing",
+        anthropic_admin_key=None,
+        openai_admin_key=None,
+        timezone="UTC",
+        cache_hit_threshold=0.75,
+        over_routing_token_ceiling=40000,
+        logs_path=tmp_path / "logs",
+    )
+    initialize(settings.database_path)
+
+    cloud = hermetic / "OneDrive"
+    chosen = cloud / ".claude-work"
+    _write_claude_transcript(
+        chosen / "projects" / "p" / "one.jsonl",
+        session_id="approved-cloud",
+        message_id="approved-cloud-message",
+    )
+    (chosen / ".claude.json").write_text(
+        json.dumps({"oauthAccount": {"accountUuid": "synthetic-cloud-account"}}),
+        encoding="utf-8",
+    )
+
+    service = connections.Service(settings, vault=_FakeVault())
+    added = service.mutate(
+        {
+            "source": "claude_local",
+            "operation": "add_profile",
+            "location": str(chosen),
+            "name": "Work",
+            "requestId": str(uuid4()),
+        }
+    )["connection"]
+    profile = next(
+        p for p in profile_store.enabled_profiles(settings.database_path) if p.key == added["key"]
+    )
+    assert profile_store.location_unchanged(profile, REGISTRY.get("claude_local"))
+    assert added["key"] in quotas._resolve_profile_lanes(settings.database_path)[0]
+
+    original_lstat = os.lstat
+
+    def cloud_lstat(path, *args, **kwargs):
+        real = original_lstat(path, *args, **kwargs)
+        return _CloudStat(real) if cp.identity(path) == cp.identity(cloud) else real
+
+    monkeypatch.setattr(os, "lstat", cloud_lstat)
+    if os.name == "nt":
+        assert cp.is_junction(cloud) is True
+        assert cp.is_name_surrogate(cloud) is False
+    assert profile_store.location_unchanged(profile, REGISTRY.get("claude_local"))
+    assert added["key"] in quotas._resolve_profile_lanes(settings.database_path)[0]
+    result = profiles_local.ingest(
+        database_path=settings.database_path,
+        pricing=PricingEngine.load(settings.pricing_path),
+    )
+    assert result.get("status") != "failed", result
+    with connect(settings.database_path) as db:
+        rows = [tuple(r) for r in db.execute("SELECT session_id,tool_key FROM usage_events")]
+    assert rows == [("approved-cloud", added["key"])], (result, rows)
+
+
+def _enable_case_sensitivity(directory: Path) -> None:
+    import subprocess
+
+    directory.mkdir()
+    result = subprocess.run(
+        ["fsutil.exe", "file", "setCaseSensitiveInfo", str(directory), "enable"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode:
+        pytest.skip("NTFS per-directory case sensitivity unavailable: " + result.stdout + result.stderr)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS per-directory case sensitivity is Windows-specific")
+def test_case_sensitive_ascii_roots_have_distinct_scopes(tmp_path: Path) -> None:
+    from spend_app import connection_paths as cp
+    from spend_app.providers import REGISTRY
+
+    parent = tmp_path / "case-sensitive"
+    _enable_case_sensitivity(parent)
+    a, b = parent / "Profile", parent / "profile"
+    a.mkdir()
+    b.mkdir()
+    assert not a.samefile(b)
+    assert profile_store.location_unchanged(str(a), REGISTRY.get("codex_local"))
+    assert profile_store.location_unchanged(str(b), REGISTRY.get("codex_local"))
+    assert codex_quota.unresolved_scope(a) != codex_quota.unresolved_scope(b)
+    assert codex_quota.scope(a) != codex_quota.scope(b)
+
+    # Even when a junction inside an intact approved root targets its lowercase sibling, confined rejects it.
+    (b / "sample.jsonl").write_text("{}\n", encoding="utf-8")
+    _create_junction(b, a / "escape")
+    with cp.approved(str(a), 1), pytest.raises(cp.LocationError):
+        cp.confined(a / "escape" / "sample.jsonl")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS per-directory case sensitivity is Windows-specific")
+def test_case_sensitive_ascii_retarget_cannot_redirect_managed_usage(tmp_path: Path, monkeypatch) -> None:
+    from uuid import uuid4
+    from spend_app import connection_paths as cp, connections, profile_detect
+    from spend_app.config import Settings
+    from spend_app.pricing import PricingEngine
+    from spend_app.providers import REGISTRY
+    from tests_spend.test_p3_profile_collection import _write_claude_transcript
+
+    hermetic = tmp_path / "hermetic"
+    hermetic.mkdir()
+    monkeypatch.setenv("HOME", str(hermetic))
+    monkeypatch.setenv("USERPROFILE", str(hermetic))
+    _isolate_default_poll_sources(tmp_path, monkeypatch)
+    monkeypatch.setattr(claude_accounts, "extra_accounts", lambda: ())
+    monkeypatch.setattr(opencode_profiles, "extra_profiles", lambda: ())
+    profile_detect.reset_cache()
+
+    settings = Settings(
+        database_path=tmp_path / "spend.db",
+        pricing_path=Path(__file__).resolve().parents[1] / "pricing",
+        anthropic_admin_key=None,
+        openai_admin_key=None,
+        timezone="UTC",
+        cache_hit_threshold=0.75,
+        over_routing_token_ceiling=40000,
+        logs_path=tmp_path / "logs",
+    )
+    initialize(settings.database_path)
+
+    parent = hermetic / "case-sensitive"
+    _enable_case_sensitivity(parent)
+    chosen, target = parent / "Approved", parent / "approved"
+    _write_claude_transcript(
+        chosen / "projects" / "p" / "one.jsonl",
+        session_id="chosen",
+        message_id="chosen-message",
+    )
+    _write_claude_transcript(
+        target / "projects" / "p" / "one.jsonl",
+        session_id="private",
+        message_id="private-message",
+    )
+    assert not chosen.samefile(target)
+
+    service = connections.Service(settings, vault=_FakeVault())
+    service.mutate(
+        {
+            "source": "claude_local",
+            "operation": "connect",
+            "location": str(chosen),
+            "revision": 0,
+            "requestId": str(uuid4()),
+        }
+    )
+    p = next(
+        prof
+        for prof in profile_store.enabled_profiles(settings.database_path)
+        if prof.provider == "claude_local" and prof.key == "default"
+    )
+    chosen.rename(parent / "original")
+    _create_junction(target, chosen)
+
+    assert not profile_store.location_unchanged(p, REGISTRY.get("claude_local"))
+    with cp.approved(str(chosen), 1), pytest.raises(cp.LocationError):
+        cp.confined(chosen / "projects" / "p" / "one.jsonl")
+
+    spec = REGISTRY.get("claude_local")
+    pricing = PricingEngine.load(settings.pricing_path)
+    result = connections.execute(settings, pricing, spec, spec.ingest)
+    assert result["status"] == "failed"
+    assert result["reason"] == "location_changed"
+    with connect(settings.database_path) as db:
+        rows = [tuple(r) for r in db.execute("SELECT session_id,tool_key FROM usage_events")]
+    assert rows == [], (result, rows)
+

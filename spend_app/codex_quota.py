@@ -70,16 +70,45 @@ def freshness_reason(observed_at, resets_at, now):
     return None
 
 
+def _path_identity_token(path) -> str:
+    from spend_app.connection_paths import _extended_path, _long_path_error
+
+    try:
+        target = os.fspath(path)
+    except (TypeError, ValueError):
+        return "invalid"
+    try:
+        info = os.lstat(target)
+    except OSError as exc:
+        if _long_path_error(exc, target) and not str(target).startswith("\\\\?\\"):
+            try:
+                info = os.lstat(_extended_path(target))
+            except FileNotFoundError:
+                return "missing"
+            except OSError:
+                return "unreadable"
+        elif isinstance(exc, FileNotFoundError):
+            return "missing"
+        else:
+            return "unreadable"
+    return f"{info.st_dev}:{info.st_ino}"
+
+
 def scope(root):
-    normalized = os.path.normcase(str(Path(root).resolve())).replace("\\", "/")
-    return hashlib.sha256(normalized.encode()).hexdigest()
+    raw_path = Path(root).expanduser()
+    resolved = raw_path.resolve()
+    normalized = os.path.normcase(str(resolved)).replace("\\", "/")
+    token = f"{normalized}|{_path_identity_token(raw_path)}|{_path_identity_token(resolved)}"
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def unresolved_scope(root):
-    normalized = os.path.normcase(
-        os.path.normpath(os.path.abspath(os.fspath(Path(root).expanduser())))
-    ).replace("\\", "/")
-    return hashlib.sha256(normalized.encode()).hexdigest()
+    raw_path = Path(root).expanduser()
+    abs_path = os.path.normpath(os.path.abspath(os.fspath(raw_path)))
+    normalized = os.path.normcase(abs_path).replace("\\", "/")
+    raw_id = _path_identity_token(abs_path)
+    token = f"{normalized}|{raw_id}|{raw_id}"
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def current_scope():
