@@ -36,18 +36,60 @@ def snapshot_path(database):
     return Path(database).absolute().parent / "snapshots" / ("claude-statusline-" + scope_id(database)[:16] + ".json")
 
 
-def atomic_write(path, snapshot):
+def _snapshot_root(parent: Path) -> tuple[Path, bool]:
+    """Return ``(root, inclusive)`` bounding ancestor link checks for ``parent``.
+
+    Checks stop at the BURNRATE data directory when ``parent`` lives under it
+    (including the root itself) so system junctions above the user's profile do
+    not break legitimate setups. Callers outside the configured data directory
+    (for example tests using ``tmp_path``) still check ancestors up to the temp
+    directory, user home, or drive anchor without crossing above it.
+    """
+    from spend_app.config import default_app_dir, default_database_path
+
+    candidates = []
+    for candidate in (
+        default_app_dir().expanduser(),
+        default_database_path().expanduser().parent,
+    ):
+        root = Path(os.path.abspath(candidate))
+        if parent == root or parent.is_relative_to(root):
+            candidates.append(root)
+    if candidates:
+        return min(candidates, key=lambda root: len(root.parts)), True
+
+    for boundary in (
+        Path(os.path.abspath(tempfile.gettempdir())),
+        Path(os.path.abspath(Path.home())),
+    ):
+        if parent != boundary and parent.is_relative_to(boundary):
+            return boundary, False
+
+    return Path(parent.anchor), False
+
+
+def _check_snapshot_ancestors(parent: Path) -> None:
     from spend_app.connection_paths import is_junction
 
-    parent = path.parent
-    for ancestor in (parent, *parent.parents):
-        if ancestor.is_symlink() or is_junction(ancestor):
-            raise ValueError("Snapshot directory cannot be a link.")
-        if ancestor.exists():
+    target_dir = Path(os.path.abspath(parent))
+    root, inclusive = _snapshot_root(target_dir)
+    current = target_dir
+    while True:
+        if not inclusive and current == root:
             break
+        if current.is_symlink() or is_junction(current):
+            raise ValueError("Snapshot directory cannot be a link.")
+        if current == root or current.parent == current:
+            break
+        current = current.parent
+
+
+def atomic_write(path, snapshot):
+    path = Path(path)
+    parent = path.parent
+    _check_snapshot_ancestors(parent)
     parent.mkdir(parents=True, exist_ok=True)
-    if parent.is_symlink() or is_junction(parent):
-        raise ValueError("Snapshot directory cannot be a link.")
+    _check_snapshot_ancestors(parent)
     temporary = None
     try:
         with tempfile.NamedTemporaryFile("w", dir=parent, prefix=".claude-statusline-", suffix=".tmp", delete=False, encoding="utf-8") as stream:
@@ -86,7 +128,8 @@ def read_snapshot(database):
     try:
         from spend_app.connection_paths import is_junction
 
-        if path.is_symlink() or is_junction(path) or path.parent.is_symlink() or is_junction(path.parent):
+        _check_snapshot_ancestors(path.parent)
+        if path.is_symlink() or is_junction(path):
             raise ValueError("Snapshot links are not supported.")
         with path.open("rb") as stream:
             raw = stream.read(MAX_BYTES + 1)

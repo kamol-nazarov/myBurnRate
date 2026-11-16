@@ -758,3 +758,111 @@ def test_statusline_atomic_write_and_read_snapshot_fail_closed_on_lstat_permissi
     monkeypatch.setattr(type(target), "open", opener)
     assert bridge.read_snapshot(database)["status"] == "unavailable"
     opener.assert_not_called()
+
+
+def _create_windows_junction(target, link):
+    import subprocess
+    try:
+        import _winapi
+        create = getattr(_winapi, 'CreateJunction', None)
+        if create is not None:
+            create(str(target), str(link))
+            return
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f'Windows junction creation not permitted: {exc}')
+    try:
+        subprocess.run(
+            ['cmd', '/c', 'mklink', '/J', str(link), str(target)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        pytest.skip(f'Windows junction creation not permitted: {exc}')
+
+
+def test_statusline_refuses_real_windows_junction_ancestor_above_existing_snapshots(tmp_path, monkeypatch):
+    import os
+    if os.name != 'nt':
+        pytest.skip('Windows junction test')
+    from spend_app import claude_statusline as bridge
+
+    claude_dir = tmp_path / '.claude'
+    claude_dir.mkdir()
+    real = tmp_path / 'real'
+    snapshots_dir = real / 'normal' / 'snapshots'
+    snapshots_dir.mkdir(parents=True)
+    linked = tmp_path / 'linked'
+    _create_windows_junction(real, linked)
+
+    monkeypatch.setenv('BURNRATE_ENABLE_CLAUDE_STATUSLINE', '1')
+    monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(claude_dir))
+    monkeypatch.setenv('BURNRATE_DATA_ROOT', str(tmp_path))
+
+    now = datetime.now(UTC).timestamp()
+    snapshot = bridge.reduce_payload(
+        {'rate_limits': {'five_hour': {'used_percentage': 42, 'resets_at': now + 3600}}},
+        scope=bridge.scope_id(claude_dir),
+        now=now,
+    )
+    database = linked / 'normal' / 'spend.db'
+    target = bridge.snapshot_path(database)
+    assert target.parent.exists()
+
+    with pytest.raises(ValueError, match='link'):
+        bridge.atomic_write(target, snapshot)
+    assert list(snapshots_dir.iterdir()) == []
+
+    # Even if a valid snapshot already exists behind the junction, read_snapshot refuses to open it.
+    bridge.atomic_write(snapshots_dir / target.name, snapshot)
+    opener = Mock(side_effect=AssertionError('read_snapshot must not open file behind junction ancestor'))
+    monkeypatch.setattr(type(target), 'open', opener)
+    assert bridge.read_snapshot(database)['status'] == 'unavailable'
+    opener.assert_not_called()
+
+    # The trusted root itself is checked inclusively as well.
+    monkeypatch.setenv('BURNRATE_DATA_ROOT', str(linked))
+    with pytest.raises(ValueError, match='link'):
+        bridge.atomic_write(target, snapshot)
+    assert bridge.read_snapshot(database)['status'] == 'unavailable'
+    opener.assert_not_called()
+
+    # Without BURNRATE_DATA_ROOT override, temp ancestors are still checked below tempdir.
+    monkeypatch.delenv('BURNRATE_DATA_ROOT', raising=False)
+    with pytest.raises(ValueError, match='link'):
+        bridge.atomic_write(target, snapshot)
+    assert bridge.read_snapshot(database)['status'] == 'unavailable'
+    opener.assert_not_called()
+
+
+def test_statusline_does_not_walk_above_trusted_root(tmp_path, monkeypatch):
+    import os
+    if os.name != 'nt':
+        pytest.skip('Windows junction test')
+    from spend_app import claude_statusline as bridge
+
+    claude_dir = tmp_path / '.claude'
+    claude_dir.mkdir()
+    real_profile = tmp_path / 'real_profile'
+    (real_profile / 'burnrate').mkdir(parents=True)
+    linked_profile = tmp_path / 'linked_profile'
+    _create_windows_junction(real_profile, linked_profile)
+
+    data_root = linked_profile / 'burnrate'
+    monkeypatch.setenv('BURNRATE_ENABLE_CLAUDE_STATUSLINE', '1')
+    monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(claude_dir))
+    monkeypatch.setenv('BURNRATE_DATA_ROOT', str(data_root))
+
+    now = datetime.now(UTC).timestamp()
+    snapshot = bridge.reduce_payload(
+        {'rate_limits': {'five_hour': {'used_percentage': 42, 'resets_at': now + 3600}}},
+        scope=bridge.scope_id(claude_dir),
+        now=now,
+    )
+    database = data_root / 'spend.db'
+    target = bridge.snapshot_path(database)
+    bridge.atomic_write(target, snapshot)
+    assert target.is_file()
+    read = bridge.read_snapshot(database)
+    assert read['status'] == 'exact'
+    assert read['windows'][0]['usedPct'] == 42
