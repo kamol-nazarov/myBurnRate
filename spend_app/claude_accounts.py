@@ -93,17 +93,19 @@ def label_for(slug: str) -> str:
 
 
 def _candidates(home: Path, environ) -> list[Path]:
+    from spend_app.connection_paths import is_junction
+
     found = []
     try:
         for entry in sorted(home.glob(".claude-*")):
-            if entry.is_dir() and not entry.is_symlink():
+            if entry.is_dir() and not entry.is_symlink() and not is_junction(entry):
                 found.append(entry)
     except OSError:
         pass
     for raw in str(environ.get(EXTRA_DIRS_ENV) or "").split(os.pathsep):
         if raw.strip():
             path = Path(raw.strip()).expanduser()
-            if path.is_dir():
+            if path.is_dir() and not path.is_symlink() and not is_junction(path):
                 found.append(path)
     return found
 
