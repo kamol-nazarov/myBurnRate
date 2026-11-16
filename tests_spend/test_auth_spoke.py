@@ -180,6 +180,46 @@ def test_spoke_machine_rotation_persists_replacement(pair):
     assert result["ok"]
 
 
+def test_spoke_login_refuses_revoked_machine_name_and_expired_rotation_deadline(pair, tmp_path):
+    hs, hub, ss, spoke = pair
+    with connect(ss.database_path) as conn:
+        machine_id = setup_wizard.read_setup_state(conn)["account"]["machineId"]
+
+    # Stamp rotation_required within grace window -> rotate-machine succeeds.
+    with connect(hs.database_path) as conn:
+        hub_state = sync._read_state(conn)
+        hub_state["machines"][machine_id]["rotation_required"] = True
+        hub_state["machines"][machine_id]["rotation_deadline"] = auth_model.stamp(
+            auth_model.moment() + timedelta(days=2)
+        )
+        sync._write_state(conn, hub_state)
+    ok_rotate = spoke.post("/api/setup/rotate-machine", headers=UI, json={})
+    assert ok_rotate.status_code == 200, ok_rotate.text
+
+    # Past rotation_deadline -> rotate-machine is rejected with 401.
+    with connect(hs.database_path) as conn:
+        hub_state = sync._read_state(conn)
+        hub_state["machines"][machine_id]["rotation_required"] = True
+        hub_state["machines"][machine_id]["rotation_deadline"] = auth_model.stamp(
+            auth_model.moment() - timedelta(seconds=1)
+        )
+        sync._write_state(conn, hub_state)
+    expired_rotate = spoke.post("/api/setup/rotate-machine", headers=UI, json={})
+    assert expired_rotate.status_code == 401, expired_rotate.text
+
+    # Revoking the machine on the hub prevents another spoke from reviving it via name-only login.
+    sync.revoke_machine(hs.database_path, machine_id=machine_id)
+    fresh = settings(tmp_path / "fresh-revoked.db")
+    with TestClient(create_app(fresh, enable_scheduler=False), base_url="http://testserver") as fresh_spoke:
+        refused = fresh_spoke.post("/api/setup/account", headers=UI, json={
+            "mode": "login", "username": "owner", "password": PASSWORD,
+            "computerName": "laptop", "serverUrl": HUB, "testSync": False,
+        })
+        assert refused.status_code == 422, refused.text
+    with connect(hs.database_path) as conn:
+        assert sync._read_state(conn)["machines"][machine_id]["revoked"] is True
+
+
 def test_setup_account_on_synced_spoke_preserves_machine_identity(pair):
     _, hub, ss, spoke = pair
     original_token = state(ss)["token"]

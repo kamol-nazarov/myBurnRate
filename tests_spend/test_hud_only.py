@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import json
+import secrets
 import subprocess
 import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
-from spend_app import sync as sync_module
-from spend_app.api import create_app
+from spend_app import auth_model, sync as sync_module
+from spend_app.api import HUD_HUB_STALE_SECONDS, create_app
 from spend_app.config import Settings
 from spend_app.db import connect, initialize
 from spend_app.hud import render_hud
@@ -79,11 +81,15 @@ def test_hud_hides_dashboard_entry_points_when_off():
     assert render_hud(dashboard=True).startswith("<!doctype html>\n<html lang=\"en\">")
 
 
-def _spoke(tmp_path: Path, monkeypatch, hub) -> Settings:
-    settings = settings_for(tmp_path)
+def _spoke(tmp_path: Path, monkeypatch, hub, *, owner_session: str = "synthetic-owner-session",
+           db_name: str = "hud.db") -> Settings:
+    settings = Settings(database_path=tmp_path / db_name, pricing_path=ROOT / "pricing",
+                        anthropic_admin_key=None, openai_admin_key=None, timezone="UTC",
+                        cache_hit_threshold=0.75, over_routing_token_ceiling=40000)
+    initialize(settings.database_path)
     with connect(settings.database_path) as connection:
         write_setup_state(connection, {"role": "spoke", "spokeConfig": {
-            "enabled": True, "hubUrl": "https://hub.test", "token": "spoke-token", "ownerSession": "synthetic-owner-session"}})
+            "enabled": True, "hubUrl": "https://hub.test", "token": "spoke-token", "ownerSession": owner_session}})
     monkeypatch.setitem(sync_module._HUB_TEST_CLIENTS, "https://hub.test", hub)
     sync_module.clear_hub_proxy_cache()
     return settings
@@ -202,6 +208,127 @@ def test_expired_hub_copy_still_covers_a_failed_hub_read(tmp_path, monkeypatch):
     sync_module.expire_hub_proxy_cache()
     assert fetch(settings, "/api/spend/hud")["read"] == 1
     assert not responses
+
+
+def test_stale_hub_copy_past_stale_seconds_is_not_served_on_recovery_or_failure(tmp_path, monkeypatch):
+    responses = [
+        FakeResponse({"capacity": [], "providers": [], "agents": [], "machines": [], "read": 1}),
+        FakeResponse({"capacity": [], "providers": [], "agents": [], "machines": [], "read": 2}),
+        FakeResponse({}, status_code=503),
+        FakeResponse({}, status_code=503),
+    ]
+    calls = []
+
+    class Hub:
+        def get(self, path, params=None, headers=None):
+            calls.append(path)
+            return responses.pop(0)
+
+    session = f"synthetic-stale-{secrets.token_hex(8)}"
+    settings = _spoke(tmp_path, monkeypatch, Hub(), owner_session=session)
+    try:
+        fetch = sync_module.fetch_from_configured_hub
+        # Prime the cache synchronously.
+        first = fetch(settings, "/api/spend/hud", {"machine": "all"}, ttl_seconds=60)
+        assert first is not None and first["read"] == 1
+        assert fetch(settings, "/api/spend/hud", {"machine": "all"},
+                     ttl_seconds=HUD_HUB_STALE_SECONDS * 2, stale_seconds=HUD_HUB_STALE_SECONDS)["read"] == 1
+
+        def age_cache_past_stale_limit():
+            with sync_module._HUB_PROXY_LOCK:
+                for key, (fetched_at, payload, fresh) in list(sync_module._HUB_PROXY_CACHE.items()):
+                    sync_module._HUB_PROXY_CACHE[key] = (
+                        fetched_at - HUD_HUB_STALE_SECONDS - 1,
+                        payload,
+                        fresh,
+                    )
+
+        # Past stale_seconds, even a large ttl_seconds does not serve the stale copy;
+        # the hub is queried synchronously and the fresh copy is returned.
+        age_cache_past_stale_limit()
+        second = fetch(settings, "/api/spend/hud", {"machine": "all"},
+                       ttl_seconds=HUD_HUB_STALE_SECONDS * 2, stale_seconds=HUD_HUB_STALE_SECONDS)
+        assert second is not None and second["read"] == 2
+        assert len(calls) == 2
+
+        # Past stale_seconds, if the hub fails with 503, the stale copy is never served.
+        age_cache_past_stale_limit()
+        failed = fetch(settings, "/api/spend/hud", {"machine": "all"},
+                       ttl_seconds=60, stale_seconds=HUD_HUB_STALE_SECONDS)
+        assert failed is None
+        assert len(calls) == 3
+
+        # Through the /api/spend/hud endpoint, an aged-out copy + 503 falls back to local-only.
+        with TestClient(create_app(settings, enable_scheduler=False, now=NOW)) as client:
+            hud_res = client.get("/api/spend/hud", params={"machine": "all"})
+            assert hud_res.status_code == 200
+            assert hud_res.json()["scope"] == "local-fallback"
+            assert not responses
+    finally:
+        sync_module.clear_hub_proxy_cache()
+
+
+@pytest.mark.parametrize("status_code", [401, 403])
+def test_hub_auth_rejection_empties_only_that_credentials_proxy_cache(tmp_path, monkeypatch, status_code):
+    victim_token = f"synthetic-victim-{status_code}-{secrets.token_hex(8)}"
+    other_token = f"synthetic-other-{status_code}-{secrets.token_hex(8)}"
+    victim_digest = auth_model.digest(victim_token)
+    other_digest = auth_model.digest(other_token)
+    reject_next = {"flag": False}
+    hub_calls = []
+
+    class Hub:
+        def get(self, path, params=None, headers=None):
+            auth = (headers or {}).get("Authorization", "")
+            hub_calls.append((path, auth))
+            if reject_next["flag"] and auth == f"Bearer {victim_token}":
+                return FakeResponse({}, status_code=status_code)
+            return FakeResponse({"capacity": [], "path": path, "auth": auth})
+
+    hub = Hub()
+    victim_settings = _spoke(tmp_path, monkeypatch, hub, owner_session=victim_token, db_name="victim.db")
+    # Configure second spoke with a different credential without clearing cache.
+    other_settings = Settings(database_path=tmp_path / "other.db", pricing_path=ROOT / "pricing",
+                              anthropic_admin_key=None, openai_admin_key=None, timezone="UTC",
+                              cache_hit_threshold=0.75, over_routing_token_ceiling=40000)
+    initialize(other_settings.database_path)
+    with connect(other_settings.database_path) as connection:
+        write_setup_state(connection, {"role": "spoke", "spokeConfig": {
+            "enabled": True, "hubUrl": "https://hub.test", "token": "spoke-token", "ownerSession": other_token}})
+
+    try:
+        fetch = sync_module.fetch_from_configured_hub
+        assert fetch(victim_settings, "/api/spend/hud", ttl_seconds=60)["path"] == "/api/spend/hud"
+        assert fetch(victim_settings, "/api/spend/hud/usage", ttl_seconds=60)["path"] == "/api/spend/hud/usage"
+        assert fetch(other_settings, "/api/spend/hud", ttl_seconds=60)["path"] == "/api/spend/hud"
+
+        with sync_module._HUB_PROXY_LOCK:
+            victim_keys = [k for k in sync_module._HUB_PROXY_CACHE if len(k) > 3 and k[3] == victim_digest]
+            other_keys = [k for k in sync_module._HUB_PROXY_CACHE if len(k) > 3 and k[3] == other_digest]
+            assert len(victim_keys) == 2
+            assert len(other_keys) == 1
+
+        # Trigger 401/403 on one endpoint for victim_token; ALL cached entries for victim_token
+        # must be dropped immediately, while other_token's cache stays intact.
+        reject_next["flag"] = True
+        assert fetch(victim_settings, "/api/spend/hud/usage", ttl_seconds=0) is None
+
+        with sync_module._HUB_PROXY_LOCK:
+            assert victim_digest in sync_module._HUB_REJECTED_CREDENTIALS
+            assert other_digest not in sync_module._HUB_REJECTED_CREDENTIALS
+            assert not [k for k in sync_module._HUB_PROXY_CACHE if len(k) > 3 and k[3] == victim_digest]
+            assert len([k for k in sync_module._HUB_PROXY_CACHE if len(k) > 3 and k[3] == other_digest]) == 1
+
+        # Subsequent reads for the rejected credential on another previously-cached path
+        # return None immediately without contacting the hub.
+        calls_before = len(hub_calls)
+        assert fetch(victim_settings, "/api/spend/hud", stale_seconds=300) is None
+        assert len(hub_calls) == calls_before
+
+        # The other credential's cached copy is still served.
+        assert fetch(other_settings, "/api/spend/hud", ttl_seconds=60)["path"] == "/api/spend/hud"
+    finally:
+        sync_module.clear_hub_proxy_cache()
 
 
 def _usage_hold_source() -> str:

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from spend_app import auth_model as auth, auth_throttle, setup_wizard, sync
+from spend_app import auth_model as auth, auth_throttle, pairing as pairing_module, setup_wizard, sync
 from spend_app.api import create_app
 from spend_app.config import Settings
 from spend_app.db import connect, initialize
@@ -237,6 +237,88 @@ def test_pairing_concurrent_redemption_only_one_succeeds(hub):
     assert sorted(r.status_code for r in results) == [200, 403]
 
 
+def test_pairing_refuses_colliding_names_but_allows_explicit_machine_id(hub):
+    settings, client = hub
+    first = sync.register_machine(settings.database_path, name="Workstation")
+    second = sync.register_machine(settings.database_path, name="workstation")
+    first_id, second_id = first["machine"]["id"], second["machine"]["id"]
+    assert first_id != second_id
+
+    actor = auth.Principal("owner", "break-glass", "owner")
+    with pytest.raises(ValueError, match="machine ID"):
+        pairing_module.issue(settings.database_path, actor, hub_url=ORIGIN, name="WORKSTATION")
+
+    refused = client.post(
+        "/api/setup/pair-hub",
+        headers={**ADMIN, "X-BURNRATE-Request": "1"},
+        json={"name": "WORKSTATION", "hubUrl": ORIGIN},
+    )
+    assert refused.status_code == 422
+    assert "pairingCode" not in refused.text
+
+    # Name-only reconnect is equally refused when multiple active machines share a name.
+    with pytest.raises(ValueError, match="machine ID"):
+        sync.register_or_reconnect_machine(settings.database_path, name="WORKSTATION")
+
+    # Explicit machineId succeeds both at the unit level and over HTTP.
+    direct = pairing_module.issue(
+        settings.database_path, actor, hub_url=ORIGIN, name="WORKSTATION", machine_id=second_id
+    )
+    assert direct["ok"] is True
+
+    explicit = pairing(client, name="WORKSTATION", machineId=first_id)
+    redeemed = client.post("/api/pairing/redeem", json={"pairingCode": explicit["pairingCode"]})
+    assert redeemed.status_code == 200
+    assert redeemed.json()["machine"]["id"] == first_id
+
+
+def test_revoked_machine_cannot_be_revived_by_name_only_pairing_or_reconnect(hub):
+    settings, client = hub
+    owner(client)
+    client.cookies.clear()
+
+    reg = sync.register_machine(settings.database_path, name="Revoked Box")
+    mid = reg["machine"]["id"]
+    sync.revoke_machine(settings.database_path, machine_id=mid)
+
+    actor = auth.Principal("owner", "break-glass", "owner")
+    with pytest.raises(ValueError, match="machine ID"):
+        pairing_module.issue(settings.database_path, actor, hub_url=ORIGIN, name="revoked box")
+
+    refused_pair = client.post(
+        "/api/setup/pair-hub",
+        headers={**ADMIN, "X-BURNRATE-Request": "1"},
+        json={"name": "revoked box", "hubUrl": ORIGIN},
+    )
+    assert refused_pair.status_code == 422
+    assert "pairingCode" not in refused_pair.text
+
+    with pytest.raises(ValueError, match="machine ID"):
+        sync.register_or_reconnect_machine(settings.database_path, name="revoked box")
+
+    refused_login = client.post(
+        "/api/account/login",
+        json={"username": "synthetic-owner", "password": PASSWORD, "computerName": "revoked box"},
+    )
+    assert refused_login.status_code == 422
+
+    # Even with machine_id, reconnect=True must never revive a revoked record.
+    with connect(settings.database_path) as connection:
+        with pytest.raises(ValueError, match="revoked"):
+            sync._register_in_connection(
+                connection, name="Revoked Box", reconnect=True, machine_id=mid
+            )
+        assert sync._read_state(connection)["machines"][mid]["revoked"] is True
+
+    # Fresh pairing with explicit machineId still works and restores sync.
+    repaired = pairing(client, name="Revoked Box", machineId=mid)
+    redeemed = client.post("/api/pairing/redeem", json={"pairingCode": repaired["pairingCode"]})
+    assert redeemed.status_code == 200
+    new_token = redeemed.json()["token"]
+    assert redeemed.json()["machine"]["id"] == mid
+    assert client.post("/api/sync/push", headers={"Authorization": "Bearer " + new_token}, json={}).status_code == 200
+
+
 def test_audit_actor_exactly_once_append_only_and_no_credential_material(hub):
     settings, client = hub
     session = owner(client).json()
@@ -261,6 +343,35 @@ def test_audit_actor_exactly_once_append_only_and_no_credential_material(hub):
             connection.execute("UPDATE admin_audit SET outcome='changed'")
 
 
+def test_dropped_admin_audit_table_and_triggers_recover_on_restart(tmp_path):
+    db_path = tmp_path / "audit-recover.db"
+    initialize(db_path)
+    with connect(db_path) as connection:
+        assert connection.execute("SELECT 1 FROM app_meta WHERE key=?", (auth.MARKER,)).fetchone()
+        auth.audit(connection, auth.Principal("owner", "test", "owner"), "machine.register", "m1")
+        connection.execute("DROP TABLE admin_audit")
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE name IN ('admin_audit', 'admin_audit_no_update', 'admin_audit_no_delete')"
+        ).fetchall() == []
+
+    # Restarting via initialize() / ensure_schema() recreates the table and both append-only triggers
+    # even when auth_model.v1 marker is already present.
+    initialize(db_path)
+    with connect(db_path) as connection:
+        triggers = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='admin_audit'"
+            )
+        }
+        assert triggers == {"admin_audit_no_update", "admin_audit_no_delete"}
+        auth.audit(connection, auth.Principal("owner", "test", "owner"), "machine.rename", "m1")
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            connection.execute("UPDATE admin_audit SET outcome='tampered'")
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            connection.execute("DELETE FROM admin_audit")
+
+
 def test_legacy_migration_once_and_055_spoke_push_without_new_setup_token(tmp_path, monkeypatch):
     monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "synthetic-break-glass")
@@ -282,6 +393,9 @@ def test_legacy_migration_once_and_055_spoke_push_without_new_setup_token(tmp_pa
         count = connection.execute("SELECT count(*) FROM admin_audit").fetchone()[0]
         rec = sync._read_state(connection)["machines"]["legacy"]
         assert rec["rotation_required"] and auth.parse(rec["expires_at"]) == created + timedelta(days=180)
+        deadline = auth.parse(rec["rotation_deadline"])
+        assert deadline is not None
+        assert auth.moment() + timedelta(days=auth.ROTATION_GRACE_DAYS - 1) < deadline <= auth.moment() + timedelta(days=auth.ROTATION_GRACE_DAYS, minutes=1)
     initialize(settings.database_path)
     initialize(settings.database_path)
     with connect(settings.database_path) as connection:
@@ -290,3 +404,88 @@ def test_legacy_migration_once_and_055_spoke_push_without_new_setup_token(tmp_pa
     with TestClient(create_app(settings, enable_scheduler=False), base_url=ORIGIN) as client:
         assert client.post("/api/sync/push", headers={"Authorization": "Bearer " + token}, json={"machine": {"name": "Legacy"}, "usageEvents": [], "sessions": [], "agentRuns": []}).status_code == 200
         assert client.post("/api/account/login", json={"username": "synthetic-owner", "password": PASSWORD, "sessionOnly": True}).status_code == 200
+
+
+def test_rotation_required_backfill_api_surface_and_deadline_enforcement(tmp_path, monkeypatch):
+    monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
+    monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "synthetic-break-glass")
+    monkeypatch.setenv("BURNRATE_ALLOW_ADMIN_BEARER", "1")
+    settings = settings_at(tmp_path)
+    legacy_token = "br_m_legacy_synthetic-grace-token"
+    fixed_deadline = auth.stamp(auth.moment() + timedelta(days=3))
+    created = auth.moment() - timedelta(days=10)
+    from spend_app.db import _initialize_base
+    _initialize_base(settings.database_path)
+    with sqlite3.connect(settings.database_path) as connection:
+        connection.execute(
+            "INSERT INTO app_meta VALUES(?,?)",
+            ("machines.v1", json.dumps({"version": 1, "machines": {
+                "legacy": {"id": "legacy", "name": "Legacy", "token_hash": auth.digest(legacy_token), "created_at": auth.stamp(created)},
+            }})),
+        )
+    initialize(settings.database_path)
+
+    # Simulate an existing migrated DB (auth_model.v1 present) with a rotation_required machine
+    # lacking rotation_deadline, plus one with an existing deadline and one not requiring rotation.
+    needs_backfill = sync.register_machine(settings.database_path, name="Needs Backfill")
+    keeps_deadline = sync.register_machine(settings.database_path, name="Keeps Deadline")
+    stays_clear = sync.register_machine(settings.database_path, name="No Rotation")
+    machine_row(settings, needs_backfill["machine"]["id"], rotation_required=True)
+    machine_row(settings, keeps_deadline["machine"]["id"], rotation_required=True, rotation_deadline=fixed_deadline)
+
+    initialize(settings.database_path)
+    with connect(settings.database_path) as connection:
+        machines = sync._read_state(connection)["machines"]
+        backfilled = auth.parse(machines[needs_backfill["machine"]["id"]].get("rotation_deadline"))
+        assert backfilled is not None
+        assert auth.moment() + timedelta(days=auth.ROTATION_GRACE_DAYS - 1) < backfilled <= auth.moment() + timedelta(days=auth.ROTATION_GRACE_DAYS, minutes=1)
+        assert machines[keeps_deadline["machine"]["id"]]["rotation_deadline"] == fixed_deadline
+        assert not machines[stays_clear["machine"]["id"]].get("rotation_deadline")
+
+    with TestClient(create_app(settings, enable_scheduler=False), base_url=ORIGIN) as client:
+        listed = client.get("/api/machines", headers=ADMIN)
+        assert listed.status_code == 200
+        by_id = {m["id"]: m for m in listed.json()["machines"]}
+        assert by_id["legacy"]["rotationRequired"] is True
+        assert by_id["legacy"]["rotationDeadline"]
+        assert by_id[needs_backfill["machine"]["id"]]["rotationRequired"] is True
+        assert by_id[needs_backfill["machine"]["id"]]["rotationDeadline"]
+        assert by_id[stays_clear["machine"]["id"]]["rotationRequired"] is False
+        assert by_id[stays_clear["machine"]["id"]]["rotationDeadline"] is None
+
+        # Stamped token works before deadline and rotates cleanly.
+        legacy_headers = {"Authorization": "Bearer " + legacy_token}
+        assert client.post("/api/sync/push", headers=legacy_headers, json={}).status_code == 200
+        rotated = client.post("/api/auth/machine/rotate", headers=legacy_headers, json={})
+        assert rotated.status_code == 200
+        new_token = rotated.json()["token"]
+        assert client.post("/api/sync/push", headers=legacy_headers, json={}).status_code == 401
+        assert client.post("/api/sync/push", headers={"Authorization": "Bearer " + new_token}, json={}).status_code == 200
+        after_rotate = {m["id"]: m for m in client.get("/api/machines", headers=ADMIN).json()["machines"]}
+        assert after_rotate["legacy"]["rotationRequired"] is False
+        assert after_rotate["legacy"]["rotationDeadline"] is None
+
+        # Once past rotation_deadline, both /api/sync/push and /api/auth/machine/rotate return 401.
+        past_deadline = auth.stamp(auth.moment() - timedelta(seconds=1))
+        machine_row(settings, needs_backfill["machine"]["id"], rotation_deadline=past_deadline)
+        expired_headers = {"Authorization": "Bearer " + needs_backfill["token"]}
+        assert client.post("/api/sync/push", headers=expired_headers, json={}).status_code == 401
+        assert client.post("/api/auth/machine/rotate", headers=expired_headers, json={}).status_code == 401
+
+        # Exact boundary (deadline == now) is also refused.
+        boundary = auth.moment()
+        machine_row(settings, keeps_deadline["machine"]["id"], rotation_deadline=auth.stamp(boundary))
+        assert sync.authenticate_machine_token(settings.database_path, keeps_deadline["token"], now=boundary) is None
+
+        # Missing or invalid rotation_deadline with rotation_required=True is also refused (401).
+        with connect(settings.database_path) as connection:
+            state = sync._read_state(connection)
+            state["machines"][keeps_deadline["machine"]["id"]].pop("rotation_deadline", None)
+            sync._write_state(connection, state)
+        missing_headers = {"Authorization": "Bearer " + keeps_deadline["token"]}
+        assert client.post("/api/sync/push", headers=missing_headers, json={}).status_code == 401
+        assert client.post("/api/auth/machine/rotate", headers=missing_headers, json={}).status_code == 401
+
+        machine_row(settings, keeps_deadline["machine"]["id"], rotation_deadline="not-a-timestamp")
+        assert client.post("/api/sync/push", headers=missing_headers, json={}).status_code == 401
+        assert client.post("/api/auth/machine/rotate", headers=missing_headers, json={}).status_code == 401
