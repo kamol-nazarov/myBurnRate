@@ -180,6 +180,21 @@ def write_setup_state(connection, state: dict) -> dict:
     return clean
 
 
+SPOKE_SYNC_ERROR_CODES = frozenset({"hub_unreachable", "hub_rejected", "sync_failed"})
+
+
+def normalize_spoke_sync_error(value: object) -> str | None:
+    """Map any non-empty legacy/unknown spoke sync error to a fixed code."""
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text in SPOKE_SYNC_ERROR_CODES:
+        return text
+    return "sync_failed"
+
+
 def public_setup_state(state: dict) -> dict:
     spoke = dict(state.get("spokeConfig") or {})
     raw_token = str(spoke.get("token") or "")
@@ -190,6 +205,7 @@ def public_setup_state(state: dict) -> dict:
     spoke.pop("token", None)
     spoke["hasOwnerSession"] = bool(spoke.pop("ownerSession", None))
     spoke["tokenPreview"] = "configured" if raw_token else ""
+    spoke["lastSyncError"] = normalize_spoke_sync_error(spoke.get("lastSyncError"))
     return {**state, "spokeConfig": spoke}
 
 
@@ -1438,7 +1454,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     "ownerSessionExpiresAt": remote_data.get("expiresAt"),
                     "enabled": True,
                     "lastSyncAt": utc_now() if sync_result and sync_result.get("ok") else state["spokeConfig"].get("lastSyncAt"),
-                    "lastSyncError": sync_result.get("error") if sync_result and not sync_result.get("ok") else None,
+                    "lastSyncError": normalize_spoke_sync_error(sync_result.get("error")) if sync_result and not sync_result.get("ok") else None,
                     "usageChangesPending": bool((sync_result or {}).get("usageChangesPending")),
                     "eventsPushed": int((sync_result or {}).get("eventsWritten") or 0),
                 }
@@ -1591,7 +1607,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     "token": token,
                     "enabled": True,
                     "lastSyncAt": utc_now() if sync_result and sync_result.get("ok") else state["spokeConfig"].get("lastSyncAt"),
-                    "lastSyncError": sync_result.get("error") if sync_result and not sync_result.get("ok") else None,
+                    "lastSyncError": normalize_spoke_sync_error(sync_result.get("error")) if sync_result and not sync_result.get("ok") else None,
                     "usageChangesPending": bool((sync_result or {}).get("usageChangesPending")),
                     "eventsPushed": int((sync_result or {}).get("eventsWritten") or 0),
                     **owner_session,

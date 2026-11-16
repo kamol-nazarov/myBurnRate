@@ -29,6 +29,7 @@ from spend_app.config import Settings
 from spend_app.connection_paths import APPROVED_REVISION, LocationError, approved
 from spend_app.db import (
     INGEST_ERROR_REDACT_KEY,
+    SPOKE_SYNC_ERROR_REDACT_KEY,
     connect,
     initialize,
     redact_legacy_ingest_errors,
@@ -712,6 +713,9 @@ def test_ui_templates_contain_spoke_sync_error_code_mappings() -> None:
     for code in ("hub_unreachable", "hub_rejected", "sync_failed"):
         assert code in wizard_html, f"{code} missing from SETUP_WIZARD_HTML"
         assert code in wealthfront_html, f"{code} missing from wealthfront_ui.html"
+    assert 'SYNC_ERROR_TEXT[spoke.lastSyncError] || "sync failed"' in wizard_html
+    assert 'syncErrMap[syncErrRaw] || "Sync failed"' in wealthfront_html
+    assert "syncErrMap[syncErrRaw] || syncErrRaw" not in wealthfront_html
 
 
 # ---------------------------------------------------------------------------
@@ -996,3 +1000,180 @@ def test_bounded_batch_migration_redacts_over_500_rows_and_is_idempotent(
         ).fetchone()
     assert marker_after is not None
     assert json.loads(marker_after[0])["updatedRows"] == 0
+
+
+SHORT_FIELD_REDACT_CASES: list[tuple[str, str, tuple[str, ...]]] = [
+    ("password_eq_short", "password=abc12", ("abc12",)),
+    ("password_eq_1char", "password=a", ("=a",)),
+    ("password_colon_short", "password: abc12", ("abc12",)),
+    ("password_eq_safe_word", "password=missing", ("missing",)),
+    ("pwd_eq_short", "pwd=z9", ("z9",)),
+    ("token_eq_short", "token=x9", ("x9",)),
+    ("token_colon_short", "token: x9", ("x9",)),
+    ("token_colon_1char", "token: x", (": x",)),
+    ("token_colon_non_phrase_word", "token: file", ("file",)),
+    ("token_colon_arbitrary_prose", "token: custom prose value", ("custom",)),
+    ("token_colon_safe_word_plus_secret", "token: missing secret123", ("missing",)),
+    ("token_colon_safe_underscore_secret", "token: missing_secret123", ("missing_secret123",)),
+    ("token_colon_safe_dot_secret", "token: missing.secret123", ("missing.secret123",)),
+    ("token_colon_safe_paren_secret", "token: missing)secret123", ("missing)secret123",)),
+    ("secret_colon_not_prefix", "secret: not mySecret123", (": not",)),
+    ("api_key_eq_short", "api_key=short", ("short",)),
+    ("apikey_eq_short", "apikey=short1", ("short1",)),
+    ("access_key_eq_short", "access_key=ak12", ("ak12",)),
+    ("client_secret_colon_short", "client_secret: cs12", ("cs12",)),
+    ("secret_quoted_spaces", 'secret="a b"', ("a b",)),
+    ("auth_bearer_short", "Authorization: Bearer x", ("Bearer x",)),
+    ("password_colon_short_before_words", "password: abc12 rejected", ("abc12",)),
+]
+
+PROSE_KEEP_CASES: list[str] = [
+    "token: file is missing",
+    "token: file is missing.",
+    "ingest failed (token: missing)",
+    "token: missing",
+    "token: MISSING",
+    "secret: not configured",
+    "secret: NOT configured",
+    "password: empty",
+    "password: invalid",
+    "api_key: none",
+    "pwd: unset",
+    "access_key: denied",
+    "client_secret: revoked",
+    "token: expired",
+    "password is required",
+    "invalid token",
+]
+
+
+@pytest.mark.parametrize(
+    "case_id,raw_input,forbidden",
+    SHORT_FIELD_REDACT_CASES,
+    ids=[c[0] for c in SHORT_FIELD_REDACT_CASES],
+)
+def test_short_explicit_secrets_redacted_in_redact_and_ingest_run(
+    case_id, raw_input, forbidden, tmp_path: Path
+) -> None:
+    cleaned = redact(raw_input)
+    assert "[redacted]" in cleaned
+    _assert_none_survive(cleaned, forbidden)
+
+    db_path = tmp_path / "short.db"
+    initialize(db_path)
+    with connect(db_path) as conn:
+        run = IngestRun.start(conn, "codex_local")
+        run.finish(status="failed", error=raw_input)
+        stored = conn.execute(
+            "SELECT error FROM ingest_runs WHERE id=?", (run.id,)
+        ).fetchone()[0]
+    assert "[redacted]" in stored
+    _assert_none_survive(stored, forbidden)
+
+
+@pytest.mark.parametrize("prose", PROSE_KEEP_CASES)
+def test_prose_preserved_in_redact_and_ingest_run(prose: str, tmp_path: Path) -> None:
+    assert redact(prose) == prose
+
+    db_path = tmp_path / "prose.db"
+    initialize(db_path)
+    with connect(db_path) as conn:
+        run = IngestRun.start(conn, "codex_local")
+        run.finish(status="failed", error=prose)
+        stored = conn.execute(
+            "SELECT error FROM ingest_runs WHERE id=?", (run.id,)
+        ).fetchone()[0]
+    assert stored == prose
+
+
+@pytest.mark.parametrize(
+    "raw_value,expected",
+    [
+        (None, None),
+        ("", None),
+        ("   ", None),
+        ("hub_unreachable", "hub_unreachable"),
+        ("hub_rejected", "hub_rejected"),
+        ("sync_failed", "sync_failed"),
+        ("RuntimeError: password=syntheticLegacyPassword123", "sync_failed"),
+        ("Pairing changed; retry sync", "sync_failed"),
+    ],
+)
+def test_public_setup_state_normalizes_last_sync_error(raw_value, expected) -> None:
+    state = setup_wizard.default_setup_state()
+    state["role"] = "spoke"
+    state["spokeConfig"]["lastSyncError"] = raw_value
+    projected = setup_wizard.public_setup_state(state)
+    assert projected["spokeConfig"]["lastSyncError"] == expected
+
+
+def test_legacy_last_sync_error_scrubbed_on_initialize_and_hidden_everywhere(
+    tmp_path: Path,
+) -> None:
+    legacy_secret_err = "RuntimeError: password=syntheticLegacyPassword123"
+    settings = _settings(tmp_path, "legacy_sync_err.db")
+    initialize(settings.database_path)
+
+    # Seed a legacy raw lastSyncError into app_setup.v1 while keeping the v1
+    # ingest-error redaction marker intact (simulating an upgraded database).
+    with connect(settings.database_path) as conn:
+        state = setup_wizard.read_setup_state(conn)
+        state["role"] = "spoke"
+        state["spokeConfig"] = {
+            **state["spokeConfig"],
+            "hubUrl": "https://hub.example",
+            "token": "br_m_spoke_secret_token",
+            "enabled": True,
+            "lastSyncError": legacy_secret_err,
+        }
+        setup_wizard.write_setup_state(conn, state)
+
+    # Public projection scrubs immediately even before migration runs.
+    with connect(settings.database_path) as conn:
+        projected_before = setup_wizard.public_setup_state(setup_wizard.read_setup_state(conn))
+    assert projected_before["spokeConfig"]["lastSyncError"] == "sync_failed"
+    assert "syntheticLegacyPassword123" not in json.dumps(projected_before)
+
+    # Re-initializing rewrites the stored app_setup.v1 value once to "sync_failed".
+    initialize(settings.database_path)
+
+    with connect(settings.database_path) as conn:
+        raw_setup_row = conn.execute(
+            "SELECT value FROM app_meta WHERE key=?", (setup_wizard.SETUP_META_KEY,)
+        ).fetchone()[0]
+        sync_marker = conn.execute(
+            "SELECT value FROM app_meta WHERE key=?", (SPOKE_SYNC_ERROR_REDACT_KEY,)
+        ).fetchone()
+        saved = setup_wizard.read_setup_state(conn)
+
+    assert sync_marker is not None
+    assert "syntheticLegacyPassword123" not in raw_setup_row
+    assert "RuntimeError" not in raw_setup_row
+    assert saved["spokeConfig"]["lastSyncError"] == "sync_failed"
+
+    # Endpoints and diagnostics report never expose the legacy string.
+    app = create_app(settings, enable_scheduler=False)
+    with TestClient(app) as client:
+        setup_resp = client.get("/api/setup/state")
+        settings_resp = client.get("/api/onboarding")
+    assert setup_resp.status_code == 200
+    assert settings_resp.status_code == 200
+    assert setup_resp.json()["setup"]["spokeConfig"]["lastSyncError"] == "sync_failed"
+    assert settings_resp.json()["setup"]["spokeConfig"]["lastSyncError"] == "sync_failed"
+    assert "syntheticLegacyPassword123" not in setup_resp.text
+    assert "syntheticLegacyPassword123" not in settings_resp.text
+
+    report_text = support_report.build_report(settings)
+    assert "syntheticLegacyPassword123" not in report_text
+
+    # Subsequent initialize() is a no-op once SPOKE_SYNC_ERROR_REDACT_KEY is set.
+    with connect(settings.database_path) as conn:
+        raw_before_second_init = conn.execute(
+            "SELECT value FROM app_meta WHERE key=?", (setup_wizard.SETUP_META_KEY,)
+        ).fetchone()[0]
+    initialize(settings.database_path)
+    with connect(settings.database_path) as conn:
+        raw_after_second_init = conn.execute(
+            "SELECT value FROM app_meta WHERE key=?", (setup_wizard.SETUP_META_KEY,)
+        ).fetchone()[0]
+    assert raw_after_second_init == raw_before_second_init

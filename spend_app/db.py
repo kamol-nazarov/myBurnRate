@@ -776,7 +776,39 @@ def usage_cache_revision(
 
 
 INGEST_ERROR_REDACT_KEY = "repair.ingest_error_redaction.v1"
+SPOKE_SYNC_ERROR_REDACT_KEY = "repair.spoke_sync_error_redaction.v1"
 INGEST_ERROR_REDACT_BATCH_SIZE = 500
+
+
+def _redact_legacy_sync_error_in_tx(connection) -> bool:
+    """Rewrite any non-fixed spokeConfig.lastSyncError in app_setup.v1 to 'sync_failed'."""
+    from spend_app.setup_wizard import SETUP_META_KEY, normalize_spoke_sync_error
+
+    row = connection.execute(
+        "SELECT value FROM app_meta WHERE key=?", (SETUP_META_KEY,)
+    ).fetchone()
+    if not row or not row[0]:
+        return False
+    try:
+        data = json.loads(row[0])
+    except ValueError:
+        return True
+    if not isinstance(data, dict):
+        return True
+    spoke = data.get("spokeConfig")
+    if isinstance(spoke, dict) and "lastSyncError" in spoke:
+        current = spoke.get("lastSyncError")
+        normalized = normalize_spoke_sync_error(current)
+        if normalized != current:
+            spoke["lastSyncError"] = normalized
+            connection.execute(
+                "UPDATE app_meta SET value=? WHERE key=?",
+                (
+                    json.dumps(data, separators=(",", ":"), sort_keys=True),
+                    SETUP_META_KEY,
+                ),
+            )
+    return True
 
 
 def redact_legacy_ingest_errors(
@@ -784,15 +816,42 @@ def redact_legacy_ingest_errors(
     *,
     batch_size: int = INGEST_ERROR_REDACT_BATCH_SIZE,
 ) -> int:
-    """Scrub pre-existing ingest_runs.error rows in bounded batches once per database."""
+    """Scrub pre-existing ingest_runs.error rows and legacy lastSyncError once per database."""
     from spend_app.redact import redact
+    from spend_app.setup_wizard import SETUP_META_KEY
 
     db_path = Path(path)
     with connect(db_path) as connection:
-        if connection.execute(
-            "SELECT 1 FROM app_meta WHERE key=?", (INGEST_ERROR_REDACT_KEY,)
-        ).fetchone():
+        ingest_done = bool(
+            connection.execute(
+                "SELECT 1 FROM app_meta WHERE key=?", (INGEST_ERROR_REDACT_KEY,)
+            ).fetchone()
+        )
+        sync_done = bool(
+            connection.execute(
+                "SELECT 1 FROM app_meta WHERE key=?", (SPOKE_SYNC_ERROR_REDACT_KEY,)
+            ).fetchone()
+        )
+        has_setup = bool(
+            connection.execute(
+                "SELECT 1 FROM app_meta WHERE key=?", (SETUP_META_KEY,)
+            ).fetchone()
+        )
+        if ingest_done and (sync_done or not has_setup):
             return 0
+
+    if not sync_done or not ingest_done:
+        with connect(db_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if _redact_legacy_sync_error_in_tx(connection):
+                connection.execute(
+                    "INSERT INTO app_meta(key, value) VALUES(?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (SPOKE_SYNC_ERROR_REDACT_KEY, json.dumps({"at": utc_now()})),
+                )
+
+    if ingest_done:
+        return 0
 
     step = max(1, int(batch_size))
     last_rowid = 0

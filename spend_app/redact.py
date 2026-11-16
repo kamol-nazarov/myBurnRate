@@ -7,30 +7,72 @@ from pathlib import Path
 from urllib.parse import unquote
 
 _FIELD_NAMES = (
-    r"api[_-]?key|access[_-]?token|refresh[_-]?token|token|"
-    r"secret|password|passwd|authorization|set-cookie|cookie|session[_-]?key|x-api-key"
+    r"api[_-]?key|access[_-]?(?:key|token)|refresh[_-]?token|client[_-]?secret|"
+    r"token|secret|password|passwd|pwd|authorization|set-cookie|cookie|session[_-]?key|x-api-key"
 )
 
 _HEADER_TO_EOL = re.compile(
-    r"(?i)(?<![\"'\\])\b(?:set-cookie|cookie|authorization)(\s*:\s*)\S[^\r\n]*"
+    r"(?i)(?<![\"'\\])\b(?:set-cookie|cookie|authorization)([ \t]*:[ \t]*)\S[^\r\n]*"
 )
 
 # Capture prefix+separator separately from the closing quote so replacements
 # preserve surrounding quotes/JSON structure while removing the entire value.
 _SECRET_FIELD_QUOTED_ESCAPED = re.compile(
-    rf'(?i)(\b(?:{_FIELD_NAMES})\b(?:\\?["\'])?\s*[:=]\s*\\")(?:\\\\\\"|\\\\|\\[^"\r\n]|[^\\"\r\n])*(\\"|(?=\r|\n|$))'
+    rf'(?i)(\b(?:{_FIELD_NAMES})\b(?:\\?["\'])?[ \t]*[:=][ \t]*\\")(?:\\\\\\"|\\\\|\\[^"\r\n]|[^\\"\r\n])*(\\"|(?=\r|\n|$))'
 )
 _SECRET_FIELD_QUOTED_DOUBLE = re.compile(
-    rf'(?i)(\b(?:{_FIELD_NAMES})\b["\']?\s*[:=]\s*")(?:\\.|[^"\\\r\n])*("|(?=\r|\n|$))'
+    rf'(?i)(\b(?:{_FIELD_NAMES})\b["\']?[ \t]*[:=][ \t]*")(?:\\.|[^"\\\r\n])*("|(?=\r|\n|$))'
 )
 _SECRET_FIELD_QUOTED_SINGLE = re.compile(
-    rf"(?i)(\b(?:{_FIELD_NAMES})\b[\"']?\s*[:=]\s*')(?:\\.|[^'\\\r\n])*('|(?=\r|\n|$))"
+    rf"(?i)(\b(?:{_FIELD_NAMES})\b[\"']?[ \t]*[:=][ \t]*')(?:\\.|[^'\\\r\n])*('|(?=\r|\n|$))"
 )
+
+# Unquoted field values:
+# - With '=', there is no minimum length and no allowlist: always redact the
+#   value (e.g. password=abc12, token=x9, api_key=short).
+# - With ':', always redact the value regardless of length unless the entire
+#   clause following ':' (up to EOL or clause boundary) is an exact, complete
+#   known-safe status phrase in _SAFE_STATUS_PHRASES (case-insensitive).
+#   Bare prose without '=' or ':' (e.g. "password is required", "invalid token")
+#   never matches _SECRET_FIELD_UNQUOTED and stays intact.
+_SAFE_STATUS_PHRASES = frozenset(
+    {
+        "missing",
+        "none",
+        "null",
+        "empty",
+        "unset",
+        "invalid",
+        "expired",
+        "required",
+        "configured",
+        "not configured",
+        "not provided",
+        "not found",
+        "not set",
+        "not available",
+        "not present",
+        "no token",
+        "no key",
+        "no secret",
+        "no password",
+        "file is missing",
+        "file missing",
+        "file not found",
+        "revoked",
+        "rejected",
+        "denied",
+    }
+)
+_SAFE_CLAUSE_RE = re.compile(
+    r"([^\r\n;,}\]]+?)(?=[ \t]*(?:[\r\n;,}\]]|\.(?=\s|$)|\)(?=\s|[.,;:\r\n]|$)|$))"
+)
+
 _SECRET_FIELD_UNQUOTED = re.compile(
     rf"(?i)(\b(?:{_FIELD_NAMES})\b[\"']?)"
-    r"(?:(\s*:\s*)(?!\\?[\"'])(?:(?:bearer|basic)\s+)?[^\s\"',;}{]{8,}"
-    r"|(\s+=\s+)(?!\\?[\"'])(?:(?:bearer|basic)\s+)?[^\s\"',;}{]{8,}"
-    r"|(\s*=\s*)(?!\\?[\"'])(?:(?:bearer|basic)\s+)?[^\s\"',;}{]{7,})"
+    r"([ \t]*[:=][ \t]*)"
+    r"(?!\\?[\"'])"
+    r"((?:(?:bearer|basic)[ \t]+)?[^\s\"',;}{]+)"
 )
 
 _URL_USERINFO = re.compile(r"(://)[^\s/:@]+:[^\s/:@]+(@)")
@@ -52,6 +94,20 @@ _CREDENTIAL_TOKENS = re.compile(
 _EMAIL = re.compile(r"(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}")
 _USER_DIR = re.compile(r"(?i)([A-Z]:[\\/]+Users[\\/]+)[^\\/\s\"']+")
 _UNIX_HOME = re.compile(r"(/(?:home|Users)/)[^/\s\"']+")
+
+
+def _replace_unquoted_secret(match: re.Match[str]) -> str:
+    prefix, sep, raw_val = match.group(1), match.group(2), match.group(3)
+    if "=" in sep:
+        return f"{prefix}{sep}[redacted]"
+    if re.match(r"(?i)^(?:bearer|basic)[ \t]+", raw_val):
+        return f"{prefix}{sep}[redacted]"
+    clause_match = _SAFE_CLAUSE_RE.match(match.string, match.start(3))
+    if clause_match:
+        phrase = re.sub(r"[ \t]+", " ", clause_match.group(1).strip()).lower()
+        if phrase in _SAFE_STATUS_PHRASES:
+            return match.group(0)
+    return f"{prefix}{sep}[redacted]"
 
 
 def _percent_decode(text: str, *, max_passes: int = 3) -> str:
@@ -94,10 +150,7 @@ def redact(
     value = _SECRET_FIELD_QUOTED_DOUBLE.sub(lambda m: m.group(1) + "[redacted]" + m.group(2), value)
     value = _SECRET_FIELD_QUOTED_SINGLE.sub(lambda m: m.group(1) + "[redacted]" + m.group(2), value)
     value = _HEADER_TO_EOL.sub(lambda m: m.group(0)[: m.start(1) - m.start(0)] + m.group(1) + "[redacted]", value)
-    value = _SECRET_FIELD_UNQUOTED.sub(
-        lambda m: m.group(1) + (m.group(2) or m.group(3) or m.group(4)) + "[redacted]",
-        value,
-    )
+    value = _SECRET_FIELD_UNQUOTED.sub(_replace_unquoted_secret, value)
     value = _CREDENTIAL_TOKENS.sub("[redacted]", value)
     value = _EMAIL.sub("[redacted]", value)
     value = _USER_DIR.sub(r"\1[user]", value)
