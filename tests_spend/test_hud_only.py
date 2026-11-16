@@ -331,6 +331,42 @@ def test_hub_auth_rejection_empties_only_that_credentials_proxy_cache(tmp_path, 
         sync_module.clear_hub_proxy_cache()
 
 
+@pytest.mark.parametrize("status_code", [401, 403])
+def test_inflight_200_does_not_refill_cache_after_rejection(tmp_path, monkeypatch, status_code):
+    token = f"synthetic-inflight-{status_code}-{secrets.token_hex(8)}"
+    token_digest = auth_model.digest(token)
+    entered_first = threading.Event()
+    release_first = threading.Event()
+
+    class RacingHub:
+        def get(self, path, params=None, headers=None):
+            if path == "/api/spend/hud":
+                entered_first.set()
+                assert release_first.wait(5), "Timed out waiting for concurrent rejection"
+                return FakeResponse({"capacity": [], "providers": [], "read": "stale-inflight"})
+            return FakeResponse({}, status_code=status_code)
+
+    settings = _spoke(tmp_path, monkeypatch, RacingHub(), owner_session=token)
+    fetch = sync_module.fetch_from_configured_hub
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            first_future = pool.submit(fetch, settings, "/api/spend/hud", ttl_seconds=0)
+            assert entered_first.wait(5)
+            # Second concurrent request gets 401/403 and purges/rejects the credential.
+            assert fetch(settings, "/api/spend/hud/usage", ttl_seconds=0) is None
+            release_first.set()
+            assert first_future.result(timeout=5) is None
+
+        with sync_module._HUB_PROXY_LOCK:
+            assert token_digest in sync_module._HUB_REJECTED_CREDENTIALS
+            assert not [k for k in sync_module._HUB_PROXY_CACHE if len(k) > 3 and k[3] == token_digest]
+        assert fetch(settings, "/api/spend/hud", ttl_seconds=60, stale_seconds=300) is None
+    finally:
+        sync_module.clear_hub_proxy_cache()
+
+
 def _usage_hold_source() -> str:
     html = render_hud()
     return html.split("        let heldStats", 1)[1].split("        function renderSummary", 1)[0]

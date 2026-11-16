@@ -237,12 +237,47 @@ def test_pairing_concurrent_redemption_only_one_succeeds(hub):
     assert sorted(r.status_code for r in results) == [200, 403]
 
 
-def test_pairing_refuses_colliding_names_but_allows_explicit_machine_id(hub):
+def test_pairing_and_registration_enforce_active_name_uniqueness(hub):
     settings, client = hub
     first = sync.register_machine(settings.database_path, name="Workstation")
-    second = sync.register_machine(settings.database_path, name="workstation")
-    first_id, second_id = first["machine"]["id"], second["machine"]["id"]
-    assert first_id != second_id
+    first_id = first["machine"]["id"]
+
+    # Registering another active machine with the same name (case-insensitive) is refused.
+    with pytest.raises(ValueError, match="already exists"):
+        sync.register_machine(settings.database_path, name="workstation")
+    reg_dup = client.post(
+        "/api/machines", headers=ADMIN, json={"action": "register", "name": "WORKSTATION"}
+    )
+    assert reg_dup.status_code == 422
+
+    # Invite -> rename One -> rename Two to One -> redeem old invite is refused (403).
+    one = sync.register_machine(settings.database_path, name="One")
+    two = sync.register_machine(settings.database_path, name="Two")
+    stale_invite = pairing(client, name="One")
+    sync.rename_machine(settings.database_path, machine_id=one["machine"]["id"], name="Renamed One")
+    sync.rename_machine(settings.database_path, machine_id=two["machine"]["id"], name="One")
+    stale_redeem = client.post("/api/pairing/redeem", json={"pairingCode": stale_invite["pairingCode"]})
+    assert stale_redeem.status_code == 403
+    with connect(settings.database_path) as connection:
+        machines = sync._read_state(connection)["machines"]
+        active_ones = [
+            mid for mid, rec in machines.items()
+            if not rec.get("revoked") and rec["name"].lower() == "one"
+        ]
+        assert active_ones == [two["machine"]["id"]]
+
+    # Seed legacy colliding active records directly to verify name-only pairing/reconnect
+    # rejects ambiguity while explicit machineId succeeds (for non-colliding name).
+    second_id = "machine-legacy-dup"
+    with connect(settings.database_path) as connection:
+        state = sync._read_state(connection)
+        state["machines"][second_id] = {
+            **state["machines"][first_id],
+            "id": second_id,
+            "name": "workstation",
+            "token_hash": auth.digest("br_m_legacy_dup_token"),
+        }
+        sync._write_state(connection, state)
 
     actor = auth.Principal("owner", "break-glass", "owner")
     with pytest.raises(ValueError, match="machine ID"):
@@ -256,20 +291,55 @@ def test_pairing_refuses_colliding_names_but_allows_explicit_machine_id(hub):
     assert refused.status_code == 422
     assert "pairingCode" not in refused.text
 
-    # Name-only reconnect is equally refused when multiple active machines share a name.
+    # Name-only reconnect and token rotation against colliding active names both refuse.
     with pytest.raises(ValueError, match="machine ID"):
         sync.register_or_reconnect_machine(settings.database_path, name="WORKSTATION")
+    with pytest.raises(ValueError, match="already exists"):
+        sync.rotate_machine_token(settings.database_path, first["token"])
 
-    # Explicit machineId succeeds both at the unit level and over HTTP.
-    direct = pairing_module.issue(
-        settings.database_path, actor, hub_url=ORIGIN, name="WORKSTATION", machine_id=second_id
-    )
-    assert direct["ok"] is True
-
+    # Explicit machineId with a unique name succeeds cleanly.
+    sync.rename_machine(settings.database_path, machine_id=second_id, name="Workstation Two")
     explicit = pairing(client, name="WORKSTATION", machineId=first_id)
     redeemed = client.post("/api/pairing/redeem", json={"pairingCode": explicit["pairingCode"]})
     assert redeemed.status_code == 200
     assert redeemed.json()["machine"]["id"] == first_id
+
+
+def test_spare_name_only_invitation_invalidated_when_machine_revoked(hub):
+    settings, client = hub
+    invite_one = pairing(client, name="Review Box")
+    invite_two = pairing(client, name="review box")
+
+    # Both name-only invites for the new machine reserve the exact same machine_id.
+    with connect(settings.database_path) as connection:
+        rows = connection.execute(
+            "SELECT machine_id, by_name, used_at FROM pairing_grants ORDER BY created_at"
+        ).fetchall()
+        assert len(rows) == 2
+        assert rows[0]["machine_id"] and rows[0]["machine_id"] == rows[1]["machine_id"]
+        assert rows[0]["by_name"] == 1 and rows[1]["by_name"] == 1
+
+    # Redeem the first invitation -> creates machine with that reserved id.
+    first_redeem = client.post("/api/pairing/redeem", json={"pairingCode": invite_one["pairingCode"]})
+    assert first_redeem.status_code == 200
+    reserved_id = first_redeem.json()["machine"]["id"]
+    assert reserved_id == rows[0]["machine_id"]
+
+    # Revoking the machine invalidates the spare invitation and blocks redeeming it.
+    sync.revoke_machine(settings.database_path, machine_id=reserved_id)
+    with connect(settings.database_path) as connection:
+        used_vals = [r["used_at"] for r in connection.execute("SELECT used_at FROM pairing_grants").fetchall()]
+        assert all(used_vals)
+    spare_redeem = client.post("/api/pairing/redeem", json={"pairingCode": invite_two["pairingCode"]})
+    assert spare_redeem.status_code == 403
+
+    # Even if a reserved name-only invite wasn't bound to an existing machine yet,
+    # creating and revoking a different machine with that name blocks redeeming it.
+    reserved_invite = pairing(client, name="Raced Box")
+    other = sync.register_machine(settings.database_path, name="Raced Box")
+    sync.revoke_machine(settings.database_path, machine_id=other["machine"]["id"])
+    raced_redeem = client.post("/api/pairing/redeem", json={"pairingCode": reserved_invite["pairingCode"]})
+    assert raced_redeem.status_code == 403
 
 
 def test_revoked_machine_cannot_be_revived_by_name_only_pairing_or_reconnect(hub):
@@ -489,3 +559,33 @@ def test_rotation_required_backfill_api_surface_and_deadline_enforcement(tmp_pat
         machine_row(settings, keeps_deadline["machine"]["id"], rotation_deadline="not-a-timestamp")
         assert client.post("/api/sync/push", headers=missing_headers, json={}).status_code == 401
         assert client.post("/api/auth/machine/rotate", headers=missing_headers, json={}).status_code == 401
+
+
+def test_parse_overflow_and_unmatched_malformed_deadlines_do_not_break_other_machines(hub):
+    settings, client = hub
+    assert auth.parse("9999-12-31T23:59:59-23:59") is None
+
+    bad_machine = sync.register_machine(settings.database_path, name="Overflow Box")
+    good_machine = sync.register_machine(settings.database_path, name="Healthy Box")
+    machine_row(
+        settings,
+        bad_machine["machine"]["id"],
+        rotation_required=True,
+        rotation_deadline="9999-12-31T23:59:59-23:59",
+    )
+    # Overflowing deadline on bad_machine must fail closed (401) and never affect good_machine.
+    assert client.post(
+        "/api/sync/push",
+        headers={"Authorization": "Bearer " + bad_machine["token"]},
+        json={},
+    ).status_code == 401
+    assert client.post(
+        "/api/auth/machine/rotate",
+        headers={"Authorization": "Bearer " + bad_machine["token"]},
+        json={},
+    ).status_code == 401
+    assert client.post(
+        "/api/sync/push",
+        headers={"Authorization": "Bearer " + good_machine["token"]},
+        json={},
+    ).status_code == 200
