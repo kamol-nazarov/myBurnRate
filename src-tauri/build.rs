@@ -17,8 +17,6 @@ const COMMANDS: &[&str] = &[
     "toggle_maximize_main",
     "hide_main",
     "open_setup_wizard",
-    "pending_update",
-    "install_update",
 ];
 
 fn main() {

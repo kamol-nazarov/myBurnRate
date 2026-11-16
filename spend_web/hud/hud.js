@@ -291,30 +291,6 @@
           if (wrap && !wrap.contains(event.target)) closeMoreMenu(false);
         });
 
-        // An installed app checks for updates in the background and offers one here.
-        function showUpdate(version) {
-          const bar = $("hud-update");
-          if (!bar || !version || bar.disabled) return;
-          bar.textContent = "BURNRATE " + version + " is ready \u00b7 install and restart";
-          bar.hidden = false;
-        }
-        $("hud-update").addEventListener("click", async () => {
-          const bar = $("hud-update");
-          bar.disabled = true;
-          bar.textContent = "Installing the update\u2026";
-          // A successful install never answers: the app closes for the installer or restarts.
-          let reason = "";
-          try {
-            await window.__TAURI_INTERNALS__?.invoke?.("install_update");
-          } catch (error) {
-            reason = String(error?.message ?? error ?? "").trim();
-          }
-          if (reason.length > 120) reason = reason.slice(0, 119) + "\u2026";
-          bar.disabled = false;
-          bar.textContent = "The update did not install" + (reason ? " (" + reason + ")" : "") + " \u00b7 try again";
-        });
-        tauriInvoke("pending_update").then(showUpdate);
-        window.__TAURI__?.event?.listen?.("burnrate://update-available", event => showUpdate(event.payload));
         labelTip($("hud-pin-btn"), () => pinned ? "Unpin from top" : "Keep on top");
         labelTip($("hud-mini-btn"), () => isMini ? "Expand" : "Collapse");
         labelTip($("hud-more-btn"), "More actions");

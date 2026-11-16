@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime
 from importlib.resources import files
 from pathlib import Path
@@ -289,8 +290,66 @@ def test_api_security_headers_include_csp(tmp_path: Path) -> None:
     csp = response.headers["Content-Security-Policy"]
     assert "default-src 'self'" in csp
     assert "style-src 'self' 'unsafe-inline'" in csp
+    assert "base-uri 'none'" in csp
+    assert "object-src 'none'" in csp
+    assert "frame-ancestors 'none'" in csp
     assert "fonts.googleapis.com" not in csp
     assert "fonts.gstatic.com" not in csp
+
+
+def test_api_boundary_error_response_includes_hardened_csp(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("BURNRATE_ALLOWED_HOSTS", raising=False)
+    monkeypatch.setenv("BURNRATE_TEST_HOSTS", "0")
+    database = tmp_path / "spend.db"
+    initialize(database)
+    app = create_app(make_settings(database), enable_scheduler=False)
+    with TestClient(app, base_url="http://attacker.invalid:17331") as client:
+        response = client.get("/healthz")
+    assert response.status_code == 403
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
+    assert response.headers["Referrer-Policy"] == "no-referrer"
+    assert response.headers["X-Frame-Options"] == "DENY"
+    csp = response.headers["Content-Security-Policy"]
+    assert "base-uri 'none'" in csp
+    assert "object-src 'none'" in csp
+    assert "frame-ancestors 'none'" in csp
+
+
+def test_api_csp_variate_dev_gating(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "spend_app").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".variate").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".variate" / "server.json").write_text(
+        json.dumps({"port": 43210}), encoding="utf-8"
+    )
+    monkeypatch.setattr(api_module, "__file__", str(tmp_path / "spend_app" / "api.py"))
+
+    database = tmp_path / "spend.db"
+    initialize(database)
+    client = TestClient(create_app(make_settings(database), enable_scheduler=False))
+
+    monkeypatch.delenv("BURNRATE_DEV", raising=False)
+    csp_unset = client.get("/healthz").headers["Content-Security-Policy"]
+    assert "http://127.0.0.1:43210" not in csp_unset
+    assert "base-uri 'none'" in csp_unset
+    assert "object-src 'none'" in csp_unset
+
+    monkeypatch.setenv("BURNRATE_DEV", "0")
+    csp_zero = client.get("/healthz").headers["Content-Security-Policy"]
+    assert "http://127.0.0.1:43210" not in csp_zero
+
+    monkeypatch.setenv("BURNRATE_DEV", "1")
+    csp_dev = client.get("/healthz").headers["Content-Security-Policy"]
+    directives = {
+        part.strip().split()[0]: part.strip()
+        for part in csp_dev.split(";")
+        if part.strip()
+    }
+    assert "http://127.0.0.1:43210" in directives["script-src"]
+    assert "http://127.0.0.1:43210" in directives["connect-src"]
+    assert "http://127.0.0.1:43210" not in directives["default-src"]
+    assert "base-uri 'none'" in csp_dev
+    assert "object-src 'none'" in csp_dev
 
 
 def test_frontend_served_from_packaged_spend_web(tmp_path: Path) -> None:

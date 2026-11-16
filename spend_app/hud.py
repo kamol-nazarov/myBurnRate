@@ -253,24 +253,8 @@ HUD_TEMPLATE = r"""<!doctype html>
       .hud-status-pill[data-state="error"] { color: var(--danger); }
       .hud-status-pill[data-state="stale"] i, .hud-status-pill[data-state="error"] i { animation: none; }
       .hud-status-pill > span { max-width: 210px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .hud-update {
-        display: block;
-        width: 100%;
-        margin: 0 0 8px;
-        padding: 6px 10px;
-        border: 1px solid var(--accent);
-        border-radius: 8px;
-        background: transparent;
-        color: var(--accent);
-        font: 600 11px/1.3 var(--fd);
-        letter-spacing: 0.04em;
-        text-align: left;
-        cursor: pointer;
-      }
-      .hud-update[hidden] { display: none; }
       .hud-notice { margin: 0 0 8px; color: var(--secondary); font: 600 11px/1.3 var(--fd); letter-spacing: 0.04em; }
       .hud-notice[hidden] { display: none; }
-      .hud-update:disabled { cursor: default; opacity: 0.7; }
       @keyframes hudPing {
         0% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 55%, transparent); }
         80%, 100% { box-shadow: 0 0 0 6px transparent; }
@@ -680,7 +664,6 @@ HUD_TEMPLATE = r"""<!doctype html>
         <span class="date" id="hud-date">Today</span>
         <button type="button" class="hud-status-pill" id="hud-status-pill" data-state="live" aria-expanded="false" aria-controls="hud-attention-panel"><i></i><span id="hud-status-text">LIVE</span></button>
       </p>
-      <button type="button" class="hud-update" id="hud-update" hidden></button>
       <p class="hud-notice" id="hud-notice" role="status" hidden></p>
       <p class="hud-notice" id="hud-owner-scope" role="status" hidden><span>Showing this computer only. </span><a href="/auth" id="hud-owner-signin">Sign in for All computers</a></p>
 

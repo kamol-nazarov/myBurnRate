@@ -253,8 +253,11 @@ def test_cli_reads_the_token_from_a_file_or_environment(tmp_path, monkeypatch) -
 
 def test_desktop_shell_and_supply_chain_inputs_are_pinned() -> None:
     tauri = json.loads((ROOT / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8"))
-    assert isinstance(tauri["app"]["security"]["csp"], str)
-    assert "default-src" in tauri["app"]["security"]["csp"]
+    csp = tauri["app"]["security"]["csp"]
+    assert isinstance(csp, str)
+    assert "default-src" in csp
+    assert "base-uri 'none'" in csp
+    assert "object-src 'none'" in csp
     capabilities = (ROOT / "src-tauri" / "capabilities" / "default.json").read_text(
         encoding="utf-8"
     )

@@ -34,7 +34,8 @@ HUD_USAGE_HUB_READ_TIMEOUT = 60.0
 CONTENT_SECURITY_POLICY = (
     "default-src 'self'; script-src 'self' 'unsafe-inline'; "
     "style-src 'self' 'unsafe-inline'; "
-    "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'"
+    "img-src 'self' data:; connect-src 'self'; "
+    "base-uri 'none'; object-src 'none'; frame-ancestors 'none'"
 )
 _ASSET_VERSIONS: dict[str, tuple[tuple[int, int], str]] = {}
 
@@ -140,6 +141,8 @@ SPEND_WINDOWS = set(WINDOW_SPECS) | {"7d", "30d", "MTD", "YTD", "All"}
 
 def _content_security_policy() -> str:
     policy = CONTENT_SECURITY_POLICY
+    if os.getenv("BURNRATE_DEV", "").strip() != "1":
+        return policy
     try:
         import json
         meta = json.loads((Path(__file__).resolve().parents[1] / ".variate" / "server.json").read_text(encoding="utf-8"))

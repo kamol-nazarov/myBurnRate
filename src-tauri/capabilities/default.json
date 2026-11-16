@@ -38,8 +38,6 @@
     "allow-minimize-main",
     "allow-toggle-maximize-main",
     "allow-hide-main",
-    "allow-open-setup-wizard",
-    "allow-pending-update",
-    "allow-install-update"
+    "allow-open-setup-wizard"
   ]
 }
