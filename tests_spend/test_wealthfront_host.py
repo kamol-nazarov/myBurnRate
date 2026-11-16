@@ -1989,3 +1989,219 @@ def test_fetch_usage_fetches_connections_in_non_demo_mode_and_passes_to_merge():
 
     assert DesktopBridge(TrackingDemo(), demo=True).fetch_usage("today", "all")["ok"] is True
     assert "/api/connections" not in demo_calls
+
+
+class ServiceBridgeClient:
+    """In-process client forwarding /api/connections directly to connections.Service."""
+
+    def __init__(self, service):
+        self.service = service
+        self.posts = []
+        self.drop_next_reply = False
+
+    def request(self, path, body=None):
+        from spend_app import profile_store
+        from spend_app.connection_paths import LocationError
+        from spend_app.connections import Conflict
+
+        if path == "/api/connections" and body is None:
+            return self.service.list()
+        if path == "/api/connections" and body is not None:
+            self.posts.append(dict(body))
+            try:
+                result = self.service.mutate(body)
+            except (Conflict, profile_store.FolderInUse) as exc:
+                raise DesktopError(str(exc), status_code=409) from None
+            except LocationError as exc:
+                raise DesktopError(str(exc), status_code=422) from None
+            if self.drop_next_reply:
+                self.drop_next_reply = False
+                raise DesktopError(
+                    "The local tracker is unavailable. Showing the last recorded result."
+                )
+            return result
+        raise DesktopError("unexpected " + path)
+
+
+def _setup_real_service(tmp_path: Path, monkeypatch):
+    from spend_app import claude_accounts, connections, profile_detect
+    from spend_app import db as spend_db
+    from spend_app.config import Settings
+
+    home = tmp_path / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    for var in (
+        "CLAUDE_CONFIG_DIR",
+        "CLAUDE_EXTRA_DIRS",
+        "CODEX_HOME",
+        "CODEX_EXTRA_DIRS",
+        "OPENCODE_EXTRA_DIRS",
+        "OPENCODE_DB",
+        "OPENCODE_CONFIG_DIR",
+        "GROK_HOME",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(claude_accounts, "extra_accounts", lambda: ())
+    profile_detect.reset_cache()
+
+    settings = Settings(
+        database_path=tmp_path / "spend.db",
+        pricing_path=Path(__file__).resolve().parents[1] / "pricing",
+        anthropic_admin_key=None,
+        openai_admin_key=None,
+        timezone="UTC",
+        cache_hit_threshold=0.75,
+        over_routing_token_ceiling=40000,
+    )
+    spend_db.initialize(settings.database_path)
+    return home, connections.Service(settings)
+
+
+def _make_claude_profile_dir(folder: Path, account_uuid: str) -> Path:
+    proj = folder / "projects" / "demo"
+    proj.mkdir(parents=True, exist_ok=True)
+    (proj / "session.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "assistant",
+                "timestamp": "2026-10-01T00:00:00Z",
+                "message": {
+                    "model": "claude-sonnet-4-5",
+                    "usage": {"input_tokens": 10, "output_tokens": 5},
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (folder / ".claude.json").write_text(
+        json.dumps({"oauthAccount": {"accountUuid": account_uuid, "subscriptionType": "pro"}}),
+        encoding="utf-8",
+    )
+    return folder
+
+
+def _claude_row(service) -> dict:
+    return next(
+        row for row in service.list()["connections"] if row["source"] == "claude_local"
+    )
+
+
+def test_add_remove_add_dismiss_and_rename_against_real_service(tmp_path, monkeypatch):
+    from spend_app import profile_detect
+
+    home, service = _setup_real_service(tmp_path, monkeypatch)
+    _make_claude_profile_dir(home / ".claude", "acct-default")
+    manual_dir = _make_claude_profile_dir(tmp_path / "claude-work", "acct-work")
+    cand_dir = _make_claude_profile_dir(home / ".claude-cand", "acct-cand")
+
+    client = ServiceBridgeClient(service)
+    bridge = DesktopBridge(client, demo=False)
+
+    try:
+        # 1. Add -> Remove -> Add -> Remove with identical folder & name
+        add1 = bridge.add_profile("claude_local", "", str(manual_dir), "Work")
+        assert add1["ok"] is True
+        work_key = add1["connection"]["key"]
+        assert any(p["key"] == work_key for p in _claude_row(service)["profiles"])
+
+        rem1 = bridge.remove_profile("claude_local", work_key, revision=1)
+        assert rem1 == {"ok": True, "disabled": False, "removed": True}
+        assert all(p["key"] != work_key for p in _claude_row(service)["profiles"])
+
+        add2 = bridge.add_profile("claude_local", "", str(manual_dir), "Work")
+        assert add2["ok"] is True
+        assert add2["connection"]["key"] == work_key
+        assert any(p["key"] == work_key for p in _claude_row(service)["profiles"])
+        assert client.posts[2]["requestId"] != client.posts[0]["requestId"]
+
+        rem2 = bridge.remove_profile("claude_local", work_key, revision=1)
+        assert rem2 == {"ok": True, "disabled": False, "removed": True}
+        assert all(p["key"] != work_key for p in _claude_row(service)["profiles"])
+        assert client.posts[3]["requestId"] != client.posts[1]["requestId"]
+
+        # 2. Dismiss -> Add candidate -> Remove -> Dismiss same candidate again
+        profile_detect.reset_cache()
+        cand = next(
+            d for d in _claude_row(service)["detected"] if cand_dir.name in d["folder"]
+        )
+        cid = cand["candidateId"]
+        assert bridge.dismiss_candidate("claude_local", cid) == {
+            "ok": True,
+            "dismissed": True,
+        }
+        assert all(d["candidateId"] != cid for d in _claude_row(service)["detected"])
+
+        cand_add = bridge.add_profile("claude_local", cid, "", "Side")
+        assert cand_add["ok"] is True
+        cand_key = cand_add["connection"]["key"]
+        assert bridge.remove_profile("claude_local", cand_key, revision=1)["removed"] is True
+        assert any(d["candidateId"] == cid for d in _claude_row(service)["detected"])
+
+        assert bridge.dismiss_candidate("claude_local", cid) == {
+            "ok": True,
+            "dismissed": True,
+        }
+        assert all(d["candidateId"] != cid for d in _claude_row(service)["detected"])
+        dismiss_ids = [
+            p["requestId"]
+            for p in client.posts
+            if p["operation"] == "dismiss_candidate"
+        ]
+        assert len(dismiss_ids) == 2 and dismiss_ids[0] != dismiss_ids[1]
+
+        # 3. Rename -> Rename -> Stale 409 retry -> Rename back
+        readd = bridge.add_profile("claude_local", "", str(manual_dir), "Alpha")
+        rkey = readd["connection"]["key"]
+        ren1 = bridge.rename_profile("claude_local", rkey, "Beta", revision=1)
+        assert ren1["ok"] is True and ren1["connection"]["revision"] == 2
+        # Stale revision=1 triggers 409 reload (rev=2) & retry once -> rev=3
+        ren2 = bridge.rename_profile("claude_local", rkey, "Gamma", revision=1)
+        assert ren2["ok"] is True and ren2["connection"]["revision"] == 3
+        ren3 = bridge.rename_profile("claude_local", rkey, "Beta", revision=3)
+        assert ren3["ok"] is True and ren3["connection"]["revision"] == 4
+        prof = next(p for p in _claude_row(service)["profiles"] if p["key"] == rkey)
+        assert prof["name"] == "Beta" and prof["revision"] == 4
+    finally:
+        profile_detect.reset_cache()
+
+
+def test_unresolved_timeout_reuses_request_id_until_confirmed_then_retires(
+    tmp_path, monkeypatch
+):
+    from spend_app import profile_detect
+
+    home, service = _setup_real_service(tmp_path, monkeypatch)
+    _make_claude_profile_dir(home / ".claude", "acct-default")
+    manual_dir = _make_claude_profile_dir(tmp_path / "claude-retry", "acct-retry")
+
+    client = ServiceBridgeClient(service)
+    bridge = DesktopBridge(client, demo=False)
+
+    try:
+        # Simulate server commit + lost reply on add_profile
+        client.drop_next_reply = True
+        first = bridge.add_profile("claude_local", "", str(manual_dir), "Work")
+        assert first["ok"] is False and "unavailable" in first["error"].lower()
+
+        # Retrying unresolved action reuses the exact same requestId and gets receipt
+        second = bridge.add_profile("claude_local", "", str(manual_dir), "Work")
+        assert second["ok"] is True
+        work_key = second["connection"]["key"]
+        assert client.posts[1]["requestId"] == client.posts[0]["requestId"]
+
+        # Once confirmed, mutation is retired -> Remove then Re-add gets a fresh requestId
+        assert bridge.remove_profile("claude_local", work_key, revision=1)["ok"] is True
+        third = bridge.add_profile("claude_local", "", str(manual_dir), "Work")
+        assert third["ok"] is True
+        assert any(p["key"] == work_key for p in _claude_row(service)["profiles"])
+        assert client.posts[3]["requestId"] != client.posts[0]["requestId"]
+
+        # Definite 4xx rejection also retires the stored mutation
+        bad = bridge.add_profile("claude_local", "", str(manual_dir), "Dup")
+        assert bad["ok"] is False
+        assert "claude_local:add" not in bridge._mutations
+    finally:
+        profile_detect.reset_cache()
