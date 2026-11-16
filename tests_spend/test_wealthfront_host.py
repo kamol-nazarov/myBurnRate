@@ -1500,3 +1500,492 @@ def test_service_ownership_cache_is_not_fooled_by_a_freshly_booted_clock(
     monkeypatch.setattr(host_module.time, "monotonic", lambda: 13.0)
     client.request = lambda path, body=None: pytest.fail("cache should answer")
     assert bridge.service_owns_plan_alerts() is False
+
+
+# --- P6: multi-profile mutations, merge, and fetch_usage ---------------------
+
+
+class ProfileRecordingClient:
+    def __init__(self, connections=None, *, post_effects=None):
+        self.connections = connections if connections is not None else []
+        self.post_effects = list(post_effects or [])
+        self.calls = []
+        self.hud = {"capacity": []}
+        self.hud_usage = {"windowTokens": {}}
+        self.snapshot_payload = {
+            "scope": "all-computers",
+            "total": {"valueUsd": 0.0, "tokens": 0, "events": 0, "complete": True},
+            "tools": [],
+            "machines": [],
+        }
+
+    def ensure_service(self):
+        return None
+
+    def snapshot(self, period, machine):
+        self.calls.append(("snapshot", period, machine))
+        return dict(self.snapshot_payload)
+
+    def request(self, path, body=None):
+        self.calls.append((path, body))
+        if path == "/api/connections" and body is None:
+            return {"connections": self.connections}
+        if path == "/api/connections" and body is not None:
+            if self.post_effects:
+                effect = self.post_effects.pop(0)
+                if isinstance(effect, Exception):
+                    raise effect
+                return effect
+            op = body.get("operation")
+            if op == "remove_profile":
+                prof = body.get("profile")
+                return {
+                    "ok": True,
+                    "disabled": prof == "default",
+                    "removed": prof != "default",
+                }
+            if op == "dismiss_candidate":
+                return {"ok": True, "dismissed": True}
+            return {
+                "ok": True,
+                "connection": {"source": body.get("source"), "operation": op},
+            }
+        if path.startswith("/api/spend/hud/usage"):
+            return self.hud_usage
+        if path.startswith("/api/spend/hud"):
+            return self.hud
+        raise DesktopError("unexpected " + path)
+
+
+def test_connection_profile_mutations_payloads_and_demo_refusal():
+    client = ProfileRecordingClient()
+    bridge = DesktopBridge(client, demo=False)
+
+    res_cand = bridge.add_profile("claude_local", " cand-1 ", "", " Side Project ")
+    assert res_cand == {
+        "ok": True,
+        "connection": {"source": "claude_local", "operation": "add_profile"},
+    }
+    path, body = client.calls[-1]
+    assert path == "/api/connections"
+    assert body["source"] == "claude_local"
+    assert body["operation"] == "add_profile"
+    assert body["candidateId"] == "cand-1"
+    assert body["name"] == "Side Project"
+    assert "location" not in body
+    assert body["requestId"]
+
+    bridge.add_profile("claude_local", "", "C:/Profiles/Work", "   ")
+    _, body = client.calls[-1]
+    assert body["operation"] == "add_profile"
+    assert body["location"] == "C:/Profiles/Work"
+    assert "candidateId" not in body
+    assert "name" not in body
+    assert body["requestId"]
+
+    res_ren = bridge.rename_profile(
+        "claude_local", "claude-code-work", " Client Work ", revision=3
+    )
+    assert res_ren["ok"] is True
+    _, body = client.calls[-1]
+    assert {k: v for k, v in body.items() if k != "requestId"} == {
+        "source": "claude_local",
+        "profile": "claude-code-work",
+        "operation": "rename_profile",
+        "name": "Client Work",
+        "revision": 3,
+    }
+    assert body["requestId"]
+
+    res_stop = bridge.remove_profile("claude_local", "default", revision=5)
+    assert res_stop == {"ok": True, "disabled": True, "removed": False}
+    _, body = client.calls[-1]
+    assert {k: v for k, v in body.items() if k != "requestId"} == {
+        "source": "claude_local",
+        "profile": "default",
+        "operation": "remove_profile",
+        "revision": 5,
+    }
+    assert body["requestId"]
+
+    res_rem = bridge.remove_profile("claude_local", "claude-code-work", revision=2)
+    assert res_rem == {"ok": True, "disabled": False, "removed": True}
+
+    res_dis = bridge.dismiss_candidate("claude_local", " cand-dup ")
+    assert res_dis == {"ok": True, "dismissed": True}
+    _, body = client.calls[-1]
+    assert {k: v for k, v in body.items() if k != "requestId"} == {
+        "source": "claude_local",
+        "operation": "dismiss_candidate",
+        "candidateId": "cand-dup",
+    }
+    assert body["requestId"]
+
+    assert bridge.connect_source("openrouter", True, "sk-123", revision=4) == {
+        "ok": True
+    }
+    _, body = client.calls[-1]
+    assert {k: v for k, v in body.items() if k != "requestId"} == {
+        "source": "openrouter",
+        "profile": "default",
+        "operation": "connect",
+        "revision": 4,
+        "mode": "api",
+        "secret": "sk-123",
+    }
+
+    assert bridge.connect_source(
+        "claude_local", False, "D:/Work/.claude", revision=7, profile="claude-code-work"
+    ) == {"ok": True}
+    _, body = client.calls[-1]
+    assert {k: v for k, v in body.items() if k != "requestId"} == {
+        "source": "claude_local",
+        "profile": "claude-code-work",
+        "operation": "connect",
+        "revision": 7,
+        "mode": "manual",
+        "location": "D:/Work/.claude",
+    }
+
+    assert bridge.disconnect_source(
+        "claude_local", revision=7, profile="claude-code-work"
+    ) == {"ok": True}
+    _, body = client.calls[-1]
+    assert {k: v for k, v in body.items() if k != "requestId"} == {
+        "source": "claude_local",
+        "profile": "claude-code-work",
+        "operation": "disable",
+        "revision": 7,
+    }
+
+    demo_client = ProfileRecordingClient()
+    demo_bridge = DesktopBridge(demo_client, demo=True)
+    for res in (
+        demo_bridge.add_profile("claude_local", "cand-1", "", "Work"),
+        demo_bridge.rename_profile("claude_local", "claude-code-work", "Work", 1),
+        demo_bridge.remove_profile("claude_local", "claude-code-work", 1),
+        demo_bridge.dismiss_candidate("claude_local", "cand-1"),
+        demo_bridge.connect_source("claude_local", False, "C:/x", 1, "claude-code-work"),
+        demo_bridge.disconnect_source("claude_local", 1, "claude-code-work"),
+    ):
+        assert res == {
+            "ok": False,
+            "error": "Settings changes are disabled in demo mode.",
+        }
+    assert demo_client.calls == []
+
+
+@pytest.mark.parametrize(
+    "caller",
+    [
+        lambda b: b.connect_source(
+            "claude_local", False, "D:/Work", revision=1, profile="claude-code-work"
+        ),
+        lambda b: b.disconnect_source("claude_local", revision=1, profile="claude-code-work"),
+        lambda b: b.rename_profile("claude_local", "claude-code-work", "Renamed", revision=1),
+        lambda b: b.remove_profile("claude_local", "claude-code-work", revision=1),
+    ],
+    ids=["connect", "disconnect", "rename", "remove"],
+)
+def test_profile_mutations_reload_fresh_revision_and_retry_once_on_409(caller):
+    conns = [
+        {
+            "source": "claude_local",
+            "revision": 3,
+            "profiles": [
+                {"key": "default", "revision": 3},
+                {"key": "claude-code-work", "revision": 9},
+            ],
+        }
+    ]
+    client = ProfileRecordingClient(
+        connections=conns,
+        post_effects=[
+            DesktopError("stale revision", status_code=409),
+            {"ok": True, "connection": {"source": "claude_local"}, "removed": True},
+        ],
+    )
+    bridge = DesktopBridge(client, demo=False)
+    res = caller(bridge)
+    assert res["ok"] is True
+    posts = [c[1] for c in client.calls if c[0] == "/api/connections" and c[1] is not None]
+    gets = [c for c in client.calls if c[0] == "/api/connections" and c[1] is None]
+    assert len(gets) == 1
+    assert len(posts) == 2
+    assert posts[0]["revision"] == 1
+    assert posts[1]["revision"] == 9
+    assert posts[1]["requestId"] != posts[0]["requestId"]
+
+
+def test_409_retry_handles_retry_desktop_error_fallback_default_and_non_retryable_ops():
+    # 1. Retry itself raises DesktopError -> stops after one retry and surfaces retry error
+    conns = [
+        {
+            "source": "claude_local",
+            "revision": 2,
+            "profiles": [{"key": "claude-code-work", "revision": 8}],
+        }
+    ]
+    retry_fail_client = ProfileRecordingClient(
+        connections=conns,
+        post_effects=[
+            DesktopError("first 409", status_code=409),
+            DesktopError("second 409", status_code=409),
+        ],
+    )
+    bridge = DesktopBridge(retry_fail_client, demo=False)
+    res = bridge.rename_profile("claude_local", "claude-code-work", "Work", revision=1)
+    assert res == {"ok": False, "error": "second 409"}
+    posts = [c for c in retry_fail_client.calls if c[1] is not None]
+    gets = [c for c in retry_fail_client.calls if c[1] is None]
+    assert len(posts) == 2 and len(gets) == 1
+
+    # 2. Missing non-default profile in reloaded /api/connections -> does not retry
+    missing_client = ProfileRecordingClient(
+        connections=[{"source": "claude_local", "revision": 4, "profiles": []}],
+        post_effects=[DesktopError("first 409", status_code=409)],
+    )
+    res_missing = DesktopBridge(missing_client, demo=False).remove_profile(
+        "claude_local", "claude-code-work", revision=1
+    )
+    assert res_missing == {"ok": False, "error": "first 409"}
+    assert len([c for c in missing_client.calls if c[1] is not None]) == 1
+
+    # 3. Default profile falls back to top-level item["revision"] when profiles list lacks it
+    fallback_client = ProfileRecordingClient(
+        connections=[{"source": "claude_local", "revision": 12, "profiles": []}],
+        post_effects=[DesktopError("stale", status_code=409), {"ok": True, "disabled": True}],
+    )
+    res_default = DesktopBridge(fallback_client, demo=False).remove_profile(
+        "claude_local", "default", revision=1
+    )
+    assert res_default == {"ok": True, "disabled": True, "removed": False}
+    posts_default = [c[1] for c in fallback_client.calls if c[1] is not None]
+    assert [p["revision"] for p in posts_default] == [1, 12]
+
+    # 4. add_profile and dismiss_candidate do NOT retry on 409
+    no_retry_client = ProfileRecordingClient(
+        connections=conns,
+        post_effects=[
+            DesktopError("conflict add", status_code=409),
+            DesktopError("conflict dismiss", status_code=409),
+        ],
+    )
+    nr_bridge = DesktopBridge(no_retry_client, demo=False)
+    assert nr_bridge.add_profile("claude_local", "cand-1", "", "Work") == {
+        "ok": False,
+        "error": "conflict add",
+    }
+    assert nr_bridge.dismiss_candidate("claude_local", "cand-1") == {
+        "ok": False,
+        "error": "conflict dismiss",
+    }
+    assert [c for c in no_retry_client.calls if c[1] is None] == []
+    assert len([c for c in no_retry_client.calls if c[1] is not None]) == 2
+
+
+def test_merge_provider_entries_resolves_store_profiles_hud_provider_name_and_ranking():
+    connections = [
+        {
+            "source": "claude_local",
+            "name": "Claude Code",
+            "profiles": [
+                {"key": "default", "name": "Personal", "plan": "Claude Max"},
+                {"key": "claude-code-work", "name": "Client Work", "plan": "Claude Pro"},
+                {"key": "claude-code-burn", "name": "Freelance Burn", "plan": "Claude Pro"},
+            ],
+        },
+        {
+            "source": "codex_local",
+            "name": "Codex",
+            "profiles": [
+                {"key": "default", "name": "Default", "plan": None},
+                {"key": "codex-team", "name": "Team Beta", "plan": "Plus"},
+            ],
+        },
+    ]
+    hud = {
+        "capacity": [
+            {
+                "providerKey": "codex-team",
+                "title": "Codex \u00b7 raw-slug",
+                "rows": [{"limitKey": "5h", "label": "5h", "pct": 10, "unit": "pct"}],
+            },
+            {
+                "providerKey": "claude-code-work",
+                "title": "claude-code-work",
+                "accountLabel": "work-slug",
+                "rows": [{"limitKey": "5h", "label": "5h", "pct": 25, "unit": "pct"}],
+            },
+            {
+                "providerKey": "claude-code",
+                "providerName": "Claude Code",
+                "rows": [{"limitKey": "5h", "label": "5h", "pct": 40, "unit": "pct"}],
+            },
+            {
+                "providerKey": "codex",
+                "title": "Codex",
+                "rows": [{"limitKey": "5h", "label": "5h", "pct": 30, "unit": "pct"}],
+            },
+        ]
+    }
+    period_report = {
+        "tools": [
+            {"key": "openrouter", "name": "OpenRouter", "tokens": 100, "valueUsd": 0.05},
+            {"key": "claude-code-burn", "name": "claude-code-burn", "tokens": 4500, "valueUsd": 0.45, "models": [{"key": "m"}]},
+            {"key": "codex-fallback", "name": "Codex \u00b7 Fallback Slug", "tokens": 900, "valueUsd": 0.09, "models": []},
+        ]
+    }
+    today_report = {"tools": [{"key": "claude-code-burn", "tokens": 1200}]}
+    week_report = {"tools": [{"key": "claude-code-burn", "tokens": 4500}]}
+
+    merged = host_module.merge_provider_entries(
+        period_report,
+        hud=hud,
+        today_report=today_report,
+        week_report=week_report,
+        connections=connections,
+    )
+    assert [p["key"] for p in merged] == [
+        "claude-code",
+        "claude-code-burn",
+        "claude-code-work",
+        "codex",
+        "codex-fallback",
+        "codex-team",
+        "openrouter",
+    ]
+    by_key = {p["key"]: p for p in merged}
+
+    # Reads live HUD providerName when title absent, and uses store default custom name
+    assert by_key["claude-code"]["name"] == "Claude Code"
+    assert by_key["claude-code"]["badge"] == "Personal"
+
+    # Overrides folder slug & raw providerKey title from store profile
+    assert by_key["claude-code-work"]["name"] == "Claude Code"
+    assert by_key["claude-code-work"]["badge"] == "Client Work"
+
+    # Default profile named "Default" keeps "Primary" when extra profile exists
+    assert by_key["codex"]["badge"] == "Primary"
+    assert by_key["codex-team"]["name"] == "Codex"
+    assert by_key["codex-team"]["badge"] == "Team Beta"
+
+    # Burn-only extra profile from period_tools uses store profile name/plan
+    burn_extra = by_key["claude-code-burn"]
+    assert burn_extra["name"] == "Claude Code"
+    assert burn_extra["badge"] == "Freelance Burn"
+    assert burn_extra["plan"] == "Claude Pro"
+    assert burn_extra["isPayg"] is False
+    assert burn_extra["remaining"]["kind"] == "usage_only"
+    assert burn_extra["burn"]["dayTokens"] == 1200
+    assert burn_extra["burn"]["weekTokens"] == 4500
+
+    # Burn-only extra profile without store entry splits " \u00b7 " fallback
+    codex_fb = by_key["codex-fallback"]
+    assert codex_fb["name"] == "Codex"
+    assert codex_fb["badge"] == "Fallback Slug"
+    assert codex_fb["plan"] == "Recorded usage"
+    assert codex_fb["isPayg"] is False
+
+    # _default_provider_rank orders all extra profiles directly after their parent
+    ranked = sorted(
+        [
+            "muse-2",
+            "muse",
+            "grok-2",
+            "grok",
+            "antigravity-2",
+            "antigravity",
+            "codex-2",
+            "codex",
+            "zcode-2",
+            "zcode",
+            "opencode-provider:p1",
+            "opencode",
+            "opencode-go-2",
+            "opencode-go",
+            "claude-code-2",
+            "claude-code",
+        ],
+        key=host_module._default_provider_rank,
+    )
+    assert ranked == [
+        "claude-code",
+        "claude-code-2",
+        "opencode-go",
+        "opencode-go-2",
+        "opencode",
+        "opencode-provider:p1",
+        "zcode",
+        "zcode-2",
+        "codex",
+        "codex-2",
+        "antigravity",
+        "antigravity-2",
+        "grok",
+        "grok-2",
+        "muse",
+        "muse-2",
+    ]
+
+
+def test_fetch_usage_fetches_connections_in_non_demo_mode_and_passes_to_merge():
+    connections = [
+        {
+            "source": "claude_local",
+            "name": "Claude Code",
+            "profiles": [
+                {"key": "default", "name": "Personal", "plan": "Claude Max"},
+                {"key": "claude-code-work", "name": "Office", "plan": "Claude Pro"},
+            ],
+        }
+    ]
+    client = ProfileRecordingClient(connections=connections)
+    client.hud = {
+        "capacity": [
+            {
+                "providerKey": "claude-code",
+                "providerName": "Claude Code",
+                "rows": [{"limitKey": "5h", "label": "5h", "pct": 15, "unit": "pct"}],
+            },
+            {
+                "providerKey": "claude-code-work",
+                "title": "Claude Code \u00b7 claude-work-dir",
+                "rows": [{"limitKey": "5h", "label": "5h", "pct": 50, "unit": "pct"}],
+            },
+        ]
+    }
+    bridge = DesktopBridge(client, demo=False)
+    res = bridge.fetch_usage("today", "all")
+    assert res["ok"] is True
+    assert ("/api/connections", None) in client.calls
+    by_key = {p["key"]: p for p in res["report"]["providers"]}
+    assert by_key["claude-code"]["badge"] == "Personal"
+    assert by_key["claude-code-work"]["badge"] == "Office"
+
+    # Graceful fallback when /api/connections fails
+    def fail_conns(path, body=None):
+        if path == "/api/connections":
+            raise DesktopError("temporary error")
+        if path.startswith("/api/spend/hud/usage"):
+            return {}
+        if path.startswith("/api/spend/hud"):
+            return client.hud
+        raise DesktopError(path)
+
+    client.request = fail_conns
+    res_fallback = bridge.fetch_usage("today", "all")
+    assert res_fallback["ok"] is True
+    fb_by_key = {p["key"]: p for p in res_fallback["report"]["providers"]}
+    assert fb_by_key["claude-code-work"]["badge"] == "claude-work-dir"
+
+    # Demo mode never calls /api/connections
+    demo_calls = []
+
+    class TrackingDemo(DemoClient):
+        def request(self, path, body=None):
+            demo_calls.append(path)
+            return super().request(path, body)
+
+    assert DesktopBridge(TrackingDemo(), demo=True).fetch_usage("today", "all")["ok"] is True
+    assert "/api/connections" not in demo_calls
