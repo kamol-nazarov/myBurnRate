@@ -2,7 +2,8 @@
 param(
     [string]$TaskName = 'BURNRATE Dashboard',
     [switch]$NoLaunch,
-    [switch]$DryRun
+    [switch]$DryRun,
+    [switch]$Dev
 )
 
 # One-command BURNRATE installer.
@@ -12,4 +13,4 @@ param(
 # opens the native BURNRATE app window directly on the Setup Wizard.
 
 $ErrorActionPreference = 'Stop'
-& (Join-Path $PSScriptRoot 'scripts\install-burnrate.ps1') -TaskName $TaskName -NoLaunch:$NoLaunch -DryRun:$DryRun
+& (Join-Path $PSScriptRoot 'scripts\install-burnrate.ps1') -TaskName $TaskName -NoLaunch:$NoLaunch -DryRun:$DryRun -Dev:$Dev

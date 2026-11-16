@@ -3,15 +3,17 @@
 ``/api/hud/native`` starts a fixed-path executable so the browser UI can bring
 up the desktop window. The paths are fixed, but anyone who can write to one of
 them can put a different binary there. Before spawning, verify the file's
-Authenticode signature and refuse a signed-but-foreign or tampered binary.
+Authenticode signature and refuse tampered, foreign, or unverifiable binaries.
 
-Release builds are unsigned while code signing is pending, so an unsigned file
-is allowed by default and reported in the response. Set
-``BURNRATE_REQUIRE_SIGNED_NATIVE=1`` to refuse unsigned binaries too. The
-publisher allowlist defaults to SignPath (the release signer) and the project
-name for locally signed builds; override it with
-``BURNRATE_NATIVE_PUBLISHERS`` (comma-separated substrings of the certificate
-subject).
+A signature is considered ``valid`` only when its Authenticode status is
+``Valid`` **and** the signing certificate's thumbprint matches a pinned
+thumbprint. A validly signed file whose thumbprint is not pinned is classified
+as ``untrusted`` (allowed by default while release signing is pending, and
+refused when ``BURNRATE_REQUIRE_SIGNED_NATIVE=1``). ``foreign``, ``tampered``,
+and ``unknown`` (verification failures or unrecognized statuses) are always
+refused. Extra pinned thumbprints may be supplied via
+``BURNRATE_NATIVE_THUMBPRINTS`` (comma-separated, case-insensitive hex with
+spaces stripped).
 """
 
 from __future__ import annotations
@@ -27,9 +29,10 @@ from pathlib import Path
 
 LOG = logging.getLogger("burnrate.native_launch")
 
-PUBLISHERS_ENV = "BURNRATE_NATIVE_PUBLISHERS"
+THUMBPRINTS_ENV = "BURNRATE_NATIVE_THUMBPRINTS"
 REQUIRE_SIGNED_ENV = "BURNRATE_REQUIRE_SIGNED_NATIVE"
-DEFAULT_PUBLISHERS = ("SignPath Foundation", "myBurnRate")
+# TODO(signpath): pin the official SignPath release certificate thumbprint(s) once enrolled.
+DEFAULT_THUMBPRINTS: tuple[str, ...] = ()
 
 VALID = "valid"
 UNSIGNED = "unsigned"
@@ -38,9 +41,8 @@ FOREIGN = "foreign"
 TAMPERED = "tampered"
 UNKNOWN = "unknown"
 
-# A valid signature from someone else, or a signature that no longer matches
-# the file, is refused even without strict mode.
-BLOCKED_ALWAYS = frozenset({FOREIGN, TAMPERED})
+# A foreign, tampered, or unverifiable signature is refused even without strict mode.
+BLOCKED_ALWAYS = frozenset({FOREIGN, TAMPERED, UNKNOWN})
 
 
 @contextmanager
@@ -86,10 +88,15 @@ def _truthy(value: str | None) -> bool:
     return (value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _publishers() -> tuple[str, ...]:
-    configured = os.getenv(PUBLISHERS_ENV, "")
-    names = tuple(part.strip() for part in configured.split(",") if part.strip())
-    return names or DEFAULT_PUBLISHERS
+def _normalize_thumbprint(value: str) -> str:
+    return "".join(value.split()).casefold()
+
+
+def _pinned_thumbprints() -> frozenset[str]:
+    configured = os.getenv(THUMBPRINTS_ENV, "")
+    extra = (_normalize_thumbprint(part) for part in configured.split(","))
+    base = (_normalize_thumbprint(part) for part in DEFAULT_THUMBPRINTS)
+    return frozenset(item for item in (*base, *extra) if item)
 
 
 def _powershell() -> str | None:
@@ -105,16 +112,18 @@ def _powershell() -> str | None:
     return next((str(candidate) for candidate in candidates if candidate.is_file()), None)
 
 
-def _authenticode(path: Path) -> tuple[str, str]:
-    """Return (status, certificate subject) for ``path``."""
+def _authenticode(path: Path) -> tuple[str, str, str]:
+    """Return (status, thumbprint, subject) for ``path``."""
     shell = _powershell()
     if shell is None:
         raise RuntimeError("PowerShell is not available for a signature check")
     quoted = str(path).replace("'", "''")
     script = (
         f"$sig = Get-AuthenticodeSignature -LiteralPath '{quoted}'; "
-        "$subject = if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { '' }; "
-        "[pscustomobject]@{ status = $sig.Status.ToString(); subject = $subject } "
+        "$cert = $sig.SignerCertificate; "
+        "$thumbprint = if ($cert) { $cert.Thumbprint } else { '' }; "
+        "$subject = if ($cert) { $cert.Subject } else { '' }; "
+        "[pscustomobject]@{ status = $sig.Status.ToString(); thumbprint = $thumbprint; subject = $subject } "
         "| ConvertTo-Json -Compress"
     )
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
@@ -129,17 +138,21 @@ def _authenticode(path: Path) -> tuple[str, str]:
     if completed.returncode != 0:
         raise RuntimeError((completed.stderr or "signature check failed").strip()[:200])
     report = json.loads(completed.stdout or "{}")
-    return str(report.get("status") or ""), str(report.get("subject") or "")
+    return (
+        str(report.get("status") or ""),
+        str(report.get("thumbprint") or ""),
+        str(report.get("subject") or ""),
+    )
 
 
 def signature_state(path: Path) -> str:
     """Classify the binary's Authenticode signature."""
-    status, subject = _authenticode(path)
+    status, thumbprint, _subject = _authenticode(path)
     normalized = status.strip().casefold()
     if normalized == "valid":
-        haystack = subject.casefold()
-        trusted = any(name.casefold() in haystack for name in _publishers())
-        return VALID if trusted else FOREIGN
+        pinned = _pinned_thumbprints()
+        thumb = _normalize_thumbprint(thumbprint)
+        return VALID if (thumb and thumb in pinned) else UNTRUSTED
     if normalized in {"notsigned", "notsupported"}:
         return UNSIGNED
     if normalized == "hashmismatch":
@@ -153,9 +166,10 @@ def signature_state(path: Path) -> str:
 def evaluate(path: Path) -> tuple[bool, str]:
     """Decide whether ``path`` may be launched, and report its signature state.
 
-    Returns ``(allowed, state)``. Verification failures are reported as
-    ``unknown``: allowed by default so a missing PowerShell cannot break the
-    HUD, refused when ``BURNRATE_REQUIRE_SIGNED_NATIVE`` is set.
+    Returns ``(allowed, state)``. ``valid`` is always allowed; ``foreign``,
+    ``tampered``, and ``unknown`` (including verification failures) are always
+    refused. ``unsigned`` and ``untrusted`` are allowed by default and refused
+    when ``BURNRATE_REQUIRE_SIGNED_NATIVE`` is set.
     """
     strict = _truthy(os.getenv(REQUIRE_SIGNED_ENV))
     try:

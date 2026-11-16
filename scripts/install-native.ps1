@@ -10,14 +10,23 @@ param(
 # the per-user NSIS installer (/S) into %LOCALAPPDATA%\Programs\BURNRATE, and
 # opens BURNRATE.exe.
 #
-# Usage:
-#   irm https://raw.githubusercontent.com/kamol-nazarov/myBurnRate/prod/scripts/install-native.ps1 | iex
+# Requires sibling scripts\minisign-verify.ps1 on disk (clone or download the
+# repository scripts before running).
 
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 $Repo = 'kamol-nazarov/myBurnRate'
 $FeedUrl = "https://github.com/$Repo/releases/latest/download/native-latest.json"
+$MinisignPublicKey = 'dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVDQUNGNEMxNUMxRkNENkQKUldSdHpSOWN3ZlNzWE9yblR0Q1BIZUFTY3VhbWFFeHB2OWVkOVZhUjF5dVNaQm1CWHZTM0I3WkMK'
+
+if ([string]::IsNullOrWhiteSpace($PSScriptRoot)) {
+    throw 'install-native.ps1 must be run from a file alongside minisign-verify.ps1.'
+}
+$VerifierPath = Join-Path $PSScriptRoot 'minisign-verify.ps1'
+if (-not (Test-Path -LiteralPath $VerifierPath -PathType Leaf)) {
+    throw "Required signature verifier not found: $VerifierPath"
+}
 
 Write-Host "Checking latest myBurnRate release from $Repo..." -ForegroundColor Cyan
 $FeedRaw = Invoke-WebRequest -Uri $FeedUrl -UseBasicParsing -TimeoutSec 30
@@ -70,14 +79,8 @@ try {
     $SigPath = Join-Path $WorkDir ($ExpectedName + '.sig')
     Invoke-WebRequest -Uri $sigUrl -OutFile $SigPath -UseBasicParsing -TimeoutSec 30
 
-    $VerifierPath = Join-Path $PSScriptRoot 'minisign-verify.ps1'
-    if (-not (Test-Path -LiteralPath $VerifierPath)) {
-        $VerifierPath = Join-Path $WorkDir 'minisign-verify.ps1'
-        $VerifierUrl = "https://raw.githubusercontent.com/$Repo/prod/scripts/minisign-verify.ps1"
-        Invoke-WebRequest -Uri $VerifierUrl -OutFile $VerifierPath -UseBasicParsing -TimeoutSec 30
-    }
     . $VerifierPath
-    Test-MinisignFile -Path $InstallerPath -SignaturePath $SigPath -ExpectedFile $ExpectedName
+    Test-MinisignFile -Path $InstallerPath -SignaturePath $SigPath -ExpectedFile $ExpectedName -PublicKey $MinisignPublicKey
     Write-Host 'Minisign signature verified against the pinned update key.' -ForegroundColor Green
 
     $Proc = Start-Process -FilePath $InstallerPath -ArgumentList @('/S') -Wait -PassThru

@@ -583,6 +583,7 @@ def _httpx_fetch(url: str, timeout: float) -> Fetched:
     client = httpx.Client(
         verify=context,
         timeout=timeout,
+        trust_env=False,
         follow_redirects=False,
         headers={
             "User-Agent": f"BURNRATE/{__version__}",

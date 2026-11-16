@@ -5,8 +5,8 @@
 ; Neither kill uses /T: an update's installer is a child of the app.
 
 !macro BURNRATE_STOP_PROCESSES
-  nsExec::Exec 'taskkill /F /IM burnrate-desktop.exe'
-  nsExec::Exec 'taskkill /F /IM burnrate-service.exe'
+  nsExec::Exec '"$SYSDIR\taskkill.exe" /F /IM burnrate-desktop.exe'
+  nsExec::Exec '"$SYSDIR\taskkill.exe" /F /IM burnrate-service.exe'
   Sleep 800
 !macroend
 

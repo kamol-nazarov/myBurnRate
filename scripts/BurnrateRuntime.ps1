@@ -768,25 +768,28 @@ function Initialize-BurnrateRepoEnvironment {
 }
 
 function Stop-BurnrateDesktopProcesses {
-    Get-Process -Name 'burnrate-desktop' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-    Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*burnrate-desktop.exe*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Get-Process -Name 'BURNRATE', 'burnrate-desktop' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" -ErrorAction SilentlyContinue | Where-Object {
+        $_.CommandLine -like '*BURNRATE.exe*' -or $_.CommandLine -like '*burnrate-desktop.exe*'
+    } | ForEach-Object {
+        Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Resolve-BurnrateDesktopBinary {
-    $repoRoot = Get-BurnrateRepoRoot
-    $dataRoot = Get-BurnrateDataRoot
-    $installedExe = Join-Path $dataRoot 'burnrate-desktop.exe'
-    $localReleaseExe = Join-Path $repoRoot 'src-tauri\target\release\burnrate-desktop.exe'
+    param([switch]$Dev)
 
-    if (Test-Path -LiteralPath $localReleaseExe) {
-        Stop-BurnrateDesktopProcesses
-        Copy-Item -LiteralPath $localReleaseExe -Destination $installedExe -Force
-        return $installedExe
+    $repoRoot = Get-BurnrateRepoRoot
+    $localReleaseExe = Join-Path $repoRoot 'src-tauri\target\release\burnrate-desktop.exe'
+    $programsExe = if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        Join-Path $env:LOCALAPPDATA 'Programs\BURNRATE\BURNRATE.exe'
+    } else {
+        $null
     }
 
     $expectedVersion = $null
     $tauriConfPath = Join-Path $repoRoot 'src-tauri\tauri.conf.json'
-    if (Test-Path -LiteralPath $tauriConfPath) {
+    if (Test-Path -LiteralPath $tauriConfPath -PathType Leaf) {
         try {
             $tauriConf = Get-Content -LiteralPath $tauriConfPath -Raw | ConvertFrom-Json
             $expectedVersion = [string]$tauriConf.version
@@ -794,56 +797,48 @@ function Resolve-BurnrateDesktopBinary {
         }
     }
 
-    $installedVersion = $null
-    if (Test-Path -LiteralPath $installedExe) {
+    if ($Dev -and (Test-Path -LiteralPath $localReleaseExe -PathType Leaf)) {
         try {
-            $installedVersion = [string](Get-Item -LiteralPath $installedExe).VersionInfo.ProductVersion
+            $localVersion = [string](Get-Item -LiteralPath $localReleaseExe).VersionInfo.ProductVersion
         } catch {
+            $localVersion = $null
         }
-        if ($expectedVersion -and $installedVersion -eq $expectedVersion) {
-            return $installedExe
+        if (-not [string]::IsNullOrWhiteSpace($expectedVersion) -and $localVersion -eq $expectedVersion) {
+            return $localReleaseExe
         }
     }
 
-    $originUrl = ''
-    try {
-        $originUrl = (& git -C $repoRoot config --get remote.origin.url 2>$null).Trim()
-    } catch {
-    }
-    $repoBase = if ($originUrl -match '^https://github\.com/[^/]+/[^/.]+') {
-        $Matches[0]
-    } else {
-        'https://github.com/kamol-nazarov/myBurnRate'
-    }
-    $releaseUrl = "$repoBase/releases/latest/download/burnrate-desktop.exe"
-    $tmpExe = "$installedExe.download"
-    try {
-        Write-Host 'Downloading native BURNRATE desktop shell...'
-        Invoke-WebRequest -UseBasicParsing -TimeoutSec 25 -Uri $releaseUrl -OutFile $tmpExe
-        if ((Test-Path -LiteralPath $tmpExe) -and ((Get-Item -LiteralPath $tmpExe).Length -gt 1000000)) {
-            Stop-BurnrateDesktopProcesses
-            Move-Item -LiteralPath $tmpExe -Destination $installedExe -Force
-            return $installedExe
-        }
-    } catch {
-        Remove-Item -LiteralPath $tmpExe -Force -ErrorAction SilentlyContinue
+    if ($programsExe -and (Test-Path -LiteralPath $programsExe -PathType Leaf)) {
+        return $programsExe
     }
 
-    if (Test-Path -LiteralPath $installedExe) {
-        return $installedExe
-    }
-
-    $cargoCmd = Get-Command cargo -ErrorAction SilentlyContinue
-    $manifestPath = Join-Path $repoRoot 'src-tauri\Cargo.toml'
-    if ($cargoCmd -and (Test-Path -LiteralPath $manifestPath)) {
+    $installNativeScript = Join-Path $PSScriptRoot 'install-native.ps1'
+    if ($programsExe -and (Test-Path -LiteralPath $installNativeScript -PathType Leaf)) {
         try {
-            Write-Host 'Building native BURNRATE desktop shell with Cargo...'
-            & $cargoCmd.Source build --release --manifest-path $manifestPath
-            if (Test-Path -LiteralPath $localReleaseExe) {
-                Copy-Item -LiteralPath $localReleaseExe -Destination $installedExe -Force
-                return $installedExe
+            & $installNativeScript -NoLaunch
+            if (Test-Path -LiteralPath $programsExe -PathType Leaf) {
+                return $programsExe
             }
         } catch {
+            Write-Host "Native desktop installer unavailable ($($_.Exception.Message))"
+        }
+    }
+
+    if ($Dev) {
+        $cargoCmd = Get-Command cargo -ErrorAction SilentlyContinue
+        $manifestPath = Join-Path $repoRoot 'src-tauri\Cargo.toml'
+        if ($cargoCmd -and (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            try {
+                Write-Host 'Building native BURNRATE desktop shell with Cargo...'
+                & $cargoCmd.Source build --release --manifest-path $manifestPath
+                if (Test-Path -LiteralPath $localReleaseExe -PathType Leaf) {
+                    $localVersion = [string](Get-Item -LiteralPath $localReleaseExe).VersionInfo.ProductVersion
+                    if (-not [string]::IsNullOrWhiteSpace($expectedVersion) -and $localVersion -eq $expectedVersion) {
+                        return $localReleaseExe
+                    }
+                }
+            } catch {
+            }
         }
     }
 
@@ -851,7 +846,10 @@ function Resolve-BurnrateDesktopBinary {
 }
 
 function Install-BurnrateShortcuts {
-    param([switch]$DryRun)
+    param(
+        [switch]$DryRun,
+        [switch]$Dev
+    )
     $repoRoot = Get-BurnrateRepoRoot
     $dataRoot = Get-BurnrateDataRoot
     $iconSource = Join-Path $repoRoot 'src-tauri\icons\icon.ico'
@@ -866,7 +864,7 @@ function Install-BurnrateShortcuts {
         Copy-Item -LiteralPath $iconSource -Destination $iconDest -Force
     }
 
-    $desktopExe = Resolve-BurnrateDesktopBinary
+    $desktopExe = Resolve-BurnrateDesktopBinary -Dev:$Dev
     $targetPath = $desktopExe
     $arguments = ''
     if (-not $targetPath) {
@@ -966,7 +964,8 @@ public class BurnrateShortcutAppId {
 function Start-BurnrateDesktopWindow {
     param(
         [switch]$OpenSetup,
-        [switch]$DryRun
+        [switch]$DryRun,
+        [switch]$Dev
     )
     $setupUri = "http://$($script:BurnrateHost):$($script:BurnratePort)/setup"
     $appUri = if ($OpenSetup) { $setupUri } else { "http://$($script:BurnrateHost):$($script:BurnratePort)/?app=1" }
@@ -980,9 +979,9 @@ function Start-BurnrateDesktopWindow {
         return
     }
 
-    $desktopExe = Resolve-BurnrateDesktopBinary
+    $desktopExe = Resolve-BurnrateDesktopBinary -Dev:$Dev
     if ($desktopExe -and (Test-Path -LiteralPath $desktopExe)) {
-        Get-Process -Name 'burnrate-desktop' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        Stop-BurnrateDesktopProcesses
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $desktopExe
         $psi.WorkingDirectory = Get-BurnrateWorkingDirectory
@@ -1003,7 +1002,8 @@ function Install-BurnrateDashboard {
     param(
         [string]$TaskName = $script:BurnrateTaskName,
         [switch]$NoLaunch,
-        [switch]$DryRun
+        [switch]$DryRun,
+        [switch]$Dev
     )
     if (-not $DryRun) {
         Initialize-BurnrateDirectories
@@ -1021,9 +1021,9 @@ function Install-BurnrateDashboard {
     Register-BurnrateWatchdogTask -Launch $launch -DryRun:$DryRun
     if ($DryRun) {
         Start-BurnrateDashboard -DryRun
-        Install-BurnrateShortcuts -DryRun
+        Install-BurnrateShortcuts -DryRun -Dev:$Dev
         if (-not $NoLaunch) {
-            Start-BurnrateDesktopWindow -OpenSetup -DryRun
+            Start-BurnrateDesktopWindow -OpenSetup -DryRun -Dev:$Dev
         }
         return
     }
@@ -1031,9 +1031,9 @@ function Install-BurnrateDashboard {
         Stop-BurnrateDashboard
     }
     Start-BurnrateDashboard
-    Install-BurnrateShortcuts
+    Install-BurnrateShortcuts -Dev:$Dev
     if (-not $NoLaunch) {
-        Start-BurnrateDesktopWindow -OpenSetup
+        Start-BurnrateDesktopWindow -OpenSetup -Dev:$Dev
     }
 }
 
