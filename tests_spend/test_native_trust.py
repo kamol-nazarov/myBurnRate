@@ -168,6 +168,21 @@ def test_embedded_minisign_public_key_matches_python_module() -> None:
         assert match.group(1) == nu.PUBLIC_KEY_B64, path.name
 
 
+def test_embedded_minisign_verifier_matches_minisign_verify_ps1() -> None:
+    def extract(path: Path) -> tuple[str, str]:
+        text = path.read_text(encoding="utf-8").replace("\r\n", "\n")
+        typedef = re.search(r"\$minisignTypeDef\s*=\s*@'\n(.*?)\n'@", text, re.S)
+        assert typedef is not None, f"$minisignTypeDef missing in {path.name}"
+        wrapper = re.search(r"(^function Test-MinisignFile\s*\{.*?^\})", text, re.M | re.S)
+        assert wrapper is not None, f"Test-MinisignFile missing in {path.name}"
+        return typedef.group(1), wrapper.group(1)
+
+    verifier_typedef, verifier_wrapper = extract(SCRIPTS / "minisign-verify.ps1")
+    installer_typedef, installer_wrapper = extract(SCRIPTS / "install-native.ps1")
+    assert installer_typedef == verifier_typedef
+    assert installer_wrapper == verifier_wrapper
+
+
 @pytest.mark.parametrize("alg", [b"ED", b"Ed"])
 def test_minisign_verify_ps1_verifies_real_signatures_in_ps5_and_pwsh(tmp_path: Path, alg: bytes) -> None:
     shells = _available_shells()
