@@ -229,6 +229,34 @@ def break_glass_matches(path, candidate, configured):
     return bool(expected and hmac.compare_digest(digest(candidate), expected))
 
 
+def extract_cookie(response, name=COOKIE):
+    cookies = getattr(response, "cookies", None)
+    if cookies is not None:
+        try:
+            value = cookies.get(name)
+        except Exception:
+            value = None
+        if value:
+            return str(value)
+    headers = getattr(response, "headers", None)
+    if headers is not None:
+        if hasattr(headers, "get_list"):
+            raw_list = headers.get_list("set-cookie")
+        else:
+            raw = headers.get("set-cookie")
+            raw_list = [raw] if raw else []
+        if raw_list:
+            from http.cookies import SimpleCookie
+            for raw in raw_list:
+                if not raw:
+                    continue
+                parsed = SimpleCookie()
+                parsed.load(raw)
+                if name in parsed and parsed[name].value:
+                    return parsed[name].value
+    return ""
+
+
 def set_session_cookie(response, request, data):
     response.set_cookie(COOKIE, data["sessionToken"], httponly=True, samesite="lax", path="/",
                         secure=request.url.scheme == "https", max_age=SESSION_DAYS * 86400)

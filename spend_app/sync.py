@@ -1194,6 +1194,7 @@ def post_to_configured_hub(
     body: dict,
     *,
     strict: bool = False,
+    cookie_out: dict | None = None,
 ) -> dict | None:
     """Forward a write mutation from a paired Spoke to the central Hub.
 
@@ -1225,6 +1226,7 @@ def post_to_configured_hub(
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
+        "X-BURNRATE-Request": "1",
     }
     test_client = _HUB_TEST_CLIENTS.get(hub_url)
     try:
@@ -1255,6 +1257,9 @@ def post_to_configured_hub(
             if strict:
                 raise HubMutationError("The hub returned an invalid save response. Retry with the same request identifier.")
             return None
+        if cookie_out is not None:
+            from spend_app.auth_model import extract_cookie
+            cookie_out["session"] = extract_cookie(response)
         clear_hub_proxy_cache()
         return data
     except HubMutationError:

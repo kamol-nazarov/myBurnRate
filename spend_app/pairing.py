@@ -1,5 +1,6 @@
 """Host-bound, expiring, atomic, single-use invitation exchange."""
 import hmac
+import ipaddress
 import secrets
 from datetime import timedelta
 from urllib.parse import urlsplit
@@ -15,6 +16,15 @@ def hub_origin(url):
     if (parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password
             or parsed.path not in {"", "/"} or parsed.query or parsed.fragment):
         raise ValueError("Use a hub HTTP(S) origin without a path, credentials, query or fragment.")
+    host = parsed.hostname.lower()
+    is_loopback = host == "localhost"
+    if not is_loopback:
+        try:
+            is_loopback = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            is_loopback = False
+    if parsed.scheme != "https" and not is_loopback:
+        raise ValueError("Use an HTTPS origin for non-loopback hubs.")
     return f"{parsed.scheme}://{parsed.netloc.lower()}"
 
 
@@ -69,13 +79,14 @@ def redeem(path, actor, code, request_origin, *, now=None):
 
 def exchange_remote(hub_url, code):
     from spend_app.sync import _HUB_TEST_CLIENTS
+    headers = {"X-BURNRATE-Request": "1", "Content-Type": "application/json"}
     test_client = _HUB_TEST_CLIENTS.get(hub_url)
     if test_client is not None:
-        response = test_client.post("/api/pairing/redeem", json={"pairingCode": code})
+        response = test_client.post("/api/pairing/redeem", json={"pairingCode": code}, headers=headers)
     else:
         import httpx
         with httpx.Client(timeout=8, trust_env=False) as client:
-            response = client.post(hub_url + "/api/pairing/redeem", json={"pairingCode": code})
+            response = client.post(hub_url + "/api/pairing/redeem", json={"pairingCode": code}, headers=headers)
     if response.status_code != 200:
         raise ValueError("Pairing refused. Create a fresh code on the hub and try again.")
     result = response.json()
