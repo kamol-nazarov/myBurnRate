@@ -576,12 +576,14 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
     spoke = state.get("spokeConfig") or {}
     if state.get("role") != "spoke" or not spoke.get("enabled"):
         return None
-    hub_url = str(spoke.get("hubUrl") or "").strip().rstrip("/")
+    configured_hub_url = str(spoke.get("hubUrl") or "").strip().rstrip("/")
     token = str(spoke.get("token") or "").strip()
-    if not hub_url or not token:
+    if not configured_hub_url or not token:
         return None
-    resolved_client = client or _HUB_TEST_CLIENTS.get(hub_url)
+    from spend_app.pairing import hub_origin
     try:
+        hub_url = hub_origin(configured_hub_url)
+        resolved_client = client or _HUB_TEST_CLIENTS.get(hub_url)
         result = sync_once(
             settings,
             pricing,
@@ -597,7 +599,7 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
         with connect(settings.database_path) as connection:
             connection.execute("BEGIN IMMEDIATE")
             latest = read_setup_state(connection)
-            if latest["spokeConfig"].get("token") != token or latest["spokeConfig"].get("hubUrl") != hub_url:
+            if latest["spokeConfig"].get("token") != token or str(latest["spokeConfig"].get("hubUrl") or "").strip().rstrip("/") != configured_hub_url:
                 return {"ok": False, "error": "Pairing changed; retry sync with the current configuration."}
             latest["spokeConfig"]["lastSyncAt"] = utc_now()
             latest["spokeConfig"]["lastSyncError"] = None
@@ -613,7 +615,7 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
         with connect(settings.database_path) as connection:
             connection.execute("BEGIN IMMEDIATE")
             latest = read_setup_state(connection)
-            if latest["spokeConfig"].get("token") != token or latest["spokeConfig"].get("hubUrl") != hub_url:
+            if latest["spokeConfig"].get("token") != token or str(latest["spokeConfig"].get("hubUrl") or "").strip().rstrip("/") != configured_hub_url:
                 return {"ok": False, "error": "Pairing changed; retry sync with the current configuration."}
             latest["spokeConfig"]["lastSyncError"] = str(exc)[:240]
             write_setup_state(connection, latest)
@@ -690,10 +692,14 @@ def _call_central_server_account(
     clean_primary = (server_url or "").strip().rstrip("/") or default_central_server_url()
     if not clean_primary:
         raise ValueError("Enter your hub's address, or join with a pairing code instead.")
-    candidates = [clean_primary]
+    from spend_app.pairing import hub_origin
+
+    clean_primary = hub_origin(clean_primary)
+    raw_candidates = [clean_primary]
     for fallback in DEFAULT_CENTRAL_SERVER_URLS:
-        if clean_primary in DEFAULT_CENTRAL_SERVER_URLS and fallback not in candidates:
-            candidates.append(fallback)
+        if clean_primary in DEFAULT_CENTRAL_SERVER_URLS and fallback not in raw_candidates:
+            raw_candidates.append(fallback)
+    candidates = [hub_origin(candidate) for candidate in raw_candidates]
 
     headers = {"X-BURNRATE-Request": "1", "Content-Type": "application/json"}
     from spend_app.auth_model import extract_cookie
@@ -1280,7 +1286,12 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             spoke = state["spokeConfig"]
             if state.get("role") != "spoke" or not spoke.get("enabled"):
                 return JSONResponse({"error": "Pair this computer first."}, status_code=409)
-            _, remote, owner_session = _call_central_server_account(spoke["hubUrl"], "/api/account/login", {
+            from spend_app.pairing import hub_origin
+            try:
+                validated_hub_url = hub_origin(str(spoke.get("hubUrl") or ""))
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=422)
+            _, remote, owner_session = _call_central_server_account(validated_hub_url, "/api/account/login", {
                 "username": str(body.get("username") or ""), "password": str(body.get("password") or ""),
                 "sessionOnly": True, "deviceLabel": state.get("computerName") or "Paired computer",
             })
@@ -1311,7 +1322,11 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
         if state.get("role") != "spoke" or not spoke.get("enabled"):
             return JSONResponse({"error": "Pair this computer first."}, status_code=409)
         headers = {"Authorization": "Bearer " + str(spoke.get("token") or ""), "X-BURNRATE-Request": "1", "Content-Type": "application/json"}
-        hub_url = spoke["hubUrl"]
+        from spend_app.pairing import hub_origin
+        try:
+            hub_url = hub_origin(str(spoke.get("hubUrl") or ""))
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=422)
         from spend_app.sync import read_sync_cursor
         prior_generation = read_sync_cursor(settings.database_path, hub_url).get("generation")
         client = _HUB_TEST_CLIENTS.get(hub_url)
@@ -1361,7 +1376,12 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             if mode == "register" and len(password) < MIN_PASSWORD_LENGTH:
                 raise ValueError(f"Choose a password of at least {MIN_PASSWORD_LENGTH} characters.")
             computer_name = str(body.get("computerName") or "").strip() or _default_computer_name()
-            server_url = str(body.get("serverUrl") or "").strip() or default_central_server_url()
+            raw_server_url = str(body.get("serverUrl") or "").strip() or default_central_server_url()
+            if not raw_server_url:
+                raise ValueError("Enter your hub's address, or join with a pairing code instead.")
+            from spend_app.pairing import hub_origin
+
+            server_url = hub_origin(raw_server_url)
             setup_token = str(body.get("setupToken") or "").strip()
             preset_keys = [str(k) for k in (body.get("presetKeys") or []) if k]
             custom_plans = list(body.get("customPlans")) if isinstance(body.get("customPlans"), list) else []
@@ -1394,10 +1414,11 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             previous_spoke = previous["spokeConfig"]
             reuse_machine = (mode == "login" and previous.get("role") == "spoke"
                             and previous_spoke.get("enabled")
-                            and str(previous_spoke.get("hubUrl") or "").rstrip("/") == server_url.rstrip("/"))
+                            and str(previous_spoke.get("hubUrl") or "").rstrip("/").lower() == server_url)
             if reuse_machine:
                 remote_payload["sessionOnly"] = True
             working_url, remote_data, owner_session = _call_central_server_account(server_url, endpoint, remote_payload)
+            working_url = hub_origin(working_url)
             if reuse_machine:
                 token = str(previous_spoke.get("token") or "").strip()
                 machine = {"id": previous["account"].get("machineId")}
@@ -1571,18 +1592,21 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 raise ValueError("Expected a JSON object.")
             pairing_code = str(body.get("pairingCode") or "").strip()
             paired_id = ""
+            from spend_app.pairing import exchange_remote, hub_origin
             if pairing_code:
                 decoded = decode_pairing_code(pairing_code)
-                hub_url = str(decoded["hubUrl"]).strip().rstrip("/")
-                from spend_app.pairing import exchange_remote
+                hub_url = hub_origin(str(decoded["hubUrl"]))
                 redeemed = exchange_remote(hub_url, pairing_code)
                 token = str(redeemed["token"]).strip()
                 decoded["machineId"] = redeemed["machine"]["id"]
                 default_name = str(decoded.get("machineName") or "")
                 paired_id = str(decoded.get("machineId") or "")
             else:
-                hub_url = str(body.get("hubUrl") or "").strip().rstrip("/")
+                raw_hub_url = str(body.get("hubUrl") or "").strip()
                 token = str(body.get("token") or "").strip()
+                if not raw_hub_url and not token:
+                    raise ValueError("Provide a Pairing Code (brpair_...) or both Hub URL and Token.")
+                hub_url = hub_origin(raw_hub_url) if raw_hub_url else ""
                 default_name = ""
             if not hub_url or not token:
                 raise ValueError("Provide a Pairing Code (brpair_...) or both Hub URL and Token.")

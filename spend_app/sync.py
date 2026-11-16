@@ -1051,6 +1051,9 @@ def sync_once(
     client=None,
 ) -> dict:
     """Collect local usage/activity and push incremental rows to ``hub_url``."""
+    from spend_app.pairing import hub_origin
+
+    hub_url = hub_origin(hub_url)
     if collect_local:
         from spend_app.providers import REGISTRY
         from spend_app.quotas import poll_activity
@@ -1215,7 +1218,18 @@ def post_to_configured_hub(
     spoke = state.get("spokeConfig") or {}
     if not spoke.get("enabled"):
         return None
-    hub_url = str(spoke.get("hubUrl") or "").strip().rstrip("/")
+    raw_hub_url = str(spoke.get("hubUrl") or "").strip()
+    if raw_hub_url:
+        from spend_app.pairing import hub_origin
+
+        try:
+            hub_url = hub_origin(raw_hub_url)
+        except ValueError as exc:
+            if strict:
+                raise HubMutationError(str(exc), 422) from exc
+            return None
+    else:
+        hub_url = ""
     token = str(spoke.get("ownerSession") or "").strip()
     if path == "/api/machines" and not token:
         token = str(spoke.get("token") or "").strip()
@@ -1523,7 +1537,15 @@ def fetch_from_configured_hub(
     spoke = state.get("spokeConfig") or {}
     if not spoke.get("enabled"):
         return None
-    hub_url = str(spoke.get("hubUrl") or "").strip().rstrip("/")
+    raw_hub_url = str(spoke.get("hubUrl") or "").strip()
+    if not raw_hub_url:
+        return None
+    from spend_app.pairing import hub_origin
+
+    try:
+        hub_url = hub_origin(raw_hub_url)
+    except ValueError:
+        return None
     from spend_app.auth_model import digest, moment, parse
     token = str(spoke.get("ownerSession") or "").strip()
     expiry = parse(spoke.get("ownerSessionExpiresAt"))
@@ -1566,6 +1588,12 @@ _HUB_REJECTED_CREDENTIALS: set[str] = set()
 
 def _read_hub_copy(cache_key: tuple, hub_url: str, token: str, path: str, params: dict,
                    timeout: float = 8.0) -> dict | None:
+    from spend_app.pairing import hub_origin
+
+    try:
+        hub_url = hub_origin(hub_url)
+    except ValueError:
+        return None
     headers = {"Authorization": f"Bearer {token}"}
     test_client = _HUB_TEST_CLIENTS.get(hub_url)
     try:

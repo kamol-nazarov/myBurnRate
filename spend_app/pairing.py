@@ -12,7 +12,7 @@ from spend_app.db import connect
 
 
 def hub_origin(url):
-    parsed = urlsplit(url)
+    parsed = urlsplit(str(url or "").strip())
     if (parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password
             or parsed.path not in {"", "/"} or parsed.query or parsed.fragment):
         raise ValueError("Use a hub HTTP(S) origin without a path, credentials, query or fragment.")
@@ -79,6 +79,7 @@ def redeem(path, actor, code, request_origin, *, now=None):
 
 def exchange_remote(hub_url, code):
     from spend_app.sync import _HUB_TEST_CLIENTS
+    hub_url = hub_origin(hub_url)
     headers = {"X-BURNRATE-Request": "1", "Content-Type": "application/json"}
     test_client = _HUB_TEST_CLIENTS.get(hub_url)
     if test_client is not None:

@@ -300,14 +300,18 @@ def test_end_to_end_sync_once_client_to_hub(tmp_path: Path) -> None:
         )
 
     hub_app = create_app(hub_settings, enable_scheduler=False)
-    hub_client = TestClient(hub_app)
-    reg = hub_client.post("/api/machines", headers=SETUP_HEADERS, json={"action": "register", "name": "Field Laptop"}).json()
+    hub_client = TestClient(hub_app, base_url="https://testserver")
+    reg = hub_client.post(
+        "/api/machines",
+        headers={"X-BURNRATE-Request": "1", "Origin": "https://testserver"},
+        json={"action": "register", "name": "Field Laptop"},
+    ).json()
 
     # Run sync_once from remote_settings -> hub_client
     first_sync = sync_once(
         remote_settings,
         pricing,
-        hub_url="http://testserver",
+        hub_url="https://testserver",
         token=reg["token"],
         machine_name="Field Laptop",
         collect_local=False,
@@ -320,7 +324,7 @@ def test_end_to_end_sync_once_client_to_hub(tmp_path: Path) -> None:
     second_sync = sync_once(
         remote_settings,
         pricing,
-        hub_url="http://testserver",
+        hub_url="https://testserver",
         token=reg["token"],
         machine_name="Field Laptop",
         collect_local=False,

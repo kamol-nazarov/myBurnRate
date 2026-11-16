@@ -23,6 +23,13 @@ def auth_router(settings):
             state = read_setup_state(connection)
         if state.get("role") != "spoke" or not state["spokeConfig"].get("enabled"):
             return None
+        raw_hub_url = str(state["spokeConfig"].get("hubUrl") or "").strip()
+        if raw_hub_url:
+            from spend_app.pairing import hub_origin
+            try:
+                hub_origin(raw_hub_url)
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=422)
         try:
             cookie_out = {} if path == "/api/auth/session/rotate" else None
             result = (fetch_from_configured_hub(settings, path, ttl_seconds=0) if body is None
