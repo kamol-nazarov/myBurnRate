@@ -158,6 +158,12 @@ def _no_real_opencode_profiles(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_claude_accounts(monkeypatch):
+    """Extra Claude accounts in the developer's home must not become quota lanes or profiles in tests."""
+    monkeypatch.setattr("spend_app.claude_accounts.extra_accounts", lambda: ())
+
+
+@pytest.fixture(autouse=True)
 def _block_live_httpx(monkeypatch):
     """Fail httpx calls whose host is not loopback, unless the client is mocked.
 

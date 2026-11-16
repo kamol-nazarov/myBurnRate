@@ -461,7 +461,7 @@ def test_connections_mutate_recheck_and_completion_redact_stored_details(
         }
     )
 
-    # recheck LocationError -> stored in connections.v1 detail
+    # recheck LocationError -> stored in connections.v2 detail
     inspector.fail_on_recheck = True
     inspector.recheck_error = message
     with pytest.raises(LocationError):
@@ -478,7 +478,7 @@ def test_connections_mutate_recheck_and_completion_redact_stored_details(
         raw_v1 = conn.execute(
             "SELECT value FROM app_meta WHERE key=?", (connections.KEY,)
         ).fetchone()[0]
-    detail_recheck = json.loads(raw_v1)["bindings"]["codex_local"]["detail"]
+    detail_recheck = json.loads(raw_v1)["profiles"]["codex_local"]["default"]["detail"]
     _assert_none_survive(detail_recheck, forbidden)
 
     # completion(issues) with accepted == 0
@@ -487,7 +487,7 @@ def test_connections_mutate_recheck_and_completion_redact_stored_details(
         raw_v1_zero = conn.execute(
             "SELECT value FROM app_meta WHERE key=?", (connections.KEY,)
         ).fetchone()[0]
-    detail_zero = json.loads(raw_v1_zero)["bindings"]["codex_local"]["detail"]
+    detail_zero = json.loads(raw_v1_zero)["profiles"]["codex_local"]["default"]["detail"]
     _assert_none_survive(detail_zero, forbidden)
 
     # completion(issues) with accepted > 0
@@ -496,7 +496,7 @@ def test_connections_mutate_recheck_and_completion_redact_stored_details(
         raw_v1_pos = conn.execute(
             "SELECT value FROM app_meta WHERE key=?", (connections.KEY,)
         ).fetchone()[0]
-    detail_pos = json.loads(raw_v1_pos)["bindings"]["codex_local"]["detail"]
+    detail_pos = json.loads(raw_v1_pos)["profiles"]["codex_local"]["default"]["detail"]
     _assert_none_survive(detail_pos, forbidden)
 
 
