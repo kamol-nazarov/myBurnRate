@@ -1075,15 +1075,143 @@ def test_short_explicit_secrets_redacted_in_redact_and_ingest_run(
 def test_prose_preserved_in_redact_and_ingest_run(prose: str, tmp_path: Path) -> None:
     assert redact(prose) == prose
 
-    db_path = tmp_path / "prose.db"
-    initialize(db_path)
-    with connect(db_path) as conn:
+    settings = _settings(tmp_path, "prose.db")
+    initialize(settings.database_path)
+    with connect(settings.database_path) as conn:
         run = IngestRun.start(conn, "codex_local")
         run.finish(status="failed", error=prose)
         stored = conn.execute(
             "SELECT error FROM ingest_runs WHERE id=?", (run.id,)
         ).fetchone()[0]
     assert stored == prose
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "dashboard.log").write_text(prose + "\n", encoding="utf-8")
+    report_text = support_report.build_report(settings, log_dir=logs)
+    assert prose in report_text
+
+
+SUFFIX_AND_MULTILINE_CASES: list[tuple[str, str, tuple[str, ...]]] = [
+    ("suffix_bracket_password", "token: missing]password=x", ("missing]", "password=x", "=x")),
+    (
+        "suffix_bracket_secret",
+        "password: missing]syntheticSecret123",
+        ("missing]", "syntheticSecret123"),
+    ),
+    (
+        "suffix_paren_colon_password",
+        "token: missing):password=x",
+        ("missing):", "password=x", "=x"),
+    ),
+    (
+        "suffix_bracket_password_pct",
+        "token%3A%20missing%5Dpassword%3Dx",
+        ("missing]", "password=x", "=x"),
+    ),
+    (
+        "suffix_bracket_secret_pct",
+        "password%3A%20missing%5DsyntheticSecret123",
+        ("missing]", "syntheticSecret123"),
+    ),
+    (
+        "suffix_paren_colon_password_pct",
+        "token%3A%20missing%29%3Apassword%3Dx",
+        ("missing):", "password=x", "=x"),
+    ),
+    (
+        "suffix_bracket_space_then_password",
+        "token: missing] password=x",
+        ("password=x", "=x"),
+    ),
+    (
+        "suffix_file_is_missing_bracket_password",
+        "token: file is missing]password=x",
+        ("password=x", "=x"),
+    ),
+    (
+        "multiline_json_lf",
+        '{"password":\n "Ab9SensitiveValue", "keep": "ok"}',
+        ("Ab9SensitiveValue",),
+    ),
+    (
+        "multiline_json_crlf",
+        '{"password":\r\n  "Ab9SensitiveValue", "keep": "ok"}',
+        ("Ab9SensitiveValue",),
+    ),
+    (
+        "multiline_json_pct_decoded_lf",
+        "%7B%22password%22%3A%0A%20%22Ab9SensitiveValue%22%7D",
+        ("Ab9SensitiveValue",),
+    ),
+    (
+        "multiline_json_escaped_lf",
+        r'{\"password\":' + "\n" + r' \"Ab9SensitiveValue\"}',
+        ("Ab9SensitiveValue",),
+    ),
+    (
+        "multiline_unquoted_colon_lf",
+        "password:\nAb9SensitiveValue",
+        ("Ab9SensitiveValue",),
+    ),
+    (
+        "multiline_unquoted_eq_crlf",
+        "password=\r\nAb9SensitiveValue",
+        ("Ab9SensitiveValue",),
+    ),
+    (
+        "multiline_colon_newline_not_exempt_prose",
+        "password:\nmissing",
+        ("missing",),
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "case_id,raw_input,forbidden",
+    SUFFIX_AND_MULTILINE_CASES,
+    ids=[c[0] for c in SUFFIX_AND_MULTILINE_CASES],
+)
+def test_suffix_leak_and_multiline_json_regressions(
+    case_id, raw_input, forbidden, tmp_path: Path, monkeypatch
+) -> None:
+    cleaned = redact(raw_input)
+    assert "[redacted]" in cleaned
+    _assert_none_survive(cleaned, forbidden)
+
+    settings = _settings(tmp_path, "suffix_multiline.db")
+    initialize(settings.database_path)
+    with connect(settings.database_path) as conn:
+        run = IngestRun.start(conn, "codex_local")
+        run.finish(status="failed", error=raw_input)
+        stored = conn.execute(
+            "SELECT error FROM ingest_runs WHERE id=?", (run.id,)
+        ).fetchone()[0]
+    assert "[redacted]" in stored
+    _assert_none_survive(stored, forbidden)
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "dashboard.log").write_text(raw_input + "\n", encoding="utf-8")
+
+    report = support_report.build_report(settings, log_dir=logs)
+    assert "[redacted]" in report
+    _assert_none_survive(report, forbidden)
+
+    monkeypatch.setattr("spend_app.service.log_dir", lambda: logs)
+    app = create_app(settings, enable_scheduler=False)
+    with TestClient(app) as client:
+        resp = client.post("/api/setup/diagnostics", headers={"X-BURNRATE-Request": "1"})
+    assert resp.status_code == 200
+    diag_text = resp.json()["text"]
+    assert "[redacted]" in diag_text
+    _assert_none_survive(diag_text, forbidden)
+
+
+def test_header_to_eol_stays_bounded_to_line() -> None:
+    sample = "Authorization: Bearer secret123\nX-Keep: visible\ntoken: missing\n"
+    cleaned = redact(sample)
+    assert cleaned == "Authorization: [redacted]\nX-Keep: visible\ntoken: missing\n"
 
 
 @pytest.mark.parametrize(

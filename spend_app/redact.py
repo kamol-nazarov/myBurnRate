@@ -11,28 +11,34 @@ _FIELD_NAMES = (
     r"token|secret|password|passwd|pwd|authorization|set-cookie|cookie|session[_-]?key|x-api-key"
 )
 
+# Header-to-EOL stays bounded to a single line.
 _HEADER_TO_EOL = re.compile(
     r"(?i)(?<![\"'\\])\b(?:set-cookie|cookie|authorization)([ \t]*:[ \t]*)\S[^\r\n]*"
 )
 
 # Capture prefix+separator separately from the closing quote so replacements
 # preserve surrounding quotes/JSON structure while removing the entire value.
+# Allow any whitespace (including newlines/CRLF) between key, separator, and value
+# for multiline JSON and decoded multi-line payloads.
 _SECRET_FIELD_QUOTED_ESCAPED = re.compile(
-    rf'(?i)(\b(?:{_FIELD_NAMES})\b(?:\\?["\'])?[ \t]*[:=][ \t]*\\")(?:\\\\\\"|\\\\|\\[^"\r\n]|[^\\"\r\n])*(\\"|(?=\r|\n|$))'
+    rf'(?i)(\b(?:{_FIELD_NAMES})\b(?:\\?["\'])?\s*[:=]\s*\\")(?:\\\\\\"|\\\\|\\[^"\r\n]|[^\\"\r\n])*(\\"|(?=\r|\n|$))'
 )
 _SECRET_FIELD_QUOTED_DOUBLE = re.compile(
-    rf'(?i)(\b(?:{_FIELD_NAMES})\b["\']?[ \t]*[:=][ \t]*")(?:\\.|[^"\\\r\n])*("|(?=\r|\n|$))'
+    rf'(?i)(\b(?:{_FIELD_NAMES})\b["\']?\s*[:=]\s*")(?:\\.|[^"\\\r\n])*("|(?=\r|\n|$))'
 )
 _SECRET_FIELD_QUOTED_SINGLE = re.compile(
-    rf"(?i)(\b(?:{_FIELD_NAMES})\b[\"']?[ \t]*[:=][ \t]*')(?:\\.|[^'\\\r\n])*('|(?=\r|\n|$))"
+    rf"(?i)(\b(?:{_FIELD_NAMES})\b[\"']?\s*[:=]\s*')(?:\\.|[^'\\\r\n])*('|(?=\r|\n|$))"
 )
 
 # Unquoted field values:
 # - With '=', there is no minimum length and no allowlist: always redact the
 #   value (e.g. password=abc12, token=x9, api_key=short).
-# - With ':', always redact the value regardless of length unless the entire
-#   clause following ':' (up to EOL or clause boundary) is an exact, complete
-#   known-safe status phrase in _SAFE_STATUS_PHRASES (case-insensitive).
+# - With ':', always redact the value regardless of length unless it is on the
+#   same line as ':' and the entire consumed span + clause up to a clean
+#   boundary is an exact, complete known-safe status phrase in
+#   _SAFE_STATUS_PHRASES (case-insensitive) plus harmless trailing punctuation.
+#   Never exempt a match whose consumed value carries an unverified suffix
+#   (e.g. token: missing]password=x, token: missing):password=x).
 #   Bare prose without '=' or ':' (e.g. "password is required", "invalid token")
 #   never matches _SECRET_FIELD_UNQUOTED and stays intact.
 _SAFE_STATUS_PHRASES = frozenset(
@@ -65,12 +71,14 @@ _SAFE_STATUS_PHRASES = frozenset(
     }
 )
 _SAFE_CLAUSE_RE = re.compile(
-    r"([^\r\n;,}\]]+?)(?=[ \t]*(?:[\r\n;,}\]]|\.(?=\s|$)|\)(?=\s|[.,;:\r\n]|$)|$))"
+    r"([^\r\n,;}{\"']+?)"
+    r"(?=[ \t]*(?:[.,;:!?)\]]*(?=$|[\r\n,;}{\"'])|(?:[)\]]+[.,;:!?]*|\.(?=\s|$))[ \t]+))"
 )
+_SAFE_TRAILING_PUNCT = re.compile(r"^[.,;:!?)\]]*$")
 
 _SECRET_FIELD_UNQUOTED = re.compile(
     rf"(?i)(\b(?:{_FIELD_NAMES})\b[\"']?)"
-    r"([ \t]*[:=][ \t]*)"
+    r"(\s*[:=]\s*)"
     r"(?!\\?[\"'])"
     r"((?:(?:bearer|basic)[ \t]+)?[^\s\"',;}{]+)"
 )
@@ -98,14 +106,17 @@ _UNIX_HOME = re.compile(r"(/(?:home|Users)/)[^/\s\"']+")
 
 def _replace_unquoted_secret(match: re.Match[str]) -> str:
     prefix, sep, raw_val = match.group(1), match.group(2), match.group(3)
-    if "=" in sep:
+    if "=" in sep or "\n" in sep or "\r" in sep:
         return f"{prefix}{sep}[redacted]"
     if re.match(r"(?i)^(?:bearer|basic)[ \t]+", raw_val):
         return f"{prefix}{sep}[redacted]"
     clause_match = _SAFE_CLAUSE_RE.match(match.string, match.start(3))
     if clause_match:
         phrase = re.sub(r"[ \t]+", " ", clause_match.group(1).strip()).lower()
-        if phrase in _SAFE_STATUS_PHRASES:
+        # Only exempt when the entire consumed span is the verified safe phrase
+        # plus harmless trailing punctuation (no unverified suffix like ']password=x').
+        consumed_tail = match.string[clause_match.end(1) : match.end(3)]
+        if phrase in _SAFE_STATUS_PHRASES and _SAFE_TRAILING_PUNCT.match(consumed_tail):
             return match.group(0)
     return f"{prefix}{sep}[redacted]"
 
