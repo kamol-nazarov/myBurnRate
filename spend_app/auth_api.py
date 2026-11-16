@@ -11,6 +11,7 @@ from spend_app.auth_model import (
     create_session, digest, owner_id, revoke_local_session, revoke_session, set_session_cookie,
 )
 from spend_app.db import connect
+from spend_app.error_codes import error_response
 
 
 def auth_router(settings):
@@ -29,23 +30,23 @@ def auth_router(settings):
             try:
                 hub_origin(raw_hub_url)
             except ValueError as exc:
-                return JSONResponse({"error": str(exc)}, status_code=422)
+                return error_response("NET-003" if "HTTPS" in str(exc) else "NET-001", status_code=422)
         try:
             cookie_out = {} if path == "/api/auth/session/rotate" else None
             result = (fetch_from_configured_hub(settings, path, ttl_seconds=0) if body is None
                       else post_to_configured_hub(settings, path, body, strict=True, cookie_out=cookie_out))
             if result is None:
-                return JSONResponse({"error": "Sign in to your hub for All computers."}, status_code=401)
+                return error_response("AUTH-107", status_code=401)
             if path in {"/api/auth/logout", "/api/auth/session/rotate"}:
                 new_session = cookie_out.get("session", "") if cookie_out is not None else ""
                 if path == "/api/auth/session/rotate" and not new_session:
-                    return JSONResponse({"error": "The hub returned an invalid session response."}, status_code=502)
+                    return error_response("HUB-501", status_code=502)
                 with connect(settings.database_path) as connection:
                     connection.execute("BEGIN IMMEDIATE")
                     current = read_setup_state(connection)
                     if (current["spokeConfig"].get("hubUrl") != state["spokeConfig"].get("hubUrl")
                             or current["spokeConfig"].get("ownerSession") != state["spokeConfig"].get("ownerSession")):
-                        return JSONResponse({"error": "Owner access changed. Reload this computer's session state."}, status_code=409)
+                        return error_response("AUTH-107", status_code=409)
                     current["spokeConfig"]["ownerSession"] = new_session
                     current["spokeConfig"]["ownerSessionExpiresAt"] = result.get("expiresAt")
                     write_setup_state(connection, current)
@@ -54,7 +55,9 @@ def auth_router(settings):
                 result = {"ok": True}
             return JSONResponse(result)
         except HubMutationError as exc:
-            return JSONResponse({"error": str(exc)}, status_code=exc.status_code)
+            if exc.code:
+                return error_response(exc.code, status_code=exc.status_code, retry_after=exc.retry_after)
+            return error_response("HUB-501", status_code=exc.status_code)
 
     def spoke_enabled() -> bool:
         from spend_app.setup_wizard import read_setup_state
@@ -257,13 +260,13 @@ def auth_router(settings):
         body = await _bounded_json(request)
         actor = request.state.principal
         if actor.kind != "machine":
-            return JSONResponse({"error": "Current machine token required."}, status_code=401)
+            return error_response("DEV-301", status_code=401)
         if body.get("id", actor.id) != actor.id:
-            return JSONResponse({"error": "Cannot rotate another machine."}, status_code=403)
+            return error_response("AUTH-107", status_code=403)
         request.state.audit_target = actor.id
         result = rotate_machine_token(settings.database_path, request.headers["authorization"][7:].strip(), actor=actor)
         if not result:
-            return JSONResponse({"error": "Invalid, expired or revoked machine token."}, status_code=401)
+            return error_response("DEV-301", status_code=401)
         request.state.audit_recorded = True
         result.pop("machines", None)
         return result

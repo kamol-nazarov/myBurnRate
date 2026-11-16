@@ -204,7 +204,7 @@ def test_login_is_throttled_and_answers_generically(tmp_path, monkeypatch) -> No
             json={"username": "nobody", "password": "wrong-password"},
         )
         assert unknown.status_code == 401
-        assert unknown.json()["error"] == "Invalid username or password."
+        assert unknown.json()["error"] == {"code": "AUTH-101"}
         for _ in range(5):
             response = client.post(
                 "/api/account/login",
@@ -213,7 +213,7 @@ def test_login_is_throttled_and_answers_generically(tmp_path, monkeypatch) -> No
             )
         assert response.status_code == 429
         assert response.headers["retry-after"]
-        assert response.json()["error"] == "Too many attempts. Try again later."
+        assert response.json()["error"]["code"] == "AUTH-102"
 
 
 def test_password_hashing_uses_the_new_work_factor_and_reads_legacy_hashes() -> None:
@@ -461,7 +461,7 @@ def test_anonymous_account_bodies_are_bounded(tmp_path, monkeypatch) -> None:
             content=oversized,
         )
         assert response.status_code == 422
-        assert response.json()["error"] == "Request too large."
+        assert response.json()["error"] == {"code": "APP-901"}
 
 
 def test_rust_audit_policy_and_zip_removal_are_committed() -> None:
