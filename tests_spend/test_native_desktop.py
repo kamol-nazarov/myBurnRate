@@ -16,10 +16,12 @@ from tests_spend.test_api import make_settings
 
 
 class Response:
-    def __init__(self, status=200, payload=None, *, invalid_json=False):
+    def __init__(self, status=200, payload=None, *, invalid_json=False, headers=None, cookies=None):
         self.status_code = status
         self.payload = payload
         self.invalid_json = invalid_json
+        self.headers = headers or {}
+        self.cookies = cookies or {}
         self.is_success = 200 <= status < 300
 
     def json(self):
@@ -50,7 +52,7 @@ class FakeHttpClient:
     def post(self, url, **kwargs):
         self.calls.append(("POST", url, kwargs))
         if url.endswith("/api/auth/bootstrap"):
-            return Response(payload={"sessionToken": "synthetic-owner-session"})
+            return Response(payload={"ok": True}, cookies={"burnrate_access": "synthetic-owner-session"})
         return self.response
 
 
@@ -737,6 +739,7 @@ def test_wealthfront_bridge_hub_account_sign_in_and_spoke_sync(tmp_path, monkeyp
 
         reg_res = hub_client.post(
             "/api/account/register",
+            headers={"X-BURNRATE-Request": "1"},
             json={
                 "username": "owner@example.com",
                 "password": "correct-horse-88",

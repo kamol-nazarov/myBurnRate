@@ -100,8 +100,9 @@ def test_spoke_hud_reads_require_owner_session_and_cookie_is_scoped(tmp_path: Pa
         denied = client.get("/api/connections", headers=spoke_headers)
         assert denied.status_code == 403
 
-        hud_res = client.get("/hud?token=hub-secret-token-123")
-        assert hud_res.status_code == 200
+        hud_res = client.get("/hud?token=hub-secret-token-123", follow_redirects=False)
+        assert hud_res.status_code == 303
+        assert hud_res.headers["location"] == "/hud"
         set_cookie = hud_res.headers.get("set-cookie", "")
         assert "burnrate_access=" in set_cookie
         assert "HttpOnly" in set_cookie

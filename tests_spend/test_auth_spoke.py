@@ -13,10 +13,12 @@ from spend_app.db import UsageEvent, connect, upsert_usage_event
 from spend_app.pricing import PricingEngine
 
 ROOT = Path(__file__).resolve().parents[1]
-HUB = "http://hub.test"
+HUB = "https://hub.test"
+SETUP_TOKEN = "synthetic-setup-token-32-chars-00"
 PASSWORD = "synthetic-password-long"
 UI = {"Origin": "http://testserver", "X-BURNRATE-Request": "1"}
-ADMIN = {**UI, "Authorization": "Bearer synthetic-admin"}
+HUB_UI = {"Origin": HUB, "X-BURNRATE-Request": "1"}
+ADMIN = {**HUB_UI, "Authorization": "Bearer synthetic-admin"}
 
 
 def settings(path):
@@ -39,7 +41,7 @@ def seed(path, raw_id, tokens):
 def pair(tmp_path, monkeypatch):
     monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "synthetic-admin")
-    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", "synthetic-setup")
+    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", SETUP_TOKEN)
     auth_throttle.reset()
     setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
@@ -47,8 +49,8 @@ def pair(tmp_path, monkeypatch):
     hs = settings(tmp_path / "hub.db")
     hub_app = create_app(hs, enable_scheduler=False)
     with TestClient(hub_app, base_url=HUB) as hub:
-        registered = hub.post("/api/account/register", json={"username": "owner", "password": PASSWORD,
-            "setupToken": "synthetic-setup", "sessionOnly": True})
+        registered = hub.post("/api/account/register", headers=HUB_UI, json={"username": "owner", "password": PASSWORD,
+            "setupToken": SETUP_TOKEN, "sessionOnly": True})
         assert registered.status_code == 200, registered.text
         hub.cookies.clear()
         invitation = hub.post("/api/setup/pair-hub", headers=ADMIN,
@@ -324,10 +326,10 @@ def test_revoke_invalidates_pending_repair_grant_but_new_grant_works(pair):
     pending = grant()
     revoked = hub.post("/api/machines", headers=ADMIN, json={"action": "revoke", "id": machine_id})
     assert revoked.status_code == 200, revoked.text
-    denied = hub.post("/api/pairing/redeem", json={"pairingCode": pending})
+    denied = hub.post("/api/pairing/redeem", headers=HUB_UI, json={"pairingCode": pending})
     assert denied.status_code == 403, denied.text
     fresh = grant()
-    redeemed = hub.post("/api/pairing/redeem", json={"pairingCode": fresh})
+    redeemed = hub.post("/api/pairing/redeem", headers=HUB_UI, json={"pairingCode": fresh})
     assert redeemed.status_code == 200, redeemed.text
     assert redeemed.json()["machine"]["id"] == machine_id
 
@@ -341,13 +343,14 @@ def test_local_token_protected_first_registration_requires_owner(tmp_path, monke
     app = create_app(settings(tmp_path / "protected.db"), enable_scheduler=False)
     payload = {"username": "owner", "password": PASSWORD, "sessionOnly": True}
     with TestClient(app) as client:
-        denied = client.post("/api/account/register", json=payload)
+        denied = client.post("/api/account/register", headers={"X-BURNRATE-Request": "1"}, json=payload)
         assert denied.status_code in (401, 403), denied.text
         assert "sessionToken" not in denied.text
         registered = client.post("/api/account/register", json=payload,
-            headers={"Authorization": "Bearer " + recovery})
+            headers={"Authorization": "Bearer " + recovery, "X-BURNRATE-Request": "1"})
         assert registered.status_code == 200, registered.text
-        assert registered.json()["sessionToken"].startswith("br_s_")
+        assert "sessionToken" not in registered.text
+        assert registered.cookies[auth_model.COOKIE].startswith("br_s_")
 
 
 def test_rotated_recovery_remains_protected_after_environment_removed(tmp_path, monkeypatch):
@@ -364,12 +367,13 @@ def test_rotated_recovery_remains_protected_after_environment_removed(tmp_path, 
     monkeypatch.delenv("BURNRATE_ACCESS_TOKEN", raising=False)
     with TestClient(create_app(local, enable_scheduler=False)) as client:
         assert client.get("/api/machines").status_code == 401
-        denied = client.post("/api/account/register", json={"username": "owner", "password": PASSWORD, "sessionOnly": True})
+        denied = client.post("/api/account/register", headers={"X-BURNRATE-Request": "1"}, json={"username": "owner", "password": PASSWORD, "sessionOnly": True})
         assert denied.status_code in (401, 403) and "sessionToken" not in denied.text
         old = client.post("/api/auth/bootstrap", headers={"Authorization": "Bearer " + recovery})
         assert old.status_code == 401
         fresh = client.post("/api/auth/bootstrap", headers={"Authorization": "Bearer " + new})
-        assert fresh.status_code == 200 and fresh.json()["sessionToken"].startswith("br_s_")
+        assert fresh.status_code == 200 and "sessionToken" not in fresh.text
+        assert fresh.cookies[auth_model.COOKIE].startswith("br_s_")
 
 
 def test_concurrent_breakglass_rotation_is_single_winner(tmp_path, monkeypatch):
@@ -421,7 +425,7 @@ def test_session_rotation_and_revocation_failures_are_audited_once(pair):
     assert revocations[0]["target"] == "/api/auth/sessions/revoke"
     assert unknown not in str(revocations) and bad_token not in str(rotations)
 
-    login = hub.post("/api/account/login", json={"username": "owner", "password": PASSWORD, "sessionOnly": True})
+    login = hub.post("/api/account/login", headers=HUB_UI, json={"username": "owner", "password": PASSWORD, "sessionOnly": True})
     assert login.status_code == 200, login.text
     session_id = login.json()["sessionId"]
     hub.cookies.clear()
@@ -446,7 +450,7 @@ def test_paired_spoke_blocks_local_owner_creation_but_hub_signin_works(pair):
     before = state(ss).get("ownerSession")
     with connect(ss.database_path) as conn:
         assert not setup_wizard._read_accounts(conn)["users"]
-    attempt = spoke.post("/api/account/register", json={"username": "synthetic-local-owner",
+    attempt = spoke.post("/api/account/register", headers=UI, json={"username": "synthetic-local-owner",
                          "password": PASSWORD, "sessionOnly": True})
     assert attempt.status_code == 403, attempt.text
     assert "sessionToken" not in attempt.text and state(ss).get("ownerSession") == before
@@ -618,6 +622,7 @@ def test_disabled_spoke_account_login_rebinds_and_reseeds(pair):
     old_cursor = sync.read_sync_cursor(ss.database_path, HUB)
     with connect(ss.database_path) as conn:
         old_state = setup_wizard.read_setup_state(conn)
+        old_machine_id = old_state["account"]["machineId"]
         name = old_state["computerName"]
         old_state["role"] = "standalone"
         old_state["spokeConfig"]["enabled"] = False
@@ -635,6 +640,7 @@ def test_disabled_spoke_account_login_rebinds_and_reseeds(pair):
     assert response.json()["syncResult"]["ok"]
     with connect(ss.database_path) as conn:
         machine_id = setup_wizard.read_setup_state(conn)["account"]["machineId"]
+    assert machine_id == old_machine_id
     with connect(hs.database_path) as conn:
         raw_id = f"m:{machine_id}:disabled-snapshot"
         row = conn.execute("SELECT input_tokens FROM usage_events WHERE raw_id=? UNION ALL "

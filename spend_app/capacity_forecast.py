@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Request
 
-from spend_app.db import connect, initialize
+from spend_app.db import UserFacingError, connect, initialize
 from spend_app.timeutil import parse_utc
 
 KEY = "capacity_forecast.v1"
@@ -517,17 +517,17 @@ def default_preferences() -> dict:
 def _threshold(value) -> int:
     number = int(value)
     if not 1 <= number <= 99:
-        raise ValueError("Threshold must be from 1 to 99")
+        raise UserFacingError("Threshold must be from 1 to 99")
     return number
 
 
 def _clock(value) -> str:
     match = _CLOCK.fullmatch(str(value).strip())
     if match is None:
-        raise ValueError("Quiet hours use HH:MM")
+        raise UserFacingError("Quiet hours use HH:MM")
     hour, minute = int(match.group(1)), int(match.group(2))
     if hour > 23 or minute > 59:
-        raise ValueError("Quiet hours use HH:MM")
+        raise UserFacingError("Quiet hours use HH:MM")
     return f"{hour:02d}:{minute:02d}"
 
 
@@ -543,7 +543,7 @@ def parse_preferences(body: dict) -> dict:
     overrides = {}
     raw_overrides = body.get("overrides") or {}
     if not isinstance(raw_overrides, dict):
-        raise ValueError("Overrides must be provider thresholds")
+        raise UserFacingError("Overrides must be provider thresholds")
     for key, value in raw_overrides.items():
         name = str(key).strip()
         if not name or value in (None, ""):
@@ -939,7 +939,7 @@ def dismiss_alert(database_path, alert_id: str) -> dict:
                 alert["dismissedAt"] = _iso(datetime.now(UTC))
                 found = True
         if not found:
-            raise ValueError("Unknown alert")
+            raise UserFacingError("Unknown alert")
         save_state(connection, state)
         return read_forecast_view(connection)
 
@@ -971,17 +971,17 @@ def forecast_router(settings):
     async def update_preferences(request: Request):
         body = await request.json()
         if not isinstance(body, dict):
-            raise ValueError("Expected a JSON object")
+            raise UserFacingError("Expected a JSON object")
         return save_preferences(settings.database_path, body)
 
     @router.post("/api/capacity/forecast-alerts/dismiss")
     async def dismiss(request: Request):
         body = await request.json()
         if not isinstance(body, dict):
-            raise ValueError("Expected a JSON object")
+            raise UserFacingError("Expected a JSON object")
         alert_id = body.get("id")
         if not isinstance(alert_id, str) or not alert_id.strip():
-            raise ValueError("Missing alert id")
+            raise UserFacingError("Missing alert id")
         return dismiss_alert(settings.database_path, alert_id.strip())
 
     return router

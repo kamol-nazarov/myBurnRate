@@ -44,7 +44,7 @@ def test_machine_registry_lifecycle_and_token_auth(tmp_path: Path, monkeypatch) 
     unauth = client.get("/api/machines")
     assert unauth.status_code == 401
 
-    admin_headers = {"Authorization": "Bearer hub-admin-secret"}
+    admin_headers = {"Authorization": "Bearer hub-admin-secret", "X-BURNRATE-Request": "1"}
     initial = client.get("/api/machines", headers=admin_headers)
     assert initial.status_code == 200
     machines = initial.json()["machines"]
@@ -116,7 +116,7 @@ def test_machine_rename_and_sync_push_reject_case_insensitive_collisions(
     pricing = PricingEngine.load(PRICING_PATH)
     app = create_app(settings, enable_scheduler=False)
     client = TestClient(app)
-    admin_headers = {"Authorization": "Bearer hub-admin-secret"}
+    admin_headers = {"Authorization": "Bearer hub-admin-secret", "X-BURNRATE-Request": "1"}
 
     alpha = client.post(
         "/api/machines",
@@ -299,7 +299,7 @@ def test_multi_machine_push_and_filtered_summary_and_entity(tmp_path: Path) -> N
     client = TestClient(app)
 
     # Register remote computer and push usage + live agent
-    reg = client.post("/api/machines", json={"action": "register", "name": "Studio Desktop", "os": "win32"}).json()
+    reg = client.post("/api/machines", headers=SETUP_HEADERS, json={"action": "register", "name": "Studio Desktop", "os": "win32"}).json()
     remote_id = reg["machine"]["id"]
     token = reg["token"]
 
@@ -432,14 +432,18 @@ def test_end_to_end_sync_once_client_to_hub(tmp_path: Path) -> None:
         )
 
     hub_app = create_app(hub_settings, enable_scheduler=False)
-    hub_client = TestClient(hub_app)
-    reg = hub_client.post("/api/machines", json={"action": "register", "name": "Field Laptop"}).json()
+    hub_client = TestClient(hub_app, base_url="https://testserver")
+    reg = hub_client.post(
+        "/api/machines",
+        headers={"X-BURNRATE-Request": "1", "Origin": "https://testserver"},
+        json={"action": "register", "name": "Field Laptop"},
+    ).json()
 
     # Run sync_once from remote_settings -> hub_client
     first_sync = sync_once(
         remote_settings,
         pricing,
-        hub_url="http://testserver",
+        hub_url="https://testserver",
         token=reg["token"],
         machine_name="Field Laptop",
         collect_local=False,
@@ -452,7 +456,7 @@ def test_end_to_end_sync_once_client_to_hub(tmp_path: Path) -> None:
     second_sync = sync_once(
         remote_settings,
         pricing,
-        hub_url="http://testserver",
+        hub_url="https://testserver",
         token=reg["token"],
         machine_name="Field Laptop",
         collect_local=False,
@@ -539,7 +543,7 @@ def test_setup_wizard_pairing_and_complete(tmp_path: Path) -> None:
     pricing = PricingEngine.load(hub_settings.pricing_path)
 
     hub_app = create_app(hub_settings, enable_scheduler=False)
-    hub_client = TestClient(hub_app)
+    hub_client = TestClient(hub_app, base_url="https://testserver")
 
     spoke_app = create_app(spoke_settings, enable_scheduler=False)
     spoke_client = TestClient(spoke_app)
@@ -565,17 +569,17 @@ def test_setup_wizard_pairing_and_complete(tmp_path: Path) -> None:
     pair_res = hub_client.post(
         "/api/setup/pair-hub",
         headers=SETUP_HEADERS,
-        json={"remoteName": "Studio Laptop", "hubHost": "http://testserver"},
+        json={"remoteName": "Studio Laptop", "hubHost": "https://testserver"},
     )
     assert pair_res.status_code == 200
     pair_data = pair_res.json()
     assert pair_data["ok"] is True
     assert pair_data["pairingCode"].startswith("brpair_")
     decoded = decode_pairing_code(pair_data["pairingCode"])
-    assert decoded["hubUrl"] == "http://testserver"
+    assert decoded["hubUrl"] == "https://testserver"
     assert decoded["token"].startswith("br_p_")
     from spend_app.sync import register_hub_test_client
-    register_hub_test_client("http://testserver", hub_client)
+    register_hub_test_client("https://testserver", hub_client)
 
     # 4. Seed an event on the Spoke and connect Spoke via pairing code
     initialize(spoke_settings.database_path)
@@ -650,7 +654,7 @@ def test_setup_wizard_pairing_and_complete(tmp_path: Path) -> None:
     # 6. Spoke read-through returns unified Hub machines and usage (both Hub + Spoke)
     from spend_app.sync import register_hub_test_client
 
-    register_hub_test_client("http://testserver", hub_client)
+    register_hub_test_client("https://testserver", hub_client)
     # Pairing conveys sync only; explicitly sign in to unlock the owner view.
     from spend_app.auth_model import Principal, create_session
     from spend_app.setup_wizard import read_setup_state, write_setup_state
@@ -680,7 +684,7 @@ def test_central_server_account_login_subscriptions_and_multi_computer_sync(
     aggregate.reset_memo()
     monkeypatch.setattr(sync, "_default_hub_name", lambda: "Synthetic Hub")
     monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
-    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", "setup-secret")
+    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", "setup-secret-at-least-32-chars-1")
 
     central_settings = _make_settings(tmp_path / "hub")
     desktop_settings = _make_settings(tmp_path / "mydesktop")
@@ -745,7 +749,7 @@ def test_central_server_account_login_subscriptions_and_multi_computer_sync(
             "password": "secret-password",
             "computerName": "MyDesktop",
             "serverUrl": central_url,
-            "setupToken": "setup-secret",
+            "setupToken": "setup-secret-at-least-32-chars-1",
             "presetKeys": ["claude_max", "grok_super"],
             "customPlans": [
                 {"tool_key": "opencode", "name": "Z.AI Coding Plan", "amount_usd": 10.0, "cadence": "monthly"}

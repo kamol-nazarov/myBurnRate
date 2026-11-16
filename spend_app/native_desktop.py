@@ -129,10 +129,11 @@ class NativeClient:
                                                     headers={**headers, "Authorization": "Bearer " + token})
                             if bootstrap.status_code != 200:
                                 raise DesktopError("BURNRATE could not authenticate this window. Sign in through Owner access.")
-                            data = bootstrap.json()
-                            if not isinstance(data, dict) or not data.get("sessionToken"):
+                            from spend_app.auth_model import extract_cookie
+                            session_token = extract_cookie(bootstrap)
+                            if not session_token:
                                 raise DesktopError("The tracker returned an invalid session response.")
-                            self._session_token = data["sessionToken"]
+                            self._session_token = session_token
                     headers["Authorization"] = "Bearer " + self._session_token
                 response = (
                     client.get(self.base_url + path, headers=headers)

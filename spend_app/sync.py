@@ -1101,6 +1101,9 @@ def sync_once(
     client=None,
 ) -> dict:
     """Collect local usage/activity and push incremental rows to ``hub_url``."""
+    from spend_app.pairing import hub_origin
+
+    hub_url = hub_origin(hub_url)
     if collect_local:
         from spend_app.providers import REGISTRY
         from spend_app.quotas import poll_activity
@@ -1244,6 +1247,7 @@ def post_to_configured_hub(
     body: dict,
     *,
     strict: bool = False,
+    cookie_out: dict | None = None,
 ) -> dict | None:
     """Forward a write mutation from a paired Spoke to the central Hub.
 
@@ -1264,7 +1268,18 @@ def post_to_configured_hub(
     spoke = state.get("spokeConfig") or {}
     if not spoke.get("enabled"):
         return None
-    hub_url = str(spoke.get("hubUrl") or "").strip().rstrip("/")
+    raw_hub_url = str(spoke.get("hubUrl") or "").strip()
+    if raw_hub_url:
+        from spend_app.pairing import hub_origin
+
+        try:
+            hub_url = hub_origin(raw_hub_url)
+        except ValueError as exc:
+            if strict:
+                raise HubMutationError(str(exc), 422) from exc
+            return None
+    else:
+        hub_url = ""
     token = str(spoke.get("ownerSession") or "").strip()
     if path == "/api/machines" and not token:
         token = str(spoke.get("token") or "").strip()
@@ -1275,6 +1290,7 @@ def post_to_configured_hub(
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
+        "X-BURNRATE-Request": "1",
     }
     test_client = _HUB_TEST_CLIENTS.get(hub_url)
     try:
@@ -1305,6 +1321,9 @@ def post_to_configured_hub(
             if strict:
                 raise HubMutationError("The hub returned an invalid save response. Retry with the same request identifier.")
             return None
+        if cookie_out is not None:
+            from spend_app.auth_model import extract_cookie
+            cookie_out["session"] = extract_cookie(response)
         clear_hub_proxy_cache()
         return data
     except HubMutationError:
@@ -1570,7 +1589,15 @@ def fetch_from_configured_hub(
     spoke = state.get("spokeConfig") or {}
     if not spoke.get("enabled"):
         return None
-    hub_url = str(spoke.get("hubUrl") or "").strip().rstrip("/")
+    raw_hub_url = str(spoke.get("hubUrl") or "").strip()
+    if not raw_hub_url:
+        return None
+    from spend_app.pairing import hub_origin
+
+    try:
+        hub_url = hub_origin(raw_hub_url)
+    except ValueError:
+        return None
     from spend_app.auth_model import digest, moment, parse
     token = str(spoke.get("ownerSession") or "").strip()
     expiry = parse(spoke.get("ownerSessionExpiresAt"))
@@ -1627,6 +1654,12 @@ def _read_hub_copy(cache_key: tuple, hub_url: str, token: str, path: str, params
         if cred_key in _HUB_REJECTED_CREDENTIALS:
             return None
         start_gen = _HUB_CREDENTIAL_GENERATIONS.get(cred_key, 0)
+    from spend_app.pairing import hub_origin
+
+    try:
+        hub_url = hub_origin(hub_url)
+    except ValueError:
+        return None
     headers = {"Authorization": f"Bearer {token}"}
     test_client = _HUB_TEST_CLIENTS.get(hub_url)
     try:
@@ -1746,11 +1779,17 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
                 if isinstance(hub_res, dict) and isinstance(hub_res.get("machines"), list):
                     return JSONResponse(hub_res, headers={"Cache-Control": "no-store"})
             if action == "register":
-                result = register_machine(
+                principal = request.state.principal
+                register_fn = (
+                    register_or_reconnect_machine
+                    if principal.kind == "owner" and principal.via in {"cookie", "bearer"}
+                    else register_machine
+                )
+                result = register_fn(
                     settings.database_path,
                     name=str(body.get("name") or ""),
                     os_name=str(body.get("os") or ""),
-                    actor=request.state.principal,
+                    actor=principal,
                 )
                 request.state.audit_target = result["machine"]["id"]
                 origin = f"{request.url.scheme}://{request.headers.get('host', '127.0.0.1:17331')}"

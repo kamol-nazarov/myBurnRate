@@ -41,7 +41,7 @@ def _clean_throttles():
 def hub(tmp_path, monkeypatch):
     monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "synthetic-break-glass")
-    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", "synthetic-setup")
+    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", "synthetic-setup-token-32-chars-00")
     monkeypatch.setenv("BURNRATE_ALLOW_ADMIN_BEARER", "1")
     app = create_app(settings_at(tmp_path), enable_scheduler=False)
     with TestClient(app, base_url="http://hub.test") as client:
@@ -60,14 +60,15 @@ def test_anonymous_hub_shells_redirect_and_health_is_minimal(hub):
 
 
 def test_owner_session_unlocks_pages_and_supervisor_health(hub):
-    registered = hub.post("/api/account/register", json={
+    registered = hub.post("/api/account/register", headers={"X-BURNRATE-Request": "1"}, json={
         "username": "synthetic-owner",
         "password": PASSWORD,
-        "setupToken": "synthetic-setup",
+        "setupToken": "synthetic-setup-token-32-chars-00",
         "sessionOnly": True,
     })
     assert registered.status_code == 200, registered.text
-    session = registered.json()["sessionToken"]
+    assert "sessionToken" not in registered.json()
+    session = registered.cookies["burnrate_access"]
     assert hub.get("/hud").status_code == 200
     assert hub.get("/setup").status_code == 200
     health = hub.get("/healthz?supervisor=1", headers={"Authorization": "Bearer " + session})
@@ -75,8 +76,9 @@ def test_owner_session_unlocks_pages_and_supervisor_health(hub):
 
 
 def test_legacy_token_url_exchanges_for_a_session_cookie(hub):
-    response = hub.get("/?token=synthetic-break-glass")
-    assert response.status_code == 200
+    response = hub.get("/?token=synthetic-break-glass", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/"
     cookie = response.headers.get("set-cookie", "")
     assert "burnrate_access=br_s_" in cookie
     assert "synthetic-break-glass" not in cookie

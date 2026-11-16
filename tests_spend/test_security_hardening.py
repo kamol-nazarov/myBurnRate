@@ -156,10 +156,10 @@ def test_test_hostname_is_not_trusted_in_production(tmp_path, monkeypatch) -> No
 def test_first_account_requires_the_setup_token(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "admin-secret")
-    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", "setup-secret")
+    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", "setup-secret-at-least-32-chars-1")
     settings = _settings(tmp_path)
     app = create_app(settings=settings, enable_scheduler=False)
-    headers = {"Content-Type": "application/json", "X-BURNRATE-Request": "1"}
+    headers = {"Content-Type": "application/json", "X-BURNRATE-Request": "1", "Origin": "http://127.0.0.1:17331"}
     body = {
         "username": "owner",
         "password": "long-enough-password",
@@ -169,10 +169,13 @@ def test_first_account_requires_the_setup_token(tmp_path, monkeypatch) -> None:
         assert client.post("/api/account/register", headers=headers, json=body).status_code == 403
         wrong = dict(headers, **{"X-BURNRATE-Setup-Token": "wrong"})
         assert client.post("/api/account/register", headers=wrong, json=body).status_code == 403
-        right = dict(headers, **{"X-BURNRATE-Setup-Token": "setup-secret"})
+        right = dict(headers, **{"X-BURNRATE-Setup-Token": "setup-secret-at-least-32-chars-1"})
         created = client.post("/api/account/register", headers=right, json=body)
         assert created.status_code == 200
-        assert created.json()["token"].startswith("br_m_")
+        assert "token" not in created.json() and "sessionToken" not in created.json()
+        machine = client.post("/api/machines", headers=headers, json={"action": "register", "name": "Hub"})
+        assert machine.status_code == 200
+        assert machine.json()["token"].startswith("br_m_")
         intruder = dict(body, username="intruder")
         assert client.post("/api/account/register", headers=right, json=intruder).status_code == 403
 
@@ -180,14 +183,14 @@ def test_first_account_requires_the_setup_token(tmp_path, monkeypatch) -> None:
 def test_login_is_throttled_and_answers_generically(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "admin-secret")
-    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", "setup-secret")
+    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", "setup-secret-at-least-32-chars-1")
     settings = _settings(tmp_path)
     app = create_app(settings=settings, enable_scheduler=False)
-    headers = {"Content-Type": "application/json", "X-BURNRATE-Request": "1"}
+    headers = {"Content-Type": "application/json", "X-BURNRATE-Request": "1", "Origin": "http://127.0.0.1:17331"}
     with TestClient(app, base_url="http://127.0.0.1:17331") as client:
         created = client.post(
             "/api/account/register",
-            headers=dict(headers, **{"X-BURNRATE-Setup-Token": "setup-secret"}),
+            headers=dict(headers, **{"X-BURNRATE-Setup-Token": "setup-secret-at-least-32-chars-1"}),
             json={
                 "username": "owner",
                 "password": "long-enough-password",
@@ -352,7 +355,7 @@ def test_anonymous_cannot_reach_any_hub_data_or_setup_route(tmp_path, monkeypatc
 def test_setup_token_can_arrive_in_the_body(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "admin-secret")
-    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", "setup-secret")
+    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", "setup-secret-at-least-32-chars-1")
     settings = _settings(tmp_path)
     app = create_app(settings=settings, enable_scheduler=False)
     with TestClient(app, base_url="http://127.0.0.1:17331") as client:
@@ -363,7 +366,7 @@ def test_setup_token_can_arrive_in_the_body(tmp_path, monkeypatch) -> None:
                 "username": "owner",
                 "password": "long-enough-password",
                 "computerName": "Hub",
-                "setupToken": "setup-secret",
+                "setupToken": "setup-secret-at-least-32-chars-1",
             },
         )
         assert created.status_code == 200
@@ -449,7 +452,7 @@ def test_anonymous_account_bodies_are_bounded(tmp_path, monkeypatch) -> None:
         oversized = b'{"username":"a","password":"b","padding":"' + b"x" * 70000 + b'"}'
         response = client.post(
             "/api/account/login",
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "X-BURNRATE-Request": "1"},
             content=oversized,
         )
         assert response.status_code == 422
