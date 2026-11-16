@@ -62,7 +62,7 @@ def run_local_pass(settings, pricing) -> dict:
 
 
 def run_profile_pass(settings, pricing, timings: dict, results: dict, errors: list) -> None:
-    """Usage from extra Claude Code accounts and OpenCode profiles (before the default collectors)."""
+    """Usage from enabled non-default provider profiles (before the default collectors)."""
     import time
 
     from spend_app.adapters import profiles_local

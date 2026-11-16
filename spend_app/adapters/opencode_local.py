@@ -39,6 +39,7 @@ from spend_app.adapters.local_common import (
     sqlite_read_only,
 )
 from spend_app.db import (
+    TOOL_KEY_OVERRIDES,
     connect,
     initialize,
     read_opencode_progress,
@@ -339,6 +340,7 @@ def _ingest_cumulative(*, database_path: Path, pricing: PricingEngine, source_da
         return result
 
     def finalize(connection: sqlite3.Connection) -> None:
+        overrides = TOOL_KEY_OVERRIDES.get() or {}
         for key, state in next_state.items():
             session_id, provider_id = key.split("\x1f", 1)
             if (session_id, provider_id) in deferred:
@@ -379,7 +381,7 @@ def _ingest_cumulative(*, database_path: Path, pricing: PricingEngine, source_da
                 connection,
                 raw_id=raw_id,
                 source=SOURCE,
-                tool_key=row.tool_key,
+                tool_key=overrides.get(row.tool_key, row.tool_key),
                 model_key=row.model_key,
                 occurred_at=row.occurred_at.isoformat().replace("+00:00", "Z"),
                 issue=issue,
