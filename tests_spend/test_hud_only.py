@@ -367,6 +367,51 @@ def test_inflight_200_does_not_refill_cache_after_rejection(tmp_path, monkeypatc
         sync_module.clear_hub_proxy_cache()
 
 
+@pytest.mark.parametrize("status_code", [401, 403])
+def test_stale_cache_return_is_fenced_when_background_refresh_rejects(tmp_path, monkeypatch, status_code):
+    token = f"synthetic-stale-fence-{status_code}-{secrets.token_hex(8)}"
+    token_digest = auth_model.digest(token)
+    reject_next = {"flag": False}
+
+    class Hub:
+        def get(self, path, params=None, headers=None):
+            if reject_next["flag"]:
+                return FakeResponse({}, status_code=status_code)
+            return FakeResponse({"capacity": [], "providers": [], "read": "initial"})
+
+    settings = _spoke(tmp_path, monkeypatch, Hub(), owner_session=token)
+    fetch = sync_module.fetch_from_configured_hub
+    try:
+        primed = fetch(settings, "/api/spend/hud", ttl_seconds=60)
+        assert primed is not None and primed["read"] == "initial"
+
+        # Force the stale-serving branch's background renewal to complete (with 401/403)
+        # before fetch_from_configured_hub can return the cached payload.
+        bg_finished = threading.Event()
+        orig_renew = sync_module._renew_hub_copy_in_background
+
+        def sync_background_renew(cache_key, read):
+            def wrapped_read():
+                try:
+                    return read()
+                finally:
+                    bg_finished.set()
+
+            orig_renew(cache_key, wrapped_read)
+            assert bg_finished.wait(5), "Background refresh did not finish in time"
+
+        monkeypatch.setattr(sync_module, "_renew_hub_copy_in_background", sync_background_renew)
+        reject_next["flag"] = True
+
+        result = fetch(settings, "/api/spend/hud", ttl_seconds=0, stale_seconds=300)
+        assert result is None
+        with sync_module._HUB_PROXY_LOCK:
+            assert token_digest in sync_module._HUB_REJECTED_CREDENTIALS
+            assert not [k for k in sync_module._HUB_PROXY_CACHE if len(k) > 3 and k[3] == token_digest]
+    finally:
+        sync_module.clear_hub_proxy_cache()
+
+
 def _usage_hold_source() -> str:
     html = render_hud()
     return html.split("        let heldStats", 1)[1].split("        function renderSummary", 1)[0]
