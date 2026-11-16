@@ -686,7 +686,7 @@ def test_default_and_extra_sharing_account_digest_produces_single_lane(tmp_path:
     _write_claude_state(claude_extra, "shared-account-id", five_pct=10, weekly_pct=20)
     codex_extra = tmp_path / ".codex-work" / "sessions"
     _write_codex_session(codex_extra, used_pct=33.0)
-    oc_extra = _write_opencode_db(tmp_path / ".opencode-work" / "opencode" / "opencode.db", "shared-oc-key")
+    oc_extra = _write_opencode_db(tmp_path / ".opencode-work" / "opencode" / "opencode.db", "shared-account-id")
 
     db_path = _seed_profiles_db(
         tmp_path / "spend.db",

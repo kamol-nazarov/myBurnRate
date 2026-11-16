@@ -345,9 +345,23 @@ def _identity_for_folder(
     *,
     is_default: bool = False,
     candidates: list[profile_detect.Candidate] | None = None,
+    use_cache: bool = True,
 ) -> tuple[str | None, str | None]:
-    loc_ids = profile_store._folder_identities(location, provider)
-    if candidates:
+    digest = profile_detect.current_account_digest(
+        provider, location, is_default=is_default, use_cache=use_cache
+    )
+    plan: str | None = None
+    if provider == "claude_local":
+        folder = _profile_folder_for(provider, location)
+        state_path = (
+            claude_accounts.primary_state_path(Path.home(), os.environ)
+            if is_default
+            else folder / ".claude.json"
+        )
+        if profile_detect._is_safe_file(state_path):
+            plan = claude_accounts.plan_name(claude_accounts.read_state(state_path))
+    if candidates and (plan is None or (digest is None and use_cache)):
+        loc_ids = profile_store._folder_identities(location, provider)
         for cand in candidates:
             if cand.provider != provider:
                 continue
@@ -356,28 +370,12 @@ def _identity_for_folder(
                 | profile_store._folder_identities(cand.location, provider)
             )
             if loc_ids & cand_ids:
-                return cand.account_digest, cand.plan
-    folder = _profile_folder_for(provider, location)
-    if provider == "claude_local":
-        state_path = (
-            claude_accounts.primary_state_path(Path.home(), os.environ)
-            if is_default
-            else folder / ".claude.json"
-        )
-        if profile_detect._is_safe_file(state_path):
-            data = claude_accounts.read_state(state_path)
-            uid = claude_accounts.account_uuid(data)
-            return (profile_detect._sha256_hex(uid) if uid else None), claude_accounts.plan_name(data)
-        return None, None
-    if provider == "codex_local":
-        return profile_detect._codex_account_digest(folder / "auth.json"), None
-    if provider == "opencode_local":
-        path = Path(location).expanduser()
-        database = path if path.suffix.lower() in {".db", ".sqlite"} else opencode_profiles.database_for(folder)
-        if database is not None and profile_detect._is_safe_file(database):
-            digests = profile_detect._opencode_key_digests(database, os.environ, is_default=is_default)
-            return (digests[0] if digests else None), None
-    return None, None
+                if digest is None and use_cache:
+                    digest = cand.account_digest
+                if plan is None:
+                    plan = cand.plan
+                break
+    return digest, plan
 
 
 def _with_virtual_defaults(
@@ -623,8 +621,22 @@ class Service:
                                 matched_cand = cand
                                 break
 
-                    digest = rec.get("accountDigest") or (matched_cand.account_digest if matched_cand else None)
-                    plan = rec.get("plan") or (matched_cand.plan if matched_cand else None)
+                    live_digest = (
+                        profile_detect.current_account_digest(
+                            spec.key, rec_loc, is_default=(prof_key == "default")
+                        )
+                        if rec_loc
+                        else None
+                    )
+                    digest = (
+                        live_digest
+                        if live_digest is not None
+                        else (
+                            rec.get("accountDigest")
+                            or (matched_cand.account_digest if matched_cand else None)
+                        )
+                    )
+                    plan = (matched_cand.plan if matched_cand else None) or rec.get("plan")
 
                     if prof_key == "default" and row["externallyManaged"]:
                         prof_state = "externally_managed"
@@ -678,7 +690,12 @@ class Service:
                     )
                     if cand_ids & added_folder_ids:
                         continue
-                    same_as = added_digests.get(cand.account_digest) if cand.account_digest else None
+                    cand_digest = profile_detect.current_account_digest(
+                        spec.key, cand.folder, is_default=False
+                    )
+                    if cand_digest is None:
+                        cand_digest = cand.account_digest
+                    same_as = added_digests.get(cand_digest) if cand_digest else None
                     detected_out.append(
                         {
                             "candidateId": cand.candidate_id,
@@ -744,6 +761,8 @@ class Service:
         provider: str,
         digest: str | None,
         exclude_key: str | None = None,
+        *,
+        use_cache: bool = False,
     ) -> None:
         if not digest:
             return
@@ -751,7 +770,20 @@ class Service:
         for key, record in prov_profiles.items():
             if exclude_key is not None and key == exclude_key:
                 continue
-            if isinstance(record, dict) and record.get("accountDigest") == digest:
+            if not isinstance(record, dict):
+                continue
+            existing_digest = record.get("accountDigest")
+            loc = record.get("location")
+            if loc and provider in profile_detect.PROVIDERS:
+                live = profile_detect.current_account_digest(
+                    provider,
+                    loc,
+                    is_default=(key == "default"),
+                    use_cache=use_cache,
+                )
+                if live is not None:
+                    existing_digest = live
+            if existing_digest == digest:
                 raise Conflict("This account is already added under another profile.")
 
     def mutate(self, body, profile=None):
@@ -818,6 +850,8 @@ class Service:
                     raise Conflict("Request identifier already used. Reload connections.")
                 return receipt["result"]
             previous = _profile_record(state, spec.key, target_profile)
+            if target_profile != "default" and previous is None:
+                raise LocationError("Profile was not found.")
             if (previous or {}).get("revision", 0) != revision:
                 raise Conflict("Connection changed. Reload before saving.")
             if external(spec, self.settings) and not spec.connection.location_env:
@@ -886,13 +920,20 @@ class Service:
                     checked["location"],
                     is_default=(target_profile == "default"),
                     candidates=detected_candidates,
+                    use_cache=False,
                 )
-                if digest_found:
+                if spec.key in profile_detect.PROVIDERS:
+                    computed_digest = digest_found
+                elif digest_found:
                     computed_digest = digest_found
                 if plan_found:
                     computed_plan = plan_found
                 self._assert_account_free(
-                    effective_state, spec.key, computed_digest, exclude_key=target_profile
+                    effective_state,
+                    spec.key,
+                    computed_digest,
+                    exclude_key=target_profile,
+                    use_cache=False,
                 )
                 record = {**checked, "mode": body.get("mode", "manual"), "enabled": True,
                           "state": "awaiting_ingest", "detail": "Saved, awaiting first import." if checked["usableSample"] else checked["detail"], "capabilities": ["usage"]}
@@ -936,6 +977,8 @@ class Service:
             try:
                 with self.store.transaction() as current:
                     current_record = _profile_record(current, spec.key, target_profile)
+                    if target_profile != "default" and current_record is None:
+                        raise LocationError("Profile was not found.")
                     if (current_record or {}).get("revision", 0) != revision:
                         raise Conflict("Connection changed while verifying. Reload before saving.")
                     if spec.connection.shape != "api":
@@ -944,7 +987,11 @@ class Service:
                             current_effective, spec.key, record["location"], exclude_key=target_profile
                         )
                         self._assert_account_free(
-                            current_effective, spec.key, computed_digest, exclude_key=target_profile
+                            current_effective,
+                            spec.key,
+                            computed_digest,
+                            exclude_key=target_profile,
+                            use_cache=False,
                         )
                     _set_profile_record(current, spec.key, target_profile, record)
                     if new_ref:
@@ -972,6 +1019,19 @@ class Service:
             raise LocationError("Choose a detected profile or enter a local folder.")
         if body.get("mode", "manual") not in {"auto", "manual", "detected"}:
             raise LocationError("Choose auto, manual or detected mode.")
+        reserved_keys = {"default", *profile_store.DEFAULT_TOOL_KEYS.values()}
+        other_prefixes = tuple(
+            f"{tk}-"
+            for prov, tk in profile_store.DEFAULT_TOOL_KEYS.items()
+            if prov != spec.key
+        )
+        requested_key = body.get("profile") if body.get("profile") is not None else body.get("key")
+        if requested_key is not None:
+            if not isinstance(requested_key, str) or not requested_key.strip():
+                raise LocationError("Invalid profile identifier.")
+            req_key = requested_key.strip()
+            if req_key in reserved_keys or req_key.startswith(other_prefixes):
+                raise LocationError("Profile key is reserved or belongs to another provider.")
 
         public_body = {
             "source": spec.key,
@@ -1011,15 +1071,19 @@ class Service:
                 if folder_for_label is not None
                 else _profile_folder_for(spec.key, checked["location"])
             )
-            if digest is None:
-                digest, detected_plan = _identity_for_folder(
-                    spec.key,
-                    checked["location"],
-                    is_default=False,
-                    candidates=profile_detect.detect_all() if spec.key in profile_detect.PROVIDERS else None,
-                )
-                if plan is None:
-                    plan = detected_plan
+            live_digest, detected_plan = _identity_for_folder(
+                spec.key,
+                checked["location"],
+                is_default=False,
+                candidates=None,
+                use_cache=False,
+            )
+            if live_digest is not None:
+                digest = live_digest
+            elif spec.key in profile_detect.PROVIDERS:
+                digest = None
+            if plan is None:
+                plan = detected_plan
 
             name = _validate_profile_name(
                 body.get("name"),
@@ -1035,20 +1099,36 @@ class Service:
             profile_store.assert_folder_free(effective_state, spec.key, folder_path)
             if identity(folder_path) != identity(checked["location"]):
                 profile_store.assert_folder_free(effective_state, spec.key, checked["location"])
-            self._assert_account_free(effective_state, spec.key, digest)
+            self._assert_account_free(effective_state, spec.key, digest, use_cache=False)
 
             with self.store.transaction() as current:
                 current_effective = _with_virtual_defaults(current, self.settings, cands_by_prov)
                 profile_store.assert_folder_free(current_effective, spec.key, folder_path)
                 if identity(folder_path) != identity(checked["location"]):
                     profile_store.assert_folder_free(current_effective, spec.key, checked["location"])
-                self._assert_account_free(current_effective, spec.key, digest)
+                self._assert_account_free(current_effective, spec.key, digest, use_cache=False)
+
+                other_provider_keys = {
+                    k
+                    for prov, pmap in (current.get("profiles") or {}).items()
+                    if prov != spec.key and isinstance(pmap, dict)
+                    for k in pmap
+                    if k != "default"
+                }
+                if requested_key is not None and requested_key.strip() in other_provider_keys:
+                    raise LocationError("Profile key is reserved or belongs to another provider.")
 
                 prov_profiles = current.setdefault("profiles", {}).setdefault(spec.key, {})
-                existing_keys = set(prov_profiles.keys()) | {"default"}
+                existing_keys = set(prov_profiles.keys()) | reserved_keys | other_provider_keys
                 new_key = profile_store.profile_key_for_folder(
                     spec.key, folder_path, existing=existing_keys
                 )
+                if (
+                    new_key in reserved_keys
+                    or new_key.startswith(other_prefixes)
+                    or new_key in other_provider_keys
+                ):
+                    raise LocationError("Profile key is reserved or belongs to another provider.")
                 origin = "detected" if candidate is not None else "manual"
                 record = {
                     **checked,

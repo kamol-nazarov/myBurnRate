@@ -966,7 +966,7 @@ def _default_profile_digest(profile) -> str | None:
 def _resolve_profile_lanes(
     database_path: Path | str,
 ) -> tuple[dict[str, Callable[[], list[QuotaSample]]], dict[str, dict[str, str]]]:
-    from spend_app import claude_accounts, opencode_profiles, profile_store
+    from spend_app import claude_accounts, opencode_profiles, profile_detect, profile_store
     from spend_app.connection_paths import identity
     from spend_app.limits import _opencode_go_keys
 
@@ -991,7 +991,14 @@ def _resolve_profile_lanes(
             if profile.key == "default":
                 owner_key = profile.tool_key or profile_store.DEFAULT_TOOL_KEYS[provider]
                 owner_name = profile.name or "Default"
-                digest = _default_profile_digest(profile)
+                live_digest = profile_detect.current_account_digest(
+                    provider, profile.location, is_default=True
+                )
+                digest = (
+                    live_digest
+                    if live_digest is not None
+                    else _default_profile_digest(profile)
+                )
                 if digest:
                     seen_digests[digest] = (owner_key, owner_name)
                 continue
@@ -999,7 +1006,10 @@ def _resolve_profile_lanes(
             tool_key = profile.tool_key or profile.key
             if not tool_key:
                 continue
-            digest = profile.account_digest
+            live_digest = profile_detect.current_account_digest(
+                provider, profile.location, is_default=False
+            )
+            digest = live_digest if live_digest is not None else profile.account_digest
 
             if provider == "claude_local":
                 folder = profile_store._claude_folder_from_location(profile.location)

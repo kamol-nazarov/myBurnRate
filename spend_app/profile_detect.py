@@ -41,6 +41,7 @@ _ENV_CACHE_KEYS: tuple[str, ...] = (
 
 _LOCK = threading.Lock()
 _DISCOVERED: dict = {"at": None, "key": None, "candidates": ()}
+_DIGEST_CACHE: dict[tuple, tuple[float, str | None]] = {}
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,7 @@ class Candidate:
 def reset_cache() -> None:
     with _LOCK:
         _DISCOVERED.update(at=None, key=None, candidates=())
+        _DIGEST_CACHE.clear()
 
 
 def _sha256_hex(value: str) -> str:
@@ -230,6 +232,140 @@ def _opencode_key_digests(database: Path, environ, *, is_default: bool) -> list[
             seen.add(digest)
             digests.append(digest)
     return digests
+
+
+def _normalize_location_path(folder: str | Path) -> Path:
+    text = str(folder).strip()
+    if text.endswith(("/**/*.jsonl", "\\**\\*.jsonl")):
+        text = text[:-11]
+    elif text.endswith("*.jsonl"):
+        text = str(Path(text).parent)
+    return Path(text).expanduser()
+
+
+def _read_current_account_digest(
+    provider: str,
+    folder: Path,
+    base_home: Path,
+    env,
+    *,
+    is_default: bool | None,
+) -> str | None:
+    if provider == "claude_local":
+        root = folder.parent if folder.name.lower() in {"projects", "transcripts"} and folder.parent != folder else folder
+        try:
+            if root.is_symlink() or is_junction(root):
+                return None
+        except OSError:
+            return None
+        configured = str(env.get("CLAUDE_CONFIG_DIR") or "").strip()
+        default_dir = Path(configured).expanduser() if configured else base_home / ".claude"
+        if is_default is not None:
+            effective_default = is_default
+        else:
+            resolved_root = _resolve_folder(root)
+            resolved_def = _resolve_folder(default_dir)
+            if resolved_root is not None and resolved_def is not None:
+                effective_default = identity(resolved_root) == identity(resolved_def)
+            else:
+                effective_default = identity(root) == identity(default_dir)
+        if not effective_default and not _is_safe_dir(root):
+            return None
+        state_path = claude_accounts.primary_state_path(base_home, env) if effective_default else root / ".claude.json"
+        if not _is_safe_file(state_path):
+            return None
+        state = claude_accounts.read_state(state_path)
+        uid = claude_accounts.account_uuid(state)
+        return _sha256_hex(uid) if uid else None
+
+    if provider == "codex_local":
+        root = folder.parent if folder.name.lower() in {"sessions", "archived_sessions"} and folder.parent != folder else folder
+        if not _is_safe_dir(root):
+            return None
+        return _codex_account_digest(root / "auth.json")
+
+    if provider == "opencode_local":
+        if folder.suffix.lower() in {".db", ".sqlite"}:
+            database = folder
+            root = (
+                folder.parent.parent
+                if folder.parent.name.lower() == "opencode"
+                and folder.parent.parent != folder.parent
+                and folder.parent.parent.name.lower().startswith(".opencode-")
+                else folder.parent
+            )
+        else:
+            root = folder
+            if not _is_safe_dir(root):
+                return None
+            database = opencode_profiles.database_for(root)
+        if database is None or not _is_safe_dir(root) or not _is_safe_file(database):
+            return None
+        if database.parent != root and not _is_safe_dir(database.parent):
+            return None
+        if is_default is not None:
+            effective_default = is_default
+        else:
+            configured_db = str(env.get("OPENCODE_DB") or "").strip()
+            if configured_db:
+                default_db = Path(configured_db).expanduser()
+            else:
+                xdg = str(env.get("XDG_DATA_HOME") or "").strip()
+                base = Path(xdg).expanduser() if xdg else base_home / ".local" / "share"
+                default_db = base / "opencode" / "opencode.db"
+            resolved_db = _resolve_folder(database)
+            resolved_def_db = _resolve_folder(default_db)
+            if resolved_db is not None and resolved_def_db is not None:
+                effective_default = identity(resolved_db) == identity(resolved_def_db)
+            else:
+                effective_default = identity(database) == identity(default_db)
+        digests = _opencode_key_digests(database, env, is_default=effective_default)
+        return digests[0] if digests else None
+
+    return None
+
+
+def current_account_digest(
+    provider: str,
+    folder: str | Path | None,
+    *,
+    is_default: bool | None = None,
+    home=None,
+    environ=None,
+    use_cache: bool = True,
+) -> str | None:
+    """Return the current account digest on disk for ``provider`` at ``folder``.
+
+    Read-only; reuses each provider's bounded identity reader and caches
+    results for ``DISCOVERY_TTL_SECONDS`` (60 s) unless ``use_cache=False``.
+    """
+    if provider not in PROVIDERS or folder is None:
+        return None
+    if isinstance(folder, str) and not folder.strip():
+        return None
+    path = _normalize_location_path(folder)
+    base_home = Path(home).expanduser() if home is not None else Path.home()
+    env = os.environ if environ is None else environ
+    cache_key = (
+        provider,
+        identity(path),
+        is_default,
+        str(base_home),
+        tuple((key, str(env.get(key) or "")) for key in _ENV_CACHE_KEYS),
+    )
+    if use_cache:
+        now = time.monotonic()
+        with _LOCK:
+            cached = _DIGEST_CACHE.get(cache_key)
+            if cached is not None and now - cached[0] < DISCOVERY_TTL_SECONDS:
+                return cached[1]
+
+    digest = _read_current_account_digest(
+        provider, path, base_home, env, is_default=is_default
+    )
+    with _LOCK:
+        _DIGEST_CACHE[cache_key] = (time.monotonic(), digest)
+    return digest
 
 
 def _detect_claude(home: Path, environ) -> list[Candidate]:

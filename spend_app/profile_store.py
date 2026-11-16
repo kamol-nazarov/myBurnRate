@@ -96,7 +96,7 @@ def profile_key_for_folder(
         slug = re.sub(r"[^a-z0-9]+", "-", name).strip("-")[:24].strip("-") or "profile"
         base = f"{tool_prefix}-{slug}"
 
-    used = set(existing)
+    used = set(existing) | {"default", *DEFAULT_TOOL_KEYS.values()}
     if base not in used:
         return base
     counter = 2
