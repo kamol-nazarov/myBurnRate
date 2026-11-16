@@ -2196,3 +2196,62 @@ def test_reviewer_three_families_across_sinks(
     report = support_report.build_report(settings, log_dir=logs)
     assert "[redacted]" in report, (case_id, layers, report)
     _assert_none_survive(report, forbidden)
+
+
+_NEW_PROXY_AND_TOKEN_HEADER_NAMES = (
+    "proxy-authorization",
+    "x-auth-token",
+    "x-access-token",
+    "private-token",
+)
+
+
+@pytest.mark.parametrize("field_name", _NEW_PROXY_AND_TOKEN_HEADER_NAMES)
+@pytest.mark.parametrize("layers", [0, 1, 2, 3], ids=["pct0", "pct1", "pct2", "pct3"])
+def test_proxy_authorization_and_header_tokens_across_forms_and_sinks(
+    field_name: str, layers: int, tmp_path: Path
+) -> None:
+    payloads: list[tuple[str, str]] = []
+    for key_label, key_form in (
+        ("bare", field_name),
+        ("dq", f'"{field_name}"'),
+        ("sq", f"'{field_name}'"),
+        ("esc_dq", f'\\"{field_name}\\"'),
+        ("esc_sq", f"\\'{field_name}\\'"),
+    ):
+        for sep in (":", "="):
+            same_line = _pct_layers(
+                f"{{{key_form}{sep} \"Negotiate Ab9SensitiveValue\"}}",
+                layers,
+            )
+            next_line = _pct_layers(
+                f"{key_form}{sep}\nNegotiate Ab9SensitiveValue",
+                layers,
+            )
+            payloads.append((f"{key_label}_{sep}_same_line", same_line))
+            payloads.append((f"{key_label}_{sep}_next_line", next_line))
+
+    settings = _settings(tmp_path, "proxy_headers.db")
+    initialize(settings.database_path)
+    with connect(settings.database_path) as conn:
+        for label, payload in payloads:
+            cleaned = redact(payload)
+            assert "[redacted]" in cleaned, (field_name, layers, label, cleaned)
+            _assert_none_survive(cleaned, ("Ab9SensitiveValue", "Negotiate"))
+
+            run = IngestRun.start(conn, f"{field_name}_{label}")
+            run.finish(status="failed", error=payload)
+            stored = conn.execute(
+                "SELECT error FROM ingest_runs WHERE id=?", (run.id,)
+            ).fetchone()[0]
+            assert "[redacted]" in stored, (field_name, layers, label, stored)
+            _assert_none_survive(stored, ("Ab9SensitiveValue", "Negotiate"))
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "dashboard.log").write_bytes(
+        ("\n".join(payload for _, payload in payloads) + "\n").encode("utf-8")
+    )
+    report = support_report.build_report(settings, log_dir=logs)
+    assert "[redacted]" in report
+    _assert_none_survive(report, ("Ab9SensitiveValue", "Negotiate"))

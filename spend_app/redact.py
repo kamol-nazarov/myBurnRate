@@ -13,7 +13,8 @@ _LINE_SPLIT = re.compile(r"(\r\n|\r|\n)")
 
 _FIELD_NAMES = (
     r"api[_-]?key|access[_-]?(?:key|token)|refresh[_-]?token|client[_-]?secret|"
-    r"token|secret|password|passwd|pwd|authorization|set-cookie|cookie|session[_-]?key|x-api-key"
+    r"proxy-authorization|authorization|x-api-key|x-auth-token|x-access-token|private-token|"
+    r"token|secret|password|passwd|pwd|set-cookie|cookie|session[_-]?key"
 )
 
 # Single key grammar shared by same-line field matching, empty-key pending, and
