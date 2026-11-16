@@ -523,22 +523,41 @@ def _read_legacy_sources(connection: sqlite3.Connection) -> list[str]:
     return [
         row[0]
         for row in connection.execute(
-            "SELECT DISTINCT source FROM ingest_runs WHERE status IN ('success','partial')"
+            "SELECT DISTINCT source FROM ingest_runs "
+            "WHERE status IN ('success','partial') AND source NOT LIKE 'sync:%'"
         )
     ]
 
 
 def _read_existing_tool_keys(connection: sqlite3.Connection) -> set[str]:
     keys: set[str] = set()
-    for table, column in (
-        ("usage_events", "tool_key"),
-        ("unpriced_usage_events", "tool_key"),
-        ("sessions", "tool_key"),
-        ("quotas", "provider_key"),
-    ):
+    queries = (
+        (
+            "ingest_runs",
+            "SELECT DISTINCT source FROM ingest_runs "
+            "WHERE status IN ('success','partial') AND source NOT LIKE 'sync:%'",
+        ),
+        (
+            "sessions",
+            "SELECT DISTINCT tool_key FROM sessions WHERE session_id NOT LIKE 'm:%'",
+        ),
+        (
+            "quotas",
+            "SELECT DISTINCT provider_key FROM quotas WHERE source NOT LIKE 'sync:%'",
+        ),
+        (
+            "usage_events",
+            "SELECT DISTINCT tool_key FROM usage_events WHERE raw_id NOT LIKE 'm:%'",
+        ),
+        (
+            "unpriced_usage_events",
+            "SELECT DISTINCT tool_key FROM unpriced_usage_events WHERE raw_id NOT LIKE 'm:%'",
+        ),
+    )
+    for table, sql in queries:
         if not _table_exists(connection, table):
             continue
-        for row in connection.execute(f"SELECT DISTINCT {column} FROM {table}"):
+        for row in connection.execute(sql):
             if row[0]:
                 keys.add(str(row[0]))
     return keys

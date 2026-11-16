@@ -1280,7 +1280,14 @@ def test_assert_folder_free_exclude_key_and_bindings_fallback(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _write_claude_sample(path: Path, *, session_id: str, message_id: str, timestamp: str = "2026-11-12T12:00:00Z") -> Path:
+def _write_claude_sample(
+    path: Path,
+    *,
+    session_id: str,
+    message_id: str,
+    timestamp: str = "2026-11-12T12:00:00Z",
+    output_tokens: int = 25,
+) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "type": "assistant",
@@ -1295,7 +1302,7 @@ def _write_claude_sample(path: Path, *, session_id: str, message_id: str, timest
                 "input_tokens": 100,
                 "cache_read_input_tokens": 0,
                 "cache_creation_input_tokens": 0,
-                "output_tokens": 25,
+                "output_tokens": output_tokens,
             },
         },
     }
@@ -1550,3 +1557,196 @@ def test_v1_rollback_keeps_vault_reference_reachable(tmp_path, monkeypatch):
     ref = old["bindings"]["openai_admin"]["credentialRef"]
     assert ref == "legacy-ref"
     assert service.vault.get(ref) == "synthetic-key"
+
+
+def test_remote_history_does_not_approve_local_folder(tmp_path, monkeypatch):
+    from spend_app import claude_accounts, opencode_profiles, profile_detect
+    from spend_app.config import Settings
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    for name in (
+        "CODEX_HOME",
+        "CLAUDE_CONFIG_DIR",
+        "XDG_DATA_HOME",
+        "OPENCODE_DB",
+        "BURNRATE_CLAUDE_ACCOUNT_DIRS",
+        "BURNRATE_OPENCODE_PROFILE_DIRS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    folder = home / ".claude-work"
+    _write_claude_sample(
+        folder / "projects" / "p" / "one.jsonl",
+        session_id="local-private",
+        message_id="private-message",
+    )
+    (folder / ".claude.json").write_text(
+        json.dumps({"oauthAccount": {"accountUuid": "local-private-account"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        claude_accounts,
+        "extra_accounts",
+        lambda: claude_accounts.discover(home=home, environ={}),
+    )
+    monkeypatch.setattr(opencode_profiles, "extra_profiles", lambda: ())
+    profile_detect.reset_cache()
+
+    root = Path(__file__).resolve().parents[1]
+    settings = Settings(
+        database_path=tmp_path / "spend.db",
+        pricing_path=root / "pricing",
+        anthropic_admin_key=None,
+        openai_admin_key=None,
+        timezone="UTC",
+        cache_hit_threshold=0.75,
+        over_routing_token_ceiling=40000,
+        logs_path=tmp_path / "logs",
+    )
+    db_path = settings.database_path
+    spend_db.initialize(db_path)
+
+    # Seed remote-only history across usage_events, unpriced_usage_events, sessions, quotas, and ingest_runs
+    with spend_db.connect(db_path) as db:
+        db.execute("DELETE FROM app_meta WHERE key IN (?, ?)", (ps.KEY, ps.MIGRATED_KEY))
+        db.execute(
+            """
+            INSERT INTO usage_events(
+                source, tool_key, model_key, occurred_at, session_id, project,
+                input_tokens, cached_input_tokens, cache_write_tokens, cache_write_1h_tokens,
+                output_tokens, reasoning_tokens, cost_usd, computed_cost_usd, is_exact,
+                occurred_epoch_us, raw_id, ingested_at
+            ) VALUES('claude_local', 'claude-code-work', 'claude-opus-5', '2026-10-01T00:00:00Z',
+                     'm:another-computer:s1', 'demo', 10, 0, 0, 0, 5, NULL, NULL, 0.01, 1, 1,
+                     'm:another-computer:remote-message', '2026-10-01T00:00:01Z')
+            """
+        )
+        db.execute(
+            """
+            INSERT INTO unpriced_usage_events(
+                source, tool_key, model_key, occurred_at, session_id, project,
+                input_tokens, cached_input_tokens, cache_write_tokens, cache_write_1h_tokens,
+                output_tokens, reasoning_tokens, unclassified_tokens, telemetry_complete, cost_usd,
+                occurred_epoch_us, raw_id, ingested_at
+            ) VALUES('claude_local', 'claude-code-work', 'unknown-model', '2026-10-01T00:00:00Z',
+                     'm:another-computer:s1', 'demo', 10, 0, 0, 0, 5, NULL, 0, 1, NULL, 1,
+                     'm:another-computer:remote-unpriced', '2026-10-01T00:00:01Z')
+            """
+        )
+        db.execute(
+            """
+            INSERT INTO sessions(session_id, tool_key, project, started_at, ended_at, model_key)
+            VALUES('m:another-computer:s1', 'claude-code-work', 'demo', '2026-10-01T00:00:00Z',
+                   '2026-10-01T00:01:00Z', 'claude-opus-5')
+            """
+        )
+        db.execute(
+            """
+            INSERT INTO quotas(provider_key, limit_key, label, unit, source, polled_at)
+            VALUES('claude-code-work', 'weekly', 'Claude weekly', 'pct',
+                   'sync:another-computer:claude_local_accounts', '2026-10-01T00:00:00Z')
+            """
+        )
+        db.execute(
+            """
+            INSERT INTO ingest_runs(source, started_at, finished_at, status, events_written)
+            VALUES('sync:another-computer', '2026-10-01T00:00:00Z', '2026-10-01T00:00:01Z', 'success', 1),
+                  ('claude_local', '2026-10-01T00:00:00Z', '2026-10-01T00:00:01Z', 'success', 1)
+            """
+        )
+
+    c.Store(db_path).bootstrap()
+    state = c.Store(db_path).read()
+    extras = [p for p in ps.profiles(state) if p.key != "default" and p.enabled]
+    assert extras == [], extras
+    assert "sync:another-computer" not in state["legacy"]
+
+    # Folder still surfaces as detected rather than approved
+    svc = c.Service(settings, vault=_FakeVault())
+    claude_row = next(row for row in svc.list()["connections"] if row["source"] == "claude_local")
+    assert any("claude-work" in d["folder"] for d in claude_row["detected"])
+    profile_detect.reset_cache()
+
+
+def test_cutover_still_applies_legitimate_usage_revisions(tmp_path, monkeypatch):
+    from spend_app import claude_accounts, opencode_profiles
+    from spend_app.adapters import claude_local, profiles_local
+    from spend_app.config import Settings
+    from spend_app.pricing import PricingEngine
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setattr(claude_accounts, "extra_accounts", lambda: ())
+    monkeypatch.setattr(opencode_profiles, "extra_profiles", lambda: ())
+
+    root = Path(__file__).resolve().parents[1]
+    settings = Settings(
+        database_path=tmp_path / "spend.db",
+        pricing_path=root / "pricing",
+        anthropic_admin_key=None,
+        openai_admin_key=None,
+        timezone="UTC",
+        cache_hit_threshold=0.75,
+        over_routing_token_ceiling=40000,
+        logs_path=tmp_path / "logs",
+    )
+    spend_db.initialize(settings.database_path)
+    pricing = PricingEngine.load(settings.pricing_path)
+
+    folder = home / ".claude-2"
+    transcript = _write_claude_sample(
+        folder / "projects" / "p" / "one.jsonl",
+        session_id="streaming",
+        message_id="message",
+        output_tokens=25,
+    )
+    claude_local.reset_file_cache()
+    claude_local.ingest(database_path=settings.database_path, pricing=pricing, session_glob=str(transcript))
+
+    v1 = _v1_payload(
+        bindings={
+            "claude_local_alt": {
+                "source": "claude_local_alt",
+                "location": str(folder / "projects"),
+                "enabled": True,
+                "revision": 3,
+                "mode": "manual",
+            }
+        }
+    )
+    with spend_db.connect(settings.database_path) as db:
+        db.execute("DELETE FROM app_meta WHERE key IN (?, ?)", (ps.KEY, ps.MIGRATED_KEY))
+        db.execute("INSERT INTO app_meta(key, value) VALUES(?, ?)", (ps.V1_KEY, json.dumps(v1)))
+
+    c.Store(settings.database_path).bootstrap()
+    first = profiles_local.ingest(database_path=settings.database_path, pricing=pricing)
+    assert first["eventsAccepted"] == 1, first
+
+    # A newer revision of the pre-cutover message arrives (25 -> 125 output tokens):
+    # revised fields must apply while preserving the stored "claude-code" tool_key.
+    _write_claude_sample(
+        transcript,
+        session_id="streaming",
+        message_id="message",
+        output_tokens=125,
+        timestamp="2026-11-12T12:01:00Z",
+    )
+    result = profiles_local.ingest(database_path=settings.database_path, pricing=pricing)
+    assert result["eventsAccepted"] == 1, result
+
+    # Unchanged re-run hits file cache and preserves accepted counts & stored revision
+    cached = profiles_local.ingest(database_path=settings.database_path, pricing=pricing)
+    assert cached["eventsAccepted"] == 1, cached
+    claude_local.reset_file_cache()
+
+    with spend_db.connect(settings.database_path) as db:
+        rows = [tuple(r) for r in db.execute("SELECT tool_key, output_tokens FROM usage_events")]
+        sess = [tuple(r) for r in db.execute("SELECT session_id, tool_key FROM sessions")]
+    assert rows == [("claude-code", 125)], (result, rows)
+    assert sess == [("streaming", "claude-code")], sess
+
