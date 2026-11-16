@@ -489,20 +489,48 @@ def _tail_rate_limit(path: Path, *, now: datetime | None = None) -> tuple[float,
     return latest
 
 
-def _codex_limits() -> dict:
-    from spend_app.codex_quota import scope, freshness_reason, newest
-    from spend_app.connection_paths import LocationError, confined, source_files, stat_path
+def _codex_profile_name(key: str) -> str:
+    if not key or key == "codex":
+        return "Codex"
+    slug = key[len("codex-"):] if key.startswith("codex-") else key
+    if slug.isdigit():
+        label = f"Profile {slug}"
+    else:
+        label = " ".join(part.capitalize() for part in slug.split("-") if part) or "Profile"
+    return f"Codex · {label}"
+
+
+def _codex_limits(root: Path | None = None, key: str = "codex") -> dict:
+    from spend_app.codex_quota import freshness_reason, newest, scope, unresolved_scope
+    from spend_app.connection_paths import LocationError, _has_surrogate_ancestor, _lstat_existing, _same_physical, confined, identity, source_files, stat_path
     from spend_app.providers import default_codex_glob
-    root = Path(default_codex_glob().replace("\\", "/").removesuffix("/**/*.jsonl"))
-    missing = {"key": "codex", "name": "Codex", "status": "unavailable", "windows": [],
+    custom_root = root is not None
+    if root is None:
+        raw_root = Path(default_codex_glob().replace("\\", "/").removesuffix("/**/*.jsonl"))
+    else:
+        raw_root = Path(str(root).replace("\\", "/").removesuffix("/**/*.jsonl")).expanduser()
+    name = _codex_profile_name(key)
+    missing = {"key": key, "name": name, "status": "unavailable", "windows": [],
                "detail": "No verified main Codex weekly snapshot in the bounded local sample. Alternate and unidentified pools are excluded."}
     try:
-        root = root.resolve(strict=True)
-        candidates = sorted(source_files(root, "**/*.jsonl", budget=5000),
+        resolved_root = raw_root.resolve(strict=True)
+        if custom_root:
+            raw_stat = _lstat_existing(raw_root)
+            resolved_stat = _lstat_existing(resolved_root)
+            if (
+                identity(resolved_root) != identity(raw_root)
+                or _has_surrogate_ancestor(raw_root)
+                or raw_stat is None
+                or resolved_stat is None
+                or (raw_stat.st_dev, raw_stat.st_ino) != (resolved_stat.st_dev, resolved_stat.st_ino)
+                or not _same_physical(raw_root, resolved_root)
+            ):
+                return {**missing, "detail": "Codex quota source location changed; re-verify the connection before reading."}
+        candidates = sorted(source_files(resolved_root, "**/*.jsonl", budget=5000),
                             key=lambda path: stat_path(path).st_mtime, reverse=True)[:40]
         latest = None
         for path in candidates:
-            row = _tail_rate_limit(confined(path, root), now=datetime.now(UTC))
+            row = _tail_rate_limit(confined(path, resolved_root), now=datetime.now(UTC))
             latest = newest(latest, row)
         now = datetime.now(UTC)
     except (OSError, LocationError, ValueError):
@@ -519,9 +547,9 @@ def _codex_limits() -> dict:
     reason = freshness_reason(observed_at, reset_at, now)
     if reason:
         return {**missing, "detail": reason, "observedAt": observed_at}
-    return {"key": "codex", "name": "Codex", "status": "exact", "poolId": "codex",
+    return {"key": key, "name": name, "status": "exact", "poolId": "codex",
             "plan": f"ChatGPT {str(limits.get('plan_type') or 'unknown').title()}",
-            "scope": scope(root), "observedAt": observed_at,
+            "scope": unresolved_scope(raw_root) if custom_root else scope(resolved_root), "observedAt": observed_at,
             "windows": [{"key": "weekly", "windowMinutes": 10080,
                          "usedPct": window["used_percent"], "remainingPct": 100 - window["used_percent"],
                          "label": "Weekly", "resetAt": reset_at}],

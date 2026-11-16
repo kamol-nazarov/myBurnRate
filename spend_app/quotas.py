@@ -58,12 +58,47 @@ QUOTA_LIMIT_ORDER = {
 }
 
 
+def _is_codex_profile_key(
+    provider_key: object, database_path: Path | str | None = None
+) -> bool:
+    if not isinstance(provider_key, str) or not provider_key or provider_key == "codex":
+        return False
+    if provider_key.startswith("codex-"):
+        return True
+    raw = database_path if database_path is not None else os.environ.get("SPEND_DATABASE_PATH")
+    if not raw:
+        return False
+    db_path = Path(raw)
+    try:
+        db_path.stat()
+    except OSError:
+        return False
+    try:
+        import sqlite3
+        from contextlib import closing
+        from spend_app import profile_store
+
+        with closing(sqlite3.connect(db_path.absolute().as_uri() + "?mode=ro", uri=True)) as db:
+            state = profile_store.load_config_if_present(db)
+        if not state:
+            return False
+        return any(
+            profile.key != "default" and (profile.tool_key or profile.key) == provider_key
+            for profile in profile_store.profiles(state, provider="codex_local")
+        )
+    except Exception:
+        return False
+
+
 def _limit_order(provider_key: str) -> tuple[str, ...]:
     # Extra Claude account and OpenCode profile lanes order their windows like the default lane.
     if provider_key not in QUOTA_LIMIT_ORDER:
-        for prefix, default in (("claude-code-", "claude-code"), ("opencode-go-", "opencode-go")):
-            if str(provider_key).startswith(prefix):
-                return QUOTA_LIMIT_ORDER[default]
+        from spend_app import claude_accounts, opencode_profiles
+
+        if claude_accounts.is_account_key(provider_key):
+            return QUOTA_LIMIT_ORDER["claude-code"]
+        if opencode_profiles.is_profile_key(provider_key):
+            return QUOTA_LIMIT_ORDER["opencode-go"]
     return QUOTA_LIMIT_ORDER.get(provider_key, ())
 
 
@@ -167,6 +202,8 @@ class QuotaLaneScheduler:
                 return self.cadence.get(claude_accounts.PRIMARY_KEY, (90, 300))
             if opencode_profiles.is_profile_key(provider_key):
                 return self.cadence.get(opencode_profiles.PRIMARY_KEY, (30, 300))
+            if _is_codex_profile_key(provider_key):
+                return self.cadence.get("codex", (15, 15))
         return self.cadence.get(provider_key, (15, 15))
 
     def due(self, provider_key: str, *, active: bool = False) -> bool:
@@ -207,12 +244,16 @@ class QuotaLaneScheduler:
             self._next_due[provider_key] = now + float(seconds)
 
     def nudge(self, provider_key: str | None = None) -> None:
-        targets = [provider_key] if provider_key else list(self.cadence)
         with self._lock:
+            targets = (
+                [provider_key]
+                if provider_key
+                else list(dict.fromkeys([*self.cadence, *self._next_due, *self._last_polled]))
+            )
             for key in targets:
                 if not key or key in self._backoff:
                     continue
-                if key in {"codex", "grok", "antigravity"}:
+                if key in {"codex", "grok", "antigravity"} or _is_codex_profile_key(key):
                     self._next_due[key] = float("-inf")
                 elif key in self._last_polled:
                     active_interval, _ = self.lane_cadence(key)
@@ -229,12 +270,25 @@ _DATABASE_LANES: dict[str, QuotaLaneScheduler] = {}
 def nudge_quota_lanes(database_path: Path | str, provider_key: str | None = None) -> None:
     """Wake due quota lanes and clear local telemetry caches when new activity/usage lands."""
     try:
+        from spend_app import claude_accounts, opencode_profiles
         from spend_app.limits import _CACHE, _CACHE_LOCK
 
         with _CACHE_LOCK:
-            if provider_key in {None, "codex"}:
-                for k in [k for k in _CACHE if k.startswith("codex_quota_poll:")]:
+            if provider_key is None:
+                for k in [
+                    k
+                    for k in _CACHE
+                    if k.startswith(("codex_quota_poll:", "claude_account_poll:", "opencode_go_profile_poll:"))
+                ]:
                     _CACHE.pop(k, None)
+            elif provider_key == "codex" or _is_codex_profile_key(provider_key, database_path):
+                prefix = f"codex_quota_poll:{provider_key}:"
+                for k in [k for k in _CACHE if k.startswith(prefix)]:
+                    _CACHE.pop(k, None)
+            elif claude_accounts.is_account_key(provider_key, database_path):
+                _CACHE.pop(f"claude_account_poll:{provider_key}", None)
+            elif opencode_profiles.is_profile_key(provider_key, database_path):
+                _CACHE.pop(f"opencode_go_profile_poll:{provider_key}", None)
             if provider_key in {None, "grok"}:
                 _CACHE.pop("grok_quota_poll", None)
             if provider_key in {None, "antigravity"}:
@@ -256,9 +310,9 @@ def lane_is_active(database_path: Path | str, provider_key: str, *, now: datetim
     from spend_app.claude_accounts import account_for_key, is_account_key
     from spend_app.opencode_profiles import is_profile_key, profile_for_key
 
-    if is_profile_key(provider_key):
+    if is_profile_key(provider_key, database_path=database_path):
         # OpenCode writes the profile's own database while that profile is in use.
-        profile = profile_for_key(provider_key)
+        profile = profile_for_key(provider_key, database_path=database_path)
         stamps = []
         for path in ((profile.database, profile.database.with_name(profile.database.name + "-wal")) if profile else ()):
             try:
@@ -266,16 +320,21 @@ def lane_is_active(database_path: Path | str, provider_key: str, *, now: datetim
             except OSError:
                 pass
         modified = max(stamps, default=None)
-        return modified is not None and moment.timestamp() - modified <= QUOTA_ACTIVITY_WINDOW_SECONDS
-    if is_account_key(provider_key):
-        # Usage is not attributed per account; Claude Code rewrites the
-        # profile's state file while that account is in use.
-        account = account_for_key(provider_key)
+        if modified is not None and moment.timestamp() - modified <= QUOTA_ACTIVITY_WINDOW_SECONDS:
+            return True
+        if not Path(database_path).exists():
+            return False
+    if is_account_key(provider_key, database_path=database_path):
+        # Claude Code rewrites the profile's state file while that account is in use.
+        account = account_for_key(provider_key, database_path=database_path)
         try:
             modified = account.state_path.stat().st_mtime if account else None
         except OSError:
             modified = None
-        return modified is not None and moment.timestamp() - modified <= QUOTA_ACTIVITY_WINDOW_SECONDS
+        if modified is not None and moment.timestamp() - modified <= QUOTA_ACTIVITY_WINDOW_SECONDS:
+            return True
+        if not Path(database_path).exists():
+            return False
     since = (moment - timedelta(seconds=QUOTA_ACTIVITY_WINDOW_SECONDS)).isoformat().replace("+00:00", "Z")
     tool_keys = ("opencode", "zcode") if provider_key == "opencode" else (provider_key,)
     placeholders = ",".join("?" for _ in tool_keys)
@@ -505,12 +564,20 @@ def antigravity_quota_samples(payload: dict, *, source: str) -> list[QuotaSample
     return samples
 
 
-def codex_quota_samples(payload: dict, *, source: str, now: datetime | None = None) -> list[QuotaSample]:
+def codex_quota_samples(
+    payload: dict,
+    *,
+    source: str,
+    now: datetime | None = None,
+    provider_key: str = "codex",
+) -> list[QuotaSample]:
     label = "Codex weekly window"
     if payload.get("status") != "exact" or payload.get("poolId") != "codex":
+        if provider_key != "codex":
+            return []
         return [
             _unavailable(
-                "codex",
+                provider_key,
                 "weekly",
                 label,
                 source,
@@ -527,9 +594,11 @@ def codex_quota_samples(payload: dict, *, source: str, now: datetime | None = No
     from spend_app.codex_quota import freshness_reason
     reason = freshness_reason(payload.get("observedAt"), _window_reset(weekly) if weekly else None, now or datetime.now(UTC))
     if used_pct is None or not 0 <= used_pct <= 100 or reason or not payload.get("scope"):
+        if provider_key != "codex":
+            return []
         return [
             _unavailable(
-                "codex",
+                provider_key,
                 "weekly",
                 label,
                 source,
@@ -538,7 +607,7 @@ def codex_quota_samples(payload: dict, *, source: str, now: datetime | None = No
         ]
     return [
         QuotaSample(
-            provider_key="codex",
+            provider_key=provider_key,
             limit_key="weekly",
             label=label,
             unit="pct",
@@ -802,12 +871,109 @@ def _claude_quota_collector() -> list[QuotaSample]:
     return _apply_throttle(claude_quota_samples(payload, source=source), payload)
 
 
-def _claude_account_collector(account) -> Callable[[], list[QuotaSample]]:
+def _profile_location_unchanged(profile_or_path, provider: str) -> bool:
+    from spend_app import profile_store
+    from spend_app.connection_paths import is_junction
+    from spend_app.providers import REGISTRY
+
+    spec = REGISTRY.get(provider)
+    conn_spec = spec.connection if spec is not None else None
+    if conn_spec is None:
+        return False
+    raw = getattr(profile_or_path, "location", profile_or_path)
+    if isinstance(raw, Path):
+        raw = str(raw)
+    if not isinstance(raw, str) or not raw.strip():
+        return False
+    if provider == "codex_local":
+        raw = raw.strip().replace("\\", "/").removesuffix("/**/*.jsonl")
+        target = profile_store.Profile(
+            provider=provider,
+            key=getattr(profile_or_path, "key", "extra"),
+            name=getattr(profile_or_path, "name", "Extra"),
+            location=raw,
+            origin=getattr(profile_or_path, "origin", "manual"),
+            enabled=getattr(profile_or_path, "enabled", True),
+            revision=getattr(profile_or_path, "revision", 1),
+            account_digest=getattr(profile_or_path, "account_digest", None),
+            tool_key=getattr(profile_or_path, "tool_key", None),
+        )
+    else:
+        target = (
+            profile_or_path
+            if isinstance(profile_or_path, profile_store.Profile)
+            else profile_store.Profile(
+                provider=provider,
+                key="extra",
+                name="Extra",
+                location=raw,
+                origin="manual",
+                enabled=True,
+                revision=1,
+                account_digest=None,
+                tool_key=None,
+            )
+        )
+    if profile_store.location_unchanged(target, conn_spec):
+        if provider == "claude_local":
+            folder = profile_store._claude_folder_from_location(raw)
+            if folder is not None:
+                state_path = folder / ".claude.json"
+                if state_path.is_symlink() or is_junction(state_path):
+                    return False
+        elif provider == "opencode_local":
+            from spend_app import opencode_profiles
+
+            db_path = opencode_profiles._database_from_location(raw)
+            if db_path is not None:
+                for path in (db_path.parent, db_path, db_path.parent / "auth.json"):
+                    if path.is_symlink() or is_junction(path):
+                        return False
+        return True
+    if provider == "claude_local":
+        loc_path = Path(raw.strip()).expanduser()
+        if (
+            loc_path.name.lower() in {"projects", "transcripts"}
+            and not loc_path.exists()
+            and not loc_path.is_symlink()
+            and not is_junction(loc_path)
+        ):
+            folder = profile_store._claude_folder_from_location(raw)
+            if folder is not None:
+                folder_profile = profile_store.Profile(
+                    provider=provider,
+                    key=target.key,
+                    name=target.name,
+                    location=str(folder),
+                    origin=target.origin,
+                    enabled=target.enabled,
+                    revision=target.revision,
+                    account_digest=target.account_digest,
+                    tool_key=target.tool_key,
+                )
+                if profile_store.location_unchanged(folder_profile, conn_spec):
+                    state_path = folder / ".claude.json"
+                    return not (state_path.is_symlink() or is_junction(state_path))
+    return False
+
+
+def _claude_account_collector(account, *, store_profile=None) -> Callable[[], list[QuotaSample]]:
     """Quota for one extra Claude Code account: its own cached usage, its own lane."""
+    from spend_app.connection_paths import is_junction
     from spend_app.limits import claude_account_limits
 
     def collect() -> list[QuotaSample]:
+        if not _profile_location_unchanged(store_profile or account.config_dir, "claude_local"):
+            return []
+        if account.state_path.is_symlink() or is_junction(account.state_path):
+            return []
         payload, source = _cached(f"claude_account_poll:{account.key}", 10, lambda: claude_account_limits(account))
+        if (
+            payload.get("status") in {"absent", "unavailable"}
+            and payload.get("throttleSeconds") is None
+            and payload.get("httpStatus") != THROTTLED_STATUS
+        ):
+            return []
         # Window labels match the default lane; the card names the account.
         samples = claude_quota_samples(payload, source=source, provider_key=account.key)
         return _apply_throttle(samples, payload)
@@ -827,10 +993,16 @@ def _collect(name: str, ttl: int, loader: Callable[[], dict], builder, source: s
     return _apply_throttle(builder(payload, source=source), payload)
 
 
-def _opencode_profile_collector(profile) -> Callable[[], list[QuotaSample]]:
+def _opencode_profile_collector(profile, *, store_profile=None) -> Callable[[], list[QuotaSample]]:
     """Go quota for one extra OpenCode profile: its own stored key, its own lane."""
+    from spend_app.connection_paths import is_junction
 
     def collect() -> list[QuotaSample]:
+        if not _profile_location_unchanged(store_profile or profile.database, "opencode_local"):
+            return []
+        for path in (profile.database.parent, profile.database, profile.database.parent / "auth.json"):
+            if path.is_symlink() or is_junction(path):
+                return []
         # Window labels match the default lane; the card names the profile.
         return _collect(
             f"opencode_go_profile_poll:{profile.key}",
@@ -843,10 +1015,221 @@ def _opencode_profile_collector(profile) -> Callable[[], list[QuotaSample]]:
     return collect
 
 
-def _codex_quota_collector(database_path):
-    from spend_app.codex_quota import current_scope
-    key = f"codex_quota_poll:{Path(database_path).resolve()}:{current_scope()}"
-    return _collect(key, 10, _codex_limits, codex_quota_samples, "codex_local_telemetry")
+def _codex_quota_collector(
+    database_path,
+    *,
+    root: Path | None = None,
+    provider_key: str = "codex",
+    store_profile=None,
+):
+    from spend_app.codex_quota import current_scope, unresolved_scope
+    if store_profile is not None:
+        if not _profile_location_unchanged(store_profile, "codex_local"):
+            return []
+    elif root is not None and not _profile_location_unchanged(root, "codex_local"):
+        return []
+    lane_scope = unresolved_scope(root) if root is not None else current_scope()
+    key = f"codex_quota_poll:{provider_key}:{Path(database_path).resolve()}:{lane_scope}"
+    loader = _codex_limits if root is None and provider_key == "codex" else (lambda r=root, k=provider_key: _codex_limits(r, key=k))
+    return _collect(
+        key,
+        10,
+        loader,
+        lambda payload, *, source: codex_quota_samples(payload, source=source, provider_key=provider_key),
+        "codex_local_telemetry",
+    )
+
+
+def _enabled_store_profiles(database_path: Path | str):
+    from spend_app import profile_store
+
+    return profile_store.enabled_profiles(database_path)
+
+
+def _default_profile_digest(profile) -> str | None:
+    if profile.account_digest:
+        return profile.account_digest
+    if not profile.location:
+        return None
+    from spend_app import profile_detect, profile_store
+
+    if profile.provider == "claude_local":
+        return profile_store._claude_digest_for_location(profile.location, is_default=True)
+    if profile.provider == "codex_local":
+        loc = Path(str(profile.location).replace("\\", "/").removesuffix("/**/*.jsonl")).expanduser()
+        folder = loc.parent if loc.name.lower() == "sessions" else loc
+        return profile_detect._codex_account_digest(folder / "auth.json")
+    if profile.provider == "opencode_local":
+        loc = Path(profile.location).expanduser()
+        digests = profile_detect._opencode_key_digests(loc, {}, is_default=False)
+        return digests[0] if digests else None
+    return None
+
+
+def _resolve_profile_lanes(
+    database_path: Path | str,
+) -> tuple[dict[str, Callable[[], list[QuotaSample]]], dict[str, dict[str, str]]]:
+    from spend_app import claude_accounts, opencode_profiles, profile_detect, profile_store
+    from spend_app.connection_paths import identity
+    from spend_app.limits import _opencode_go_keys
+
+    profiles = _enabled_store_profiles(database_path)
+    accounts_by_folder: dict[str, claude_accounts.ClaudeAccount] = {}
+    for account in claude_accounts.extra_accounts():
+        try:
+            accounts_by_folder[identity(account.config_dir)] = account
+        except Exception:
+            pass
+
+    collectors: dict[str, Callable[[], list[QuotaSample]]] = {}
+    shared: dict[str, dict[str, str]] = {}
+
+    for provider in ("claude_local", "opencode_local", "codex_local"):
+        prov_profiles = sorted(
+            (profile for profile in profiles if profile.provider == provider),
+            key=lambda profile: 0 if profile.key == "default" else 1,
+        )
+        seen_digests: dict[str, tuple[str, str]] = {}
+        for profile in prov_profiles:
+            if profile.key == "default":
+                owner_key = profile.tool_key or profile_store.DEFAULT_TOOL_KEYS[provider]
+                owner_name = profile.name or "Default"
+                live_digest = profile_detect.current_account_digest(
+                    provider, profile.location, is_default=True
+                )
+                digest = (
+                    live_digest
+                    if live_digest is not None
+                    else _default_profile_digest(profile)
+                )
+                if digest:
+                    seen_digests[digest] = (owner_key, owner_name)
+                continue
+
+            tool_key = profile.tool_key or profile.key
+            if not tool_key:
+                continue
+            if not _profile_location_unchanged(profile, provider):
+                continue
+            live_digest = profile_detect.current_account_digest(
+                provider, profile.location, is_default=False
+            )
+            digest = live_digest if live_digest is not None else profile.account_digest
+
+            if provider == "claude_local":
+                folder = profile_store._claude_folder_from_location(profile.location)
+                matched = None
+                if folder is not None:
+                    try:
+                        matched = accounts_by_folder.get(identity(folder))
+                    except Exception:
+                        matched = None
+                if matched is not None:
+                    if not digest and matched.account_uuid:
+                        digest = profile_store._sha256_hex(matched.account_uuid)
+                    account = claude_accounts.ClaudeAccount(
+                        key=tool_key,
+                        label=profile.name or matched.label,
+                        config_dir=matched.config_dir,
+                        state_path=matched.state_path,
+                        account_uuid=matched.account_uuid,
+                        plan=matched.plan,
+                    )
+                elif folder is not None:
+                    state_path = folder / ".claude.json"
+                    state = claude_accounts.read_state(state_path) if state_path.is_file() else {}
+                    uid = claude_accounts.account_uuid(state)
+                    if uid:
+                        digest = digest or profile_store._sha256_hex(uid)
+                        slug = tool_key[len(claude_accounts.PREFIX):] if tool_key.startswith(claude_accounts.PREFIX) else claude_accounts.slug_for(folder)
+                        account = claude_accounts.ClaudeAccount(
+                            key=tool_key,
+                            label=profile.name or claude_accounts.label_for(slug),
+                            config_dir=folder,
+                            state_path=state_path,
+                            account_uuid=uid,
+                            plan=claude_accounts.plan_name(state),
+                        )
+                    elif digest:
+                        account = claude_accounts.ClaudeAccount(
+                            key=tool_key,
+                            label=profile.name or tool_key,
+                            config_dir=folder,
+                            state_path=state_path,
+                            account_uuid="",
+                            plan=None,
+                        )
+                    else:
+                        continue
+                else:
+                    continue
+
+                if digest:
+                    if digest in seen_digests:
+                        owner_key, owner_name = seen_digests[digest]
+                        shared[tool_key] = {
+                            "ownerKey": owner_key,
+                            "ownerName": owner_name,
+                            "label": f"Shares limits with {owner_name}",
+                        }
+                        continue
+                    seen_digests[digest] = (tool_key, profile.name or account.label or tool_key)
+                collectors[tool_key] = _claude_account_collector(account, store_profile=profile)
+
+            elif provider == "opencode_local":
+                if not profile.location:
+                    continue
+                db_path = opencode_profiles._database_from_location(profile.location)
+                if db_path is None:
+                    continue
+                if db_path.is_file() and not digest and not _opencode_go_keys(db_path):
+                    continue
+                if digest:
+                    if digest in seen_digests:
+                        owner_key, owner_name = seen_digests[digest]
+                        shared[tool_key] = {
+                            "ownerKey": owner_key,
+                            "ownerName": owner_name,
+                            "label": f"Shares limits with {owner_name}",
+                        }
+                        continue
+                    seen_digests[digest] = (tool_key, profile.name or tool_key)
+                data_dir = db_path.parent.parent if db_path.parent.name == "opencode" else db_path.parent
+                oc_profile = opencode_profiles.OpenCodeProfile(
+                    key=tool_key,
+                    label=profile.name or tool_key,
+                    data_dir=data_dir,
+                    database=db_path,
+                )
+                collectors[tool_key] = _opencode_profile_collector(oc_profile, store_profile=profile)
+
+            elif provider == "codex_local":
+                if not profile.location:
+                    continue
+                if digest:
+                    if digest in seen_digests:
+                        owner_key, owner_name = seen_digests[digest]
+                        shared[tool_key] = {
+                            "ownerKey": owner_key,
+                            "ownerName": owner_name,
+                            "label": f"Shares limits with {owner_name}",
+                        }
+                        continue
+                    seen_digests[digest] = (tool_key, profile.name or tool_key)
+                root = Path(str(profile.location).replace("\\", "/").removesuffix("/**/*.jsonl")).expanduser()
+                collectors[tool_key] = (
+                    lambda r=root, k=tool_key, p=profile: _codex_quota_collector(
+                        database_path, root=r, provider_key=k, store_profile=p
+                    )
+                )
+
+    return collectors, shared
+
+
+def shared_limit_lanes(database_path: Path | str) -> dict[str, dict[str, str]]:
+    """Profiles sharing an ``account_digest`` with an earlier profile's lane."""
+    _, shared = _resolve_profile_lanes(database_path)
+    return shared
 
 
 def default_quota_collectors(
@@ -871,12 +1254,8 @@ def default_quota_collectors(
         "deepseek": lambda: _collect("deepseek_balance_poll", 10, _deepseek_balance_uncached,
                                      deepseek_quota_samples, "deepseek_balance_api"),
     }
-    from spend_app.claude_accounts import extra_accounts
-    for account in extra_accounts():
-        result[account.key] = _claude_account_collector(account)
-    from spend_app.opencode_profiles import extra_profiles
-    for profile in extra_profiles():
-        result[profile.key] = _opencode_profile_collector(profile)
+    extra_collectors, _ = _resolve_profile_lanes(database_path)
+    result.update(extra_collectors)
     from spend_app.integration_policy import authorize
     if authorize("claude_statusline_snapshot")[0]:
         from spend_app.claude_statusline import read_snapshot

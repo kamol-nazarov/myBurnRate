@@ -1,10 +1,11 @@
-"""Usage from extra Claude Code accounts and OpenCode profiles.
+"""Collect usage from enabled non-default provider profiles.
 
-The default collectors read the default profile only. This step runs the same
-collectors on each extra profile's own transcripts or database, confined to
-that profile's folder. Its rows carry the profile's card key as their tool
-(``claude-code-work``, ``opencode-go-2``) so per-card burn, run-out forecasts
-and the Hub can tell them apart; model keys, and so prices, are unchanged.
+The default collectors (``key == "default"``) run on the registry pass and read
+only each provider's default profile. This step runs each enabled non-default
+profile through its provider's own adapter ``ingest()``, confined to that
+profile's location and tagged with the profile's ``tool_key`` via
+``TOOL_KEY_OVERRIDES`` so per-card burn, run-out forecasts and the Hub can tell
+profiles apart while model keys and prices remain unchanged.
 
 Runs at the start of a pass, before the default collectors, so each default
 source's own run stays its latest health record.
@@ -17,35 +18,110 @@ from pathlib import Path
 NAME = "profiles_local"
 
 
-def ingest(*, database_path: Path, pricing) -> dict:
-    from spend_app.adapters import claude_local, opencode_local
-    from spend_app.adapters.file_cache import merge_results
-    from spend_app.claude_accounts import extra_accounts
-    from spend_app.connection_paths import approved
-    from spend_app.db import TOOL_KEY_OVERRIDES
-    from spend_app.opencode_profiles import extra_profiles
+def _profile_folder_and_patterns(
+    provider: str, path: Path, meta
+) -> tuple[str, list[str] | None, str | Path]:
+    from spend_app.connection_paths import transcript_patterns
 
-    results = []
-    for account in extra_accounts():
-        projects = account.config_dir / "projects"
-        if not projects.is_dir() or next(projects.glob("*/*.jsonl"), None) is None:
-            continue  # this account has no transcripts yet
-        token = TOOL_KEY_OVERRIDES.set({"claude-code": account.key})
+    if path.is_file():
+        folder = str(path.parent)
+        patterns = [path.name] if meta.argument == "session_glob" else None
+        arg_value: str | Path = (
+            str(path) if meta.argument in {"session_glob", "database_glob"} else path
+        )
+        return folder, patterns, arg_value
+
+    folder = str(path)
+    if provider in {"codex_local", "claude_local"}:
+        patterns = transcript_patterns(provider, path, meta.suffix or "**/*.jsonl")
+    elif provider == "muse_local":
+        patterns = (
+            ["sessions/**/*.jsonl"] if (path / "sessions").is_dir() else ["**/*.jsonl"]
+        )
+    else:
+        patterns = None
+
+    if meta.suffix and meta.argument != "import_path":
+        arg_value = str(path / meta.suffix)
+    elif meta.argument in {"session_glob", "database_glob"}:
+        arg_value = str(path)
+    else:
+        arg_value = path
+    return folder, patterns, arg_value
+
+
+def ingest(*, database_path: Path, pricing) -> dict:
+    from spend_app.adapters.file_cache import merge_results
+    from spend_app.connection_paths import MissingLocation, approved, normalize
+    from spend_app.db import PRESERVE_EXISTING_TOOL_KEYS, TOOL_KEY_OVERRIDES
+    from spend_app.profile_store import (
+        DEFAULT_TOOL_KEYS,
+        enabled_profiles,
+        location_unchanged,
+        supports_profiles,
+    )
+    from spend_app.providers import REGISTRY
+
+    results: list[dict] = []
+    for profile in enabled_profiles(database_path):
+        if profile.key == "default" or not supports_profiles(profile.provider):
+            continue
+        if not profile.location or not profile.tool_key:
+            continue
+        spec = REGISTRY.get(profile.provider)
+        if spec is None or spec.ingest is None or spec.connection is None:
+            continue
+        default_tool_key = DEFAULT_TOOL_KEYS.get(profile.provider)
+        if not default_tool_key:
+            continue
+
         try:
-            with approved(str(projects)):
-                results.append(claude_local.ingest(database_path=database_path, pricing=pricing,
-                                                   session_glob=str(projects / "**" / "*.jsonl")))
-        finally:
-            TOOL_KEY_OVERRIDES.reset(token)
-    for profile in extra_profiles():
-        token = TOOL_KEY_OVERRIDES.set({"opencode-go": profile.key})
-        try:
-            with approved(str(profile.database.parent)):
-                results.append(opencode_local.ingest(database_path=database_path, pricing=pricing,
-                                                     source_database=profile.database))
-        finally:
-            TOOL_KEY_OVERRIDES.reset(token)
-    if not results:
+            normalized = normalize(profile.location, spec.connection)
+            if not location_unchanged(profile, spec.connection):
+                results.append(
+                    {
+                        "source": spec.key,
+                        "status": "failed",
+                        "reason": "location_changed",
+                        "eventsSeen": 0,
+                        "eventsWritten": 0,
+                        "unpricedEventsWritten": 0,
+                        "issues": [f"{profile.key}:location_changed"],
+                    }
+                )
+                continue
+            folder, patterns, arg_value = _profile_folder_and_patterns(
+                profile.provider, Path(normalized), spec.connection
+            )
+            kwargs = {
+                "database_path": database_path,
+                "pricing": pricing,
+                spec.connection.argument: arg_value,
+            }
+            token = TOOL_KEY_OVERRIDES.set({default_tool_key: profile.tool_key})
+            preserve_token = PRESERVE_EXISTING_TOOL_KEYS.set(bool(profile.cutover_at))
+            try:
+                with approved(folder, profile.revision, patterns):
+                    results.append(spec.ingest(**kwargs))
+            finally:
+                PRESERVE_EXISTING_TOOL_KEYS.reset(preserve_token)
+                TOOL_KEY_OVERRIDES.reset(token)
+        except MissingLocation:
+            continue
+        except Exception as exc:
+            results.append(
+                {
+                    "source": spec.key,
+                    "status": "failed",
+                    "eventsSeen": 0,
+                    "eventsWritten": 0,
+                    "unpricedEventsWritten": 0,
+                    "issues": [f"{profile.key}:{type(exc).__name__}"],
+                }
+            )
+
+    active = [result for result in results if result.get("status") != "skipped"]
+    if not active:
         # Nothing to read: no run is recorded for a step that is not a source.
         return {"status": "skipped", "eventsWritten": 0, "unpricedEventsWritten": 0}
-    return merge_results(results)
+    return merge_results(active)

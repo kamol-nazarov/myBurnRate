@@ -2,6 +2,7 @@
 import hashlib
 import json
 import math
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -69,8 +70,45 @@ def freshness_reason(observed_at, resets_at, now):
     return None
 
 
+def _path_identity_token(path) -> str:
+    from spend_app.connection_paths import _extended_path, _long_path_error
+
+    try:
+        target = os.fspath(path)
+    except (TypeError, ValueError):
+        return "invalid"
+    try:
+        info = os.lstat(target)
+    except OSError as exc:
+        if _long_path_error(exc, target) and not str(target).startswith("\\\\?\\"):
+            try:
+                info = os.lstat(_extended_path(target))
+            except FileNotFoundError:
+                return "missing"
+            except OSError:
+                return "unreadable"
+        elif isinstance(exc, FileNotFoundError):
+            return "missing"
+        else:
+            return "unreadable"
+    return f"{info.st_dev}:{info.st_ino}"
+
+
 def scope(root):
-    return hashlib.sha256(str(Path(root).resolve()).replace("\\", "/").casefold().encode()).hexdigest()
+    raw_path = Path(root).expanduser()
+    resolved = raw_path.resolve()
+    normalized = os.path.normcase(str(resolved)).replace("\\", "/")
+    token = f"{normalized}|{_path_identity_token(raw_path)}|{_path_identity_token(resolved)}"
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def unresolved_scope(root):
+    raw_path = Path(root).expanduser()
+    abs_path = os.path.normpath(os.path.abspath(os.fspath(raw_path)))
+    normalized = os.path.normcase(abs_path).replace("\\", "/")
+    raw_id = _path_identity_token(abs_path)
+    token = f"{normalized}|{raw_id}|{raw_id}"
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def current_scope():
@@ -78,14 +116,100 @@ def current_scope():
     return scope(default_codex_glob().replace("\\", "/").removesuffix("/**/*.jsonl"))
 
 
+def meta_key(provider_key="codex"):
+    return KEY if provider_key == "codex" else f"{KEY}:{provider_key}"
+
+
+def _is_codex_sample(sample):
+    provider_key = getattr(sample, "provider_key", None)
+    if not isinstance(provider_key, str) or not provider_key:
+        return False
+    return (
+        provider_key == "codex"
+        or provider_key.startswith("codex-")
+        or getattr(sample, "source", None) == "codex_local_telemetry"
+        or getattr(sample, "pool_id", None) == "codex"
+    )
+
+
+def _codex_root(location):
+    if not isinstance(location, str) or not location.strip():
+        return None
+    return Path(location.strip().replace("\\", "/").removesuffix("/**/*.jsonl")).expanduser()
+
+
+def _is_codex_row(row):
+    key = row.get("provider_key")
+    if not isinstance(key, str) or not key:
+        return False
+    return (
+        key == "codex"
+        or key.startswith("codex-")
+        or row.get("source") == "codex_local_telemetry"
+    )
+
+
+def _codex_extra_record(connection, provider_key):
+    if not provider_key or provider_key == "codex":
+        return None
+    from spend_app import profile_store
+
+    try:
+        rows = dict(
+            connection.execute(
+                "SELECT key,value FROM app_meta WHERE key IN (?)",
+                (profile_store.KEY,),
+            )
+        )
+    except Exception:
+        return None
+    raw_v2 = rows.get(profile_store.KEY)
+    if raw_v2 is None:
+        return None
+    try:
+        conn_data = json.loads(raw_v2)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(conn_data, dict):
+        return None
+    codex_map = (conn_data.get("profiles") or {}).get("codex_local")
+    if not isinstance(codex_map, dict):
+        return None
+    for prof_key, record in codex_map.items():
+        if prof_key == "default" or not isinstance(record, dict):
+            continue
+        tool_key = record.get("toolKey") or prof_key
+        if tool_key == provider_key:
+            return record
+    return None
+
+
 def save_metadata(connection, sample, polled_at):
-    if sample.provider_key != "codex":
+    if not _is_codex_sample(sample):
         return
-    value = {"poolId": sample.pool_id, "scope": sample.scope,
+    saved_scope = sample.scope
+    record = _codex_extra_record(connection, sample.provider_key)
+    if record is not None:
+        from types import SimpleNamespace
+        from spend_app import profile_store
+        from spend_app.providers import CONNECTION_SPECS
+
+        root = _codex_root(record.get("location"))
+        approved_scope = unresolved_scope(root) if root is not None else None
+        unchanged = (
+            root is not None
+            and bool(record.get("enabled"))
+            and profile_store.location_unchanged(
+                SimpleNamespace(location=str(root)),
+                CONNECTION_SPECS["codex_local"],
+            )
+        )
+        saved_scope = approved_scope if (unchanged and approved_scope is not None and sample.scope == approved_scope) else None
+    value = {"poolId": sample.pool_id, "scope": saved_scope,
              "observedAt": sample.observed_at, "polledAt": polled_at,
              "pct": sample.pct, "resetsAt": sample.resets_at}
     connection.execute("INSERT INTO app_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                       (KEY, json.dumps(value)))
+                       (meta_key(sample.provider_key), json.dumps(value)))
 
 
 def mask_expired_synced(rows, now):
@@ -110,33 +234,134 @@ def mask_expired_synced(rows, now):
 def read_rows(connection, *, now=None, rows=None):
     """Mask unproven/expired Codex rows and expired synced rows at read time, including pre-fix rows."""
     rows = [dict(row) for row in (connection.execute("SELECT * FROM quotas") if rows is None else rows)]
-    mask_expired_synced(rows, now or datetime.now(UTC))
-    if not any(row['provider_key'] == 'codex' for row in rows):
-        return rows
-    from spend_app.connections import KEY as CONNECTIONS_KEY
-    records = dict(connection.execute("SELECT key,value FROM app_meta WHERE key IN (?,?)", (KEY, CONNECTIONS_KEY)))
-    try:
-        meta = json.loads(records.get(KEY, "{}"))
-        binding = json.loads(records.get(CONNECTIONS_KEY, "{}")).get("bindings", {}).get("codex_local")
-        if not isinstance(meta, dict) or (binding is not None and not isinstance(binding, dict)):
-            raise ValueError("Invalid quota metadata")
-    except (ValueError, TypeError, AttributeError):
-        meta, binding = {}, {"enabled": False}
     now = now or datetime.now(UTC)
+    mask_expired_synced(rows, now)
+    non_sync_rows = [row for row in rows if not str(row.get('source') or '').startswith('sync:')]
+    if not non_sync_rows:
+        return rows
+
+    from spend_app import connections, profile_store
+
+    candidate_keys = list(dict.fromkeys(
+        row['provider_key']
+        for row in non_sync_rows
+        if _is_codex_row(row)
+    ))
+    query_keys = [*dict.fromkeys(meta_key(k) for k in candidate_keys), profile_store.KEY, profile_store.V1_KEY]
+    placeholders = ",".join("?" for _ in query_keys)
+    records = dict(connection.execute(f"SELECT key,value FROM app_meta WHERE key IN ({placeholders})", tuple(query_keys)))
+
+    has_v2_profiles = False
+    extra_profiles = {}
+    corrupt_conn = False
     try:
-        active_scope = current_scope() if not binding else None
+        binding = profile_store.default_binding_from_records(records, "codex_local")
+        if binding is not None and not isinstance(binding, dict):
+            raise ValueError("Invalid connection metadata")
+        raw_v2 = records.get(profile_store.KEY)
+        if raw_v2 is not None:
+            conn_data = json.loads(raw_v2)
+            if not isinstance(conn_data, dict):
+                raise ValueError("Invalid connection metadata")
+            if "profiles" in conn_data:
+                profiles_map = conn_data["profiles"]
+                if not isinstance(profiles_map, dict):
+                    raise ValueError("Invalid connection metadata")
+                has_v2_profiles = True
+                codex_map = profiles_map.get("codex_local")
+                if codex_map is not None:
+                    if not isinstance(codex_map, dict):
+                        raise ValueError("Invalid connection metadata")
+                    for prof_key, record in codex_map.items():
+                        if prof_key == "default" or not isinstance(record, dict):
+                            continue
+                        tool_key = record.get("toolKey") or prof_key
+                        if isinstance(tool_key, str) and tool_key:
+                            extra_profiles[tool_key] = record
+    except (ValueError, TypeError, AttributeError):
+        corrupt_conn = True
+        binding = {"enabled": False}
+        has_v2_profiles = True
+        extra_profiles = {}
+
+    extra_codex_keys = {
+        row['provider_key']
+        for row in non_sync_rows
+        if row['provider_key'] in extra_profiles and row['provider_key'] not in candidate_keys
+    }
+    if extra_codex_keys:
+        missing_meta_keys = tuple(meta_key(k) for k in sorted(extra_codex_keys))
+        ph = ",".join("?" for _ in missing_meta_keys)
+        records.update(dict(connection.execute(f"SELECT key,value FROM app_meta WHERE key IN ({ph})", missing_meta_keys)))
+
+    all_codex_keys = set(candidate_keys) | extra_codex_keys
+    if not all_codex_keys:
+        return rows
+
+    meta_by_key = {}
+    for key in all_codex_keys:
+        try:
+            parsed = json.loads(records.get(meta_key(key), "{}"))
+            meta_by_key[key] = parsed if isinstance(parsed, dict) else {}
+        except (ValueError, TypeError):
+            meta_by_key[key] = {}
+
+    suppressed = connections.suppresses_default_profile("codex_local", binding)
+    try:
+        default_scope = current_scope() if not suppressed else None
     except (OSError, ValueError):
-        active_scope = None
+        default_scope = None
+
     for row in rows:
-        if row['provider_key'] != 'codex':
+        key = row['provider_key']
+        if key not in all_codex_keys:
             continue
         if str(row.get('source') or '').startswith('sync:'):
             continue
+        meta = meta_by_key.get(key, {})
         reason = None
-        if binding:
-            reason = "Codex connection is disabled." if not binding.get("enabled") else "Managed Codex location grants usage only; local quota permission is not supported. No default profile was read."
-        elif row['pct'] is not None:
-            if (meta.get('poolId') != 'codex' or meta.get('scope') != active_scope or active_scope is None
+        if key == 'codex':
+            if suppressed:
+                reason = "Codex connection is disabled." if not binding.get("enabled") else "Managed Codex location grants usage only; local quota permission is not supported. No default profile was read."
+            else:
+                active_scope = default_scope
+                require_scope = True
+        else:
+            if corrupt_conn:
+                reason = "Codex connection is disabled."
+                active_scope = None
+                require_scope = True
+            elif has_v2_profiles:
+                profile_rec = extra_profiles.get(key)
+                if profile_rec is None:
+                    reason = "Codex profile was removed."
+                    active_scope = None
+                elif not profile_rec.get("enabled"):
+                    reason = "Codex connection is disabled."
+                    active_scope = None
+                else:
+                    root = _codex_root(profile_rec.get("location"))
+                    if root is None:
+                        active_scope = None
+                    else:
+                        from types import SimpleNamespace
+                        from spend_app.providers import CONNECTION_SPECS
+
+                        if profile_store.location_unchanged(
+                            SimpleNamespace(location=str(root)),
+                            CONNECTION_SPECS["codex_local"],
+                        ):
+                            active_scope = unresolved_scope(root)
+                        else:
+                            active_scope = None
+                require_scope = True
+            else:
+                active_scope = meta.get('scope') if isinstance(meta.get('scope'), str) and meta.get('scope') else None
+                require_scope = False
+
+        if reason is None and row['pct'] is not None:
+            scope_ok = (active_scope is not None and meta.get('scope') == active_scope) if require_scope else bool(meta.get('scope'))
+            if (meta.get('poolId') != 'codex' or not scope_ok
                     or meta.get('pct') != row['pct'] or meta.get('resetsAt') != row['resets_at']
                     or meta.get('polledAt') != row['polled_at']):
                 reason = "Main Codex quota identity is unverified; awaiting a new quota poll."
@@ -147,5 +372,5 @@ def read_rows(connection, *, now=None, rows=None):
                 check_now = max(now, polled) if polled and observed and observed <= polled else now
                 reason = freshness_reason(meta.get('observedAt'), row['resets_at'], check_now)
         if reason:
-            row.update(pct=None, used=None, allowance=None, resets_at=None, unit='unavailable', label='Codex weekly window \u2014 ' + reason)
+            row.update(pct=None, used=None, allowance=None, resets_at=None, unit='unavailable', label='Codex weekly window — ' + reason)
     return rows

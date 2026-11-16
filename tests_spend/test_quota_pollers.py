@@ -446,12 +446,25 @@ def test_unavailable_sources_persist_reasons_and_never_fake_zero(
         assert not (row["pct"] == 0 and row["unit"] == "unavailable")
 
 
-def test_default_collectors_cover_required_providers_without_invoking(monkeypatch) -> None:
-    from spend_app import claude_accounts, opencode_profiles
+def test_default_collectors_cover_required_providers_without_invoking(tmp_path: Path, monkeypatch) -> None:
+    from spend_app import claude_accounts, opencode_profiles, profile_store
+
+    database = tmp_path / "spend.db"
+    initialize(database)
+    state = profile_store.empty_state()
+    with connect(database) as conn:
+        conn.execute(
+            "INSERT INTO app_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (profile_store.KEY, profile_store.encode(state)),
+        )
+        conn.execute(
+            "INSERT INTO app_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (profile_store.MIGRATED_KEY, "1"),
+        )
 
     monkeypatch.setattr(claude_accounts, "extra_accounts", lambda: ())
     monkeypatch.setattr(opencode_profiles, "extra_profiles", lambda: ())
-    collectors = default_quota_collectors(Path("unused.db"))
+    collectors = default_quota_collectors(database)
     # OpenCode Go and DeepSeek are polled but not required: without them there is no card.
     assert set(collectors) == set(REQUIRED_LIMITS) | {"opencode-go", "deepseek"}
     assert set(collectors) == {
@@ -465,16 +478,64 @@ def test_default_collectors_cover_required_providers_without_invoking(monkeypatc
         "opencode",
         "openrouter",
     }
-    # Each extra signed-in Claude Code profile adds exactly its own lane.
-    work = claude_accounts.ClaudeAccount(key="claude-code-work", label="Work", config_dir=Path("w"),
-                                         state_path=Path("w/.claude.json"), account_uuid="work-uuid", plan="Claude Max")
+    # Each extra signed-in Claude Code profile added to the profile store gets its own lane.
+    work_dir = tmp_path / ".claude-work"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    work = claude_accounts.ClaudeAccount(key="claude-code-work", label="Work", config_dir=work_dir,
+                                         state_path=work_dir / ".claude.json", account_uuid="work-uuid", plan="Claude Max")
     monkeypatch.setattr(claude_accounts, "extra_accounts", lambda: (work,))
-    assert set(default_quota_collectors(Path("unused.db"))) - set(REQUIRED_LIMITS) == {"claude-code-work", "opencode-go", "deepseek"}
-    # So does each extra OpenCode profile signed in to another Console account.
-    second = opencode_profiles.OpenCodeProfile(key="opencode-go-2", label="Profile 2", data_dir=Path("p"),
-                                               database=Path("p/opencode/opencode.db"))
+    state["profiles"]["claude_local"] = {
+        "claude-code-work": {
+            "source": "claude_local",
+            "bindingId": "claude_local:claude-code-work",
+            "name": "Work",
+            "location": str(work.config_dir),
+            "origin": "detected",
+            "mode": "detected",
+            "enabled": True,
+            "revision": 1,
+            "state": "awaiting_ingest",
+            "capabilities": ["usage"],
+            "accountDigest": "work-digest",
+            "toolKey": "claude-code-work",
+        }
+    }
+    with connect(database) as conn:
+        conn.execute(
+            "INSERT INTO app_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (profile_store.KEY, profile_store.encode(state)),
+        )
+    assert set(default_quota_collectors(database)) - set(REQUIRED_LIMITS) == {"claude-code-work", "opencode-go", "deepseek"}
+    # So does each extra OpenCode profile in the store signed in to another Console account.
+    second_dir = tmp_path / ".opencode-2"
+    second_db = second_dir / "opencode" / "opencode.db"
+    second_db.parent.mkdir(parents=True, exist_ok=True)
+    second_db.touch()
+    second = opencode_profiles.OpenCodeProfile(key="opencode-go-2", label="Profile 2", data_dir=second_dir,
+                                               database=second_db)
     monkeypatch.setattr(opencode_profiles, "extra_profiles", lambda: (second,))
-    assert "opencode-go-2" in default_quota_collectors(Path("unused.db"))
+    state["profiles"]["opencode_local"] = {
+        "opencode-go-2": {
+            "source": "opencode_local",
+            "bindingId": "opencode_local:opencode-go-2",
+            "name": "Profile 2",
+            "location": str(second.database),
+            "origin": "detected",
+            "mode": "detected",
+            "enabled": True,
+            "revision": 1,
+            "state": "awaiting_ingest",
+            "capabilities": ["usage"],
+            "accountDigest": "oc-2-digest",
+            "toolKey": "opencode-go-2",
+        }
+    }
+    with connect(database) as conn:
+        conn.execute(
+            "INSERT INTO app_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (profile_store.KEY, profile_store.encode(state)),
+        )
+    assert "opencode-go-2" in default_quota_collectors(database)
 
 
 def test_poll_quotas_public_seam_uses_default_collectors(tmp_path: Path, monkeypatch) -> None:

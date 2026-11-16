@@ -28,11 +28,15 @@ class MemoryStore:
 
     @contextmanager
     def transaction(self):
+        from spend_app import profile_store
+
         state = self.read()
+        initial_bindings = copy.deepcopy(state["bindings"])
         yield state
         if self.fail:
             raise OSError("storage failed")
-        self.raw = json.dumps(state)
+        persisted = profile_store.sync_bindings_view(state, initial_bindings)
+        self.raw = profile_store.encode(persisted)
 
 
 class FakeInspector:
@@ -139,7 +143,7 @@ def test_discovery_bounded_catalog_ambiguity_and_no_secret_reads(service):
     codex = next(row for row in result["connections"] if row["source"] == "codex_local")
     assert len(codex["candidates"]) == 2
     assert all(row["kind"] != "api" for row in result["connections"])
-    assert len(result["connections"]) == 8
+    assert len(result["connections"]) == 7
     service.probe.assert_not_called()
     service.inspector.fail = True
     assert all(candidate["state"] == "needs_attention" for row in service.discover()["connections"] for candidate in row["candidates"])
@@ -197,7 +201,7 @@ def test_dispatch_root_change_disable_and_unrelated_source(service, monkeypatch)
 def test_experimental_gate_legacy_and_managed(service):
     default_on = REGISTRY.get("grok_local")
     assert c.eligible(default_on, service.store.read())
-    spec = REGISTRY.get("claude_local_alt")
+    spec = REGISTRY.get("deepseek")
     assert not c.eligible(spec, service.store.read())
     with service.store.transaction() as state:
         state["legacy"].append(spec.key)
@@ -755,6 +759,51 @@ def test_is_junction_fails_closed_and_retries_extended_path(monkeypatch):
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows path semantics")
+def test_is_name_surrogate_distinguishes_cloud_and_fails_closed(monkeypatch):
+    import stat
+    from spend_app import connection_paths as paths
+
+    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+    monkeypatch.setattr(paths.os, "lstat", Mock(side_effect=FileNotFoundError("missing")))
+    assert paths.is_name_surrogate("C:/fake/missing") is False
+
+    for err in (
+        PermissionError("denied"),
+        OSError(13, "denied"),
+        ValueError("invalid"),
+    ):
+        monkeypatch.setattr(paths.os, "lstat", Mock(side_effect=err))
+        assert paths.is_name_surrogate("C:/fake/unreadable") is True
+
+    monkeypatch.setattr(paths.os, "lstat", Mock(return_value=SimpleNamespace()))
+    assert paths.is_name_surrogate("C:/fake/no-attrs") is True
+
+    monkeypatch.setattr(paths.os, "lstat", Mock(return_value=SimpleNamespace(st_file_attributes=0)))
+    assert paths.is_name_surrogate("C:/fake/clean") is False
+
+    # Reparse point missing st_reparse_tag fails closed.
+    monkeypatch.setattr(paths.os, "lstat", Mock(return_value=SimpleNamespace(st_file_attributes=reparse)))
+    assert paths.is_name_surrogate("C:/fake/no-tag") is True
+
+    # Cloud placeholder (0x9000001A) is NOT a name surrogate.
+    monkeypatch.setattr(
+        paths.os,
+        "lstat",
+        Mock(return_value=SimpleNamespace(st_file_attributes=reparse, st_reparse_tag=0x9000001A)),
+    )
+    assert paths.is_name_surrogate("C:/fake/cloud") is False
+
+    # Junction (0xA0000003) and symlink (0xA000000C) ARE name surrogates.
+    for tag in (0xA0000003, 0xA000000C):
+        monkeypatch.setattr(
+            paths.os,
+            "lstat",
+            Mock(return_value=SimpleNamespace(st_file_attributes=reparse, st_reparse_tag=tag)),
+        )
+        assert paths.is_name_surrogate("C:/fake/surrogate") is True
+
+
 def test_source_files_treats_lstat_permission_error_entries_as_links(monkeypatch, tmp_path):
     from spend_app import connection_paths as paths
 

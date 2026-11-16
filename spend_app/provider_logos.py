@@ -66,7 +66,6 @@ ICONS_2X: dict[str, str] = {
 ALIASES: dict[str, str] = {
     "claude-code": "claude",
     "claude_local": "claude",
-    "claude_local_alt": "claude",
     "anthropic": "anthropic",
     "anthropic_admin": "anthropic",
     "api:anthropic_admin": "anthropic",

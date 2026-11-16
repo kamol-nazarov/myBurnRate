@@ -64,27 +64,6 @@
       "reason": null
     },
     {
-      "source": "claude_local_alt",
-      "sourceLabel": "Claude Code (second instance)",
-      "toolKeys": [
-        "claude-code"
-      ],
-      "associationKey": "claude-code",
-      "relevant": true,
-      "configuredState": "configured",
-      "status": "skipped",
-      "lastAttemptAt": "2026-09-09T04:00:00Z",
-      "lastSuccessAt": "2026-09-09T03:59:00Z",
-      "freshness": {
-        "state": "recent",
-        "ageSeconds": 60.0,
-        "asOf": "2026-09-09T04:00:00Z"
-      },
-      "coverage": "No successful current capture; historical capture is unverified.",
-      "eventsWritten": 0,
-      "reason": "Collection deferred to the established cadence."
-    },
-    {
       "source": "codex_local",
       "sourceLabel": "Codex",
       "toolKeys": [
@@ -343,20 +322,6 @@
       "documentation": "https://github.com/kamol-nazarov/myBurnRate/blob/main/docs/providers.md"
     },
     {
-      "source": "claude_local_alt",
-      "path": null,
-      "state": "configuration_missing",
-      "lastAttempt": "2026-09-09T04:00:00Z",
-      "lastSuccess": "2026-09-09T03:59:00Z",
-      "freshnessSeconds": 60.0,
-      "measurements": [],
-      "reason": "The latest source attempt reported a problem; other sources continue independently.",
-      "nextAction": "If you want this optional integration, configure its documented opt-in setting. No credential is required for the dashboard.",
-      "pricingMissing": [],
-      "experimental": false,
-      "documentation": "https://github.com/kamol-nazarov/myBurnRate/blob/main/docs/providers.md"
-    },
-    {
       "source": "codex_local",
       "path": "~/.codex/sessions",
       "state": "healthy",
@@ -548,6 +513,6 @@
   },
   "queryCounts": [
     3,
-    53
+    49
   ]
 }

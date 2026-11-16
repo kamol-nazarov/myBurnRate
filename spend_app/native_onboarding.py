@@ -17,6 +17,8 @@ from pathlib import Path
 ACTIVE_STATES = frozenset(
     {"already_monitored", "awaiting_ingest", "waiting_activity", "receiving_usage"}
 )
+#: Grouped profile states that count as connected/active on this PC.
+ACTIVE_PROFILE_STATES = frozenset({"receiving", "added"})
 #: States in which an API (balance) source holds a working credential.
 API_CONNECTED_STATES = frozenset(
     {
@@ -43,7 +45,6 @@ HEADLINE_TOOLS = (
 
 _BRANDS = {
     "claude_local": "claude",
-    "claude_local_alt": "claude",
     "codex_local": "codex",
     "opencode_local": "opencode-go",
     "zcode_local": "zcode",
@@ -172,6 +173,15 @@ def demo_onboarding_data() -> dict:
     }
 
 
+def _row_revision(row: dict) -> int:
+    if row.get("revision") is not None:
+        return int(row.get("revision") or 0)
+    profiles = [p for p in (row.get("profiles") or []) if isinstance(p, dict)]
+    if profiles:
+        return int(profiles[0].get("revision") or 0)
+    return 0
+
+
 def build_onboarding_data(
     client,
     *,
@@ -206,8 +216,16 @@ def build_onboarding_data(
     tools = []
     for source, name, _programs, _kind in HEADLINE_TOOLS:
         row = by_source.get(source)
-        active = bool(row and str(row.get("state") or "") in ACTIVE_STATES)
-        is_detected = bool(detected.get(source) or active)
+        profiles = [p for p in (row.get("profiles") or []) if isinstance(p, dict)] if row else []
+        active = bool(
+            row
+            and (
+                str(row.get("state") or "") in ACTIVE_STATES
+                or any(str(p.get("state") or "") in ACTIVE_PROFILE_STATES for p in profiles)
+            )
+        )
+        detected_candidates = bool(row and row.get("detected"))
+        is_detected = bool(detected.get(source) or active or detected_candidates)
         tools.append(
             {
                 "source": source,
@@ -224,9 +242,16 @@ def build_onboarding_data(
             "source": str(row.get("source")),
             "name": str(row.get("name") or row.get("source")),
             "brand": brand_for(str(row.get("source"))),
-            "connected": str(row.get("state") or "") in API_CONNECTED_STATES,
+            "connected": (
+                str(row.get("state") or "") in API_CONNECTED_STATES
+                or any(
+                    str(p.get("state") or "") in ACTIVE_PROFILE_STATES
+                    for p in (row.get("profiles") or [])
+                    if isinstance(p, dict)
+                )
+            ),
             "credentialHelp": str(row.get("credentialHelp") or ""),
-            "revision": int(row.get("revision") or 0),
+            "revision": _row_revision(row),
         }
         for row in rows
         if row.get("kind") == "api"

@@ -170,7 +170,7 @@ def test_local_ingest_job_runs_readers_serially(tmp_path: Path, monkeypatch) -> 
     jobs = {job.id: job for job in scheduler.get_jobs()}
     jobs["local-ingest"].func()
     assert calls == [
-        "codex", "claude", "claude", "traycer", "opencode", "zcode", "grok", "antigravity", "muse"
+        "codex", "claude", "traycer", "opencode", "zcode", "grok", "antigravity", "muse"
     ]
 
 
@@ -219,7 +219,6 @@ def test_experimental_provider_failure_is_isolated(tmp_path: Path, monkeypatch) 
     assert calls == [
         "codex",
         "claude",
-        "claude",
         "traycer",
         "injected",
         "opencode",
@@ -255,7 +254,6 @@ def test_official_provider_failure_still_runs_remaining(tmp_path: Path, monkeypa
     assert calls == [
         "codex",
         "claude",
-        "claude",
         "traycer",
         "opencode",
         "zcode",
@@ -272,7 +270,6 @@ def test_local_ingest_follows_registry_and_keeps_adapter_signatures() -> None:
     assert [spec.key for spec in REGISTRY.local_ingest()] == [
         "codex_local",
         "claude_local",
-        "claude_local_alt",
         "traycer_local",
         "opencode_local",
         "zcode_local",

@@ -16,9 +16,11 @@ named after the directory ("Profile 2" for ``~/.opencode-go-2``, "Work" for
 
 from __future__ import annotations
 
+from contextlib import closing
 import hashlib
 import os
 import re
+import sqlite3
 import threading
 import time
 from dataclasses import dataclass
@@ -73,17 +75,19 @@ def database_for(directory: Path) -> Path | None:
 
 
 def _candidates(home: Path, environ) -> list[Path]:
+    from spend_app.connection_paths import is_junction
+
     found = []
     try:
         for entry in sorted(home.glob(".opencode-*")):
-            if entry.is_dir() and not entry.is_symlink():
+            if entry.is_dir() and not entry.is_symlink() and not is_junction(entry):
                 found.append(entry)
     except OSError:
         pass
     for raw in str(environ.get(EXTRA_DIRS_ENV) or "").split(os.pathsep):
         if raw.strip():
             path = Path(raw.strip()).expanduser()
-            if path.is_dir():
+            if path.is_dir() and not path.is_symlink() and not is_junction(path):
                 found.append(path)
     return found
 
@@ -143,25 +147,107 @@ def extra_profiles() -> tuple[OpenCodeProfile, ...]:
     return profiles
 
 
-def profile_for_key(key: str) -> OpenCodeProfile | None:
-    if not is_profile_key(key):
+def _store_profiles(database_path: Path | str | None = None, *, include_default: bool = False):
+    from spend_app import profile_store
+
+    raw = database_path if database_path is not None else os.environ.get("SPEND_DATABASE_PATH")
+    if not raw:
+        return []
+    db_path = Path(raw)
+    try:
+        db_path.stat()
+    except OSError:
+        return []
+    try:
+        with closing(sqlite3.connect(db_path.absolute().as_uri() + "?mode=ro", uri=True)) as db:
+            state = profile_store.load_config_if_present(db)
+    except Exception:
+        return []
+    if not state:
+        return []
+    found = profile_store.profiles(state, provider="opencode_local")
+    if include_default:
+        return found
+    return [profile for profile in found if profile.key != "default"]
+
+
+def _store_sharing_info(key: str, database_path: Path | str | None = None) -> dict | None:
+    all_profiles = [p for p in _store_profiles(database_path, include_default=True) if p.enabled]
+    if not all_profiles:
         return None
+    ordered = sorted(all_profiles, key=lambda p: 0 if p.key == "default" else 1)
+    seen: dict[str, tuple[str, str]] = {}
+    for profile in ordered:
+        tkey = profile.tool_key or (PRIMARY_KEY if profile.key == "default" else profile.key)
+        digest = profile.account_digest
+        if not digest:
+            continue
+        if digest in seen:
+            if tkey == key:
+                owner_key, owner_name = seen[digest]
+                return {
+                    "sharesLimitsWith": owner_key,
+                    "sharesLimitsLabel": f"Shares limits with {owner_name}",
+                }
+        else:
+            seen[digest] = (tkey, profile.name or ("Default" if profile.key == "default" else tkey))
+    return None
+
+
+def _database_from_location(location: str | None) -> Path | None:
+    if not location:
+        return None
+    loc = Path(location).expanduser()
+    if loc.is_dir():
+        return database_for(loc) or (loc / "opencode.db")
+    return loc
+
+
+def profile_for_key(key: str, database_path: Path | str | None = None) -> OpenCodeProfile | None:
+    if not is_profile_key(key, database_path=database_path):
+        return None
+    store_prof = next(
+        (profile for profile in _store_profiles(database_path) if (profile.tool_key or profile.key) == key),
+        None,
+    )
+    if store_prof is not None and store_prof.location:
+        db_path = _database_from_location(store_prof.location)
+        if db_path is not None:
+            data_dir = db_path.parent.parent if db_path.parent.name == "opencode" else db_path.parent
+            slug = key[len(PREFIX):] if key.startswith(PREFIX) else slug_for(data_dir)
+            return OpenCodeProfile(
+                key=key,
+                label=store_prof.name or label_for(slug),
+                data_dir=data_dir,
+                database=db_path,
+            )
     return next((profile for profile in extra_profiles() if profile.key == key), None)
 
 
-def is_profile_key(key: object) -> bool:
-    return isinstance(key, str) and key.startswith(PREFIX)
+def is_profile_key(key: object, database_path: Path | str | None = None) -> bool:
+    if not isinstance(key, str) or not key or key in {PRIMARY_KEY, "opencode"}:
+        return False
+    if key.startswith(PREFIX):
+        return True
+    return any((profile.tool_key or profile.key) == key for profile in _store_profiles(database_path))
 
 
-def provider_meta(key: str) -> dict | None:
+def provider_meta(key: str, database_path: Path | str | None = None) -> dict | None:
     """Capacity-card metadata for an extra profile lane (also for synced rows from another computer)."""
-    if not is_profile_key(key):
+    if not is_profile_key(key, database_path=database_path):
         return None
-    profile = profile_for_key(key)
-    slug = key[len(PREFIX):]
-    label = profile.label if profile else label_for(slug)
-    short = slug if slug.isdigit() else label
-    return {
+    store_prof = next(
+        (profile for profile in _store_profiles(database_path) if (profile.tool_key or profile.key) == key),
+        None,
+    )
+    profile = profile_for_key(key, database_path=database_path)
+    slug = key[len(PREFIX):] if key.startswith(PREFIX) else key
+    label = (
+        (store_prof.name if store_prof and store_prof.name else None)
+        or (profile.label if profile else label_for(slug))
+    )
+    short = slug if (slug.isdigit() and label == label_for(slug)) else label
+    meta = {
         "providerKey": key,
         "providerName": f"OpenCode Go · {label}",
         "shortName": f"OpenCode Go {short}",
@@ -170,3 +256,7 @@ def provider_meta(key: str) -> dict | None:
         "isPayg": False,
         "toolKey": PRIMARY_KEY,
     }
+    sharing = _store_sharing_info(key, database_path)
+    if sharing:
+        meta.update(sharing)
+    return meta
