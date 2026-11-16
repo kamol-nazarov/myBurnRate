@@ -7,6 +7,7 @@ build directories, or the network.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -233,7 +234,7 @@ def test_minisign_verify_ps1_rejects_tampered_file_wrong_name_and_wrong_pubkey(t
 
 
 # ---------------------------------------------------------------------------------------
-# install-native.ps1 & BurnrateRuntime.ps1 (hermetic)
+# install-native.ps1 (self-contained / iex proof) & BurnrateRuntime.ps1 (hermetic)
 # ---------------------------------------------------------------------------------------
 
 
@@ -244,29 +245,200 @@ def test_install_native_has_no_raw_githubusercontent_or_prod_fallback() -> None:
     assert "fallback" not in text.lower()
 
 
-def test_install_native_fails_nonzero_without_sibling_minisign_verify(tmp_path: Path) -> None:
-    shell = _require_ps5()
-    isolated = tmp_path / "alone"
-    isolated.mkdir(parents=True)
-    alone = isolated / "install-native.ps1"
-    shutil.copy2(SCRIPTS / "install-native.ps1", alone)
+def test_install_native_is_self_contained_with_no_dot_source_or_script_root() -> None:
+    text = (SCRIPTS / "install-native.ps1").read_text(encoding="utf-8")
+    assert "PSScriptRoot" not in text
+    assert "minisign-verify.ps1" not in text
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            continue
+        assert not re.match(r"\.\s+[\$'\"]", stripped), f"Unexpected dot-source: {line}"
 
-    local_app_data = tmp_path / "localappdata"
-    local_app_data.mkdir()
+
+def _flip_minisign_signature(sig_b64: str) -> str:
+    raw_lines = base64.b64decode(sig_b64).decode("utf-8").splitlines()
+    sig_blob = bytearray(base64.b64decode(raw_lines[1]))
+    sig_blob[15] ^= 0x01
+    raw_lines[1] = base64.b64encode(bytes(sig_blob)).decode("ascii")
+    return base64.b64encode(("\n".join(raw_lines) + "\n").encode("utf-8")).decode("ascii")
+
+
+def _run_install_native_via_iex(
+    shell: str,
+    case_dir: Path,
+    script_text: str,
+    *,
+    feed_json: str,
+    installer_bytes: bytes,
+    sig_text: str,
+) -> tuple[subprocess.CompletedProcess[str], list[str], Path, Path]:
+    case_dir.mkdir(parents=True, exist_ok=True)
+    empty_cwd = case_dir / "empty_cwd"
+    empty_cwd.mkdir(exist_ok=True)
+    local_app_data = case_dir / "localappdata"
+    local_app_data.mkdir(exist_ok=True)
+    temp_dir = case_dir / "temp"
+    temp_dir.mkdir(exist_ok=True)
+
+    script_file = case_dir / "candidate-install-native.ps1"
+    script_file.write_text(script_text, encoding="utf-8")
+    feed_file = case_dir / "feed.json"
+    feed_file.write_text(feed_json, encoding="utf-8")
+    installer_fixture = case_dir / "fixture-installer.exe"
+    installer_fixture.write_bytes(installer_bytes)
+    sig_fixture = case_dir / "fixture-installer.exe.sig"
+    sig_fixture.write_text(sig_text, encoding="utf-8")
+    start_log = case_dir / "start-process.log"
+
+    harness = f"""
+$ErrorActionPreference = 'Stop'
+$feedFile = {_ps_quote(feed_file)}
+$installerFixture = {_ps_quote(installer_fixture)}
+$sigFixture = {_ps_quote(sig_fixture)}
+$startLog = {_ps_quote(start_log)}
+$candidateScript = Get-Content -LiteralPath {_ps_quote(script_file)} -Raw
+
+function Invoke-WebRequest {{
+    param(
+        [string]$Uri,
+        [string]$OutFile,
+        [switch]$UseBasicParsing,
+        [int]$TimeoutSec
+    )
+    if ($Uri -like '*native-latest.json') {{
+        return [pscustomobject]@{{ Content = (Get-Content -LiteralPath $feedFile -Raw) }}
+    }}
+    if ($Uri -like '*.exe.sig') {{
+        [IO.File]::Copy($sigFixture, $OutFile, $true)
+        return
+    }}
+    if ($Uri -like '*.exe') {{
+        [IO.File]::Copy($installerFixture, $OutFile, $true)
+        return
+    }}
+    throw "Unexpected Invoke-WebRequest Uri: $Uri"
+}}
+
+function Start-Process {{
+    param(
+        [string]$FilePath,
+        [string[]]$ArgumentList,
+        [string]$WorkingDirectory,
+        [switch]$Wait,
+        [switch]$PassThru
+    )
+    $argText = if ($ArgumentList) {{ $ArgumentList -join ' ' }} else {{ '' }}
+    Add-Content -LiteralPath $startLog -Value "$FilePath|$argText"
+    if ($ArgumentList -contains '/S') {{
+        $installed = Join-Path $env:LOCALAPPDATA 'Programs\\BURNRATE\\BURNRATE.exe'
+        $parent = Split-Path -Parent $installed
+        New-Item -ItemType Directory -Force -Path $parent | Out-Null
+        [IO.File]::WriteAllBytes($installed, [byte[]]@(0x4D, 0x5A))
+        return [pscustomobject]@{{ ExitCode = 0 }}
+    }}
+    return [pscustomobject]@{{ ExitCode = 0 }}
+}}
+
+& {{ Invoke-Expression $candidateScript }}
+"""
     env = os.environ.copy()
     env["LOCALAPPDATA"] = str(local_app_data)
+    env["TEMP"] = str(temp_dir)
+    env["TMP"] = str(temp_dir)
 
-    res = subprocess.run(
-        [shell, "-NoProfile", "-NonInteractive", "-File", str(alone), "-NoLaunch"],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        env=env,
-        check=False,
+    res = _ps_run(shell, harness, env=env, cwd=empty_cwd)
+    starts = start_log.read_text(encoding="utf-8").splitlines() if start_log.exists() else []
+    return res, starts, local_app_data, temp_dir
+
+
+def test_install_native_via_iex_verifies_signature_and_blocks_tampering_in_ps5_and_pwsh(
+    tmp_path: Path,
+) -> None:
+    shells = _available_shells()
+    if not shells:
+        pytest.skip("PowerShell is not available")
+
+    version = "9.8.7"
+    expected_name = f"myBurnRate_{version}_x64-setup.exe"
+    expected_url = f"https://github.com/kamol-nazarov/myBurnRate/releases/download/v{version}/{expected_name}"
+    installer_bytes = b"MZ" + b"burnrate-setup-payload-" * 64
+    installer_sha = hashlib.sha256(installer_bytes).hexdigest()
+    feed_json = json.dumps(
+        {
+            "version": version,
+            "platforms": {
+                "windows-x86_64": {
+                    "url": expected_url,
+                    "sha256": installer_sha,
+                    "size": len(installer_bytes),
+                }
+            },
+        }
     )
-    output = res.stdout + res.stderr
-    assert res.returncode != 0
-    assert "minisign-verify.ps1" in output
+
+    test_seed = bytes(range(30, 62))
+    test_pub, good_sig = tnu.minisign(
+        test_seed,
+        installer_bytes,
+        alg=b"ED",
+        trusted=f"timestamp:1\tfile:{expected_name}".encode("utf-8"),
+    )
+    tampered_sig = _flip_minisign_signature(good_sig)
+
+    raw_script = (SCRIPTS / "install-native.ps1").read_text(encoding="utf-8")
+    test_key_script, replacements = re.subn(
+        r"(\$MinisignPublicKey\s*=\s*')[^']+(')",
+        rf"\g<1>{test_pub}\g<2>",
+        raw_script,
+    )
+    assert replacements == 1
+
+    for label, shell in shells:
+        # 1) Exact unmodified file contents run via `iex` reject a foreign signature before Start-Process.
+        res, starts, local_app_data, temp_dir = _run_install_native_via_iex(
+            shell,
+            tmp_path / f"{label}_unmodified_foreign_sig",
+            raw_script,
+            feed_json=feed_json,
+            installer_bytes=installer_bytes,
+            sig_text=good_sig,
+        )
+        assert res.returncode != 0, f"{label} unexpectedly accepted foreign sig via iex"
+        assert starts == [], f"{label} invoked Start-Process before signature check: {starts}"
+        assert not (local_app_data / "Programs" / "BURNRATE" / "BURNRATE.exe").exists()
+        assert list(temp_dir.glob("myburnrate-install-*")) == []
+
+        # 2) Valid signature under pinned key succeeds end-to-end via `iex` (no script directory).
+        res, starts, local_app_data, temp_dir = _run_install_native_via_iex(
+            shell,
+            tmp_path / f"{label}_valid_sig",
+            test_key_script,
+            feed_json=feed_json,
+            installer_bytes=installer_bytes,
+            sig_text=good_sig,
+        )
+        assert res.returncode == 0, f"{label} valid iex failed: {res.stdout}{res.stderr}"
+        installed_exe = local_app_data / "Programs" / "BURNRATE" / "BURNRATE.exe"
+        assert installed_exe.exists()
+        assert len(starts) == 2, f"{label} expected installer + app launch, got: {starts}"
+        assert starts[0].endswith(f"{expected_name}|/S")
+        assert starts[1] == f"{installed_exe}|"
+        assert list(temp_dir.glob("myburnrate-install-*")) == []
+
+        # 3) Tampered signature (valid size & SHA-256) fails before Start-Process via `iex`.
+        res, starts, local_app_data, temp_dir = _run_install_native_via_iex(
+            shell,
+            tmp_path / f"{label}_tampered_sig",
+            test_key_script,
+            feed_json=feed_json,
+            installer_bytes=installer_bytes,
+            sig_text=tampered_sig,
+        )
+        assert res.returncode != 0, f"{label} unexpectedly accepted tampered sig via iex"
+        assert starts == [], f"{label} invoked Start-Process on tampered sig: {starts}"
+        assert not (local_app_data / "Programs" / "BURNRATE" / "BURNRATE.exe").exists()
+        assert list(temp_dir.glob("myburnrate-install-*")) == []
 
 
 def test_powershell_scripts_do_not_inspect_git_remote_origin() -> None:
