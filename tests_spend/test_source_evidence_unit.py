@@ -166,11 +166,13 @@ def test_pure_module_import_and_legacy_sanitizer_surface():
     source = Path(source_evidence.__file__).read_text()
     real_import = builtins.__import__
 
-    def only_re(name, *args, **kwargs):
-        assert name == "re", f"unexpected pure-layer dependency: {name}"
+    def only_pure(name, *args, **kwargs):
+        assert name in {"re", "spend_app.redact", "urllib.parse", "pathlib", "__future__"}, (
+            f"unexpected pure-layer dependency: {name}"
+        )
         return real_import(name, *args, **kwargs)
 
-    with isolated(), patch("builtins.__import__", only_re):
+    with isolated(), patch("builtins.__import__", only_pure):
         namespace = {"__name__": "source_evidence_isolated"}
         exec(compile(source, "source_evidence.py", "exec"), namespace)
         assert namespace["sanitize_reason"]("Basic synthetic-token\nproblem") == "[redacted] problem"

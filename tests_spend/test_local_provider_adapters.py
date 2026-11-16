@@ -24,7 +24,13 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests_spend" / "fixtures"
 
 
-def test_public_error_redacts_unprefixed_tokens() -> None:
+def test_public_error_redacts_unprefixed_tokens(monkeypatch) -> None:
+    monkeypatch.delenv("BURNRATE_DEBUG_ERRORS", raising=False)
+    default_msg = public_error(Exception("Authorization: zai_live_unprefixed_secret_token_value"))
+    assert "zai_live_unprefixed_secret_token_value" not in default_msg
+    assert default_msg == "Connected source could not be imported. Recheck its location, schema or provider access."
+
+    monkeypatch.setenv("BURNRATE_DEBUG_ERRORS", "1")
     zai = public_error(Exception("Authorization: zai_live_unprefixed_secret_token_value"))
     assert "zai_live_unprefixed_secret_token_value" not in zai
     assert "[redacted]" in zai

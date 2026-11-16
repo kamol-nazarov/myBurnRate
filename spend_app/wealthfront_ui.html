@@ -3955,7 +3955,13 @@ function paintSettingsBody() {
     const account = setup.account || {};
     const spoke = setup.spokeConfig || {};
     const hubConnected = !!(spoke.enabled && spoke.hubUrl);
-    const syncErr = spoke.lastSyncError ? String(spoke.lastSyncError) : "";
+    const syncErrMap = {
+      hub_unreachable: "Could not reach the hub",
+      hub_rejected: "Hub rejected this computer's sync credential",
+      sync_failed: "Sync failed"
+    };
+    const syncErrRaw = spoke.lastSyncError ? String(spoke.lastSyncError) : "";
+    const syncErr = syncErrRaw ? (syncErrMap[syncErrRaw] || "Sync failed") : "";
     const defaultHubUrl = account.serverUrl || spoke.hubUrl || state.settingsData.centralServerUrl || "";
     const defaultUser = account.username || "";
     const defaultComp = setup.computerName || "";

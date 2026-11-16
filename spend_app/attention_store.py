@@ -19,6 +19,7 @@ from spend_app.plans_value_store import load_source_health
 from spend_app.pricing import UnpricedModelError
 from spend_app.providers import REGISTRY
 from spend_app.quotas import REQUIRED_LIMITS, PROVIDER_SOURCES
+from spend_app.redact import redact
 
 KEY = "attention.v1"
 BATCH = 500
@@ -30,8 +31,8 @@ class Conflict(ValueError):
 
 
 def safe_label(value):
-    text = str(value or "")
-    if len(text) > 120 or re.search(r"(?i)(?:[a-z]:[/\\]|://|@|sk-|bearer|gh[pousr]_)", text):
+    text = redact(str(value or ""), 120)
+    if len(text) > 120 or re.search(r"(?i)(?:[a-z]:[/\\]|://|@)", text):
         return "Unidentified evidence"
     return text if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._:/()+-]*", text) else "Unidentified evidence"
 

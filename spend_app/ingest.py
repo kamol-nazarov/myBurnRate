@@ -11,6 +11,7 @@ import sqlite3
 from dataclasses import dataclass
 
 from spend_app.db import utc_now
+from spend_app.redact import redact
 
 
 @dataclass
@@ -29,7 +30,8 @@ class IngestRun:
         return cls(connection=connection, source=source, id=int(cursor.lastrowid))
 
     def finish(self, *, status: str, error: str | None = None) -> None:
+        clean_error = redact(error, 1000) if error is not None else None
         self.connection.execute(
             "UPDATE ingest_runs SET finished_at=?, status=?, events_written=?, error=? WHERE id=?",
-            (utc_now(), status, self.events_written, error, self.id),
+            (utc_now(), status, self.events_written, clean_error, self.id),
         )

@@ -779,6 +779,120 @@ def usage_cache_revision(
     )
 
 
+INGEST_ERROR_REDACT_KEY = "repair.ingest_error_redaction.v1"
+SPOKE_SYNC_ERROR_REDACT_KEY = "repair.spoke_sync_error_redaction.v1"
+INGEST_ERROR_REDACT_BATCH_SIZE = 500
+
+
+def _redact_legacy_sync_error_in_tx(connection) -> bool:
+    """Rewrite any non-fixed spokeConfig.lastSyncError in app_setup.v1 to 'sync_failed'."""
+    from spend_app.setup_wizard import SETUP_META_KEY, normalize_spoke_sync_error
+
+    row = connection.execute(
+        "SELECT value FROM app_meta WHERE key=?", (SETUP_META_KEY,)
+    ).fetchone()
+    if not row or not row[0]:
+        return False
+    try:
+        data = json.loads(row[0])
+    except ValueError:
+        return True
+    if not isinstance(data, dict):
+        return True
+    spoke = data.get("spokeConfig")
+    if isinstance(spoke, dict) and "lastSyncError" in spoke:
+        current = spoke.get("lastSyncError")
+        normalized = normalize_spoke_sync_error(current)
+        if normalized != current:
+            spoke["lastSyncError"] = normalized
+            connection.execute(
+                "UPDATE app_meta SET value=? WHERE key=?",
+                (
+                    json.dumps(data, separators=(",", ":"), sort_keys=True),
+                    SETUP_META_KEY,
+                ),
+            )
+    return True
+
+
+def redact_legacy_ingest_errors(
+    path: Path,
+    *,
+    batch_size: int = INGEST_ERROR_REDACT_BATCH_SIZE,
+) -> int:
+    """Scrub pre-existing ingest_runs.error rows and legacy lastSyncError once per database."""
+    from spend_app.redact import redact
+    from spend_app.setup_wizard import SETUP_META_KEY
+
+    db_path = Path(path)
+    with connect(db_path) as connection:
+        ingest_done = bool(
+            connection.execute(
+                "SELECT 1 FROM app_meta WHERE key=?", (INGEST_ERROR_REDACT_KEY,)
+            ).fetchone()
+        )
+        sync_done = bool(
+            connection.execute(
+                "SELECT 1 FROM app_meta WHERE key=?", (SPOKE_SYNC_ERROR_REDACT_KEY,)
+            ).fetchone()
+        )
+        has_setup = bool(
+            connection.execute(
+                "SELECT 1 FROM app_meta WHERE key=?", (SETUP_META_KEY,)
+            ).fetchone()
+        )
+        if ingest_done and (sync_done or not has_setup):
+            return 0
+
+    if not sync_done or not ingest_done:
+        with connect(db_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if _redact_legacy_sync_error_in_tx(connection):
+                connection.execute(
+                    "INSERT INTO app_meta(key, value) VALUES(?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (SPOKE_SYNC_ERROR_REDACT_KEY, json.dumps({"at": utc_now()})),
+                )
+
+    if ingest_done:
+        return 0
+
+    step = max(1, int(batch_size))
+    last_rowid = 0
+    updated = 0
+    while True:
+        with connect(db_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute(
+                "SELECT 1 FROM app_meta WHERE key=?", (INGEST_ERROR_REDACT_KEY,)
+            ).fetchone():
+                return updated
+            batch = connection.execute(
+                "SELECT rowid, error FROM ingest_runs "
+                "WHERE rowid > ? AND error IS NOT NULL AND error != '' "
+                "ORDER BY rowid LIMIT ?",
+                (last_rowid, step),
+            ).fetchall()
+            for row_id, error in batch:
+                last_rowid = int(row_id)
+                cleaned = redact(error, 1000)
+                if cleaned != error:
+                    connection.execute(
+                        "UPDATE ingest_runs SET error=? WHERE rowid=?", (cleaned, row_id)
+                    )
+                    updated += 1
+            if len(batch) < step:
+                connection.execute(
+                    "INSERT INTO app_meta(key, value) VALUES(?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (
+                        INGEST_ERROR_REDACT_KEY,
+                        json.dumps({"updatedRows": updated, "at": utc_now()}),
+                    ),
+                )
+                return updated
+
+
 def initialize(path: Path) -> None:
     from spend_app.subscription_schema import upgrade_database
     upgrade_database(path, _initialize_base)
@@ -788,6 +902,7 @@ def initialize(path: Path) -> None:
     retire_cursor_usage(path)
     dedupe_grok_calls(path)
     retire_muse_rollup_events(path)
+    redact_legacy_ingest_errors(path)
     from spend_app.auth_model import ensure_schema
     ensure_schema(path)
 

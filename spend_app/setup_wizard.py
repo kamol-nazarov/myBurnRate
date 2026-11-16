@@ -180,6 +180,21 @@ def write_setup_state(connection, state: dict) -> dict:
     return clean
 
 
+SPOKE_SYNC_ERROR_CODES = frozenset({"hub_unreachable", "hub_rejected", "sync_failed"})
+
+
+def normalize_spoke_sync_error(value: object) -> str | None:
+    """Map any non-empty legacy/unknown spoke sync error to a fixed code."""
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text in SPOKE_SYNC_ERROR_CODES:
+        return text
+    return "sync_failed"
+
+
 def public_setup_state(state: dict) -> dict:
     spoke = dict(state.get("spokeConfig") or {})
     raw_token = str(spoke.get("token") or "")
@@ -190,6 +205,7 @@ def public_setup_state(state: dict) -> dict:
     spoke.pop("token", None)
     spoke["hasOwnerSession"] = bool(spoke.pop("ownerSession", None))
     spoke["tokenPreview"] = "configured" if raw_token else ""
+    spoke["lastSyncError"] = normalize_spoke_sync_error(spoke.get("lastSyncError"))
     return {**state, "spokeConfig": spoke}
 
 
@@ -612,14 +628,23 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
             write_setup_state(connection, latest)
         return result
     except Exception as exc:
+        import httpx
+
+        msg = str(exc)
+        if isinstance(exc, (httpx.RequestError, OSError)):
+            code = "hub_unreachable"
+        elif "Sync push failed (401)" in msg or "Sync push failed (403)" in msg:
+            code = "hub_rejected"
+        else:
+            code = "sync_failed"
         with connect(settings.database_path) as connection:
             connection.execute("BEGIN IMMEDIATE")
             latest = read_setup_state(connection)
             if latest["spokeConfig"].get("token") != token or str(latest["spokeConfig"].get("hubUrl") or "").strip().rstrip("/") != configured_hub_url:
                 return {"ok": False, "error": "Pairing changed; retry sync with the current configuration."}
-            latest["spokeConfig"]["lastSyncError"] = str(exc)[:240]
+            latest["spokeConfig"]["lastSyncError"] = code
             write_setup_state(connection, latest)
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": code}
 
 
 # Setup shows a tool as not read recently only after this long without a
@@ -1512,7 +1537,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     "ownerSessionExpiresAt": remote_data.get("expiresAt"),
                     "enabled": True,
                     "lastSyncAt": utc_now() if sync_result and sync_result.get("ok") else state["spokeConfig"].get("lastSyncAt"),
-                    "lastSyncError": sync_result.get("error") if sync_result and not sync_result.get("ok") else None,
+                    "lastSyncError": normalize_spoke_sync_error(sync_result.get("error")) if sync_result and not sync_result.get("ok") else None,
                     "usageChangesPending": bool((sync_result or {}).get("usageChangesPending")),
                     "eventsPushed": int((sync_result or {}).get("eventsWritten") or 0),
                 }
@@ -1668,7 +1693,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     "token": token,
                     "enabled": True,
                     "lastSyncAt": utc_now() if sync_result and sync_result.get("ok") else state["spokeConfig"].get("lastSyncAt"),
-                    "lastSyncError": sync_result.get("error") if sync_result and not sync_result.get("ok") else None,
+                    "lastSyncError": normalize_spoke_sync_error(sync_result.get("error")) if sync_result and not sync_result.get("ok") else None,
                     "usageChangesPending": bool((sync_result or {}).get("usageChangesPending")),
                     "eventsPushed": int((sync_result or {}).get("eventsWritten") or 0),
                     **owner_session,
@@ -2718,7 +2743,12 @@ SETUP_WIZARD_HTML = """<!doctype html>
           if (connected) {
             let text = "This computer sends its usage to your hub at " + spoke.hubUrl;
             if (s.account?.username) text += " as " + s.account.username;
-            if (spoke.lastSyncError) text += ". The last sync failed: " + spoke.lastSyncError;
+            const SYNC_ERROR_TEXT = {
+              hub_unreachable: "could not reach the hub",
+              hub_rejected: "hub rejected this computer's sync credential",
+              sync_failed: "sync failed"
+            };
+            if (spoke.lastSyncError) text += ". The last sync failed: " + (SYNC_ERROR_TEXT[spoke.lastSyncError] || "sync failed");
             else if (spoke.usageChangesPending) text += ". Update the hub to receive usage corrections and deletions.";
             else if (spoke.lastSyncAt) text += " · last sync " + ago(spoke.lastSyncAt);
             $("wiz-current-text").textContent = text + ".";
