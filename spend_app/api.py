@@ -817,12 +817,15 @@ def create_app(
         if action not in {"open", "show", "pin"}:
             return {"ok": False, "reason": "use_tauri_ipc"}
         repo_root = Path(__file__).resolve().parents[1]
-        data_root = Path(os.getenv("LOCALAPPDATA") or (Path.home() / "AppData" / "Local")) / "BURNRATE"
-        candidates = [
-            repo_root / "src-tauri" / "target" / "release" / "burnrate-desktop.exe",
-            data_root / "burnrate-desktop.exe",
-            repo_root / "src-tauri" / "target" / "debug" / "burnrate-desktop.exe",
-        ]
+        local_app_data = Path(os.getenv("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+        programs_exe = local_app_data / "Programs" / "BURNRATE" / "BURNRATE.exe"
+        candidates: list[Path] = []
+        if os.getenv("BURNRATE_DEV", "").strip() == "1":
+            candidates.extend([
+                repo_root / "src-tauri" / "target" / "release" / "burnrate-desktop.exe",
+                repo_root / "src-tauri" / "target" / "debug" / "burnrate-desktop.exe",
+            ])
+        candidates.append(programs_exe)
         exe_path = next((p for p in candidates if p.is_file()), None)
         if sys.platform == "win32":
             try:
@@ -843,7 +846,7 @@ def create_app(
                 with locked_binary(exe_path):
                     trusted, signature = await asyncio.to_thread(evaluate_native_binary, exe_path)
                     if not trusted:
-                        return {"ok": False, "reason": "untrusted_binary", "signature": signature}
+                        return {"ok": False, "reason": "binary_refused", "state": signature}
                     si = None
                     if sys.platform == "win32":
                         si = subprocess.STARTUPINFO()
@@ -851,19 +854,18 @@ def create_app(
                         si.wShowWindow = 5
                     subprocess.Popen(
                         [str(exe_path)],
-                        cwd=str(repo_root),
+                        cwd=str(exe_path.parent),
                         stdin=subprocess.DEVNULL,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                         startupinfo=si,
                     )
-                    return {"ok": True, "pinned": True, "launchedNative": True,
-                            "exe": str(exe_path), "signature": signature}
-            except OSError as exc:
-                return {"ok": False, "reason": "binary_busy", "error": str(exc)}
-            except Exception as exc:
-                return {"ok": False, "error": str(exc)}
-        return {"ok": False, "reason": "native_not_available"}
+                    return {"ok": True, "state": signature}
+            except OSError:
+                return {"ok": False, "reason": "binary_busy"}
+            except Exception:
+                return {"ok": False, "reason": "launch_failed"}
+        return {"ok": False, "reason": "not_found"}
 
     @app.get("/spend.css")
     def spend_css(request: Request):

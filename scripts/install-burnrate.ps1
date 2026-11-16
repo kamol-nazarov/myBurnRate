@@ -2,7 +2,8 @@
 param(
     [string]$TaskName = 'BURNRATE Dashboard',
     [switch]$NoLaunch,
-    [switch]$DryRun
+    [switch]$DryRun,
+    [switch]$Dev
 )
 
 # Per-user scheduled task "BURNRATE Dashboard": AtLogOn, Limited, Hidden.
@@ -15,4 +16,4 @@ param(
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'BurnrateRuntime.ps1')
-Install-BurnrateDashboard -TaskName $TaskName -NoLaunch:$NoLaunch -DryRun:$DryRun
+Install-BurnrateDashboard -TaskName $TaskName -NoLaunch:$NoLaunch -DryRun:$DryRun -Dev:$Dev

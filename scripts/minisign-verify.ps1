@@ -13,10 +13,9 @@ $ErrorActionPreference = 'Stop'
 $MinisignPublicKey = 'dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVDQUNGNEMxNUMxRkNENkQKUldSdHpSOWN3ZlNzWE9yblR0Q1BIZUFTY3VhbWFFeHB2OWVkOVZhUjF5dVNaQm1CWHZTM0I3WkMK'
 
 if (-not ('Burnrate.Minisign' -as [type])) {
-    Add-Type -ReferencedAssemblies 'System.Numerics' -TypeDefinition @'
+    $minisignTypeDef = @'
 using System;
 using System.IO;
-using System.Linq;
 using System.Numerics;
 using System.Security.Cryptography;
 using System.Text;
@@ -213,11 +212,11 @@ namespace Burnrate
         private static Point Decode(byte[] data, int offset)
         {
             if (data.Length - offset < 32) return null;
-            byte[] copy = new byte[32];
+            byte[] copy = new byte[33];
             Array.Copy(data, offset, copy, 0, 32);
             int sign = (copy[31] & 0x80) != 0 ? 1 : 0;
             copy[31] = (byte)(copy[31] & 0x7f);
-            BigInteger y = new BigInteger(copy.Concat(new byte[] { 0 }).ToArray());
+            BigInteger y = new BigInteger(copy);
             BigInteger? x = RecoverX(y, sign);
             if (!x.HasValue) return null;
             return new Point(x.Value, y, BigInteger.One, Mod(x.Value * y));
@@ -354,6 +353,11 @@ namespace Burnrate
     }
 }
 '@
+    if ($PSVersionTable.PSVersion.Major -ge 6) {
+        Add-Type -TypeDefinition $minisignTypeDef
+    } else {
+        Add-Type -ReferencedAssemblies 'System.Numerics' -TypeDefinition $minisignTypeDef
+    }
 }
 
 function Test-MinisignFile {
@@ -361,12 +365,14 @@ function Test-MinisignFile {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string]$SignaturePath,
-        [Parameter(Mandatory = $true)][string]$ExpectedFile
+        [Parameter(Mandatory = $true)][string]$ExpectedFile,
+        [string]$PublicKey = $MinisignPublicKey
     )
     if (-not (Test-Path -LiteralPath $Path)) { throw "Signed file not found: $Path" }
     if (-not (Test-Path -LiteralPath $SignaturePath)) { throw "Signature not found: $SignaturePath" }
+    if ([string]::IsNullOrWhiteSpace($PublicKey)) { throw "Minisign public key is missing." }
     $signature = Get-Content -LiteralPath $SignaturePath -Raw
-    if (-not [Burnrate.Minisign]::VerifyFile($Path, $signature, $MinisignPublicKey, $ExpectedFile)) {
+    if (-not [Burnrate.Minisign]::VerifyFile($Path, $signature, $PublicKey, $ExpectedFile)) {
         throw "The installer's minisign signature is missing, invalid, or names a different file."
     }
 }

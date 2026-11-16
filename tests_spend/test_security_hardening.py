@@ -286,8 +286,10 @@ def test_desktop_shell_and_supply_chain_inputs_are_pinned() -> None:
 def test_installer_verifies_the_minisign_signature() -> None:
     installer = (ROOT / "scripts" / "install-native.ps1").read_text(encoding="utf-8")
     assert "Test-MinisignFile" in installer
-    assert "minisign-verify.ps1" in installer
+    assert "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVDQUNGNEMxNUMxRkNENkQK" in installer
+    assert "Ed25519" in installer and "Blake2b" in installer
     verifier = (ROOT / "scripts" / "minisign-verify.ps1").read_text(encoding="utf-8")
+    assert "Test-MinisignFile" in verifier
     assert "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVDQUNGNEMxNUMxRkNENkQK" in verifier
     assert "Ed25519" in verifier and "Blake2b" in verifier
 
