@@ -323,7 +323,7 @@ def test_copy_diagnostics_removes_keys_addresses_and_the_home_folder(client: Tes
     from spend_app.support_report import build_report, redact
 
     home = Path("C:/Users/someone")
-    sample = ("Authorization: Bearer abc.def-123 key=sk-or-v1-0123456789abcdef api_key=\"plainsecret\" "
+    sample = ("Authorization: Bearer abc.def-123\nkey=sk-or-v1-0123456789abcdef api_key=\"plainsecret\" "
               r"mail me@example.com at C:\Users\someone\.claude and C:/Users/other/x and /home/dev/y")
     clean = redact(sample, home=home)
     for leaked in ("abc.def-123", "sk-or-v1", "plainsecret", "me@example.com", "someone", "other", "dev/"):

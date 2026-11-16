@@ -238,11 +238,45 @@ def test_redact_module_scrubs_all_tokens(case_id, token, message, forbidden) -> 
     _assert_none_survive(redact(message), forbidden)
     _assert_none_survive(redact(token), forbidden)
 
-    # Length cap applies AFTER redaction so partial secrets cannot leak near the cutoff.
-    padded = ("x" * 95) + token + " trailing"
-    capped = redact(padded, 105)
-    assert len(capped) <= 105
-    _assert_none_survive(capped, forbidden)
+    # Length cap applies AFTER redaction so no credential prefix or fragment
+    # survives even when the cutoff lands inside where the secret sat.
+    credential_prefixes = (
+        "sk-",
+        "ghp_",
+        "github_pat_",
+        "brpair_",
+        "br_m_",
+        "zai_",
+        "xai-",
+        "or-v1-",
+        "eyJ",
+        "%73%6B",
+        "%2573",
+    )
+    padded = ("x" * 94) + " " + token + " trailing"
+    for limit in (98, 99, 101, 105, 110):
+        capped = redact(padded, limit)
+        assert len(capped) <= limit
+        _assert_none_survive(capped, forbidden)
+        for prefix in credential_prefixes:
+            assert prefix not in capped, f"Prefix {prefix!r} leaked at limit={limit} in {capped!r}"
+        for secret in forbidden:
+            if len(secret) >= 4:
+                assert secret[:4] not in capped, f"Fragment {secret[:4]!r} leaked at limit={limit} in {capped!r}"
+                assert secret[-4:] not in capped, f"Fragment {secret[-4:]!r} leaked at limit={limit} in {capped!r}"
+    if token.startswith(credential_prefixes):
+        for sep in ("_", "/", ".", "=", ":"):
+            emb = ("x" * 94) + sep + token + " trailing"
+            for limit in (98, 99, 101, 105, 110):
+                capped_emb = redact(emb, limit)
+                assert len(capped_emb) <= limit
+                _assert_none_survive(capped_emb, forbidden)
+                for prefix in credential_prefixes:
+                    assert prefix not in capped_emb, f"Prefix {prefix!r} leaked with sep={sep!r} at limit={limit} in {capped_emb!r}"
+                for secret in forbidden:
+                    if len(secret) >= 4:
+                        assert secret[:4] not in capped_emb, f"Fragment {secret[:4]!r} leaked with sep={sep!r} at limit={limit} in {capped_emb!r}"
+                        assert secret[-4:] not in capped_emb, f"Fragment {secret[-4:]!r} leaked with sep={sep!r} at limit={limit} in {capped_emb!r}"
 
 
 def test_redact_percent_decode_three_pass_boundary_and_home_and_limit() -> None:
@@ -747,3 +781,218 @@ def test_one_time_startup_migration_redacts_legacy_ingest_errors_and_becomes_noo
             "SELECT error FROM ingest_runs WHERE source='muse_local' ORDER BY id DESC LIMIT 1"
         ).fetchone()[0]
     assert latest == unredacted_sentinel
+
+
+# ---------------------------------------------------------------------------
+# 5. Security review regressions: quoted fields, headers, embedded prefixes,
+#    prose preservation, and bounded-batch startup migration
+# ---------------------------------------------------------------------------
+
+
+def test_redact_quoted_fields_headers_embedded_prefixes_and_prose() -> None:
+    # Finding 1: full quoted values (single, double, JSON, JSON-escaped)
+    dq = redact('login failed password="synthetic correct horse battery staple" next=ok')
+    assert dq == 'login failed password="[redacted]" next=ok'
+
+    sq = redact("login failed password='synthetic correct horse battery staple' next=ok")
+    assert sq == "login failed password='[redacted]' next=ok"
+
+    js = redact('{"password": "synthetic correct horse battery staple", "keep": "visible"}')
+    assert js == '{"password": "[redacted]", "keep": "visible"}'
+
+    escaped_js = redact(r'{\"password\":\"synthetic correct horse battery staple\",\"keep\":\"visible\"}')
+    assert escaped_js == r'{\"password\":\"[redacted]\",\"keep\":\"visible\"}'
+
+    inner_escaped = redact(r'{"api_key": "first \"quoted\" word", "ok": 1}')
+    assert inner_escaped == '{"api_key": "[redacted]", "ok": 1}'
+
+    # Finding 1: Cookie / Set-Cookie / Authorization headers redacted to end of line
+    cookie_hdr = redact("Cookie: sid=a; csrf=b\nGET /healthz")
+    assert cookie_hdr == "Cookie: [redacted]\nGET /healthz"
+
+    set_cookie_hdr = redact("Set-Cookie: sid=secret123; Path=/; HttpOnly; SameSite=Lax\nX-Ok: 1")
+    assert set_cookie_hdr == "Set-Cookie: [redacted]\nX-Ok: 1"
+
+    auth_hdr = redact("Authorization: Custom scheme part1 part2\nHost: localhost")
+    assert auth_hdr == "Authorization: [redacted]\nHost: localhost"
+
+    json_cookie = redact('{"Cookie": "sid=a; csrf=b", "keep": "yes"}')
+    assert json_cookie == '{"Cookie": "[redacted]", "keep": "yes"}'
+
+    # Finding 2: credential prefixes embedded after _, /, ., =, :, -
+    embedded_cases = [
+        ("connection_sk-proj_syntheticCredentialValue", "connection_[redacted]", "syntheticCredentialValue"),
+        ("path/sk-proj_syntheticPathValue", "path/[redacted]", "syntheticPathValue"),
+        ("host.ghp_1234567890abcdef1234", "host.[redacted]", "1234567890abcdef1234"),
+        ("k=github_pat_11AAAAAA_0123456789abcdef", "k=[redacted]", "0123456789abcdef"),
+        ("k:br_m_machine_secret_12345", "k:[redacted]", "machine_secret_12345"),
+        ("prefix_brpair_eyJodWJVcmwiOiJodHRwczovL2h1Yi5leGFtcGxlIn0=", "prefix_[redacted]", "eyJodWJVcmwi"),
+        ("prefix/xai-secret-token-456", "prefix/[redacted]", "xai-secret-token-456"),
+        ("prefix_zai_live_secret_token_987", "prefix_[redacted]", "zai_live_secret_token_987"),
+        ("prefix.or-v1-secret-token-789", "prefix.[redacted]", "or-v1-secret-token-789"),
+        ("prefix-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0In0.sig123", "prefix-[redacted]", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"),
+    ]
+    for raw_val, expected, leaked in embedded_cases:
+        cleaned = redact(raw_val)
+        assert cleaned == expected
+        assert leaked not in cleaned
+
+    # Finding 3: ordinary prose survives while real field values stay redacted
+    for prose in (
+        "token: file is missing",
+        "token: missing",
+        "secret: not configured",
+        "password: empty",
+        "api_key: none",
+        "BURNRATE_ENABLE_ZAI_QUOTA",
+        "via zai_quota_endpoint",
+        "task-12345",
+        "heyJoe123456",
+    ):
+        assert redact(prose) == prose
+
+    assert redact("ERROR token=hunter2") == "ERROR token=[redacted]"
+    assert redact("token: 12345678") == "token: [redacted]"
+    assert redact('password="abc"') == 'password="[redacted]"'
+
+
+def test_review_regressions_through_ingest_run_and_diagnostics(
+    tmp_path: Path, monkeypatch
+) -> None:
+    settings = _settings(tmp_path, "review_diag.db")
+    initialize(settings.database_path)
+
+    payloads = [
+        'login failed password="synthetic correct horse battery staple"',
+        '{"password": "synthetic json horse battery", "keep": "yes"}',
+        r'{\"secret\":\"synthetic escaped battery staple\",\"ok\":true}',
+        "Cookie: sid=alpha; csrf=beta_token",
+        "Set-Cookie: sess=gamma_secret; Path=/; HttpOnly",
+        "Authorization: Digest username=alice, response=deadbeef00112233",
+        "failed connection_sk-proj_syntheticCredentialValue and path/ghp_1234567890abcdef1234",
+        "token: file is missing",
+    ]
+    forbidden = (
+        "synthetic",
+        "horse",
+        "battery",
+        "staple",
+        "alpha",
+        "beta_token",
+        "gamma_secret",
+        "HttpOnly",
+        "deadbeef00112233",
+        "syntheticCredentialValue",
+        "sk-proj",
+        "1234567890abcdef1234",
+        "ghp_",
+    )
+
+    with connect(settings.database_path) as conn:
+        for idx, msg in enumerate(payloads):
+            run = IngestRun.start(conn, f"src_{idx}")
+            run.finish(status="failed", error=msg)
+        stored_rows = [
+            row[0]
+            for row in conn.execute("SELECT error FROM ingest_runs ORDER BY id").fetchall()
+        ]
+
+    joined_db = "\n".join(stored_rows)
+    _assert_none_survive(joined_db, forbidden)
+    assert "token: file is missing" in stored_rows
+    assert 'keep": "yes"' in joined_db
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "dashboard.log").write_text("\n".join(payloads) + "\n", encoding="utf-8")
+
+    report = support_report.build_report(settings, log_dir=logs)
+    _assert_none_survive(report, forbidden)
+    assert "token: file is missing" in report
+
+    monkeypatch.setattr("spend_app.service.log_dir", lambda: logs)
+    app = create_app(settings, enable_scheduler=False)
+    with TestClient(app) as client:
+        resp = client.post("/api/setup/diagnostics", headers={"X-BURNRATE-Request": "1"})
+    assert resp.status_code == 200
+    diag_text = resp.json()["text"]
+    _assert_none_survive(diag_text, forbidden)
+    assert "token: file is missing" in diag_text
+
+
+def test_bounded_batch_migration_redacts_over_500_rows_and_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "batched_legacy.db"
+    initialize(db_path)
+
+    dirty_indices = {
+        0: 'password="synthetic correct horse battery staple"',
+        499: "Cookie: sid=a; csrf=b",
+        500: "error connection_sk-proj_syntheticCredentialValue",
+        999: "Encoded %73%6B-proj_encoded123 failed",
+        1000: r'{\"password\":\"synthetic escaped secret\"}',
+        1204: "host/github_pat_11AAAAAA_0123456789abcdef",
+    }
+    total_rows = 1205
+    with connect(db_path) as conn:
+        rows = [
+            (
+                "codex_local",
+                "2026-09-01T00:00:00Z",
+                "2026-09-01T00:00:01Z",
+                "failed",
+                0,
+                dirty_indices.get(i, "token: file is missing"),
+            )
+            for i in range(total_rows)
+        ]
+        conn.executemany(
+            "INSERT INTO ingest_runs(source, started_at, finished_at, status, events_written, error) "
+            "VALUES(?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+        conn.execute("DELETE FROM app_meta WHERE key=?", (INGEST_ERROR_REDACT_KEY,))
+
+    initialize(db_path)
+
+    with connect(db_path) as conn:
+        stored = [
+            row[0]
+            for row in conn.execute("SELECT error FROM ingest_runs ORDER BY id").fetchall()
+        ]
+        marker = conn.execute(
+            "SELECT value FROM app_meta WHERE key=?", (INGEST_ERROR_REDACT_KEY,)
+        ).fetchone()
+
+    assert len(stored) == total_rows
+    assert marker is not None
+    assert json.loads(marker[0])["updatedRows"] == len(dirty_indices)
+
+    for idx in dirty_indices:
+        assert "[redacted]" in stored[idx]
+    for leaked in (
+        "synthetic",
+        "battery",
+        "csrf=b",
+        "sk-proj",
+        "encoded123",
+        "0123456789abcdef",
+    ):
+        assert all(leaked not in row for row in stored)
+    assert stored[1] == "token: file is missing"
+    assert stored[750] == "token: file is missing"
+
+    # Marker guard makes subsequent calls a no-op
+    assert redact_legacy_ingest_errors(db_path) == 0
+
+    # Resume after an interrupted pass (missing marker) is also idempotent
+    with connect(db_path) as conn:
+        conn.execute("DELETE FROM app_meta WHERE key=?", (INGEST_ERROR_REDACT_KEY,))
+    assert redact_legacy_ingest_errors(db_path) == 0
+    with connect(db_path) as conn:
+        marker_after = conn.execute(
+            "SELECT value FROM app_meta WHERE key=?", (INGEST_ERROR_REDACT_KEY,)
+        ).fetchone()
+    assert marker_after is not None
+    assert json.loads(marker_after[0])["updatedRows"] == 0
