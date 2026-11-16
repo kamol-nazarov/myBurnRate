@@ -1026,10 +1026,16 @@ def test_service_mutate_and_completion_multi_profile_independent_lifecycle(tmp_p
     service = _make_service(tmp_path, monkeypatch)
     spend_db.initialize(service.settings.database_path)
 
-    # Connect default and an extra profile independently
+    # Connect default and add an extra profile independently
     default_res = service.mutate(_mutate_body("codex_local", location="C:/fake/.codex"))
-    work_req = _mutate_body("codex_local", location="C:/fake/.codex-work", name="Work")
-    work_res = service.mutate(work_req, profile="codex-work")
+    work_req = {
+        "source": "codex_local",
+        "operation": "add_profile",
+        "location": "C:/fake/.codex-work",
+        "name": "Work",
+        "requestId": str(uuid4()),
+    }
+    work_res = service.mutate(work_req)
 
     assert default_res["connection"]["revision"] == 1
     assert default_res["connection"]["bindingId"] == "codex_local"
@@ -1040,12 +1046,12 @@ def test_service_mutate_and_completion_multi_profile_independent_lifecycle(tmp_p
     assert work_res["connection"]["toolKey"] == "codex-work"
     assert work_res["connection"]["name"] == "Work"
 
-    # Receipt idempotency for the same profile vs conflict across profiles
-    assert service.mutate(work_req, profile="codex-work") == work_res
+    # Receipt idempotency for the same profile vs conflict across profiles / LocationError for uncreated non-default connect
+    assert service.mutate(work_req) == work_res
     with pytest.raises(c.Conflict):
-        service.mutate(work_req, profile="default")
-    with pytest.raises(c.Conflict):
-        service.mutate(work_req, profile="codex-personal")
+        service.mutate(_mutate_body("codex_local", location="C:/fake/.codex-other", requestId=work_req["requestId"]), profile="default")
+    with pytest.raises(c.LocationError):
+        service.mutate(_mutate_body("codex_local", location="C:/fake/.codex-personal"), profile="codex-personal")
 
     # Independent revision tracking: advance default to revision 2 while codex-work stays at 1
     default_res_2 = service.mutate(

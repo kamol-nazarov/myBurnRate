@@ -1065,45 +1065,54 @@ def test_post_dismiss_candidate_existing_ops_and_security_guards(
         )
         assert r_bad.status_code == 422
 
-    # 2. Existing ops (connect, recheck, disable, reconnect) with explicit profile parameter
+    # 2. Existing ops (connect, recheck, disable, reconnect) require an existing non-default profile
+    for op_name in ("connect", "reconnect", "recheck", "disable"):
+        missing_payload = {
+            "source": "claude_local",
+            "operation": op_name,
+            "profile": "claude-code-missing",
+            "revision": 0,
+            "requestId": str(uuid4()),
+        }
+        if op_name in {"connect", "reconnect"}:
+            missing_payload["location"] = str(work_dir)
+        assert client.post("/api/connections", json=missing_payload, headers=API_HEADERS).status_code == 422
+
+    # Create profiles via add_profile (revision=1)
     r_conn = client.post(
         "/api/connections",
         json={
             "source": "claude_local",
-            "operation": "connect",
-            "profile": "claude-code-ops",
+            "operation": "add_profile",
             "location": str(work_dir),
-            "revision": 0,
             "requestId": str(uuid4()),
         },
         headers=API_HEADERS,
     )
     assert r_conn.status_code == 200
+    ops_key = r_conn.json()["connection"]["key"]
     assert r_conn.json()["connection"]["revision"] == 1
 
-    # Connect second explicit profile
     r_other = client.post(
         "/api/connections",
         json={
             "source": "claude_local",
-            "operation": "connect",
-            "profile": "claude-code-other",
+            "operation": "add_profile",
             "location": str(other_dir),
-            "revision": 0,
             "requestId": str(uuid4()),
         },
         headers=API_HEADERS,
     )
     assert r_other.status_code == 200
 
-    # connect / reconnect pointing claude-code-ops to claude-code-other's folder -> 409 FolderInUse
+    # connect / reconnect pointing ops_key to other_dir's folder -> 409 FolderInUse
     assert (
         client.post(
             "/api/connections",
             json={
                 "source": "claude_local",
                 "operation": "reconnect",
-                "profile": "claude-code-ops",
+                "profile": ops_key,
                 "location": str(other_dir),
                 "revision": 1,
                 "requestId": str(uuid4()),
@@ -1120,7 +1129,7 @@ def test_post_dismiss_candidate_existing_ops_and_security_guards(
             json={
                 "source": "claude_local",
                 "operation": "connect",
-                "profile": "claude-code-ops",
+                "profile": ops_key,
                 "location": str(dup_acct_dir),
                 "revision": 1,
                 "requestId": str(uuid4()),
@@ -1136,7 +1145,7 @@ def test_post_dismiss_candidate_existing_ops_and_security_guards(
         json={
             "source": "claude_local",
             "operation": "recheck",
-            "profile": "claude-code-ops",
+            "profile": ops_key,
             "revision": 1,
             "requestId": str(uuid4()),
         },
@@ -1149,7 +1158,7 @@ def test_post_dismiss_candidate_existing_ops_and_security_guards(
         json={
             "source": "claude_local",
             "operation": "disable",
-            "profile": "claude-code-ops",
+            "profile": ops_key,
             "revision": 2,
             "requestId": str(uuid4()),
         },
@@ -1164,7 +1173,7 @@ def test_post_dismiss_candidate_existing_ops_and_security_guards(
         json={
             "source": "claude_local",
             "operation": "reconnect",
-            "profile": "claude-code-ops",
+            "profile": ops_key,
             "location": str(work_dir),
             "revision": 3,
             "requestId": str(uuid4()),
@@ -1447,3 +1456,187 @@ def test_demo_client_connections_include_profile_fields():
                 "plan",
                 "sharesLimitsWith",
             } <= set(prof.keys())
+
+
+# ---------------------------------------------------------------------------
+# 5. Review probes: live account digest tracking & non-default connect guard
+# ---------------------------------------------------------------------------
+
+
+def test_add_rechecks_current_account_of_existing_profile(
+    client: TestClient, settings: Settings, isolated_env: Path
+):
+    home = isolated_env
+    work = _make_codex_folder(home / ".codex-work", account_id="account-A")
+    other = _make_codex_folder(home / ".codex-other", account_id="account-B")
+
+    service = c.Service(settings)
+    added = service.mutate(
+        {
+            "source": "codex_local",
+            "operation": "add_profile",
+            "location": str(work),
+            "name": "Work",
+            "requestId": str(uuid4()),
+        }
+    )["connection"]
+    work_key = added["key"]
+
+    # Switch Work's auth.json from account-A to account-B (without even resetting cache)
+    (work / "auth.json").write_text(json.dumps({"tokens": {"account_id": "account-B"}}), encoding="utf-8")
+
+    # Adding another folder signed in to account-B is refused (409 / Conflict)
+    with pytest.raises(c.Conflict):
+        service.mutate(
+            {
+                "source": "codex_local",
+                "operation": "add_profile",
+                "location": str(other),
+                "name": "Other",
+                "requestId": str(uuid4()),
+            }
+        )
+
+    # Same via HTTP POST returns 409
+    r_dup = client.post(
+        "/api/connections",
+        json={
+            "source": "codex_local",
+            "operation": "add_profile",
+            "location": str(other),
+            "name": "Other",
+            "requestId": str(uuid4()),
+        },
+        headers=API_HEADERS,
+    )
+    assert r_dup.status_code == 409
+
+    # GET /api/connections remains read-only (stored accountDigest stays account-A),
+    # while reporting live sameAccountAs -> work_key after cache reset
+    profile_detect.reset_cache()
+    codex_row = next(r for r in client.get("/api/connections").json()["connections"] if r["source"] == "codex_local")
+    assert len(codex_row["detected"]) == 1
+    assert codex_row["detected"][0]["sameAccountAs"] == work_key
+
+    stored_before = c.Store(settings.database_path).read()["profiles"]["codex_local"][work_key]
+    assert stored_before["accountDigest"] == _sha256("account-A")
+
+    # Recheck (a write) refreshes the stored accountDigest to account-B
+    r_recheck = client.post(
+        "/api/connections",
+        json={
+            "source": "codex_local",
+            "operation": "recheck",
+            "profile": work_key,
+            "revision": 1,
+            "requestId": str(uuid4()),
+        },
+        headers=API_HEADERS,
+    )
+    assert r_recheck.status_code == 200
+    stored_after = c.Store(settings.database_path).read()["profiles"]["codex_local"][work_key]
+    assert stored_after["accountDigest"] == _sha256("account-B")
+
+    # A third folder with account-A is now allowed since Work switched to account-B
+    third = _make_codex_folder(home / ".codex-third", account_id="account-A")
+    r_third = client.post(
+        "/api/connections",
+        json={
+            "source": "codex_local",
+            "operation": "add_profile",
+            "location": str(third),
+            "name": "Third",
+            "requestId": str(uuid4()),
+        },
+        headers=API_HEADERS,
+    )
+    assert r_third.status_code == 200
+
+
+def test_limits_deduplicate_after_account_switch(
+    client: TestClient, settings: Settings, isolated_env: Path
+):
+    from spend_app import quotas
+
+    home = isolated_env
+    first = _make_codex_folder(home / ".codex-first", account_id="account-A")
+    second = _make_codex_folder(home / ".codex-second", account_id="account-B")
+    service = c.Service(settings)
+    res_first = service.mutate(
+        {
+            "source": "codex_local",
+            "operation": "add_profile",
+            "location": str(first),
+            "name": "First",
+            "requestId": str(uuid4()),
+        }
+    )["connection"]
+    res_second = service.mutate(
+        {
+            "source": "codex_local",
+            "operation": "add_profile",
+            "location": str(second),
+            "name": "Second",
+            "requestId": str(uuid4()),
+        }
+    )["connection"]
+
+    # Switch second profile from account-B to account-A on disk
+    (second / "auth.json").write_text(json.dumps({"tokens": {"account_id": "account-A"}}), encoding="utf-8")
+    profile_detect.reset_cache()
+
+    collectors, shared = quotas._resolve_profile_lanes(settings.database_path)
+    assert len(collectors) == 1, (list(collectors), shared)
+    assert res_first["key"] in collectors
+    assert res_second["key"] in shared
+    assert shared[res_second["key"]]["ownerKey"] == res_first["key"]
+
+    # GET /api/connections also reflects sharesLimitsWith using current account digest
+    codex_row = next(r for r in client.get("/api/connections").json()["connections"] if r["source"] == "codex_local")
+    by_key = {p["key"]: p for p in codex_row["profiles"]}
+    assert by_key[res_first["key"]]["sharesLimitsWith"] is None
+    assert by_key[res_second["key"]]["sharesLimitsWith"] == res_first["key"]
+
+
+def test_connect_requires_existing_nondefault_profile(
+    client: TestClient, settings: Settings, isolated_env: Path
+):
+    home = isolated_env
+    folder = _make_codex_folder(home / ".codex-custom", account_id="account-A")
+    service = c.Service(settings)
+
+    # connect/reconnect/recheck/disable for non-existent non-default profile (including built-in tool key "codex") must fail
+    for op_name in ("connect", "reconnect", "recheck", "disable"):
+        payload = {
+            "source": "codex_local",
+            "operation": op_name,
+            "profile": "codex",
+            "revision": 0,
+            "requestId": str(uuid4()),
+        }
+        if op_name in {"connect", "reconnect"}:
+            payload["location"] = str(folder)
+        with pytest.raises(c.LocationError):
+            service.mutate(payload)
+        assert client.post("/api/connections", json={**payload, "requestId": str(uuid4())}, headers=API_HEADERS).status_code == 422
+
+    # add_profile refuses reserved built-in default keys, "default", and cross-provider keys
+    for bad_key in ("default", *ps.DEFAULT_TOOL_KEYS.values(), "claude-code-work", "opencode-go-team"):
+        r_bad = client.post(
+            "/api/connections",
+            json={
+                "source": "codex_local",
+                "operation": "add_profile",
+                "profile": bad_key,
+                "location": str(folder),
+                "requestId": str(uuid4()),
+            },
+            headers=API_HEADERS,
+        )
+        assert r_bad.status_code == 422
+
+    # profile_key_for_folder never produces "default" or any DEFAULT_TOOL_KEYS value
+    for prov in ps.DEFAULT_TOOL_KEYS:
+        generated = ps.profile_key_for_folder(prov, home / "some-folder")
+        assert generated != "default"
+        assert generated not in set(ps.DEFAULT_TOOL_KEYS.values())
