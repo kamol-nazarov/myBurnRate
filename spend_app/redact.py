@@ -6,9 +6,22 @@ import re
 from pathlib import Path
 from urllib.parse import unquote
 
+_MAX_UNBOUNDED_INPUT = 64 * 1024
+
 _FIELD_NAMES = (
     r"api[_-]?key|access[_-]?(?:key|token)|refresh[_-]?token|client[_-]?secret|"
     r"token|secret|password|passwd|pwd|authorization|set-cookie|cookie|session[_-]?key|x-api-key"
+)
+
+# When a separator crosses a newline, a value only starts if what follows is NOT
+# itself another key:value / key=value field (so an empty `key:` at EOL never
+# swallows the next line's field name).
+_NEXT_FIELD_LOOKAHEAD = (
+    r'(?!\\"[^"\r\n]+\\"\s*[:=]|"[^"\r\n]+"\s*[:=]|'
+    r"'[^'\r\n]+'\s*[:=]|[\w.-]+\s*[:=])"
+)
+_FIELD_SEP = (
+    rf"\s*[:=](?:[ \t]*(?![\r\n])|[ \t]*[\r\n]\s*{_NEXT_FIELD_LOOKAHEAD})"
 )
 
 # Header-to-EOL stays bounded to a single line.
@@ -18,27 +31,23 @@ _HEADER_TO_EOL = re.compile(
 
 # Capture prefix+separator separately from the closing quote so replacements
 # preserve surrounding quotes/JSON structure while removing the entire value.
-# Allow any whitespace (including newlines/CRLF) between key, separator, and value
-# for multiline JSON and decoded multi-line payloads.
 _SECRET_FIELD_QUOTED_ESCAPED = re.compile(
-    rf'(?i)(\b(?:{_FIELD_NAMES})\b(?:\\?["\'])?\s*[:=]\s*\\")(?:\\\\\\"|\\\\|\\[^"\r\n]|[^\\"\r\n])*(\\"|(?=\r|\n|$))'
+    rf'(?i)(\b(?:{_FIELD_NAMES})\b(?:\\?["\'])?{_FIELD_SEP}\\")(?:\\\\\\"|\\\\|\\[^"\r\n]|[^\\"\r\n])*(\\"|(?=\r|\n|$))'
 )
 _SECRET_FIELD_QUOTED_DOUBLE = re.compile(
-    rf'(?i)(\b(?:{_FIELD_NAMES})\b["\']?\s*[:=]\s*")(?:\\.|[^"\\\r\n])*("|(?=\r|\n|$))'
+    rf'(?i)(\b(?:{_FIELD_NAMES})\b["\']?{_FIELD_SEP}")(?:\\.|[^"\\\r\n])*("|(?=\r|\n|$))'
 )
 _SECRET_FIELD_QUOTED_SINGLE = re.compile(
-    rf"(?i)(\b(?:{_FIELD_NAMES})\b[\"']?\s*[:=]\s*')(?:\\.|[^'\\\r\n])*('|(?=\r|\n|$))"
+    rf"(?i)(\b(?:{_FIELD_NAMES})\b[\"']?{_FIELD_SEP}')(?:\\.|[^'\\\r\n])*('|(?=\r|\n|$))"
 )
 
 # Unquoted field values:
-# - With '=', there is no minimum length and no allowlist: always redact the
-#   value (e.g. password=abc12, token=x9, api_key=short).
-# - With ':', always redact the value regardless of length unless it is on the
-#   same line as ':' and the entire consumed span + clause up to a clean
-#   boundary is an exact, complete known-safe status phrase in
-#   _SAFE_STATUS_PHRASES (case-insensitive) plus harmless trailing punctuation.
-#   Never exempt a match whose consumed value carries an unverified suffix
-#   (e.g. token: missing]password=x, token: missing):password=x).
+# - With '=' or across a newline, there is no minimum length and no allowlist:
+#   always redact the value (e.g. password=abc12, token=x9, api_key=short).
+# - With ':' on the same line, always redact unless the value starts with an
+#   exact known-safe status phrase in _SAFE_STATUS_PHRASES (case-insensitive)
+#   and the remainder of the consumed span (and glued tail) consists strictly of
+#   harmless trailing punctuation [.,;:!?)\]] in a linear check.
 #   Bare prose without '=' or ':' (e.g. "password is required", "invalid token")
 #   never matches _SECRET_FIELD_UNQUOTED and stays intact.
 _SAFE_STATUS_PHRASES = frozenset(
@@ -70,15 +79,17 @@ _SAFE_STATUS_PHRASES = frozenset(
         "denied",
     }
 )
-_SAFE_CLAUSE_RE = re.compile(
-    r"([^\r\n,;}{\"']+?)"
-    r"(?=[ \t]*(?:[.,;:!?)\]]*(?=$|[\r\n,;}{\"'])|(?:[)\]]+[.,;:!?]*|\.(?=\s|$))[ \t]+))"
+_SAFE_STATUS_ALTERNATION = "|".join(
+    r"[ \t]+".join(re.escape(part) for part in phrase.split(" "))
+    for phrase in sorted(_SAFE_STATUS_PHRASES, key=len, reverse=True)
 )
-_SAFE_TRAILING_PUNCT = re.compile(r"^[.,;:!?)\]]*$")
+_SAFE_PHRASE_START = re.compile(rf"(?i)(?:{_SAFE_STATUS_ALTERNATION})")
+_SAFE_TRAILING_PUNCT_CHARS = ".,;:!?)]"
+_CLAUSE_STOP_CHARS = " \t,;}{\"'"
 
 _SECRET_FIELD_UNQUOTED = re.compile(
     rf"(?i)(\b(?:{_FIELD_NAMES})\b[\"']?)"
-    r"(\s*[:=]\s*)"
+    rf"({_FIELD_SEP})"
     r"(?!\\?[\"'])"
     r"((?:(?:bearer|basic)[ \t]+)?[^\s\"',;}{]+)"
 )
@@ -104,21 +115,49 @@ _USER_DIR = re.compile(r"(?i)([A-Z]:[\\/]+Users[\\/]+)[^\\/\s\"']+")
 _UNIX_HOME = re.compile(r"(/(?:home|Users)/)[^/\s\"']+")
 
 
+def _line_end(text: str, start: int) -> int:
+    nl_r = text.find("\r", start)
+    nl_n = text.find("\n", start)
+    if nl_r == -1:
+        return len(text) if nl_n == -1 else nl_n
+    if nl_n == -1:
+        return nl_r
+    return nl_r if nl_r < nl_n else nl_n
+
+
 def _replace_unquoted_secret(match: re.Match[str]) -> str:
     prefix, sep, raw_val = match.group(1), match.group(2), match.group(3)
     if "=" in sep or "\n" in sep or "\r" in sep:
         return f"{prefix}{sep}[redacted]"
     if re.match(r"(?i)^(?:bearer|basic)[ \t]+", raw_val):
         return f"{prefix}{sep}[redacted]"
-    clause_match = _SAFE_CLAUSE_RE.match(match.string, match.start(3))
-    if clause_match:
-        phrase = re.sub(r"[ \t]+", " ", clause_match.group(1).strip()).lower()
-        # Only exempt when the entire consumed span is the verified safe phrase
-        # plus harmless trailing punctuation (no unverified suffix like ']password=x').
-        consumed_tail = match.string[clause_match.end(1) : match.end(3)]
-        if phrase in _SAFE_STATUS_PHRASES and _SAFE_TRAILING_PUNCT.match(consumed_tail):
-            return match.group(0)
-    return f"{prefix}{sep}[redacted]"
+
+    text = match.string
+    start = match.start(3)
+    nl_pos = _line_end(text, start)
+    phrase_match = _SAFE_PHRASE_START.match(text, start, min(nl_pos, start + 64))
+    if not phrase_match:
+        return f"{prefix}{sep}[redacted]"
+
+    phrase_end = phrase_match.end()
+    # Linear check of the remainder of the consumed span and any non-whitespace
+    # characters glued onto the phrase before a whitespace or clause delimiter.
+    tail_end = phrase_end
+    while tail_end < nl_pos and text[tail_end] not in _CLAUSE_STOP_CHARS:
+        tail_end += 1
+    glued_tail = text[phrase_end:tail_end]
+    if glued_tail.strip(_SAFE_TRAILING_PUNCT_CHARS):
+        return f"{prefix}{sep}[redacted]"
+
+    if tail_end < nl_pos and text[tail_end] in " \t":
+        if not any(ch in ".!?)]" for ch in glued_tail):
+            rest_pos = tail_end
+            while rest_pos < nl_pos and text[rest_pos] in " \t":
+                rest_pos += 1
+            if rest_pos < nl_pos and text[rest_pos] not in ",;}{\"'":
+                return f"{prefix}{sep}[redacted]"
+
+    return match.group(0)
 
 
 def _percent_decode(text: str, *, max_passes: int = 3) -> str:
@@ -139,6 +178,12 @@ def redact(
 ) -> str:
     """Percent-decode, scrub credentials/emails/home paths, and cap length."""
     value = "" if text is None else str(text)
+    max_input = max(0, limit) * 4 if limit is not None else _MAX_UNBOUNDED_INPUT
+    if max_input == 0:
+        return ""
+    if len(value) > max_input:
+        value = value[:max_input]
+
     value = _percent_decode(value, max_passes=3)
 
     if home is not None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -1212,6 +1213,130 @@ def test_header_to_eol_stays_bounded_to_line() -> None:
     sample = "Authorization: Bearer secret123\nX-Keep: visible\ntoken: missing\n"
     cleaned = redact(sample)
     assert cleaned == "Authorization: [redacted]\nX-Keep: visible\ntoken: missing\n"
+
+
+CROSSLINE_SECRET_CASES: list[tuple[str, str, tuple[str, ...]]] = [
+    ("auth_eol_then_password", "Authorization:\npassword: Ab9SensitiveValue", ("Ab9SensitiveValue",)),
+    ("cookie_eol_then_password", "Cookie:\npassword: Ab9SensitiveValue", ("Ab9SensitiveValue",)),
+    ("token_eol_then_password", "token:\npassword: Ab9SensitiveValue", ("Ab9SensitiveValue",)),
+    ("token_crlf_then_password", "token:\r\npassword: Ab9SensitiveValue", ("Ab9SensitiveValue",)),
+    (
+        "token_pct_newline_then_password",
+        "token%3A%0Apassword%3A%20Ab9SensitiveValue",
+        ("Ab9SensitiveValue",),
+    ),
+    (
+        "json_double_quoted_crossline_keys",
+        '{"token":\n"password": "Ab9SensitiveValue"}',
+        ("Ab9SensitiveValue",),
+    ),
+    (
+        "json_escaped_crossline_keys",
+        r'{\"token\":' + "\n" + r'\"password\": \"Ab9SensitiveValue\"}',
+        ("Ab9SensitiveValue",),
+    ),
+    (
+        "single_quoted_crossline_keys",
+        "token:\n'password': 'Ab9SensitiveValue'",
+        ("Ab9SensitiveValue",),
+    ),
+    (
+        "json_pct_newline_crossline_keys",
+        "%7B%22token%22%3A%0A%22password%22%3A%20%22Ab9SensitiveValue%22%7D",
+        ("Ab9SensitiveValue",),
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "case_id,raw_input,forbidden",
+    CROSSLINE_SECRET_CASES,
+    ids=[c[0] for c in CROSSLINE_SECRET_CASES],
+)
+def test_crossline_empty_key_does_not_swallow_next_field(
+    case_id, raw_input, forbidden, tmp_path: Path
+) -> None:
+    cleaned = redact(raw_input)
+    assert "[redacted]" in cleaned
+    _assert_none_survive(cleaned, forbidden)
+
+    settings = _settings(tmp_path, "crossline.db")
+    initialize(settings.database_path)
+    with connect(settings.database_path) as conn:
+        run = IngestRun.start(conn, "codex_local")
+        run.finish(status="failed", error=raw_input)
+        stored = conn.execute(
+            "SELECT error FROM ingest_runs WHERE id=?", (run.id,)
+        ).fetchone()[0]
+    assert "[redacted]" in stored
+    _assert_none_survive(stored, forbidden)
+
+    report = support_report.build_report(settings)
+    assert "[redacted]" in report
+    _assert_none_survive(report, forbidden)
+
+
+@pytest.mark.parametrize(
+    "raw_input",
+    [
+        "Authorization:\nX-Keep: visible",
+        "Cookie:\nX-Keep: visible",
+    ],
+)
+def test_empty_header_at_eol_keeps_next_line_header_intact(
+    raw_input: str, tmp_path: Path
+) -> None:
+    assert redact(raw_input) == raw_input
+
+    settings = _settings(tmp_path, "empty_hdr.db")
+    initialize(settings.database_path)
+    with connect(settings.database_path) as conn:
+        run = IngestRun.start(conn, "codex_local")
+        run.finish(status="failed", error=raw_input)
+        stored = conn.execute(
+            "SELECT error FROM ingest_runs WHERE id=?", (run.id,)
+        ).fetchone()[0]
+    assert stored == raw_input
+
+    report = support_report.build_report(settings)
+    assert "X-Keep: visible" in report
+
+
+def test_redact_repeated_parens_is_linear_time(tmp_path: Path) -> None:
+    n = 32768
+    payload = "token: missing" + (")" * n) + "SyntheticSuffix"
+
+    t0 = time.perf_counter()
+    cleaned = redact(payload)
+    elapsed = time.perf_counter() - t0
+
+    assert elapsed < 0.5, f"redact() took {elapsed:.3f}s for n={n}"
+    assert cleaned == "token: [redacted]"
+    assert "SyntheticSuffix" not in cleaned
+
+    # Also verify bounded work and redaction through IngestRun.finish and build_report
+    within_cap_payload = "token: missing" + (")" * 2000) + "SyntheticSuffix"
+    settings = _settings(tmp_path, "linear_time.db")
+    initialize(settings.database_path)
+    with connect(settings.database_path) as conn:
+        run_big = IngestRun.start(conn, "codex_local")
+        run_big.finish(status="failed", error=payload)
+        stored_big = conn.execute(
+            "SELECT error FROM ingest_runs WHERE id=?", (run_big.id,)
+        ).fetchone()[0]
+        run_cap = IngestRun.start(conn, "claude_local")
+        run_cap.finish(status="failed", error=within_cap_payload)
+        stored_cap = conn.execute(
+            "SELECT error FROM ingest_runs WHERE id=?", (run_cap.id,)
+        ).fetchone()[0]
+
+    assert "SyntheticSuffix" not in stored_big
+    assert stored_cap == "token: [redacted]"
+    assert "SyntheticSuffix" not in stored_cap
+
+    report = support_report.build_report(settings)
+    assert "SyntheticSuffix" not in report
+    assert "token: [redacted]" in report
 
 
 @pytest.mark.parametrize(
