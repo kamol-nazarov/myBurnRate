@@ -863,3 +863,62 @@ def test_existing_discover_skips_real_windows_junction(tmp_path: Path) -> None:
     assert [p.key for p in opencode_profiles.discover(home=home, environ={}, primary_database=default_db)] == [
         "opencode-go-work"
     ]
+
+
+# ---------------------------------------------------------------------------
+# 12. current_account_digest() helper and 60s cache
+# ---------------------------------------------------------------------------
+
+
+def test_current_account_digest_reads_live_identity_caches_60s_and_checks_safety(
+    tmp_path: Path, monkeypatch
+) -> None:
+    home = tmp_path / "home"
+    xdg = tmp_path / "xdg"
+    targets = tmp_path / "targets"
+    (home / ".claude" / "projects").mkdir(parents=True)
+    _write_claude_state(home, "claude-def-uuid")
+    claude_work = tmp_path / ".claude-work"
+    (claude_work / "projects").mkdir(parents=True)
+    _write_claude_state(claude_work, "claude-work-uuid")
+
+    codex_work = tmp_path / ".codex-work"
+    (codex_work / "sessions").mkdir(parents=True)
+    _write_codex_auth(codex_work, account_id="codex-acct-A")
+
+    oc_work_db = _write_opencode_db(tmp_path / ".opencode-work" / "opencode" / "opencode.db", "oc-key-A")
+    oc_def_db = _write_opencode_db(xdg / "opencode" / "opencode.db", "oc-def-key")
+
+    now = [2000.0]
+    monkeypatch.setattr(profile_detect.time, "monotonic", lambda: now[0])
+    env = {"XDG_DATA_HOME": str(xdg)}
+
+    assert profile_detect.current_account_digest("claude_local", home / ".claude" / "projects", home=home, environ=env) == profile_detect._sha256_hex("claude-def-uuid")
+    assert profile_detect.current_account_digest("claude_local", claude_work / "projects", home=home, environ=env) == profile_detect._sha256_hex("claude-work-uuid")
+    assert profile_detect.current_account_digest("codex_local", str(codex_work / "sessions") + "/**/*.jsonl", home=home, environ=env) == profile_detect._sha256_hex("codex-acct-A")
+    assert profile_detect.current_account_digest("opencode_local", oc_work_db, home=home, environ=env) == profile_detect._sha256_hex("oc-key-A")
+    assert profile_detect.current_account_digest("opencode_local", oc_def_db.parent, is_default=True, home=home, environ=env) == profile_detect._sha256_hex("oc-def-key")
+    assert profile_detect.current_account_digest("grok_local", tmp_path, home=home, environ=env) is None
+    assert profile_detect.current_account_digest("codex_local", None, home=home, environ=env) is None
+
+    # Switch Codex auth on disk: cached for 60s unless use_cache=False or reset_cache()
+    _write_codex_auth(codex_work, account_id="codex-acct-B")
+    now[0] = 2059.0
+    assert profile_detect.current_account_digest("codex_local", codex_work / "sessions", home=home, environ=env) == profile_detect._sha256_hex("codex-acct-A")
+    assert profile_detect.current_account_digest("codex_local", codex_work / "sessions", home=home, environ=env, use_cache=False) == profile_detect._sha256_hex("codex-acct-B")
+    assert profile_detect.current_account_digest("codex_local", codex_work / "sessions", home=home, environ=env) == profile_detect._sha256_hex("codex-acct-B")
+
+    # After 60s TTL expires, reads new digest
+    _write_codex_auth(codex_work, account_id="codex-acct-C")
+    now[0] = 2120.0
+    assert profile_detect.current_account_digest("codex_local", codex_work / "sessions", home=home, environ=env) == profile_detect._sha256_hex("codex-acct-C")
+
+    # reset_cache() clears digest cache immediately
+    _write_codex_auth(codex_work, account_id="codex-acct-D")
+    reset_cache()
+    assert profile_detect.current_account_digest("codex_local", codex_work / "sessions", home=home, environ=env) == profile_detect._sha256_hex("codex-acct-D")
+
+    # Junction folder is rejected
+    _write_codex_auth(targets / "codex-junc", account_id="codex-junc")
+    _make_junction(home / ".codex-junc", targets / "codex-junc")
+    assert profile_detect.current_account_digest("codex_local", home / ".codex-junc", home=home, environ=env) is None
