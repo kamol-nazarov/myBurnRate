@@ -1277,16 +1277,17 @@ def test_crossline_empty_key_does_not_swallow_next_field(
 
 
 @pytest.mark.parametrize(
-    "raw_input",
+    "raw_input,expected",
     [
-        "Authorization:\nX-Keep: visible",
-        "Cookie:\nX-Keep: visible",
+        ("Authorization:\nX-Keep: visible", "Authorization:\n[redacted]"),
+        ("Cookie:\nX-Keep: visible", "Cookie:\n[redacted]"),
+        ("Authorization:\nBearer: x", "Authorization:\n[redacted]"),
     ],
 )
-def test_empty_header_at_eol_keeps_next_line_header_intact(
-    raw_input: str, tmp_path: Path
+def test_empty_header_at_eol_redacts_next_line_with_no_header_exemption(
+    raw_input: str, expected: str, tmp_path: Path
 ) -> None:
-    assert redact(raw_input) == raw_input
+    assert redact(raw_input) == expected
 
     settings = _settings(tmp_path, "empty_hdr.db")
     initialize(settings.database_path)
@@ -1296,10 +1297,15 @@ def test_empty_header_at_eol_keeps_next_line_header_intact(
         stored = conn.execute(
             "SELECT error FROM ingest_runs WHERE id=?", (run.id,)
         ).fetchone()[0]
-    assert stored == raw_input
+    assert stored == expected
 
-    report = support_report.build_report(settings)
-    assert "X-Keep: visible" in report
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "dashboard.log").write_text(raw_input + "\n", encoding="utf-8")
+    report = support_report.build_report(settings, log_dir=logs)
+    assert expected in report
+    assert "X-Keep: visible" not in report
+    assert "Bearer: x" not in report
 
 
 def test_redact_repeated_parens_is_linear_time(tmp_path: Path) -> None:
@@ -1470,7 +1476,7 @@ MULTILINE_SCALAR_CASES: list[tuple[str, str, str, tuple[str, ...]]] = [
     (
         "pretty_json_password",
         '{"password":\n "Ab9SensitiveValue", "keep": "ok"}',
-        '{"password":\n "[redacted]", "keep": "ok"}',
+        '{"password":\n[redacted]',
         ("Ab9SensitiveValue",),
     ),
     (
@@ -1518,9 +1524,82 @@ MULTILINE_SCALAR_CASES: list[tuple[str, str, str, tuple[str, ...]]] = [
     (
         "pct_pretty_json_password",
         "%7B%22password%22%3A%0A%20%22Ab9SensitiveValue%22%2C%20%22keep%22%3A%20%22ok%22%7D",
-        '{"password":\n "[redacted]", "keep": "ok"}',
+        '{"password":\n[redacted]',
         ("Ab9SensitiveValue",),
     ),
+    (
+        "quoted_safe_phrase_plus_secret_next_line",
+        'password:\n"token: missing Ab9SensitiveValue"',
+        "password:\n[redacted]",
+        ("Ab9SensitiveValue",),
+    ),
+    (
+        "json_key_only_line_colon_next_line",
+        '{"password"\n: "Ab9SensitiveValue"}',
+        '{"password"\n[redacted]',
+        ("Ab9SensitiveValue",),
+    ),
+    (
+        "quoted_key_only_line_colon_next_line",
+        '"password"\n: "Ab9SensitiveValue"',
+        '"password"\n[redacted]',
+        ("Ab9SensitiveValue",),
+    ),
+    (
+        "bare_key_only_line_colon_next_line",
+        "password\n: Ab9SensitiveValue",
+        "password\n[redacted]",
+        ("Ab9SensitiveValue",),
+    ),
+    (
+        "bare_key_only_line_eq_next_line",
+        "password\n= Ab9SensitiveValue",
+        "password\n[redacted]",
+        ("Ab9SensitiveValue",),
+    ),
+    (
+        "nbsp_next_line_value",
+        "password:\n\u00a0Ab9SensitiveValue",
+        "password:\n[redacted]",
+        ("Ab9SensitiveValue",),
+    ),
+    (
+        "nbsp_before_colon",
+        "password\u00a0:Ab9SensitiveValue",
+        "password\u00a0:[redacted]",
+        ("Ab9SensitiveValue",),
+    ),
+    (
+        "bearer_eol_continuation",
+        "request rejected: Bearer\nAb9SensitiveValue",
+        "request rejected: Bearer\n[redacted]",
+        ("Ab9SensitiveValue",),
+    ),
+    (
+        "basic_crlf_continuation",
+        "request rejected: Basic\r\nYWJjZGVmZw==",
+        "request rejected: Basic\r\n[redacted]",
+        ("YWJjZGVmZw==",),
+    ),
+    (
+        "bearer_lowercase_nbsp_continuation",
+        "request rejected: bearer\u00a0\nAb9SensitiveValue",
+        "request rejected: bearer\u00a0\n[redacted]",
+        ("Ab9SensitiveValue",),
+    ),
+    (
+        "overlong_line_ending_in_password_colon",
+        ("x" * 8200) + " password:\nAb9SensitiveValue",
+        "[line omitted]\n[redacted]",
+        ("Ab9SensitiveValue",),
+    ),
+    (
+        "overlong_line_ending_in_bearer",
+        ("x" * 8200) + " Bearer\nAb9SensitiveValue",
+        "[line omitted]\n[redacted]",
+        ("Ab9SensitiveValue",),
+    ),
+
 ]
 
 
@@ -1730,3 +1809,33 @@ def test_whitespace_only_line_over_limit_preserves_crossline_pending(tmp_path: P
     # Non-blank line over 8192 chars is omitted and clears pending state
     non_blank_omitted = "password:\n" + ("x" * 8193) + "\nAb9SensitiveValue"
     assert redact(non_blank_omitted) == "password:\n[line omitted]\nAb9SensitiveValue"
+
+def test_lone_surrogates_never_raise_and_redact_across_sinks(tmp_path: Path) -> None:
+    payload = "password=Ab9" + chr(0xDC80) + "SensitiveValue"
+    assert redact(payload) == "password=[redacted]"
+
+    # Lone surrogate outside secret and across 256 KiB byte-accounting boundary
+    outside = "prefix " + chr(0xDC80) + " password=Ab9SensitiveValue"
+    assert redact(outside) == "prefix " + chr(0xDC80) + " password=[redacted]"
+
+    large_surrogate = ("line " + chr(0xDC80) + ("x" * 8000) + "\n") * 40
+    large_cleaned = redact(large_surrogate)
+    assert large_cleaned.endswith("\n[truncated]")
+
+    settings = _settings(tmp_path, "surrogate.db")
+    initialize(settings.database_path)
+    with connect(settings.database_path) as conn:
+        run = IngestRun.start(conn, "codex_local")
+        run.finish(status="failed", error=payload)
+        stored = conn.execute(
+            "SELECT error FROM ingest_runs WHERE id=?", (run.id,)
+        ).fetchone()[0]
+    assert stored == "password=[redacted]"
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "dashboard.log").write_bytes(b"password=Ab9\x80SensitiveValue\n")
+    report = support_report.build_report(settings, log_dir=logs)
+    assert "password=[redacted]" in report
+    assert "Ab9" not in report
+    assert "SensitiveValue" not in report

@@ -110,5 +110,6 @@ def build_report(settings, *, now: datetime | None = None, log_dir: Path | None 
     for name in LOG_FILES:
         lines = _tail(log_dir / name) if log_dir is not None else []
         if lines:
-            out += ["", f"## {name} (last {len(lines)} lines)", *(redact(line)[:LINE_CHARS] for line in lines)]
+            scrubbed = redact("\n".join(lines)).splitlines()
+            out += ["", f"## {name} (last {len(lines)} lines)", *(line[:LINE_CHARS] for line in scrubbed)]
     return redact("\n".join(out)) + "\n"
