@@ -784,11 +784,36 @@ def _api_connections(settings) -> dict:
         listing = Service(settings).list()
     except Exception:
         return {"connections": [], "vaultAvailable": False}
-    rows = [
-        {key: row.get(key) for key in ("source", "name", "state", "detail", "enabled", "revision", "capabilities",
-                                        "credentialHelp", "externallyManaged", "credentialConfigured", "lastImport")}
-        for row in listing["connections"] if row.get("kind") == "api"
-    ]
+    rows = []
+    for row in listing.get("connections") or []:
+        if row.get("kind") != "api":
+            continue
+        item = {
+            key: row.get(key)
+            for key in (
+                "source",
+                "name",
+                "state",
+                "detail",
+                "enabled",
+                "revision",
+                "capabilities",
+                "credentialHelp",
+                "externallyManaged",
+                "credentialConfigured",
+                "lastImport",
+            )
+        }
+        profiles = [p for p in (row.get("profiles") or []) if isinstance(p, dict)]
+        if profiles:
+            primary = profiles[0]
+            if item["revision"] is None:
+                item["revision"] = primary.get("revision", 0)
+            if item["state"] is None:
+                item["state"] = primary.get("state")
+            if item["enabled"] is None:
+                item["enabled"] = primary.get("state") != "disabled"
+        rows.append(item)
     return {"connections": rows, "vaultAvailable": bool(listing.get("vaultAvailable"))}
 
 

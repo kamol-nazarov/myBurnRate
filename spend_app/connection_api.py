@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from spend_app import profile_detect, profile_store
 from spend_app.connections import Conflict, Service
 from spend_app.connection_paths import LocationError
 
@@ -198,7 +199,7 @@ def connection_router(settings):
             return JSONResponse(result, headers={"Cache-Control": "no-store"})
         except PermissionError as exc:
             return JSONResponse({"error": str(exc)}, status_code=403)
-        except Conflict as exc:
+        except (Conflict, profile_store.FolderInUse) as exc:
             return JSONResponse({"error": str(exc)}, status_code=409)
         except LocationError as exc:
             return JSONResponse({"error": str(exc)}, status_code=422)
@@ -209,7 +210,11 @@ def connection_router(settings):
 
     @router.post("/api/connections/discover")
     async def discover(request: Request):
-        return await action(request, lambda body: service.discover())
+        def _discover(_body):
+            profile_detect.reset_cache()
+            return service.list()
+
+        return await action(request, _discover)
 
     @router.post("/api/connections/verify")
     async def verify(request: Request):
