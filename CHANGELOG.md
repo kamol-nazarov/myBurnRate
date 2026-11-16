@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 This project is licensed under Apache-2.0.
 
+## [0.5.8] - 2026-11-16
+
+### Security
+
+- **The source installer only starts a verified desktop app.** `install.ps1` no longer downloads
+  `burnrate-desktop.exe` from the `origin` remote with only a size check. It installs through
+  `install-native.ps1`, which checks the pinned URL, size, SHA-256 and minisign signature. Local
+  `target` builds and the cargo fallback require `-Dev`. `install-native.ps1` now embeds its
+  verifier and public key, so the `irm | iex` one-liner never fetches a verifier.
+- **Native HUD launch trusts a pinned certificate, not a subject name.** A signed file counts as
+  BURNRATE only when its thumbprint is pinned (`BURNRATE_NATIVE_THUMBPRINTS`); any other SignPath
+  signature is untrusted. A failed Authenticode check (`UnknownError`) is always refused.
+  `/api/hud/native` launches only the installed app (plus dev builds with `BURNRATE_DEV=1`) and
+  returns reason codes, not paths or exception text.
+- **Login, registration and pairing redemption require a same-origin JSON request.** These routes
+  no longer skip the cross-site check, and request bodies need `Content-Type: application/json` and
+  `X-BURNRATE-Request`, so a cross-site form post cannot create the first owner.
+- **Session secrets stay out of URLs and response bodies.** A break-glass `?token=` link redirects to
+  the same page without the token and reuses an existing session. Session tokens are delivered only
+  as the HttpOnly cookie, and login/registration no longer return machine tokens.
+- **Hubs must use HTTPS** (loopback excepted). Every setup, pairing, sync and relay path checks the
+  hub address before sending credentials; a saved `http://` hub fails closed.
+- **The first-owner setup token is hardened.** Comparison is by digest, failures count toward the
+  login throttle, and a hub refuses to start with a `BURNRATE_SETUP_TOKEN` under 32 characters.
+- **Stored errors no longer carry raw exception text.** Collection errors use fixed messages by
+  default, including the default local collection and the scheduler. One shared redactor now
+  covers every stored error, source reason and diagnostics copy. Existing error rows and saved
+  spoke sync errors are scrubbed once on upgrade.
+- **Pairing and machine identity.** A name-only pairing code binds only when exactly one active
+  machine has that name, can no longer revive a revoked machine, and is cancelled when that machine
+  is revoked. Machine names stay unique, and pending codes from before this release are expired.
+- **Legacy machine tokens marked for rotation are refused after a 14-day grace period.**
+- **The spoke HUD stops showing a hub view after the hub rejects its session,** and never serves a
+  cached owner view older than its limit.
+- **Smaller attack surface.** `/docs`, `/redoc` and `/openapi.json` are disabled; unexpected
+  `ValueError`s return a fixed `invalid_request`; the CSP adds `base-uri 'none'` and
+  `object-src 'none'`; web pages can no longer call the desktop update-install command.
+- **Local hardening.** The update client ignores proxy environment variables; the NSIS hook calls
+  `taskkill` from System32; a failed junction check is treated as a link; agent-run names are
+  capped at 120 characters; `burnrate doctor` prints home-relative paths.
+
+### Changed
+
+- The HUD no longer shows an "update available" button. Install updates from the tray menu or
+  Settings.
+- `BURNRATE_NATIVE_PUBLISHERS` is replaced by `BURNRATE_NATIVE_THUMBPRINTS`.
+- The admin audit table and its triggers are recreated on start if missing.
+
 ## [0.5.7] - 2026-11-14
 
 ### Security
