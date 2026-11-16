@@ -198,14 +198,39 @@ def test_python_m_spend_app_uses_cli_main() -> None:
 
 
 def test_cli_init(monkeypatch, tmp_path: Path, capsys) -> None:
-    monkeypatch.setattr(cli, "load_settings", lambda: _settings(tmp_path))
+    fake_home = tmp_path / "home"
+    data_root = fake_home / ".burnrate"
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+    monkeypatch.setattr(cli, "load_settings", lambda: _settings(data_root))
     monkeypatch.setattr("sys.argv", ["burnrate", "init"])
     assert cli.main() == 0
-    payload = json.loads(capsys.readouterr().out)
+    raw = capsys.readouterr().out
+    payload = json.loads(raw)
     assert payload["status"] == "initialized"
-    assert payload["database"] == str(tmp_path / "spend.db")
-    assert payload["dataRoot"] == str(tmp_path)
-    assert (tmp_path / "spend.db").exists()
+    assert payload["database"] == str(Path("~") / ".burnrate" / "spend.db")
+    assert payload["dataRoot"] == str(Path("~") / ".burnrate")
+    assert str(fake_home) not in json.dumps(payload) and str(fake_home) not in payload["database"]
+    assert (data_root / "spend.db").exists()
+
+
+def test_cli_init_home_root_and_outside_home_paths(monkeypatch, tmp_path: Path, capsys) -> None:
+    fake_home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+    monkeypatch.setattr(cli, "load_settings", lambda: _settings(fake_home))
+    monkeypatch.setattr("sys.argv", ["burnrate", "init"])
+    assert cli.main() == 0
+    in_home_root = json.loads(capsys.readouterr().out)
+    assert in_home_root["database"] == str(Path("~") / "spend.db")
+    assert in_home_root["dataRoot"] == "~"
+
+    outside = tmp_path / "outside"
+    monkeypatch.setattr(cli, "load_settings", lambda: _settings(outside))
+    monkeypatch.setattr("sys.argv", ["burnrate", "init"])
+    assert cli.main() == 0
+    outside_payload = json.loads(capsys.readouterr().out)
+    assert outside_payload["database"] == str(outside / "spend.db")
+    assert outside_payload["dataRoot"] == str(outside)
 
 
 def test_cli_init_db_alias(monkeypatch, tmp_path: Path, capsys) -> None:
@@ -222,13 +247,90 @@ def test_cli_doctor(monkeypatch, tmp_path: Path, capsys) -> None:
     monkeypatch.setattr(cli, "load_settings", lambda: settings)
     monkeypatch.setattr("sys.argv", ["burnrate", "doctor"])
     assert cli.main() == 0
-    payload = json.loads(capsys.readouterr().out)
+    raw = capsys.readouterr().out
+    payload = json.loads(raw)
     assert payload["ok"] is True
+    assert not any(str(Path.home()) in str(check["detail"]) for check in payload["checks"])
     by_id = {check["id"]: check for check in payload["checks"]}
     for key in ("python", "imports", "tzdata", "database", "pricing", "web_assets", "bind"):
         assert by_id[key]["status"] == "ok", by_id[key]
     assert "127.0.0.1" in by_id["bind"]["detail"]
     assert "17331" in by_id["bind"]["detail"]
+
+
+def test_cli_doctor_display_path_inside_and_outside_home(monkeypatch, tmp_path: Path, capsys) -> None:
+    fake_home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+    in_home_settings = _settings(fake_home / ".burnrate")
+    initialize(in_home_settings.database_path)
+    monkeypatch.setattr(cli, "load_settings", lambda: in_home_settings)
+    monkeypatch.setattr("sys.argv", ["burnrate", "doctor"])
+    assert cli.main() == 0
+    in_home_out = capsys.readouterr().out
+    in_home_payload = json.loads(in_home_out)
+    assert not any(str(fake_home) in str(c["detail"]) for c in in_home_payload["checks"])
+    in_home_db = next(c for c in in_home_payload["checks"] if c["id"] == "database")
+    assert in_home_db["detail"] == str(Path("~") / ".burnrate" / "spend.db")
+
+    outside_settings = _settings(tmp_path / "outside")
+    initialize(outside_settings.database_path)
+    monkeypatch.setattr(cli, "load_settings", lambda: outside_settings)
+    monkeypatch.setattr("sys.argv", ["burnrate", "doctor"])
+    assert cli.main() == 0
+    outside_out = capsys.readouterr().out
+    outside_db = next(c for c in json.loads(outside_out)["checks"] if c["id"] == "database")
+    assert outside_db["detail"] == str(outside_settings.database_path)
+
+
+def test_cli_check_database_and_pricing_redact_exceptions(monkeypatch, tmp_path: Path) -> None:
+    fake_home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+    db_path = fake_home / ".burnrate" / "spend.db"
+    db_path.parent.mkdir(parents=True)
+    db_path.write_bytes(b"placeholder")
+    secret_exc = f"sqlite open failed at {fake_home}/secret-db-token"
+
+    monkeypatch.setattr(
+        cli.sqlite3,
+        "connect",
+        lambda *args, **kwargs: (_ for _ in ()).throw(cli.sqlite3.DatabaseError(secret_exc)),
+    )
+    db_check = cli._check_database(db_path)
+    assert db_check == {"id": "database", "status": "fail", "detail": "database_check_failed"}
+    assert str(fake_home) not in db_check["detail"]
+    assert "secret-db-token" not in db_check["detail"]
+
+    class CorruptConn:
+        def execute(self, sql):
+            return type("Cur", (), {"fetchone": lambda self: (f"bad page in {fake_home}/secret-page",)})()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(cli.sqlite3, "connect", lambda *args, **kwargs: CorruptConn())
+    integrity_check = cli._check_database(db_path)
+    assert integrity_check == {"id": "database", "status": "fail", "detail": "database_integrity_failed"}
+    assert "secret-page" not in integrity_check["detail"]
+
+    pricing_dir = fake_home / "empty-pricing"
+    pricing_dir.mkdir(parents=True)
+    empty_check = cli._check_pricing(pricing_dir)
+    assert empty_check["status"] == "fail"
+    assert empty_check["detail"] == f"no pricing cards loaded from {Path('~') / 'empty-pricing'}"
+    assert str(fake_home) not in empty_check["detail"]
+
+    pricing_secret = f"yaml parse error at {fake_home}/secret-pricing-key"
+    monkeypatch.setattr(
+        cli.PricingEngine,
+        "load",
+        staticmethod(lambda path: (_ for _ in ()).throw(RuntimeError(pricing_secret))),
+    )
+    load_fail = cli._check_pricing(pricing_dir)
+    assert load_fail == {"id": "pricing", "status": "fail", "detail": "pricing_load_failed"}
+    assert str(fake_home) not in load_fail["detail"]
+    assert "secret-pricing-key" not in load_fail["detail"]
 
 
 def test_cli_doctor_does_not_create_the_database(monkeypatch, tmp_path: Path, capsys) -> None:

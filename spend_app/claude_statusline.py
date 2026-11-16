@@ -40,9 +40,14 @@ def atomic_write(path, snapshot):
     from spend_app.connection_paths import is_junction
 
     parent = path.parent
+    for ancestor in (parent, *parent.parents):
+        if ancestor.is_symlink() or is_junction(ancestor):
+            raise ValueError("Snapshot directory cannot be a link.")
+        if ancestor.exists():
+            break
+    parent.mkdir(parents=True, exist_ok=True)
     if parent.is_symlink() or is_junction(parent):
         raise ValueError("Snapshot directory cannot be a link.")
-    parent.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:
         with tempfile.NamedTemporaryFile("w", dir=parent, prefix=".claude-statusline-", suffix=".tmp", delete=False, encoding="utf-8") as stream:
@@ -81,7 +86,7 @@ def read_snapshot(database):
     try:
         from spend_app.connection_paths import is_junction
 
-        if path.is_symlink() or path.parent.is_symlink() or is_junction(path.parent):
+        if path.is_symlink() or is_junction(path) or path.parent.is_symlink() or is_junction(path.parent):
             raise ValueError("Snapshot links are not supported.")
         with path.open("rb") as stream:
             raw = stream.read(MAX_BYTES + 1)

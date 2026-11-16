@@ -4,8 +4,10 @@ from pathlib import Path
 
 from spend_app.config import ROOT, load_settings
 from spend_app.db import (
+    MAX_AGENT_RUN_NAME_LENGTH,
     UsageEvent,
     backup_database,
+    cap_agent_run_name,
     connect,
     initialize,
     sync_model_prices,
@@ -350,6 +352,52 @@ def test_agent_run_upsert_is_idempotent_and_tracks_last_seen(tmp_path: Path) -> 
     assert second is False
     assert count == 1
     assert tuple(rows[0]) == ("traycer:run-1", "complete", "2026-08-30T20:05:00Z")
+
+
+def test_upsert_agent_run_caps_long_names_at_120_chars(tmp_path: Path) -> None:
+    assert MAX_AGENT_RUN_NAME_LENGTH == 120
+    exact_name = "a" * 120
+    long_name = "b" * 5000
+    assert cap_agent_run_name(exact_name) == exact_name
+
+    database = tmp_path / "spend.db"
+    initialize(database)
+    with connect(database) as connection:
+        upsert_agent_run(
+            connection,
+            id="run-short",
+            name="Short run",
+            model_key="gpt-5.6-sol",
+            state="running",
+            started_at="2026-08-30T20:00:00Z",
+            last_seen_at="2026-08-30T20:01:00Z",
+        )
+        upsert_agent_run(
+            connection,
+            id="run-exact",
+            name=exact_name,
+            model_key="gpt-5.6-sol",
+            state="running",
+            started_at="2026-08-30T20:00:00Z",
+            last_seen_at="2026-08-30T20:01:00Z",
+        )
+        upsert_agent_run(
+            connection,
+            id="run-long",
+            name=long_name,
+            model_key="gpt-5.6-sol",
+            state="running",
+            started_at="2026-08-30T20:00:00Z",
+            last_seen_at="2026-08-30T20:01:00Z",
+        )
+        rows = dict(
+            connection.execute("SELECT id, name FROM agent_runs").fetchall()
+        )
+    assert rows["run-short"] == "Short run"
+    assert rows["run-exact"] == exact_name
+    assert len(rows["run-long"]) == 120
+    assert rows["run-long"].endswith("\u2026")
+    assert rows["run-long"] == ("b" * 119) + "\u2026"
 
 
 STALE_ACTIVITY_SQL = """

@@ -40,9 +40,10 @@ def poisoned(monkeypatch, tmp_path):
     """Poison the primitives the real paths would reach if any gate leaked.
 
     The Cursor token reader and both network primitives explode loudly; the
-    Claude/Z.AI credential files are moved away by pointing Path.home at an
-    empty directory, so an unguarded lane would fall through to the poisoned
-    network instead of finding nothing quietly.
+    Claude/Z.AI credential files and platform app-support paths are moved away
+    by pointing Path.home and APPDATA/LOCALAPPDATA/XDG_CONFIG_HOME at an empty
+    directory, so an unguarded lane would fall through to the poisoned network
+    instead of finding nothing quietly.
     """
     calls = []
 
@@ -61,6 +62,9 @@ def poisoned(monkeypatch, tmp_path):
     empty_home = tmp_path / "empty-home"
     empty_home.mkdir()
     monkeypatch.setattr(limits.Path, "home", classmethod(lambda cls: empty_home))
+    monkeypatch.setenv("APPDATA", str(empty_home / "AppData" / "Roaming"))
+    monkeypatch.setenv("LOCALAPPDATA", str(empty_home / "AppData" / "Local"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(empty_home / ".config"))
     return calls
 
 

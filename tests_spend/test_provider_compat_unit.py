@@ -308,7 +308,7 @@ def test_snapshot_atomic_replacement_failure_cleans_only_owned_temp(monkeypatch)
             return False
     stream = Stream()
     monkeypatch.setattr(Path, "is_symlink", lambda _: False)
-    monkeypatch.setattr(Path, "is_junction", lambda _: False, raising=False)
+    monkeypatch.setattr("spend_app.connection_paths.is_junction", lambda _: False)
     monkeypatch.setattr(Path, "mkdir", Mock())
     unlink = Mock()
     monkeypatch.setattr(Path, "unlink", lambda path, **kwargs: unlink(str(path)))
@@ -638,9 +638,123 @@ def test_transcript_permission_patterns_preserve_narrow_roots(monkeypatch):
     from pathlib import Path
     from spend_app.connection_paths import transcript_patterns
     monkeypatch.setattr(Path, "is_symlink", lambda path: False)
-    monkeypatch.setattr(Path, "is_junction", lambda path: False, raising=False)
+    monkeypatch.setattr("spend_app.connection_paths.is_junction", lambda path: False)
     monkeypatch.setattr(Path, "is_dir", lambda path: False)
     assert transcript_patterns("codex_local", "C:/user/.codex") == ["sessions/**/*.jsonl", "archived_sessions/**/*.jsonl"]
     assert transcript_patterns("codex_local", "C:/user/.codex/sessions") == ["**/*.jsonl"]
     assert transcript_patterns("claude_local", "C:/user/.claude") == ["projects/**/*.jsonl", "transcripts/**/*.jsonl"]
     assert transcript_patterns("claude_local", "C:/user/.claude/projects") == ["**/*.jsonl"]
+
+
+def test_statusline_atomic_write_and_read_snapshot_create_missing_snapshots_dir(tmp_path, monkeypatch):
+    from spend_app import claude_statusline as bridge
+
+    claude_dir = tmp_path / ".claude"
+    claude_dir.mkdir()
+    database = tmp_path / "data" / "spend.db"
+    database.parent.mkdir()
+    monkeypatch.setenv("BURNRATE_ENABLE_CLAUDE_STATUSLINE", "1")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_dir))
+
+    now = datetime.now(UTC).timestamp()
+    snapshot = bridge.reduce_payload(
+        {"rate_limits": {"five_hour": {"used_percentage": 42, "resets_at": now + 3600}}},
+        scope=bridge.scope_id(claude_dir),
+        now=now,
+    )
+    target = bridge.snapshot_path(database)
+    assert not target.parent.exists()
+
+    bridge.atomic_write(target, snapshot)
+    assert target.is_file()
+    read = bridge.read_snapshot(database)
+    assert read["status"] == "exact"
+    assert read["windows"][0]["usedPct"] == 42
+
+
+def test_statusline_atomic_write_and_read_snapshot_refuse_junctions(tmp_path, monkeypatch):
+    from spend_app import claude_statusline as bridge
+    from spend_app import connection_paths
+
+    claude_dir = tmp_path / ".claude"
+    claude_dir.mkdir()
+    database = tmp_path / "data" / "spend.db"
+    database.parent.mkdir()
+    monkeypatch.setenv("BURNRATE_ENABLE_CLAUDE_STATUSLINE", "1")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_dir))
+
+    now = datetime.now(UTC).timestamp()
+    snapshot = bridge.reduce_payload(
+        {"rate_limits": {"five_hour": {"used_percentage": 42, "resets_at": now + 3600}}},
+        scope=bridge.scope_id(claude_dir),
+        now=now,
+    )
+    target = bridge.snapshot_path(database)
+
+    # Existing ancestor reported as junction before snapshots/ exists.
+    monkeypatch.setattr(connection_paths, "is_junction", lambda p: str(p) == str(database.parent))
+    with pytest.raises(ValueError, match="link"):
+        bridge.atomic_write(target, snapshot)
+    assert not target.parent.exists()
+
+    # snapshots/ itself reported as junction blocks both write and read without opening.
+    target.parent.mkdir()
+    target.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(connection_paths, "is_junction", lambda p: str(p) == str(target.parent))
+    with pytest.raises(ValueError, match="link"):
+        bridge.atomic_write(target, snapshot)
+    opener = Mock(side_effect=AssertionError("read_snapshot must not open junction target"))
+    monkeypatch.setattr(type(target), "open", opener)
+    assert bridge.read_snapshot(database)["status"] == "unavailable"
+    opener.assert_not_called()
+
+
+def test_statusline_atomic_write_and_read_snapshot_fail_closed_on_lstat_permission_error(tmp_path, monkeypatch):
+    import os
+    if os.name != "nt":
+        pytest.skip("Windows path semantics")
+    from spend_app import claude_statusline as bridge
+    from spend_app import connection_paths
+
+    claude_dir = tmp_path / ".claude"
+    claude_dir.mkdir()
+    database = tmp_path / "data" / "spend.db"
+    database.parent.mkdir()
+    monkeypatch.setenv("BURNRATE_ENABLE_CLAUDE_STATUSLINE", "1")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_dir))
+
+    now = datetime.now(UTC).timestamp()
+    snapshot = bridge.reduce_payload(
+        {"rate_limits": {"five_hour": {"used_percentage": 42, "resets_at": now + 3600}}},
+        scope=bridge.scope_id(claude_dir),
+        now=now,
+    )
+    target = bridge.snapshot_path(database)
+    real_lstat = os.lstat
+
+    def blocked_ancestor_lstat(path):
+        if os.fspath(path) == str(database.parent):
+            raise PermissionError("denied")
+        return real_lstat(path)
+
+    monkeypatch.setattr(connection_paths.os, "lstat", blocked_ancestor_lstat)
+    with pytest.raises(ValueError, match="link"):
+        bridge.atomic_write(target, snapshot)
+    assert not target.parent.exists()
+
+    # Now create snapshots/ cleanly, then deny lstat on snapshots/.
+    monkeypatch.setattr(connection_paths.os, "lstat", real_lstat)
+    bridge.atomic_write(target, snapshot)
+
+    def blocked_snapshots_lstat(path):
+        if os.fspath(path) == str(target.parent):
+            raise PermissionError("denied")
+        return real_lstat(path)
+
+    monkeypatch.setattr(connection_paths.os, "lstat", blocked_snapshots_lstat)
+    with pytest.raises(ValueError, match="link"):
+        bridge.atomic_write(target, snapshot)
+    opener = Mock(side_effect=AssertionError("read_snapshot must not open unreadable directory"))
+    monkeypatch.setattr(type(target), "open", opener)
+    assert bridge.read_snapshot(database)["status"] == "unavailable"
+    opener.assert_not_called()

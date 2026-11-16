@@ -94,6 +94,19 @@ def require_loopback_host(host: str) -> str:
     return host
 
 
+def _display_path(path: Path) -> str:
+    candidate = Path(path).expanduser()
+    home = Path.home()
+    try:
+        relative = candidate.relative_to(home)
+    except ValueError:
+        try:
+            relative = candidate.resolve(strict=False).relative_to(home.resolve(strict=False))
+        except ValueError:
+            return str(candidate)
+    return "~" if relative == Path(".") else str(Path("~") / relative)
+
+
 def _cmd_init(settings: Settings) -> int:
     data_root = settings.database_path.parent
     data_root.mkdir(parents=True, exist_ok=True)
@@ -101,8 +114,8 @@ def _cmd_init(settings: Settings) -> int:
     print(
         json.dumps(
             {
-                "database": str(settings.database_path),
-                "dataRoot": str(data_root),
+                "database": _display_path(settings.database_path),
+                "dataRoot": _display_path(data_root),
                 "status": "initialized",
             }
         )
@@ -152,24 +165,24 @@ def _check_database(database_path: Path) -> dict[str, str]:
             integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
         finally:
             connection.close()
-    except Exception as exc:
-        return {"id": "database", "status": "fail", "detail": str(exc)}
+    except Exception:
+        return {"id": "database", "status": "fail", "detail": "database_check_failed"}
     if integrity != "ok":
-        return {"id": "database", "status": "fail", "detail": f"integrity_check={integrity}"}
-    return {"id": "database", "status": "ok", "detail": str(database_path)}
+        return {"id": "database", "status": "fail", "detail": "database_integrity_failed"}
+    return {"id": "database", "status": "ok", "detail": _display_path(database_path)}
 
 
 def _check_pricing(pricing_path: Path) -> dict[str, str]:
     try:
         engine = PricingEngine.load(pricing_path)
-    except Exception as exc:
-        return {"id": "pricing", "status": "fail", "detail": str(exc)}
+    except Exception:
+        return {"id": "pricing", "status": "fail", "detail": "pricing_load_failed"}
     cards = list(Path(pricing_path).glob("*.yaml"))
     if not engine.prices or not cards:
         return {
             "id": "pricing",
             "status": "fail",
-            "detail": f"no pricing cards loaded from {pricing_path}",
+            "detail": f"no pricing cards loaded from {_display_path(pricing_path)}",
         }
     return {
         "id": "pricing",

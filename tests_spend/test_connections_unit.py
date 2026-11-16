@@ -681,3 +681,138 @@ def test_promote_priced_unpriced_events_skips_full_scan_when_distinct_models_unp
     assert promote_priced_unpriced_events(FakeConnection(), fake_pricing) == 0
     assert len(queries) == 1 and "SELECT DISTINCT model_key" in queries[0][0]
 
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows path semantics")
+def test_is_junction_fails_closed_and_retries_extended_path(monkeypatch):
+    import stat
+    from spend_app import connection_paths as paths
+
+    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+    monkeypatch.setattr(paths.os, "lstat", Mock(side_effect=FileNotFoundError("missing")))
+    assert paths.is_junction("C:/fake/missing") is False
+
+    for err in (
+        PermissionError("denied"),
+        OSError(13, "denied"),
+        ValueError("invalid"),
+    ):
+        monkeypatch.setattr(paths.os, "lstat", Mock(side_effect=err))
+        assert paths.is_junction("C:/fake/unreadable") is True
+
+    # Missing st_file_attributes fails closed.
+    monkeypatch.setattr(paths.os, "lstat", Mock(return_value=SimpleNamespace()))
+    assert paths.is_junction("C:/fake/no-attrs") is True
+
+    # Clean vs reparse attribute bit.
+    monkeypatch.setattr(paths.os, "lstat", Mock(return_value=SimpleNamespace(st_file_attributes=0)))
+    assert paths.is_junction("C:/fake/clean") is False
+    monkeypatch.setattr(paths.os, "lstat", Mock(return_value=SimpleNamespace(st_file_attributes=reparse)))
+    assert paths.is_junction("C:/fake/junction") is True
+
+    # Long-path WinError 3 triggers extended-path retry.
+    def make_win3(target):
+        exc = FileNotFoundError(3, "path too long", target)
+        exc.winerror = 3
+        return exc
+
+    long_target = "C:/fake/" + ("x" * 260)
+    seen_calls = []
+
+    def retry_clean(target):
+        seen_calls.append(target)
+        if not target.startswith("\\\\?\\"):
+            raise make_win3(target)
+        return SimpleNamespace(st_file_attributes=0)
+
+    monkeypatch.setattr(paths.os, "lstat", retry_clean)
+    assert paths.is_junction(long_target) is False
+    assert any(call.startswith("\\\\?\\") for call in seen_calls)
+
+    def retry_reparse(target):
+        if not target.startswith("\\\\?\\"):
+            raise make_win3(target)
+        return SimpleNamespace(st_file_attributes=reparse)
+
+    monkeypatch.setattr(paths.os, "lstat", retry_reparse)
+    assert paths.is_junction(long_target) is True
+
+    def retry_missing(target):
+        if not target.startswith("\\\\?\\"):
+            raise make_win3(target)
+        raise FileNotFoundError("still missing")
+
+    monkeypatch.setattr(paths.os, "lstat", retry_missing)
+    assert paths.is_junction(long_target) is False
+
+    def retry_permission_error(target):
+        if not target.startswith("\\\\?\\"):
+            raise make_win3(target)
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(paths.os, "lstat", retry_permission_error)
+    assert paths.is_junction(long_target) is True
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows path semantics")
+def test_source_files_treats_lstat_permission_error_entries_as_links(monkeypatch, tmp_path):
+    from spend_app import connection_paths as paths
+
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "ok.jsonl").write_text("{}\n", encoding="utf-8")
+    ok_dir = root / "ok_dir"
+    ok_dir.mkdir()
+    (ok_dir / "nested.jsonl").write_text("{}\n", encoding="utf-8")
+    blocked_file = root / "blocked.jsonl"
+    blocked_file.write_text("{}\n", encoding="utf-8")
+    blocked_dir = root / "blocked_dir"
+    blocked_dir.mkdir()
+    (blocked_dir / "secret.jsonl").write_text("{}\n", encoding="utf-8")
+
+    real_lstat = os.lstat
+    real_scandir = os.scandir
+    scandir_calls = []
+
+    def guarded_lstat(target):
+        text = os.path.normcase(os.fspath(target))
+        if text in {os.path.normcase(str(blocked_file)), os.path.normcase(str(blocked_dir))}:
+            raise PermissionError("denied")
+        return real_lstat(target)
+
+    def tracked_scandir(target):
+        scandir_calls.append(os.path.normcase(os.fspath(target)))
+        return real_scandir(target)
+
+    monkeypatch.setattr(paths.os, "lstat", guarded_lstat)
+    monkeypatch.setattr(paths.os, "scandir", tracked_scandir)
+
+    found = sorted(p.name for p in paths.source_files(root, "**/*.jsonl"))
+    assert found == ["nested.jsonl", "ok.jsonl"]
+    assert os.path.normcase(str(blocked_dir)) not in scandir_calls
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows path semantics")
+def test_transcript_patterns_treats_lstat_permission_error_on_subroots_as_links(monkeypatch, tmp_path):
+    from spend_app import connection_paths as paths
+
+    root = tmp_path / "custom"
+    sessions = root / "sessions"
+    projects = root / "projects"
+    sessions.mkdir(parents=True)
+    projects.mkdir(parents=True)
+
+    assert paths.transcript_patterns("codex_local", root) == ["sessions/**/*.jsonl", "archived_sessions/**/*.jsonl"]
+    assert paths.transcript_patterns("claude_local", root) == ["projects/**/*.jsonl", "transcripts/**/*.jsonl"]
+
+    real_lstat = os.lstat
+
+    def blocked_subroots(target):
+        text = os.path.normcase(os.fspath(target))
+        if text in {os.path.normcase(str(sessions)), os.path.normcase(str(projects))}:
+            raise PermissionError("denied")
+        return real_lstat(target)
+
+    monkeypatch.setattr(paths.os, "lstat", blocked_subroots)
+    assert paths.transcript_patterns("codex_local", root) == ["**/*.jsonl"]
+    assert paths.transcript_patterns("claude_local", root) == ["**/*.jsonl"]
