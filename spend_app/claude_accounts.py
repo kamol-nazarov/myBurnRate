@@ -15,9 +15,11 @@ Directories with other names can be listed in ``BURNRATE_CLAUDE_ACCOUNT_DIRS``
 
 from __future__ import annotations
 
+from contextlib import closing
 import json
 import os
 import re
+import sqlite3
 import threading
 import time
 from dataclasses import dataclass
@@ -155,23 +157,130 @@ def extra_accounts() -> tuple[ClaudeAccount, ...]:
     return accounts
 
 
-def account_for_key(key: str) -> ClaudeAccount | None:
-    if not str(key).startswith(PREFIX):
+def _safe_identity(path: Path) -> str | None:
+    from spend_app.connection_paths import identity
+
+    try:
+        return identity(path)
+    except Exception:
         return None
-    return next((account for account in extra_accounts() if account.key == key), None)
 
 
-def is_account_key(key: object) -> bool:
-    return isinstance(key, str) and key.startswith(PREFIX)
+def _store_profiles(database_path: Path | str | None = None, *, include_default: bool = False):
+    from spend_app import profile_store
+
+    raw = database_path if database_path is not None else os.environ.get("SPEND_DATABASE_PATH")
+    if not raw:
+        return []
+    db_path = Path(raw)
+    try:
+        db_path.stat()
+    except OSError:
+        return []
+    try:
+        with closing(sqlite3.connect(db_path.absolute().as_uri() + "?mode=ro", uri=True)) as db:
+            state = profile_store.load_config_if_present(db)
+    except Exception:
+        return []
+    if not state:
+        return []
+    found = profile_store.profiles(state, provider="claude_local")
+    if include_default:
+        return found
+    return [profile for profile in found if profile.key != "default"]
 
 
-def provider_meta(key: str) -> dict | None:
+def _store_sharing_info(key: str, database_path: Path | str | None = None) -> dict | None:
+    all_profiles = [p for p in _store_profiles(database_path, include_default=True) if p.enabled]
+    if not all_profiles:
+        return None
+    ordered = sorted(all_profiles, key=lambda p: 0 if p.key == "default" else 1)
+    seen: dict[str, tuple[str, str]] = {}
+    for profile in ordered:
+        tkey = profile.tool_key or (PRIMARY_KEY if profile.key == "default" else profile.key)
+        digest = profile.account_digest
+        if not digest:
+            continue
+        if digest in seen:
+            if tkey == key:
+                owner_key, owner_name = seen[digest]
+                return {
+                    "sharesLimitsWith": owner_key,
+                    "sharesLimitsLabel": f"Shares limits with {owner_name}",
+                }
+        else:
+            seen[digest] = (tkey, profile.name or ("Default" if profile.key == "default" else tkey))
+    return None
+
+
+def account_for_key(key: str, database_path: Path | str | None = None) -> ClaudeAccount | None:
+    if not is_account_key(key, database_path=database_path):
+        return None
+    from spend_app import profile_store
+
+    discovered = extra_accounts()
+    matched = next((account for account in discovered if account.key == key), None)
+    store_prof = next(
+        (profile for profile in _store_profiles(database_path) if (profile.tool_key or profile.key) == key),
+        None,
+    )
+    if store_prof is not None:
+        folder = profile_store._claude_folder_from_location(store_prof.location)
+        if matched is None and folder is not None:
+            folder_id = _safe_identity(folder)
+            if folder_id is not None:
+                matched = next(
+                    (account for account in discovered if _safe_identity(account.config_dir) == folder_id),
+                    None,
+                )
+        if matched is not None:
+            return ClaudeAccount(
+                key=key,
+                label=store_prof.name or matched.label,
+                config_dir=matched.config_dir,
+                state_path=matched.state_path,
+                account_uuid=matched.account_uuid,
+                plan=matched.plan,
+            )
+        if folder is not None:
+            state_path = folder / ".claude.json"
+            state = read_state(state_path) if state_path.is_file() else {}
+            uid = account_uuid(state) or ""
+            slug = key[len(PREFIX):] if key.startswith(PREFIX) else slug_for(folder)
+            return ClaudeAccount(
+                key=key,
+                label=store_prof.name or label_for(slug),
+                config_dir=folder,
+                state_path=state_path,
+                account_uuid=uid,
+                plan=plan_name(state),
+            )
+    return matched
+
+
+def is_account_key(key: object, database_path: Path | str | None = None) -> bool:
+    if not isinstance(key, str) or not key or key == PRIMARY_KEY:
+        return False
+    if key.startswith(PREFIX):
+        return True
+    return any((profile.tool_key or profile.key) == key for profile in _store_profiles(database_path))
+
+
+def provider_meta(key: str, database_path: Path | str | None = None) -> dict | None:
     """Capacity-card metadata for an extra account lane (also for synced rows from another computer)."""
-    if not is_account_key(key):
+    if not is_account_key(key, database_path=database_path):
         return None
-    account = account_for_key(key)
-    label = account.label if account else label_for(key[len(PREFIX):])
-    return {
+    store_prof = next(
+        (profile for profile in _store_profiles(database_path) if (profile.tool_key or profile.key) == key),
+        None,
+    )
+    account = account_for_key(key, database_path=database_path)
+    slug = key[len(PREFIX):] if key.startswith(PREFIX) else key
+    label = (
+        (store_prof.name if store_prof and store_prof.name else None)
+        or (account.label if account else label_for(slug))
+    )
+    meta = {
         "providerKey": key,
         "providerName": f"Claude Code · {label}",
         "shortName": f"Claude {label}",
@@ -180,3 +289,7 @@ def provider_meta(key: str) -> dict | None:
         "isPayg": False,
         "toolKey": PRIMARY_KEY,
     }
+    sharing = _store_sharing_info(key, database_path)
+    if sharing:
+        meta.update(sharing)
+    return meta
