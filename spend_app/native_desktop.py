@@ -747,7 +747,7 @@ class UsageWindow:
         for icon in (
             resource_root / "burnrate.ico",
             resource_root / "burnrate-assets" / "burnrate.ico",
-            resource_root / "src-tauri" / "icons" / "icon.ico",
+            resource_root / "assets" / "icons" / "icon.ico",
         ):
             if sys.platform == "win32" and icon.is_file():
                 root.iconbitmap(str(icon))

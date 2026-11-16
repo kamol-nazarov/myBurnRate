@@ -140,20 +140,6 @@ def test_httpx_fetch_disables_trust_env_and_redirects(monkeypatch) -> None:
 
 
 # ---------------------------------------------------------------------------------------
-# src-tauri/nsis-hooks.nsh
-# ---------------------------------------------------------------------------------------
-
-
-def test_nsis_hooks_stop_processes_uses_system_taskkill() -> None:
-    nsh = (ROOT / "src-tauri" / "nsis-hooks.nsh").read_text(encoding="utf-8")
-    match = re.search(r"!macro\s+BURNRATE_STOP_PROCESSES\b(.*?)!macroend", nsh, re.S)
-    assert match is not None, "BURNRATE_STOP_PROCESSES macro missing"
-    body = match.group(1)
-    assert "'\"$SYSDIR\\taskkill.exe\" /F /IM burnrate-desktop.exe'" in body
-    assert "'\"$SYSDIR\\taskkill.exe\" /F /IM burnrate-service.exe'" in body
-
-
-# ---------------------------------------------------------------------------------------
 # PowerShell syntax parsing (5.1 + pwsh)
 # ---------------------------------------------------------------------------------------
 
@@ -490,10 +476,6 @@ def _isolated_runtime(tmp_path: Path, *, install_native_body: str | None = None)
         shutil.copy2(SCRIPTS / name, scripts_dir / name)
     shutil.copy2(ROOT / "install.ps1", repo / "install.ps1")
 
-    tauri_conf = repo / "src-tauri" / "tauri.conf.json"
-    tauri_conf.parent.mkdir(parents=True)
-    shutil.copy2(ROOT / "src-tauri" / "tauri.conf.json", tauri_conf)
-
     if install_native_body is not None:
         (scripts_dir / "install-native.ps1").write_text(install_native_body, encoding="utf-8")
 
@@ -503,20 +485,6 @@ def _isolated_runtime(tmp_path: Path, *, install_native_body: str | None = None)
     env["LOCALAPPDATA"] = str(local_app_data)
     env["BURNRATE_DATA_ROOT"] = str(local_app_data / "BURNRATE")
     return repo, local_app_data, env
-
-
-def _build_versioned_exe(shell: str, output_exe: Path, version: str) -> None:
-    output_exe.parent.mkdir(parents=True, exist_ok=True)
-    csharp = (
-        f'[assembly: System.Reflection.AssemblyInformationalVersion("{version}")]\n'
-        "public class BurnrateTestStub { public static void Main() {} }"
-    )
-    cmd = (
-        f"Add-Type -TypeDefinition {_ps_quote(csharp)} "
-        f"-OutputAssembly {_ps_quote(output_exe)} -OutputType ConsoleApplication"
-    )
-    res = _ps_run(shell, cmd)
-    assert res.returncode == 0, res.stdout + res.stderr
 
 
 def test_resolve_desktop_binary_returns_programs_exe_when_present(tmp_path: Path) -> None:
@@ -539,7 +507,7 @@ def test_resolve_desktop_binary_ignores_legacy_and_cleans_no_binary_on_installer
     for index, body in enumerate(("throw 'offline in test'", "exit 1")):
         case_dir = tmp_path / f"case_{index}"
         repo, local_app_data, env = _isolated_runtime(case_dir, install_native_body=body)
-        legacy = local_app_data / "BURNRATE" / "burnrate-desktop.exe"
+        legacy = local_app_data / "BURNRATE" / "BURNRATE.exe"
         legacy.parent.mkdir(parents=True, exist_ok=True)
         legacy.write_bytes(b"MZ")
 
@@ -567,32 +535,7 @@ def test_resolve_desktop_binary_ignores_legacy_and_cleans_no_binary_on_installer
     assert res.returncode == 0, res.stdout + res.stderr
     assert res.stdout.strip().splitlines()[-1] == "NULL"
     assert not (local_app_data / "Programs" / "BURNRATE").exists()
-    assert not (local_app_data / "BURNRATE" / "burnrate-desktop.exe").exists()
-
-
-def test_resolve_desktop_binary_ignores_target_release_unless_dev_is_passed(tmp_path: Path) -> None:
-    shell = _require_ps5()
-    repo, local_app_data, env = _isolated_runtime(tmp_path, install_native_body="exit 1")
-    conf = json.loads((repo / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8"))
-    version = str(conf["version"])
-
-    target_release = repo / "src-tauri" / "target" / "release" / "burnrate-desktop.exe"
-    _build_versioned_exe(shell, target_release, version)
-
-    runtime = repo / "scripts" / "BurnrateRuntime.ps1"
-    no_dev_cmd = (
-        f". {_ps_quote(runtime)}; "
-        "$resolved = Resolve-BurnrateDesktopBinary; "
-        "if ($null -eq $resolved) { 'NULL' } else { $resolved }"
-    )
-    no_dev = _ps_run(shell, no_dev_cmd, env=env)
-    assert no_dev.returncode == 0, no_dev.stdout + no_dev.stderr
-    assert no_dev.stdout.strip().splitlines()[-1] == "NULL"
-    assert not (local_app_data / "Programs" / "BURNRATE" / "BURNRATE.exe").exists()
-
-    dev = _ps_run(shell, f". {_ps_quote(runtime)}; Resolve-BurnrateDesktopBinary -Dev", env=env)
-    assert dev.returncode == 0, dev.stdout + dev.stderr
-    assert dev.stdout.strip() == str(target_release)
+    assert not (local_app_data / "BURNRATE" / "BURNRATE.exe").exists()
 
 
 def test_dev_switch_exists_on_installers_and_runtime_functions() -> None:

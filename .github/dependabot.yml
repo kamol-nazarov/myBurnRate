@@ -12,12 +12,6 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
 
-  - package-ecosystem: cargo
-    directory: /src-tauri
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-
   - package-ecosystem: npm
     directory: /scripts/asset-tools
     schedule:

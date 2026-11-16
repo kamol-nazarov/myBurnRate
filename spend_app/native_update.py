@@ -8,9 +8,8 @@ Trust model, all of it checked before anything is executed:
 * The feed and the installer come only from this repository's GitHub release assets. The
   feed URL is pinned, the installer URL must sit under the repository's release-download
   path, and redirects are followed by hand to GitHub's release-asset hosts over https.
-* The installer's size and SHA-256 must equal the feed's, and its minisign signature (the
-  format Tauri's signer writes) must verify against the public key pinned below, which is
-  the same key as ``plugins.updater.pubkey`` in ``src-tauri/tauri.conf.json``. Ed25519 is
+* The installer's size and SHA-256 must equal the feed's, and its minisign signature
+  must verify against the public key pinned below. Ed25519 is
   implemented here in pure Python (RFC 8032) so no new dependency carries that decision.
 * A running copy whose ``BURNRATE.exe`` is Authenticode-signed only accepts an installer
   signed by the same publisher; an update never downgrades from signed to unsigned.
@@ -42,7 +41,7 @@ PLATFORM_KEY = "windows-x86_64"
 INSTALL_MARKER = "BURNRATE.installed"
 OPT_OUT_ENV = "BURNRATE_NO_UPDATE_CHECK"
 
-# base64 of the minisign public key file; identical to plugins.updater.pubkey in tauri.conf.json.
+# base64 of the minisign public key file pinned for verifying release installers.
 PUBLIC_KEY_B64 = (
     "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVDQUNGNEMxNUMxRkNENkQKUldSdHpS"
     "OWN3ZlNzWE9yblR0Q1BIZUFTY3VhbWFFeHB2OWVkOVZhUjF5dVNaQm1CWHZTM0I3WkMK"
@@ -177,7 +176,7 @@ def ed25519_verify(public_key: bytes, message: bytes, signature: bytes) -> bool:
 
 
 # ---------------------------------------------------------------------------------------
-# minisign (what Tauri's updater signer writes)
+# minisign (what the release updater signer writes)
 # ---------------------------------------------------------------------------------------
 
 
@@ -248,7 +247,7 @@ def parse_signature(signature_b64: str) -> _Signature:
 
 
 def trusted_fields(trusted_comment: bytes) -> dict[str, str]:
-    """Tauri's signer writes ``timestamp:<unix>\tfile:<basename>[\tversion:<v>]``; first key wins."""
+    """Updater signer writes ``timestamp:<unix>\tfile:<basename>[\tversion:<v>]``; first key wins."""
     fields: dict[str, str] = {}
     for part in trusted_comment.decode("utf-8", "replace").split("\t"):
         key, separator, value = part.partition(":")
@@ -283,7 +282,7 @@ def _check_minisign(
         raise SignatureError("The update's signature comment was altered.")
     # The global signature covers the trusted comment, so these fields are signed: one key
     # signs every BURNRATE installer, and this is what stops a validly signed *other* file
-    # (the Tauri installer, an older native build) from passing as this one.
+    # (an older build or another installer) from passing as this one.
     fields = trusted_fields(sig.trusted_comment)
     if expected_file is not None and fields.get("file") != expected_file:
         raise SignatureError("The update's signature was made for a different file.")
@@ -303,7 +302,7 @@ def verify_minisign(
     expected_file: str | None = None,
     expected_version: str | None = None,
 ) -> None:
-    """Verify ``data`` against a Tauri/minisign signature; raises :class:`SignatureError`.
+    """Verify ``data`` against a minisign signature; raises :class:`SignatureError`.
 
     With ``expected_file`` the signed trusted comment must carry ``file:<expected_file>``.
     """
@@ -396,8 +395,7 @@ LEGACY_INSTALLER_PREFIX = "BURNRATE-native_"
 def installer_name(version: str) -> str:
     """The one file name a native installer for ``version`` may have.
 
-    It ends like the Tauri installer's name (``BURNRATE_<v>_x64-setup.exe``) but the prefixes
-    differ, and the signed ``file:`` field plus the feed URL must both carry this exact name.
+    The signed ``file:`` field and the feed URL must both carry this exact name.
     """
     return f"{INSTALLER_PREFIX}{_file_version(version)}{INSTALLER_SUFFIX}"
 

@@ -27,7 +27,7 @@ Internal Python packages in this tree remain `spend_app` (application) and `spen
   FastAPI  127.0.0.1:17331
         │
         ▼
-  Sidecar HUD  /hud (Tauri window or browser)
+  Sidecar HUD  /hud (browser)
   Optional dashboard  spend_web/{index.html, spend.css, spend.js, favicon.svg}
 ```
 

@@ -18,7 +18,7 @@ COPY pyproject.toml README.md LICENSE NOTICE requirements-build.txt ./
 COPY spend_app ./spend_app
 COPY spend_web ./spend_web
 COPY pricing ./pricing
-COPY src-tauri/icons ./src-tauri/icons
+COPY assets/icons ./assets/icons
 RUN pip install --require-hashes -r requirements-build.txt \
     && pip install --no-deps --no-build-isolation . \
     && python -c "from importlib.metadata import version; assert tuple(map(int, version('certifi').split('.'))) >= (2026, 10, 23); from spend_app.bounded_reads import BoundedReadExecutor" \

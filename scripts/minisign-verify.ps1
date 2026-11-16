@@ -5,8 +5,7 @@
 # one-line PowerShell installer can check the signature without Python,
 # minisign, or any other runtime.
 #
-# The public key is the same value pinned in spend_app/native_update.py and
-# plugins.updater.pubkey in tauri.conf.json.
+# The public key matches PUBLIC_KEY_B64 pinned in spend_app/native_update.py.
 
 $ErrorActionPreference = 'Stop'
 

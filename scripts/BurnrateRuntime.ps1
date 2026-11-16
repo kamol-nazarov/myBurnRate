@@ -768,9 +768,9 @@ function Initialize-BurnrateRepoEnvironment {
 }
 
 function Stop-BurnrateDesktopProcesses {
-    Get-Process -Name 'BURNRATE', 'burnrate-desktop' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Get-Process -Name 'BURNRATE' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" -ErrorAction SilentlyContinue | Where-Object {
-        $_.CommandLine -like '*BURNRATE.exe*' -or $_.CommandLine -like '*burnrate-desktop.exe*'
+        $_.CommandLine -like '*BURNRATE.exe*'
     } | ForEach-Object {
         Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
     }
@@ -779,33 +779,10 @@ function Stop-BurnrateDesktopProcesses {
 function Resolve-BurnrateDesktopBinary {
     param([switch]$Dev)
 
-    $repoRoot = Get-BurnrateRepoRoot
-    $localReleaseExe = Join-Path $repoRoot 'src-tauri\target\release\burnrate-desktop.exe'
     $programsExe = if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
         Join-Path $env:LOCALAPPDATA 'Programs\BURNRATE\BURNRATE.exe'
     } else {
         $null
-    }
-
-    $expectedVersion = $null
-    $tauriConfPath = Join-Path $repoRoot 'src-tauri\tauri.conf.json'
-    if (Test-Path -LiteralPath $tauriConfPath -PathType Leaf) {
-        try {
-            $tauriConf = Get-Content -LiteralPath $tauriConfPath -Raw | ConvertFrom-Json
-            $expectedVersion = [string]$tauriConf.version
-        } catch {
-        }
-    }
-
-    if ($Dev -and (Test-Path -LiteralPath $localReleaseExe -PathType Leaf)) {
-        try {
-            $localVersion = [string](Get-Item -LiteralPath $localReleaseExe).VersionInfo.ProductVersion
-        } catch {
-            $localVersion = $null
-        }
-        if (-not [string]::IsNullOrWhiteSpace($expectedVersion) -and $localVersion -eq $expectedVersion) {
-            return $localReleaseExe
-        }
     }
 
     if ($programsExe -and (Test-Path -LiteralPath $programsExe -PathType Leaf)) {
@@ -824,24 +801,6 @@ function Resolve-BurnrateDesktopBinary {
         }
     }
 
-    if ($Dev) {
-        $cargoCmd = Get-Command cargo -ErrorAction SilentlyContinue
-        $manifestPath = Join-Path $repoRoot 'src-tauri\Cargo.toml'
-        if ($cargoCmd -and (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
-            try {
-                Write-Host 'Building native BURNRATE desktop shell with Cargo...'
-                & $cargoCmd.Source build --release --manifest-path $manifestPath
-                if (Test-Path -LiteralPath $localReleaseExe -PathType Leaf) {
-                    $localVersion = [string](Get-Item -LiteralPath $localReleaseExe).VersionInfo.ProductVersion
-                    if (-not [string]::IsNullOrWhiteSpace($expectedVersion) -and $localVersion -eq $expectedVersion) {
-                        return $localReleaseExe
-                    }
-                }
-            } catch {
-            }
-        }
-    }
-
     return $null
 }
 
@@ -852,7 +811,7 @@ function Install-BurnrateShortcuts {
     )
     $repoRoot = Get-BurnrateRepoRoot
     $dataRoot = Get-BurnrateDataRoot
-    $iconSource = Join-Path $repoRoot 'src-tauri\icons\icon.ico'
+    $iconSource = Join-Path $repoRoot 'assets\icons\icon.ico'
     $iconDest = Join-Path $dataRoot 'burnrate.ico'
 
     if ($DryRun) {

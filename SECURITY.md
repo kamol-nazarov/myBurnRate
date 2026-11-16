@@ -76,8 +76,8 @@ computer.
 
 - The local HTTP service and API on `127.0.0.1` (authentication, authorization, CSRF and
   DNS-rebinding defenses, path handling, injection).
-- The native desktop window: the WebView2/pywebview JavaScript bridge, local file loading, theme and
-  settings persistence, and the Tauri shell's command permissions and CSP.
+- The native desktop window: the WebView2/pywebview JavaScript bridge, local file loading, and theme and
+  settings persistence.
 - Hub and spoke: pairing codes, machine bearer tokens, account authentication, sync ingestion,
   per-machine isolation, and upgrade handling.
 - Credential handling: storage in the OS keychain, reuse of provider-owned keys, redaction in logs,
@@ -169,8 +169,7 @@ These are invariants, not aspirations. A change that breaks one is a security bu
 - **Update verification before execution.** A native update is rejected unless the URL, byte size,
   SHA-256, signer and version all match the pinned expectations, and failed downloads are deleted.
 - **Checked desktop launch.** `/api/hud/native` only starts the installed desktop binary
-  (`%LOCALAPPDATA%\Programs\BURNRATE\BURNRATE.exe`, plus `src-tauri\target\{release,debug}` when
-  `BURNRATE_DEV=1`) after an Authenticode check. A binary is trusted as `valid` only when
+  (`%LOCALAPPDATA%\Programs\BURNRATE\BURNRATE.exe`) after an Authenticode check. A binary is trusted as `valid` only when
   Authenticode validation succeeds and its certificate thumbprint matches `BURNRATE_NATIVE_THUMBPRINTS`
   (empty by default until SignPath enrolment). Signed-but-unpinned binaries (`untrusted`) and
   `unsigned` builds are allowed while signing is pending and reported in the response; set
@@ -178,7 +177,7 @@ These are invariants, not aspirations. A change that breaks one is a security bu
   verification results are always refused.
 - **Reproducible releases.** Artifacts are built on GitHub Actions from a tagged commit, listed in
   `SHA256SUMS`, and carry build provenance attestations.
-- **Continuous checks.** CI runs a hermetic test suite on Windows, macOS and Linux, Python, Rust and
+- **Continuous checks.** CI runs a hermetic test suite on Windows, macOS and Linux, Python and
   npm dependency audits, and a secret scan on every push.
 
 ## If a secret is exposed

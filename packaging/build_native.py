@@ -26,6 +26,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / "packaging" / "build"
 NSIS_SCRIPT = ROOT / "packaging" / "burnrate-native.nsi"
+ICON_PATH = ROOT / "assets" / "icons" / "icon.ico"
+
+
+def commit() -> str:
+    sha = os.environ.get("GITHUB_SHA", "").strip()
+    if sha:
+        return sha
+    result = subprocess.run(
+        ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip()
 
 
 def find_makensis(env=None, which=shutil.which) -> str | None:
@@ -62,7 +76,7 @@ def build_installer(makensis: str, bundle: Path, version: str, output: Path) -> 
             f"/DVERSION={version}",
             f"/DVI_VERSION={numeric_version(version)}",
             f"/DSOURCE_DIR={bundle}",
-            f"/DICON={ROOT / 'src-tauri' / 'icons' / 'icon.ico'}",
+            f"/DICON={ICON_PATH}",
             f"/DOUTFILE={output}",
             str(NSIS_SCRIPT),
         ],
@@ -88,7 +102,6 @@ def main(argv: list[str] | None = None) -> int:
 
     sys.path.insert(0, str(ROOT))
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from build_service import commit
     from sign_windows import Signer, SigningError
 
     from spend_app import __version__
@@ -125,9 +138,7 @@ def main(argv: list[str] | None = None) -> int:
         check=True,
     )
     bundle = BUILD / "native" / "BURNRATE"
-    shutil.copy2(
-        ROOT / "src-tauri" / "icons" / "icon.ico", bundle / "_internal" / "burnrate.ico"
-    )
+    shutil.copy2(ICON_PATH, bundle / "_internal" / "burnrate.ico")
     for name in ("LICENSE", "NOTICE"):
         shutil.copy2(ROOT / name, bundle / name)
 

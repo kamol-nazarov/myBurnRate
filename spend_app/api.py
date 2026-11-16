@@ -165,19 +165,11 @@ def _live_hud_html() -> str:
     return hud.render_hud(dashboard=dashboard_enabled())
 
 
-# With the dashboard off, "/" belongs to the HUD: inside the desktop app it
-# hides the main window (also on desktop builds that still open "/?app=1" at
-# launch); in a browser it opens the HUD.
+# With the dashboard off, "/" redirects to the browser HUD.
 HUD_LAUNCHER_HTML = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>BURNRATE</title>
 <script>
-(async () => {
-  const tauri = window.__TAURI_INTERNALS__;
-  if (tauri && typeof tauri.invoke === "function") {
-    try { await tauri.invoke("hide_main"); return; } catch {}
-  }
-  location.replace("/hud");
-})();
+location.replace("/hud");
 </script></head><body></body></html>
 """
 
@@ -834,30 +826,10 @@ def create_app(
             body = {}
         action = str((body or {}).get("action") or "open").strip().lower()
         if action not in {"open", "show", "pin"}:
-            return {"ok": False, "reason": "use_tauri_ipc"}
-        repo_root = Path(__file__).resolve().parents[1]
+            return {"ok": False, "reason": "unsupported_action"}
         local_app_data = Path(os.getenv("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
         programs_exe = local_app_data / "Programs" / "BURNRATE" / "BURNRATE.exe"
-        candidates: list[Path] = []
-        if os.getenv("BURNRATE_DEV", "").strip() == "1":
-            candidates.extend([
-                repo_root / "src-tauri" / "target" / "release" / "burnrate-desktop.exe",
-                repo_root / "src-tauri" / "target" / "debug" / "burnrate-desktop.exe",
-            ])
-        candidates.append(programs_exe)
-        exe_path = next((p for p in candidates if p.is_file()), None)
-        if sys.platform == "win32":
-            try:
-                import ctypes
-
-                user32 = ctypes.windll.user32
-                hwnd = user32.FindWindowW("Tauri Window", "BURNRATE \u00b7 Sidecar HUD")
-                if hwnd:
-                    user32.ShowWindow(hwnd, 5)
-                    user32.SetForegroundWindow(hwnd)
-                    return {"ok": True, "pinned": True, "nativeFound": True}
-            except Exception:
-                pass
+        exe_path = programs_exe if programs_exe.is_file() else None
         if exe_path is not None:
             try:
                 # Hold the file without write sharing so the binary checked
@@ -946,7 +918,7 @@ def create_app(
 
     @app.get("/favicon.ico")
     def favicon_ico(request: Request):
-        ico_path = Path(__file__).resolve().parents[1] / "src-tauri" / "icons" / "icon.ico"
+        ico_path = Path(__file__).resolve().parents[1] / "assets" / "icons" / "icon.ico"
         if ico_path.is_file():
             return FileResponse(
                 ico_path,

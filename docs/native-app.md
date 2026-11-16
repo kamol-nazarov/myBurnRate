@@ -20,9 +20,7 @@ burnrate desktop --demo
 local tracker port; otherwise `BURNRATE_PORT` or `17331` is used. The app starts its
 local background tracker when none is running. It leaves unrelated listeners alone.
 If an older tracker is already running, stop it with the existing lifecycle scripts
-and reopen the new application so it can start the matching backend. The Tauri HUD
-shell grants its commands only to `http://127.0.0.1:17331`; a custom port uses the
-native desktop window.
+and reopen the new application so it can start the matching backend.
 
 ## Everyday use
 
@@ -74,8 +72,8 @@ enabled rather than adding an exclusion or restoring a quarantined executable.
 
 Releases carry `myBurnRate_<version>_x64-setup.exe`. It installs for the current user
 only (no administrator prompt) into `%LOCALAPPDATA%\Programs\BURNRATE`, adds Start Menu and
-Desktop shortcuts named **myBurnRate**, and registers its own entry (**myBurnRate**) in Windows' installed
-apps, separate from the older Tauri app's. `/S` installs silently. Your data stays in
+Desktop shortcuts named **myBurnRate**, and registers **myBurnRate** in Windows' installed
+apps. `/S` installs silently. Your data stays in
 `%LOCALAPPDATA%\BURNRATE`, which installing and updating never write; uninstalling removes only
 the program and shortcuts, and offers (unticked, interactive only) to delete that data too.
 
@@ -91,9 +89,9 @@ accepts it only if:
 - the URL is `https://github.com/kamol-nazarov/myBurnRate/releases/download/v<version>/myBurnRate_<version>_x64-setup.exe`
   (redirects may only go to GitHub's release-asset hosts, over https);
 - the download is at most 300 MiB with exactly the feed's size and SHA-256;
-- its minisign signature verifies against the update key built into the app, the same key as the
-  Tauri updater's, and the signed `file:` field is exactly that installer name, so a signed Tauri
-  installer or an older native build cannot be substituted;
+- its minisign signature verifies against the update key pinned in the app, and the signed
+  `file:` field is exactly that installer name, so another installer or an older build cannot
+  be substituted;
 - the version is strictly newer than the running one (prereleases sort below their release);
 - when the running `BURNRATE.exe` is Authenticode-signed, the installer is validly signed by the
   same publisher (a secondary check: the minisign signature is the primary one).
@@ -126,7 +124,6 @@ isolated temporary home, verifies process ownership and real desktop IPC, and
 cleans up only that test process.
 
 The native build has its own CI job, which builds the portable zip and the installer on
-every push. A version tag's release workflow also publishes the native installer, its update
-signature and `native-latest.json` beside the Tauri files (the Tauri updater's `latest.json` is
-unchanged and ignores the native installer). The existing hub and spoke data protocol is
+every push. A version tag's release workflow publishes the native installer, its update
+signature, and `native-latest.json` alongside the Python wheel and sdist. The existing hub and spoke data protocol is
 retained. Update the hub's code too to serve the new `/api/spend/usage` projection.
