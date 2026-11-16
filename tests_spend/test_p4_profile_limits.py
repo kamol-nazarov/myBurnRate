@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import sqlite3
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -152,7 +153,7 @@ def _write_claude_state(
 
 def _write_opencode_db(path: Path, console_key: str | None) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS credential ("
             "id TEXT, integration_id TEXT, label TEXT, value TEXT, "
@@ -369,6 +370,7 @@ def test_default_quota_collectors_iterates_enabled_store_profiles_and_skips_disa
     tmp_path: Path,
 ) -> None:
     codex2 = tmp_path / "codex-2" / "sessions"
+    codex2.mkdir(parents=True, exist_ok=True)
     codex_off = tmp_path / "codex-off" / "sessions"
     claude_work = tmp_path / "claude-work"
     claude_off = tmp_path / "claude-off"
@@ -941,8 +943,11 @@ def test_profiles_without_signin_or_limit_data_produce_no_lane(
     # Claude 2: signed in, but no cachedUsageUtilization.
     claude_nocache = tmp_path / ".claude-nocache"
     _write_claude_state(claude_nocache, "uuid-nocache")
-    # Codex extra: missing / unavailable directory.
+    # Codex extra 1: missing directory -> skipped (no lane).
     codex_missing = tmp_path / ".codex-missing" / "sessions"
+    # Codex extra 2: existing empty directory -> lane returns [] samples.
+    codex_empty = tmp_path / ".codex-empty" / "sessions"
+    codex_empty.mkdir(parents=True, exist_ok=True)
     # OpenCode extra 1: db present with no Go keys and no digest -> skipped in _resolve_profile_lanes.
     oc_empty = _write_opencode_db(tmp_path / ".opencode-empty" / "opencode.db", None)
     # OpenCode extra 2: digest present, db missing or no Go keys / Go quota disabled -> returns [] samples.
@@ -978,6 +983,14 @@ def test_profiles_without_signin_or_limit_data_produce_no_lane(
                     enabled=True,
                     account_digest=_sha256("codex-missing-acct"),
                 ),
+                "codex-empty": _profile_record(
+                    "codex_local",
+                    "codex-empty",
+                    name="Empty Codex",
+                    location=str(codex_empty),
+                    enabled=True,
+                    account_digest=_sha256("codex-empty-acct"),
+                ),
             },
             "opencode_local": {
                 "opencode-go-empty": _profile_record(
@@ -1003,8 +1016,9 @@ def test_profiles_without_signin_or_limit_data_produce_no_lane(
     collectors = default_quota_collectors(db_path)
     assert "claude-code-unsigned" not in collectors
     assert "opencode-go-empty" not in collectors
+    assert "codex-missing" not in collectors
     assert collectors["claude-code-nocache"]() == []
-    assert collectors["codex-missing"]() == []
+    assert collectors["codex-empty"]() == []
     assert collectors["opencode-go-nokeys"]() == []
 
     # Default codex retains its existing unavailable behavior while extra codex does not.
@@ -1018,6 +1032,7 @@ def test_profiles_without_signin_or_limit_data_produce_no_lane(
         "claude-code-unsigned",
         "claude-code-nocache",
         "codex-missing",
+        "codex-empty",
         "opencode-go-empty",
         "opencode-go-nokeys",
     ):
@@ -1533,3 +1548,267 @@ def test_extra_codex_quota_validates_stale_root_disabled_and_removed(
         assert removed["studio-codex"]["pct"] is None
         assert removed["studio-codex"]["unit"] == "unavailable"
         assert "removed" in removed["studio-codex"]["label"]
+
+
+# ---------------------------------------------------------------------------
+# 6. Retargeted root guards (R1)
+# ---------------------------------------------------------------------------
+
+
+def _create_junction(target: Path, link: Path) -> None:
+    try:
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+    except (ImportError, AttributeError, NotImplementedError, OSError) as exc:
+        pytest.skip(f"Windows junction creation not permitted: {exc}")
+
+
+class _FakeVault:
+    def available(self) -> bool:
+        return True
+
+    def get(self, _ref: str) -> str | None:
+        return None
+
+
+def test_location_unchanged_helper(tmp_path: Path, monkeypatch) -> None:
+    from spend_app.providers import CONNECTION_SPECS
+
+    codex_dir = tmp_path / ".codex-work" / "sessions"
+    codex_dir.mkdir(parents=True)
+    target_dir = tmp_path / "unapproved-codex" / "sessions"
+    target_dir.mkdir(parents=True)
+    oc_db = _write_opencode_db(tmp_path / ".opencode-work" / "opencode" / "opencode.db", "k1")
+
+    assert profile_store.location_unchanged(
+        profile_store.Profile("codex_local", "codex-work", "Work", str(codex_dir), "manual", True, 1, None, "codex-work"),
+        CONNECTION_SPECS["codex_local"],
+    ) is True
+    assert profile_store.location_unchanged(
+        profile_store.Profile("opencode_local", "opencode-go-work", "Work", str(oc_db), "manual", True, 1, None, "opencode-go-work"),
+        CONNECTION_SPECS["opencode_local"],
+    ) is True
+
+    # Empty, missing, relative, wildcard, or missing spec all return False.
+    for bad in (None, "", "relative/path", str(tmp_path / "missing"), str(codex_dir / "**/*.jsonl")):
+        assert profile_store.location_unchanged(
+            profile_store.Profile("codex_local", "codex-work", "Work", bad, "manual", True, 1, None, "codex-work"),
+            CONNECTION_SPECS["codex_local"],
+        ) is False
+    assert profile_store.location_unchanged(
+        profile_store.Profile("codex_local", "codex-work", "Work", str(codex_dir), "manual", True, 1, None, "codex-work"),
+        None,
+    ) is False
+
+    # ~ home path matches expanded identity.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    assert profile_store.location_unchanged(
+        profile_store.Profile("codex_local", "codex-work", "Work", "~/.codex-work/sessions", "manual", True, 1, None, "codex-work"),
+        CONNECTION_SPECS["codex_local"],
+    ) is True
+
+    # Windows junction retargeting is detected as changed.
+    chosen = tmp_path / ".codex-junc"
+    chosen.mkdir()
+    chosen.rename(tmp_path / ".codex-junc-orig")
+    _create_junction(target_dir.parent, chosen)
+    assert profile_store.location_unchanged(
+        profile_store.Profile("codex_local", "codex-junc", "Junc", str(chosen), "manual", True, 1, None, "codex-junc"),
+        CONNECTION_SPECS["codex_local"],
+    ) is False
+
+
+def test_quota_reader_rejects_retargeted_extra_root(tmp_path: Path, monkeypatch) -> None:
+    """Ported R1 probe: retargeting a Codex profile root via junction yields no lane, no sample, and masks stored rows."""
+    from uuid import uuid4
+    from spend_app import connections, quotas
+    from spend_app.config import Settings
+
+    hermetic = tmp_path / "hermetic"
+    hermetic.mkdir()
+    monkeypatch.setenv("HOME", str(hermetic))
+    monkeypatch.setenv("USERPROFILE", str(hermetic))
+    _isolate_default_poll_sources(tmp_path, monkeypatch)
+    monkeypatch.setattr(limits, "datetime", datetime)
+    monkeypatch.setattr(codex_quota, "datetime", datetime)
+    monkeypatch.setattr("spend_app.quotas.datetime", datetime)
+
+    settings = Settings(
+        database_path=tmp_path / "spend.db",
+        pricing_path=Path(__file__).resolve().parents[1] / "pricing",
+        anthropic_admin_key=None,
+        openai_admin_key=None,
+        timezone="UTC",
+        cache_hit_threshold=0.75,
+        over_routing_token_ceiling=40000,
+        logs_path=tmp_path / "logs",
+    )
+    initialize(settings.database_path)
+
+    chosen = hermetic / ".codex-work"
+    target = hermetic / "private-codex"
+    now = datetime.now(UTC)
+    for root, pct in ((chosen, 17.0), (target, 83.0)):
+        session = _write_codex_session(root / "sessions", used_pct=pct, now=now)
+        doc = json.loads(session.read_text(encoding="utf-8"))
+        doc["type"] = "event_msg"
+        doc["payload"]["type"] = "token_count"
+        session.write_text(json.dumps(doc) + "\n", encoding="utf-8")
+        (root / "auth.json").write_text(json.dumps({"tokens": {"account_id": f"account-{pct}"}}), encoding="utf-8")
+
+    service = connections.Service(settings, vault=_FakeVault())
+    added = service.mutate(
+        {
+            "source": "codex_local",
+            "operation": "add_profile",
+            "location": str(chosen),
+            "name": "Work",
+            "requestId": str(uuid4()),
+        }
+    )["connection"]
+    key = added["key"]
+
+    # Before retargeting: lane exists and reads 17.0%.
+    pre_collectors, _ = quotas._resolve_profile_lanes(settings.database_path)
+    assert key in pre_collectors
+    pre_collector = pre_collectors[key]
+    quotas.poll_quotas(settings.database_path)
+    with connect(settings.database_path) as db:
+        rows = codex_quota.read_rows(db)
+    assert next(r for r in rows if r["provider_key"] == key)["pct"] == 17.0
+
+    # Retarget approved path via Windows junction to unapproved target (83.0%).
+    chosen.rename(hermetic / "chosen-original")
+    _create_junction(target, chosen)
+
+    # 1) _resolve_profile_lanes produces no lane.
+    post_collectors, _ = quotas._resolve_profile_lanes(settings.database_path)
+    assert key not in post_collectors
+
+    # 2) Even a pre-swap collector callable returns no sample.
+    assert pre_collector() == []
+
+    # 3) Direct _codex_limits refuses the retargeted root.
+    assert limits._codex_limits(chosen, key=key)["status"] == "unavailable"
+
+    # 4) Default poll_quotas + read_rows masks the prior row (never surfaces 17% or 83%).
+    quotas.poll_quotas(settings.database_path)
+    with connect(settings.database_path) as db:
+        rows = codex_quota.read_rows(db)
+    visible = next(r for r in rows if r["provider_key"] == key)
+    assert visible["pct"] is None
+
+    # 5) Even if a sample carrying target's resolved scope is fed into poll_quotas,
+    #    save_metadata and read_rows reject it because approved scope uses the unresolved path.
+    forged = QuotaSample(
+        provider_key=key,
+        limit_key="weekly",
+        label="Codex weekly window",
+        unit="pct",
+        source="codex_local_telemetry",
+        pct=83.0,
+        resets_at=_iso(now + timedelta(days=4)),
+        observed_at=_iso(now),
+        pool_id="codex",
+        scope=codex_quota.scope(target),
+    )
+    quotas.poll_quotas(settings.database_path, collectors={key: lambda: [forged]})
+    with connect(settings.database_path) as db:
+        rows = codex_quota.read_rows(db)
+    visible = next(r for r in rows if r["provider_key"] == key)
+    assert visible["pct"] is None
+
+
+def test_retargeted_claude_and_opencode_lanes_return_no_lane_and_no_sample(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from spend_app import quotas
+
+    _isolate_default_poll_sources(tmp_path, monkeypatch)
+    monkeypatch.setattr(limits, "datetime", FixedClock)
+    monkeypatch.setenv("BURNRATE_ENABLE_OPENCODE_GO_QUOTA", "1")
+
+    claude_chosen = tmp_path / ".claude-work"
+    claude_target = tmp_path / "private-claude"
+    _write_claude_state(claude_chosen, "claude-chosen-uuid", five_pct=12.0, weekly_pct=24.0, fetched=NOW)
+    _write_claude_state(claude_target, "claude-target-uuid", five_pct=91.0, weekly_pct=95.0, fetched=NOW)
+
+    oc_chosen = tmp_path / ".opencode-work"
+    oc_target = tmp_path / "private-opencode"
+    _write_opencode_db(oc_chosen / "opencode" / "opencode.db", "oc-chosen-key")
+    _write_opencode_db(oc_target / "opencode" / "opencode.db", "oc-target-key")
+
+    sent_auths: list[str] = []
+
+    def fake_get(url, *, headers=None, **_kwargs):
+        sent_auths.append((headers or {}).get("Authorization", ""))
+        req = httpx.Request("GET", url)
+        return httpx.Response(
+            200,
+            request=req,
+            json={
+                "usage": {
+                    "rolling": {"percent": 19, "resetsAt": "2026-10-26T16:00:00Z"},
+                    "weekly": {"percent": 28, "resetsAt": "2026-10-30T00:00:00Z"},
+                    "monthly": {"percent": 37, "resetsAt": "2026-11-20T00:00:00Z"},
+                }
+            },
+        )
+
+    monkeypatch.setattr(limits.httpx, "get", fake_get)
+
+    db_path = _seed_profiles_db(
+        tmp_path / "spend.db",
+        {
+            "claude_local": {
+                "claude-code-work": _profile_record(
+                    "claude_local",
+                    "claude-code-work",
+                    name="Work Claude",
+                    location=str(claude_chosen),
+                    enabled=True,
+                    account_digest=_sha256("claude-chosen-uuid"),
+                    tool_key="claude-code-work",
+                ),
+            },
+            "opencode_local": {
+                "opencode-go-work": _profile_record(
+                    "opencode_local",
+                    "opencode-go-work",
+                    name="Work Go",
+                    location=str(oc_chosen),
+                    enabled=True,
+                    account_digest=_sha256("oc-chosen-key"),
+                    tool_key="opencode-go-work",
+                ),
+            },
+        },
+    )
+
+    pre_collectors, _ = quotas._resolve_profile_lanes(db_path)
+    assert "claude-code-work" in pre_collectors
+    assert "opencode-go-work" in pre_collectors
+    pre_claude = pre_collectors["claude-code-work"]
+    pre_oc = pre_collectors["opencode-go-work"]
+    assert pre_claude()[0].pct == 12.0
+    assert pre_oc()[0].pct == 19.0
+    assert sent_auths == ["Bearer oc-chosen-key"]
+
+    # Retarget both approved roots via Windows junctions.
+    claude_chosen.rename(tmp_path / "claude-chosen-orig")
+    oc_chosen.rename(tmp_path / "oc-chosen-orig")
+    _create_junction(claude_target, claude_chosen)
+    _create_junction(oc_target, oc_chosen)
+
+    # Clear caches to ensure pre-built collectors also refuse without cache hits.
+    nudge_quota_lanes(db_path, None)
+
+    post_collectors, _ = quotas._resolve_profile_lanes(db_path)
+    assert "claude-code-work" not in post_collectors
+    assert "opencode-go-work" not in post_collectors
+
+    assert pre_claude() == []
+    assert pre_oc() == []
+    assert sent_auths == ["Bearer oc-chosen-key"]

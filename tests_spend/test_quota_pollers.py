@@ -479,8 +479,10 @@ def test_default_collectors_cover_required_providers_without_invoking(tmp_path: 
         "openrouter",
     }
     # Each extra signed-in Claude Code profile added to the profile store gets its own lane.
-    work = claude_accounts.ClaudeAccount(key="claude-code-work", label="Work", config_dir=Path("w"),
-                                         state_path=Path("w/.claude.json"), account_uuid="work-uuid", plan="Claude Max")
+    work_dir = tmp_path / ".claude-work"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    work = claude_accounts.ClaudeAccount(key="claude-code-work", label="Work", config_dir=work_dir,
+                                         state_path=work_dir / ".claude.json", account_uuid="work-uuid", plan="Claude Max")
     monkeypatch.setattr(claude_accounts, "extra_accounts", lambda: (work,))
     state["profiles"]["claude_local"] = {
         "claude-code-work": {
@@ -505,8 +507,12 @@ def test_default_collectors_cover_required_providers_without_invoking(tmp_path: 
         )
     assert set(default_quota_collectors(database)) - set(REQUIRED_LIMITS) == {"claude-code-work", "opencode-go", "deepseek"}
     # So does each extra OpenCode profile in the store signed in to another Console account.
-    second = opencode_profiles.OpenCodeProfile(key="opencode-go-2", label="Profile 2", data_dir=Path("p"),
-                                               database=Path("p/opencode/opencode.db"))
+    second_dir = tmp_path / ".opencode-2"
+    second_db = second_dir / "opencode" / "opencode.db"
+    second_db.parent.mkdir(parents=True, exist_ok=True)
+    second_db.touch()
+    second = opencode_profiles.OpenCodeProfile(key="opencode-go-2", label="Profile 2", data_dir=second_dir,
+                                               database=second_db)
     monkeypatch.setattr(opencode_profiles, "extra_profiles", lambda: (second,))
     state["profiles"]["opencode_local"] = {
         "opencode-go-2": {
@@ -520,7 +526,7 @@ def test_default_collectors_cover_required_providers_without_invoking(tmp_path: 
             "revision": 1,
             "state": "awaiting_ingest",
             "capabilities": ["usage"],
-            "accountDigest": None,
+            "accountDigest": "oc-2-digest",
             "toolKey": "opencode-go-2",
         }
     }

@@ -2,6 +2,7 @@
 import hashlib
 import json
 import math
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -73,6 +74,11 @@ def scope(root):
     return hashlib.sha256(str(Path(root).resolve()).replace("\\", "/").casefold().encode()).hexdigest()
 
 
+def unresolved_scope(root):
+    normalized = os.path.abspath(os.fspath(Path(root).expanduser()))
+    return hashlib.sha256(normalized.replace("\\", "/").casefold().encode()).hexdigest()
+
+
 def current_scope():
     from spend_app.providers import default_codex_glob
     return scope(default_codex_glob().replace("\\", "/").removesuffix("/**/*.jsonl"))
@@ -111,10 +117,63 @@ def _is_codex_row(row):
     )
 
 
+def _codex_extra_record(connection, provider_key):
+    if not provider_key or provider_key == "codex":
+        return None
+    from spend_app import profile_store
+
+    try:
+        rows = dict(
+            connection.execute(
+                "SELECT key,value FROM app_meta WHERE key IN (?)",
+                (profile_store.KEY,),
+            )
+        )
+    except Exception:
+        return None
+    raw_v2 = rows.get(profile_store.KEY)
+    if raw_v2 is None:
+        return None
+    try:
+        conn_data = json.loads(raw_v2)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(conn_data, dict):
+        return None
+    codex_map = (conn_data.get("profiles") or {}).get("codex_local")
+    if not isinstance(codex_map, dict):
+        return None
+    for prof_key, record in codex_map.items():
+        if prof_key == "default" or not isinstance(record, dict):
+            continue
+        tool_key = record.get("toolKey") or prof_key
+        if tool_key == provider_key:
+            return record
+    return None
+
+
 def save_metadata(connection, sample, polled_at):
     if not _is_codex_sample(sample):
         return
-    value = {"poolId": sample.pool_id, "scope": sample.scope,
+    saved_scope = sample.scope
+    record = _codex_extra_record(connection, sample.provider_key)
+    if record is not None:
+        from types import SimpleNamespace
+        from spend_app import profile_store
+        from spend_app.providers import CONNECTION_SPECS
+
+        root = _codex_root(record.get("location"))
+        approved_scope = unresolved_scope(root) if root is not None else None
+        unchanged = (
+            root is not None
+            and bool(record.get("enabled"))
+            and profile_store.location_unchanged(
+                SimpleNamespace(location=str(root)),
+                CONNECTION_SPECS["codex_local"],
+            )
+        )
+        saved_scope = approved_scope if (unchanged and approved_scope is not None and sample.scope == approved_scope) else None
+    value = {"poolId": sample.pool_id, "scope": saved_scope,
              "observedAt": sample.observed_at, "polledAt": polled_at,
              "pct": sample.pct, "resetsAt": sample.resets_at}
     connection.execute("INSERT INTO app_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -250,10 +309,19 @@ def read_rows(connection, *, now=None, rows=None):
                     active_scope = None
                 else:
                     root = _codex_root(profile_rec.get("location"))
-                    try:
-                        active_scope = scope(root) if root is not None else None
-                    except (OSError, ValueError):
+                    if root is None:
                         active_scope = None
+                    else:
+                        from types import SimpleNamespace
+                        from spend_app.providers import CONNECTION_SPECS
+
+                        if profile_store.location_unchanged(
+                            SimpleNamespace(location=str(root)),
+                            CONNECTION_SPECS["codex_local"],
+                        ):
+                            active_scope = unresolved_scope(root)
+                        else:
+                            active_scope = None
                 require_scope = True
             else:
                 active_scope = meta.get('scope') if isinstance(meta.get('scope'), str) and meta.get('scope') else None

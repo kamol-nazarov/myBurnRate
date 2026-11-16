@@ -871,11 +871,102 @@ def _claude_quota_collector() -> list[QuotaSample]:
     return _apply_throttle(claude_quota_samples(payload, source=source), payload)
 
 
-def _claude_account_collector(account) -> Callable[[], list[QuotaSample]]:
+def _profile_location_unchanged(profile_or_path, provider: str) -> bool:
+    from spend_app import profile_store
+    from spend_app.connection_paths import is_junction
+    from spend_app.providers import REGISTRY
+
+    spec = REGISTRY.get(provider)
+    conn_spec = spec.connection if spec is not None else None
+    if conn_spec is None:
+        return False
+    raw = getattr(profile_or_path, "location", profile_or_path)
+    if isinstance(raw, Path):
+        raw = str(raw)
+    if not isinstance(raw, str) or not raw.strip():
+        return False
+    if provider == "codex_local":
+        raw = raw.strip().replace("\\", "/").removesuffix("/**/*.jsonl")
+        target = profile_store.Profile(
+            provider=provider,
+            key=getattr(profile_or_path, "key", "extra"),
+            name=getattr(profile_or_path, "name", "Extra"),
+            location=raw,
+            origin=getattr(profile_or_path, "origin", "manual"),
+            enabled=getattr(profile_or_path, "enabled", True),
+            revision=getattr(profile_or_path, "revision", 1),
+            account_digest=getattr(profile_or_path, "account_digest", None),
+            tool_key=getattr(profile_or_path, "tool_key", None),
+        )
+    else:
+        target = (
+            profile_or_path
+            if isinstance(profile_or_path, profile_store.Profile)
+            else profile_store.Profile(
+                provider=provider,
+                key="extra",
+                name="Extra",
+                location=raw,
+                origin="manual",
+                enabled=True,
+                revision=1,
+                account_digest=None,
+                tool_key=None,
+            )
+        )
+    if profile_store.location_unchanged(target, conn_spec):
+        if provider == "claude_local":
+            folder = profile_store._claude_folder_from_location(raw)
+            if folder is not None:
+                state_path = folder / ".claude.json"
+                if state_path.is_symlink() or is_junction(state_path):
+                    return False
+        elif provider == "opencode_local":
+            from spend_app import opencode_profiles
+
+            db_path = opencode_profiles._database_from_location(raw)
+            if db_path is not None:
+                for path in (db_path.parent, db_path, db_path.parent / "auth.json"):
+                    if path.is_symlink() or is_junction(path):
+                        return False
+        return True
+    if provider == "claude_local":
+        loc_path = Path(raw.strip()).expanduser()
+        if (
+            loc_path.name.lower() in {"projects", "transcripts"}
+            and not loc_path.exists()
+            and not loc_path.is_symlink()
+            and not is_junction(loc_path)
+        ):
+            folder = profile_store._claude_folder_from_location(raw)
+            if folder is not None:
+                folder_profile = profile_store.Profile(
+                    provider=provider,
+                    key=target.key,
+                    name=target.name,
+                    location=str(folder),
+                    origin=target.origin,
+                    enabled=target.enabled,
+                    revision=target.revision,
+                    account_digest=target.account_digest,
+                    tool_key=target.tool_key,
+                )
+                if profile_store.location_unchanged(folder_profile, conn_spec):
+                    state_path = folder / ".claude.json"
+                    return not (state_path.is_symlink() or is_junction(state_path))
+    return False
+
+
+def _claude_account_collector(account, *, store_profile=None) -> Callable[[], list[QuotaSample]]:
     """Quota for one extra Claude Code account: its own cached usage, its own lane."""
+    from spend_app.connection_paths import is_junction
     from spend_app.limits import claude_account_limits
 
     def collect() -> list[QuotaSample]:
+        if not _profile_location_unchanged(store_profile or account.config_dir, "claude_local"):
+            return []
+        if account.state_path.is_symlink() or is_junction(account.state_path):
+            return []
         payload, source = _cached(f"claude_account_poll:{account.key}", 10, lambda: claude_account_limits(account))
         if (
             payload.get("status") in {"absent", "unavailable"}
@@ -902,10 +993,16 @@ def _collect(name: str, ttl: int, loader: Callable[[], dict], builder, source: s
     return _apply_throttle(builder(payload, source=source), payload)
 
 
-def _opencode_profile_collector(profile) -> Callable[[], list[QuotaSample]]:
+def _opencode_profile_collector(profile, *, store_profile=None) -> Callable[[], list[QuotaSample]]:
     """Go quota for one extra OpenCode profile: its own stored key, its own lane."""
+    from spend_app.connection_paths import is_junction
 
     def collect() -> list[QuotaSample]:
+        if not _profile_location_unchanged(store_profile or profile.database, "opencode_local"):
+            return []
+        for path in (profile.database.parent, profile.database, profile.database.parent / "auth.json"):
+            if path.is_symlink() or is_junction(path):
+                return []
         # Window labels match the default lane; the card names the profile.
         return _collect(
             f"opencode_go_profile_poll:{profile.key}",
@@ -923,9 +1020,15 @@ def _codex_quota_collector(
     *,
     root: Path | None = None,
     provider_key: str = "codex",
+    store_profile=None,
 ):
-    from spend_app.codex_quota import current_scope, scope
-    lane_scope = scope(root) if root is not None else current_scope()
+    from spend_app.codex_quota import current_scope, unresolved_scope
+    if store_profile is not None:
+        if not _profile_location_unchanged(store_profile, "codex_local"):
+            return []
+    elif root is not None and not _profile_location_unchanged(root, "codex_local"):
+        return []
+    lane_scope = unresolved_scope(root) if root is not None else current_scope()
     key = f"codex_quota_poll:{provider_key}:{Path(database_path).resolve()}:{lane_scope}"
     loader = _codex_limits if root is None and provider_key == "codex" else (lambda r=root, k=provider_key: _codex_limits(r, key=k))
     return _collect(
@@ -1006,6 +1109,8 @@ def _resolve_profile_lanes(
             tool_key = profile.tool_key or profile.key
             if not tool_key:
                 continue
+            if not _profile_location_unchanged(profile, provider):
+                continue
             live_digest = profile_detect.current_account_digest(
                 provider, profile.location, is_default=False
             )
@@ -1069,7 +1174,7 @@ def _resolve_profile_lanes(
                         }
                         continue
                     seen_digests[digest] = (tool_key, profile.name or account.label or tool_key)
-                collectors[tool_key] = _claude_account_collector(account)
+                collectors[tool_key] = _claude_account_collector(account, store_profile=profile)
 
             elif provider == "opencode_local":
                 if not profile.location:
@@ -1096,7 +1201,7 @@ def _resolve_profile_lanes(
                     data_dir=data_dir,
                     database=db_path,
                 )
-                collectors[tool_key] = _opencode_profile_collector(oc_profile)
+                collectors[tool_key] = _opencode_profile_collector(oc_profile, store_profile=profile)
 
             elif provider == "codex_local":
                 if not profile.location:
@@ -1113,7 +1218,9 @@ def _resolve_profile_lanes(
                     seen_digests[digest] = (tool_key, profile.name or tool_key)
                 root = Path(str(profile.location).replace("\\", "/").removesuffix("/**/*.jsonl")).expanduser()
                 collectors[tool_key] = (
-                    lambda r=root, k=tool_key: _codex_quota_collector(database_path, root=r, provider_key=k)
+                    lambda r=root, k=tool_key, p=profile: _codex_quota_collector(
+                        database_path, root=r, provider_key=k, store_profile=p
+                    )
                 )
 
     return collectors, shared

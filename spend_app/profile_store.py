@@ -28,7 +28,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from spend_app import claude_accounts, opencode_profiles
-from spend_app.connection_paths import LocationError, _resolve, identity
+from spend_app.connection_paths import LocationError, _resolve, identity, normalize
 
 KEY = "connections.v2"
 V1_KEY = "connections.v1"
@@ -795,6 +795,19 @@ def profiles(state: dict, provider: str | None = None) -> list[Profile]:
     return result
 
 
+def location_unchanged(profile: Profile | object, connection_spec) -> bool:
+    """True only when ``profile.location`` resolves to the same path identity as saved."""
+    raw = getattr(profile, "location", profile) if profile is not None else None
+    spec = getattr(connection_spec, "connection", connection_spec)
+    if not isinstance(raw, str) or not raw.strip() or spec is None:
+        return False
+    try:
+        normalized = normalize(raw, spec)
+    except LocationError:
+        return False
+    return identity(normalized) == identity(Path(raw.strip()).expanduser())
+
+
 def enabled_profiles(database_path: str | Path) -> list[Profile]:
     """Open a read-only connection and return all enabled ``Profile`` entries."""
     path = Path(database_path)
@@ -824,6 +837,7 @@ __all__ = (
     "load",
     "load_bindings_map",
     "load_config_if_present",
+    "location_unchanged",
     "migrate_v1_to_v2",
     "profile_key_for_folder",
     "profile_tool_key",
