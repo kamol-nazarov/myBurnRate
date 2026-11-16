@@ -56,12 +56,6 @@ def default_claude_glob() -> str:
     return str(Path(os.getenv("CLAUDE_CONFIG_DIR") or _home() / ".claude").expanduser() / "projects" / "**" / "*.jsonl")
 
 
-def default_claude_alt_glob() -> str:
-    # A second Claude CLI instance lives wherever its CLAUDE_CONFIG_DIR points;
-    # there is no convention, so this default only seeds the wizard field.
-    return str(_home() / ".claude-2" / "projects" / "**" / "*.jsonl")
-
-
 def default_muse_glob() -> str:
     return str(Path(os.getenv("XDG_DATA_HOME") or _home() / ".local" / "share").expanduser() / "muse" / "**" / "*.jsonl")
 
@@ -97,10 +91,6 @@ def _codex_kwargs(settings: Settings, pricing: PricingEngine, **_: object) -> di
 
 def _claude_kwargs(settings: Settings, pricing: PricingEngine, **_: object) -> dict:
     return {**_base_kwargs(settings, pricing), "session_glob": default_claude_glob()}
-
-
-def _claude_alt_kwargs(settings: Settings, pricing: PricingEngine, **_: object) -> dict:
-    return {**_base_kwargs(settings, pricing), "session_glob": default_claude_alt_glob()}
 
 
 def _muse_kwargs(settings: Settings, pricing: PricingEngine, **_: object) -> dict:
@@ -176,7 +166,6 @@ class ConnectionSpec:
 CONNECTION_SPECS = {
     "codex_local": ConnectionSpec("Codex", "session_glob", default_codex_glob, "**/*.jsonl", home_name=".codex", child="", location_env="CODEX_HOME"),
     "claude_local": ConnectionSpec("Claude Code", "session_glob", default_claude_glob, "**/*.jsonl", home_name=".claude", child="", location_env="CLAUDE_CONFIG_DIR"),
-    "claude_local_alt": ConnectionSpec("Claude Code (second instance)", "session_glob", default_claude_alt_glob, "**/*.jsonl", home_name=".claude", child=""),
     "traycer_local": ConnectionSpec("Traycer", "database_glob", default_traycer_glob, "app-assets/app-assets.db", "sqlite", ".traycer", "", "usage_analytics_facts", ("fact_id", "harness_id", "occurred_at", "uncached_input_tokens", "output_tokens")),
     "opencode_local": ConnectionSpec("OpenCode", "source_database", default_opencode_database, shape="opencode", home_name="opencode", child="", table="session", columns=("id", "project_id", "directory", "path", "model", "cost", "tokens_input", "tokens_output", "tokens_reasoning", "tokens_cache_read", "tokens_cache_write", "time_updated"), location_env="XDG_DATA_HOME"),
     "zcode_local": ConnectionSpec("ZCode", "source_database", default_zcode_database, shape="zcode", home_name=".zcode", child="", table="model_usage", columns=("id", "session_id", "provider_id", "model_id", "completed_at", "input_tokens", "output_tokens", "reasoning_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "raw_usage_json", "status")),
@@ -318,19 +307,6 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         kind="local",
         scheduler_alias="ingest_claude_local",
         ingest_kwargs=_claude_kwargs,
-    ),
-    _spec(
-        "claude_local_alt",
-        "spend_app.adapters.claude_local:ingest",
-        ("usage", "activity"),
-        stability="official",
-        exactness="exact",
-        enabled_by_default=False,
-        tool_keys=("claude-code",),
-        ingest=ingest_claude_local,
-        kind="local",
-        scheduler_alias="ingest_claude_local",
-        ingest_kwargs=_claude_alt_kwargs,
     ),
     _spec(
         "traycer_local",

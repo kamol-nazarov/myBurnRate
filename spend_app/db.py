@@ -905,6 +905,8 @@ def initialize(path: Path) -> None:
     redact_legacy_ingest_errors(path)
     from spend_app.auth_model import ensure_schema
     ensure_schema(path)
+    from spend_app.connections import Store
+    Store(path).bootstrap()
 
 
 def ensure_usage_change_journal(path: Path) -> None:

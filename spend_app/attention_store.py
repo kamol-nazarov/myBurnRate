@@ -293,7 +293,8 @@ class Service:
             with self.repository.transaction(write=True) as connection:
                 state = load_state(connection)
                 try:
-                    config = meta(connection, "connections.v1")
+                    from spend_app import profile_store
+                    config = profile_store.load_config_if_present(connection)
                     if not isinstance(config, dict) or not isinstance(config.get("bindings"), dict) or not isinstance(config.get("legacy"), list):
                         raise ValueError("Connection evidence unavailable")
                 except Exception:

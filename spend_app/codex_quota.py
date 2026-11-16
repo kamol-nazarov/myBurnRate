@@ -113,11 +113,11 @@ def read_rows(connection, *, now=None, rows=None):
     mask_expired_synced(rows, now or datetime.now(UTC))
     if not any(row['provider_key'] == 'codex' for row in rows):
         return rows
-    from spend_app.connections import KEY as CONNECTIONS_KEY
-    records = dict(connection.execute("SELECT key,value FROM app_meta WHERE key IN (?,?)", (KEY, CONNECTIONS_KEY)))
+    from spend_app import profile_store
+    records = dict(connection.execute("SELECT key,value FROM app_meta WHERE key IN (?,?,?)", (KEY, profile_store.KEY, profile_store.V1_KEY)))
     try:
         meta = json.loads(records.get(KEY, "{}"))
-        binding = json.loads(records.get(CONNECTIONS_KEY, "{}")).get("bindings", {}).get("codex_local")
+        binding = profile_store.default_binding_from_records(records, "codex_local")
         if not isinstance(meta, dict) or (binding is not None and not isinstance(binding, dict)):
             raise ValueError("Invalid quota metadata")
     except (ValueError, TypeError, AttributeError):
