@@ -1207,7 +1207,7 @@ def test_l15_saved_plain_http_config_blocked_at_egress_without_sending_tokens(
         bg_res = setup_wizard.maybe_run_configured_spoke_sync(
             spoke_settings, PricingEngine.load(spoke_settings.pricing_path)
         )
-        assert bg_res is not None and bg_res["ok"] is False and "HTTPS" in bg_res["error"]
+        assert bg_res is not None and bg_res["ok"] is False and bg_res["error"] == "sync_failed"
 
         with pytest.raises(ValueError, match="HTTPS"):
             sync.sync_once(
