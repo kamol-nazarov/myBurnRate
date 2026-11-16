@@ -353,13 +353,15 @@ def _identity_for_folder(
     plan: str | None = None
     if provider == "claude_local":
         folder = _profile_folder_for(provider, location)
-        state_path = (
-            claude_accounts.primary_state_path(Path.home(), os.environ)
-            if is_default
-            else folder / ".claude.json"
-        )
-        if profile_detect._is_safe_file(state_path):
-            plan = claude_accounts.plan_name(claude_accounts.read_state(state_path))
+        resolved_folder = profile_detect._resolve_folder(folder)
+        if (
+            resolved_folder is not None
+            and identity(resolved_folder) == identity(folder)
+            and profile_detect._is_safe_dir(folder)
+        ):
+            state_path = profile_detect._claude_state_path(folder, Path.home(), os.environ)
+            if profile_detect._is_safe_file(state_path):
+                plan = claude_accounts.plan_name(claude_accounts.read_state(state_path))
     if candidates and (plan is None or (digest is None and use_cache)):
         loc_ids = profile_store._folder_identities(location, provider)
         for cand in candidates:
@@ -608,9 +610,7 @@ class Service:
                     rec_loc = rec.get("location") or ""
 
                     matched_cand = None
-                    if prof_key == "default" and default_cand is not None:
-                        matched_cand = default_cand
-                    elif rec_loc:
+                    if rec_loc:
                         rec_ids = profile_store._folder_identities(rec_loc, spec.key)
                         for cand in prov_candidates:
                             cand_ids = (
@@ -620,6 +620,8 @@ class Service:
                             if rec_ids & cand_ids:
                                 matched_cand = cand
                                 break
+                    if matched_cand is None and is_virtual and default_cand is not None:
+                        matched_cand = default_cand
 
                     live_digest = (
                         profile_detect.current_account_digest(
@@ -928,6 +930,8 @@ class Service:
                     computed_digest = digest_found
                 if plan_found:
                     computed_plan = plan_found
+                elif previous and identity(previous.get("location") or "") != identity(checked["location"]):
+                    computed_plan = None
                 self._assert_account_free(
                     effective_state,
                     spec.key,
