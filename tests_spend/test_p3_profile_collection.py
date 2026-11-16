@@ -1168,3 +1168,88 @@ def test_broken_profile_returns_failed_status_while_collecting_remaining_valid_p
         sessions = conn.execute("SELECT session_id, tool_key FROM sessions").fetchall()
     assert [(r["session_id"], r["tool_key"]) for r in events] == [("muse-ok-sess", "muse-valid")]
     assert [(r["session_id"], r["tool_key"]) for r in sessions] == [("muse-ok-sess", "muse-valid")]
+
+class _NullVault:
+    def available(self) -> bool:
+        return False
+
+
+def test_saved_profile_retarget_requires_reapproval(
+    tmp_path: Path,
+    _isolated_home_and_caches: Path,
+) -> None:
+    from uuid import uuid4
+
+    fake_home = _isolated_home_and_caches
+    settings = _make_settings(tmp_path)
+    pricing = PricingEngine.load(settings.pricing_path)
+
+    chosen = fake_home / "chosen"
+    target = fake_home / "unapproved"
+    other = fake_home / ".claude-other"
+    _write_claude_transcript(
+        chosen / "projects" / "p" / "one.jsonl",
+        session_id="initial",
+        message_id="initial",
+    )
+    _write_claude_transcript(
+        target / "projects" / "p" / "two.jsonl",
+        session_id="unapproved-session",
+        message_id="unapproved-message",
+    )
+    _write_claude_transcript(
+        other / "projects" / "p" / "three.jsonl",
+        session_id="other-session",
+        message_id="other-message",
+    )
+
+    service = connections.Service(settings, vault=_NullVault())
+    added = service.mutate(
+        {
+            "source": "claude_local",
+            "operation": "add_profile",
+            "location": str(chosen),
+            "name": "Chosen",
+            "requestId": str(uuid4()),
+        }
+    )
+    chosen_key = added["connection"]["key"]
+
+    chosen.rename(fake_home / "chosen-original")
+    try:
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(chosen))
+    except (ImportError, AttributeError, NotImplementedError, OSError) as exc:
+        pytest.skip(f"Windows junction creation not permitted: {exc}")
+
+    solo_res = profiles_local.ingest(database_path=settings.database_path, pricing=pricing)
+    assert solo_res["status"] == "failed", solo_res
+    assert solo_res.get("reason") == "location_changed", solo_res
+    assert f"{chosen_key}:location_changed" in solo_res.get("issues", []), solo_res
+    assert solo_res["eventsWritten"] == 0, solo_res
+
+    with spend_db.connect(settings.database_path) as conn:
+        solo_rows = [tuple(r) for r in conn.execute("SELECT session_id, tool_key FROM usage_events")]
+    assert solo_rows == [], (solo_res, solo_rows)
+
+    other_added = service.mutate(
+        {
+            "source": "claude_local",
+            "operation": "add_profile",
+            "location": str(other),
+            "name": "Other",
+            "requestId": str(uuid4()),
+        }
+    )
+    other_key = other_added["connection"]["key"]
+
+    mixed_res = profiles_local.ingest(database_path=settings.database_path, pricing=pricing)
+    assert mixed_res["status"] == "failed", mixed_res
+    assert mixed_res.get("reason") == "location_changed", mixed_res
+    assert f"{chosen_key}:location_changed" in mixed_res.get("issues", []), mixed_res
+    assert mixed_res["eventsWritten"] == 1, mixed_res
+
+    with spend_db.connect(settings.database_path) as conn:
+        mixed_rows = [tuple(r) for r in conn.execute("SELECT session_id, tool_key FROM usage_events")]
+    assert mixed_rows == [("other-session", other_key)], (mixed_res, mixed_rows)

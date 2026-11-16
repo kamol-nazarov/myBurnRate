@@ -52,7 +52,7 @@ def _profile_folder_and_patterns(
 
 def ingest(*, database_path: Path, pricing) -> dict:
     from spend_app.adapters.file_cache import merge_results
-    from spend_app.connection_paths import MissingLocation, approved, normalize
+    from spend_app.connection_paths import MissingLocation, approved, identity, normalize
     from spend_app.db import PRESERVE_EXISTING_TOOL_KEYS, TOOL_KEY_OVERRIDES
     from spend_app.profile_store import (
         DEFAULT_TOOL_KEYS,
@@ -76,6 +76,19 @@ def ingest(*, database_path: Path, pricing) -> dict:
 
         try:
             normalized = normalize(profile.location, spec.connection)
+            if identity(normalized) != identity(Path(profile.location).expanduser()):
+                results.append(
+                    {
+                        "source": spec.key,
+                        "status": "failed",
+                        "reason": "location_changed",
+                        "eventsSeen": 0,
+                        "eventsWritten": 0,
+                        "unpricedEventsWritten": 0,
+                        "issues": [f"{profile.key}:location_changed"],
+                    }
+                )
+                continue
             folder, patterns, arg_value = _profile_folder_and_patterns(
                 profile.provider, Path(normalized), spec.connection
             )
