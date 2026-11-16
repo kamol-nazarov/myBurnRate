@@ -138,6 +138,10 @@ class Conflict(LocationError):
     pass
 
 
+class _LocationChanged(LocationError):
+    pass
+
+
 def source_spec(source):
     spec = REGISTRY.get(source)
     if not spec or not spec.connection:
@@ -1460,8 +1464,11 @@ def managed_job(settings, pricing, spec, window=None, profile="default"):
                 path = service.inspector.normalize(binding["location"], meta)
                 if profile == "default" and location_conflict(spec, path):
                     raise Conflict("Saved location conflicts with " + meta.location_env + "; collection was not redirected.")
-                if identity(path) != identity(binding["location"]):
-                    raise LocationError("Saved location moved. Recheck before collecting.")
+                if identity(path) != identity(binding["location"]) or (
+                    isinstance(service.inspector, Inspector)
+                    and not profile_store.location_unchanged(binding["location"], meta)
+                ):
+                    raise _LocationChanged("Saved location moved. Recheck before collecting.")
                 service.inspector.inspect(spec.key, path, meta)
                 if meta.suffix and Path(path).is_dir() and meta.argument != "import_path":
                     kwargs[meta.argument] = str(Path(path) / meta.suffix)
@@ -1491,6 +1498,18 @@ def execute(settings, pricing, spec, ingest, window=None, profile="default"):
                     root = service.inspector.normalize(default_location(spec, settings), spec.connection)
             with approved(root, binding["revision"] if binding else 0, binding.get("patterns") if binding else None):
                 result = ingest(**kwargs)
+        except _LocationChanged:
+            if binding:
+                with lock_for(settings.database_path):
+                    service.completion(spec.key, binding["revision"], {"status": "failed"}, profile=profile)
+            from spend_app.adapters.common import failed_result
+            result = failed_result(
+                database_path=settings.database_path,
+                source=spec.key,
+                reason="location_changed",
+            )
+            result["issues"] = [f"{profile}:location_changed"]
+            return result
         except MissingLocation:
             if not binding and spec.connection and not external(spec, settings):
                 from spend_app.adapters.common import skipped_result

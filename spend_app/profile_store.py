@@ -29,7 +29,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from spend_app import claude_accounts, opencode_profiles
-from spend_app.connection_paths import LocationError, _resolve, identity, is_junction, normalize
+from spend_app.connection_paths import LocationError, _resolve, identity, is_name_surrogate, normalize
 
 KEY = "connections.v2"
 V1_KEY = "connections.v1"
@@ -842,7 +842,7 @@ def location_unchanged(profile: Profile | object, connection_spec) -> bool:
     candidate = saved
     while candidate.parent != candidate:
         try:
-            if candidate.is_symlink() or is_junction(candidate):
+            if candidate.is_symlink() or is_name_surrogate(candidate):
                 return False
         except OSError:
             return False

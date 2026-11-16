@@ -64,6 +64,95 @@ def is_junction(path) -> bool:
         return True
 
 
+def is_name_surrogate(path) -> bool:
+    """True when ``path`` is a Windows name-surrogate reparse point, or cannot be inspected.
+
+    Non-surrogate reparse points such as cloud placeholders
+    (``IO_REPARSE_TAG_CLOUD``, ``0x9000001A``) return ``False``. Missing paths
+    (``FileNotFoundError``) return ``False``; any other ``OSError``,
+    ``ValueError``, or unreadable reparse metadata fails closed (``True``).
+    """
+    if os.name != "nt":
+        return False
+    try:
+        target = os.fspath(path)
+    except (TypeError, ValueError):
+        return True
+    try:
+        info = os.lstat(target)
+    except OSError as exc:
+        if _long_path_error(exc, target) and not str(target).startswith("\\\\?\\"):
+            try:
+                info = os.lstat(_extended_path(target))
+            except FileNotFoundError:
+                return False
+            except (OSError, ValueError):
+                return True
+        elif isinstance(exc, FileNotFoundError):
+            return False
+        else:
+            return True
+    except ValueError:
+        return True
+    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    try:
+        attrs = info.st_file_attributes
+    except AttributeError:
+        return True
+    if not (attrs & reparse):
+        return False
+    try:
+        tag = info.st_reparse_tag
+    except AttributeError:
+        return True
+    try:
+        return bool(tag & 0x20000000)
+    except TypeError:
+        return True
+
+
+def _lstat_existing(path):
+    try:
+        target = os.fspath(path)
+    except (TypeError, ValueError):
+        return None
+    try:
+        return os.lstat(target)
+    except OSError as exc:
+        if _long_path_error(exc, target) and not str(target).startswith("\\\\?\\"):
+            try:
+                return os.lstat(_extended_path(target))
+            except FileNotFoundError:
+                return None
+        if isinstance(exc, FileNotFoundError):
+            return None
+        raise
+
+
+def _same_physical(a, b) -> bool:
+    try:
+        return os.path.samefile(a, b)
+    except OSError as exc:
+        if not _long_path_error(exc, a) and not _long_path_error(exc, b):
+            return False
+        try:
+            return os.path.samefile(_extended_path(a), _extended_path(b))
+        except OSError:
+            return False
+
+
+def _has_surrogate_ancestor(path: Path) -> bool:
+    candidate = path
+    while candidate.parent != candidate:
+        try:
+            if candidate.is_symlink() or is_name_surrogate(candidate):
+                return True
+        except OSError:
+            return True
+        candidate = candidate.parent
+    return False
+
+
 def normalize(raw, meta):
     if not isinstance(raw, str) or not raw.strip() or len(raw) > 2048:
         raise LocationError("Enter a local folder or file on the computer running BURNRATE.")
@@ -143,8 +232,30 @@ def confined(path, root=None):
         return path if not isinstance(path, (str, os.PathLike)) else Path(path)
     base = Path(root)
     resolved = _resolve(path, strict=True)
-    if identity(_resolve(base, strict=True)) != identity(base):
+    resolved_base = _resolve(base, strict=True)
+    if identity(resolved_base) != identity(base) or _has_surrogate_ancestor(base):
         raise LocationError("The saved location changed. Recheck it before collecting.")
+    try:
+        base_stat = _lstat_existing(base)
+        resolved_base_stat = _lstat_existing(resolved_base)
+    except OSError:
+        raise LocationError("The saved location changed. Recheck it before collecting.") from None
+    if base_stat is not None or resolved_base_stat is not None:
+        if (
+            base_stat is None
+            or resolved_base_stat is None
+            or (base_stat.st_dev, base_stat.st_ino) != (resolved_base_stat.st_dev, resolved_base_stat.st_ino)
+            or not _same_physical(base, resolved_base)
+        ):
+            raise LocationError("The saved location changed. Recheck it before collecting.")
+        if len(resolved.parts) < len(resolved_base.parts) or not resolved.is_relative_to(resolved_base):
+            raise LocationError("A source link points outside the approved location.")
+        if len(resolved.parts) > len(resolved_base.parts) and base.is_file():
+            raise LocationError("A source link points outside the approved location.")
+        prefix = Path(*resolved.parts[: len(resolved_base.parts)])
+        if not _same_physical(prefix, resolved_base):
+            raise LocationError("A source link points outside the approved location.")
+        return resolved
     if resolved != base and (base.is_file() or not resolved.is_relative_to(base)):
         raise LocationError("A source link points outside the approved location.")
     return resolved
@@ -293,6 +404,16 @@ def _confined_child(path, base):
     resolved = _resolve(path, strict=True)
     if resolved != base and not resolved.is_relative_to(base):
         raise LocationError("A source link points outside the approved location.")
+    try:
+        base_stat = _lstat_existing(base)
+    except OSError:
+        base_stat = None
+    if base_stat is not None:
+        if len(resolved.parts) < len(base.parts):
+            raise LocationError("A source link points outside the approved location.")
+        prefix = Path(*resolved.parts[: len(base.parts)])
+        if not _same_physical(prefix, base):
+            raise LocationError("A source link points outside the approved location.")
     return resolved
 
 
