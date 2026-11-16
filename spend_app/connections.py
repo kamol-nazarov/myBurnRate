@@ -931,6 +931,8 @@ class Service:
             )
             if computed_plan:
                 record["plan"] = computed_plan
+            if previous and previous.get("cutoverAt"):
+                record["cutoverAt"] = previous["cutoverAt"]
             try:
                 with self.store.transaction() as current:
                     current_record = _profile_record(current, spec.key, target_profile)
@@ -1285,12 +1287,30 @@ class Service:
                 if ref not in state["cleanup"]:
                     state["cleanup"].append(ref)
 
+    def _protected_v1_refs(self):
+        path = getattr(self.store, "path", None)
+        if not path:
+            return set()
+        try:
+            Path(path).stat()
+        except OSError:
+            return set()
+        with closing(sqlite3.connect(Path(path).absolute().as_uri() + "?mode=ro", uri=True)) as db:
+            return profile_store.v1_credential_refs(db)
+
     def cleanup(self):
-        for ref in self.store.read().get("cleanup", []):
-            try:
-                self.vault.delete(ref)
-            except Exception:
-                continue
+        # Leave Vault references still named in frozen connections.v1 intact so
+        # rollback to v1 works; those secrets are retired when v1 is removed.
+        cleanup_refs = self.store.read().get("cleanup", [])
+        if not cleanup_refs:
+            return
+        protected = self._protected_v1_refs()
+        for ref in cleanup_refs:
+            if ref not in protected:
+                try:
+                    self.vault.delete(ref)
+                except Exception:
+                    continue
             with self.store.transaction() as state:
                 state["cleanup"] = [r for r in state["cleanup"] if r != ref]
 

@@ -1631,6 +1631,7 @@ def record_coverage_gap(
 # While an extra profile is collected, its rows and sessions are recorded under
 # that profile's card key (see adapters.profiles_local): {"claude-code": "claude-code-work"}.
 TOOL_KEY_OVERRIDES: ContextVar[dict | None] = ContextVar("tool_key_overrides", default=None)
+PRESERVE_EXISTING_TOOL_KEYS: ContextVar[bool] = ContextVar("preserve_existing_tool_keys", default=False)
 
 
 def upsert_session(
@@ -1646,12 +1647,13 @@ def upsert_session(
     overrides = TOOL_KEY_OVERRIDES.get()
     if overrides:
         tool_key = overrides.get(tool_key, tool_key)
+    tool_key_update = "sessions.tool_key" if PRESERVE_EXISTING_TOOL_KEYS.get() else "excluded.tool_key"
     connection.execute(
-        """
+        f"""
         INSERT INTO sessions(session_id, tool_key, project, started_at, ended_at, model_key)
         VALUES(?, ?, ?, ?, ?, ?)
         ON CONFLICT(session_id) DO UPDATE SET
-            tool_key=excluded.tool_key,
+            tool_key={tool_key_update},
             project=COALESCE(excluded.project, sessions.project),
             started_at=MIN(sessions.started_at, excluded.started_at),
             ended_at=MAX(COALESCE(sessions.ended_at, excluded.ended_at), excluded.ended_at),

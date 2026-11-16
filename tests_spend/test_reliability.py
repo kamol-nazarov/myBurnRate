@@ -163,7 +163,7 @@ def test_collection_runs_in_a_worker_process(tmp_path: Path, monkeypatch) -> Non
 
 
 def test_extra_profile_usage_is_recorded_under_its_own_card(tmp_path: Path, monkeypatch) -> None:
-    from spend_app import claude_accounts, opencode_profiles, profile_store
+    from spend_app import claude_accounts, connections, opencode_profiles, profile_store
     from spend_app.adapters import claude_local, profiles_local
     from spend_app.pricing import PricingEngine
 
@@ -177,6 +177,21 @@ def test_extra_profile_usage_is_recorded_under_its_own_card(tmp_path: Path, monk
     monkeypatch.setattr(claude_accounts, "extra_accounts", lambda: (account,))
     monkeypatch.setattr(opencode_profiles, "extra_profiles", lambda: ())
     settings = settings_for(tmp_path)
+    with connections.Store(settings.database_path).transaction() as state:
+        state["profiles"].setdefault("claude_local", {})["claude-code-work"] = {
+            "source": "claude_local",
+            "bindingId": "claude_local:claude-code-work",
+            "name": "Work",
+            "location": str(work),
+            "origin": "detected",
+            "mode": "detected",
+            "enabled": True,
+            "revision": 1,
+            "state": "awaiting_ingest",
+            "capabilities": ["usage"],
+            "accountDigest": None,
+            "toolKey": "claude-code-work",
+        }
     claude_local.reset_file_cache()
     result = profiles_local.ingest(database_path=settings.database_path, pricing=PricingEngine.load(settings.pricing_path))
     claude_local.reset_file_cache()

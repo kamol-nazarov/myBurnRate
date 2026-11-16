@@ -1267,3 +1267,280 @@ def test_assert_folder_free_exclude_key_and_bindings_fallback(tmp_path):
         ps.assert_folder_free(
             state, "claude_local", default_dir, exclude_key="default"
         )
+
+
+# ---------------------------------------------------------------------------
+# 7. Review regression tests: fresh install, alt cutover, v1 rollback
+# ---------------------------------------------------------------------------
+
+
+def _write_claude_sample(path: Path, *, session_id: str, message_id: str, timestamp: str = "2026-11-12T12:00:00Z") -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "type": "assistant",
+        "timestamp": timestamp,
+        "sessionId": session_id,
+        "cwd": "C:/work/demo",
+        "uuid": f"uuid-{message_id}",
+        "message": {
+            "id": message_id,
+            "model": "claude-opus-5",
+            "usage": {
+                "input_tokens": 100,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 0,
+                "output_tokens": 25,
+            },
+        },
+    }
+    path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    return path
+
+
+def test_fresh_install_does_not_autoapprove_extra_profiles(tmp_path, monkeypatch):
+    from spend_app import claude_accounts, opencode_profiles, profile_detect
+    from spend_app.adapters import profiles_local
+    from spend_app.config import Settings
+    from spend_app.pricing import PricingEngine
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    for name in (
+        "CODEX_HOME",
+        "CLAUDE_CONFIG_DIR",
+        "XDG_DATA_HOME",
+        "OPENCODE_DB",
+        "BURNRATE_CLAUDE_ACCOUNT_DIRS",
+        "BURNRATE_OPENCODE_PROFILE_DIRS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    extra = home / ".claude-work"
+    _write_claude_sample(extra / "projects" / "p" / "one.jsonl", session_id="work-session", message_id="work-message")
+    (extra / ".claude.json").write_text(
+        json.dumps({"oauthAccount": {"accountUuid": "work-account", "billingType": "claude_max"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(claude_accounts, "extra_accounts", lambda: claude_accounts.discover(home=home, environ={}))
+    monkeypatch.setattr(opencode_profiles, "extra_profiles", lambda: ())
+    profile_detect.reset_cache()
+
+    root = Path(__file__).resolve().parents[1]
+    settings = Settings(
+        database_path=tmp_path / "spend.db",
+        pricing_path=root / "pricing",
+        anthropic_admin_key=None,
+        openai_admin_key=None,
+        timezone="UTC",
+        cache_hit_threshold=0.75,
+        over_routing_token_ceiling=40000,
+        logs_path=tmp_path / "logs",
+    )
+    spend_db.initialize(settings.database_path)
+
+    state = c.Store(settings.database_path).read()
+    extras = [p for p in ps.profiles(state) if p.key != "default" and p.enabled]
+    assert extras == []
+    assert state["profiles"] == {}
+
+    # Extra folder is not collected without approval, and surfaces as detected for approval
+    ingest_res = profiles_local.ingest(
+        database_path=settings.database_path,
+        pricing=PricingEngine.load(settings.pricing_path),
+    )
+    assert ingest_res["status"] == "skipped"
+    with spend_db.connect(settings.database_path) as db:
+        assert db.execute("SELECT COUNT(*) FROM usage_events").fetchone()[0] == 0
+
+    svc = c.Service(settings, vault=_FakeVault())
+    claude_row = next(row for row in svc.list()["connections"] if row["source"] == "claude_local")
+    assert any("claude-work" in d["folder"] or d["candidateId"] for d in claude_row["detected"])
+    profile_detect.reset_cache()
+
+
+def test_legacy_upgrade_grandfathers_known_tool_key_without_v1(tmp_path, monkeypatch):
+    from spend_app import opencode_profiles
+
+    db_path = tmp_path / "legacy-no-v1.db"
+    spend_db.initialize(db_path)
+    with spend_db.connect(db_path) as db:
+        # Simulate pre-v2 DB with historical usage_events for claude-code-work, no v1 metadata
+        db.execute("DELETE FROM app_meta WHERE key IN (?, ?)", (ps.KEY, ps.MIGRATED_KEY))
+        db.execute(
+            """
+            INSERT INTO usage_events(
+                source, tool_key, model_key, occurred_at, session_id, project,
+                input_tokens, cached_input_tokens, cache_write_tokens, cache_write_1h_tokens,
+                output_tokens, reasoning_tokens, cost_usd, computed_cost_usd, is_exact,
+                occurred_epoch_us, raw_id, ingested_at
+            ) VALUES('claude_local', 'claude-code-work', 'claude-opus-5', '2026-10-01T00:00:00Z',
+                     's-old', 'demo', 10, 0, 0, 0, 5, NULL, NULL, 0.01, 1, 1, 'old-raw-1', '2026-10-01T00:00:01Z')
+            """
+        )
+
+    work_acc = ClaudeAccount(
+        key="claude-code-work",
+        label="Work",
+        config_dir=tmp_path / ".claude-work",
+        state_path=tmp_path / ".claude-work" / ".claude.json",
+        account_uuid="work-uuid",
+        plan="Claude Max",
+    )
+    unseen_acc = ClaudeAccount(
+        key="claude-code-unseen",
+        label="Unseen",
+        config_dir=tmp_path / ".claude-unseen",
+        state_path=tmp_path / ".claude-unseen" / ".claude.json",
+        account_uuid="unseen-uuid",
+        plan="Claude Pro",
+    )
+    monkeypatch.setattr("spend_app.claude_accounts.extra_accounts", lambda: (work_acc, unseen_acc))
+    monkeypatch.setattr(opencode_profiles, "extra_profiles", lambda: ())
+
+    c.Store(db_path).bootstrap()
+    state = c.Store(db_path).read()
+    claude_profiles = state["profiles"].get("claude_local") or {}
+    assert "claude-code-work" in claude_profiles
+    assert claude_profiles["claude-code-work"]["enabled"] is True
+    assert "claude-code-unseen" not in claude_profiles
+
+
+def test_alt_migration_preserves_old_usage_tool_key(tmp_path, monkeypatch):
+    from spend_app import claude_accounts, opencode_profiles
+    from spend_app.adapters import claude_local, profiles_local
+    from spend_app.config import Settings
+    from spend_app.pricing import PricingEngine
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setattr(claude_accounts, "extra_accounts", lambda: ())
+    monkeypatch.setattr(opencode_profiles, "extra_profiles", lambda: ())
+
+    root = Path(__file__).resolve().parents[1]
+    settings = Settings(
+        database_path=tmp_path / "spend.db",
+        pricing_path=root / "pricing",
+        anthropic_admin_key=None,
+        openai_admin_key=None,
+        timezone="UTC",
+        cache_hit_threshold=0.75,
+        over_routing_token_ceiling=40000,
+        logs_path=tmp_path / "logs",
+    )
+    spend_db.initialize(settings.database_path)
+    pricing = PricingEngine.load(settings.pricing_path)
+
+    folder = home / ".claude-2"
+    transcript = _write_claude_sample(
+        folder / "projects" / "p" / "one.jsonl",
+        session_id="old-session",
+        message_id="old-message",
+        timestamp="2026-11-12T12:00:00Z",
+    )
+    claude_local.reset_file_cache()
+    claude_local.ingest(database_path=settings.database_path, pricing=pricing, session_glob=str(transcript))
+
+    v1 = _v1_payload(
+        bindings={
+            "claude_local_alt": {
+                "source": "claude_local_alt",
+                "location": str(folder / "projects"),
+                "enabled": True,
+                "revision": 3,
+                "mode": "manual",
+            }
+        }
+    )
+    with spend_db.connect(settings.database_path) as db:
+        db.execute("DELETE FROM app_meta WHERE key IN (?, ?)", (ps.KEY, ps.MIGRATED_KEY))
+        db.execute("INSERT INTO app_meta(key, value) VALUES(?, ?)", (ps.V1_KEY, json.dumps(v1)))
+
+    c.Store(settings.database_path).bootstrap()
+    migrated = c.Store(settings.database_path).read()
+    alt_rec = migrated["profiles"]["claude_local"]["claude-code-2"]
+    assert alt_rec["cutoverAt"]
+
+    profiles_local.ingest(database_path=settings.database_path, pricing=pricing)
+    with spend_db.connect(settings.database_path) as db:
+        rows = [tuple(r) for r in db.execute("SELECT session_id, tool_key FROM usage_events ORDER BY id")]
+        sess_rows = [tuple(r) for r in db.execute("SELECT session_id, tool_key FROM sessions")]
+    assert rows == [("old-session", "claude-code")]
+    assert sess_rows == [("old-session", "claude-code")]
+
+    # New events added after cutover ARE recorded under claude-code-2 while old row stays claude-code
+    _write_claude_sample(
+        folder / "projects" / "p" / "two.jsonl",
+        session_id="new-session",
+        message_id="new-message",
+        timestamp="2026-11-12T12:05:00Z",
+    )
+    profiles_local.ingest(database_path=settings.database_path, pricing=pricing)
+    claude_local.reset_file_cache()
+    with spend_db.connect(settings.database_path) as db:
+        rows_after = [tuple(r) for r in db.execute("SELECT session_id, tool_key FROM usage_events ORDER BY id")]
+        sess_after = dict(db.execute("SELECT session_id, tool_key FROM sessions").fetchall())
+    assert rows_after == [("old-session", "claude-code"), ("new-session", "claude-code-2")]
+    assert sess_after == {"old-session": "claude-code", "new-session": "claude-code-2"}
+
+
+def test_v1_rollback_keeps_vault_reference_reachable(tmp_path, monkeypatch):
+    service = _make_service(tmp_path, monkeypatch)
+    spend_db.initialize(service.settings.database_path)
+    v1 = _v1_payload(
+        bindings={
+            "openai_admin": {
+                "source": "openai_admin",
+                "enabled": True,
+                "revision": 1,
+                "location": "",
+                "mode": "api",
+                "credentialRef": "legacy-ref",
+            }
+        }
+    )
+    with spend_db.connect(service.settings.database_path) as db:
+        db.execute("DELETE FROM app_meta WHERE key IN (?, ?)", (ps.KEY, ps.MIGRATED_KEY))
+        db.execute("INSERT INTO app_meta(key, value) VALUES(?, ?)", (ps.V1_KEY, json.dumps(v1)))
+
+    c.Store(service.settings.database_path).bootstrap()
+    service.vault.put("synthetic-key", "legacy-ref")
+
+    # 1. Replacing the key in v2 must NOT delete the frozen v1 credentialRef
+    service.mutate(
+        {
+            "source": "openai_admin",
+            "operation": "connect",
+            "mode": "api",
+            "revision": 1,
+            "secret": "sk-new-v2-key",
+            "requestId": str(uuid4()),
+        }
+    )
+    assert "legacy-ref" in service.vault.values
+    v2_ref = service.store.read()["profiles"]["openai_admin"]["default"]["credentialRef"]
+    assert v2_ref and v2_ref != "legacy-ref"
+    assert v2_ref in service.vault.values
+
+    # 2. Disabling in v2 deletes the v2-only ref on cleanup, but still preserves legacy-ref
+    service.mutate(
+        {
+            "source": "openai_admin",
+            "operation": "disable",
+            "revision": 2,
+            "requestId": str(uuid4()),
+        }
+    )
+    assert v2_ref not in service.vault.values
+    assert "legacy-ref" in service.vault.values
+    assert service.store.read()["cleanup"] == []
+
+    # 3. connections.v1 still names legacy-ref and resolves cleanly in the Vault
+    with spend_db.connect(service.settings.database_path) as db:
+        old = json.loads(db.execute("SELECT value FROM app_meta WHERE key=?", (ps.V1_KEY,)).fetchone()[0])
+    ref = old["bindings"]["openai_admin"]["credentialRef"]
+    assert ref == "legacy-ref"
+    assert service.vault.get(ref) == "synthetic-key"
