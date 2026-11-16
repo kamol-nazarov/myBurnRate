@@ -113,7 +113,7 @@ def read_rows(connection, *, now=None, rows=None):
     mask_expired_synced(rows, now or datetime.now(UTC))
     if not any(row['provider_key'] == 'codex' for row in rows):
         return rows
-    from spend_app import profile_store
+    from spend_app import connections, profile_store
     records = dict(connection.execute("SELECT key,value FROM app_meta WHERE key IN (?,?,?)", (KEY, profile_store.KEY, profile_store.V1_KEY)))
     try:
         meta = json.loads(records.get(KEY, "{}"))
@@ -122,9 +122,10 @@ def read_rows(connection, *, now=None, rows=None):
             raise ValueError("Invalid quota metadata")
     except (ValueError, TypeError, AttributeError):
         meta, binding = {}, {"enabled": False}
+    suppressed = connections.suppresses_default_profile("codex_local", binding)
     now = now or datetime.now(UTC)
     try:
-        active_scope = current_scope() if not binding else None
+        active_scope = current_scope() if not suppressed else None
     except (OSError, ValueError):
         active_scope = None
     for row in rows:
@@ -133,7 +134,7 @@ def read_rows(connection, *, now=None, rows=None):
         if str(row.get('source') or '').startswith('sync:'):
             continue
         reason = None
-        if binding:
+        if suppressed:
             reason = "Codex connection is disabled." if not binding.get("enabled") else "Managed Codex location grants usage only; local quota permission is not supported. No default profile was read."
         elif row['pct'] is not None:
             if (meta.get('poolId') != 'codex' or meta.get('scope') != active_scope or active_scope is None

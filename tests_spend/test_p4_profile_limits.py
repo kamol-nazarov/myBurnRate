@@ -1231,3 +1231,137 @@ def test_lane_is_active_for_store_backed_keys(tmp_path: Path) -> None:
     assert lane_is_active(db_path, "custom-claude", now=NOW) is True
     assert lane_is_active(db_path, "custom-oc", now=NOW) is True
     assert lane_is_active(db_path, "codex-2", now=NOW) is True
+
+
+def test_missing_database_returns_no_discovered_extra_lanes(tmp_path: Path, monkeypatch) -> None:
+    """When the DB does not exist, _enabled_store_profiles returns [] without auto-discovering extras."""
+    extra_claude = claude_accounts.ClaudeAccount(
+        key="claude-code-extra",
+        label="Extra",
+        config_dir=tmp_path / ".claude-extra",
+        state_path=tmp_path / ".claude-extra" / ".claude.json",
+        account_uuid="extra-uuid",
+        plan="Claude Max",
+    )
+    extra_oc = opencode_profiles.OpenCodeProfile(
+        key="opencode-go-extra",
+        label="Extra OC",
+        data_dir=tmp_path / ".opencode-extra",
+        database=tmp_path / ".opencode-extra" / "opencode" / "opencode.db",
+    )
+    monkeypatch.setattr(claude_accounts, "extra_accounts", lambda: (extra_claude,))
+    monkeypatch.setattr(opencode_profiles, "extra_profiles", lambda: (extra_oc,))
+
+    missing_db = tmp_path / "missing-spend.db"
+    assert not missing_db.exists()
+    collectors = default_quota_collectors(missing_db)
+    assert "claude-code-extra" not in collectors
+    assert "opencode-go-extra" not in collectors
+
+
+def test_codex_read_rows_respects_default_vs_custom_or_disabled_binding(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from spend_app import connections
+    from spend_app.providers import REGISTRY
+
+    _freeze_codex_clock(monkeypatch)
+    monkeypatch.setattr("spend_app.quotas.datetime", FixedClock)
+    home = _isolate_default_poll_sources(tmp_path, monkeypatch)
+
+    default_sessions = home / ".codex" / "sessions"
+    _write_codex_session(default_sessions, used_pct=37.0)
+    default_loc = connections.default_location(REGISTRY.get("codex_local"), None)
+
+    # 1) Persisted default binding pointing at the default location keeps the codex lane.
+    db_default = _seed_profiles_db(
+        tmp_path / "default-loc.db",
+        {
+            "codex_local": {
+                "default": _profile_record(
+                    "codex_local",
+                    "default",
+                    name="Default",
+                    location=default_loc,
+                    enabled=True,
+                )
+            }
+        },
+    )
+    poll_quotas(db_default, now=lambda: _iso(NOW))
+    with connect(db_default) as conn:
+        rows = {(r["provider_key"], r["limit_key"]): r for r in codex_quota.read_rows(conn, now=NOW)}
+    assert rows[("codex", "weekly")]["pct"] == 37.0
+    assert rows[("codex", "weekly")]["unit"] == "pct"
+    snap = {p["key"]: p for p in limits.snapshot_limits(db_default, now=NOW)["providers"]}
+    assert snap["codex"]["status"] == "exact"
+    assert snap["codex"]["windows"][0]["usedPct"] == 37.0
+
+    # 2) Persisted default binding at a custom location suppresses the codex lane.
+    custom_loc = str(tmp_path / "custom-codex" / "sessions")
+    db_custom = _seed_profiles_db(
+        tmp_path / "custom-loc.db",
+        {
+            "codex_local": {
+                "default": _profile_record(
+                    "codex_local",
+                    "default",
+                    name="Default",
+                    location=custom_loc,
+                    enabled=True,
+                )
+            }
+        },
+    )
+    with connect(db_custom) as conn:
+        sample = QuotaSample(
+            provider_key="codex",
+            limit_key="weekly",
+            label="Codex weekly window",
+            unit="pct",
+            source="codex_local_telemetry",
+            pct=37.0,
+            resets_at=_iso(NOW + timedelta(days=4)),
+            observed_at=_iso(NOW),
+            pool_id="codex",
+            scope=codex_quota.current_scope(),
+        )
+        codex_quota.save_metadata(conn, sample, _iso(NOW))
+        conn.execute(
+            "INSERT INTO quotas(provider_key, limit_key, label, unit, pct, resets_at, source, polled_at) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            ("codex", "weekly", sample.label, "pct", 37.0, sample.resets_at, sample.source, _iso(NOW)),
+        )
+    with connect(db_custom) as conn:
+        custom_rows = {(r["provider_key"], r["limit_key"]): r for r in codex_quota.read_rows(conn, now=NOW)}
+    assert custom_rows[("codex", "weekly")]["pct"] is None
+    assert custom_rows[("codex", "weekly")]["unit"] == "unavailable"
+    assert "usage only" in custom_rows[("codex", "weekly")]["label"]
+
+    # 3) Persisted disabled default binding suppresses the codex lane.
+    db_disabled = _seed_profiles_db(
+        tmp_path / "disabled.db",
+        {
+            "codex_local": {
+                "default": _profile_record(
+                    "codex_local",
+                    "default",
+                    name="Default",
+                    location=default_loc,
+                    enabled=False,
+                )
+            }
+        },
+    )
+    with connect(db_disabled) as conn:
+        codex_quota.save_metadata(conn, sample, _iso(NOW))
+        conn.execute(
+            "INSERT INTO quotas(provider_key, limit_key, label, unit, pct, resets_at, source, polled_at) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            ("codex", "weekly", sample.label, "pct", 37.0, sample.resets_at, sample.source, _iso(NOW)),
+        )
+    with connect(db_disabled) as conn:
+        disabled_rows = {(r["provider_key"], r["limit_key"]): r for r in codex_quota.read_rows(conn, now=NOW)}
+    assert disabled_rows[("codex", "weekly")]["pct"] is None
+    assert disabled_rows[("codex", "weekly")]["unit"] == "unavailable"
+    assert "disabled" in disabled_rows[("codex", "weekly")]["label"]

@@ -940,15 +940,7 @@ def _codex_quota_collector(
 def _enabled_store_profiles(database_path: Path | str):
     from spend_app import profile_store
 
-    db_path = Path(database_path)
-    profiles = profile_store.enabled_profiles(db_path)
-    if not profiles and not db_path.exists():
-        profiles = [
-            profile
-            for profile in profile_store.profiles(profile_store.migrate_v1_to_v2(None, discover=True))
-            if profile.enabled
-        ]
-    return profiles
+    return profile_store.enabled_profiles(database_path)
 
 
 def _default_profile_digest(profile) -> str | None:
