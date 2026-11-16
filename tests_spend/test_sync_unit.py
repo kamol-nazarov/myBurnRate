@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from spend_app import aggregate
@@ -10,7 +11,7 @@ from spend_app.api import create_app
 from spend_app.config import Settings
 from spend_app.db import UsageEvent, connect, initialize, upsert_agent_run, upsert_session, upsert_usage_event
 from spend_app.pricing import PricingEngine
-from spend_app.sync import sync_once
+from spend_app.sync import apply_sync_push, rename_machine, sync_once
 
 
 NOW = datetime.now(timezone.utc)
@@ -103,6 +104,137 @@ def test_machine_registry_lifecycle_and_token_auth(tmp_path: Path, monkeypatch) 
         json={"usageEvents": []},
     )
     assert rejected.status_code == 401
+
+
+def test_machine_rename_and_sync_push_reject_case_insensitive_collisions(
+    tmp_path: Path, monkeypatch
+) -> None:
+    aggregate.reset_memo()
+    monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "hub-admin-secret")
+    monkeypatch.setenv("BURNRATE_ALLOW_ADMIN_BEARER", "1")
+    settings = _make_settings(tmp_path)
+    pricing = PricingEngine.load(PRICING_PATH)
+    app = create_app(settings, enable_scheduler=False)
+    client = TestClient(app)
+    admin_headers = {"Authorization": "Bearer hub-admin-secret", "X-BURNRATE-Request": "1"}
+
+    alpha = client.post(
+        "/api/machines",
+        headers=admin_headers,
+        json={"action": "register", "name": "AlphaBox", "os": "linux"},
+    ).json()
+    beta = client.post(
+        "/api/machines",
+        headers=admin_headers,
+        json={"action": "register", "name": "BetaBox", "os": "darwin"},
+    ).json()
+    revoked_reg = client.post(
+        "/api/machines",
+        headers=admin_headers,
+        json={"action": "register", "name": "GammaBox", "os": "win32"},
+    ).json()
+    assert (
+        client.post(
+            "/api/machines",
+            headers=admin_headers,
+            json={"action": "revoke", "id": revoked_reg["machine"]["id"]},
+        ).status_code
+        == 200
+    )
+
+    alpha_id, alpha_token = alpha["machine"]["id"], alpha["token"]
+    beta_id, beta_token = beta["machine"]["id"], beta["token"]
+
+    # 1. Colliding rename via rename_machine() and /api/machines action="rename" is refused (422).
+    with pytest.raises(ValueError, match="already exists"):
+        rename_machine(settings.database_path, machine_id=beta_id, name="alphabox")
+    with pytest.raises(ValueError, match="already exists"):
+        rename_machine(settings.database_path, machine_id="local", name="ALPHABOX")
+
+    res_rename = client.post(
+        "/api/machines",
+        headers=admin_headers,
+        json={"action": "rename", "id": beta_id, "name": "alphabox"},
+    )
+    assert res_rename.status_code == 422
+
+    res_local_rename = client.post(
+        "/api/machines",
+        headers=admin_headers,
+        json={"action": "rename", "id": "local", "name": "ALPHABOX"},
+    )
+    assert res_local_rename.status_code == 422
+
+    # 2. Same-machine case change via /api/machines is allowed.
+    self_rename = client.post(
+        "/api/machines",
+        headers=admin_headers,
+        json={"action": "rename", "id": alpha_id, "name": "ALPHABOX"},
+    )
+    assert self_rename.status_code == 200
+    assert any(m["id"] == alpha_id and m["name"] == "ALPHABOX" for m in self_rename.json()["machines"])
+
+    # 3. Colliding name via apply_sync_push() and /api/sync/push is refused (422).
+    with pytest.raises(ValueError, match="already exists"):
+        apply_sync_push(
+            settings.database_path,
+            pricing,
+            machine_id=beta_id,
+            body={"machine": {"name": "alphabox"}},
+        )
+    push_collision = client.post(
+        "/api/sync/push",
+        headers={"Authorization": f"Bearer {beta_token}"},
+        json={"machine": {"name": "alphabox"}, "usageEvents": [], "sessions": [], "agentRuns": []},
+    )
+    assert push_collision.status_code == 422
+
+    # 4. Same-machine case change via /api/sync/push is allowed.
+    push_self = client.post(
+        "/api/sync/push",
+        headers={"Authorization": f"Bearer {alpha_token}"},
+        json={"machine": {"name": "alphaBox"}, "usageEvents": [], "sessions": [], "agentRuns": []},
+    )
+    assert push_self.status_code == 200
+
+    # 5. Reusing a revoked machine's name is allowed in both /api/machines rename and /api/sync/push.
+    reuse_rename = client.post(
+        "/api/machines",
+        headers=admin_headers,
+        json={"action": "rename", "id": beta_id, "name": "gammabox"},
+    )
+    assert reuse_rename.status_code == 200
+    assert any(m["id"] == beta_id and m["name"] == "gammabox" for m in reuse_rename.json()["machines"])
+
+    revoked_push = client.post(
+        "/api/machines",
+        headers=admin_headers,
+        json={"action": "register", "name": "EpsilonBox", "os": "win32"},
+    ).json()
+    assert (
+        client.post(
+            "/api/machines",
+            headers=admin_headers,
+            json={"action": "revoke", "id": revoked_push["machine"]["id"]},
+        ).status_code
+        == 200
+    )
+    delta = client.post(
+        "/api/machines",
+        headers=admin_headers,
+        json={"action": "register", "name": "DeltaBox", "os": "linux"},
+    ).json()
+    push_reuse = client.post(
+        "/api/sync/push",
+        headers={"Authorization": f"Bearer {delta['token']}"},
+        json={"machine": {"name": "EPSILONBOX"}, "usageEvents": [], "sessions": [], "agentRuns": []},
+    )
+    assert push_reuse.status_code == 200
+
+    machines_by_id = {m["id"]: m for m in client.get("/api/machines", headers=admin_headers).json()["machines"]}
+    assert machines_by_id[alpha_id]["name"] == "alphaBox"
+    assert machines_by_id[beta_id]["name"] == "gammabox"
+    assert machines_by_id[delta["machine"]["id"]]["name"] == "EPSILONBOX"
 
 
 def test_multi_machine_push_and_filtered_summary_and_entity(tmp_path: Path) -> None:
