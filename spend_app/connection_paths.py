@@ -101,7 +101,7 @@ def normalize(raw, meta):
 
 
 def identity(path):
-    return os.path.normcase(os.path.normpath(str(path))).casefold()
+    return os.path.normcase(os.path.normpath(str(path)))
 
 
 def _resolve(path, *, strict):

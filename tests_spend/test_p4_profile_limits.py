@@ -1812,3 +1812,183 @@ def test_retargeted_claude_and_opencode_lanes_return_no_lane_and_no_sample(
     assert pre_claude() == []
     assert pre_oc() == []
     assert sent_auths == ["Bearer oc-chosen-key"]
+
+
+def test_distinct_windows_directories_have_distinct_unresolved_scopes(tmp_path: Path) -> None:
+    first = tmp_path / "Straße"
+    second = tmp_path / "Strasse"
+    first.mkdir()
+    second.mkdir()
+    if first.samefile(second):
+        pytest.skip("Filesystem folds sharp-s and ss")
+    assert codex_quota.unresolved_scope(first) != codex_quota.unresolved_scope(second)
+    assert codex_quota.scope(first) != codex_quota.scope(second)
+
+
+def test_unicode_casefold_junction_cannot_redirect_usage(tmp_path: Path, monkeypatch) -> None:
+    from uuid import uuid4
+    from spend_app import connections, profile_detect
+    from spend_app.adapters import profiles_local
+    from spend_app.config import Settings
+    from spend_app.pricing import PricingEngine
+    from spend_app.providers import REGISTRY
+    from tests_spend.test_p3_profile_collection import _write_claude_transcript
+
+    hermetic = tmp_path / "hermetic"
+    hermetic.mkdir()
+    monkeypatch.setenv("HOME", str(hermetic))
+    monkeypatch.setenv("USERPROFILE", str(hermetic))
+    for name in (
+        "CODEX_HOME",
+        "CLAUDE_CONFIG_DIR",
+        "XDG_DATA_HOME",
+        "OPENCODE_DB",
+        "OPENCODE_API_KEY",
+        "BURNRATE_CLAUDE_ACCOUNT_DIRS",
+        "BURNRATE_OPENCODE_PROFILE_DIRS",
+        "BURNRATE_CODEX_PROFILE_DIRS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(claude_accounts, "extra_accounts", lambda: ())
+    monkeypatch.setattr(opencode_profiles, "extra_profiles", lambda: ())
+    profile_detect.reset_cache()
+
+    chosen = hermetic / ".claude-straße"
+    target = hermetic / ".claude-strasse"
+    _write_claude_transcript(
+        chosen / "projects" / "p" / "one.jsonl",
+        session_id="chosen-session",
+        message_id="chosen-message",
+    )
+    _write_claude_transcript(
+        target / "projects" / "p" / "one.jsonl",
+        session_id="private-session",
+        message_id="private-message",
+    )
+    if chosen.samefile(target):
+        pytest.skip("Filesystem folds sharp-s and ss")
+
+    settings = Settings(
+        database_path=tmp_path / "spend.db",
+        pricing_path=Path(__file__).resolve().parents[1] / "pricing",
+        anthropic_admin_key=None,
+        openai_admin_key=None,
+        timezone="UTC",
+        cache_hit_threshold=0.75,
+        over_routing_token_ceiling=40000,
+        logs_path=tmp_path / "logs",
+    )
+    initialize(settings.database_path)
+
+    service = connections.Service(settings, vault=_FakeVault())
+    added = service.mutate(
+        {
+            "source": "claude_local",
+            "operation": "add_profile",
+            "location": str(chosen),
+            "name": "Chosen",
+            "requestId": str(uuid4()),
+        }
+    )["connection"]
+
+    chosen.rename(hermetic / "original-chosen")
+    _create_junction(target, chosen)
+
+    profile = next(
+        p for p in profile_store.enabled_profiles(settings.database_path) if p.key == added["key"]
+    )
+    assert profile_store.location_unchanged(profile, REGISTRY.get("claude_local")) is False
+    profiles_local.ingest(
+        database_path=settings.database_path,
+        pricing=PricingEngine.load(settings.pricing_path),
+    )
+    with connect(settings.database_path) as db:
+        rows = [tuple(r) for r in db.execute("SELECT session_id,tool_key FROM usage_events")]
+    assert rows == []
+
+
+def test_unicode_casefold_junction_cannot_redirect_quota(tmp_path: Path, monkeypatch) -> None:
+    from uuid import uuid4
+    from spend_app import connections, profile_detect, quotas
+    from spend_app.config import Settings
+
+    hermetic = tmp_path / "hermetic"
+    hermetic.mkdir()
+    monkeypatch.setenv("HOME", str(hermetic))
+    monkeypatch.setenv("USERPROFILE", str(hermetic))
+    _isolate_default_poll_sources(tmp_path, monkeypatch)
+    monkeypatch.setattr(limits, "datetime", datetime)
+    monkeypatch.setattr(codex_quota, "datetime", datetime)
+    monkeypatch.setattr("spend_app.quotas.datetime", datetime)
+    monkeypatch.setattr(claude_accounts, "extra_accounts", lambda: ())
+    monkeypatch.setattr(opencode_profiles, "extra_profiles", lambda: ())
+    profile_detect.reset_cache()
+
+    chosen = hermetic / ".codex-straße"
+    target = hermetic / ".codex-strasse"
+    now = datetime.now(UTC)
+    for root, pct in ((chosen, 17.0), (target, 83.0)):
+        session = _write_codex_session(root / "sessions", used_pct=pct, now=now)
+        doc = json.loads(session.read_text(encoding="utf-8"))
+        doc["type"] = "event_msg"
+        doc["payload"]["type"] = "token_count"
+        session.write_text(json.dumps(doc) + "\n", encoding="utf-8")
+        (root / "auth.json").write_text(
+            json.dumps({"tokens": {"account_id": f"account-{pct}"}}), encoding="utf-8"
+        )
+    if chosen.samefile(target):
+        pytest.skip("Filesystem folds sharp-s and ss")
+
+    settings = Settings(
+        database_path=tmp_path / "spend.db",
+        pricing_path=Path(__file__).resolve().parents[1] / "pricing",
+        anthropic_admin_key=None,
+        openai_admin_key=None,
+        timezone="UTC",
+        cache_hit_threshold=0.75,
+        over_routing_token_ceiling=40000,
+        logs_path=tmp_path / "logs",
+    )
+    initialize(settings.database_path)
+
+    service = connections.Service(settings, vault=_FakeVault())
+    added = service.mutate(
+        {
+            "source": "codex_local",
+            "operation": "add_profile",
+            "location": str(chosen),
+            "name": "Chosen",
+            "requestId": str(uuid4()),
+        }
+    )["connection"]
+
+    chosen.rename(hermetic / "original-chosen")
+    _create_junction(target, chosen)
+
+    collectors, _ = quotas._resolve_profile_lanes(settings.database_path)
+    reader = collectors.get(added["key"])
+    samples = reader() if reader is not None else []
+    quotas.poll_quotas(settings.database_path, collectors={added["key"]: lambda: samples})
+    with connect(settings.database_path) as db:
+        rows = codex_quota.read_rows(db)
+    visible = next((r for r in rows if r["provider_key"] == added["key"]), None)
+    assert visible is None or visible["pct"] is None
+
+
+def test_ascii_case_and_dotdot_aliases_are_consistent(tmp_path: Path) -> None:
+    from spend_app.providers import REGISTRY
+
+    root = tmp_path / "Profile"
+    root.mkdir()
+    intermediate = tmp_path / "intermediate"
+    intermediate.mkdir()
+    aliases = [intermediate / ".." / "Profile"]
+    if os.name == "nt":
+        aliases.append(tmp_path / "PROFILE")
+    for alias in aliases:
+        assert alias.samefile(root)
+        assert codex_quota.unresolved_scope(alias) == codex_quota.unresolved_scope(root)
+        assert profile_store.location_unchanged(str(alias), REGISTRY.get("codex_local"))
+    distinct = tmp_path / "Unrelated"
+    distinct.mkdir()
+    assert codex_quota.unresolved_scope(root) != codex_quota.unresolved_scope(distinct)

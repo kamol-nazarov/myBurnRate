@@ -71,12 +71,15 @@ def freshness_reason(observed_at, resets_at, now):
 
 
 def scope(root):
-    return hashlib.sha256(str(Path(root).resolve()).replace("\\", "/").casefold().encode()).hexdigest()
+    normalized = os.path.normcase(str(Path(root).resolve())).replace("\\", "/")
+    return hashlib.sha256(normalized.encode()).hexdigest()
 
 
 def unresolved_scope(root):
-    normalized = os.path.abspath(os.fspath(Path(root).expanduser()))
-    return hashlib.sha256(normalized.replace("\\", "/").casefold().encode()).hexdigest()
+    normalized = os.path.normcase(
+        os.path.normpath(os.path.abspath(os.fspath(Path(root).expanduser())))
+    ).replace("\\", "/")
+    return hashlib.sha256(normalized.encode()).hexdigest()
 
 
 def current_scope():

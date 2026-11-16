@@ -19,6 +19,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import re
 import sqlite3
 from collections.abc import Iterable
@@ -28,7 +29,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from spend_app import claude_accounts, opencode_profiles
-from spend_app.connection_paths import LocationError, _resolve, identity, normalize
+from spend_app.connection_paths import LocationError, _resolve, identity, is_junction, normalize
 
 KEY = "connections.v2"
 V1_KEY = "connections.v1"
@@ -815,16 +816,38 @@ def profiles(state: dict, provider: str | None = None) -> list[Profile]:
 
 
 def location_unchanged(profile: Profile | object, connection_spec) -> bool:
-    """True only when ``profile.location`` resolves to the same path identity as saved."""
+    """True only when ``profile.location`` resolves to the same physical directory as saved."""
     raw = getattr(profile, "location", profile) if profile is not None else None
     spec = getattr(connection_spec, "connection", connection_spec)
     if not isinstance(raw, str) or not raw.strip() or spec is None:
         return False
+    saved = Path(raw.strip()).expanduser()
+    if (
+        getattr(spec, "home_name", "")
+        and getattr(spec, "child", "")
+        and saved.name.lower() == spec.home_name.lower()
+    ):
+        saved = saved / spec.child
     try:
         normalized = normalize(raw, spec)
     except LocationError:
         return False
-    return identity(normalized) == identity(Path(raw.strip()).expanduser())
+    if identity(normalized) != identity(saved):
+        return False
+    try:
+        if not os.path.samefile(saved, normalized):
+            return False
+    except OSError:
+        return False
+    candidate = saved
+    while candidate.parent != candidate:
+        try:
+            if candidate.is_symlink() or is_junction(candidate):
+                return False
+        except OSError:
+            return False
+        candidate = candidate.parent
+    return True
 
 
 def enabled_profiles(database_path: str | Path) -> list[Profile]:
