@@ -201,6 +201,7 @@ def list_machines(
                 "eventsPushed": int(rec.get("events_pushed") or 0),
                 "expiresAt": rec.get("expires_at"),
                 "rotationRequired": bool(rec.get("rotation_required")),
+                "rotationDeadline": rec.get("rotation_deadline"),
             }
         )
     return items
@@ -216,14 +217,25 @@ def _register_in_connection(connection, *, name, os_name="", now=None, reconnect
     if matched_id is not None and matched_id not in state["machines"]:
         raise ValueError("Unknown machine.")
     if matched_id is None and reconnect:
-        matched_id = next((mid for mid, rec in state["machines"].items()
-                           if isinstance(rec, dict) and str(rec.get("name", "")).lower() == clean_name.lower()), None)
+        matches = [
+            mid for mid, rec in state["machines"].items()
+            if isinstance(rec, dict) and str(rec.get("name", "")).lower() == clean_name.lower()
+        ]
+        active = [mid for mid in matches if not state["machines"][mid].get("revoked")]
+        if matches:
+            if len(active) != 1:
+                raise ValueError(
+                    "Multiple or revoked machines match that name; specify the machine ID."
+                )
+            matched_id = active[0]
     if matched_id is None:
         matched_id = f"machine-{secrets.token_hex(8)}"
         while matched_id in state["machines"] or matched_id in {"local", "all"}:
             matched_id = f"machine-{secrets.token_hex(8)}"
     token = f"br_m_{matched_id}_{secrets.token_urlsafe(32)}"
     prev = state["machines"].get(matched_id) or {}
+    if reconnect and prev.get("revoked"):
+        raise ValueError("This machine is revoked; pair it again using its machine ID.")
     state["machines"][matched_id] = {
         "id": matched_id, "name": clean_name, "os": (os_name or prev.get("os") or "").strip()[:32],
         "token_hash": _token_hash(token), "created_at": stamp(now),
@@ -315,12 +327,20 @@ def rename_machine(
     with connect(database_path) as connection:
         connection.execute("BEGIN IMMEDIATE")
         state = _read_state(connection)
+        if machine_id != "local" and machine_id not in state["machines"]:
+            raise ValueError(f"Unknown machine: {machine_id}")
+        if any(
+            mid != machine_id
+            and isinstance(rec, dict)
+            and not rec.get("revoked")
+            and str(rec.get("name", "")).lower() == clean_name.lower()
+            for mid, rec in state["machines"].items()
+        ):
+            raise ValueError("A machine with that name already exists.")
         if machine_id == "local":
             state["hub_name"] = clean_name
-        elif machine_id in state["machines"]:
-            state["machines"][machine_id]["name"] = clean_name
         else:
-            raise ValueError(f"Unknown machine: {machine_id}")
+            state["machines"][machine_id]["name"] = clean_name
         _write_state(connection, state)
         if actor:
             from spend_app.auth_model import audit
@@ -342,6 +362,10 @@ def authenticate_machine_token(database_path: Path, token: str, *, now=None) -> 
         for machine_id, rec in state["machines"].items():
             if not isinstance(rec, dict) or rec.get("revoked"):
                 continue
+            if rec.get("rotation_required"):
+                deadline = parse(rec.get("rotation_deadline"))
+                if not deadline or deadline <= moment(now):
+                    continue
             expected = str(rec.get("token_hash") or "")
             expires = parse(rec.get("expires_at"))
             if expected and hmac.compare_digest(digest, expected) and expires and expires > moment(now):
@@ -769,6 +793,16 @@ def apply_sync_push(
                     quotas_changed = True
 
             state = _read_state(connection)
+            if machine_meta.get("name"):
+                candidate_name = str(machine_meta["name"]).strip()[:64]
+                if candidate_name and any(
+                    mid != machine_id
+                    and isinstance(other, dict)
+                    and not other.get("revoked")
+                    and str(other.get("name", "")).lower() == candidate_name.lower()
+                    for mid, other in state["machines"].items()
+                ):
+                    raise ValueError("A machine with that name already exists.")
             rec = state["machines"].setdefault(
                 machine_id,
                 {
@@ -1500,11 +1534,13 @@ def fetch_from_configured_hub(
 ) -> dict | None:
     """When this instance is a paired Spoke, read unified dashboard data from the Hub.
 
-    A copy younger than ``ttl_seconds`` is served as is. With ``stale_seconds``
-    any copy, of any age, is served at once while one background read renews
-    it, and a cold cache returns immediately so the caller can paint local
-    data. A slow or unreachable Hub therefore never holds up the HUD. A failed
-    blocking read (``stale_seconds`` of 0) falls back to the last copy of any age.
+    A copy younger than ``ttl_seconds`` is served as is (bounded by
+    ``stale_seconds`` when positive). With positive ``stale_seconds``, a copy
+    younger than ``stale_seconds`` is served at once while one background read
+    renews it, and a cold cache returns immediately so the caller can paint
+    local data; copies at or past ``stale_seconds`` require a synchronous read
+    and are never served on failure. A failed blocking read (``stale_seconds``
+    of 0) falls back to the last copy of any age unless rejected (401/403).
     """
     try:
         from spend_app.setup_wizard import read_setup_state
@@ -1524,25 +1560,26 @@ def fetch_from_configured_hub(
     expiry = parse(spoke.get("ownerSessionExpiresAt"))
     if expiry is not None and expiry <= moment():
         return None
-    if digest(token) in _HUB_REJECTED_CREDENTIALS:
-        return None
     if not hub_url or not token:
         return None
+    token_digest = digest(token)
 
     clean_params = {k: str(v) for k, v in (params or {}).items() if v is not None}
-    cache_key = (hub_url, path, tuple(sorted(clean_params.items())), digest(token))
+    cache_key = (hub_url, path, tuple(sorted(clean_params.items())), token_digest)
 
     def read() -> dict | None:
         return _read_hub_copy(cache_key, hub_url, token, path, clean_params, timeout=read_timeout)
 
     with _HUB_PROXY_LOCK:
+        if token_digest in _HUB_REJECTED_CREDENTIALS:
+            return None
         cached = _HUB_PROXY_CACHE.get(cache_key)
     if cached:
         fetched_at, payload, fresh = cached
         age = time.monotonic() - fetched_at
-        if fresh and age < ttl_seconds:
+        if fresh and age < ttl_seconds and (stale_seconds <= 0 or age < stale_seconds):
             return _hub_copy_for_display(settings, payload)
-        if stale_seconds > 0:
+        if stale_seconds > 0 and age < stale_seconds:
             _renew_hub_copy_in_background(cache_key, read)
             return _hub_copy_for_display(settings, payload)
     elif stale_seconds > 0:
@@ -1550,9 +1587,12 @@ def fetch_from_configured_hub(
         return None
     data = read()
     if data is None:
-        if digest(token) in _HUB_REJECTED_CREDENTIALS:
-            return None
-        return _hub_copy_for_display(settings, cached[1]) if cached else None
+        with _HUB_PROXY_LOCK:
+            if token_digest in _HUB_REJECTED_CREDENTIALS:
+                return None
+        if cached and (stale_seconds <= 0 or (time.monotonic() - cached[0]) < stale_seconds):
+            return _hub_copy_for_display(settings, cached[1])
+        return None
     return _hub_copy_for_display(settings, data)
 
 

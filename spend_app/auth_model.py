@@ -16,6 +16,7 @@ from spend_app.db import connect
 
 MACHINE_DAYS = 90
 LEGACY_MACHINE_DAYS = 180
+ROTATION_GRACE_DAYS = 14
 SESSION_DAYS = 30
 PAIRING_MINUTES = 15
 LOCAL_SESSION_DAYS = 30
@@ -68,16 +69,47 @@ def audit(connection, actor, action, target, outcome="success", *, now=None):
     )
 
 
+def _stamp_missing_rotation_deadlines(data, *, deadline=None):
+    target = deadline or stamp(moment() + timedelta(days=ROTATION_GRACE_DAYS))
+    changed = False
+    for rec in data.get("machines", {}).values():
+        if isinstance(rec, dict) and rec.get("rotation_required") and not rec.get("rotation_deadline"):
+            rec["rotation_deadline"] = target
+            changed = True
+    return changed
+
+
 def ensure_schema(path):
     with connect(path) as connection:
-        # Local (spoke) sessions arrived after the first auth marker; create
-        # this table unconditionally so existing databases pick it up.
-        connection.execute(
+        # Local (spoke) sessions and admin_audit/triggers must be ensured
+        # unconditionally so existing databases recover missing audit guards.
+        for sql in (
             "CREATE TABLE IF NOT EXISTS local_sessions (id TEXT PRIMARY KEY, token_hash TEXT NOT NULL, "
             "created_at TEXT NOT NULL, last_used_at TEXT, expires_at TEXT NOT NULL, revoked_at TEXT, "
-            "device_label TEXT NOT NULL)"
-        )
+            "device_label TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS admin_audit (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "actor_type TEXT NOT NULL, actor_id TEXT, action TEXT NOT NULL, target TEXT NOT NULL, "
+            "outcome TEXT NOT NULL, timestamp TEXT NOT NULL)",
+            "CREATE TRIGGER IF NOT EXISTS admin_audit_no_update BEFORE UPDATE ON admin_audit "
+            "BEGIN SELECT RAISE(ABORT, 'admin audit is append-only'); END",
+            "CREATE TRIGGER IF NOT EXISTS admin_audit_no_delete BEFORE DELETE ON admin_audit "
+            "BEGIN SELECT RAISE(ABORT, 'admin audit is append-only'); END",
+        ):
+            connection.execute(sql)
         if connection.execute("SELECT 1 FROM app_meta WHERE key=?", (MARKER,)).fetchone():
+            row = connection.execute("SELECT value FROM app_meta WHERE key='machines.v1'").fetchone()
+            if row:
+                data = json.loads(row[0])
+                if isinstance(data, dict) and any(
+                    isinstance(rec, dict) and rec.get("rotation_required") and not rec.get("rotation_deadline")
+                    for rec in data.get("machines", {}).values()
+                ):
+                    connection.execute("BEGIN IMMEDIATE")
+                    row = connection.execute("SELECT value FROM app_meta WHERE key='machines.v1'").fetchone()
+                    if row:
+                        data = json.loads(row[0])
+                        if isinstance(data, dict) and _stamp_missing_rotation_deadlines(data):
+                            connection.execute("UPDATE app_meta SET value=? WHERE key='machines.v1'", (json.dumps(data),))
             return
         connection.execute("BEGIN IMMEDIATE")
         if connection.execute("SELECT 1 FROM app_meta WHERE key=?", (MARKER,)).fetchone():
@@ -89,13 +121,6 @@ def ensure_schema(path):
             "CREATE TABLE IF NOT EXISTS pairing_grants (id TEXT PRIMARY KEY, secret_hash TEXT NOT NULL, "
             "hub_origin TEXT NOT NULL, machine_id TEXT, machine_name TEXT NOT NULL, os_name TEXT NOT NULL, "
             "created_at TEXT NOT NULL, expires_at TEXT NOT NULL, used_at TEXT)",
-            "CREATE TABLE IF NOT EXISTS admin_audit (id INTEGER PRIMARY KEY AUTOINCREMENT, "
-            "actor_type TEXT NOT NULL, actor_id TEXT, action TEXT NOT NULL, target TEXT NOT NULL, "
-            "outcome TEXT NOT NULL, timestamp TEXT NOT NULL)",
-            "CREATE TRIGGER IF NOT EXISTS admin_audit_no_update BEFORE UPDATE ON admin_audit "
-            "BEGIN SELECT RAISE(ABORT, 'admin audit is append-only'); END",
-            "CREATE TRIGGER IF NOT EXISTS admin_audit_no_delete BEFORE DELETE ON admin_audit "
-            "BEGIN SELECT RAISE(ABORT, 'admin audit is append-only'); END",
         ):
             connection.execute(sql)
         changed = False
@@ -105,6 +130,7 @@ def ensure_schema(path):
                 continue
             data = json.loads(row[0])  # Corrupt auth state fails closed, never reset it.
             records = data["machines" if key == "machines.v1" else "users"]
+            deadline = stamp(moment() + timedelta(days=ROTATION_GRACE_DAYS)) if key == "machines.v1" else None
             for rec in records.values():
                 if key == "machines.v1":
                     created = parse(rec.get("created_at"))
@@ -112,6 +138,8 @@ def ensure_schema(path):
                                    if created else stamp(datetime(1970, 1, 1, tzinfo=UTC)))
                     rec.setdefault("last_used_at", None)
                     rec.setdefault("rotation_required", True)
+                    if rec.get("rotation_required") and not rec.get("rotation_deadline"):
+                        rec["rotation_deadline"] = deadline
                 else:
                     rec.setdefault("id", secrets.token_hex(16))
                     rec.setdefault("role", "owner")

@@ -31,10 +31,20 @@ def issue(path, actor, *, hub_url, name, os_name="", machine_id=None, now=None):
         state = _read_state(connection)
         if machine_id and machine_id not in state["machines"]:
             raise ValueError("Unknown machine.")
-        # An owner may re-pair a revoked or expired computer without SQL edits.
+        # Name-only binding requires an unambiguous non-revoked match; revoked
+        # or colliding names must be paired explicitly by machine ID.
         if not machine_id:
-            machine_id = next((mid for mid, rec in state["machines"].items()
-                               if str(rec.get("name", "")).lower() == name.lower()), None)
+            matches = [
+                mid for mid, rec in state["machines"].items()
+                if isinstance(rec, dict) and str(rec.get("name", "")).lower() == name.lower()
+            ]
+            active = [mid for mid in matches if not state["machines"][mid].get("revoked")]
+            if matches:
+                if len(active) != 1:
+                    raise ValueError(
+                        "Multiple or revoked machines match that name; specify the machine ID."
+                    )
+                machine_id = active[0]
         connection.execute("INSERT INTO pairing_grants VALUES(?,?,?,?,?,?,?,?,?)",
                            (grant_id, digest(secret), origin, machine_id, name, os_name[:32], stamp(now), expiry, None))
         audit(connection, actor, "pairing.create", grant_id, now=now)
