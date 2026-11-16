@@ -1749,4 +1749,120 @@ def test_cutover_still_applies_legitimate_usage_revisions(tmp_path, monkeypatch)
         sess = [tuple(r) for r in db.execute("SELECT session_id, tool_key FROM sessions")]
     assert rows == [("claude-code", 125)], (result, rows)
     assert sess == [("streaming", "claude-code")], sess
+def test_preserve_existing_tool_keys_ignores_other_source_collisions(tmp_path):
+    from datetime import UTC, datetime
+    from spend_app.adapters import common
 
+    db_path = tmp_path / "spend.db"
+    spend_db.initialize(db_path)
+
+    with spend_db.connect(db_path) as db:
+        db.execute(
+            """
+            INSERT INTO usage_events(
+                source, tool_key, model_key, occurred_at, session_id, project,
+                input_tokens, cached_input_tokens, cache_write_tokens, cache_write_1h_tokens,
+                output_tokens, reasoning_tokens, cost_usd, computed_cost_usd, is_exact,
+                occurred_epoch_us, raw_id, ingested_at
+            ) VALUES
+                ('codex_local', 'codex', 'gpt-5', '2026-11-12T12:00:00Z',
+                 's-codex', 'demo', 10, 0, 0, 0, 5, NULL, NULL, 0.01, 1, 1,
+                 'shared-priced-id', '2026-11-12T12:00:01Z'),
+                ('claude_local', 'claude-code', 'claude-opus-5', '2026-11-12T12:00:00Z',
+                 's-claude', 'demo', 10, 0, 0, 0, 5, NULL, NULL, 0.01, 1, 1,
+                 'same-source-id', '2026-11-12T12:00:01Z')
+            """
+        )
+        db.execute(
+            """
+            INSERT INTO unpriced_usage_events(
+                source, tool_key, model_key, occurred_at, session_id, project,
+                input_tokens, cached_input_tokens, cache_write_tokens, cache_write_1h_tokens,
+                output_tokens, reasoning_tokens, unclassified_tokens, telemetry_complete, cost_usd,
+                occurred_epoch_us, raw_id, ingested_at
+            ) VALUES(
+                'opencode_local', 'opencode-go', 'unknown-model', '2026-11-12T12:00:00Z',
+                's-oc', 'demo', 10, 0, 0, 0, 5, NULL, 0, 1, NULL, 1,
+                'shared-unpriced-id', '2026-11-12T12:00:01Z'
+            )
+            """
+        )
+
+        occurred = datetime(2026, 11, 12, 12, 5, tzinfo=UTC)
+        incoming_priced = common.UsageRow(
+            source="claude_local",
+            tool_key="claude-code-2",
+            model_key="claude-opus-5",
+            occurred_at=occurred,
+            session_id="s-claude-2",
+            project="demo",
+            input_tokens=20,
+            cached_input_tokens=0,
+            cache_write_tokens=0,
+            cache_write_1h_tokens=0,
+            output_tokens=10,
+            reasoning_tokens=None,
+            cost_usd=None,
+            raw_id="shared-priced-id",
+        )
+        incoming_unpriced = common.UsageRow(
+            source="claude_local",
+            tool_key="claude-code-2",
+            model_key="unknown-model",
+            occurred_at=occurred,
+            session_id="s-claude-2",
+            project="demo",
+            input_tokens=20,
+            cached_input_tokens=0,
+            cache_write_tokens=0,
+            cache_write_1h_tokens=0,
+            output_tokens=10,
+            reasoning_tokens=None,
+            cost_usd=None,
+            raw_id="shared-unpriced-id",
+        )
+        incoming_same_source = common.UsageRow(
+            source="claude_local",
+            tool_key="claude-code-2",
+            model_key="claude-opus-5",
+            occurred_at=occurred,
+            session_id="s-claude",
+            project="demo",
+            input_tokens=20,
+            cached_input_tokens=0,
+            cache_write_tokens=0,
+            cache_write_1h_tokens=0,
+            output_tokens=30,
+            reasoning_tokens=None,
+            cost_usd=None,
+            raw_id="same-source-id",
+        )
+
+        resolved = common._preserve_existing_tool_keys(
+            db, (incoming_priced, incoming_unpriced, incoming_same_source)
+        )
+        assert resolved[0] == incoming_priced
+        assert resolved[0].tool_key == "claude-code-2"
+        assert resolved[1] == incoming_unpriced
+        assert resolved[1].tool_key == "claude-code-2"
+        assert resolved[2].tool_key == "claude-code"
+
+        stored_priced = [
+            tuple(r)
+            for r in db.execute(
+                "SELECT raw_id, source, tool_key FROM usage_events ORDER BY raw_id"
+            )
+        ]
+        stored_unpriced = [
+            tuple(r)
+            for r in db.execute(
+                "SELECT raw_id, source, tool_key FROM unpriced_usage_events ORDER BY raw_id"
+            )
+        ]
+        assert stored_priced == [
+            ("same-source-id", "claude_local", "claude-code"),
+            ("shared-priced-id", "codex_local", "codex"),
+        ]
+        assert stored_unpriced == [
+            ("shared-unpriced-id", "opencode_local", "opencode-go"),
+        ]
