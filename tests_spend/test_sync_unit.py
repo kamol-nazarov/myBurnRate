@@ -1051,3 +1051,48 @@ def test_cached_hub_payload_is_remasked_and_never_mutated() -> None:
     # The cached copy keeps the Hub's raw values for the next re-mask.
     assert cached["capacity"][0]["rows"][0]["pct"] == 77.0
     assert cached["providers"][0]["windows"][0]["usedPct"] == 77.0
+
+
+def test_apply_sync_push_caps_agent_run_name(tmp_path: Path) -> None:
+    from spend_app.sync import apply_sync_push, register_machine
+
+    settings = _make_settings(tmp_path / "cap-sync")
+    pricing = PricingEngine.load(PRICING_PATH)
+    reg = register_machine(settings.database_path, name="Laptop", os_name="win32", now=NOW)
+    machine_id = reg["machine"]["id"]
+
+    apply_sync_push(
+        settings.database_path,
+        pricing,
+        machine_id=machine_id,
+        body={
+            "machine": {"name": "Laptop", "os": "win32"},
+            "usageEvents": [],
+            "unpricedEvents": [],
+            "sessions": [],
+            "agentRuns": [
+                {
+                    "id": "long-run",
+                    "name": "z" * 5000,
+                    "model_key": "gpt-5.6-sol",
+                    "state": "live",
+                    "started_at": NOW.isoformat(),
+                    "last_seen_at": NOW.isoformat(),
+                }
+            ],
+            "quotas": [],
+        },
+        now=NOW,
+    )
+
+    with connect(settings.database_path) as connection:
+        row = connection.execute(
+            "SELECT name FROM agent_runs WHERE id=?",
+            (f"m:{machine_id}:long-run",),
+        ).fetchone()
+    assert row is not None
+    stored_name = row[0]
+    assert len(stored_name) <= 120
+    assert len(stored_name) == 120
+    assert stored_name.endswith("\u2026")
+    assert stored_name == ("z" * 119) + "\u2026"

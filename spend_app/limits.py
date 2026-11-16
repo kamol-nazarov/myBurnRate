@@ -234,26 +234,44 @@ def _antigravity_running() -> bool:
     return True if running is None else running  # unknown: do not claim it is closed
 
 
+def _antigravity_loopback_client(base_url: str, *, timeout: float = 8) -> httpx.Client:
+    """Return an httpx.Client for Antigravity's loopback gRPC-Web RPC.
+
+    The Antigravity language server embeds an ephemeral self-signed certificate
+    (``OU=bundled on purpose``) in memory and writes no certificate or
+    fingerprint to disk (verified in ``main.log``, ``language_server.log``, and
+    ``daemon/hub_*.json``). Pinning from disk is therefore not possible, so
+    ``verify=False`` is centralised here and restricted strictly to
+    ``https://127.0.0.1``.
+    """
+    _assert_allowed_https_host(base_url, ANTIGRAVITY_RPC_ALLOWED_HOSTS)
+    parsed = urlparse(base_url)
+    if parsed.scheme != "https" or (parsed.hostname or "").lower() != "127.0.0.1":
+        raise RuntimeError("refusing unverified TLS outside https://127.0.0.1")
+    return httpx.Client(
+        verify=False,
+        timeout=timeout,
+        trust_env=False,
+        follow_redirects=False,
+    )
+
+
 def _antigravity_limits_uncached() -> dict:
     try:
         base_url, csrf_token = _antigravity_local_connection()
-        _assert_allowed_https_host(base_url, ANTIGRAVITY_RPC_ALLOWED_HOSTS)
         request_payload = b"{}"
         frame = b"\x00" + struct.pack(">I", len(request_payload)) + request_payload
-        response = httpx.post(
-            base_url
-            + "/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary",
-            content=frame,
-            headers={
-                "x-codeium-csrf-token": csrf_token,
-                "content-type": "application/grpc-web+json",
-                "x-grpc-web": "1",
-            },
-            verify=False,
-            timeout=8,
-            trust_env=False,
-            follow_redirects=False,
-        )
+        with _antigravity_loopback_client(base_url, timeout=8) as client:
+            response = client.post(
+                base_url
+                + "/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary",
+                content=frame,
+                headers={
+                    "x-codeium-csrf-token": csrf_token,
+                    "content-type": "application/grpc-web+json",
+                    "x-grpc-web": "1",
+                },
+            )
         response.raise_for_status()
         return _antigravity_from_quota_result(_grpc_web_json_payload(response.content))
     except Exception as exc:
@@ -271,22 +289,18 @@ def _antigravity_limits_uncached() -> dict:
 
 def _antigravity_rpc_json(method: str, payload: dict, *, timeout: float = 8) -> dict:
     base_url, csrf_token = _antigravity_local_connection()
-    _assert_allowed_https_host(base_url, ANTIGRAVITY_RPC_ALLOWED_HOSTS)
     request_payload = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     frame = b"\x00" + struct.pack(">I", len(request_payload)) + request_payload
-    response = httpx.post(
-        base_url + "/exa.language_server_pb.LanguageServerService/" + method,
-        content=frame,
-        headers={
-            "x-codeium-csrf-token": csrf_token,
-            "content-type": "application/grpc-web+json",
-            "x-grpc-web": "1",
-        },
-        verify=False,
-        timeout=timeout,
-        trust_env=False,
-        follow_redirects=False,
-    )
+    with _antigravity_loopback_client(base_url, timeout=timeout) as client:
+        response = client.post(
+            base_url + "/exa.language_server_pb.LanguageServerService/" + method,
+            content=frame,
+            headers={
+                "x-codeium-csrf-token": csrf_token,
+                "content-type": "application/grpc-web+json",
+                "x-grpc-web": "1",
+            },
+        )
     response.raise_for_status()
     return _grpc_web_json_payload(response.content)
 

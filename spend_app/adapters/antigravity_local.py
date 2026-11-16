@@ -19,9 +19,8 @@ import httpx
 from spend_app.adapters.common import UsageRow, failed_result, persist_rows, skipped_result, stable_id
 from spend_app.adapters.local_common import parse_iso_time, project_name
 from spend_app.limits import (
-    ANTIGRAVITY_RPC_ALLOWED_HOSTS,
     _antigravity_local_connection,
-    _assert_allowed_https_host,
+    _antigravity_loopback_client,
     _grpc_web_json_payload,
 )
 from spend_app.pricing import PricingEngine
@@ -207,8 +206,7 @@ def ingest(*, database_path: Path, pricing: PricingEngine, import_path: Path | N
     issues: list[str] = []
     seen = fetched = 0
     try:
-        _assert_allowed_https_host(base_url, ANTIGRAVITY_RPC_ALLOWED_HOSTS)
-        with httpx.Client(verify=False, timeout=15, trust_env=False, follow_redirects=False) as client:
+        with _antigravity_loopback_client(base_url, timeout=15) as client:
             summaries_payload = _rpc_json(
                 client,
                 base_url=base_url,

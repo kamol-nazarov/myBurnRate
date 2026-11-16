@@ -28,27 +28,40 @@ class SampleLimit(LocationError):
 
 
 def is_junction(path) -> bool:
-    """True when ``path`` is a Windows junction.
+    """True when ``path`` is a Windows reparse point, or cannot be inspected.
 
-    ``Path.is_junction`` arrived in Python 3.12. A 3.11 Windows scan must
-    still refuse junctions instead of crashing on the missing method.
-    Symlinks stay on ``is_symlink``; this only covers the other reparse point.
+    Uses ``os.lstat(path).st_file_attributes`` directly rather than
+    ``Path.is_junction()``, which returns ``False`` on ``OSError``. Missing
+    paths (``FileNotFoundError``) return ``False``; any other ``OSError`` or
+    ``ValueError`` fails closed (returns ``True``) so callers skip the entry.
     """
-    candidate = Path(path)
-    method = getattr(candidate, "is_junction", None)
-    if method is not None:
-        try:
-            return bool(method())
-        except OSError:
-            return False
     if os.name != "nt":
         return False
     try:
-        attributes = os.lstat(candidate).st_file_attributes
-    except (OSError, AttributeError):
-        return False
+        target = os.fspath(path)
+    except (TypeError, ValueError):
+        return True
+    try:
+        info = os.lstat(target)
+    except OSError as exc:
+        if _long_path_error(exc, target) and not str(target).startswith("\\\\?\\"):
+            try:
+                info = os.lstat(_extended_path(target))
+            except FileNotFoundError:
+                return False
+            except (OSError, ValueError):
+                return True
+        elif isinstance(exc, FileNotFoundError):
+            return False
+        else:
+            return True
+    except ValueError:
+        return True
     reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-    return bool(attributes & reparse) and not candidate.is_symlink()
+    try:
+        return bool(info.st_file_attributes & reparse)
+    except AttributeError:
+        return True
 
 
 def normalize(raw, meta):

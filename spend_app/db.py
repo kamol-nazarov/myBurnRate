@@ -1556,6 +1556,16 @@ def upsert_quota(
     return not existed
 
 
+MAX_AGENT_RUN_NAME_LENGTH = 120
+
+
+def cap_agent_run_name(name: str) -> str:
+    text = str(name)
+    if len(text) <= MAX_AGENT_RUN_NAME_LENGTH:
+        return text
+    return text[: MAX_AGENT_RUN_NAME_LENGTH - 1] + "…"
+
+
 def upsert_agent_run(
     connection: sqlite3.Connection,
     *,
@@ -1566,6 +1576,7 @@ def upsert_agent_run(
     started_at: str,
     last_seen_at: str,
 ) -> bool:
+    name = cap_agent_run_name(name)
     existed = connection.execute(
         "SELECT 1 FROM agent_runs WHERE id = ?", (id,)
     ).fetchone() is not None

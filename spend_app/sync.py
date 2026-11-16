@@ -33,6 +33,7 @@ from spend_app.db import (
     UsageEvent,
     connect,
     initialize,
+    cap_agent_run_name,
     prune_ingest_runs,
     upsert_agent_run,
     upsert_quota,
@@ -678,7 +679,7 @@ def apply_sync_push(
                     if upsert_agent_run(
                         connection,
                         id=rid,
-                        name=str(item["name"]),
+                        name=cap_agent_run_name(str(item["name"])),
                         model_key=item.get("model_key") or item.get("modelKey"),
                         state=str(item.get("state") or "LIVE"),
                         started_at=str(item.get("started_at") or item.get("startedAt") or stamp),
