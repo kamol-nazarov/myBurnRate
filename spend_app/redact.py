@@ -6,25 +6,46 @@ import re
 from pathlib import Path
 from urllib.parse import unquote
 
-_SECRET_FIELD = re.compile(
-    r"(?i)(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|"
-    r"passwd|authorization|cookie|session[_-]?key)|x-api-key)"
-    r"(\s*[\"']?\s*[:=]\s*[\"']?)(?:(?:bearer|basic)\s+)?[^\s\"',;}]+"
+_FIELD_NAMES = (
+    r"api[_-]?key|access[_-]?token|refresh[_-]?token|token|"
+    r"secret|password|passwd|authorization|set-cookie|cookie|session[_-]?key|x-api-key"
 )
 
-_URL_USERINFO = re.compile(r"(://)[^/\s:@]+:[^/\s:@]+(@)")
+_HEADER_TO_EOL = re.compile(
+    r"(?i)(?<![\"'\\])\b(?:set-cookie|cookie|authorization)(\s*:\s*)\S[^\r\n]*"
+)
+
+# Capture prefix+separator separately from the closing quote so replacements
+# preserve surrounding quotes/JSON structure while removing the entire value.
+_SECRET_FIELD_QUOTED_ESCAPED = re.compile(
+    rf'(?i)(\b(?:{_FIELD_NAMES})\b(?:\\?["\'])?\s*[:=]\s*\\")(?:\\\\\\"|\\\\|\\[^"\r\n]|[^\\"\r\n])*(\\"|(?=\r|\n|$))'
+)
+_SECRET_FIELD_QUOTED_DOUBLE = re.compile(
+    rf'(?i)(\b(?:{_FIELD_NAMES})\b["\']?\s*[:=]\s*")(?:\\.|[^"\\\r\n])*("|(?=\r|\n|$))'
+)
+_SECRET_FIELD_QUOTED_SINGLE = re.compile(
+    rf"(?i)(\b(?:{_FIELD_NAMES})\b[\"']?\s*[:=]\s*')(?:\\.|[^'\\\r\n])*('|(?=\r|\n|$))"
+)
+_SECRET_FIELD_UNQUOTED = re.compile(
+    rf"(?i)(\b(?:{_FIELD_NAMES})\b[\"']?)"
+    r"(?:(\s*:\s*)(?!\\?[\"'])(?:(?:bearer|basic)\s+)?[^\s\"',;}{]{8,}"
+    r"|(\s+=\s+)(?!\\?[\"'])(?:(?:bearer|basic)\s+)?[^\s\"',;}{]{8,}"
+    r"|(\s*=\s*)(?!\\?[\"'])(?:(?:bearer|basic)\s+)?[^\s\"',;}{]{7,})"
+)
+
+_URL_USERINFO = re.compile(r"(://)[^\s/:@]+:[^\s/:@]+(@)")
 
 _CREDENTIAL_TOKENS = re.compile(
     r"(?i)(?:bearer|basic)\s+\S+"
-    r"|(?<![a-z0-9_-])sk-[a-z0-9_-]+"
-    r"|\bzai_[a-z0-9_-]+"
-    r"|\bxai-[a-z0-9_-]+"
-    r"|\bor-v1-[a-z0-9_-]+"
-    r"|\bgh[pousr]_[A-Za-z0-9_]{8,}"
-    r"|\bgithub_pat_[A-Za-z0-9_]{8,}"
-    r"|\bbr_(?:m|s|p|bg|l)_[A-Za-z0-9_-]{6,}"
-    r"|\bbrpair_[A-Za-z0-9_=-]{6,}"
-    r"|(?-i:\beyJ)[A-Za-z0-9_-]{6,}(?:\.[A-Za-z0-9_-]*)*"
+    r"|(?<![A-Za-z0-9])sk-[a-z0-9_-]+"
+    r"|(?<![A-Za-z0-9])(?-i:zai_)(?!quota_endpoint(?![A-Za-z0-9_-]))[A-Za-z0-9_-]+"
+    r"|(?<![A-Za-z0-9])xai-[a-z0-9_-]+"
+    r"|(?<![A-Za-z0-9])or-v1-[a-z0-9_-]+"
+    r"|(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9_]{8,}"
+    r"|(?<![A-Za-z0-9])github_pat_[A-Za-z0-9_]{8,}"
+    r"|(?<![A-Za-z0-9])br_(?:m|s|p|bg|l)_[A-Za-z0-9_-]{6,}"
+    r"|(?<![A-Za-z0-9])brpair_[A-Za-z0-9_=-]{6,}"
+    r"|(?<![A-Za-z0-9])(?-i:eyJ)[A-Za-z0-9_-]{6,}(?:\.[A-Za-z0-9_-]*)*"
     r"|[A-Fa-f0-9]{32,}"
 )
 
@@ -69,7 +90,14 @@ def redact(
                 value = re.sub(re.escape(form), "~", value, flags=re.IGNORECASE)
 
     value = _URL_USERINFO.sub(r"\1[redacted]\2", value)
-    value = _SECRET_FIELD.sub(lambda m: m.group(1) + m.group(2) + "[redacted]", value)
+    value = _SECRET_FIELD_QUOTED_ESCAPED.sub(lambda m: m.group(1) + "[redacted]" + m.group(2), value)
+    value = _SECRET_FIELD_QUOTED_DOUBLE.sub(lambda m: m.group(1) + "[redacted]" + m.group(2), value)
+    value = _SECRET_FIELD_QUOTED_SINGLE.sub(lambda m: m.group(1) + "[redacted]" + m.group(2), value)
+    value = _HEADER_TO_EOL.sub(lambda m: m.group(0)[: m.start(1) - m.start(0)] + m.group(1) + "[redacted]", value)
+    value = _SECRET_FIELD_UNQUOTED.sub(
+        lambda m: m.group(1) + (m.group(2) or m.group(3) or m.group(4)) + "[redacted]",
+        value,
+    )
     value = _CREDENTIAL_TOKENS.sub("[redacted]", value)
     value = _EMAIL.sub("[redacted]", value)
     value = _USER_DIR.sub(r"\1[user]", value)

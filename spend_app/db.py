@@ -776,32 +776,58 @@ def usage_cache_revision(
 
 
 INGEST_ERROR_REDACT_KEY = "repair.ingest_error_redaction.v1"
+INGEST_ERROR_REDACT_BATCH_SIZE = 500
 
 
-def redact_legacy_ingest_errors(path: Path) -> int:
-    """Scrub pre-existing ingest_runs.error rows once per database."""
+def redact_legacy_ingest_errors(
+    path: Path,
+    *,
+    batch_size: int = INGEST_ERROR_REDACT_BATCH_SIZE,
+) -> int:
+    """Scrub pre-existing ingest_runs.error rows in bounded batches once per database."""
     from spend_app.redact import redact
 
-    with connect(Path(path)) as connection:
-        if connection.execute("SELECT 1 FROM app_meta WHERE key=?", (INGEST_ERROR_REDACT_KEY,)).fetchone():
+    db_path = Path(path)
+    with connect(db_path) as connection:
+        if connection.execute(
+            "SELECT 1 FROM app_meta WHERE key=?", (INGEST_ERROR_REDACT_KEY,)
+        ).fetchone():
             return 0
-        connection.execute("BEGIN IMMEDIATE")
-        if connection.execute("SELECT 1 FROM app_meta WHERE key=?", (INGEST_ERROR_REDACT_KEY,)).fetchone():
-            return 0
-        rows = connection.execute(
-            "SELECT id, error FROM ingest_runs WHERE error IS NOT NULL AND error != ''"
-        ).fetchall()
-        updated = 0
-        for row_id, error in rows:
-            cleaned = redact(error, 1000)
-            if cleaned != error:
-                connection.execute("UPDATE ingest_runs SET error=? WHERE id=?", (cleaned, row_id))
-                updated += 1
-        connection.execute(
-            "INSERT INTO app_meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (INGEST_ERROR_REDACT_KEY, json.dumps({"updatedRows": updated, "at": utc_now()})),
-        )
-        return updated
+
+    step = max(1, int(batch_size))
+    last_rowid = 0
+    updated = 0
+    while True:
+        with connect(db_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute(
+                "SELECT 1 FROM app_meta WHERE key=?", (INGEST_ERROR_REDACT_KEY,)
+            ).fetchone():
+                return updated
+            batch = connection.execute(
+                "SELECT rowid, error FROM ingest_runs "
+                "WHERE rowid > ? AND error IS NOT NULL AND error != '' "
+                "ORDER BY rowid LIMIT ?",
+                (last_rowid, step),
+            ).fetchall()
+            for row_id, error in batch:
+                last_rowid = int(row_id)
+                cleaned = redact(error, 1000)
+                if cleaned != error:
+                    connection.execute(
+                        "UPDATE ingest_runs SET error=? WHERE rowid=?", (cleaned, row_id)
+                    )
+                    updated += 1
+            if len(batch) < step:
+                connection.execute(
+                    "INSERT INTO app_meta(key, value) VALUES(?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (
+                        INGEST_ERROR_REDACT_KEY,
+                        json.dumps({"updatedRows": updated, "at": utc_now()}),
+                    ),
+                )
+                return updated
 
 
 def initialize(path: Path) -> None:
