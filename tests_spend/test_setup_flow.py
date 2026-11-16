@@ -260,11 +260,13 @@ def test_a_hub_with_an_account_accepts_no_new_ones(client: TestClient, monkeypat
 
 
 def test_there_is_no_built_in_hub_address(client: TestClient, monkeypatch) -> None:
-    monkeypatch.delenv("BURNRATE_CENTRAL_SERVER_URL", raising=False)
-    assert client.get("/api/setup/state").json()["centralServerUrl"] == ""
+    monkeypatch.delenv("BURNRATE_HUB_URL", raising=False)
+    payload = client.get("/api/setup/state").json()
+    assert payload["hubAvailable"] is False
+    assert "centralServerUrl" not in payload
     response = client.post("/api/setup/account", headers=SETUP,
                            json={"mode": "login", "username": "alex", "password": "long-enough-1"})
-    assert response.status_code == 422 and "hub's address" in response.json()["error"]
+    assert response.status_code == 422 and "No hub is configured" in response.json()["error"]
 
 
 def test_hub_update_runs_the_deploy_steps_and_refuses_odd_arguments() -> None:

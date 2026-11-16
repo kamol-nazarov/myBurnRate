@@ -148,13 +148,20 @@ def _log_config(log_path: Path) -> dict:
         "version": 1,
         "disable_existing_loggers": False,
         "formatters": {
-            "default": {"format": LOG_FORMAT},
+            "default": {
+                "()": "spend_app.redact.RedactingFormatter",
+                "format": LOG_FORMAT,
+            },
+        },
+        "filters": {
+            "hub_redact": {"()": "spend_app.redact.HubUrlRedactingFilter"},
         },
         "handlers": {
             "file": {
                 "class": "logging.handlers.RotatingFileHandler",
                 "filename": filename,
                 "formatter": "default",
+                "filters": ["hub_redact"],
                 "encoding": "utf-8",
                 "maxBytes": LOG_MAX_BYTES,
                 "backupCount": LOG_BACKUPS,
@@ -181,14 +188,17 @@ def _close_root_handlers() -> None:
 
 
 def configure_logging() -> Path:
+    from spend_app.redact import RedactingFormatter, install_log_redaction
+
     ensure_directories()
     log_path = log_dir() / "dashboard.log"
     _close_root_handlers()
     handler = logging.handlers.RotatingFileHandler(
         log_path, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUPS, encoding="utf-8"
     )
-    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    handler.setFormatter(RedactingFormatter(LOG_FORMAT))
     logging.basicConfig(level=logging.INFO, handlers=[handler], force=True)
+    install_log_redaction()
     for name, level in QUIET_LOGGERS.items():
         logging.getLogger(name).setLevel(level)
     return log_path

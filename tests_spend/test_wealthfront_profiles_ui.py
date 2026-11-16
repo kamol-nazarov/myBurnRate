@@ -135,7 +135,7 @@ def p6_settings_fixture() -> dict:
         ],
         "machines": [{"id": "pc", "name": "Desk PC", "online": True}],
         "setup": {},
-        "centralServerUrl": "",
+        "hubAvailable": False,
     }
 
 
@@ -755,7 +755,7 @@ def _xss_settings_payload() -> dict:
         ],
         "machines": [],
         "setup": {},
-        "centralServerUrl": "",
+        "hubAvailable": False,
     }
 
 

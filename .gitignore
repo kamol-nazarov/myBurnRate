@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+spend_app/_build_config.py
 
 # Python environments, build outputs, and caches
 .venv*/

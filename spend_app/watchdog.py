@@ -130,12 +130,15 @@ def restart(*, run=subprocess.run) -> tuple[bool, str]:
 
 
 def _configure_logging() -> None:
+    from spend_app.redact import RedactingFormatter, install_log_redaction
+
     service.ensure_directories()
     handler = logging.handlers.RotatingFileHandler(
         service.log_dir() / LOG_FILE, maxBytes=512 * 1024, backupCount=1, encoding="utf-8"
     )
-    handler.setFormatter(logging.Formatter(service.LOG_FORMAT))
+    handler.setFormatter(RedactingFormatter(service.LOG_FORMAT))
     logging.basicConfig(level=logging.INFO, handlers=[handler], force=True)
+    install_log_redaction()
 
 
 def check_once(*, port: int, dry_run: bool = False, token: str | None = None, sleep=time.sleep,

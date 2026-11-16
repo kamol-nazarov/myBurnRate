@@ -1161,7 +1161,8 @@ def sync_once(
                 batch["replaceAgentRuns"] = False
             response = post_fn(endpoint, json=batch, headers=headers)
             if response.status_code >= 400:
-                raise RuntimeError(f"Sync push failed ({response.status_code}): {response.text}")
+                from spend_app.redact import redact
+                raise RuntimeError(f"Sync push failed ({response.status_code}): {redact(response.text)}")
             last_result = response.json()
             total_written += int(last_result.get("eventsWritten") or 0)
             total_skipped += int(last_result.get("usageChangesSkipped") or 0)
@@ -1270,18 +1271,16 @@ def post_to_configured_hub(
     spoke = state.get("spokeConfig") or {}
     if not spoke.get("enabled"):
         return None
-    raw_hub_url = str(spoke.get("hubUrl") or "").strip()
-    if raw_hub_url:
-        from spend_app.pairing import hub_origin
+    from spend_app.config import resolve_hub_url
+    from spend_app.pairing import hub_origin
 
-        try:
-            hub_url = hub_origin(raw_hub_url)
-        except ValueError as exc:
-            if strict:
-                raise HubMutationError(str(exc), 422) from exc
-            return None
-    else:
-        hub_url = ""
+    try:
+        raw_hub_url = resolve_hub_url() or str(spoke.get("hubUrl") or "").strip()
+        hub_url = hub_origin(raw_hub_url) if raw_hub_url else ""
+    except ValueError as exc:
+        if strict:
+            raise HubMutationError(str(exc), 422) from exc
+        return None
     token = str(spoke.get("ownerSession") or "").strip()
     if path == "/api/machines" and not token:
         token = str(spoke.get("token") or "").strip()
@@ -1591,12 +1590,13 @@ def fetch_from_configured_hub(
     spoke = state.get("spokeConfig") or {}
     if not spoke.get("enabled"):
         return None
-    raw_hub_url = str(spoke.get("hubUrl") or "").strip()
-    if not raw_hub_url:
-        return None
+    from spend_app.config import resolve_hub_url
     from spend_app.pairing import hub_origin
 
     try:
+        raw_hub_url = resolve_hub_url() or str(spoke.get("hubUrl") or "").strip()
+        if not raw_hub_url:
+            return None
         hub_url = hub_origin(raw_hub_url)
     except ValueError:
         return None
@@ -1790,9 +1790,8 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
                     actor=request.state.principal,
                 )
                 request.state.audit_target = result["machine"]["id"]
-                origin = f"{request.url.scheme}://{request.headers.get('host', '127.0.0.1:17331')}"
                 result["syncCommand"] = (
-                    f"python -m spend_app sync --hub {origin} --token-file <path-to-token-file>"
+                    "python -m spend_app sync --token-file <path-to-token-file>"
                 )
                 result["syncHint"] = (
                     "Write the token to a private file first; the token is shown once in this response."

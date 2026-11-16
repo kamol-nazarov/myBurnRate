@@ -292,6 +292,8 @@ def create_app(
     app.include_router(sync_router(settings, pricing))
     from spend_app.auth_api import auth_router
     app.include_router(auth_router(settings))
+    from spend_app.redact import install_log_redaction
+    install_log_redaction()
     from spend_app.setup_wizard import setup_router
     app.include_router(setup_router(settings, pricing, collect_now=collect_now))
     app.state._resource_stack = resource_stack

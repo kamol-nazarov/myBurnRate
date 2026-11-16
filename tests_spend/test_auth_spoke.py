@@ -182,7 +182,8 @@ def test_spoke_machine_rotation_persists_replacement(pair):
     assert result["ok"]
 
 
-def test_spoke_login_refuses_revoked_machine_name_and_expired_rotation_deadline(pair, tmp_path):
+def test_spoke_login_refuses_revoked_machine_name_and_expired_rotation_deadline(pair, tmp_path, monkeypatch):
+    monkeypatch.setenv("BURNRATE_HUB_URL", HUB)
     hs, hub, ss, spoke = pair
     with connect(ss.database_path) as conn:
         machine_id = setup_wizard.read_setup_state(conn)["account"]["machineId"]
@@ -215,18 +216,19 @@ def test_spoke_login_refuses_revoked_machine_name_and_expired_rotation_deadline(
     with TestClient(create_app(fresh, enable_scheduler=False), base_url="http://testserver") as fresh_spoke:
         refused = fresh_spoke.post("/api/setup/account", headers=UI, json={
             "mode": "login", "username": "owner", "password": PASSWORD,
-            "computerName": "laptop", "serverUrl": HUB, "testSync": False,
+            "computerName": "laptop", "testSync": False,
         })
         assert refused.status_code == 422, refused.text
     with connect(hs.database_path) as conn:
         assert sync._read_state(conn)["machines"][machine_id]["revoked"] is True
 
 
-def test_setup_account_on_synced_spoke_preserves_machine_identity(pair):
+def test_setup_account_on_synced_spoke_preserves_machine_identity(pair, monkeypatch):
     _, hub, ss, spoke = pair
+    monkeypatch.setenv("BURNRATE_HUB_URL", HUB)
     original_token = state(ss)["token"]
     response = spoke.post("/api/setup/account", headers=UI, json={"mode": "login", "username": "owner",
-        "password": PASSWORD, "computerName": "Second laptop", "serverUrl": HUB, "testSync": True})
+        "password": PASSWORD, "computerName": "Second laptop", "testSync": True})
     assert response.status_code == 200, response.text
     saved = state(ss)
     assert saved["ownerSession"] and saved["token"] and saved["ownerSession"] != saved["token"]
@@ -238,13 +240,14 @@ def test_setup_account_on_synced_spoke_preserves_machine_identity(pair):
 
 
 
-def test_fresh_setup_account_enables_owner_view(pair, tmp_path):
+def test_fresh_setup_account_enables_owner_view(pair, tmp_path, monkeypatch):
     _, hub, _, _ = pair
+    monkeypatch.setenv("BURNRATE_HUB_URL", HUB)
     fresh = settings(tmp_path / "fresh.db")
     with TestClient(create_app(fresh, enable_scheduler=False), base_url="http://testserver") as spoke:
         seed(fresh.database_path, "fresh-event", 3000)
         response = spoke.post("/api/setup/account", headers=UI, json={"mode": "login", "username": "owner",
-            "password": PASSWORD, "computerName": "Fresh laptop", "serverUrl": HUB, "testSync": True})
+            "password": PASSWORD, "computerName": "Fresh laptop", "testSync": True})
         assert response.status_code == 200, response.text
         saved = state(fresh)
         assert saved["ownerSession"] and saved["token"] and saved["ownerSession"] != saved["token"]
@@ -616,8 +619,9 @@ def test_redeemed_pairing_survives_failed_initial_sync_and_retries(pair, monkeyp
     assert row is not None and row["input_tokens"] == 2100
 
 
-def test_disabled_spoke_account_login_rebinds_and_reseeds(pair):
+def test_disabled_spoke_account_login_rebinds_and_reseeds(pair, monkeypatch):
     hs, hub, ss, spoke = pair
+    monkeypatch.setenv("BURNRATE_HUB_URL", HUB)
     old_token = state(ss)["token"]
     old_cursor = sync.read_sync_cursor(ss.database_path, HUB)
     with connect(ss.database_path) as conn:
@@ -630,7 +634,7 @@ def test_disabled_spoke_account_login_rebinds_and_reseeds(pair):
     seed(ss.database_path, "disabled-snapshot", 1700)
     response = spoke.post("/api/setup/account", headers=UI,
         json={"mode": "login", "username": "owner", "password": PASSWORD,
-              "computerName": name, "serverUrl": HUB, "testSync": True})
+              "computerName": name, "testSync": True})
     assert response.status_code == 200, response.text
     saved = state(ss)
     assert saved["enabled"] and saved["token"] != old_token and saved["ownerSession"]
@@ -648,8 +652,9 @@ def test_disabled_spoke_account_login_rebinds_and_reseeds(pair):
     assert row is not None and row["input_tokens"] == 1700
 
 
-def test_expired_reused_machine_does_not_block_owner_login(pair):
+def test_expired_reused_machine_does_not_block_owner_login(pair, monkeypatch):
     hs, hub, ss, spoke = pair
+    monkeypatch.setenv("BURNRATE_HUB_URL", HUB)
     before = state(ss).copy()
     cursor = sync.read_sync_cursor(ss.database_path, HUB)
     with connect(ss.database_path) as conn:
@@ -661,7 +666,7 @@ def test_expired_reused_machine_does_not_block_owner_login(pair):
         sync._write_state(conn, machines)
     response = spoke.post("/api/setup/account", headers=UI,
         json={"mode": "login", "username": "owner", "password": PASSWORD,
-              "computerName": name, "serverUrl": HUB, "testSync": True})
+              "computerName": name, "testSync": True})
     assert response.status_code == 200, response.text
     saved = state(ss)
     assert saved["token"] == before["token"] and saved["ownerSession"]

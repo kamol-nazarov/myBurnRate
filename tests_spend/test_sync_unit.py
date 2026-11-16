@@ -698,6 +698,7 @@ def test_central_server_account_login_subscriptions_and_multi_computer_sync(
     laptop_client = TestClient(create_app(laptop_settings, enable_scheduler=False))
 
     central_url = "https://hub.test"
+    monkeypatch.setenv("BURNRATE_HUB_URL", central_url)
     register_hub_test_client(central_url, central_client)
 
     # Seed local usage and quota on MyDesktop
@@ -748,7 +749,6 @@ def test_central_server_account_login_subscriptions_and_multi_computer_sync(
             "username": "alex",
             "password": "secret-password",
             "computerName": "MyDesktop",
-            "serverUrl": central_url,
             "setupToken": "setup-secret-at-least-32-chars-1",
             "presetKeys": ["claude_max", "grok_super"],
             "customPlans": [
@@ -796,7 +796,6 @@ def test_central_server_account_login_subscriptions_and_multi_computer_sync(
             "username": "alex",
             "password": "secret-password",
             "computerName": "MacBook Pro",
-            "serverUrl": central_url,
             "testSync": True,
         },
     )

@@ -606,6 +606,7 @@ def test_l7_spoke_join_register_login_owner_session_and_rotate_end_to_end(
     local_ui = {"Origin": "http://127.0.0.1:17331", "X-BURNRATE-Request": "1"}
 
     with hub_client, spoke1, spoke2:
+        monkeypatch.setenv("BURNRATE_HUB_URL", HUB_URL)
         monkeypatch.setitem(sync._HUB_TEST_CLIENTS, HUB_URL, hub_client)
 
         # 1) Spoke 1 joins via /api/setup/account (mode=register)
@@ -617,7 +618,6 @@ def test_l7_spoke_join_register_login_owner_session_and_rotate_end_to_end(
                 "username": "owner",
                 "password": PASSWORD,
                 "computerName": "Spoke One",
-                "serverUrl": HUB_URL,
                 "setupToken": SETUP_TOKEN,
                 "testSync": True,
             },
@@ -645,7 +645,6 @@ def test_l7_spoke_join_register_login_owner_session_and_rotate_end_to_end(
                 "username": "owner",
                 "password": PASSWORD,
                 "computerName": "Spoke Two",
-                "serverUrl": HUB_URL,
                 "testSync": True,
             },
         )
@@ -1042,6 +1041,7 @@ def test_l15_setup_account_rejects_plain_http_without_outbound_call_or_persisten
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
     spoke_settings, spoke_client = _make_local_client(tmp_path, monkeypatch, db_name="spoke_acct.db")
+    monkeypatch.setenv("BURNRATE_HUB_URL", "http://hub.example")
     with spoke_client:
         httpx_calls, test_client_calls = _install_recording_hub_transport(monkeypatch, "http://hub.example")
         res = spoke_client.post(
@@ -1052,7 +1052,6 @@ def test_l15_setup_account_rejects_plain_http_without_outbound_call_or_persisten
                 "username": "owner",
                 "password": PASSWORD,
                 "computerName": "Laptop",
-                "serverUrl": "http://hub.example",
                 "setupToken": SETUP_TOKEN,
             },
         )
@@ -1066,7 +1065,7 @@ def test_l15_setup_account_rejects_plain_http_without_outbound_call_or_persisten
     assert state["spokeConfig"]["enabled"] is False
     assert state["spokeConfig"]["hubUrl"] == ""
     assert state["spokeConfig"]["token"] == ""
-    assert state["account"]["serverUrl"] == ""
+    assert "serverUrl" not in state["account"]
 
 
 def test_l15_connect_spoke_manual_rejects_plain_http_without_outbound_call_or_persistence(
@@ -1235,6 +1234,7 @@ def test_l15_loopback_http_stays_allowed_across_setup_and_egress(
     _, spoke_client = _make_local_client(tmp_path, monkeypatch, db_name="loopback_spoke.db")
     spoke_settings = _settings(tmp_path, "loopback_spoke.db")
     with hub_client, spoke_client:
+        monkeypatch.setenv("BURNRATE_HUB_URL", loopback_url)
         monkeypatch.setitem(sync._HUB_TEST_CLIENTS, loopback_url, hub_client)
 
         acct_res = spoke_client.post(
@@ -1245,7 +1245,6 @@ def test_l15_loopback_http_stays_allowed_across_setup_and_egress(
                 "username": "owner",
                 "password": PASSWORD,
                 "computerName": "Loopback Spoke",
-                "serverUrl": loopback_url,
                 "setupToken": SETUP_TOKEN,
                 "testSync": True,
             },

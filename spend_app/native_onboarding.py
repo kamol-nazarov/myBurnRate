@@ -208,7 +208,7 @@ def build_onboarding_data(
         try:
             setup = client.request("/api/setup/state").get("setup") or {}
             spoke = setup.get("spokeConfig") or {}
-            hub_connected = bool(spoke.get("enabled") and spoke.get("hubUrl"))
+            hub_connected = bool(spoke.get("enabled") and (spoke.get("hubConfigured") or spoke.get("hubUrl")))
         except Exception:  # noqa: BLE001 -- the hub flag alone degrades to False
             hub_connected = False
 

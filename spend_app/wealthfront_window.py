@@ -1526,7 +1526,7 @@ class DesktopBridge:
                 "connections": connections.get("connections") or [],
                 "machines": machines.get("machines") or [],
                 "setup": setup.get("setup") or {},
-                "centralServerUrl": setup.get("centralServerUrl") or "",
+                "hubAvailable": bool(setup.get("hubAvailable", False)),
             }
         except DesktopError as exc:
             return {"ok": False, "error": str(exc)}
@@ -1784,7 +1784,6 @@ class DesktopBridge:
 
     def connect_hub_account(
         self,
-        server_url: str,
         username: str,
         password: str,
         computer_name: str = "",
@@ -1793,15 +1792,6 @@ class DesktopBridge:
     ) -> dict:
         if self._demo:
             return {"ok": False, "error": "Hub sign-in is disabled in demo mode."}
-        raw_url = (server_url or "").strip().rstrip("/")
-        if raw_url and "://" not in raw_url:
-            raw_url = "https://" + raw_url
-        parsed = urlsplit(raw_url)
-        if parsed.scheme not in {"https", "http"} or not parsed.hostname:
-            return {
-                "ok": False,
-                "error": "Enter your VPS hub URL (for example https://your-hub.ts.net:8449).",
-            }
         clean_user = (username or "").strip()
         if not clean_user or not password:
             return {
@@ -1817,7 +1807,6 @@ class DesktopBridge:
                 "/api/setup/account",
                 {
                     "mode": auth_mode,
-                    "serverUrl": raw_url,
                     "username": clean_user,
                     "password": password,
                     "computerName": clean_comp,
@@ -1839,22 +1828,15 @@ class DesktopBridge:
         except (OSError, RuntimeError, ValueError, KeyError, TypeError):
             return {"ok": False, "error": "Could not sign in to hub account."}
 
-    def create_pairing_code(self, hub_url: str, name: str) -> dict:
+    def create_pairing_code(self, name: str) -> dict:
         if self._demo:
             return {"ok": False, "error": "Pairing is disabled in demo mode."}
-        parsed = urlsplit(hub_url.strip())
-        if (
-            parsed.scheme not in {"https", "http"}
-            or not parsed.hostname
-            or parsed.hostname in {"localhost", "127.0.0.1", "::1"}
-        ):
-            return {
-                "ok": False,
-                "error": "Enter a reachable hub address, not localhost.",
-            }
+        clean_name = (name or "").strip()
+        if not clean_name:
+            return {"ok": False, "error": "Enter a computer name."}
         try:
             res = self._client.request(
-                "/api/setup/pair-hub", {"hubUrl": hub_url.strip(), "name": name.strip()}
+                "/api/setup/pair-hub", {"name": clean_name}
             )
             return {"ok": True, "pairingCode": res.get("pairingCode", "")}
         except DesktopError as exc:

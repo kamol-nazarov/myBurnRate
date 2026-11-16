@@ -84,11 +84,14 @@ def _worker_main(connection, settings) -> None:
     from spend_app.pricing import PricingEngine
 
     try:
+        from spend_app.redact import RedactingFormatter, install_log_redaction
+
         settings.logs_path.mkdir(parents=True, exist_ok=True)
         handler = logging.handlers.RotatingFileHandler(
             settings.logs_path / "collector.log", maxBytes=2 * 1024 * 1024, backupCount=2, encoding="utf-8")
-        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+        handler.setFormatter(RedactingFormatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
         logging.basicConfig(level=logging.WARNING, handlers=[handler], force=True)
+        install_log_redaction()
     except Exception:
         pass
     pricing = PricingEngine.load(settings.pricing_path)

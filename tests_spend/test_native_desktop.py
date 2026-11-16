@@ -670,7 +670,7 @@ def test_wealthfront_bridge_hub_account_sign_in_and_spoke_sync(tmp_path, monkeyp
 
     demo_bridge = DesktopBridge(DemoClient(), demo=True)
     assert (
-        demo_bridge.connect_hub_account("https://hub.invalid", "u", "password123")["ok"]
+        demo_bridge.connect_hub_account("u", "password123")["ok"]
         is False
     )
 
@@ -709,6 +709,7 @@ def test_wealthfront_bridge_hub_account_sign_in_and_spoke_sync(tmp_path, monkeyp
         create_app(spoke_settings, enable_scheduler=False),
         base_url="http://127.0.0.1:17331",
     )
+    monkeypatch.setenv("BURNRATE_HUB_URL", "https://vps-hub.tailnet.ts.net:8449")
     monkeypatch.setitem(
         sync._HUB_TEST_CLIENTS, "https://vps-hub.tailnet.ts.net:8449", hub_client
     )
@@ -733,7 +734,7 @@ def test_wealthfront_bridge_hub_account_sign_in_and_spoke_sync(tmp_path, monkeyp
 
     try:
         missing = bridge.connect_hub_account(
-            "vps-hub.tailnet.ts.net:8449", "owner@example.com", ""
+            "owner@example.com", ""
         )
         assert missing["ok"] is False
 
@@ -750,7 +751,6 @@ def test_wealthfront_bridge_hub_account_sign_in_and_spoke_sync(tmp_path, monkeyp
         assert reg_res.status_code == 200, reg_res.text
 
         bad = bridge.connect_hub_account(
-            "vps-hub.tailnet.ts.net:8449",
             "owner@example.com",
             "wrong-password",
             "NewLaptop",
@@ -760,7 +760,6 @@ def test_wealthfront_bridge_hub_account_sign_in_and_spoke_sync(tmp_path, monkeyp
         assert "Invalid username or password" in bad["error"]
 
         good = bridge.connect_hub_account(
-            "vps-hub.tailnet.ts.net:8449",
             "owner@example.com",
             "correct-horse-88",
             "NewLaptop",
@@ -768,11 +767,10 @@ def test_wealthfront_bridge_hub_account_sign_in_and_spoke_sync(tmp_path, monkeyp
         )
         assert good["ok"] is True, good
         assert good["account"]["username"] == "owner@example.com"
+        assert "serverUrl" not in good["account"]
         assert good["setup"]["spokeConfig"]["enabled"] is True
-        assert (
-            good["setup"]["spokeConfig"]["hubUrl"]
-            == "https://vps-hub.tailnet.ts.net:8449"
-        )
+        assert good["setup"]["spokeConfig"]["hubConfigured"] is True
+        assert "hubUrl" not in good["setup"]["spokeConfig"]
 
         settings_view = bridge.get_settings_data()
         assert settings_view["ok"] is True

@@ -92,7 +92,7 @@ def issue(path, actor, *, hub_url, name, os_name="", machine_id=None, now=None):
         audit(connection, actor, "pairing.create", grant_id, now=now)
     code = encode_pairing_code(hub_url=origin, token=secret, machine_id=grant_id,
                                machine_name=clean_name, hub_name="Hub")
-    return {"ok": True, "pairingCode": code, "hubUrl": origin, "expiresAt": expiry}
+    return {"ok": True, "pairingCode": code, "expiresAt": expiry}
 
 
 def redeem(path, actor, code, request_origin, *, now=None):

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import importlib
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -10,6 +12,8 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_DIR_NAME = "BURNRATE"
+BUILTIN_HUB_MODULE = "spend_app._build_config"
+HUB_URL_ENV = "BURNRATE_HUB_URL"
 
 LOCAL_INGEST_INTERVAL_SECONDS = 15
 ADMIN_INGEST_INTERVAL_MINUTES = 15
@@ -137,6 +141,40 @@ def load_user_env() -> None:
         "BURNRATE_ENABLE_OPENCODE_GO_QUOTA",
     ):
         os.environ.setdefault(key, "1")
+
+
+def builtin_hub_url() -> str:
+    """Return the build-time hub origin from ``spend_app._build_config``, or ``""``."""
+    try:
+        mod = importlib.import_module(BUILTIN_HUB_MODULE)
+    except ImportError:
+        return ""
+    raw = str(getattr(mod, "BUILTIN_HUB_URL", "") or "").strip()
+    if not raw:
+        return ""
+    parsed = urlsplit(raw)
+    if (
+        parsed.scheme.lower() != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.path not in ("", "/")
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("Built-in hub address must be an https:// origin.")
+    return f"https://{parsed.netloc.lower()}"
+
+
+def resolve_hub_url() -> str:
+    """Return the configured hub origin: ``BURNRATE_HUB_URL`` override, then built-in."""
+    load_user_env()
+    override = os.getenv(HUB_URL_ENV, "").strip()
+    if override:
+        from spend_app.pairing import hub_origin
+
+        return hub_origin(override)
+    return builtin_hub_url()
 
 
 def load_settings(env_path: Path | None = None) -> Settings:
