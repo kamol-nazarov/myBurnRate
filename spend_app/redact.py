@@ -16,7 +16,7 @@ _FIELD_NAMES = (
     r"token|secret|password|passwd|pwd|authorization|set-cookie|cookie|session[_-]?key|x-api-key"
 )
 
-# Single key grammar shared by same-line field matchers, empty-key pending, and
+# Single key grammar shared by same-line field matching, empty-key pending, and
 # key-only pending matchers: bare, "...", '...', \"...\", and \'...\'.
 _FIELD_KEY = (
     rf'(?:\\"(?:{_FIELD_NAMES})\\"'
@@ -26,39 +26,13 @@ _FIELD_KEY = (
     rf'|\b(?:{_FIELD_NAMES})\b)'
 )
 
-# Per-line secret-field matchers (never cross line boundaries; cross-line values
-# are handled by the explicit line-level state machine in redact()).
-_HEADER_TO_EOL = re.compile(
-    r"(?i)(?<![\"'\\])\b(?:set-cookie|cookie|authorization)([^\S\r\n]*:[^\S\r\n]*)\S[^\r\n]*"
-)
+# Any recognised secret field key followed by ':' or '=' on the same line.
+# Matching values redact from value start to end of line via linear slicing.
+_SECRET_FIELD_PREFIX = re.compile(rf"(?i){_FIELD_KEY}[^\S\r\n]*[:=]")
 
-# Capture prefix+separator separately from the closing quote so replacements
-# preserve surrounding quotes/JSON structure while removing the entire value.
-# Disjoint single/two-character alternatives with bounded repetition prevent
-# backtracking on unclosed or mismatched quotes; trailing lone backslash at EOL
-# is also consumed so unclosed quotes never leak.
-_SECRET_FIELD_QUOTED_ESCAPED_DOUBLE = re.compile(
-    rf'(?i)({_FIELD_KEY}[^\S\r\n]*[:=][^\S\r\n]*\\")(?:[^\\\r\n]|\\[^"\r\n]){{0,8192}}(\\"|\\?$)'
-)
-_SECRET_FIELD_QUOTED_ESCAPED_SINGLE = re.compile(
-    rf"(?i)({_FIELD_KEY}[^\S\r\n]*[:=][^\S\r\n]*\\')(?:[^\\\r\n]|\\[^'\r\n]){{0,8192}}(\\'|\\?$)"
-)
-_SECRET_FIELD_QUOTED_DOUBLE = re.compile(
-    rf'(?i)({_FIELD_KEY}[^\S\r\n]*[:=][^\S\r\n]*")(?:[^"\\\r\n]|\\[^\r\n]){{0,8192}}("|\\?$)'
-)
-_SECRET_FIELD_QUOTED_SINGLE = re.compile(
-    rf"(?i)({_FIELD_KEY}[^\S\r\n]*[:=][^\S\r\n]*')(?:[^'\\\r\n]|\\[^\r\n]){{0,8192}}('|\\?$)"
-)
-
-# Unquoted field values:
-# - With '=', there is no minimum length and no allowlist: always redact the
-#   value (e.g. password=abc12, token=x9, api_key=short).
-# - With ':', always redact regardless of length unless the value starts with an
-#   exact known-safe status phrase in _SAFE_STATUS_PHRASES (case-insensitive)
-#   and the remainder of the consumed span (and glued tail) consists strictly of
-#   harmless trailing punctuation [.,;:!?)\\]] in a linear check.
-#   Bare prose without '=' or ':' (e.g. "password is required", "invalid token")
-#   never matches _SECRET_FIELD_UNQUOTED and stays intact.
+# Exact known-safe status phrases exempted only when the separator is ':' and the
+# entire remainder of the line, stripped, is one of these phrases plus optional
+# trailing punctuation.
 _SAFE_STATUS_PHRASES = frozenset(
     {
         "missing",
@@ -88,19 +62,7 @@ _SAFE_STATUS_PHRASES = frozenset(
         "denied",
     }
 )
-_SAFE_STATUS_ALTERNATION = "|".join(
-    r"[^\S\r\n]+".join(re.escape(part) for part in phrase.split(" "))
-    for phrase in sorted(_SAFE_STATUS_PHRASES, key=len, reverse=True)
-)
-_SAFE_PHRASE_START = re.compile(rf"(?i)(?:{_SAFE_STATUS_ALTERNATION})")
 _SAFE_TRAILING_PUNCT_CHARS = ".,;:!?)]"
-_CLAUSE_DELIM_CHARS = ",;}{\"'"
-
-_SECRET_FIELD_UNQUOTED = re.compile(
-    rf"(?i)({_FIELD_KEY})([^\S\r\n]*[:=][^\S\r\n]*)"
-    r"(?!\\?[\"'])"
-    r"((?:(?:bearer|basic)[^\S\r\n]+)?[^\s\"',;}{]+)"
-)
 
 # Cross-line pending-state matchers (evaluated on a small trailing window of the
 # whitespace-trimmed raw line):
@@ -132,50 +94,33 @@ _USER_DIR = re.compile(r"(?i)([A-Z]:[\\/]+Users[\\/]+)[^\\/\s\"']+")
 _UNIX_HOME = re.compile(r"(/(?:home|Users)/)[^/\s\"']+")
 
 
-def _replace_quoted_secret(match: re.Match[str]) -> str:
-    closing = match.group(2)
-    if closing == "\\":
-        closing = ""
-    return f"{match.group(1)}[redacted]{closing}"
+def _is_safe_status_value(rest: str) -> bool:
+    """Return True if rest (after ':') is strictly a known-safe phrase plus optional trailing punctuation."""
+    candidate = rest.rstrip(_SAFE_TRAILING_PUNCT_CHARS).rstrip()
+    if not candidate:
+        return False
+    normalized = " ".join(candidate.lower().split())
+    return normalized in _SAFE_STATUS_PHRASES
 
 
-def _replace_unquoted_secret(match: re.Match[str]) -> str:
-    prefix, sep, raw_val = match.group(1), match.group(2), match.group(3)
-    if "=" in sep:
-        return f"{prefix}{sep}[redacted]"
-    if re.match(r"(?i)^(?:bearer|basic)[^\S\r\n]+", raw_val):
-        return f"{prefix}{sep}[redacted]"
+def _redact_secret_field_to_eol(line: str) -> str:
+    """Redact from the start of a recognised secret field's value to the end of the line."""
+    match = _SECRET_FIELD_PREFIX.search(line)
+    if not match:
+        return line
 
-    line = match.string
-    start = match.start(3)
+    sep_char = line[match.end() - 1]
+    val_start = match.end()
     line_len = len(line)
-    phrase_match = _SAFE_PHRASE_START.match(line, start, min(line_len, start + 64))
-    if not phrase_match:
-        return f"{prefix}{sep}[redacted]"
+    while val_start < line_len and line[val_start].isspace():
+        val_start += 1
+    if val_start >= line_len:
+        return line
 
-    phrase_end = phrase_match.end()
-    # Linear check of the remainder of the consumed span and any non-whitespace
-    # characters glued onto the phrase before a whitespace or clause delimiter.
-    tail_end = phrase_end
-    while (
-        tail_end < line_len
-        and line[tail_end] not in _CLAUSE_DELIM_CHARS
-        and not line[tail_end].isspace()
-    ):
-        tail_end += 1
-    glued_tail = line[phrase_end:tail_end]
-    if glued_tail.strip(_SAFE_TRAILING_PUNCT_CHARS):
-        return f"{prefix}{sep}[redacted]"
+    if sep_char == ":" and _is_safe_status_value(line[val_start:]):
+        return line
 
-    if tail_end < line_len and line[tail_end].isspace():
-        if not any(ch in ".!?)]" for ch in glued_tail):
-            rest_pos = tail_end
-            while rest_pos < line_len and line[rest_pos].isspace():
-                rest_pos += 1
-            if rest_pos < line_len and line[rest_pos] not in _CLAUSE_DELIM_CHARS:
-                return f"{prefix}{sep}[redacted]"
-
-    return match.group(0)
+    return f"{line[:val_start]}[redacted]"
 
 
 def _line_sets_pending(line: str) -> bool:
@@ -210,16 +155,11 @@ def _is_separator_only_line(line: str) -> bool:
 
 
 def _redact_line(line: str, home_forms: list[str]) -> str:
+    line = _redact_secret_field_to_eol(line)
     for form in home_forms:
         line = re.sub(re.escape(form), "~", line, flags=re.IGNORECASE)
 
     line = _URL_USERINFO.sub(r"\1[redacted]\2", line)
-    line = _SECRET_FIELD_QUOTED_ESCAPED_DOUBLE.sub(_replace_quoted_secret, line)
-    line = _SECRET_FIELD_QUOTED_ESCAPED_SINGLE.sub(_replace_quoted_secret, line)
-    line = _SECRET_FIELD_QUOTED_DOUBLE.sub(_replace_quoted_secret, line)
-    line = _SECRET_FIELD_QUOTED_SINGLE.sub(_replace_quoted_secret, line)
-    line = _HEADER_TO_EOL.sub(lambda m: m.group(0)[: m.start(1) - m.start(0)] + m.group(1) + "[redacted]", line)
-    line = _SECRET_FIELD_UNQUOTED.sub(_replace_unquoted_secret, line)
     line = _CREDENTIAL_TOKENS.sub("[redacted]", line)
     if "@" in line:
         line = _EMAIL.sub("[redacted]", line)
@@ -287,11 +227,11 @@ def redact(
 
         if not line.strip():
             scrubbed_line = "" if len(line) > _MAX_LINE_CHARS else line
+        elif expect_crossline_secret and _is_separator_only_line(line):
+            scrubbed_line = "[line omitted]" if len(line) > _MAX_LINE_CHARS else line
         elif len(line) > _MAX_LINE_CHARS:
             expect_crossline_secret = _line_sets_pending(line)
             scrubbed_line = "[line omitted]"
-        elif expect_crossline_secret and _is_separator_only_line(line):
-            scrubbed_line = line
         else:
             next_pending = _line_sets_pending(line)
             if expect_crossline_secret:
