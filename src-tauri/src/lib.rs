@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent, Wry};
+use tauri::{AppHandle, Manager, RunEvent, State, WindowEvent, Wry};
 use auto_launch::{AutoLaunch, AutoLaunchBuilder, MacOSLaunchMode, WindowsEnableMode};
 use tauri_plugin_updater::UpdaterExt;
 
@@ -641,7 +641,6 @@ fn check_for_update(app: &AppHandle) -> Option<String> {
         *pending = Some(update);
     }
     set_update_menu_text(app, &format!("Install update {version} and restart"));
-    let _ = app.emit_to("hud", "burnrate://update-available", &version);
     Some(version)
 }
 
@@ -660,16 +659,6 @@ fn updates_enabled(app: &AppHandle) -> bool {
         && env::var("BURNRATE_UPDATES").map(|v| v.trim() != "0").unwrap_or(true)
 }
 
-#[tauri::command]
-fn pending_update(state: State<'_, PendingUpdate>) -> Option<String> {
-    state
-        .update
-        .lock()
-        .ok()
-        .and_then(|update| update.as_ref().map(|update| update.version.clone()))
-}
-
-#[tauri::command]
 async fn install_update(app: AppHandle) -> Result<(), String> {
     // A copy, so the update stays offered if this attempt fails.
     let update = app
@@ -1832,9 +1821,7 @@ pub fn run() {
             minimize_main,
             toggle_maximize_main,
             hide_main,
-            open_setup_wizard,
-            pending_update,
-            install_update
+            open_setup_wizard
         ])
         .setup(move |app| {
             #[cfg(target_os = "windows")]
