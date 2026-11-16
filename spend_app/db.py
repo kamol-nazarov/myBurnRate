@@ -775,6 +775,35 @@ def usage_cache_revision(
     )
 
 
+INGEST_ERROR_REDACT_KEY = "repair.ingest_error_redaction.v1"
+
+
+def redact_legacy_ingest_errors(path: Path) -> int:
+    """Scrub pre-existing ingest_runs.error rows once per database."""
+    from spend_app.redact import redact
+
+    with connect(Path(path)) as connection:
+        if connection.execute("SELECT 1 FROM app_meta WHERE key=?", (INGEST_ERROR_REDACT_KEY,)).fetchone():
+            return 0
+        connection.execute("BEGIN IMMEDIATE")
+        if connection.execute("SELECT 1 FROM app_meta WHERE key=?", (INGEST_ERROR_REDACT_KEY,)).fetchone():
+            return 0
+        rows = connection.execute(
+            "SELECT id, error FROM ingest_runs WHERE error IS NOT NULL AND error != ''"
+        ).fetchall()
+        updated = 0
+        for row_id, error in rows:
+            cleaned = redact(error, 1000)
+            if cleaned != error:
+                connection.execute("UPDATE ingest_runs SET error=? WHERE id=?", (cleaned, row_id))
+                updated += 1
+        connection.execute(
+            "INSERT INTO app_meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (INGEST_ERROR_REDACT_KEY, json.dumps({"updatedRows": updated, "at": utc_now()})),
+        )
+        return updated
+
+
 def initialize(path: Path) -> None:
     from spend_app.subscription_schema import upgrade_database
     upgrade_database(path, _initialize_base)
@@ -784,6 +813,7 @@ def initialize(path: Path) -> None:
     retire_cursor_usage(path)
     dedupe_grok_calls(path)
     retire_muse_rollup_events(path)
+    redact_legacy_ingest_errors(path)
     from spend_app.auth_model import ensure_schema
     ensure_schema(path)
 

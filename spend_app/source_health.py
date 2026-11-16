@@ -19,6 +19,7 @@ from typing import Iterator
 
 from spend_app.db import connect, initialize
 from spend_app.ingest import IngestRun
+from spend_app.redact import redact
 from spend_app.source_evidence import sanitize_reason as sanitize_reason
 
 
@@ -151,14 +152,14 @@ def source_attempt(database_path: Path, source: str) -> Iterator[list[AttemptRes
     except Exception as exc:
         with connect(database_path) as connection:
             IngestRun(connection, source, run_id).finish(
-                status="failed", error=sanitize_reason(exc)
+                status="failed", error=sanitize_reason(redact(exc, 240))
             )
         raise
     with connect(database_path) as connection:
         run = IngestRun(connection, source, run_id)
         if not outcomes:
             run.finish(
-                status="failed", error=sanitize_reason("ingest produced no result")
+                status="failed", error=sanitize_reason(redact("ingest produced no result", 240))
             )
         else:
             result = outcomes[0]

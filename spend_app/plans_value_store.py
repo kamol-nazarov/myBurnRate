@@ -31,6 +31,7 @@ from spend_app.plans_value_periods import (
     resolve_period_bounds,
 )
 from spend_app.providers import REGISTRY
+from spend_app.redact import redact
 from spend_app.source_evidence import sanitize_reason, source_reason_text
 from spend_app.timeutil import epoch_micros, from_epoch_micros, iso_utc, parse_utc
 
@@ -222,7 +223,7 @@ def _safe_health_reason(raw: Any, source: str) -> str | None:
 
     # Keep the existing diagnostic vocabulary for known categories.  It maps
     # credential/configuration and permission details to safe explanations.
-    normalized = sanitize_reason(raw)
+    normalized = sanitize_reason(redact(raw, 240))
     lowered = normalized.lower()
     if any(marker in lowered for marker in _MISSING_MARKERS):
         return safe_reason(normalized, source)
@@ -235,7 +236,7 @@ def _safe_health_reason(raw: Any, source: str) -> str | None:
     # report must defend against older rows and synthetic fixtures too.
     import re
 
-    text = source_reason_text(normalized)
+    text = source_reason_text(redact(normalized, 240))
     if re.fullmatch(r"redacted (?:provider|cursor|codex|source) failure", text.lower()):
         return text
     if text.lower() == "adaptive cadence":

@@ -7,18 +7,16 @@ vocabulary; credential scrubbing alone is not a general privacy guarantee.
 
 import re
 
-_CREDENTIAL_SHAPED = re.compile(
-    r"(?i)(bearer\s+)\S+|(basic\s+)\S+|(sk-[a-z0-9_-]{8,})|(x-api-key\s*[:=]\s*)\S+|"
-    r"(eyJ[A-Za-z0-9_-]{10,}\.)|(gh[pousr]_[A-Za-z0-9]{20,})|([A-Fa-f0-9]{32,})|"
-    r"(br_(?:m|s|p|bg|l)_[A-Za-z0-9_-]{8,})|(brpair_[A-Za-z0-9_=-]{8,})"
-)
+from spend_app.redact import redact
+
 _MAX_REASON = 240
 
 
 def sanitize_reason(value: object) -> str:
     """One-line, secret-free, class-free reason safe for DB/log/API."""
-    text = str(value if value is not None else "").replace("\n", " ").replace("\r", " ")
-    text = _CREDENTIAL_SHAPED.sub("[redacted]", text)
+    if value is None:
+        return ""
+    text = redact(value, _MAX_REASON).replace("\n", " ").replace("\r", " ")
     text = re.sub(r"\s+", " ", text).strip()
     return text[:_MAX_REASON]
 

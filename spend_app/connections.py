@@ -17,6 +17,7 @@ from pathlib import Path
 from spend_app.connection_paths import Inspector, LocationError, MissingLocation, approved, identity
 from spend_app.db import connect
 from spend_app.providers import REGISTRY
+from spend_app.redact import redact
 
 KEY = "connections.v1"
 # Provider APIs that report an account balance only, never usage events.
@@ -304,7 +305,7 @@ class Service:
                         record = current["bindings"].get(spec.key)
                         if not record or record["revision"] != revision:
                             raise Conflict("Connection changed. Reload before rechecking.")
-                        record.update(state="needs_attention" if record["enabled"] else "disabled", detail=str(exc), lastVerification=now())
+                        record.update(state="needs_attention" if record["enabled"] else "disabled", detail=redact(str(exc), 1000), lastVerification=now())
                     raise
                 if location_conflict(spec, checked["location"]):
                     raise Conflict("Selected location conflicts with " + spec.connection.location_env + ". Resolve the external setting first.")
@@ -372,14 +373,14 @@ class Service:
             if status in {"success", "partial"}:
                 accepted = result.get("eventsAccepted", result.get("eventsSeen", 0))
                 if not accepted and result.get("issues"):
-                    record.update(state="needs_attention", detail="Source metadata was read, but usage could not be accepted safely: " + ", ".join(result["issues"]))
+                    record.update(state="needs_attention", detail=redact("Source metadata was read, but usage could not be accepted safely: " + ", ".join(str(i) for i in result["issues"]), 1000))
                     return
                 seen = accepted > 0 or record["state"] == "receiving_usage"
                 record.update(lastImport=now(), importRevision=revision,
                               state=("balance_available" if source in BALANCE_SOURCES else "receiving_usage") if (seen or source in BALANCE_SOURCES) else "waiting_activity",
                               detail=("Balance updated; usage events are a separate connection." if source in BALANCE_SOURCES else "Import completed. Missing pricing and quota do not disconnect usage.") if (seen or source in BALANCE_SOURCES) else "Readable; waiting for usage. No paid turn is required to finish setup.")
                 if result.get("issues"):
-                    record["detail"] += " Some records need attention: " + "; ".join(str(issue).replace("_", " ") for issue in sorted(set(result["issues"]))[:3]) + ". Review the provider compatibility guidance before changing the source."
+                    record["detail"] = redact(record["detail"] + " Some records need attention: " + "; ".join(redact(str(issue)).replace("_", " ") for issue in sorted(set(result["issues"]))[:3]) + ". Review the provider compatibility guidance before changing the source.", 1000)
             else:
                 record.update(state="needs_attention", detail="Import unavailable. Recheck location, permissions or provider access; collection will retry on its normal cadence.")
 

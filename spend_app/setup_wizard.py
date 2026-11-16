@@ -597,14 +597,23 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
             write_setup_state(connection, latest)
         return result
     except Exception as exc:
+        import httpx
+
+        msg = str(exc)
+        if isinstance(exc, (httpx.RequestError, OSError)):
+            code = "hub_unreachable"
+        elif "Sync push failed (401)" in msg or "Sync push failed (403)" in msg:
+            code = "hub_rejected"
+        else:
+            code = "sync_failed"
         with connect(settings.database_path) as connection:
             connection.execute("BEGIN IMMEDIATE")
             latest = read_setup_state(connection)
             if latest["spokeConfig"].get("token") != token or latest["spokeConfig"].get("hubUrl") != hub_url:
                 return {"ok": False, "error": "Pairing changed; retry sync with the current configuration."}
-            latest["spokeConfig"]["lastSyncError"] = str(exc)[:240]
+            latest["spokeConfig"]["lastSyncError"] = code
             write_setup_state(connection, latest)
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": code}
 
 
 # Setup shows a tool as not read recently only after this long without a
@@ -2630,7 +2639,12 @@ SETUP_WIZARD_HTML = """<!doctype html>
           if (connected) {
             let text = "This computer sends its usage to your hub at " + spoke.hubUrl;
             if (s.account?.username) text += " as " + s.account.username;
-            if (spoke.lastSyncError) text += ". The last sync failed: " + spoke.lastSyncError;
+            const SYNC_ERROR_TEXT = {
+              hub_unreachable: "could not reach the hub",
+              hub_rejected: "hub rejected this computer's sync credential",
+              sync_failed: "sync failed"
+            };
+            if (spoke.lastSyncError) text += ". The last sync failed: " + (SYNC_ERROR_TEXT[spoke.lastSyncError] || "sync failed");
             else if (spoke.usageChangesPending) text += ". Update the hub to receive usage corrections and deletions.";
             else if (spoke.lastSyncAt) text += " · last sync " + ago(spoke.lastSyncAt);
             $("wiz-current-text").textContent = text + ".";

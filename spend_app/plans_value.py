@@ -25,6 +25,7 @@ from zoneinfo import ZoneInfo
 
 from spend_app.pricing import PricingEngine, UnpricedModelError
 from spend_app.plans_value_groups import SUPPORTED_TOOLS, canonical_tool_key
+from spend_app.redact import redact
 from spend_app.source_evidence import source_reason_text
 from spend_app.value_summary import ValueSummary, ratio_with_coverage
 
@@ -306,7 +307,9 @@ def _collection_source_label(value: Any, source: str) -> str:
 
 def _collection_safe_text(value: Any) -> str | None:
     """Keep the report projection seam while sharing metadata redaction."""
-    return source_reason_text(value)
+    if value is None or not str(value).strip():
+        return None
+    return source_reason_text(redact(value, 240))
 
 
 def _collection_freshness(mapping: Mapping[str, Any]) -> dict:

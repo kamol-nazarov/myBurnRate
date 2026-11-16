@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
+import os
 import sqlite3
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -25,17 +25,12 @@ from spend_app.db import (
     utc_now,
 )
 from spend_app.ingest import IngestRun
+from spend_app.redact import redact
 from spend_app.pricing import Price, PricingEngine, UnpricedModelError
 
 HEALTHY_INGEST_STATUSES = frozenset({"success", "partial"})
 INCOMPLETE_TELEMETRY_ISSUE = (
     "Token components are incomplete; cache rate is unavailable for this event."
-)
-_CREDENTIAL_RE = re.compile(
-    r"(?i)(?P<prefix>bearer\s+|basic\s+|x-api-key\s*[:=]\s*|"
-    r"authorization\s*[:=]\s*(?:bearer\s+|basic\s+)?)\S+"
-    r"|(?P<token>sk-[a-z0-9-]+|zai_[a-z0-9_-]+|xai-[a-z0-9_-]+|or-v1-[a-z0-9]+|"
-    r"eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+)"
 )
 
 
@@ -82,24 +77,18 @@ class CostRow:
 
 
 def public_error(exc: BaseException) -> str:
-    """Strip credential-shaped tokens from adapter errors before persistence."""
+    """Return a fixed diagnostic sentence by default, or redacted raw text when debugging."""
 
-    from spend_app.connection_paths import APPROVED_REVISION
-    if APPROVED_REVISION.get():
-        if isinstance(exc, PermissionError):
-            return "Permission denied reading the connected source. Recheck access."
-        status = getattr(getattr(exc, "response", None), "status_code", None)
-        if status in {401, 403}:
-            return "Connected provider rejected the credential or its read scope."
-        if status == 429:
-            return "Connected provider rate limited collection. Wait for the normal retry cadence."
-        return "Connected source could not be imported. Recheck its location, schema or provider access."
-
-    def _replace(match: re.Match[str]) -> str:
-        prefix = match.group("prefix")
-        return f"{prefix}[redacted]" if prefix else "[redacted]"
-
-    return _CREDENTIAL_RE.sub(_replace, str(exc))[:1000]
+    if os.environ.get("BURNRATE_DEBUG_ERRORS") == "1":
+        return redact(str(exc), 1000)
+    if isinstance(exc, PermissionError):
+        return "Permission denied reading the connected source. Recheck access."
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status in {401, 403}:
+        return "Connected provider rejected the credential or its read scope."
+    if status == 429:
+        return "Connected provider rate limited collection. Wait for the normal retry cadence."
+    return "Connected source could not be imported. Recheck its location, schema or provider access."
 
 
 def event_is_exact(source: str, price: Price) -> bool:

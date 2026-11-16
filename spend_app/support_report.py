@@ -9,39 +9,22 @@ puts the text on the clipboard for the owner to paste where they choose.
 from __future__ import annotations
 
 import platform
-import re
 import sys
 from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
 
 from spend_app import __version__
-from spend_app.source_evidence import _CREDENTIAL_SHAPED
+from spend_app.redact import redact as _redact
 
 LOG_FILES = ("dashboard.log", "collector.log", "watchdog.log")
 LOG_LINES = 40
 LINE_CHARS = 400
 FAILED_RUNS = 12
 
-_SECRET_FIELD = re.compile(
-    r"(?i)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|passwd|authorization|cookie|session[_-]?key)"
-    r"(\s*[\"']?\s*[:=]\s*[\"']?)(?:(?:bearer|basic)\s+)?[^\s\"',;}]+"
-)
-_EMAIL = re.compile(r"(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}")
-_USER_DIR = re.compile(r"(?i)([A-Z]:[\\/]+Users[\\/]+)[^\\/\s\"']+")
-_UNIX_HOME = re.compile(r"(/(?:home|Users)/)[^/\s\"']+")
-
 
 def redact(text: str, home: Path | None = None) -> str:
-    home_text = str(home or Path.home())
-    for form in {home_text, home_text.replace("\\", "/"), home_text.replace("/", "\\"), home_text.replace("\\", "\\\\")}:
-        if len(form) > 3:
-            text = re.sub(re.escape(form), "~", text, flags=re.IGNORECASE)
-    text = _CREDENTIAL_SHAPED.sub("[redacted]", text)
-    text = _SECRET_FIELD.sub(lambda m: m.group(1) + m.group(2) + "[redacted]", text)
-    text = _EMAIL.sub("[email]", text)
-    text = _USER_DIR.sub(r"\1[user]", text)
-    return _UNIX_HOME.sub(r"\1[user]", text)
+    return _redact(text, home=home or Path.home())
 
 
 def _age(seconds) -> str:
@@ -60,7 +43,7 @@ def _age(seconds) -> str:
 def _tail(path: Path, lines: int = LOG_LINES) -> list[str]:
     try:
         with path.open("r", encoding="utf-8", errors="replace") as handle:
-            return [line.rstrip("\n")[:LINE_CHARS] for line in deque(handle, maxlen=lines)]
+            return [line.rstrip("\n") for line in deque(handle, maxlen=lines)]
     except OSError:
         return []
 
@@ -116,7 +99,7 @@ def build_report(settings, *, now: datetime | None = None, log_dir: Path | None 
     out += ["", "## Sign-in reuse switches"]
     out += [f"- {item['label']}: {'on' if item.get('enabled') else 'off'}" for item in consent_state()]
     out += ["", f"## Recent failed runs ({len(failed)})"]
-    out += [f"- {started} {source}: {(error or status)[:LINE_CHARS]}" for source, status, started, error in failed]
+    out += [f"- {started} {source}: {redact(error or status)[:LINE_CHARS]}" for source, status, started, error in failed]
     if log_dir is None:
         from spend_app.service import log_dir as service_log_dir
 
@@ -127,5 +110,5 @@ def build_report(settings, *, now: datetime | None = None, log_dir: Path | None 
     for name in LOG_FILES:
         lines = _tail(log_dir / name) if log_dir is not None else []
         if lines:
-            out += ["", f"## {name} (last {len(lines)} lines)", *lines]
+            out += ["", f"## {name} (last {len(lines)} lines)", *(redact(line)[:LINE_CHARS] for line in lines)]
     return redact("\n".join(out)) + "\n"
