@@ -1599,18 +1599,15 @@ class DesktopBridge:
         )
         try:
             res = mutation.send(body)
+            self._mutations.pop(mutation_key, None)
             return (res if isinstance(res, dict) else {}), None
         except DesktopError as exc:
             if retry_409 and exc.status_code == 409 and profile is not None:
                 try:
                     fresh_rev = self._fresh_profile_revision(source, profile)
-                    if fresh_rev is not None:
-                        retry_body = dict(body)
-                        retry_body["revision"] = fresh_rev
-                        res = mutation.send(retry_body)
-                        return (res if isinstance(res, dict) else {}), None
-                except DesktopError as retry_exc:
-                    return None, {"ok": False, "error": str(retry_exc)}
+                except DesktopError as reload_exc:
+                    self._mutations.pop(mutation_key, None)
+                    return None, {"ok": False, "error": str(reload_exc)}
                 except (
                     OSError,
                     AttributeError,
@@ -1618,8 +1615,27 @@ class DesktopBridge:
                     ValueError,
                     KeyError,
                     TypeError,
-                ) as retry_exc:
-                    LOGGER.debug("Optional UI call skipped: %s", retry_exc)
+                ) as reload_exc:
+                    LOGGER.debug("Optional UI call skipped: %s", reload_exc)
+                    fresh_rev = None
+                if fresh_rev is not None:
+                    retry_body = dict(body)
+                    retry_body["revision"] = fresh_rev
+                    try:
+                        res = mutation.send(retry_body)
+                        self._mutations.pop(mutation_key, None)
+                        return (res if isinstance(res, dict) else {}), None
+                    except DesktopError as retry_exc:
+                        if (
+                            retry_exc.status_code is not None
+                            and 400 <= retry_exc.status_code < 500
+                        ):
+                            self._mutations.pop(mutation_key, None)
+                        return None, {"ok": False, "error": str(retry_exc)}
+                    except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+                        return None, {"ok": False, "error": fallback_error}
+            if exc.status_code is not None and 400 <= exc.status_code < 500:
+                self._mutations.pop(mutation_key, None)
             return None, {"ok": False, "error": str(exc)}
         except (OSError, RuntimeError, ValueError, KeyError, TypeError):
             return None, {"ok": False, "error": fallback_error}
