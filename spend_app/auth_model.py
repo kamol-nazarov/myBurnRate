@@ -98,7 +98,16 @@ def ensure_schema(path):
             connection.execute(sql)
         grant_cols = {row[1] for row in connection.execute("PRAGMA table_info(pairing_grants)")}
         if grant_cols and "by_name" not in grant_cols:
-            connection.execute("ALTER TABLE pairing_grants ADD COLUMN by_name INTEGER NOT NULL DEFAULT 0")
+            connection.commit()
+            connection.execute("BEGIN IMMEDIATE")
+            grant_cols = {row[1] for row in connection.execute("PRAGMA table_info(pairing_grants)")}
+            if "by_name" not in grant_cols:
+                connection.execute("ALTER TABLE pairing_grants ADD COLUMN by_name INTEGER NOT NULL DEFAULT 0")
+                connection.execute(
+                    "UPDATE pairing_grants SET expires_at=? WHERE machine_id IS NULL AND used_at IS NULL",
+                    (stamp(moment() - timedelta(seconds=1)),),
+                )
+            connection.commit()
         if connection.execute("SELECT 1 FROM app_meta WHERE key=?", (MARKER,)).fetchone():
             row = connection.execute("SELECT value FROM app_meta WHERE key='machines.v1'").fetchone()
             if row:

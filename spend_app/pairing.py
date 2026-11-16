@@ -65,14 +65,14 @@ def issue(path, actor, *, hub_url, name, os_name="", machine_id=None, now=None):
                 # once invalidates any spare invitations for the same computer name.
                 existing_rows = connection.execute(
                     "SELECT machine_id, expires_at FROM pairing_grants "
-                    "WHERE used_at IS NULL AND machine_id IS NOT NULL AND LOWER(TRIM(machine_name))=LOWER(?) "
+                    "WHERE used_at IS NULL AND by_name=1 AND machine_id IS NOT NULL AND LOWER(TRIM(machine_name))=LOWER(?) "
                     "ORDER BY created_at DESC",
                     (clean_name,),
                 ).fetchall()
                 for row in existing_rows:
                     exp = parse(row["expires_at"])
                     cand_id = row["machine_id"]
-                    if exp and exp > current and not (state["machines"].get(cand_id) or {}).get("revoked"):
+                    if exp and exp > current and cand_id not in state["machines"]:
                         machine_id = cand_id
                         break
                 if not machine_id:
@@ -104,7 +104,8 @@ def redeem(path, actor, code, request_origin, *, now=None):
         connection.execute("BEGIN IMMEDIATE")
         rec = connection.execute("SELECT * FROM pairing_grants WHERE id=?", (grant_id,)).fetchone()
         if (not rec or not hmac.compare_digest(digest(str(decoded.get("token") or "")), rec["secret_hash"])
-                or rec["used_at"] or not parse(rec["expires_at"]) or parse(rec["expires_at"]) <= moment(now)
+                or rec["used_at"] or not rec["machine_id"]
+                or not parse(rec["expires_at"]) or parse(rec["expires_at"]) <= moment(now)
                 or request_origin != rec["hub_origin"] or hub_origin(str(decoded["hubUrl"])) != rec["hub_origin"]):
             audit(connection, actor, "pairing.redeem", "pairing", "failure", now=now)
             return JSONResponse({"error": "Pairing code invalid, expired, used or bound to another Host."}, status_code=403)
@@ -113,8 +114,12 @@ def redeem(path, actor, code, request_origin, *, now=None):
         grant_name = str(rec["machine_name"] or "").strip()
         is_name_bound = bool(rec["by_name"]) if "by_name" in rec.keys() else False
         try:
-            if target_id and target_id in state["machines"] and is_name_bound and state["machines"][target_id].get("revoked"):
-                raise ValueError("Revoked machine cannot be revived by a name-only invitation.")
+            if is_name_bound and target_id in state["machines"]:
+                existing = state["machines"][target_id]
+                if not isinstance(existing, dict) or existing.get("revoked"):
+                    raise ValueError("Revoked machine cannot be revived by a name-only invitation.")
+                if str(existing.get("name", "")).strip().lower() != grant_name.lower():
+                    raise ValueError("Pairing name no longer matches that machine.")
             if is_name_bound:
                 for mid, mrec in state["machines"].items():
                     if mid != target_id and isinstance(mrec, dict) and str(mrec.get("name", "")).strip().lower() == grant_name.lower():

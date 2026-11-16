@@ -234,7 +234,7 @@ def _register_in_connection(
     matched_id = machine_id
     if matched_id is not None and not allow_new_id and matched_id not in state["machines"]:
         raise ValueError("Unknown machine.")
-    if matched_id is None and reconnect:
+    if matched_id is None:
         matches = [
             mid for mid, rec in state["machines"].items()
             if isinstance(rec, dict) and str(rec.get("name", "")).strip().lower() == clean_name.lower()
@@ -245,7 +245,8 @@ def _register_in_connection(
                 raise ValueError(
                     "Multiple or revoked machines match that name; specify the machine ID."
                 )
-            matched_id = active[0]
+            if reconnect:
+                matched_id = active[0]
     if matched_id is None:
         matched_id = f"machine-{secrets.token_hex(8)}"
         while matched_id in state["machines"] or matched_id in {"local", "all"}:
@@ -1618,29 +1619,31 @@ def fetch_from_configured_hub(
             return None
         start_gen = _HUB_CREDENTIAL_GENERATIONS.get(token_digest, 0)
         cached = _HUB_PROXY_CACHE.get(cache_key)
+
+    def _fenced_display(payload: dict) -> dict | None:
+        display = _hub_copy_for_display(settings, payload)
+        with _HUB_PROXY_LOCK:
+            if token_digest in _HUB_REJECTED_CREDENTIALS or _HUB_CREDENTIAL_GENERATIONS.get(token_digest, 0) != start_gen:
+                return None
+        return display
+
     if cached:
         fetched_at, payload, fresh = cached
         age = time.monotonic() - fetched_at
         if fresh and age < ttl_seconds and (stale_seconds <= 0 or age < stale_seconds):
-            return _hub_copy_for_display(settings, payload)
+            return _fenced_display(payload)
         if stale_seconds > 0 and age < stale_seconds:
             _renew_hub_copy_in_background(cache_key, read)
-            return _hub_copy_for_display(settings, payload)
+            return _fenced_display(payload)
     elif stale_seconds > 0:
         _renew_hub_copy_in_background(cache_key, read)
         return None
     data = read()
     if data is None:
-        with _HUB_PROXY_LOCK:
-            if token_digest in _HUB_REJECTED_CREDENTIALS or _HUB_CREDENTIAL_GENERATIONS.get(token_digest, 0) != start_gen:
-                return None
         if cached and (stale_seconds <= 0 or (time.monotonic() - cached[0]) < stale_seconds):
-            return _hub_copy_for_display(settings, cached[1])
+            return _fenced_display(cached[1])
         return None
-    with _HUB_PROXY_LOCK:
-        if token_digest in _HUB_REJECTED_CREDENTIALS or _HUB_CREDENTIAL_GENERATIONS.get(token_digest, 0) != start_gen:
-            return None
-    return _hub_copy_for_display(settings, data)
+    return _fenced_display(data)
 
 
 _HUB_REJECTED_CREDENTIALS: set[str] = set()
@@ -1779,17 +1782,11 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
                 if isinstance(hub_res, dict) and isinstance(hub_res.get("machines"), list):
                     return JSONResponse(hub_res, headers={"Cache-Control": "no-store"})
             if action == "register":
-                principal = request.state.principal
-                register_fn = (
-                    register_or_reconnect_machine
-                    if principal.kind == "owner" and principal.via in {"cookie", "bearer"}
-                    else register_machine
-                )
-                result = register_fn(
+                result = register_or_reconnect_machine(
                     settings.database_path,
                     name=str(body.get("name") or ""),
                     os_name=str(body.get("os") or ""),
-                    actor=principal,
+                    actor=request.state.principal,
                 )
                 request.state.audit_target = result["machine"]["id"]
                 origin = f"{request.url.scheme}://{request.headers.get('host', '127.0.0.1:17331')}"
