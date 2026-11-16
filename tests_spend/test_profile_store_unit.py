@@ -1106,3 +1106,164 @@ def test_service_mutate_rejects_non_default_profiles_for_unsupported_sources(tmp
         service.mutate(
             _mutate_body(source, location="C:/fake/alt", secret="sk-test", profile="alt-profile"),
         )
+
+
+# ---------------------------------------------------------------------------
+# 6. assert_folder_free & FolderInUse
+# ---------------------------------------------------------------------------
+
+
+def test_folder_in_use_is_value_error_and_blocks_same_and_cross_provider(tmp_path):
+    assert issubclass(ps.FolderInUse, ValueError)
+    claude_dir = tmp_path / ".claude-work"
+    claude_dir.mkdir(parents=True)
+
+    state = {
+        "version": 2,
+        "profiles": {
+            "claude_local": {
+                "claude-code-work": {
+                    "source": "claude_local",
+                    "location": str(claude_dir),
+                }
+            }
+        },
+    }
+
+    # Same folder, same provider -> FolderInUse
+    with pytest.raises(ps.FolderInUse):
+        ps.assert_folder_free(state, "claude_local", claude_dir)
+
+    # Same folder across different providers -> FolderInUse
+    with pytest.raises(ps.FolderInUse):
+        ps.assert_folder_free(state, "codex_local", claude_dir)
+    with pytest.raises(ps.FolderInUse):
+        ps.assert_folder_free(state, "muse_local", str(claude_dir))
+
+    # Distinct folder passes
+    other_dir = tmp_path / ".claude-personal"
+    other_dir.mkdir(parents=True)
+    ps.assert_folder_free(state, "claude_local", other_dir)
+
+
+def test_assert_folder_free_subpath_vs_root_equivalence(tmp_path):
+    claude_root = tmp_path / ".claude"
+    (claude_root / "projects").mkdir(parents=True)
+    (claude_root / "transcripts").mkdir(parents=True)
+
+    codex_root = tmp_path / ".codex"
+    (codex_root / "sessions").mkdir(parents=True)
+    (codex_root / "archived_sessions").mkdir(parents=True)
+
+    oc_flat = tmp_path / "oc-flat"
+    oc_flat.mkdir(parents=True)
+    oc_flat_db = oc_flat / "opencode.db"
+    oc_flat_db.write_bytes(b"")
+
+    oc_nested = tmp_path / ".opencode-work"
+    oc_nested_db = oc_nested / "opencode" / "opencode.db"
+    oc_nested_db.parent.mkdir(parents=True)
+    oc_nested_db.write_bytes(b"")
+
+    zcode_root = tmp_path / ".zcode"
+    zcode_db = zcode_root / "cli" / "db" / "db.sqlite"
+    zcode_db.parent.mkdir(parents=True)
+    zcode_db.write_bytes(b"")
+
+    state = {
+        "version": 2,
+        "profiles": {
+            "claude_local": {"default": {"location": str(claude_root)}},
+            "codex_local": {"default": {"location": str(codex_root)}},
+            "opencode_local": {
+                "default": {"location": str(oc_flat_db)},
+                "opencode-go-work": {"location": str(oc_nested_db)},
+            },
+            "zcode_local": {"default": {"location": str(zcode_db)}},
+        },
+    }
+
+    # Claude root <-> projects / transcripts (both directions)
+    with pytest.raises(ps.FolderInUse):
+        ps.assert_folder_free(state, "claude_local", claude_root / "projects")
+    with pytest.raises(ps.FolderInUse):
+        ps.assert_folder_free(state, "claude_local", claude_root / "transcripts")
+
+    state_sub = {
+        "version": 2,
+        "profiles": {
+            "claude_local": {"default": {"location": str(claude_root / "projects")}},
+            "codex_local": {"default": {"location": str(codex_root / "sessions")}},
+            "opencode_local": {"default": {"location": str(oc_flat)}},
+            "zcode_local": {"default": {"location": str(zcode_root)}},
+        },
+    }
+    with pytest.raises(ps.FolderInUse):
+        ps.assert_folder_free(state_sub, "claude_local", claude_root)
+    with pytest.raises(ps.FolderInUse):
+        ps.assert_folder_free(state_sub, "codex_local", codex_root)
+    with pytest.raises(ps.FolderInUse):
+        ps.assert_folder_free(state_sub, "opencode_local", oc_flat_db)
+    with pytest.raises(ps.FolderInUse):
+        ps.assert_folder_free(state_sub, "zcode_local", zcode_db)
+
+    # Codex root <-> sessions / archived_sessions
+    with pytest.raises(ps.FolderInUse):
+        ps.assert_folder_free(state, "codex_local", codex_root / "sessions")
+    with pytest.raises(ps.FolderInUse):
+        ps.assert_folder_free(state, "codex_local", codex_root / "archived_sessions")
+
+    # OpenCode opencode.db <-> parent and .opencode-* nested layout
+    with pytest.raises(ps.FolderInUse):
+        ps.assert_folder_free(state, "opencode_local", oc_flat)
+    with pytest.raises(ps.FolderInUse):
+        ps.assert_folder_free(state, "opencode_local", oc_nested)
+    with pytest.raises(ps.FolderInUse):
+        ps.assert_folder_free(state, "opencode_local", oc_nested / "opencode")
+
+    # ZCode cli/db/db.sqlite <-> .zcode root
+    with pytest.raises(ps.FolderInUse):
+        ps.assert_folder_free(state, "zcode_local", zcode_root)
+
+
+def test_assert_folder_free_exclude_key_and_bindings_fallback(tmp_path):
+    claude_dir = tmp_path / ".claude-work"
+    (claude_dir / "projects").mkdir(parents=True)
+    default_dir = tmp_path / ".codex"
+    (default_dir / "sessions").mkdir(parents=True)
+
+    state = {
+        "version": 2,
+        "profiles": {
+            "claude_local": {
+                "claude-code-work": {"location": str(claude_dir)},
+            }
+        },
+        "bindings": {
+            "codex_local": {"location": str(default_dir / "sessions")},
+        },
+    }
+
+    # Same profile key may reuse/update its own folder (including subpath form)
+    ps.assert_folder_free(
+        state, "claude_local", claude_dir / "projects", exclude_key="claude-code-work"
+    )
+    ps.assert_folder_free(
+        state, "codex_local", default_dir, exclude_key="default"
+    )
+
+    # Different profile key on the same provider still raises FolderInUse
+    with pytest.raises(ps.FolderInUse):
+        ps.assert_folder_free(
+            state, "claude_local", claude_dir, exclude_key="claude-code-other"
+        )
+
+    # Same exclude_key string on a DIFFERENT provider does not bypass the check
+    with pytest.raises(ps.FolderInUse):
+        ps.assert_folder_free(
+            state, "codex_local", claude_dir, exclude_key="claude-code-work"
+        )
+    with pytest.raises(ps.FolderInUse):
+        ps.assert_folder_free(
+            state, "claude_local", default_dir, exclude_key="default"
+        )
