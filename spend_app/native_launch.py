@@ -157,7 +157,7 @@ def signature_state(path: Path) -> str:
         return UNSIGNED
     if normalized == "hashmismatch":
         return TAMPERED
-    if normalized in {"nottrusted", "unknownerror"}:
+    if normalized == "nottrusted":
         # A self-signed local build: not a publisher we know, but not tampered.
         return UNTRUSTED
     return UNKNOWN

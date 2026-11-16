@@ -105,13 +105,22 @@ def test_empty_thumbprint_never_matches_pinned_list(tmp_path, monkeypatch) -> No
     assert native_launch.evaluate(tmp_path / "BURNRATE.exe") == (False, "untrusted")
 
 
-@pytest.mark.parametrize("status", ["NotTrusted", "UnknownError"])
-def test_not_trusted_and_unknown_error_are_untrusted(tmp_path, monkeypatch, status: str) -> None:
-    _report(monkeypatch, status, "AA11", "CN=myBurnRate local build")
+def test_not_trusted_is_untrusted(tmp_path, monkeypatch) -> None:
+    _report(monkeypatch, "NotTrusted", "AA11", "CN=myBurnRate local build")
     monkeypatch.delenv(native_launch.REQUIRE_SIGNED_ENV, raising=False)
+    assert native_launch.signature_state(tmp_path / "BURNRATE.exe") == native_launch.UNTRUSTED
     assert native_launch.evaluate(tmp_path / "BURNRATE.exe") == (True, "untrusted")
     monkeypatch.setenv(native_launch.REQUIRE_SIGNED_ENV, "1")
     assert native_launch.evaluate(tmp_path / "BURNRATE.exe") == (False, "untrusted")
+
+
+def test_unknown_error_is_unknown_and_always_refused(tmp_path, monkeypatch) -> None:
+    _report(monkeypatch, "UnknownError", "AA11", "CN=myBurnRate local build")
+    monkeypatch.delenv(native_launch.REQUIRE_SIGNED_ENV, raising=False)
+    assert native_launch.signature_state(tmp_path / "BURNRATE.exe") == native_launch.UNKNOWN
+    assert native_launch.evaluate(tmp_path / "BURNRATE.exe") == (False, "unknown")
+    monkeypatch.setenv(native_launch.REQUIRE_SIGNED_ENV, "1")
+    assert native_launch.evaluate(tmp_path / "BURNRATE.exe") == (False, "unknown")
 
 
 @pytest.mark.parametrize("status", ["NotSigned", "NotSupported"])
