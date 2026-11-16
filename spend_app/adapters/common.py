@@ -281,20 +281,24 @@ def _preserve_existing_tool_keys(
     connection: sqlite3.Connection, usage_rows: tuple[UsageRow, ...]
 ) -> tuple[UsageRow, ...]:
     """Preserve the stored ``tool_key`` when updating pre-existing events."""
-    raw_ids = [row.raw_id for row in usage_rows]
-    existing_tools: dict[str, str] = {}
-    for index in range(0, len(raw_ids), 500):
-        chunk = raw_ids[index : index + 500]
-        marks = ",".join("?" for _ in chunk)
-        for table in ("usage_events", "unpriced_usage_events"):
-            for raw_id, tool_key in connection.execute(
-                f"SELECT raw_id, tool_key FROM {table} WHERE raw_id IN ({marks})",
-                chunk,
-            ):
-                existing_tools.setdefault(raw_id, tool_key)
+    raw_ids_by_source: dict[str, list[str]] = {}
+    for row in usage_rows:
+        raw_ids_by_source.setdefault(row.source, []).append(row.raw_id)
+    existing_tools: dict[tuple[str, str], str] = {}
+    for row_source, raw_ids in raw_ids_by_source.items():
+        for index in range(0, len(raw_ids), 500):
+            chunk = raw_ids[index : index + 500]
+            marks = ",".join("?" for _ in chunk)
+            for table in ("usage_events", "unpriced_usage_events"):
+                for raw_id, tool_key in connection.execute(
+                    f"SELECT raw_id, tool_key FROM {table} WHERE source = ? AND raw_id IN ({marks})",
+                    (row_source, *chunk),
+                ):
+                    existing_tools.setdefault((row_source, raw_id), tool_key)
     return tuple(
-        replace(row, tool_key=existing_tools[row.raw_id])
-        if row.raw_id in existing_tools and existing_tools[row.raw_id] != row.tool_key
+        replace(row, tool_key=existing_tools[(row.source, row.raw_id)])
+        if (row.source, row.raw_id) in existing_tools
+        and existing_tools[(row.source, row.raw_id)] != row.tool_key
         else row
         for row in usage_rows
     )
