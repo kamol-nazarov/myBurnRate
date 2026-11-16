@@ -277,10 +277,10 @@ def resolve_pricing_gaps(connection, pricing: PricingEngine) -> None:
 
 
 
-def _filter_preserving_existing_tool_keys(
+def _preserve_existing_tool_keys(
     connection: sqlite3.Connection, usage_rows: tuple[UsageRow, ...]
 ) -> tuple[UsageRow, ...]:
-    """Skip events whose ``raw_id`` is already stored under a different ``tool_key``."""
+    """Preserve the stored ``tool_key`` when updating pre-existing events."""
     raw_ids = [row.raw_id for row in usage_rows]
     existing_tools: dict[str, str] = {}
     for index in range(0, len(raw_ids), 500):
@@ -291,11 +291,12 @@ def _filter_preserving_existing_tool_keys(
                 f"SELECT raw_id, tool_key FROM {table} WHERE raw_id IN ({marks})",
                 chunk,
             ):
-                existing_tools[raw_id] = tool_key
+                existing_tools.setdefault(raw_id, tool_key)
     return tuple(
-        row
+        replace(row, tool_key=existing_tools[row.raw_id])
+        if row.raw_id in existing_tools and existing_tools[row.raw_id] != row.tool_key
+        else row
         for row in usage_rows
-        if existing_tools.get(row.raw_id) in (None, row.tool_key)
     )
 
 def persist_rows(
@@ -336,7 +337,7 @@ def persist_rows(
             if overrides:
                 usage_rows = tuple(replace(row, tool_key=overrides.get(row.tool_key, row.tool_key)) for row in usage_rows)
             if PRESERVE_EXISTING_TOOL_KEYS.get() and usage_rows:
-                usage_rows = _filter_preserving_existing_tool_keys(connection, usage_rows)
+                usage_rows = _preserve_existing_tool_keys(connection, usage_rows)
             issues = tuple(issues)
             for row in usage_rows:
                 if not row.telemetry_complete:
