@@ -1,7 +1,8 @@
-"""Revisioned connection service; one durable binding per registry source.
+"""Revisioned connection service; multi-profile bindings per registry source.
 
-The existing app_meta table holds non-secret, versioned JSON. No new schema,
-event identity, database, worker, or scheduler is introduced.
+The existing app_meta table holds non-secret, versioned JSON under
+``connections.v2``. No new schema, event identity, database, worker, or
+scheduler is introduced.
 """
 import copy
 import hashlib
@@ -10,16 +11,17 @@ import os
 import sqlite3
 import threading
 import uuid
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
+from spend_app import profile_store
 from spend_app.connection_paths import Inspector, LocationError, MissingLocation, approved, identity
 from spend_app.db import connect
 from spend_app.providers import REGISTRY
 from spend_app.redact import redact
 
-KEY = "connections.v1"
+KEY = profile_store.KEY
 # Provider APIs that report an account balance only, never usage events.
 BALANCE_SOURCES = frozenset({"openrouter", "deepseek"})
 _LOCKS = {}
@@ -33,8 +35,8 @@ def lock_for(path):
         return _LOCKS.setdefault(key, threading.RLock())
 
 
-def source_lock_for(path, source):
-    key = (identity(Path(path).absolute()), str(source))
+def source_lock_for(path, source, profile="default"):
+    key = (identity(Path(path).absolute()), str(source), str(profile))
     with _LOCK_GUARD:
         return _SOURCE_LOCKS.setdefault(key, threading.RLock())
 
@@ -44,19 +46,24 @@ def now():
 
 
 def empty_state():
-    return {"version": 1, "bindings": {}, "requests": {}, "legacy": [], "cleanup": []}
+    return profile_store.with_bindings_view(profile_store.empty_state())
 
 
 def decode(raw):
-    state = json.loads(raw) if raw is not None else empty_state()
-    if not isinstance(state, dict) or state.get("version") != 1:
-        raise LocationError("Connection settings require a newer BURNRATE version.")
-    if not isinstance(state.get("bindings"), dict) or not isinstance(state.get("requests"), dict) or not isinstance(state.get("legacy"), list) or not isinstance(state.get("cleanup"), list):
-        raise LocationError("Connection settings are corrupted; restore or repair them before collecting.")
-    for binding in state["bindings"].values():
-        if not isinstance(binding, dict) or type(binding.get("enabled")) is not bool or type(binding.get("revision")) is not int:
-            raise LocationError("Connection binding metadata is corrupted; defaults were not enabled.")
-    return state
+    return profile_store.with_bindings_view(profile_store.decode(raw))
+
+
+def _profile_record(state, source, profile="default"):
+    record = (state.get("profiles") or {}).get(source, {}).get(profile)
+    if record is None and profile == "default":
+        record = (state.get("bindings") or {}).get(source)
+    return record
+
+
+def _set_profile_record(state, source, profile, record):
+    state.setdefault("profiles", {}).setdefault(source, {})[profile] = record
+    if profile == "default" and isinstance(state.get("bindings"), dict):
+        state["bindings"][source] = record
 
 
 class Store:
@@ -65,7 +72,6 @@ class Store:
 
     def read(self):
         # Status reads do not create directories, switch WAL modes or write.
-        from contextlib import closing
         try:
             Path(self.path).stat()
         except FileNotFoundError:
@@ -73,26 +79,37 @@ class Store:
         with closing(sqlite3.connect(Path(self.path).absolute().as_uri() + "?mode=ro", uri=True)) as db:
             if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_meta'").fetchone():
                 return empty_state()
-            row = db.execute("SELECT value FROM app_meta WHERE key=?", (KEY,)).fetchone()
-            return decode(row[0] if row else None)
+            return profile_store.with_bindings_view(profile_store.load(db))
 
     @contextmanager
     def transaction(self):
         with connect(self.path) as db:
             db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT value FROM app_meta WHERE key=?", (KEY,)).fetchone()
-            state = decode(row[0] if row else None)
+            v2_state = profile_store.ensure_migrated(db)
+            state = profile_store.with_bindings_view(v2_state)
+            initial_bindings = copy.deepcopy(state["bindings"])
             yield state
-            db.execute("INSERT INTO app_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (KEY, json.dumps(state, ensure_ascii=False)))
+            persisted = profile_store.sync_bindings_view(state, initial_bindings)
+            encoded = profile_store.encode(persisted)
+            db.execute(
+                "INSERT INTO app_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (KEY, encoded),
+            )
 
     def bootstrap(self):
         # Called by normal application initialization, never by GET/discovery.
         with connect(self.path) as db:
-            if db.execute("SELECT 1 FROM app_meta WHERE key=?", (KEY,)).fetchone():
+            existing = {
+                row[0]
+                for row in db.execute(
+                    "SELECT key FROM app_meta WHERE key IN (?,?)",
+                    (KEY, profile_store.MIGRATED_KEY),
+                )
+            }
+            if existing == {KEY, profile_store.MIGRATED_KEY}:
                 return
-            state = empty_state()
-            state["legacy"] = [r[0] for r in db.execute("SELECT DISTINCT source FROM ingest_runs WHERE status IN ('success','partial')")]
-            db.execute("INSERT OR IGNORE INTO app_meta(key,value) VALUES(?,?)", (KEY, json.dumps(state)))
+            db.execute("BEGIN IMMEDIATE")
+            profile_store.ensure_migrated(db)
 
 
 class Conflict(LocationError):
@@ -155,10 +172,12 @@ def suppresses_default_profile(source, binding):
         return True
 
 
-def eligible(spec, state):
-    binding = state["bindings"].get(spec.key)
-    if binding:
-        return binding["enabled"]
+def eligible(spec, state, profile="default"):
+    record = _profile_record(state, spec.key, profile)
+    if record:
+        return record["enabled"]
+    if profile != "default":
+        return False
     return spec.enabled_by_default or spec.key in state.get("legacy", [])
 
 
@@ -181,7 +200,7 @@ class Service:
                 if spec.kind == "local":
                     rows.append({"source": spec.key, "name": spec.key.replace("_", " "), "kind": "external", "experimental": spec.stability == "experimental", "revision": 0, "location": "", "capabilities": sorted(spec.capabilities), "capabilityNote": "This existing local-service integration has no supported custom-file contract. Configure it outside this wizard.", "credentialHelp": "", "externallyManaged": True, "state": "externally_managed", "detail": "The wizard does not borrow native credentials, call private services to discover sources, or configure this integration.", "lastVerification": None, "lastImport": None, "importRevision": None})
                 continue
-            binding = state["bindings"].get(spec.key)
+            binding = _profile_record(state, spec.key, "default")
             monitored = eligible(spec, state) and meta.shape != "api"
             row = {"source": spec.key, "name": meta.name, "kind": meta.shape,
                    "experimental": spec.stability == "experimental", "revision": 0,
@@ -232,10 +251,16 @@ class Service:
                 row["candidates"].append(result)
         return {"connections": [r for r in rows if r["kind"] not in {"api", "external"} and not source_spec(r["source"]).connection.manual_only]}
 
-    def mutate(self, body):
+    def mutate(self, body, profile=None):
         if not isinstance(body, dict):
             raise LocationError("Expected a connection object.")
         spec = source_spec(body.get("source"))
+        target_profile = profile if profile is not None else (body.get("profile") if body.get("profile") is not None else "default")
+        if not isinstance(target_profile, str) or not target_profile.strip():
+            raise LocationError("Invalid profile identifier.")
+        target_profile = target_profile.strip()
+        if target_profile != "default" and not profile_store.supports_profiles(spec.key):
+            raise LocationError("Multiple profiles are not supported for this source.")
         op = body.get("operation", "connect")
         if op not in {"connect", "disable", "reconnect", "recheck"}:
             raise LocationError("Unsupported connection operation.")
@@ -250,16 +275,18 @@ class Service:
         # Never hash/store a secret. Retries identify the original operation;
         # replacement requires a NEW request identifier.
         public_body = {k: body.get(k) for k in ("source", "operation", "revision", "location", "mode")}
+        if target_profile != "default":
+            public_body["profile"] = target_profile
         fingerprint = hashlib.sha256(json.dumps(public_body, sort_keys=True).encode()).hexdigest()
         new_ref = None
-        with source_lock_for(self.settings.database_path, spec.key), self.lock:
+        with source_lock_for(self.settings.database_path, spec.key, target_profile), self.lock:
             state = self.store.read()
             receipt = state["requests"].get(request_id)
             if receipt:
                 if receipt["fingerprint"] != fingerprint:
                     raise Conflict("Request identifier already used. Reload connections.")
                 return receipt["result"]
-            previous = state["bindings"].get(spec.key)
+            previous = _profile_record(state, spec.key, target_profile)
             if (previous or {}).get("revision", 0) != revision:
                 raise Conflict("Connection changed. Reload before saving.")
             if external(spec, self.settings) and not spec.connection.location_env:
@@ -269,7 +296,12 @@ class Service:
             if spec.connection.shape == "api" and body.get("mode") == "auto":
                 raise LocationError("Provider APIs cannot be automatically connected.")
             if op == "disable":
-                record = copy.deepcopy(previous or {"source": spec.key, "location": default_location(spec, self.settings) if spec.connection.shape != "api" else "", "mode": "manual"})
+                default_loc = (
+                    default_location(spec, self.settings)
+                    if spec.connection.shape != "api" and target_profile == "default"
+                    else (body.get("location") or "")
+                )
+                record = copy.deepcopy(previous or {"source": spec.key, "location": default_loc, "mode": "manual"})
                 record.update(enabled=False, state="disabled", detail="Disconnected. Existing measured history is preserved.", credentialRef=None)
             elif spec.connection.shape == "api":
                 if not self.vault.available():
@@ -302,12 +334,13 @@ class Service:
                     if op != "recheck" or not previous:
                         raise
                     with self.store.transaction() as current:
-                        record = current["bindings"].get(spec.key)
+                        record = _profile_record(current, spec.key, target_profile)
                         if not record or record["revision"] != revision:
                             raise Conflict("Connection changed. Reload before rechecking.")
                         record.update(state="needs_attention" if record["enabled"] else "disabled", detail=redact(str(exc), 1000), lastVerification=now())
+                        _set_profile_record(current, spec.key, target_profile, record)
                     raise
-                if location_conflict(spec, checked["location"]):
+                if target_profile == "default" and location_conflict(spec, checked["location"]):
                     raise Conflict("Selected location conflicts with " + spec.connection.location_env + ". Resolve the external setting first.")
                 record = {**checked, "mode": body.get("mode", "manual"), "enabled": True,
                           "state": "awaiting_ingest", "detail": "Saved, awaiting first import." if checked["usableSample"] else checked["detail"], "capabilities": ["usage"]}
@@ -316,9 +349,9 @@ class Service:
                 # No new authority engine: custom Grok/Traycer combinations cannot
                 # reuse the existing default-log cutoff safely.
                 other = "traycer_local" if spec.key == "grok_local" else "grok_local"
-                if spec.key in {"grok_local", "traycer_local"}:
+                if spec.key in {"grok_local", "traycer_local"} and target_profile == "default":
                     peer = REGISTRY.get(other)
-                    peer_binding = state["bindings"].get(other)
+                    peer_binding = _profile_record(state, other, "default")
                     custom = identity(record["location"]) != identity(default_location(spec, self.settings))
                     peer_custom = peer_binding and identity(peer_binding["location"]) != identity(default_location(peer, self.settings))
                     # An environment-selected Grok profile is not evidence that
@@ -326,12 +359,33 @@ class Service:
                     custom = custom or bool(os.getenv("GROK_HOME"))
                     if eligible(peer, state) and (custom or peer_custom):
                         raise Conflict("Custom Grok and Traycer locations cannot be monitored together. Disable the overlapping source first.")
-            record.update(revision=revision + 1, bindingId=spec.key, lastImport=None, importRevision=None)
+            requested_name = body.get("name")
+            name = (
+                requested_name.strip()
+                if isinstance(requested_name, str) and requested_name.strip()
+                else (previous or {}).get("name")
+                or ("Default" if target_profile == "default" else target_profile)
+            )
+            origin = (previous or {}).get("origin") or (
+                "default" if target_profile == "default" else "manual"
+            )
+            binding_id = spec.key if target_profile == "default" else f"{spec.key}:{target_profile}"
+            record.update(
+                revision=revision + 1,
+                bindingId=binding_id,
+                name=name,
+                origin=origin,
+                accountDigest=(previous or {}).get("accountDigest"),
+                toolKey=profile_store.profile_tool_key(spec.key, target_profile),
+                lastImport=None,
+                importRevision=None,
+            )
             try:
                 with self.store.transaction() as current:
-                    if current["bindings"].get(spec.key, {}).get("revision", 0) != revision:
+                    current_record = _profile_record(current, spec.key, target_profile)
+                    if (current_record or {}).get("revision", 0) != revision:
                         raise Conflict("Connection changed while verifying. Reload before saving.")
-                    current["bindings"][spec.key] = record
+                    _set_profile_record(current, spec.key, target_profile, record)
                     if new_ref:
                         current["cleanup"] = [r for r in current["cleanup"] if r != new_ref]
                     public = {k: v for k, v in record.items() if k != "credentialRef"}
@@ -364,9 +418,9 @@ class Service:
             with self.store.transaction() as state:
                 state["cleanup"] = [r for r in state["cleanup"] if r != ref]
 
-    def completion(self, source, revision, result):
+    def completion(self, source, revision, result, profile="default"):
         with self.store.transaction() as state:
-            record = state["bindings"].get(source)
+            record = _profile_record(state, source, profile)
             if not record or not record["enabled"] or record["revision"] != revision:
                 return
             status = result.get("status")
@@ -374,6 +428,7 @@ class Service:
                 accepted = result.get("eventsAccepted", result.get("eventsSeen", 0))
                 if not accepted and result.get("issues"):
                     record.update(state="needs_attention", detail=redact("Source metadata was read, but usage could not be accepted safely: " + ", ".join(str(i) for i in result["issues"]), 1000))
+                    _set_profile_record(state, source, profile, record)
                     return
                 seen = accepted > 0 or record["state"] == "receiving_usage"
                 record.update(lastImport=now(), importRevision=revision,
@@ -383,21 +438,26 @@ class Service:
                     record["detail"] = redact(record["detail"] + " Some records need attention: " + "; ".join(redact(str(issue)).replace("_", " ") for issue in sorted(set(result["issues"]))[:3]) + ". Review the provider compatibility guidance before changing the source.", 1000)
             else:
                 record.update(state="needs_attention", detail="Import unavailable. Recheck location, permissions or provider access; collection will retry on its normal cadence.")
+            _set_profile_record(state, source, profile, record)
 
 
-def managed_job(settings, pricing, spec, window=None):
+def managed_job(settings, pricing, spec, window=None, profile="default"):
     """Resolve at execution time, not when the scheduler was constructed."""
     service = Service(settings)
     state = service.store.read()
-    binding = state["bindings"].get(spec.key)
+    binding = _profile_record(state, spec.key, profile)
     if binding and not binding["enabled"]:
         return service, binding, None
-    if not eligible(spec, state) and not (spec.connection and external(spec, settings)):
+    if profile != "default":
+        if not binding:
+            return service, None, None
+    elif not eligible(spec, state) and not (spec.connection and external(spec, settings)):
         return service, None, None
-    if spec.key in {"grok_local", "traycer_local"}:
+    if spec.key in {"grok_local", "traycer_local"} and profile == "default":
         peers = [REGISTRY.get(key) for key in ("grok_local", "traycer_local")]
         custom = bool(os.getenv("GROK_HOME")) or any(
-            state["bindings"].get(peer.key) and identity(state["bindings"][peer.key]["location"]) != identity(default_location(peer, settings))
+            _profile_record(state, peer.key, "default")
+            and identity(_profile_record(state, peer.key, "default")["location"]) != identity(default_location(peer, settings))
             for peer in peers)
         if custom and all(eligible(peer, state) for peer in peers):
             raise Conflict("Selected Grok/Traycer profiles have no proven shared authority. Disable one overlapping source.")
@@ -411,14 +471,14 @@ def managed_job(settings, pricing, spec, window=None):
         kwargs = spec.build_ingest_kwargs(settings, pricing, **(window or {}))
     if binding and spec.connection:
         meta = spec.connection
-        if not binding["enabled"] and not external(spec, settings):
+        if not binding["enabled"] and (profile != "default" or not external(spec, settings)):
             return service, binding, None
-        if not external(spec, settings) or meta.location_env:
+        if profile != "default" or not external(spec, settings) or meta.location_env:
             if meta.shape == "api":
                 kwargs[meta.argument] = service.vault.get(binding["credentialRef"])
             else:
                 path = service.inspector.normalize(binding["location"], meta)
-                if location_conflict(spec, path):
+                if profile == "default" and location_conflict(spec, path):
                     raise Conflict("Saved location conflicts with " + meta.location_env + "; collection was not redirected.")
                 if identity(path) != identity(binding["location"]):
                     raise LocationError("Saved location moved. Recheck before collecting.")
@@ -432,18 +492,18 @@ def managed_job(settings, pricing, spec, window=None):
     return service, binding, kwargs
 
 
-def execute(settings, pricing, spec, ingest, window=None):
+def execute(settings, pricing, spec, ingest, window=None, profile="default"):
     # Saves serialize with the existing job per source, so a successful save
     # cannot be followed by an obsolete collector starting or reporting healthy,
     # while independent sources and quota/activity readers are not starved by
     # one slow local transcript scan.
-    with source_lock_for(settings.database_path, spec.key):
+    with source_lock_for(settings.database_path, spec.key, profile):
         try:
             with lock_for(settings.database_path):
                 service = Service(settings)
                 service.cleanup()
-                binding = service.store.read()["bindings"].get(spec.key)
-                service, binding, kwargs = managed_job(settings, pricing, spec, window)
+                binding = _profile_record(service.store.read(), spec.key, profile)
+                service, binding, kwargs = managed_job(settings, pricing, spec, window, profile=profile)
                 if kwargs is None:
                     return {"status": "skipped", "eventsSeen": 0}
                 root = binding["location"] if binding and spec.connection.shape != "api" else None
@@ -458,17 +518,17 @@ def execute(settings, pricing, spec, ingest, window=None):
                     reason="Default local source was not detected. Install or connect this optional harness when needed.")
             if binding:
                 with lock_for(settings.database_path):
-                    service.completion(spec.key, binding["revision"], {"status": "failed"})
+                    service.completion(spec.key, binding["revision"], {"status": "failed"}, profile=profile)
             raise LocationError("Configured source is missing or moved. Recheck its saved location or explicit environment path.") from None
         except Exception:
             if binding:
                 with lock_for(settings.database_path):
-                    service.completion(spec.key, binding["revision"], {"status": "failed"})
+                    service.completion(spec.key, binding["revision"], {"status": "failed"}, profile=profile)
                 raise LocationError("Connected source import failed. Recheck its location, permissions or provider access.") from None
             raise
         if binding:
             with lock_for(settings.database_path):
-                service.completion(spec.key, binding["revision"], result)
+                service.completion(spec.key, binding["revision"], result, profile=profile)
         return result
 
 

@@ -392,7 +392,7 @@ class Inspector:
             if source == "muse_local":
                 patterns = ["sessions/**/*.jsonl"] if (Path(path) / "sessions").is_dir() else ["**/*.jsonl"]
             else:
-                patterns = transcript_patterns(source, path, meta.suffix or "*") if source in {"codex_local", "claude_local", "claude_local_alt"} else [meta.suffix or "*"]
+                patterns = transcript_patterns(source, path, meta.suffix or "*") if source in {"codex_local", "claude_local"} else [meta.suffix or "*"]
             if source == "zcode_local":
                 patterns = ["cli/db/db.sqlite", "projects/**/*.jsonl"] if Path(path).name == ".zcode" else ["**/*.jsonl"]
             found = 0
@@ -453,7 +453,7 @@ class Inspector:
                         if source == "codex_local":
                             recognized |= kind in {"session_meta", "event_msg", "response_item", "turn_context"}
                             usable |= kind == "event_msg" and isinstance(row.get("payload"), dict) and row["payload"].get("type") == "token_count"
-                        elif source in {"claude_local", "claude_local_alt"}:
+                        elif source == "claude_local":
                             recognized |= kind in {"user", "assistant", "summary", "system", "progress", "file-history-snapshot"}
                             usable |= kind == "assistant" and isinstance(row.get("message"), dict) and bool(row["message"].get("usage"))
                         elif source == "muse_local":

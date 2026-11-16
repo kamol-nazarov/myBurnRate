@@ -28,11 +28,15 @@ class MemoryStore:
 
     @contextmanager
     def transaction(self):
+        from spend_app import profile_store
+
         state = self.read()
+        initial_bindings = copy.deepcopy(state["bindings"])
         yield state
         if self.fail:
             raise OSError("storage failed")
-        self.raw = json.dumps(state)
+        persisted = profile_store.sync_bindings_view(state, initial_bindings)
+        self.raw = profile_store.encode(persisted)
 
 
 class FakeInspector:
@@ -139,7 +143,7 @@ def test_discovery_bounded_catalog_ambiguity_and_no_secret_reads(service):
     codex = next(row for row in result["connections"] if row["source"] == "codex_local")
     assert len(codex["candidates"]) == 2
     assert all(row["kind"] != "api" for row in result["connections"])
-    assert len(result["connections"]) == 8
+    assert len(result["connections"]) == 7
     service.probe.assert_not_called()
     service.inspector.fail = True
     assert all(candidate["state"] == "needs_attention" for row in service.discover()["connections"] for candidate in row["candidates"])
@@ -197,7 +201,7 @@ def test_dispatch_root_change_disable_and_unrelated_source(service, monkeypatch)
 def test_experimental_gate_legacy_and_managed(service):
     default_on = REGISTRY.get("grok_local")
     assert c.eligible(default_on, service.store.read())
-    spec = REGISTRY.get("claude_local_alt")
+    spec = REGISTRY.get("deepseek")
     assert not c.eligible(spec, service.store.read())
     with service.store.transaction() as state:
         state["legacy"].append(spec.key)

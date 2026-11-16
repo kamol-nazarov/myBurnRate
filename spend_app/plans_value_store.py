@@ -311,24 +311,10 @@ def _registered_sources() -> set[str]:
 
 def _read_bindings(connection) -> dict[str, dict]:
     """Read only safe connection state; never touch credential references."""
+    from spend_app import profile_store
     try:
-        rows = _rows(
-            connection.execute(
-                "SELECT value FROM app_meta WHERE key=?", ("connections.v1",)
-            )
-        )
+        bindings = profile_store.load_bindings_map(connection)
     except Exception:
-        return {}
-    if not rows:
-        return {}
-    raw = rows[0]
-    try:
-        value = raw["value"] if isinstance(raw, dict) else raw[0]
-        state = json.loads(value) if value else {}
-    except (TypeError, ValueError, KeyError, IndexError):
-        return {}
-    bindings = state.get("bindings") if isinstance(state, dict) else None
-    if not isinstance(bindings, dict):
         return {}
     return {
         _safe_source_key(source): value

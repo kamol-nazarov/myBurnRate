@@ -19,7 +19,7 @@
       "source": {
         "enabled": true,
         "eligible": 1,
-        "observedSubjects": 9
+        "observedSubjects": 8
       },
       "pricing": {
         "enabled": true,
@@ -76,7 +76,7 @@
       "snoozed": true,
       "needsAttention": false,
       "reason": "Recorded usage has no applicable event-time rate.",
-      "summary": "vendor:missing · 1 records · 1100 measured tokens",
+      "summary": "vendor:missing \u00b7 1 records \u00b7 1100 measured tokens",
       "timestamps": [
         {
           "label": "Evidence",
@@ -99,7 +99,7 @@
           "at": "2026-09-01T12:00:00Z"
         }
       ],
-      "stateLabel": "active · Warning",
+      "stateLabel": "active \u00b7 Warning",
       "controls": [
         {
           "operation": "acknowledge",
@@ -152,7 +152,7 @@
       "snoozed": false,
       "needsAttention": false,
       "reason": "Currently at or above the configured quota threshold.",
-      "summary": "82% used · codex · weekly",
+      "summary": "82% used \u00b7 codex \u00b7 weekly",
       "timestamps": [
         {
           "label": "Evidence",
@@ -171,7 +171,7 @@
           "at": "2026-09-10T12:00:00Z"
         }
       ],
-      "stateLabel": "active · Warning",
+      "stateLabel": "active \u00b7 Warning",
       "controls": [
         {
           "operation": "snooze",
@@ -226,7 +226,7 @@
           "at": "2026-09-10T12:00:20Z"
         }
       ],
-      "stateLabel": "active · Warning",
+      "stateLabel": "active \u00b7 Warning",
       "controls": [
         {
           "operation": "acknowledge",
@@ -292,7 +292,7 @@
           "at": "2026-09-10T12:00:10Z"
         }
       ],
-      "stateLabel": "closed · Warning",
+      "stateLabel": "closed \u00b7 Warning",
       "controls": [],
       "actionLabel": "View diagnostics",
       "reason": "A later usable import established recovery for the same binding."

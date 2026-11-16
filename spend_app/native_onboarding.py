@@ -43,7 +43,6 @@ HEADLINE_TOOLS = (
 
 _BRANDS = {
     "claude_local": "claude",
-    "claude_local_alt": "claude",
     "codex_local": "codex",
     "opencode_local": "opencode-go",
     "zcode_local": "zcode",
