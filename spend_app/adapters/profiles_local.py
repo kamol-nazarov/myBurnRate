@@ -53,7 +53,7 @@ def _profile_folder_and_patterns(
 def ingest(*, database_path: Path, pricing) -> dict:
     from spend_app.adapters.file_cache import merge_results
     from spend_app.connection_paths import MissingLocation, approved, normalize
-    from spend_app.db import TOOL_KEY_OVERRIDES
+    from spend_app.db import PRESERVE_EXISTING_TOOL_KEYS, TOOL_KEY_OVERRIDES
     from spend_app.profile_store import (
         DEFAULT_TOOL_KEYS,
         enabled_profiles,
@@ -85,10 +85,12 @@ def ingest(*, database_path: Path, pricing) -> dict:
                 spec.connection.argument: arg_value,
             }
             token = TOOL_KEY_OVERRIDES.set({default_tool_key: profile.tool_key})
+            preserve_token = PRESERVE_EXISTING_TOOL_KEYS.set(bool(profile.cutover_at))
             try:
                 with approved(folder, profile.revision, patterns):
                     results.append(spec.ingest(**kwargs))
             finally:
+                PRESERVE_EXISTING_TOOL_KEYS.reset(preserve_token)
                 TOOL_KEY_OVERRIDES.reset(token)
         except MissingLocation:
             continue

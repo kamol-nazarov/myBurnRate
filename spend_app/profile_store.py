@@ -24,6 +24,7 @@ import sqlite3
 from collections.abc import Iterable
 from contextlib import closing
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from spend_app import claude_accounts, opencode_profiles
@@ -64,6 +65,7 @@ class Profile:
     revision: int
     account_digest: str | None
     tool_key: str | None
+    cutover_at: str | None = None
 
 
 def profile_tool_key(provider: str, key: str) -> str | None:
@@ -365,6 +367,7 @@ def migrate_v1_to_v2(
     legacy_sources: Iterable[str] = (),
     *,
     discover: bool = True,
+    known_tool_keys: Iterable[str] = (),
 ) -> dict:
     """Convert a v1 connection state (and optional discovered profiles) into v2."""
     state = empty_state()
@@ -418,10 +421,17 @@ def migrate_v1_to_v2(
         record["origin"] = "manual"
         record["toolKey"] = key
         record["accountDigest"] = _claude_digest_for_location(loc, is_default=False)
+        record["cutoverAt"] = alt_binding.get("cutoverAt") or (
+            datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        )
         claude_profiles[key] = record
 
-    if discover:
+    known_keys = {str(k) for k in known_tool_keys if k}
+    allow_all_discovered = v1_state is not None
+    if discover and (allow_all_discovered or known_keys):
         for account in claude_accounts.extra_accounts():
+            if not allow_all_discovered and account.key not in known_keys:
+                continue
             claude_profiles = state["profiles"].setdefault("claude_local", {})
             digest = _sha256_hex(account.account_uuid)
             acc_location = str(account.config_dir)
@@ -461,6 +471,8 @@ def migrate_v1_to_v2(
             }
 
         for prof in opencode_profiles.extra_profiles():
+            if not allow_all_discovered and prof.key not in known_keys:
+                continue
             oc_profiles = state["profiles"].setdefault("opencode_local", {})
             prof_location = str(prof.database)
             duplicate = any(
@@ -516,6 +528,51 @@ def _read_legacy_sources(connection: sqlite3.Connection) -> list[str]:
     ]
 
 
+def _read_existing_tool_keys(connection: sqlite3.Connection) -> set[str]:
+    keys: set[str] = set()
+    for table, column in (
+        ("usage_events", "tool_key"),
+        ("unpriced_usage_events", "tool_key"),
+        ("sessions", "tool_key"),
+        ("quotas", "provider_key"),
+    ):
+        if not _table_exists(connection, table):
+            continue
+        for row in connection.execute(f"SELECT DISTINCT {column} FROM {table}"):
+            if row[0]:
+                keys.add(str(row[0]))
+    return keys
+
+
+def v1_credential_refs(connection: sqlite3.Connection) -> set[str]:
+    """Return Vault credential references still named in frozen ``connections.v1``.
+
+    v2 preserves ``connections.v1`` so an older binary can roll back cleanly;
+    these references remain in the Vault until ``connections.v1`` is retired.
+    """
+    if not _table_exists(connection, "app_meta"):
+        return set()
+    row = connection.execute(
+        "SELECT value FROM app_meta WHERE key=?", (V1_KEY,)
+    ).fetchone()
+    if row is None or not row[0]:
+        return set()
+    try:
+        v1 = json.loads(row[0])
+    except ValueError:
+        return set()
+    bindings = v1.get("bindings") if isinstance(v1, dict) else None
+    if not isinstance(bindings, dict):
+        return set()
+    refs: set[str] = set()
+    for binding in bindings.values():
+        if isinstance(binding, dict):
+            ref = binding.get("credentialRef")
+            if isinstance(ref, str) and ref:
+                refs.add(ref)
+    return refs
+
+
 def load(connection: sqlite3.Connection) -> dict:
     """Return v2 state from ``connection``; migrates v1 in memory on read-only DBs."""
     if not _table_exists(connection, "app_meta"):
@@ -535,7 +592,13 @@ def load(connection: sqlite3.Connection) -> dict:
     ).fetchone()
     v1_state = _decode_v1(v1_row[0]) if v1_row is not None else None
     legacy_sources = _read_legacy_sources(connection)
-    return migrate_v1_to_v2(v1_state, legacy_sources, discover=True)
+    known_tool_keys = _read_existing_tool_keys(connection)
+    return migrate_v1_to_v2(
+        v1_state,
+        legacy_sources,
+        discover=True,
+        known_tool_keys=known_tool_keys,
+    )
 
 
 def _meta_rows_by_key(connection: sqlite3.Connection, *keys: str) -> tuple[dict[str, str | None], list[str | None]]:
@@ -674,7 +737,13 @@ def ensure_migrated(connection: sqlite3.Connection) -> dict:
     ).fetchone()
     v1_state = _decode_v1(v1_row[0]) if v1_row is not None else None
     legacy_sources = _read_legacy_sources(connection)
-    state = migrate_v1_to_v2(v1_state, legacy_sources, discover=True)
+    known_tool_keys = _read_existing_tool_keys(connection)
+    state = migrate_v1_to_v2(
+        v1_state,
+        legacy_sources,
+        discover=True,
+        known_tool_keys=known_tool_keys,
+    )
     connection.execute(
         "INSERT INTO app_meta(key,value) VALUES(?,?) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -720,6 +789,7 @@ def profiles(state: dict, provider: str | None = None) -> list[Profile]:
                     revision=int(record.get("revision", 0)),
                     account_digest=record.get("accountDigest"),
                     tool_key=tool_key,
+                    cutover_at=record.get("cutoverAt"),
                 )
             )
     return result
@@ -760,5 +830,6 @@ __all__ = (
     "profiles",
     "supports_profiles",
     "sync_bindings_view",
+    "v1_credential_refs",
     "with_bindings_view",
 )
