@@ -93,6 +93,8 @@ def access_allowed(
         principal = (Principal("machine", machine_id) if machine_id else
                      Principal("owner", "break-glass", "owner", via="break-glass")
                      if isinstance(token, str) and _bearer_matches(request, token) else Principal())
+    if request.url.path == "/api/hub/info" and getattr(request, "method", "GET") in {"GET", "HEAD"}:
+        return True
     if request.url.path in _PUBLIC_ACCOUNT_PATHS and getattr(request, "method", "GET") == "POST":
         return True
     if not request.url.path.startswith("/api/"):

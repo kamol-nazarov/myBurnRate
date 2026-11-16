@@ -21,7 +21,15 @@ from decimal import Decimal
 from pathlib import Path
 
 from anyio import CancelScope
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
+from spend_app.error_codes import (
+    HUB_PROTOCOL_VERSION,
+    check_protocol_version,
+    error_response,
+    format_error,
+    map_http_error,
+    map_transport_error,
+)
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -1238,9 +1246,18 @@ def expire_hub_proxy_cache() -> None:
 class HubMutationError(RuntimeError):
     """A paired computer must not turn a rejected Hub write into a local save."""
 
-    def __init__(self, message: str, status_code: int = 503):
+    def __init__(
+        self,
+        message: str,
+        status_code: int = 503,
+        *,
+        code: str | None = None,
+        retry_after: int | None = None,
+    ):
         super().__init__(message)
         self.status_code = status_code
+        self.code = code
+        self.retry_after = retry_after
 
 
 def post_to_configured_hub(
@@ -1293,6 +1310,7 @@ def post_to_configured_hub(
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
         "X-BURNRATE-Request": "1",
+        "X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION),
     }
     test_client = _HUB_TEST_CLIENTS.get(hub_url)
     try:
@@ -1305,18 +1323,43 @@ def post_to_configured_hub(
                 response = http.post(f"{hub_url}{path}", json=body, headers=headers)
         if not 200 <= response.status_code < 300:
             if strict:
-                code = response.status_code
+                status = response.status_code
                 message = "The hub could not save this change. Retry with the same request identifier."
-                if code in {400, 401, 403, 409, 413, 415, 422, 429}:
-                    try:
-                        error = response.json().get("error")
+                err_code = None
+                retry_after = None
+                try:
+                    payload = response.json()
+                except (ValueError, AttributeError):
+                    payload = None
+                if isinstance(payload, dict) and isinstance(payload.get("error"), dict):
+                    mapped = map_http_error(
+                        status,
+                        payload,
+                        headers=getattr(response, "headers", None),
+                        endpoint_path=path,
+                    )
+                    err_code = mapped.code
+                    retry_after = mapped.retry_after
+                    message = format_error(err_code, retry_after=retry_after)
+                    status = mapped.status_code
+                elif status in {400, 401, 403, 409, 413, 415, 422, 429}:
+                    if isinstance(payload, dict):
+                        error = payload.get("error")
                         if isinstance(error, str) and error:
                             message = error
-                    except (ValueError, AttributeError):
-                        pass
+                    if status in {401, 403, 429}:
+                        mapped = map_http_error(
+                            status,
+                            payload,
+                            headers=getattr(response, "headers", None),
+                            endpoint_path=path,
+                        )
+                        err_code = mapped.code
+                        retry_after = mapped.retry_after
                 else:
-                    code = 503
-                raise HubMutationError(message, code)
+                    status = 503
+                    err_code = "HUB-501"
+                raise HubMutationError(message, status, code=err_code, retry_after=retry_after)
             return None
         data = response.json()
         if not isinstance(data, dict):
@@ -1332,7 +1375,12 @@ def post_to_configured_hub(
         raise
     except Exception as exc:
         if strict:
-            raise HubMutationError("Could not reach the hub. Retry with the same request identifier.") from exc
+            err_code, err_status = map_transport_error(exc)
+            raise HubMutationError(
+                "Could not reach the hub. Retry with the same request identifier.",
+                err_status,
+                code=err_code,
+            ) from exc
         return None
 
 
@@ -1760,6 +1808,9 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
 
     @router.post("/api/machines")
     async def mutate_machines(request: Request):
+        proto_err = check_protocol_version(request.headers.get("x-burnrate-protocol"))
+        if proto_err is not None:
+            return error_response(proto_err, status_code=426)
         try:
             from spend_app.setup_wizard import _bounded_json
             body = await _bounded_json(request)
@@ -1774,10 +1825,7 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
             if getattr(request.state, "auth_kind", "anonymous") == "machine":
                 own_id = getattr(request.state, "machine_id", None)
                 if action not in {"rename", "revoke"} or str(body.get("id") or "") != str(own_id):
-                    return JSONResponse(
-                        {"error": "A machine token can only rename or revoke its own machine."},
-                        status_code=403,
-                    )
+                    return error_response("AUTH-107", status_code=403)
             if action in {"revoke", "rename"}:
                 hub_res = post_to_configured_hub(settings, "/api/machines", body)
                 if isinstance(hub_res, dict) and isinstance(hub_res.get("machines"), list):
@@ -1820,9 +1868,16 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
                     result["machines"] = [m for m in result["machines"] if m["id"] == request.state.principal.id]
                 request.state.audit_recorded = True
                 return JSONResponse(result, headers={"Cache-Control": "no-store"})
-            return JSONResponse({"error": "Unsupported machine action."}, status_code=422)
+            return error_response("APP-901", status_code=422)
+        except HTTPException as exc:
+            if exc.status_code == 403:
+                return error_response("NET-002", status_code=403)
+            return error_response("APP-901", status_code=exc.status_code)
         except ValueError as exc:
-            return JSONResponse({"error": str(exc)}, status_code=422)
+            low = str(exc).lower()
+            if "unknown machine" in low or "cannot revoke" in low or ("revoked" in low and "multiple or revoked" not in low):
+                return error_response("DEV-301", status_code=422)
+            return error_response("DEV-302", status_code=422)
 
     @router.post("/api/sync/trigger")
     async def sync_trigger():
@@ -1869,7 +1924,7 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
         token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
         machine_id = authenticate_machine_token(settings.database_path, token)
         if not machine_id:
-            return JSONResponse({"error": "Invalid or revoked machine token."}, status_code=401)
+            return error_response("DEV-301", status_code=401)
         try:
             raw = bytearray()
             async for chunk in request.stream():
@@ -1906,7 +1961,9 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
             )
             return JSONResponse(result, headers={"Cache-Control": "no-store"})
         except (ValueError, KeyError, TypeError) as exc:
-            return JSONResponse({"error": f"Invalid sync payload: {exc}"}, status_code=422)
+            if "already exists" in str(exc).lower():
+                return error_response("DEV-302", status_code=422)
+            return error_response("HUB-501", status_code=422)
 
     @router.get("/api/spend/stream")
     async def spend_stream(request: Request, once: int = Query(default=0)):
