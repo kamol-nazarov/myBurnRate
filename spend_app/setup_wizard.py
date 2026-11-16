@@ -22,6 +22,16 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from spend_app import aggregate, auth_throttle
 from spend_app.config import dashboard_enabled
 from spend_app.db import connect, initialize, utc_now
+from spend_app.error_codes import (
+    ERROR_CATALOG,
+    HUB_PROTOCOL_VERSION,
+    CodedError,
+    check_protocol_version,
+    error_response,
+    format_error,
+    map_http_error,
+    map_transport_error,
+)
 from spend_app.diagnostics import detect_local_sources
 from spend_app.plan_service import PlanConflict, PlanError, apply_mutation, effective_terms, list_plans
 from spend_app.platform_paths import NO_WINDOW
@@ -281,11 +291,11 @@ def _global_key(database_path: Path | None) -> str:
 
 
 def _throttled(retry_after: int) -> JSONResponse:
-    return JSONResponse(
-        {"error": "Too many attempts. Try again later."},
-        status_code=429,
-        headers={"Retry-After": str(max(1, retry_after)), "Cache-Control": "no-store"},
-    )
+    return error_response("AUTH-102", status_code=429, retry_after=retry_after)
+
+
+class RequestTooLargeError(ValueError):
+    """Raised when an incoming JSON request body exceeds the allowed byte limit."""
 
 
 async def _bounded_json(request: Request, limit: int = 65536) -> dict:
@@ -300,11 +310,11 @@ async def _bounded_json(request: Request, limit: int = 65536) -> dict:
         raise HTTPException(status_code=415, detail="Use application/json.")
     declared = request.headers.get("content-length", "")
     if declared.isdigit() and int(declared) > limit:
-        raise ValueError("Request too large.")
+        raise RequestTooLargeError("Request too large.")
     chunks = bytearray()
     async for chunk in request.stream():
         if len(chunks) + len(chunk) > limit:
-            raise ValueError("Request too large.")
+            raise RequestTooLargeError("Request too large.")
         chunks.extend(chunk)
     value = json.loads(
         chunks, parse_constant=lambda _: (_ for _ in ()).throw(ValueError())
@@ -719,6 +729,92 @@ def _build_harness_list(settings) -> list[dict]:
     return result
 
 
+def _hub_protocol_handshake(base_url: str, test_client) -> None:
+    """Verify hub protocol compatibility via unauthenticated /api/hub/info (B3)."""
+    if test_client is not None and not hasattr(test_client, "get"):
+        return
+    headers = {"X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION)}
+    try:
+        if test_client is not None:
+            info_res = test_client.get("/api/hub/info", headers=headers)
+        else:
+            import httpx
+
+            with httpx.Client(timeout=5.0, trust_env=False) as http:
+                info_res = http.get(f"{base_url}/api/hub/info", headers=headers)
+    except Exception as exc:
+        code, status = map_transport_error(exc)
+        raise CodedError(code, status_code=status) from exc
+
+    if info_res.status_code == 200:
+        try:
+            info_data = info_res.json() if getattr(info_res, "content", b"") else {}
+        except ValueError:
+            info_data = {}
+        if not isinstance(info_data, dict):
+            raise CodedError("HUB-501", status_code=502)
+        raw_proto = info_data.get("protocolVersion")
+        if raw_proto is None:
+            raw_proto = getattr(info_res, "headers", {}).get("x-burnrate-protocol")
+        if raw_proto is None:
+            raise CodedError("HUB-502", status_code=426)
+        try:
+            hub_proto = int(raw_proto)
+        except (TypeError, ValueError):
+            raise CodedError("HUB-501", status_code=502) from None
+        if hub_proto < HUB_PROTOCOL_VERSION:
+            raise CodedError("HUB-502", status_code=426)
+        if hub_proto > HUB_PROTOCOL_VERSION:
+            raise CodedError("APP-902", status_code=426)
+        return
+
+    if info_res.status_code == 403:
+        raise CodedError("NET-002", status_code=403)
+    if info_res.status_code == 426:
+        try:
+            err_data = info_res.json() if getattr(info_res, "content", b"") else {}
+        except ValueError:
+            err_data = None
+        raise map_http_error(
+            426,
+            err_data,
+            headers=getattr(info_res, "headers", None),
+            endpoint_path="/api/hub/info",
+        )
+    if info_res.status_code >= 500:
+        raise CodedError("HUB-501", status_code=502)
+
+    if info_res.status_code in {401, 404}:
+        try:
+            if test_client is not None:
+                hz_res = test_client.get("/healthz")
+            else:
+                import httpx
+
+                with httpx.Client(timeout=5.0, trust_env=False) as http:
+                    hz_res = http.get(f"{base_url}/healthz")
+        except Exception as exc:
+            code, status = map_transport_error(exc)
+            raise CodedError(code, status_code=status) from exc
+        if hz_res.status_code == 200:
+            try:
+                hz_data = hz_res.json() if getattr(hz_res, "content", b"") else {}
+            except ValueError:
+                hz_data = {}
+            if isinstance(hz_data, dict) and hz_data.get("status") == "ok":
+                raw_proto = hz_data.get("protocolVersion")
+                if raw_proto is None:
+                    raise CodedError("HUB-502", status_code=426)
+                try:
+                    hub_proto = int(raw_proto)
+                except (TypeError, ValueError):
+                    raise CodedError("HUB-502", status_code=426) from None
+                if hub_proto < HUB_PROTOCOL_VERSION:
+                    raise CodedError("HUB-502", status_code=426)
+                if hub_proto > HUB_PROTOCOL_VERSION:
+                    raise CodedError("APP-902", status_code=426)
+
+
 def _call_central_server_account(
     server_url: str,
     endpoint_path: str,
@@ -728,17 +824,28 @@ def _call_central_server_account(
     from spend_app.config import resolve_hub_url
     from spend_app.pairing import hub_origin
 
-    clean_primary = (server_url or "").strip().rstrip("/") or resolve_hub_url()
-    if not clean_primary:
-        raise ValueError("No hub is configured for this build.")
-    candidates = [hub_origin(clean_primary)]
+    try:
+        clean_primary = (server_url or "").strip().rstrip("/") or resolve_hub_url()
+        if not clean_primary:
+            raise CodedError("NET-001", status_code=422)
+        clean_primary = hub_origin(clean_primary)
+    except ValueError as exc:
+        if isinstance(exc, CodedError):
+            raise
+        raise CodedError("NET-003" if "HTTPS" in str(exc) else "NET-001", status_code=422) from exc
+    candidates = [clean_primary]
 
-    headers = {"X-BURNRATE-Request": "1", "Content-Type": "application/json"}
+    headers = {
+        "X-BURNRATE-Request": "1",
+        "X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION),
+        "Content-Type": "application/json",
+    }
     from spend_app.auth_model import extract_cookie
-    last_error = "Could not reach central account server."
+    last_error: CodedError = CodedError("NET-001")
     for base_url in candidates:
         test_client = _HUB_TEST_CLIENTS.get(base_url)
         try:
+            _hub_protocol_handshake(base_url, test_client)
             if test_client is not None:
                 cookies = getattr(test_client, "cookies", None)
                 saved_jar = list(cookies.jar) if cookies is not None and hasattr(cookies, "jar") else None
@@ -756,21 +863,30 @@ def _call_central_server_account(
 
                 with httpx.Client(timeout=8.0, trust_env=False) as http:
                     res = http.post(f"{base_url}{endpoint_path}", json=payload, headers=headers)
-            data = res.json() if res.content else {}
+            try:
+                data = res.json() if getattr(res, "content", b"") else {}
+            except ValueError:
+                data = None
             if res.status_code >= 400:
-                err_msg = data.get("error") if isinstance(data, dict) else None
-                raise ValueError(err_msg or f"Server returned HTTP {res.status_code}")
+                raise map_http_error(
+                    res.status_code,
+                    data,
+                    headers=getattr(res, "headers", None),
+                    endpoint_path=endpoint_path,
+                )
             session_token = extract_cookie(res)
             if not isinstance(data, dict) or not session_token:
-                raise ValueError("Invalid response from central account server.")
+                raise CodedError("HUB-501", status_code=502)
             return base_url, data, session_token
-        except ValueError:
+        except CodedError as exc:
+            if exc.code in {"NET-001", "NET-003"} and len(candidates) > 1:
+                last_error = exc
+                continue
             raise
         except Exception as exc:
-            from spend_app.redact import redact
-
-            last_error = f"Could not connect to central server: {redact(exc)}"
-    raise ValueError(last_error)
+            code, status = map_transport_error(exc)
+            last_error = CodedError(code, status_code=status)
+    raise last_error
 
 
 def _setup_request_refused(request: Request) -> JSONResponse | None:
@@ -1044,10 +1160,23 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
 
     @router.post("/api/account/register")
     async def central_account_register(request: Request):
+        proto_err = check_protocol_version(request.headers.get("x-burnrate-protocol"))
+        if proto_err is not None:
+            return error_response(proto_err, status_code=426)
         try:
-            body = await _bounded_json(request)
+            try:
+                body = await _bounded_json(request)
+            except RequestTooLargeError:
+                return error_response("REQ-401", status_code=422)
+            except HTTPException as exc:
+                return error_response(
+                    "NET-002" if exc.status_code == 403 else "APP-901",
+                    status_code=exc.status_code,
+                )
+            except ValueError:
+                return error_response("APP-901", status_code=422)
             if not isinstance(body, dict):
-                raise ValueError("Expected a JSON object.")
+                return error_response("APP-901", status_code=422)
             username = str(body.get("username") or "").strip()
             password = str(body.get("password") or "")
             computer_name = str(body.get("computerName") or "").strip() or "Connected Computer"
@@ -1056,9 +1185,9 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             custom_plans = body.get("customPlans") if isinstance(body.get("customPlans"), list) else []
 
             if len(username) < 2 or len(username) > 64:
-                raise ValueError("Username must be between 2 and 64 characters.")
+                return error_response("AUTH-106", status_code=422)
             if len(password) < MIN_PASSWORD_LENGTH:
-                raise ValueError(f"Password must be at least {MIN_PASSWORD_LENGTH} characters.")
+                return error_response("AUTH-105", status_code=422)
 
             key = _client_key(request, username, settings.database_path)
             global_key = _global_key(settings.database_path)
@@ -1077,7 +1206,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 existing_user = accounts["users"].get(user_key)
                 local_setup = read_setup_state(connection)
                 if local_setup.get("role") == "spoke" and local_setup["spokeConfig"].get("enabled"):
-                    return JSONResponse({"error": "Create the owner account on your hub, then sign in on this computer."}, status_code=403)
+                    return error_response("AUTH-103", status_code=403)
                 if isinstance(existing_user, dict):
                     iterations = _account_iterations(existing_user)
                     if not _verify_password(
@@ -1090,10 +1219,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                         retry = auth_throttle.fail(key)
                         if global_retry or retry:
                             return _throttled(max(global_retry, retry))
-                        return JSONResponse(
-                            {"error": "Invalid username or password."},
-                            status_code=401,
-                        )
+                        return error_response("AUTH-101", status_code=401)
                     if iterations < PBKDF2_ITERATIONS:
                         salt_hex, hash_hex = _hash_password(password, iterations=PBKDF2_ITERATIONS)
                         existing_user.update(
@@ -1106,11 +1232,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 else:
                     allow = os.getenv(ALLOW_REGISTRATION_ENV, "").strip().lower() in {"1", "true", "yes"}
                     if accounts["users"] and not allow:
-                        return JSONResponse(
-                            {"error": "This hub already has an account, so it accepts no new ones. Sign in with that "
-                                      "account, or join with a pairing code created on the hub."},
-                            status_code=403,
-                        )
+                        return error_response("AUTH-103", status_code=403)
                     first_account = not accounts["users"]
                     if first_account and central_server_for_accounts():
                         if not _setup_token_allowed(request, body):
@@ -1118,10 +1240,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                             retry = auth_throttle.fail(key)
                             if global_retry or retry:
                                 return _throttled(max(global_retry, retry))
-                            return JSONResponse(
-                                {"error": _setup_token_required_message()},
-                                status_code=403,
-                            )
+                            return error_response("AUTH-103", status_code=403)
                     elif first_account:
                         protected = bool(os.getenv("BURNRATE_ACCESS_TOKEN", "").strip() or connection.execute(
                             "SELECT 1 FROM app_meta WHERE key='auth.break_glass.v1'"
@@ -1132,7 +1251,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                             retry = auth_throttle.fail(key)
                             if global_retry or retry:
                                 return _throttled(max(global_retry, retry))
-                            return JSONResponse({"error": "Bootstrap authorization required."}, status_code=403)
+                            return error_response("AUTH-103", status_code=403)
                     salt_hex, hash_hex = _hash_password(password)
                     accounts["users"][user_key] = {
                         "username": username,
@@ -1156,7 +1275,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 from spend_app.auth_model import Principal, create_session
                 rec = accounts["users"][user_key]
                 if rec.get("role", "owner") != "owner":
-                    return JSONResponse({"error": "Role is not enabled."}, status_code=403)
+                    return error_response("AUTH-103", status_code=403)
                 rec.setdefault("id", secrets.token_hex(16))
                 actor = Principal("owner", rec["id"], "owner")
                 request.state.principal = actor
@@ -1181,15 +1300,28 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 },
                 headers={"Cache-Control": "no-store"},
             ), request, session)
-        except ValueError as exc:
-            return JSONResponse({"error": str(exc)}, status_code=422)
+        except ValueError:
+            return error_response("HUB-501", status_code=422)
 
     @router.post("/api/account/login")
     async def central_account_login(request: Request):
+        proto_err = check_protocol_version(request.headers.get("x-burnrate-protocol"))
+        if proto_err is not None:
+            return error_response(proto_err, status_code=426)
         try:
-            body = await _bounded_json(request)
+            try:
+                body = await _bounded_json(request)
+            except RequestTooLargeError:
+                return error_response("REQ-401", status_code=422)
+            except HTTPException as exc:
+                return error_response(
+                    "NET-002" if exc.status_code == 403 else "APP-901",
+                    status_code=exc.status_code,
+                )
+            except ValueError:
+                return error_response("APP-901", status_code=422)
             if not isinstance(body, dict):
-                raise ValueError("Expected a JSON object.")
+                return error_response("APP-901", status_code=422)
             username = str(body.get("username") or "").strip()
             password = str(body.get("password") or "")
             computer_name = str(body.get("computerName") or "").strip() or "Connected Computer"
@@ -1197,8 +1329,10 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             preset_keys = [str(k) for k in (body.get("presetKeys") or []) if k]
             custom_plans = body.get("customPlans") if isinstance(body.get("customPlans"), list) else []
 
-            if not username or not password:
-                raise ValueError("Enter your account username and password.")
+            if not username:
+                return error_response("AUTH-106", status_code=422)
+            if not password:
+                return error_response("AUTH-101", status_code=422)
 
             key = _client_key(request, username, settings.database_path)
             global_key = _global_key(settings.database_path)
@@ -1216,17 +1350,16 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 accounts = _read_accounts(connection)
                 user_rec = accounts["users"].get(user_key)
                 if not isinstance(user_rec, dict):
-                    # Spend the KDF before the generic answer so an unknown
-                    # username is not measurably cheaper than a wrong password.
+                    # Spend the KDF before answering so an unknown username is
+                    # not measurably cheaper than a wrong password.
                     _verify_password(password, "00" * 16, "00" * 32, PBKDF2_ITERATIONS)
                     global_retry = _GLOBAL_THROTTLE.fail(global_key)
                     retry = auth_throttle.fail(key)
                     if global_retry or retry:
                         return _throttled(max(global_retry, retry))
-                    return JSONResponse(
-                        {"error": "Invalid username or password."},
-                        status_code=401,
-                    )
+                    if not accounts["users"]:
+                        return error_response("AUTH-104", status_code=401)
+                    return error_response("AUTH-101", status_code=401)
                 iterations = _account_iterations(user_rec)
                 if not _verify_password(
                     password,
@@ -1238,10 +1371,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     retry = auth_throttle.fail(key)
                     if global_retry or retry:
                         return _throttled(max(global_retry, retry))
-                    return JSONResponse(
-                        {"error": "Invalid username or password."},
-                        status_code=401,
-                    )
+                    return error_response("AUTH-101", status_code=401)
                 display_username = str(user_rec.get("username") or username)
                 if iterations < PBKDF2_ITERATIONS:
                     salt_hex, hash_hex = _hash_password(password, iterations=PBKDF2_ITERATIONS)
@@ -1264,7 +1394,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 from spend_app.auth_model import Principal, create_session
                 rec = accounts["users"][user_key]
                 if rec.get("role", "owner") != "owner":
-                    return JSONResponse({"error": "Role is not enabled."}, status_code=403)
+                    return error_response("AUTH-103", status_code=403)
                 rec.setdefault("id", secrets.token_hex(16))
                 actor = Principal("owner", rec["id"], "owner")
                 request.state.principal = actor
@@ -1288,8 +1418,8 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 },
                 headers={"Cache-Control": "no-store"},
             ), request, session)
-        except ValueError as exc:
-            return JSONResponse({"error": str(exc)}, status_code=422)
+        except ValueError:
+            return error_response("HUB-501", status_code=422)
 
     @router.post("/api/account/subscriptions")
     async def central_account_subscriptions(request: Request):
@@ -1339,21 +1469,33 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
         if refused:
             return refused
         try:
-            body = await _bounded_json(request)
+            try:
+                body = await _bounded_json(request)
+            except RequestTooLargeError:
+                return error_response("REQ-401", status_code=422)
+            except HTTPException as exc:
+                return error_response(
+                    "NET-002" if exc.status_code == 403 else "APP-901",
+                    status_code=exc.status_code,
+                )
+            except ValueError:
+                return error_response("APP-901", status_code=422)
             with connect(settings.database_path) as connection:
                 state = read_setup_state(connection)
             spoke = state["spokeConfig"]
             if state.get("role") != "spoke" or not spoke.get("enabled"):
-                return JSONResponse({"error": "Pair this computer first."}, status_code=409)
+                return error_response("AUTH-107", status_code=409)
             from spend_app.pairing import hub_origin
             from spend_app.config import resolve_hub_url
-            from spend_app.redact import redact
 
             try:
                 raw_hub_url = resolve_hub_url() or str(spoke.get("hubUrl") or "").strip()
                 validated_hub_url = hub_origin(raw_hub_url)
             except ValueError as exc:
-                return JSONResponse({"error": redact(exc)}, status_code=422)
+                return error_response(
+                    "NET-003" if "HTTPS" in str(exc) else "NET-001",
+                    status_code=422,
+                )
             _, remote, owner_session = _call_central_server_account(validated_hub_url, "/api/account/login", {
                 "username": str(body.get("username") or ""), "password": str(body.get("password") or ""),
                 "sessionOnly": True, "deviceLabel": state.get("computerName") or "Paired computer",
@@ -1362,7 +1504,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 connection.execute("BEGIN IMMEDIATE")
                 state = read_setup_state(connection)
                 if state["spokeConfig"].get("hubUrl") != spoke.get("hubUrl"):
-                    return JSONResponse({"error": "Hub changed during sign-in. Retry on the selected hub."}, status_code=409)
+                    return error_response("AUTH-107", status_code=409)
                 state["spokeConfig"]["ownerSession"] = owner_session
                 state["spokeConfig"]["ownerSessionExpiresAt"] = remote["expiresAt"]
                 write_setup_state(connection, state)
@@ -1371,8 +1513,10 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             clear_hub_proxy_cache()
             response = JSONResponse({"ok": True, "expiresAt": remote["expiresAt"]})
             return set_local_cookie(response, request, local)
+        except CodedError as exc:
+            return error_response(exc.code, status_code=exc.status_code, retry_after=exc.retry_after)
         except ValueError:
-            return JSONResponse({"error": "Sign-in failed. Check your hub and credentials."}, status_code=401)
+            return error_response("AUTH-101", status_code=401)
 
     @router.post("/api/setup/rotate-machine")
     async def spoke_rotate_machine(request: Request):
@@ -1383,17 +1527,24 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             state = read_setup_state(connection)
         spoke = state["spokeConfig"]
         if state.get("role") != "spoke" or not spoke.get("enabled"):
-            return JSONResponse({"error": "Pair this computer first."}, status_code=409)
-        headers = {"Authorization": "Bearer " + str(spoke.get("token") or ""), "X-BURNRATE-Request": "1", "Content-Type": "application/json"}
+            return error_response("AUTH-107", status_code=409)
+        headers = {
+            "Authorization": "Bearer " + str(spoke.get("token") or ""),
+            "X-BURNRATE-Request": "1",
+            "X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION),
+            "Content-Type": "application/json",
+        }
         from spend_app.pairing import hub_origin
         from spend_app.config import resolve_hub_url
-        from spend_app.redact import redact
 
         try:
             raw_hub_url = resolve_hub_url() or str(spoke.get("hubUrl") or "").strip()
             hub_url = hub_origin(raw_hub_url)
         except ValueError as exc:
-            return JSONResponse({"error": redact(exc)}, status_code=422)
+            return error_response(
+                "NET-003" if "HTTPS" in str(exc) else "NET-001",
+                status_code=422,
+            )
         from spend_app.sync import read_sync_cursor
         prior_generation = read_sync_cursor(settings.database_path, hub_url).get("generation")
         client = _HUB_TEST_CLIENTS.get(hub_url)
@@ -1405,7 +1556,22 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 with httpx.Client(timeout=8, trust_env=False) as http:
                     response = http.post(hub_url + "/api/auth/machine/rotate", json={}, headers=headers)
             if response.status_code != 200:
-                return JSONResponse({"error": "Rotation refused. Re-pair expired or revoked computers."}, status_code=response.status_code)
+                try:
+                    err_data = response.json() if getattr(response, "content", b"") else {}
+                except ValueError:
+                    err_data = None
+                mapped = map_http_error(
+                    response.status_code,
+                    err_data,
+                    headers=getattr(response, "headers", None),
+                    endpoint_path="/api/auth/machine/rotate",
+                    has_machine_token=True,
+                )
+                return error_response(
+                    mapped.code,
+                    status_code=response.status_code if response.status_code in {401, 403, 426, 429} else mapped.status_code,
+                    retry_after=mapped.retry_after,
+                )
             replacement = response.json()
             with connect(settings.database_path) as connection:
                 connection.execute("BEGIN IMMEDIATE")
@@ -1414,15 +1580,18 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 row = connection.execute("SELECT value FROM app_meta WHERE key=?", (_cursor_key(hub_url),)).fetchone()
                 generation = json.loads(row[0]).get("generation") if row else None
                 if current["spokeConfig"].get("token") != spoke.get("token") or generation != prior_generation:
-                    return JSONResponse({"error": "Pairing changed during rotation. Re-pair this computer."}, status_code=409)
+                    return error_response("DEV-301", status_code=409)
                 current["spokeConfig"]["token"] = replacement["token"]
                 current["spokeConfig"]["tokenExpiresAt"] = replacement["expiresAt"]
                 from spend_app.sync import rotate_spoke_sync_credential
                 rotate_spoke_sync_credential(connection, hub_url, replacement["token"])
                 write_setup_state(connection, current)
             return {"ok": True, "expiresAt": replacement["expiresAt"]}
-        except (ValueError, OSError):
-            return JSONResponse({"error": "Could not rotate the token. Re-pair if the reply was lost."}, status_code=503)
+        except ValueError:
+            return error_response("HUB-501", status_code=503)
+        except Exception as exc:
+            err_code, err_status = map_transport_error(exc)
+            return error_response(err_code, status_code=err_status)
 
     @router.post("/api/setup/account")
     async def setup_connect_account(request: Request):
@@ -1430,26 +1599,44 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
         if refused:
             return refused
         try:
-            body = await _bounded_json(request)
+            try:
+                body = await _bounded_json(request)
+            except RequestTooLargeError:
+                return error_response("REQ-401", status_code=422)
+            except HTTPException as exc:
+                return error_response(
+                    "NET-002" if exc.status_code == 403 else "APP-901",
+                    status_code=exc.status_code,
+                )
+            except ValueError:
+                return error_response("APP-901", status_code=422)
             if not isinstance(body, dict):
-                raise ValueError("Expected a JSON object.")
+                return error_response("APP-901", status_code=422)
             mode = str(body.get("mode") or "login").strip().lower()
             if mode not in {"login", "register"}:
-                raise ValueError("Mode must be 'login' or 'register'.")
+                return error_response("APP-901", status_code=422)
             username = str(body.get("username") or "").strip()
             password = str(body.get("password") or "")
-            if not username or not password:
-                raise ValueError("Enter your account username and password.")
+            if not username:
+                return error_response("AUTH-106", status_code=422)
+            if not password:
+                return error_response("AUTH-105" if mode == "register" else "AUTH-101", status_code=422)
             if mode == "register" and len(password) < MIN_PASSWORD_LENGTH:
-                raise ValueError(f"Choose a password of at least {MIN_PASSWORD_LENGTH} characters.")
+                return error_response("AUTH-105", status_code=422)
             computer_name = str(body.get("computerName") or "").strip() or _default_computer_name()
             from spend_app.config import resolve_hub_url
             from spend_app.pairing import hub_origin
 
-            raw_server_url = resolve_hub_url()
-            if not raw_server_url:
-                raise ValueError("No hub is configured for this build.")
-            server_url = hub_origin(raw_server_url)
+            try:
+                raw_server_url = resolve_hub_url()
+                if not raw_server_url:
+                    return error_response("NET-001", status_code=422)
+                server_url = hub_origin(raw_server_url)
+            except ValueError as exc:
+                return error_response(
+                    "NET-003" if "HTTPS" in str(exc) else "NET-001",
+                    status_code=422,
+                )
             setup_token = str(body.get("setupToken") or "").strip()
             preset_keys = [str(k) for k in (body.get("presetKeys") or []) if k]
             custom_plans = list(body.get("customPlans")) if isinstance(body.get("customPlans"), list) else []
@@ -1495,6 +1682,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 reg_headers = {
                     "Authorization": f"Bearer {owner_session}",
                     "X-BURNRATE-Request": "1",
+                    "X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION),
                     "Content-Type": "application/json",
                 }
                 reg_payload = {"action": "register", "name": computer_name, "os": sys.platform}
@@ -1517,15 +1705,21 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                         with httpx.Client(timeout=8.0, trust_env=False) as http:
                             reg_res = http.post(f"{working_url}/api/machines", json=reg_payload, headers=reg_headers)
                 except Exception as exc:
-                    from spend_app.redact import redact
-
-                    raise ValueError(f"Could not register computer with hub: {redact(exc)}") from exc
-                reg_data = reg_res.json() if reg_res.content else {}
+                    err_code, err_status = map_transport_error(exc)
+                    raise CodedError(err_code, status_code=err_status) from exc
+                try:
+                    reg_data = reg_res.json() if getattr(reg_res, "content", b"") else {}
+                except ValueError:
+                    reg_data = None
                 if reg_res.status_code >= 400:
-                    err_msg = reg_data.get("error") if isinstance(reg_data, dict) else None
-                    raise ValueError(err_msg or f"Server returned HTTP {reg_res.status_code}")
+                    raise map_http_error(
+                        reg_res.status_code,
+                        reg_data,
+                        headers=getattr(reg_res, "headers", None),
+                        endpoint_path="/api/machines",
+                    )
                 if not isinstance(reg_data, dict) or not str(reg_data.get("token") or "").strip():
-                    raise ValueError("Invalid machine registration response from hub.")
+                    raise CodedError("HUB-501", status_code=502)
                 token = str(reg_data["token"]).strip()
                 machine = reg_data.get("machine") or {}
                 machines_list = reg_data.get("machines") or []
@@ -1552,7 +1746,11 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 except Exception:
                     # Owner credentials have already been verified. Keep the
                     # session usable independently from a failed first push.
-                    sync_result = {"ok": False, "error": "Signed in; machine sync is unavailable. Retry, rotate or re-pair this computer."}
+                    sync_result = {
+                        "ok": False,
+                        "code": "SYNC-201",
+                        "error": format_error("SYNC-201"),
+                    }
 
             initialize(settings.database_path)
             with connect(settings.database_path) as connection:
@@ -1560,12 +1758,12 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 state = read_setup_state(connection)
                 if (state["spokeConfig"].get("token") != previous_spoke.get("token")
                         or state["spokeConfig"].get("hubUrl") != previous_spoke.get("hubUrl")):
-                    return JSONResponse({"error": "Pairing changed during sign-in. Retry."}, status_code=409)
+                    return error_response("AUTH-107", status_code=409)
                 if account_generation:
                     from spend_app.sync import _cursor_key
                     row = connection.execute("SELECT value FROM app_meta WHERE key=?", (_cursor_key(working_url),)).fetchone()
                     if not row or json.loads(row[0]).get("generation") != account_generation:
-                        return JSONResponse({"error": "Pairing changed during sign-in. Retry."}, status_code=409)
+                        return error_response("AUTH-107", status_code=409)
                 _sync_plans_into_local_db(connection, settings.timezone, remote_subs)
                 state["role"] = "spoke"
                 state["computerName"] = computer_name
@@ -1602,10 +1800,15 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 },
                 headers={"Cache-Control": "no-store"},
             )
+        except CodedError as exc:
+            return error_response(exc.code, status_code=exc.status_code, retry_after=exc.retry_after)
         except ValueError as exc:
-            from spend_app.redact import redact
-
-            return JSONResponse({"error": redact(exc)}, status_code=422)
+            msg = str(exc)
+            if "HTTPS" in msg:
+                return error_response("NET-003", status_code=422)
+            if "address" in msg.lower():
+                return error_response("NET-001", status_code=422)
+            return error_response("HUB-501", status_code=422)
 
     @router.post("/api/setup/scan")
     async def scan_and_import(request: Request):
@@ -1762,12 +1965,22 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 },
                 headers={"Cache-Control": "no-store"},
             )
-        except HTTPException:
-            raise
+        except RequestTooLargeError:
+            return error_response("REQ-401", status_code=422)
+        except CodedError as exc:
+            return error_response(exc.code, status_code=exc.status_code, retry_after=exc.retry_after)
+        except HTTPException as exc:
+            return error_response(
+                "NET-002" if exc.status_code == 403 else "APP-901",
+                status_code=exc.status_code,
+            )
         except Exception as exc:
-            from spend_app.redact import redact
-
-            return JSONResponse({"error": redact(exc)}, status_code=422)
+            msg = str(exc)
+            if "HTTPS" in msg:
+                return error_response("NET-003", status_code=422)
+            if "hub" in msg.lower() or "url" in msg.lower() or "address" in msg.lower():
+                return error_response("NET-001", status_code=422)
+            return error_response("DEV-301" if "token" in msg.lower() else "APP-901", status_code=422)
 
     @router.post("/api/setup/complete")
     async def complete_setup(request: Request):
@@ -2727,6 +2940,25 @@ SETUP_WIZARD_HTML = """<!doctype html>
         const suggestionChoices = new Map();
         const addedPlans = [];
 
+        const ERROR_MESSAGES = __ERROR_MESSAGES__;
+        function formatApiError(data, status) {
+          const err = data && data.error;
+          if (err && typeof err === "object" && err.code) {
+            const code = String(err.code);
+            let msg = ERROR_MESSAGES[code] || "Your hub had a problem. Try again later.";
+            if (code === "AUTH-102") {
+              const secs = Number(err.retryAfter || 0);
+              if (secs > 0) {
+                const mins = Math.max(1, Math.ceil(secs / 60));
+                msg = "Too many attempts. Try again in " + mins + (mins === 1 ? " minute." : " minutes.");
+              } else {
+                msg = "Too many attempts. Try again in a few minutes.";
+              }
+            }
+            return msg + " Error " + code;
+          }
+          return (typeof err === "string" && err) || data?.detail || ("HTTP " + status);
+        }
         async function api(url, method = "GET", body = null) {
           const opts = {method, cache: "no-store", headers: {}};
           if (method !== "GET") opts.headers["X-BURNRATE-Request"] = "1";
@@ -2736,7 +2968,7 @@ SETUP_WIZARD_HTML = """<!doctype html>
           }
           const res = await fetch(url, opts);
           const data = await res.json().catch(() => ({}));
-          if (!res.ok) throw new Error(data.error || data.detail || ("HTTP " + res.status));
+          if (!res.ok) throw new Error(formatApiError(data, res.status));
           return data;
         }
         const el = (tag, cls, text) => {
@@ -3443,4 +3675,9 @@ SETUP_WIZARD_HTML = """<!doctype html>
 def render_setup_wizard() -> str:
     from spend_app.config import dashboard_enabled
 
-    return SETUP_WIZARD_HTML.replace("__SKIP_TARGET__", "Dashboard" if dashboard_enabled() else "HUD", 1)
+    catalog = {code: str(entry["message"]) for code, entry in ERROR_CATALOG.items()}
+    return (
+        SETUP_WIZARD_HTML
+        .replace("__SKIP_TARGET__", "Dashboard" if dashboard_enabled() else "HUD", 1)
+        .replace("__ERROR_MESSAGES__", json.dumps(catalog), 1)
+    )

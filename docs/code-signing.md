@@ -10,31 +10,27 @@ Free code signing provided by [SignPath.io](https://about.signpath.io/), certifi
 
 ## What is signed
 
-The Windows installers, `BURNRATE_<version>_x64-setup.exe` (the Tauri app) and
-`myBurnRate_<version>_x64-setup.exe` (the native app), are
-code-signed, and only when built by this repository's
+The Windows installer, `myBurnRate_<version>_x64-setup.exe` (the native app), is
+code-signed only when built by this repository's
 [release workflow](../.github/workflows/release.yml) from a version tag. Local
-builds and the per-commit builds in the Desktop and Native desktop workflows are
+builds and the per-commit builds in the Native desktop workflow are
 never signed by the project.
 
 A certificate has to be supplied by the project owner: until the SignPath
 Foundation application is approved (or an Azure Trusted Signing account is set
-up, the paid alternative), neither installer carries an Authenticode signature
+up, the paid alternative), the installer does not carry an Authenticode signature
 and Windows SmartScreen or Defender may warn about it. In the native release
 job SignPath signs the installer only; `BURNRATE.exe` inside it is signed only
 when a build is run with the `BURNRATE_SIGN_*` variables below.
 
-Separately from Authenticode, every installer also has an **update signature**
-(a minisign signature made with the Tauri updater key). The native app checks
+Separately from Authenticode, the installer also has an **update signature**
+(a minisign signature made with the release updater key). The native app checks
 it, with the installer's size and SHA-256, before it installs an update, and
 the release workflow verifies it against the key built into the app.
 
 Each signing request is approved by hand in SignPath before the certificate is
 used. The installer is signed after it is built, and its in-app update
-signature is made again for the signed file.
-
-macOS and Linux bundles are not code-signed. The macOS app is ad-hoc signed
-only; see the README for opening it the first time.
+signature is made after SignPath for those final signed bytes.
 
 ## Team roles
 
@@ -52,11 +48,9 @@ authentication for GitHub and SignPath.
 This program will not transfer any information to other networked systems
 unless the person using or installing it asks for it. The exceptions are:
 
-- **Update checks.** An installed Tauri app asks GitHub Releases for
-  `latest.json` about every six hours to see whether a newer version exists.
-  This sends no usage data. To turn it off, set `BURNRATE_UPDATES=0`.
-  An installed native app asks for `native-latest.json` once after it starts
-  and then daily; to turn that off, set `BURNRATE_NO_UPDATE_CHECK=1`. See the
+- **Update checks.** An installed native app asks GitHub Releases for
+  `native-latest.json` once after it starts and then daily; to turn that off,
+  set `BURNRATE_NO_UPDATE_CHECK=1`. This sends no usage data. See the
   [privacy notes](privacy.md#update-checks-native-app).
 - **Connections the person sets up.** These are a hub they run themselves,
   provider admin or balance keys they paste in, and the sign-in-reuse switches

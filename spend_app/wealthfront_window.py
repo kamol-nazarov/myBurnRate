@@ -17,6 +17,7 @@ from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 
 from spend_app import __version__, native_geometry
+from spend_app.error_codes import format_error
 from spend_app.native_alerts import QuotaWatcher
 from spend_app.native_autoupdate import UpdateChecker
 from spend_app.native_desktop import (
@@ -1529,9 +1530,12 @@ class DesktopBridge:
                 "hubAvailable": bool(setup.get("hubAvailable", False)),
             }
         except DesktopError as exc:
-            return {"ok": False, "error": str(exc)}
+            out = {"ok": False, "error": str(exc)}
+            if getattr(exc, "code", None):
+                out["code"] = exc.code
+            return out
         except (OSError, RuntimeError, ValueError, KeyError, TypeError):
-            return {"ok": False, "error": "Could not load settings."}
+            return {"ok": False, "code": "APP-901", "error": format_error("APP-901")}
 
     def browse_location(self, kind: str = "") -> str:
         if self._window is None:
@@ -1793,10 +1797,18 @@ class DesktopBridge:
         if self._demo:
             return {"ok": False, "error": "Hub sign-in is disabled in demo mode."}
         clean_user = (username or "").strip()
-        if not clean_user or not password:
+        if not clean_user:
             return {
                 "ok": False,
-                "error": "Enter your hub account username and password.",
+                "code": "AUTH-106",
+                "error": format_error("AUTH-106"),
+            }
+        if not password:
+            code = "AUTH-105" if str(mode or "").strip().lower() == "register" else "AUTH-101"
+            return {
+                "ok": False,
+                "code": code,
+                "error": format_error(code),
             }
         auth_mode = (
             "register" if str(mode or "").strip().lower() == "register" else "login"
@@ -1818,15 +1830,25 @@ class DesktopBridge:
                 self._client.request("/api/setup/defer", {})
             except DesktopError:
                 pass
-            return {
+            out = {
                 "ok": True,
                 "account": res.get("account") or {},
                 "setup": res.get("setup") or {},
             }
+            sync_res = res.get("syncResult")
+            if isinstance(sync_res, dict) and sync_res.get("ok") is False:
+                warn_code = sync_res.get("code") or "SYNC-201"
+                out["warningCode"] = warn_code
+                out["warning"] = format_error(warn_code)
+                out["syncResult"] = sync_res
+            return out
         except DesktopError as exc:
-            return {"ok": False, "error": str(exc)}
+            code = getattr(exc, "code", None)
+            if code:
+                return {"ok": False, "code": code, "error": str(exc)}
+            return {"ok": False, "code": "HUB-501", "error": format_error("HUB-501")}
         except (OSError, RuntimeError, ValueError, KeyError, TypeError):
-            return {"ok": False, "error": "Could not sign in to hub account."}
+            return {"ok": False, "code": "HUB-501", "error": format_error("HUB-501")}
 
     def create_pairing_code(self, name: str) -> dict:
         if self._demo:
@@ -1840,9 +1862,12 @@ class DesktopBridge:
             )
             return {"ok": True, "pairingCode": res.get("pairingCode", "")}
         except DesktopError as exc:
-            return {"ok": False, "error": str(exc)}
+            code = getattr(exc, "code", None)
+            if code:
+                return {"ok": False, "code": code, "error": str(exc)}
+            return {"ok": False, "code": "HUB-501", "error": format_error("HUB-501")}
         except (OSError, RuntimeError, ValueError, KeyError, TypeError):
-            return {"ok": False, "error": "Could not generate pairing code."}
+            return {"ok": False, "code": "HUB-501", "error": format_error("HUB-501")}
 
     def join_with_code(self, code: str) -> dict:
         if self._demo:
@@ -1854,9 +1879,12 @@ class DesktopBridge:
             )
             return {"ok": True}
         except DesktopError as exc:
-            return {"ok": False, "error": str(exc)}
+            code = getattr(exc, "code", None)
+            if code:
+                return {"ok": False, "code": code, "error": str(exc)}
+            return {"ok": False, "code": "HUB-501", "error": format_error("HUB-501")}
         except (OSError, RuntimeError, ValueError, KeyError, TypeError):
-            return {"ok": False, "error": "Could not pair computer."}
+            return {"ok": False, "code": "HUB-501", "error": format_error("HUB-501")}
 
     def minimize_window(self) -> None:
         if self._window is not None:
@@ -1892,7 +1920,7 @@ def _find_icon() -> Path | None:
     for candidate in (
         resource_root / "burnrate.ico",
         resource_root / "burnrate-assets" / "burnrate.ico",
-        resource_root / "src-tauri" / "icons" / "icon.ico",
+        resource_root / "assets" / "icons" / "icon.ico",
     ):
         if candidate.is_file():
             return candidate

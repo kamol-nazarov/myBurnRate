@@ -27,32 +27,28 @@ maintainer's computer, so every download traces back to a tagged commit.
 2. Bump the version in these files:
    - `pyproject.toml` (PEP 440, for example `0.4.0b2`);
    - `spend_app/__init__.py`;
-   - `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock` and
-     `src-tauri/tauri.conf.json`;
    - the current-release line and release-notes link in the README.
 3. Write `docs/releases/RELEASE-<version>.md` (it becomes the release notes)
    and move the changelog's `[Unreleased]` entries under the new version.
-4. Commit on `release/<version>`, push it, and wait for CI and the Desktop
-   workflow to pass.
+4. Commit on `release/<version>`, push it, and wait for CI and the Native
+   desktop workflow to pass.
 5. Tag the release branch and push the tag:
    `git tag -a v<version> -m "BURNRATE v<version>"` then
    `git push origin v<version>`.
 6. The release workflow:
-   - checks that the tag matches the versions in the code;
-   - builds and update-signs the Windows, macOS and Linux bundles;
+   - checks that the tag matches the version in `spend_app/__init__.py`;
    - builds the native Windows app's installer
      (`myBurnRate_<version>_x64-setup.exe`), has SignPath sign it when
-     configured, then makes its update signature for those final bytes and
-     checks that the `.sig` names exactly that file and verifies against the
-     key pinned in the app;
-   - code-signs the Windows installer through SignPath when signing is set
-     up (see [code signing](code-signing.md)), which needs an approver;
-   - writes `latest.json` (Tauri), `native-latest.json` (native) and
-     `SHA256SUMS` and attests the build provenance;
-   - creates a **draft** release with the wheel and sdist.
-7. Check the draft and publish it as the latest release. Installed apps find
-   the update within about six hours, or at once from the tray's **Check for
-   updates**.
+     configured (which needs an approver; see [code signing](code-signing.md)),
+     then makes its update signature for those final bytes and checks that the
+     `.sig` names exactly that file and verifies against the key pinned in the
+     app;
+   - writes `native-latest.json` and `SHA256SUMS` and attests the build
+     provenance;
+   - creates a **draft** release with the installer, wheel and sdist.
+7. Check the draft and publish it as the latest release. Installed native apps
+   find the update after launch or daily, or at once from **Settings → General →
+   Check for updates**.
 8. Move `prod` to the release: `git push origin v<version>^{commit}:refs/heads/prod`
    (a fast-forward; it fails rather than rewrite history).
    Once the tag's Hub image build has passed, verify its digest with
@@ -60,16 +56,6 @@ maintainer's computer, so every download traces back to a tagged commit.
    and pin that `tag@sha256:...` in `deploy/hub/compose.yaml`. Commit this release metadata
    on `release/<version>` and fast-forward `prod` to it; keep the published tag unchanged. The image's
    digest is available only after its tag build, so do not guess it before tagging.
-9. Command-line installs:
-   - **Scoop** needs nothing more. The release carries `myburnrate.json`, so
-     `scoop install https://github.com/kamol-nazarov/myBurnRate/releases/latest/download/myburnrate.json`
-     installs the latest release.
-   - **winget:** unzip the release's `winget-manifests-<version>.zip` into
-     `manifests/k/KamolNazarov/myBurnRate/<version>/` of a fork of
-     [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs), check
-     it with `winget validate`, and open a pull request; `wingetcreate submit`
-     does the same in one step. The winget maintainers review new packages,
-     and the installer should be code-signed first.
 
 ## Built-in hub address
 
@@ -94,24 +80,24 @@ fragments are rejected). Leaving it empty or unset builds an app with no built-i
 
 ## The update-signing key
 
-In-app updates are verified with a Tauri updater key. The private key and its
-password are the repository secrets `TAURI_SIGNING_PRIVATE_KEY` and
-`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. The public key is
-`plugins.updater.pubkey` in `src-tauri/tauri.conf.json`.
+In-app updates and `scripts/install-native.ps1` are verified with an Ed25519
+minisign updater key. The private key and its password are the repository secrets
+`TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. The
+corresponding public key is pinned in `spend_app/native_update.py`
+(`PUBLIC_KEY_B64`) and `scripts/minisign-verify.ps1` (`$MinisignPublicKey`).
 
 Keep an offline backup of the private key: if it is lost, installed apps
 cannot verify any later update, and people would have to reinstall.
 
-The native app (`spend_app/native_update.py`) pins the same public key, and a test asserts that
-the constant equals `plugins.updater.pubkey`, so rotating the key means changing both together.
-It reads `native-latest.json`
+Rotating the key requires updating `PUBLIC_KEY_B64` in
+`spend_app/native_update.py` and `$MinisignPublicKey` in
+`scripts/minisign-verify.ps1` together. The app reads `native-latest.json`
 (`{version, notes, pub_date, platforms: {"windows-x86_64": {url, signature, sha256, size}}}`)
 from the release marked Latest, and accepts an installer only when its signature, size, SHA-256,
 file name and version all match (see [native app](native-app.md#install-and-update)). The
 signature records the installer's file name, so the workflow signs the installer under its final
-name and the file must not be renamed afterwards. The native installer is deliberately kept out
-of `latest.json` and the Scoop and winget manifests. The release's `publish` job needs the native
-job to succeed, so a release is never missing its native feed.
+name and the file must not be renamed afterwards. The release's `publish` job needs the
+`native-windows` job to succeed, so a release is never missing its native feed.
 
 Verify a download with:
 

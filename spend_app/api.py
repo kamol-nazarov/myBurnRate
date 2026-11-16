@@ -19,6 +19,7 @@ from starlette.middleware.gzip import GZipMiddleware
 from spend_app import __version__
 from spend_app.bounded_reads import BoundedReadExecutor, ReadCapacityExceeded
 from spend_app.build import build_id
+from spend_app.error_codes import HUB_PROTOCOL_VERSION, error_payload
 from spend_app.native_launch import evaluate as evaluate_native_binary
 from spend_app.native_launch import locked_binary
 
@@ -165,19 +166,11 @@ def _live_hud_html() -> str:
     return hud.render_hud(dashboard=dashboard_enabled())
 
 
-# With the dashboard off, "/" belongs to the HUD: inside the desktop app it
-# hides the main window (also on desktop builds that still open "/?app=1" at
-# launch); in a browser it opens the HUD.
+# With the dashboard off, "/" redirects to the browser HUD.
 HUD_LAUNCHER_HTML = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>BURNRATE</title>
 <script>
-(async () => {
-  const tauri = window.__TAURI_INTERNALS__;
-  if (tauri && typeof tauri.invoke === "function") {
-    try { await tauri.invoke("hide_main"); return; } catch {}
-  }
-  location.replace("/hud");
-})();
+location.replace("/hud");
 </script></head><body></body></html>
 """
 
@@ -312,7 +305,13 @@ def create_app(
             response.headers["Cache-Control"] = "no-store"
         return response
 
-    def boundary_error(status: int, message: str, *, retry_after: str | None = None) -> JSONResponse:
+    def boundary_error(
+        status: int,
+        message: str,
+        *,
+        retry_after: str | None = None,
+        code: str | None = None,
+    ) -> JSONResponse:
         """Boundary rejections still carry the security headers."""
         headers = {
             "X-Content-Type-Options": "nosniff",
@@ -323,7 +322,8 @@ def create_app(
         }
         if retry_after is not None:
             headers["Retry-After"] = retry_after
-        return JSONResponse({"error": message}, status_code=status, headers=headers)
+        payload = error_payload(code) if code is not None else {"error": message}
+        return JSONResponse(payload, status_code=status, headers=headers)
 
     @app.middleware("http")
     async def host_boundary(request, call_next):
@@ -331,7 +331,7 @@ def create_app(
         from spend_app.connection_api import host_allowed
 
         if not host_allowed(request.headers.get("host", "")):
-            return boundary_error(403, "Request rejected: unrecognized Host header.")
+            return boundary_error(403, "Request rejected: unrecognized Host header.", code="NET-002")
         return await call_next(request)
 
     # Explicit application boundary (Release A A13): when BURNRATE_ACCESS_TOKEN
@@ -362,7 +362,7 @@ def create_app(
             _MACHINE_READ_PATHS, access_allowed, csrf_mutation_allowed, host_allowed, trusted,
         )
         if not host_allowed(request.headers.get("host", "")):
-            return boundary_error(403, "Request rejected: unrecognized Host header.")
+            return boundary_error(403, "Request rejected: unrecognized Host header.", code="NET-002")
         auth = request.headers.get("authorization", "")
         bearer = auth[7:].strip() if auth.startswith("Bearer ") else ""
         cookie = request.cookies.get(COOKIE, "")
@@ -412,13 +412,14 @@ def create_app(
             elif bearer.startswith("br_s_"):
                 principal = await asyncio.to_thread(authenticate_session, settings.database_path, bearer)
             if not principal or principal.kind == "unauthenticated":
-                return await recorded(boundary_error(401, "Invalid, expired or revoked credential."))
+                err_code = "DEV-301" if bearer.startswith("br_m_") else "AUTH-107"
+                return await recorded(boundary_error(401, "Invalid, expired or revoked credential.", code=err_code))
         elif cookie:
             principal = await asyncio.to_thread(authenticate_session, settings.database_path, cookie, via="cookie")
             if not principal:
                 # Login remains available when a browser's previous session expires.
                 if request.url.path not in {"/api/account/login", "/api/account/register"} and request.url.path.startswith("/api/"):
-                    return await recorded(boundary_error(401, "Session expired or revoked. Sign in again."))
+                    return await recorded(boundary_error(401, "Session expired or revoked. Sign in again.", code="AUTH-107"))
                 principal = Principal()
         request.state.principal = principal
         request.state.machine_id = principal.id if principal.kind == "machine" else None
@@ -432,7 +433,7 @@ def create_app(
             return await recorded(RedirectResponse("/auth", status_code=303))
         bearer_ok = principal.via in {"bearer", "break-glass"}
         if not csrf_mutation_allowed(request, bearer_ok=bearer_ok):
-            return await recorded(boundary_error(403, "Request rejected: use the configured BURNRATE origin."))
+            return await recorded(boundary_error(403, "Request rejected: use the configured BURNRATE origin.", code="NET-002"))
         if (principal.via == "cookie" and request.method not in {"GET", "HEAD", "OPTIONS"}
                 and (not trusted(request) or urlsplit(request.headers.get("origin", "")).scheme != request.url.scheme)):
             return await recorded(boundary_error(403, "Cookie mutations require the same origin."))
@@ -441,8 +442,11 @@ def create_app(
             with connect(settings.database_path) as connection:
                 protected = bool(connection.execute("SELECT 1 FROM app_meta WHERE key='auth.break_glass.v1'").fetchone())
         if not access_allowed(request, protected, central=_central, principal=principal):
-            return await recorded(boundary_error(403 if principal.kind != "unauthenticated" else 401,
-                                                 "Permission denied." if principal.kind != "unauthenticated" else "Authentication required for the API"))
+            return await recorded(boundary_error(
+                403 if principal.kind != "unauthenticated" else 401,
+                "Permission denied." if principal.kind != "unauthenticated" else "Authentication required for the API",
+                code="DEV-301" if principal.kind == "machine" else "AUTH-107",
+            ))
         if principal.kind == "machine" and request.method in {"GET", "HEAD"} and request.url.path in _MACHINE_READ_PATHS:
             data = await asyncio.to_thread(scoped_machine_read, settings, pricing, principal, request)
             return JSONResponse(data, headers={"Cache-Control": "no-store"})
@@ -773,6 +777,19 @@ def create_app(
             ],
         }
 
+    @app.get("/api/hub/info")
+    async def hub_info(request: Request) -> JSONResponse:
+        return JSONResponse(
+            {
+                "service": "burnrate",
+                "protocolVersion": HUB_PROTOCOL_VERSION,
+            },
+            headers={
+                "Cache-Control": "no-store",
+                "X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION),
+            },
+        )
+
     @app.get("/healthz")
     async def healthz(request: Request, supervisor: bool = False) -> dict:
         if not supervisor:
@@ -836,30 +853,10 @@ def create_app(
             body = {}
         action = str((body or {}).get("action") or "open").strip().lower()
         if action not in {"open", "show", "pin"}:
-            return {"ok": False, "reason": "use_tauri_ipc"}
-        repo_root = Path(__file__).resolve().parents[1]
+            return {"ok": False, "reason": "unsupported_action"}
         local_app_data = Path(os.getenv("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
         programs_exe = local_app_data / "Programs" / "BURNRATE" / "BURNRATE.exe"
-        candidates: list[Path] = []
-        if os.getenv("BURNRATE_DEV", "").strip() == "1":
-            candidates.extend([
-                repo_root / "src-tauri" / "target" / "release" / "burnrate-desktop.exe",
-                repo_root / "src-tauri" / "target" / "debug" / "burnrate-desktop.exe",
-            ])
-        candidates.append(programs_exe)
-        exe_path = next((p for p in candidates if p.is_file()), None)
-        if sys.platform == "win32":
-            try:
-                import ctypes
-
-                user32 = ctypes.windll.user32
-                hwnd = user32.FindWindowW("Tauri Window", "BURNRATE \u00b7 Sidecar HUD")
-                if hwnd:
-                    user32.ShowWindow(hwnd, 5)
-                    user32.SetForegroundWindow(hwnd)
-                    return {"ok": True, "pinned": True, "nativeFound": True}
-            except Exception:
-                pass
+        exe_path = programs_exe if programs_exe.is_file() else None
         if exe_path is not None:
             try:
                 # Hold the file without write sharing so the binary checked
@@ -948,7 +945,7 @@ def create_app(
 
     @app.get("/favicon.ico")
     def favicon_ico(request: Request):
-        ico_path = Path(__file__).resolve().parents[1] / "src-tauri" / "icons" / "icon.ico"
+        ico_path = Path(__file__).resolve().parents[1] / "assets" / "icons" / "icon.ico"
         if ico_path.is_file():
             return FileResponse(
                 ico_path,

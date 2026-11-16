@@ -4821,7 +4821,7 @@ window.submitHubAccount = async function() {
     if (res && res.ok) {
       state.accountBusy = false;
       state.accountFormOpen = false;
-      showToast("Connected to Hub! Syncing all computers.");
+      showToast(res.warning || "Connected to Hub! Syncing all computers.");
       await refreshSettingsData();
       loadUsage(false, false);
     } else {

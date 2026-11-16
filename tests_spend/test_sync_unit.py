@@ -470,8 +470,7 @@ def test_end_to_end_sync_once_client_to_hub(tmp_path: Path) -> None:
     assert summary["totals"]["tokens"] == 4_500
 
 
-def test_sidecar_hud_and_tauri_native_scaffold(tmp_path: Path, monkeypatch) -> None:
-    import json
+def test_sidecar_hud_and_native_scaffold(tmp_path: Path, monkeypatch) -> None:
     import sys
     from spend_app.cli import main as cli_main
 
@@ -494,37 +493,7 @@ def test_sidecar_hud_and_tauri_native_scaffold(tmp_path: Path, monkeypatch) -> N
         assert 'id="hud-quotas"' in body
 
     repo_root = Path(__file__).resolve().parents[1]
-    tauri_conf = json.loads((repo_root / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8"))
-    windows = {w["label"]: w for w in tauri_conf["app"]["windows"]}
-    assert "hud" in windows and "main" not in windows
-    assert windows["hud"]["alwaysOnTop"] is True
-    assert windows["hud"]["decorations"] is False
-    assert windows["hud"]["skipTaskbar"] is True
-    # Only the lightweight HUD spawns at startup on the boot page; the main
-    # dashboard window is lazily created on demand and destroyed when closed.
-    assert windows["hud"]["url"] == "starting.html"
-    assert (repo_root / "src-tauri" / "boot" / "starting.html").is_file()
     assert (repo_root / "spend_web" / "starting.html").is_file()
-    assert windows["hud"]["transparent"] is True
-
-    lib_rs = (repo_root / "src-tauri" / "src" / "lib.rs").read_text(encoding="utf-8")
-    for symbol in (
-        "toggle_hud",
-        "show_hud",
-        "hide_hud",
-        "toggle_hud_pin",
-        "show_dashboard",
-        "ensure_main_window",
-        "open_setup_wizard",
-        "TrayIconBuilder",
-        "BackendSupervisor",
-        '"/hud?glass=1"',
-        "install_update",
-        "ManagedChild::spawn",
-        "JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE",
-        "fn service_health",
-    ):
-        assert symbol in lib_rs
 
     monkeypatch.setattr(sys, "argv", ["spend_app", "desktop", "--check-only"])
     assert cli_main() == 0

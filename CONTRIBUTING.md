@@ -64,7 +64,6 @@ Its dataset is what the README screenshots use.
 | `pricing/` | Effective-dated YAML rate cards |
 | `tests_spend/` | Hermetic pytest suite, fixtures and browser contracts |
 | `packaging/` | PyInstaller, NSIS and release-manifest tooling |
-| `src-tauri/` | Tauri v2 HUD shell used by the cross-platform bundles |
 | `scripts/` | Install, lifecycle, validation and smoke-test scripts |
 | `deploy/hub/` | Docker Compose reference deployment for a self-hosted hub |
 | `docs/` | User, provider, privacy, architecture and release documentation |
@@ -132,7 +131,7 @@ with `--no-build-isolation -e .`, so a clean runner must already have that build
 It is not a runtime dependency.
 
 Commit all four files with any dependency change. GitHub Actions are pinned to
-commit SHAs; Dependabot proposes updates for Actions, pip, Cargo and npm.
+commit SHAs; Dependabot proposes updates for Actions, pip and npm.
 
 ## Privacy rules
 
@@ -266,7 +265,7 @@ A pull request should:
 - describe the problem and the chosen approach, including alternatives you rejected;
 - state how it was verified (commands, fixtures, screenshots);
 - include new or updated tests, with experimental/exact/derived labels in the same change;
-- pass CI, including lint, the hermetic suite, browser contracts and the native supervisor tests;
+- pass CI, including lint, the hermetic suite and browser contracts;
 - contain no secrets, no real paths and no unrelated formatting;
 - link the issue it closes, if any.
 

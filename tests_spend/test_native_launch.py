@@ -177,7 +177,7 @@ def test_powershell_resolution_uses_an_absolute_system_path(tmp_path, monkeypatc
 def test_locked_binary_denies_write_and_delete_until_released(tmp_path) -> None:
     if sys.platform != "win32":
         pytest.skip("Windows share-mode lock")
-    binary = tmp_path / "burnrate-desktop.exe"
+    binary = tmp_path / "BURNRATE.exe"
     binary.write_bytes(b"MZ")
     with native_launch.locked_binary(binary):
         with pytest.raises(PermissionError):
@@ -222,15 +222,16 @@ def _hud_client(tmp_path: Path, monkeypatch) -> tuple[TestClient, Path, Path]:
     return TestClient(app, base_url="http://127.0.0.1:17331"), local_app_data, fake_repo
 
 
-def test_hud_native_default_ignores_legacy_and_target_binaries(tmp_path, monkeypatch) -> None:
-    client, local_app_data, fake_repo = _hud_client(tmp_path, monkeypatch)
-    legacy = local_app_data / "BURNRATE" / "burnrate-desktop.exe"
+@pytest.mark.parametrize("dev_mode", ["0", "1"])
+def test_hud_native_ignores_legacy_binary(tmp_path, monkeypatch, dev_mode: str) -> None:
+    client, local_app_data, _fake_repo = _hud_client(tmp_path, monkeypatch)
+    if dev_mode == "1":
+        monkeypatch.setenv("BURNRATE_DEV", "1")
+    else:
+        monkeypatch.delenv("BURNRATE_DEV", raising=False)
+    legacy = local_app_data / "BURNRATE" / "BURNRATE.exe"
     legacy.parent.mkdir(parents=True, exist_ok=True)
     legacy.write_bytes(b"MZ")
-    for profile in ("release", "debug"):
-        target_exe = fake_repo / "src-tauri" / "target" / profile / "burnrate-desktop.exe"
-        target_exe.parent.mkdir(parents=True, exist_ok=True)
-        target_exe.write_bytes(b"MZ")
 
     with client:
         res = client.post("/api/hud/native", json={"action": "open"})
@@ -238,16 +239,19 @@ def test_hud_native_default_ignores_legacy_and_target_binaries(tmp_path, monkeyp
     assert res.json() == {"ok": False, "reason": "not_found"}
 
 
-@pytest.mark.parametrize("profile", ["release", "debug", "programs"])
-def test_hud_native_dev_mode_checks_target_release_and_debug_and_programs(
-    tmp_path, monkeypatch, profile: str
+@pytest.mark.parametrize("dev_mode", ["0", "1"])
+def test_hud_native_launches_programs_binary_with_or_without_dev_mode(
+    tmp_path, monkeypatch, dev_mode: str
 ) -> None:
-    client, local_app_data, fake_repo = _hud_client(tmp_path, monkeypatch)
-    monkeypatch.setenv("BURNRATE_DEV", "1")
-    if profile in ("release", "debug"):
-        expected_exe = fake_repo / "src-tauri" / "target" / profile / "burnrate-desktop.exe"
+    client, local_app_data, _fake_repo = _hud_client(tmp_path, monkeypatch)
+    if dev_mode == "1":
+        monkeypatch.setenv("BURNRATE_DEV", "1")
     else:
-        expected_exe = local_app_data / "Programs" / "BURNRATE" / "BURNRATE.exe"
+        monkeypatch.delenv("BURNRATE_DEV", raising=False)
+    legacy = local_app_data / "BURNRATE" / "BURNRATE.exe"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_bytes(b"MZ")
+    expected_exe = local_app_data / "Programs" / "BURNRATE" / "BURNRATE.exe"
     expected_exe.parent.mkdir(parents=True, exist_ok=True)
     expected_exe.write_bytes(b"MZ")
 

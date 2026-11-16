@@ -25,6 +25,7 @@ import httpx
 
 from spend_app import native_theme as theme
 from spend_app.config import Settings, load_settings, load_user_env
+from spend_app.error_codes import format_error, map_http_error
 from spend_app.native_frame import NativeFrame
 from spend_app.platform_paths import NO_WINDOW
 from spend_app.timeutil import parse_utc
@@ -64,9 +65,10 @@ def money(value, complete=True) -> str:
 
 
 class DesktopError(RuntimeError):
-    def __init__(self, message, status_code=None):
+    def __init__(self, message, status_code=None, code=None):
         super().__init__(message)
         self.status_code = status_code
+        self.code = code
 
 
 class SourceMutation:
@@ -128,11 +130,31 @@ class NativeClient:
                             bootstrap = client.post(self.base_url + "/api/auth/bootstrap", json={},
                                                     headers={**headers, "Authorization": "Bearer " + token})
                             if bootstrap.status_code != 200:
-                                raise DesktopError("BURNRATE could not authenticate this window. Sign in through Owner access.")
+                                try:
+                                    boot_data = bootstrap.json()
+                                except ValueError:
+                                    boot_data = None
+                                mapped = map_http_error(
+                                    bootstrap.status_code,
+                                    boot_data,
+                                    headers=getattr(bootstrap, "headers", None),
+                                    endpoint_path="/api/auth/bootstrap",
+                                    has_machine_token=token.startswith("br_m_"),
+                                    local_service=True,
+                                )
+                                raise DesktopError(
+                                    format_error(mapped.code, retry_after=mapped.retry_after),
+                                    bootstrap.status_code,
+                                    code=mapped.code,
+                                )
                             from spend_app.auth_model import extract_cookie
                             session_token = extract_cookie(bootstrap)
                             if not session_token:
-                                raise DesktopError("The tracker returned an invalid session response.")
+                                raise DesktopError(
+                                    "The tracker returned an invalid session response.",
+                                    bootstrap.status_code,
+                                    code="APP-901",
+                                )
                             self._session_token = session_token
                     headers["Authorization"] = "Bearer " + self._session_token
                 response = (
@@ -140,34 +162,36 @@ class NativeClient:
                     if body is None
                     else client.post(self.base_url + path, json=body, headers=headers)
                 )
-                if response.status_code == 404 and path.startswith("/api/spend/usage"):
-                    raise DesktopError(
-                        "Restart BURNRATE's local tracker with this version to load the native usage view."
-                    )
-                if response.status_code in (401, 403):
-                    raise DesktopError(
-                        "BURNRATE could not authenticate this window. Check the local access-token configuration."
-                    )
                 try:
                     data = response.json()
                 except ValueError:
-                    raise DesktopError(
-                        "The tracker returned an invalid response."
-                    ) from None
+                    data = None
                 if not response.is_success:
-                    message = data.get("error") if isinstance(data, dict) else None
-                    raise DesktopError(
-                        message
-                        if isinstance(message, str)
-                        else "The tracker is busy. Please retry.",
+                    mapped = map_http_error(
                         response.status_code,
+                        data,
+                        headers=getattr(response, "headers", None),
+                        endpoint_path=path,
+                        has_machine_token=token.startswith("br_m_"),
+                        local_service=True,
+                    )
+                    raise DesktopError(
+                        format_error(mapped.code, retry_after=mapped.retry_after),
+                        response.status_code,
+                        code=mapped.code,
                     )
                 if not isinstance(data, dict):
-                    raise DesktopError("The tracker returned an invalid response.")
+                    raise DesktopError(
+                        format_error("APP-901"),
+                        response.status_code,
+                        code="APP-901",
+                    )
                 return data
         except httpx.HTTPError:
             raise DesktopError(
-                "The local tracker is unavailable. Showing the last recorded result."
+                format_error("APP-901"),
+                503,
+                code="APP-901",
             ) from None
 
     def snapshot(self, period: str, machine: str) -> dict:
@@ -747,7 +771,7 @@ class UsageWindow:
         for icon in (
             resource_root / "burnrate.ico",
             resource_root / "burnrate-assets" / "burnrate.ico",
-            resource_root / "src-tauri" / "icons" / "icon.ico",
+            resource_root / "assets" / "icons" / "icon.ico",
         ):
             if sys.platform == "win32" and icon.is_file():
                 root.iconbitmap(str(icon))

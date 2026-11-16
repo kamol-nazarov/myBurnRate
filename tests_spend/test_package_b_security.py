@@ -1056,7 +1056,7 @@ def test_l15_setup_account_rejects_plain_http_without_outbound_call_or_persisten
             },
         )
     assert res.status_code == 422
-    assert "HTTPS" in res.json()["error"]
+    assert res.json()["error"] == {"code": "NET-003"}
     assert httpx_calls == []
     assert test_client_calls == []
     with connect(spoke_settings.database_path) as conn:
@@ -1085,7 +1085,7 @@ def test_l15_connect_spoke_manual_rejects_plain_http_without_outbound_call_or_pe
             },
         )
     assert res.status_code == 422
-    assert "HTTPS" in res.json()["error"]
+    assert res.json()["error"] == {"code": "NET-003"}
     assert httpx_calls == []
     assert test_client_calls == []
     with connect(spoke_settings.database_path) as conn:
@@ -1117,7 +1117,7 @@ def test_l15_connect_spoke_pairing_code_rejects_plain_http_without_outbound_call
         with pytest.raises(ValueError, match="HTTPS"):
             pairing.exchange_remote("http://hub.example", bad_code)
     assert res.status_code == 422
-    assert "HTTPS" in res.json()["error"]
+    assert res.json()["error"] == {"code": "NET-003"}
     assert httpx_calls == []
     assert test_client_calls == []
     with connect(spoke_settings.database_path) as conn:
@@ -1177,15 +1177,15 @@ def test_l15_saved_plain_http_config_blocked_at_egress_without_sending_tokens(
         # 3) Auth relay routes (GET and POST)
         sessions_res = spoke_client.get("/api/auth/sessions")
         assert sessions_res.status_code == 422
-        assert "HTTPS" in sessions_res.json()["error"]
+        assert sessions_res.json()["error"] == {"code": "NET-003"}
 
         rotate_res = spoke_client.post("/api/auth/session/rotate", headers=local_headers, json={})
         assert rotate_res.status_code == 422
-        assert "HTTPS" in rotate_res.json()["error"]
+        assert rotate_res.json()["error"] == {"code": "NET-003"}
 
         logout_res = spoke_client.post("/api/auth/logout", headers=local_headers, json={})
         assert logout_res.status_code == 422
-        assert "HTTPS" in logout_res.json()["error"]
+        assert logout_res.json()["error"] == {"code": "NET-003"}
 
         # 4) Direct fetch_from_configured_hub
         assert sync.fetch_from_configured_hub(spoke_settings, "/api/spend/hud", ttl_seconds=0) is None
@@ -1197,11 +1197,11 @@ def test_l15_saved_plain_http_config_blocked_at_egress_without_sending_tokens(
             json={"username": "owner", "password": PASSWORD},
         )
         assert owner_res.status_code == 422
-        assert "HTTPS" in owner_res.json()["error"]
+        assert owner_res.json()["error"] == {"code": "NET-003"}
 
         rot_machine_res = spoke_client.post("/api/setup/rotate-machine", headers=local_headers, json={})
         assert rot_machine_res.status_code == 422
-        assert "HTTPS" in rot_machine_res.json()["error"]
+        assert rot_machine_res.json()["error"] == {"code": "NET-003"}
 
         bg_res = setup_wizard.maybe_run_configured_spoke_sync(
             spoke_settings, PricingEngine.load(spoke_settings.pricing_path)

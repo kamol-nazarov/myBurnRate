@@ -128,11 +128,11 @@ def test_native_client_uses_loopback_and_disables_redirects_and_proxy_environmen
 @pytest.mark.parametrize(
     ("response", "message"),
     [
-        (Response(status=401, payload={}), "authenticate"),
-        (Response(status=302, payload={}), "busy"),
-        (Response(status=200, payload=[]), "invalid response"),
-        (Response(status=200, invalid_json=True), "invalid response"),
-        (Response(status=503, payload={"error": "maintenance"}), "maintenance"),
+        (Response(status=401, payload={}), "Error AUTH-107"),
+        (Response(status=302, payload={}), "Error APP-901"),
+        (Response(status=200, payload=[]), "Error APP-901"),
+        (Response(status=200, invalid_json=True), "Error APP-901"),
+        (Response(status=503, payload={"error": "maintenance"}), "Error APP-901"),
     ],
 )
 def test_native_client_reports_http_and_payload_failures(
@@ -192,10 +192,10 @@ def test_machine_bearer_must_be_valid_for_native_usage_endpoint(tmp_path, monkey
     client = _client(tmp_path)
     try:
         monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "br_m_bogus-revoked")
-        with pytest.raises(DesktopError, match="authenticate"):
+        with pytest.raises(DesktopError, match="Error DEV-301"):
             client.snapshot("all", "all")
         monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", valid_token)
-        with pytest.raises(DesktopError, match="authenticate"):
+        with pytest.raises(DesktopError, match="Error DEV-301"):
             client.snapshot("all", "all")
     finally:
         application.close()
@@ -757,7 +757,7 @@ def test_wealthfront_bridge_hub_account_sign_in_and_spoke_sync(tmp_path, monkeyp
             "login",
         )
         assert bad["ok"] is False
-        assert "Invalid username or password" in bad["error"]
+        assert bad["code"] == "AUTH-101" and "Error AUTH-101" in bad["error"]
 
         good = bridge.connect_hub_account(
             "owner@example.com",

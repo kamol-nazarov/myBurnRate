@@ -93,8 +93,7 @@ burnrate desktop
 ```
 
 The portable native build and its smoke test are documented in [native app](native-app.md).
-The earlier Tauri shell remains under `src-tauri/` for existing release bundles;
-the `desktop` command now opens the native usage interface.
+`burnrate desktop` opens the native usage interface.
 
 ## Try it with made-up data
 

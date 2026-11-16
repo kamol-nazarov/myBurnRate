@@ -44,10 +44,6 @@ Thumbs.db
 *.tmp
 *.log
 node_modules/
-src-tauri/target/
-src-tauri/gen/
 
-# Desktop bundle staging (packaging/build_service.py)
+# Native build output (packaging/build_native.py)
 packaging/build/
-src-tauri/resources/burnrate-service/*
-!src-tauri/resources/burnrate-service/README.md

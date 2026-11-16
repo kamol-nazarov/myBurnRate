@@ -754,7 +754,8 @@ def test_acceptance_sentinel_hub_url_never_leaks(
                 "testSync": False,
             },
         )
-        assert acct_err.status_code == 422
+        assert acct_err.status_code == 503
+        assert acct_err.json() == {"error": {"code": "NET-001"}}
         _assert_no_leak(acct_err.text, context="/api/setup/account connection error")
 
         # 4. /api/setup/pair-hub
