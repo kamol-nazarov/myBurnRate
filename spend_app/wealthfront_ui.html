@@ -1779,6 +1779,121 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
   flex-wrap: wrap;
 }
 
+.state-badge.new {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.state-badge.danger {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.source-row.sub {
+  padding-left: 49px;
+}
+.source-row.sub .source-logo {
+  width: 22px;
+  height: 22px;
+}
+.source-row.sub .source-logo svg {
+  width: 11px;
+  height: 11px;
+}
+.source-row.sub .source-meta {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+.source-row.is-missing .source-logo {
+  opacity: 0.45;
+}
+.source-row.is-missing .source-name {
+  color: var(--ink-secondary);
+}
+.source-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+.source-add-line {
+  padding: 2px 12px 9px 49px;
+}
+.btn-ghost {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 6px 3px 0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.btn-ghost:hover {
+  text-decoration: underline;
+}
+.inline-editor.sub {
+  padding-left: 49px;
+}
+.add-profile-panel {
+  padding: 8px 12px 12px 49px;
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid var(--divider);
+}
+.add-profile-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.add-profile-title {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--ink);
+}
+.add-option {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 7px 9px;
+  border: 1px solid var(--border-input);
+  border-radius: 9px;
+  background: var(--surface);
+  cursor: pointer;
+}
+.add-option input[type="radio"] {
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+.add-option.sel {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.editor-field {
+  display: grid;
+  gap: 3px;
+}
+.editor-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--ink-secondary);
+}
+.editor-hint {
+  font-size: 10.5px;
+  color: var(--ink-secondary);
+  line-height: 1.38;
+}
+.editor-inline-row {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+.editor-inline-row .text-input {
+  flex: 1;
+  min-width: 0;
+}
+
 /* Compact iOS Toggle Switch & Opacity Presets */
 .toggle-row {
   padding: 11px 12px;
@@ -2457,6 +2572,9 @@ const state = {
   updateCheck: { status: "idle", error: "" },
   settingsData: { connections: [], machines: [], setup: {}, centralServerUrl: "" },
   editingSource: null,
+  editingProfile: null,
+  addingProvider: null,
+  addDraft: null,
   accountFormOpen: false,
   accountAuthMode: "login",
   accountBusy: false,
@@ -2757,16 +2875,42 @@ function bindChartScrub() {
   });
 }
 
+function findStoreProfileName(toolKey) {
+  const conns = state.settingsData?.connections || [];
+  for (const c of conns) {
+    const profs = Array.isArray(c.profiles) ? c.profiles : [];
+    for (const p of profs) {
+      if (p.key === toolKey) return { providerName: c.name, profileName: p.name, plan: p.plan };
+    }
+  }
+  return null;
+}
+
 function getNormalizedProviders(data) {
   if (Array.isArray(data.providers) && data.providers.length) {
     return data.providers;
   }
   const tools = data.tools || [];
-  return tools.map(t => ({
+  return tools.map(t => {
+    let displayName = t.name;
+    let badge = t.organization ? "Org API" : "";
+    let plan = "API";
+    const storeMatch = findStoreProfileName(t.key);
+    if (storeMatch && storeMatch.profileName) {
+      displayName = storeMatch.providerName || displayName;
+      if (!badge && storeMatch.profileName !== "Default") badge = storeMatch.profileName;
+      if (storeMatch.plan) plan = storeMatch.plan;
+    } else if (!t.organization && typeof t.name === "string" && t.name.includes(" · ")) {
+      const idx = t.name.indexOf(" · ");
+      displayName = t.name.slice(0, idx).trim();
+      if (!badge) badge = t.name.slice(idx + 3).trim();
+      plan = "Recorded usage";
+    }
+    return {
     key: t.key,
-    name: t.name,
-    badge: t.organization ? "Org API" : "",
-    plan: "API",
+    name: displayName,
+    badge,
+    plan,
     inUse: false,
     isPayg: true,
     organization: !!t.organization,
@@ -2796,7 +2940,8 @@ function getNormalizedProviders(data) {
     output: t.output,
     reasoning: t.reasoning,
     models: t.models || []
-  }));
+  };
+  });
 }
 
 function paintHeroText(data, animate = true) {
@@ -3897,52 +4042,19 @@ function paintSettingsBody() {
 
   if (tab === "sources") {
     const conns = state.settingsData.connections || [];
+    const totalProfiles = conns.reduce((sum, c) => {
+      const profs = connectionProfiles(c);
+      return sum + profs.filter(p => p.state !== "not_found").length;
+    }, 0);
+    const hdrSub = `${conns.length} ${conns.length === 1 ? "provider" : "providers"} &middot; ${totalProfiles} ${totalProfiles === 1 ? "profile" : "profiles"}`;
     body.innerHTML = `
       <div class="wf-card">
         <div class="card-header">
           <span class="card-title">Usage &amp; balance sources</span>
-          <span class="card-subtitle">${conns.length} integrations</span>
+          <span class="card-subtitle">${hdrSub}</span>
         </div>
         <div>
-          ${conns.map(c => {
-            const st = String(c.state || "unknown");
-            const ok = st.includes("receiving") || st.includes("connected") || st === "active" || st === "ready";
-            const label = st.replace(/_/g, " ");
-            const editing = state.editingSource === c.source;
-            const isApi = c.kind === "api";
-            return `
-              <div>
-                <div class="source-row">
-                  ${logoHtml(c.source, "source-logo")}
-                  <div class="source-info">
-                    <div class="source-name">${esc(c.name)}</div>
-                    <div class="source-meta">${esc(c.detail || c.location || c.capabilityNote || "Local telemetry")}</div>
-                  </div>
-                  <span class="state-badge ${ok ? "ok" : ""}">${esc(label)}</span>
-                  ${!state.demo && c.kind !== "external" ? `
-                    <button class="btn-secondary" id="cfg_${esc(c.source)}" type="button" aria-expanded="${editing}" aria-label="${editing ? "Cancel editing" : "Configure"} ${esc(c.name)}" onclick="toggleSourceEdit('${esc(c.source)}')">
-                      ${editing ? "Cancel" : "Configure"}
-                    </button>
-                  ` : ""}
-                </div>
-                ${editing ? `
-                  <form class="inline-editor" autocomplete="off" novalidate onsubmit="event.preventDefault();saveSource('${esc(c.source)}','${esc(c.kind || "")}', ${Number(c.revision || 0)})">
-                    <input class="text-input" id="srcInput_${esc(c.source)}"
-                      type="${isApi ? "password" : "text"}" autocomplete="${isApi ? "new-password" : "off"}" spellcheck="false"
-                      placeholder="${esc(isApi ? (c.credentialHelp || "Paste API or management key") : "Path to usage folder or DB")}"
-                      value="${esc(isApi ? "" : (c.location || ""))}"/>
-                    <div class="editor-actions">
-                      <div style="display:flex;gap:5px">
-                        ${!isApi ? `<button class="btn-secondary" type="button" onclick="browseForSource('${esc(c.source)}','${esc(c.kind || "")}')">Browse…</button>` : ""}
-                        ${ok ? `<button class="btn-danger-quiet" type="button" onclick="disconnectSource('${esc(c.source)}', ${Number(c.revision || 0)})">Disconnect</button>` : ""}
-                      </div>
-                      <button class="btn-primary" type="submit">Test &amp; connect</button>
-                    </div>
-                  </form>
-                ` : ""}
-              </div>
-            `;
-          }).join("")}
+          ${conns.map(c => renderConnectionGroup(c)).join("")}
         </div>
       </div>
     `;
@@ -4140,27 +4252,375 @@ function paintSettingsBody() {
   `;
 }
 
-window.toggleSourceEdit = function(source) {
-  state.editingSource = state.editingSource === source ? null : source;
+function profileEditorKey(source, profileKey) {
+  return !profileKey || profileKey === "default" ? String(source) : `${source}__${profileKey}`;
+}
+
+function connectionProfiles(c) {
+  if (Array.isArray(c.profiles) && c.profiles.length) return c.profiles;
+  return [{
+    key: "default",
+    name: c.name || "Default",
+    location: c.location || "",
+    origin: "default",
+    state: String(c.state || "not_found"),
+    revision: Number(c.revision || 0),
+    plan: null,
+    sharesLimitsWith: null
+  }];
+}
+
+function profileBadgeClass(st) {
+  if (st === "receiving" || st === "connected" || st === "active" || st === "ready") return "ok";
+  if (st === "added") return "accent";
+  if (st === "error" || st === "needs_attention") return "warn";
+  return "";
+}
+
+function profileBadgeLabel(st) {
+  return String(st || "unknown").replace(/_/g, " ");
+}
+
+function suggestProfileNameFromFolder(folder) {
+  const raw = String(folder || "").replace(/[\\/]+$/, "");
+  const base = raw.split(/[\\/]/).pop() || "";
+  const trimmed = base.replace(/^\.+/, "");
+  if (!trimmed) return "";
+  const dash = trimmed.indexOf("-");
+  const token = dash >= 0 ? trimmed.slice(dash + 1) : trimmed;
+  if (!token) return trimmed;
+  if (/^\d+$/.test(token)) return "Profile " + token;
+  return token.charAt(0).toUpperCase() + token.slice(1);
+}
+
+function renderApiConnectionRow(c) {
+  const st = String(c.state || "unknown");
+  const ok = st.includes("receiving") || st.includes("connected") || st === "active" || st === "ready";
+  const label = st.replace(/_/g, " ");
+  const editing = state.editingSource === c.source;
+  return `
+    <div>
+      <div class="source-row">
+        ${logoHtml(c.source, "source-logo")}
+        <div class="source-info">
+          <div class="source-name">${esc(c.name)}</div>
+          <div class="source-meta">${esc(c.detail || c.location || c.capabilityNote || "API telemetry")}</div>
+        </div>
+        <span class="state-badge ${ok ? "ok" : ""}">${esc(label)}</span>
+        ${!state.demo && c.kind !== "external" ? `
+          <button class="btn-secondary" id="cfg_${esc(c.source)}" type="button"
+            aria-expanded="${editing}" aria-label="${editing ? "Cancel editing" : "Configure"} ${esc(c.name)}"
+            data-source="${esc(c.source)}" data-profile="default"
+            onclick="toggleSourceEdit(this.dataset.source, this.dataset.profile)">
+            ${editing ? "Cancel" : "Configure"}
+          </button>
+        ` : ""}
+      </div>
+      ${editing ? `
+        <form class="inline-editor" autocomplete="off" novalidate
+          data-source="${esc(c.source)}" data-kind="${esc(c.kind || "")}" data-revision="${Number(c.revision || 0)}" data-profile="default" data-editor="${esc(c.source)}"
+          onsubmit="event.preventDefault();window.saveSource(this.dataset.source, this.dataset.kind, Number(this.dataset.revision), this.dataset.profile, this.dataset.editor)">
+          <input class="text-input" id="srcInput_${esc(c.source)}"
+            type="password" autocomplete="new-password" spellcheck="false"
+            placeholder="${esc(c.credentialHelp || "Paste API or management key")}"
+            value=""/>
+          <div class="editor-actions">
+            <div style="display:flex;gap:5px">
+              ${ok ? `<button class="btn-danger-quiet" type="button" data-source="${esc(c.source)}" data-revision="${Number(c.revision || 0)}" data-profile="default" onclick="disconnectSource(this.dataset.source, Number(this.dataset.revision), this.dataset.profile)">Disconnect</button>` : ""}
+            </div>
+            <button class="btn-primary" type="submit">Test &amp; connect</button>
+          </div>
+        </form>
+      ` : ""}
+    </div>
+  `;
+}
+
+function renderProfileEditor(c, p, isSub) {
+  const edKey = profileEditorKey(c.source, p.key);
+  const rev = Number(p.revision || 0);
+  const canRemove = p.state !== "not_found" && !(p.key === "default" && p.state === "disabled");
+  const removeLabel = p.key === "default" ? "Stop tracking" : "Remove";
+  return `
+    <div class="inline-editor ${isSub ? "sub" : ""}">
+      <form autocomplete="off" novalidate
+        data-source="${esc(c.source)}" data-kind="${esc(c.kind || "")}" data-revision="${rev}" data-profile="${esc(p.key)}" data-editor="${esc(edKey)}"
+        onsubmit="event.preventDefault();window.saveSource(this.dataset.source, this.dataset.kind, Number(this.dataset.revision), this.dataset.profile, this.dataset.editor)">
+        <div class="editor-field">
+          <label class="editor-label" for="srcInput_${esc(edKey)}">Folder or DB path</label>
+          <div class="editor-inline-row">
+            <input class="text-input" id="srcInput_${esc(edKey)}"
+              type="text" autocomplete="off" spellcheck="false"
+              placeholder="Path to usage folder or DB"
+              value="${esc(p.location || "")}"/>
+            <button class="btn-secondary" type="button" data-editor="${esc(edKey)}" data-kind="${esc(c.kind || "")}" onclick="browseForSource(this.dataset.editor, this.dataset.kind)">Browse&#8230;</button>
+          </div>
+        </div>
+        <div class="editor-actions" style="margin-top:6px">
+          <div>
+            ${canRemove ? `<button class="btn-danger-quiet" type="button" data-source="${esc(c.source)}" data-profile="${esc(p.key)}" data-revision="${rev}" onclick="removeProfile(this.dataset.source, this.dataset.profile, Number(this.dataset.revision))">${removeLabel}</button>` : ""}
+          </div>
+          <button class="btn-primary" type="submit">Test &amp; connect</button>
+        </div>
+      </form>
+      ${p.state !== "not_found" ? `
+        <form autocomplete="off" novalidate
+          data-source="${esc(c.source)}" data-profile="${esc(p.key)}" data-revision="${rev}" data-editor="${esc(edKey)}"
+          onsubmit="event.preventDefault();window.renameProfile(this.dataset.source, this.dataset.profile, Number(this.dataset.revision), this.dataset.editor)">
+          <div class="editor-field">
+            <label class="editor-label" for="profName_${esc(edKey)}">Profile name</label>
+            <div class="editor-inline-row">
+              <input class="text-input" id="profName_${esc(edKey)}"
+                type="text" maxlength="40" autocomplete="off" spellcheck="false"
+                placeholder="Profile name" value="${esc(p.name || "")}"/>
+              <button class="btn-secondary" type="submit">Rename</button>
+            </div>
+          </div>
+        </form>
+      ` : ""}
+    </div>
+  `;
+}
+
+function renderProfileRow(c, p, profileByKey, isSub) {
+  const edKey = profileEditorKey(c.source, p.key);
+  const editing = state.editingSource === edKey;
+  const st = String(p.state || "unknown");
+  const isMissing = st === "not_found";
+  const badgeCls = profileBadgeClass(st);
+  const badgeText = profileBadgeLabel(st);
+  const canConfigure = !state.demo && c.kind !== "external" && st !== "externally_managed";
+  const metaParts = [];
+  if (isMissing) {
+    metaParts.push("Not found on this PC");
+  } else {
+    if (p.location) metaParts.push(p.location);
+    if (p.plan) metaParts.push(p.plan);
+    if (p.sharesLimitsWith) {
+      const target = profileByKey.get(p.sharesLimitsWith);
+      metaParts.push("Shares limits with " + (target ? target.name : p.sharesLimitsWith));
+    }
+    if (st === "externally_managed") metaParts.push("Managed externally");
+  }
+  const metaText = metaParts.join(" · ") || c.detail || "Local telemetry";
+  const titleText = isSub ? (p.name || p.key) : c.name;
+  const subNameTag = !isSub && p.name && p.name !== "Default" && p.name !== c.name ? ` · ${p.name}` : "";
+  const btnText = editing ? "Cancel" : (isMissing && !isSub ? "Choose folder" : "Configure");
+  return `
+    <div>
+      <div class="source-row ${isSub ? "sub" : ""} ${isMissing ? "is-missing" : ""}">
+        ${logoHtml(c.source, "source-logo")}
+        <div class="source-info">
+          <div class="source-name">${esc(titleText)}</div>
+          <div class="source-meta">${esc(metaText + subNameTag)}</div>
+        </div>
+        <span class="state-badge ${badgeCls}">${esc(badgeText)}</span>
+        ${canConfigure ? `
+          <button class="btn-secondary" id="cfg_${esc(edKey)}" type="button"
+            aria-expanded="${editing}" aria-label="${editing ? "Cancel editing" : "Configure"} ${esc(titleText)}"
+            data-source="${esc(c.source)}" data-profile="${esc(p.key)}"
+            onclick="toggleSourceEdit(this.dataset.source, this.dataset.profile)">
+            ${btnText}
+          </button>
+        ` : ""}
+      </div>
+      ${editing && canConfigure ? renderProfileEditor(c, p, isSub) : ""}
+    </div>
+  `;
+}
+
+function renderDetectedRow(c, d, profileByKey) {
+  const sameKey = d.sameAccountAs;
+  if (sameKey) {
+    const matched = profileByKey.get(sameKey);
+    const sameName = matched ? matched.name : sameKey;
+    const metaParts = ["Same account as " + sameName];
+    if (d.plan) metaParts.push(d.plan);
+    return `
+      <div class="source-row sub">
+        ${logoHtml(c.source, "source-logo")}
+        <div class="source-info">
+          <div class="source-name">${esc(d.folder)}</div>
+          <div class="source-meta">${esc(metaParts.join(" · "))}</div>
+        </div>
+        <span class="state-badge">same account</span>
+        ${!state.demo ? `
+          <div class="source-actions">
+            <button class="btn-secondary" type="button"
+              data-source="${esc(c.source)}" data-candidate="${esc(d.candidateId)}"
+              onclick="dismissCandidate(this.dataset.source, this.dataset.candidate)">Dismiss</button>
+          </div>
+        ` : ""}
+      </div>
+    `;
+  }
+  const metaParts = ["Detected"];
+  if (d.plan) metaParts.push(d.plan);
+  return `
+    <div class="source-row sub">
+      ${logoHtml(c.source, "source-logo")}
+      <div class="source-info">
+        <div class="source-name">${esc(d.folder)}</div>
+        <div class="source-meta">${esc(metaParts.join(" · "))}</div>
+      </div>
+      <span class="state-badge new">detected</span>
+      ${!state.demo ? `
+        <div class="source-actions">
+          <button class="btn-primary" type="button"
+            data-source="${esc(c.source)}" data-candidate="${esc(d.candidateId)}"
+            onclick="openAddProfile(this.dataset.source, this.dataset.candidate)">Add</button>
+          <button class="btn-secondary" type="button"
+            data-source="${esc(c.source)}" data-candidate="${esc(d.candidateId)}"
+            onclick="dismissCandidate(this.dataset.source, this.dataset.candidate)">Dismiss</button>
+        </div>
+      ` : ""}
+    </div>
+  `;
+}
+
+function renderAddProfileEditor(c, detected) {
+  const eligible = detected.filter(d => !d.sameAccountAs);
+  const draft = state.addDraft || { choice: "__custom__", location: "", name: "", nameTouched: false, busy: false };
+  return `
+    <form class="add-profile-panel" autocomplete="off" novalidate
+      data-source="${esc(c.source)}"
+      onsubmit="event.preventDefault();window.submitAddProfile(this.dataset.source)">
+      <div class="add-profile-head">
+        <span class="add-profile-title">Add a ${esc(c.name)} profile</span>
+        <button class="btn-ghost" type="button" onclick="cancelAddProfile()">Cancel</button>
+      </div>
+      ${eligible.length ? `<div class="editor-hint">Found on this PC and not added yet:</div>` : ""}
+      ${eligible.map(d => {
+        const checked = draft.choice === d.candidateId;
+        return `
+          <label class="add-option ${checked ? "sel" : ""}">
+            <input type="radio" name="addChoice_${esc(c.source)}" value="${esc(d.candidateId)}" ${checked ? "checked" : ""}
+              onchange="selectAddChoice(this.value)"/>
+            <div class="source-info">
+              <div class="source-name">${esc(d.folder)}</div>
+              <div class="source-meta">${esc(["Detected", d.plan].filter(Boolean).join(" · "))}</div>
+            </div>
+          </label>
+        `;
+      }).join("")}
+      <label class="add-option ${draft.choice === "__custom__" ? "sel" : ""}">
+        <input type="radio" name="addChoice_${esc(c.source)}" value="__custom__" ${draft.choice === "__custom__" ? "checked" : ""}
+          onchange="selectAddChoice('__custom__')"/>
+        <div class="source-info">
+          <div class="source-name">Another folder&#8230;</div>
+          <div class="source-meta">Choose a profile directory on this PC</div>
+        </div>
+      </label>
+      ${draft.choice === "__custom__" ? `
+        <div class="editor-field">
+          <label class="editor-label" for="addPath_${esc(c.source)}">Folder or DB path</label>
+          <div class="editor-inline-row">
+            <input class="text-input" id="addPath_${esc(c.source)}" type="text" autocomplete="off" spellcheck="false"
+              placeholder="Path to profile folder or DB"
+              value="${esc(draft.location || "")}"
+              oninput="if(state.addDraft)state.addDraft.location=this.value"/>
+            <button class="btn-secondary" type="button" data-source="${esc(c.source)}" data-kind="${esc(c.kind || "")}"
+              onclick="browseForNewProfile(this.dataset.source, this.dataset.kind)">Browse&#8230;</button>
+          </div>
+        </div>
+      ` : ""}
+      <div class="editor-field">
+        <label class="editor-label" for="addName_${esc(c.source)}">Profile name</label>
+        <input class="text-input" id="addName_${esc(c.source)}" type="text" maxlength="40" autocomplete="off" spellcheck="false"
+          placeholder="e.g. Work or Personal"
+          value="${esc(draft.name || "")}"
+          oninput="if(state.addDraft){state.addDraft.name=this.value;state.addDraft.nameTouched=true;}"/>
+      </div>
+      <div class="editor-hint">Usage from this profile is tracked separately. Duplicate accounts are skipped automatically.</div>
+      <div class="editor-actions">
+        <button class="btn-secondary" type="button" onclick="cancelAddProfile()">Cancel</button>
+        <button class="btn-primary" id="addSubmitBtn_${esc(c.source)}" type="submit" ${draft.busy ? "disabled" : ""}>
+          ${draft.busy ? "Adding&#8230;" : "Test &amp; add"}
+        </button>
+      </div>
+    </form>
+  `;
+}
+
+function renderConnectionGroup(c) {
+  if (c.kind === "api") return renderApiConnectionRow(c);
+  const profiles = connectionProfiles(c);
+  const detected = Array.isArray(c.detected) ? c.detected : [];
+  const supportsProfiles = !!c.supportsProfiles;
+  const profileByKey = new Map(profiles.map(p => [p.key, p]));
+  const grouped = profiles.length > 1 || detected.length > 0;
+  const adding = supportsProfiles && !state.demo && c.kind !== "external" && state.addingProvider === c.source;
+
+  let html = "";
+  if (grouped) {
+    const addedCount = profiles.filter(p => p.state !== "not_found").length;
+    const eligibleCount = detected.filter(d => !d.sameAccountAs).length;
+    const metaParts = [`${addedCount} ${addedCount === 1 ? "profile" : "profiles"}`];
+    if (eligibleCount > 0) metaParts.push(`${eligibleCount} found, not added`);
+    else if (detected.length > 0) metaParts.push(`${detected.length} detected`);
+    html += `
+      <div class="source-row">
+        ${logoHtml(c.source, "source-logo")}
+        <div class="source-info">
+          <div class="source-name">${esc(c.name)}</div>
+          <div class="source-meta">${esc(metaParts.join(" · "))}</div>
+        </div>
+      </div>
+    `;
+    html += profiles.map(p => renderProfileRow(c, p, profileByKey, true)).join("");
+    html += detected.map(d => renderDetectedRow(c, d, profileByKey)).join("");
+  } else {
+    html += renderProfileRow(c, profiles[0], profileByKey, false);
+  }
+
+  if (supportsProfiles && !state.demo && c.kind !== "external") {
+    if (adding) {
+      html += renderAddProfileEditor(c, detected);
+    } else {
+      const btnText = profiles.length > 1 ? "+ Add another profile" : "+ Add profile";
+      html += `
+        <div class="source-add-line">
+          <button class="btn-ghost" id="addProfBtn_${esc(c.source)}" type="button" data-source="${esc(c.source)}"
+            onclick="openAddProfile(this.dataset.source)">${btnText}</button>
+        </div>
+      `;
+    }
+  }
+  return `<div>${html}</div>`;
+}
+
+window.toggleSourceEdit = function(source, profileKey = "default") {
+  const edKey = profileEditorKey(source, profileKey);
+  if (state.editingSource === edKey) {
+    state.editingSource = null;
+    state.editingProfile = null;
+  } else {
+    state.editingSource = edKey;
+    state.editingProfile = { source, profile: profileKey || "default" };
+    state.addingProvider = null;
+    state.addDraft = null;
+  }
   renderSettingsBody();
 };
 
-window.browseForSource = async function(source, kind) {
+window.browseForSource = async function(editorKey, kind) {
   if (!apiAvailable()) return;
   const picked = await window.pywebview.api.browse_location(kind);
   if (picked) {
-    const inp = document.getElementById("srcInput_" + source);
+    const inp = document.getElementById("srcInput_" + editorKey);
     if (inp) inp.value = picked;
   }
 };
 
-window.saveSource = async function(source, kind, revision) {
+window.saveSource = async function(source, kind, revision, profile = "default", editorKey = null) {
   if (!apiAvailable()) return;
-  const inp = document.getElementById("srcInput_" + source);
+  const edKey = editorKey || profileEditorKey(source, profile);
+  const inp = document.getElementById("srcInput_" + edKey);
   const val = inp ? inp.value : "";
-  const res = await window.pywebview.api.connect_source(source, kind === "api", val, revision);
+  const res = await window.pywebview.api.connect_source(source, kind === "api", val, revision, profile || "default");
   if (res && res.ok) {
     state.editingSource = null;
+    state.editingProfile = null;
     showToast("Source connected");
     await refreshSettingsData();
     loadUsage(true, false);
@@ -4169,16 +4629,158 @@ window.saveSource = async function(source, kind, revision) {
   }
 };
 
-window.disconnectSource = async function(source, revision) {
+window.disconnectSource = async function(source, revision, profile = "default") {
   if (!apiAvailable()) return;
-  const res = await window.pywebview.api.disconnect_source(source, revision);
+  const res = await window.pywebview.api.disconnect_source(source, revision, profile || "default");
   if (res && res.ok) {
     state.editingSource = null;
+    state.editingProfile = null;
     showToast("Source disconnected");
     await refreshSettingsData();
     loadUsage(false, false);
   } else {
     showToast((res && res.error) || "Could not disconnect");
+  }
+};
+
+window.openAddProfile = function(source, candidateId = null) {
+  const conns = state.settingsData.connections || [];
+  const conn = conns.find(x => x.source === source);
+  const detected = (conn && Array.isArray(conn.detected)) ? conn.detected : [];
+  const eligible = detected.filter(d => !d.sameAccountAs);
+  let choice = "__custom__";
+  if (candidateId && eligible.some(d => d.candidateId === candidateId)) {
+    choice = candidateId;
+  } else if (eligible.length > 0) {
+    choice = eligible[0].candidateId;
+  }
+  const picked = eligible.find(d => d.candidateId === choice);
+  state.editingSource = null;
+  state.editingProfile = null;
+  state.addingProvider = source;
+  state.addDraft = {
+    choice,
+    location: "",
+    name: picked ? suggestProfileNameFromFolder(picked.folder) : "",
+    nameTouched: false,
+    busy: false
+  };
+  renderSettingsBody();
+};
+
+window.cancelAddProfile = function() {
+  state.addingProvider = null;
+  state.addDraft = null;
+  renderSettingsBody();
+};
+
+window.selectAddChoice = function(choice) {
+  if (!state.addDraft) return;
+  state.addDraft.choice = choice;
+  if (!state.addDraft.nameTouched) {
+    if (choice === "__custom__") {
+      state.addDraft.name = state.addDraft.location ? suggestProfileNameFromFolder(state.addDraft.location) : "";
+    } else {
+      const conns = state.settingsData.connections || [];
+      const conn = conns.find(x => x.source === state.addingProvider);
+      const cand = ((conn && conn.detected) || []).find(d => d.candidateId === choice);
+      state.addDraft.name = cand ? suggestProfileNameFromFolder(cand.folder) : "";
+    }
+  }
+  renderSettingsBody();
+};
+
+window.browseForNewProfile = async function(source, kind) {
+  if (!apiAvailable()) return;
+  const picked = await window.pywebview.api.browse_location(kind);
+  if (picked && state.addDraft) {
+    state.addDraft.location = picked;
+    if (!state.addDraft.nameTouched) {
+      state.addDraft.name = suggestProfileNameFromFolder(picked);
+    }
+    renderSettingsBody();
+  }
+};
+
+window.submitAddProfile = async function(source) {
+  if (!apiAvailable() || !state.addDraft || state.addDraft.busy) return;
+  const nameInp = document.getElementById("addName_" + source);
+  const pathInp = document.getElementById("addPath_" + source);
+  const draft = state.addDraft;
+  const isCustom = draft.choice === "__custom__";
+  const candidateId = isCustom ? "" : draft.choice;
+  const location = isCustom ? ((pathInp ? pathInp.value : draft.location) || "").trim() : "";
+  const name = ((nameInp ? nameInp.value : draft.name) || "").trim();
+  if (isCustom && !location) {
+    showToast("Choose or enter a profile folder");
+    return;
+  }
+  draft.location = location;
+  draft.name = name;
+  draft.busy = true;
+  renderSettingsBody();
+  let res = null;
+  try {
+    res = await window.pywebview.api.add_profile(source, candidateId, location, name);
+  } catch (err) {
+    res = null;
+  }
+  if (res && res.ok) {
+    state.addingProvider = null;
+    state.addDraft = null;
+    showToast("Profile added");
+    await refreshSettingsData();
+    loadUsage(true, false);
+  } else {
+    if (state.addDraft) state.addDraft.busy = false;
+    renderSettingsBody();
+    showToast((res && res.error) || "Could not add profile");
+  }
+};
+
+window.renameProfile = async function(source, profile, revision, editorKey = null) {
+  if (!apiAvailable()) return;
+  const edKey = editorKey || profileEditorKey(source, profile);
+  const inp = document.getElementById("profName_" + edKey);
+  const name = (inp ? inp.value : "").trim();
+  if (!name) {
+    showToast("Enter a profile name");
+    return;
+  }
+  const res = await window.pywebview.api.rename_profile(source, profile, name, revision);
+  if (res && res.ok) {
+    state.editingSource = null;
+    state.editingProfile = null;
+    showToast("Profile renamed");
+    await refreshSettingsData();
+    loadUsage(false, false);
+  } else {
+    showToast((res && res.error) || "Could not rename profile");
+  }
+};
+
+window.removeProfile = async function(source, profile, revision) {
+  if (!apiAvailable()) return;
+  const res = await window.pywebview.api.remove_profile(source, profile, revision);
+  if (res && res.ok) {
+    state.editingSource = null;
+    state.editingProfile = null;
+    showToast(res.disabled ? "Stopped tracking profile" : "Profile removed");
+    await refreshSettingsData();
+    loadUsage(false, false);
+  } else {
+    showToast((res && res.error) || "Could not remove profile");
+  }
+};
+
+window.dismissCandidate = async function(source, candidateId) {
+  if (!apiAvailable()) return;
+  const res = await window.pywebview.api.dismiss_candidate(source, candidateId);
+  if (res && res.ok) {
+    showToast("Candidate dismissed");
+    await refreshSettingsData();
+  } else {
+    showToast((res && res.error) || "Could not dismiss candidate");
   }
 };
 
@@ -4478,8 +5080,15 @@ document.addEventListener("keydown", (e) => {
     if (state.editingSource) {
       const src = state.editingSource;
       state.editingSource = null;
+      state.editingProfile = null;
       renderSettingsBody();
       document.getElementById("cfg_" + src)?.focus();
+    } else if (state.addingProvider) {
+      const src = state.addingProvider;
+      state.addingProvider = null;
+      state.addDraft = null;
+      renderSettingsBody();
+      document.getElementById("addProfBtn_" + src)?.focus();
     } else if (state.accountFormOpen) {
       state.accountFormOpen = false;
       renderSettingsBody();

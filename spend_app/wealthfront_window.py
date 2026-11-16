@@ -29,8 +29,8 @@ from spend_app.native_desktop import (
 from spend_app.native_links import is_allowed_external_url
 from spend_app.native_onboarding import build_onboarding_data
 from spend_app.native_prefs import PreferenceStore, store_for
-from spend_app.opencode_providers import provider_tool_name
 from spend_app.native_tray import TrayController, run_on_ui
+from spend_app.opencode_providers import provider_tool_name
 
 LOGGER = logging.getLogger(__name__)
 
@@ -150,6 +150,60 @@ def _combine_tool_entries(tool_map: dict[str, dict], keys: tuple[str, ...]) -> d
     }
 
 
+_SOURCE_DISPLAY_NAMES = {
+    "claude_local": ("claude-code", "Claude Code"),
+    "codex_local": ("codex", "Codex"),
+    "opencode_local": ("opencode-go", "OpenCode Go"),
+    "zcode_local": ("zcode", "Z.AI Coding Plan"),
+    "grok_local": ("grok", "Grok Build"),
+    "antigravity_local": ("antigravity", "Antigravity"),
+    "muse_local": ("muse", "Muse Code"),
+}
+_MULTI_PRIMARY_KEYS = (
+    "claude-code",
+    "opencode-go",
+    "zcode",
+    "codex",
+    "antigravity",
+    "grok",
+    "muse",
+)
+
+
+def _store_profile_index(connections: list[dict] | None) -> dict[str, dict]:
+    """Map profile tool_keys (default and extra) to their store profile names."""
+    index: dict[str, dict] = {}
+    if not isinstance(connections, list):
+        return index
+    for conn in connections:
+        if not isinstance(conn, dict):
+            continue
+        source = str(conn.get("source") or "").strip()
+        default_key, default_display = _SOURCE_DISPLAY_NAMES.get(
+            source, ("", str(conn.get("name") or source))
+        )
+        profiles = conn.get("profiles")
+        if not isinstance(profiles, list):
+            continue
+        for prof in profiles:
+            if not isinstance(prof, dict):
+                continue
+            pkey = str(prof.get("key") or "").strip()
+            if not pkey:
+                continue
+            tkey = default_key if pkey == "default" else pkey
+            if not tkey:
+                continue
+            index[tkey] = {
+                "source": source,
+                "profileKey": pkey,
+                "name": str(prof.get("name") or "").strip(),
+                "providerName": default_display,
+                "plan": prof.get("plan"),
+            }
+    return index
+
+
 def _default_provider_rank(key: str) -> tuple[int, str]:
     k = key.lower()
     if k == "claude-code":
@@ -164,18 +218,30 @@ def _default_provider_rank(key: str) -> tuple[int, str]:
         return (22, k)
     if k.startswith("opencode-provider:"):
         return (23, k)
+    if k == "zcode":
+        return (24, k)
+    if k.startswith("zcode-"):
+        return (25, k)
     if k == "codex":
         return (30, k)
+    if k.startswith("codex-"):
+        return (31, k)
     if k == "antigravity":
         return (40, k)
+    if k.startswith("antigravity-"):
+        return (41, k)
     if k == "grok":
         return (50, k)
+    if k.startswith("grok-"):
+        return (51, k)
     if k == "openrouter":
         return (60, k)
     if k == "deepseek":
         return (70, k)
     if k == "muse":
         return (80, k)
+    if k.startswith("muse-"):
+        return (81, k)
     return (90, k)
 
 
@@ -186,6 +252,7 @@ def merge_provider_entries(
     today_report: dict | None = None,
     week_report: dict | None = None,
     provider_order: list[str] | None = None,
+    connections: list[dict] | None = None,
 ) -> list[dict]:
     """Merge live quota/balance lanes with recorded token telemetry across accounts."""
     capacity = (hud or {}).get("capacity") if isinstance(hud, dict) else []
@@ -196,6 +263,8 @@ def merge_provider_entries(
     )
     if not isinstance(window_tokens_all, dict):
         window_tokens_all = {}
+
+    store_profiles = _store_profile_index(connections)
 
     period_tools = {
         str(t["key"]): t
@@ -218,12 +287,11 @@ def merge_provider_entries(
         for c in capacity
         if isinstance(c, dict) and c.get("providerKey")
     }
-    has_multi_claude = "claude-code" in capacity_keys and any(
-        k.startswith("claude-code-") for k in capacity_keys
-    )
-    has_multi_opencode_go = "opencode-go" in capacity_keys and any(
-        k.startswith("opencode-go-") for k in capacity_keys
-    )
+    multi_primary_keys = {
+        pk
+        for pk in _MULTI_PRIMARY_KEYS
+        if pk in capacity_keys and any(k.startswith(pk + "-") for k in capacity_keys)
+    }
 
     consumed_usage_keys: set[str] = set()
     providers: list[dict] = []
@@ -245,23 +313,36 @@ def merge_provider_entries(
         today_entry = _combine_tool_entries(today_tools, usage_keys)
         week_entry = _combine_tool_entries(week_tools, usage_keys)
 
-        raw_title = str(card.get("title") or period_entry.get("name") or key).strip()
+        raw_title = str(
+            card.get("title")
+            or card.get("providerName")
+            or period_entry.get("name")
+            or key
+        ).strip()
         acct_label = str(card.get("accountLabel") or "").strip()
         if acct_label and raw_title.endswith(" · " + acct_label):
             display_name = raw_title[: -(len(acct_label) + 3)].strip()
             badge = acct_label
+        elif " · " in raw_title and any(
+            key.startswith(pk + "-") for pk in _MULTI_PRIMARY_KEYS
+        ):
+            display_name, _, tail_label = raw_title.partition(" · ")
+            display_name = display_name.strip()
+            badge = acct_label or tail_label.strip()
         else:
             display_name = raw_title
             badge = acct_label
 
-        if (
-            key == "claude-code"
-            and has_multi_claude
-            and not badge
-            or key == "opencode-go"
-            and has_multi_opencode_go
-            and not badge
-        ):
+        store_prof = store_profiles.get(key)
+        if store_prof and store_prof.get("name"):
+            if store_prof["profileKey"] != "default":
+                badge = store_prof["name"]
+                if display_name == key or display_name == raw_title:
+                    display_name = store_prof["providerName"]
+            elif store_prof["name"] != "Default":
+                badge = store_prof["name"]
+
+        if key in multi_primary_keys and not badge:
             badge = "Primary"
         elif key == "opencode" and not badge:
             if "z.ai" in display_name.lower():
@@ -527,7 +608,35 @@ def merge_provider_entries(
         if key in consumed_usage_keys:
             continue
         opencode_provider = key.startswith("opencode-provider:")
-        name = provider_tool_name(key) or str(tool.get("name") or key)
+        is_extra_profile = any(key.startswith(pk + "-") for pk in _MULTI_PRIMARY_KEYS)
+        store_prof = store_profiles.get(key)
+        raw_tool_name = str(tool.get("name") or key)
+        badge = "Org API" if tool.get("organization") else ""
+        plan_label = "Recorded usage" if opencode_provider else "API"
+        is_payg = not opencode_provider
+        if (
+            store_prof
+            and store_prof.get("name")
+            and (
+                store_prof["profileKey"] != "default"
+                or store_prof["name"] != "Default"
+            )
+        ):
+            name = store_prof["providerName"]
+            if not badge:
+                badge = store_prof["name"]
+            if is_extra_profile:
+                plan_label = str(store_prof.get("plan") or "Recorded usage")
+                is_payg = False
+        elif is_extra_profile and " · " in raw_tool_name:
+            base_name, _, tail_label = raw_tool_name.partition(" · ")
+            name = base_name.strip()
+            if not badge:
+                badge = tail_label.strip()
+            plan_label = "Recorded usage"
+            is_payg = False
+        else:
+            name = provider_tool_name(key) or raw_tool_name
         today_value = (today_tools.get(key) or {}).get("tokens")
         week_value = (week_tools.get(key) or {}).get("tokens")
         day_tok = int(today_value) if isinstance(today_value, (int, float)) else None
@@ -539,10 +648,10 @@ def merge_provider_entries(
             {
                 "key": key,
                 "name": name,
-                "badge": "Org API" if tool.get("organization") else "",
-                "plan": "Recorded usage" if opencode_provider else "API",
+                "badge": badge,
+                "plan": plan_label,
                 "inUse": False,
-                "isPayg": not opencode_provider,
+                "isPayg": is_payg,
                 "fundsRemainingUsd": None,
                 "organization": bool(tool.get("organization")),
                 "remaining": {
@@ -1377,6 +1486,17 @@ class DesktopBridge:
                 query = urlencode({"machine": use_machine})
                 hud = self._safe_request("/api/spend/hud?" + query)
                 hud_usage = self._safe_request("/api/spend/hud/usage?" + query)
+                conns_res = (
+                    self._safe_request("/api/connections")
+                    if not self._demo
+                    else None
+                )
+                connections = (
+                    conns_res.get("connections")
+                    if isinstance(conns_res, dict)
+                    and isinstance(conns_res.get("connections"), list)
+                    else None
+                )
                 report["providers"] = merge_provider_entries(
                     report,
                     hud=hud,
@@ -1384,6 +1504,7 @@ class DesktopBridge:
                     today_report=today_report,
                     week_report=week_report,
                     provider_order=self._provider_order,
+                    connections=connections,
                 )
             return {"ok": True, "report": report}
         except DesktopError as exc:
@@ -1434,60 +1555,216 @@ class DesktopBridge:
             self._ui_busy = prev_busy
         return ""
 
-    def connect_source(
-        self, source: str, is_api: bool, value: str, revision: int = 0
-    ) -> dict:
+    def _fresh_profile_revision(self, source: str, profile: str) -> int | None:
+        fresh = self._client.request("/api/connections")
+        item = next(
+            (
+                c
+                for c in (fresh.get("connections") or [])
+                if c.get("source") == source
+            ),
+            None,
+        )
+        if item is None:
+            return None
+        profiles = item.get("profiles")
+        if isinstance(profiles, list):
+            prof = next(
+                (p for p in profiles if isinstance(p, dict) and p.get("key") == profile),
+                None,
+            )
+            if prof is not None:
+                return int(prof.get("revision") or 0)
+            if profile != "default":
+                return None
+        return int(item.get("revision") or 0)
+
+    def _run_connection_mutation(
+        self,
+        source: str,
+        mutation_key: str,
+        body: dict,
+        *,
+        profile: str | None = None,
+        retry_409: bool = True,
+        fallback_error: str = "Could not update connection.",
+    ) -> tuple[dict | None, dict | None]:
         if self._demo:
-            return {"ok": False, "error": "Settings changes are disabled in demo mode."}
-        mutation = self._mutations.setdefault(source, SourceMutation(self._client))
+            return None, {
+                "ok": False,
+                "error": "Settings changes are disabled in demo mode.",
+            }
+        mutation = self._mutations.setdefault(
+            mutation_key, SourceMutation(self._client)
+        )
+        try:
+            res = mutation.send(body)
+            return (res if isinstance(res, dict) else {}), None
+        except DesktopError as exc:
+            if retry_409 and exc.status_code == 409 and profile is not None:
+                try:
+                    fresh_rev = self._fresh_profile_revision(source, profile)
+                    if fresh_rev is not None:
+                        retry_body = dict(body)
+                        retry_body["revision"] = fresh_rev
+                        res = mutation.send(retry_body)
+                        return (res if isinstance(res, dict) else {}), None
+                except DesktopError as retry_exc:
+                    return None, {"ok": False, "error": str(retry_exc)}
+                except (
+                    OSError,
+                    AttributeError,
+                    RuntimeError,
+                    ValueError,
+                    KeyError,
+                    TypeError,
+                ) as retry_exc:
+                    LOGGER.debug("Optional UI call skipped: %s", retry_exc)
+            return None, {"ok": False, "error": str(exc)}
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return None, {"ok": False, "error": fallback_error}
+
+    def connect_source(
+        self,
+        source: str,
+        is_api: bool,
+        value: str,
+        revision: int = 0,
+        profile: str = "default",
+    ) -> dict:
+        target_profile = str(profile or "default")
         body = {
             "source": source,
+            "profile": target_profile,
             "operation": "connect",
             "revision": int(revision or 0),
             "mode": "api" if is_api else "manual",
             ("secret" if is_api else "location"): value,
         }
-        try:
-            mutation.send(body)
-            return {"ok": True}
-        except DesktopError as exc:
-            if exc.status_code == 409:
-                try:
-                    fresh = self._client.request("/api/connections")
-                    item = next(
-                        (
-                            c
-                            for c in (fresh.get("connections") or [])
-                            if c.get("source") == source
-                        ),
-                        None,
-                    )
-                    if item is not None:
-                        body["revision"] = int(item.get("revision") or 0)
-                        mutation.send(body)
-                        return {"ok": True}
-                except (OSError, AttributeError, RuntimeError) as exc:
-                    LOGGER.debug("Optional UI call skipped: %s", exc)
-            return {"ok": False, "error": str(exc)}
-        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
-            return {"ok": False, "error": "Could not connect source."}
+        _res, err = self._run_connection_mutation(
+            source,
+            f"{source}:{target_profile}",
+            body,
+            profile=target_profile,
+            retry_409=True,
+            fallback_error="Could not connect source.",
+        )
+        return err if err is not None else {"ok": True}
 
-    def disconnect_source(self, source: str, revision: int = 0) -> dict:
-        if self._demo:
-            return {"ok": False, "error": "Settings changes are disabled in demo mode."}
-        mutation = self._mutations.setdefault(source, SourceMutation(self._client))
+    def disconnect_source(
+        self, source: str, revision: int = 0, profile: str = "default"
+    ) -> dict:
+        target_profile = str(profile or "default")
         body = {
             "source": source,
+            "profile": target_profile,
             "operation": "disable",
             "revision": int(revision or 0),
         }
-        try:
-            mutation.send(body)
-            return {"ok": True}
-        except DesktopError as exc:
-            return {"ok": False, "error": str(exc)}
-        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
-            return {"ok": False, "error": "Could not disconnect source."}
+        _res, err = self._run_connection_mutation(
+            source,
+            f"{source}:{target_profile}",
+            body,
+            profile=target_profile,
+            retry_409=True,
+            fallback_error="Could not disconnect source.",
+        )
+        return err if err is not None else {"ok": True}
+
+    def add_profile(
+        self,
+        source: str,
+        candidate_id: str = "",
+        location: str = "",
+        name: str = "",
+    ) -> dict:
+        body: dict = {"source": source, "operation": "add_profile"}
+        clean_cand = str(candidate_id or "").strip()
+        if clean_cand:
+            body["candidateId"] = clean_cand
+        else:
+            body["location"] = str(location or "")
+        clean_name = str(name or "").strip()
+        if clean_name:
+            body["name"] = clean_name
+        res, err = self._run_connection_mutation(
+            source,
+            f"{source}:add",
+            body,
+            profile=None,
+            retry_409=False,
+            fallback_error="Could not add profile.",
+        )
+        if err is not None:
+            return err
+        return {"ok": True, "connection": (res or {}).get("connection") or {}}
+
+    def rename_profile(
+        self, source: str, profile: str, name: str, revision: int = 0
+    ) -> dict:
+        target_profile = str(profile or "default")
+        body = {
+            "source": source,
+            "profile": target_profile,
+            "operation": "rename_profile",
+            "name": str(name or "").strip(),
+            "revision": int(revision or 0),
+        }
+        res, err = self._run_connection_mutation(
+            source,
+            f"{source}:{target_profile}",
+            body,
+            profile=target_profile,
+            retry_409=True,
+            fallback_error="Could not rename profile.",
+        )
+        if err is not None:
+            return err
+        return {"ok": True, "connection": (res or {}).get("connection") or {}}
+
+    def remove_profile(
+        self, source: str, profile: str, revision: int = 0
+    ) -> dict:
+        target_profile = str(profile or "default")
+        body = {
+            "source": source,
+            "profile": target_profile,
+            "operation": "remove_profile",
+            "revision": int(revision or 0),
+        }
+        res, err = self._run_connection_mutation(
+            source,
+            f"{source}:{target_profile}",
+            body,
+            profile=target_profile,
+            retry_409=True,
+            fallback_error="Could not remove profile.",
+        )
+        if err is not None:
+            return err
+        return {
+            "ok": True,
+            "disabled": bool((res or {}).get("disabled")),
+            "removed": bool((res or {}).get("removed")),
+        }
+
+    def dismiss_candidate(self, source: str, candidate_id: str) -> dict:
+        body = {
+            "source": source,
+            "operation": "dismiss_candidate",
+            "candidateId": str(candidate_id or "").strip(),
+        }
+        res, err = self._run_connection_mutation(
+            source,
+            f"{source}:dismiss",
+            body,
+            profile=None,
+            retry_409=False,
+            fallback_error="Could not dismiss candidate.",
+        )
+        if err is not None:
+            return err
+        return {"ok": True, "dismissed": bool((res or {}).get("dismissed", True))}
 
     def connect_hub_account(
         self,
