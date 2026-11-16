@@ -1311,8 +1311,19 @@ def test_redact_repeated_parens_is_linear_time(tmp_path: Path) -> None:
     elapsed = time.perf_counter() - t0
 
     assert elapsed < 0.5, f"redact() took {elapsed:.3f}s for n={n}"
-    assert cleaned == "token: [redacted]"
+    assert cleaned == "[line omitted]"
     assert "SyntheticSuffix" not in cleaned
+
+    # Within the 8192-char line cap, safe-phrase suffix verification still runs linearly
+    in_cap_n = 8000
+    in_cap_payload = "token: missing" + (")" * in_cap_n) + "SyntheticSuffix"
+    t1 = time.perf_counter()
+    in_cap_cleaned = redact(in_cap_payload)
+    in_cap_elapsed = time.perf_counter() - t1
+
+    assert in_cap_elapsed < 0.5, f"redact() took {in_cap_elapsed:.3f}s for n={in_cap_n}"
+    assert in_cap_cleaned == "token: [redacted]"
+    assert "SyntheticSuffix" not in in_cap_cleaned
 
     # Also verify bounded work and redaction through IngestRun.finish and build_report
     within_cap_payload = "token: missing" + (")" * 2000) + "SyntheticSuffix"
@@ -1430,3 +1441,261 @@ def test_legacy_last_sync_error_scrubbed_on_initialize_and_hidden_everywhere(
             "SELECT value FROM app_meta WHERE key=?", (setup_wizard.SETUP_META_KEY,)
         ).fetchone()[0]
     assert raw_after_second_init == raw_before_second_init
+
+
+# ---------------------------------------------------------------------------
+# 6. Line-bounded fail-closed redesign & cross-line state machine tests
+# ---------------------------------------------------------------------------
+
+
+MULTILINE_SCALAR_CASES: list[tuple[str, str, str, tuple[str, ...]]] = [
+    (
+        "password_colon_base64_eq",
+        "password:\nAb9SensitiveValue==",
+        "password:\n[redacted]",
+        ("Ab9SensitiveValue",),
+    ),
+    (
+        "password_colon_opaque_suffix",
+        "password:\nAb9SensitiveValue:opaque",
+        "password:\n[redacted]",
+        ("Ab9SensitiveValue", "opaque"),
+    ),
+    (
+        "token_eq_base64",
+        "token=\nYWJjZGVmZw==",
+        "token=\n[redacted]",
+        ("YWJjZGVmZw",),
+    ),
+    (
+        "pretty_json_password",
+        '{"password":\n "Ab9SensitiveValue", "keep": "ok"}',
+        '{"password":\n "[redacted]", "keep": "ok"}',
+        ("Ab9SensitiveValue",),
+    ),
+    (
+        "auth_colon_newline_bearer",
+        "Authorization:\nBearer Ab9SensitiveValue",
+        "Authorization:\n[redacted]",
+        ("Ab9SensitiveValue",),
+    ),
+    (
+        "auth_colon_newline_basic",
+        "Authorization:\nBasic dXNlcjpwYXNzd29yZA==",
+        "Authorization:\n[redacted]",
+        ("dXNlcjpwYXNzd29yZA==",),
+    ),
+    (
+        "password_colon_crlf_base64_eq",
+        "password:\r\nAb9SensitiveValue==",
+        "password:\r\n[redacted]",
+        ("Ab9SensitiveValue",),
+    ),
+    (
+        "password_colon_blank_line_then_secret",
+        "password:\n\nAb9SensitiveValue==",
+        "password:\n\n[redacted]",
+        ("Ab9SensitiveValue",),
+    ),
+    (
+        "pct_password_colon_base64_eq",
+        "password%3A%0AAb9SensitiveValue%3D%3D",
+        "password:\n[redacted]",
+        ("Ab9SensitiveValue",),
+    ),
+    (
+        "pct_password_colon_opaque_suffix",
+        "password%3A%0AAb9SensitiveValue%3Aopaque",
+        "password:\n[redacted]",
+        ("Ab9SensitiveValue", "opaque"),
+    ),
+    (
+        "pct_token_eq_base64",
+        "token%3D%0AYWJjZGVmZw%3D%3D",
+        "token=\n[redacted]",
+        ("YWJjZGVmZw",),
+    ),
+    (
+        "pct_pretty_json_password",
+        "%7B%22password%22%3A%0A%20%22Ab9SensitiveValue%22%2C%20%22keep%22%3A%20%22ok%22%7D",
+        '{"password":\n "[redacted]", "keep": "ok"}',
+        ("Ab9SensitiveValue",),
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "case_id,raw_input,expected,forbidden",
+    MULTILINE_SCALAR_CASES,
+    ids=[c[0] for c in MULTILINE_SCALAR_CASES],
+)
+def test_crossline_multiline_scalars_across_all_sinks(
+    case_id, raw_input, expected, forbidden, tmp_path: Path
+) -> None:
+    cleaned = redact(raw_input)
+    assert cleaned == expected
+    _assert_none_survive(cleaned, forbidden)
+
+    sanitized = source_evidence.sanitize_reason(raw_input)
+    _assert_none_survive(sanitized, forbidden)
+    reason_text = source_evidence.source_reason_text(raw_input)
+    _assert_none_survive(reason_text, forbidden)
+
+    settings = _settings(tmp_path, "multiline_scalar.db")
+    initialize(settings.database_path)
+    with connect(settings.database_path) as conn:
+        run = IngestRun.start(conn, "codex_local")
+        run.finish(status="failed", error=raw_input)
+        stored = conn.execute(
+            "SELECT error FROM ingest_runs WHERE id=?", (run.id,)
+        ).fetchone()[0]
+    assert "[redacted]" in stored
+    _assert_none_survive(stored, forbidden)
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "dashboard.log").write_text(raw_input + "\n", encoding="utf-8")
+    report = support_report.build_report(settings, log_dir=logs)
+    assert "[redacted]" in report
+    _assert_none_survive(report, forbidden)
+
+
+def test_no_raw_pre_truncation_and_url_userinfo_redaction(tmp_path: Path) -> None:
+    pct_ghp = ("%2520" * 38) + "ghp_Ab9SensitiveValue"
+    cleaned_ghp = redact(pct_ghp, 50)
+    assert len(cleaned_ghp) <= 50
+    assert "[redacted]" in cleaned_ghp
+    _assert_none_survive(cleaned_ghp, ("ghp_", "Ab9SensitiveValue"))
+
+    sanitized_ghp = source_evidence.sanitize_reason(pct_ghp)
+    assert "[redacted]" in sanitized_ghp
+    _assert_none_survive(sanitized_ghp, ("ghp_", "Ab9SensitiveValue"))
+
+    reason_ghp = source_evidence.source_reason_text(pct_ghp)
+    assert reason_ghp is not None and "[redacted]" in reason_ghp
+    _assert_none_survive(reason_ghp, ("ghp_", "Ab9SensitiveValue"))
+
+    pct_url = ("%252520" * 567) + "https://alice:Ab9SensitiveValue@example.invalid"
+    cleaned_url = redact(pct_url, 1000)
+    assert len(cleaned_url) <= 1000
+    assert "https://[redacted]@example.invalid" in cleaned_url
+    _assert_none_survive(cleaned_url, ("alice", "Ab9SensitiveValue"))
+
+    sanitized_pct_url = source_evidence.sanitize_reason(pct_url)
+    _assert_none_survive(sanitized_pct_url, ("alice", "Ab9SensitiveValue"))
+    reason_pct_url = source_evidence.source_reason_text(pct_url)
+    if reason_pct_url is not None:
+        _assert_none_survive(reason_pct_url, ("alice", "Ab9SensitiveValue"))
+
+    direct_url = "https://alice:Ab9SensitiveValue@example.invalid"
+    assert source_evidence.sanitize_reason(direct_url) == "https://[redacted]@example.invalid"
+    assert source_evidence.source_reason_text(direct_url) == "https://[redacted]@example.invalid"
+    padded_url = ("%2520" * 10) + direct_url
+    assert source_evidence.sanitize_reason(padded_url) == "https://[redacted]@example.invalid"
+    assert source_evidence.source_reason_text(padded_url) == "https://[redacted]@example.invalid"
+
+    settings = _settings(tmp_path, "no_pretrunc.db")
+    initialize(settings.database_path)
+    with connect(settings.database_path) as conn:
+        r1 = IngestRun.start(conn, "codex_local")
+        r1.finish(status="failed", error=pct_ghp)
+        e1 = conn.execute("SELECT error FROM ingest_runs WHERE id=?", (r1.id,)).fetchone()[0]
+        r2 = IngestRun.start(conn, "claude_local")
+        r2.finish(status="failed", error=pct_url)
+        e2 = conn.execute("SELECT error FROM ingest_runs WHERE id=?", (r2.id,)).fetchone()[0]
+
+    assert "[redacted]" in e1
+    _assert_none_survive(e1, ("ghp_", "Ab9SensitiveValue"))
+    assert "https://[redacted]@example.invalid" in e2
+    _assert_none_survive(e2, ("alice", "Ab9SensitiveValue"))
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "dashboard.log").write_text(f"{pct_ghp}\n{pct_url}\n", encoding="utf-8")
+    report = support_report.build_report(settings, log_dir=logs)
+    _assert_none_survive(report, ("ghp_", "Ab9SensitiveValue", "alice"))
+
+
+def test_long_secret_line_omitted_and_subsequent_line_kept(tmp_path: Path) -> None:
+    huge_secret_line = "password=" + ("Z" * 65518) + " ghp_Ab9SensitiveValue1234"
+    assert redact(huge_secret_line) == "[line omitted]"
+    assert source_evidence.sanitize_reason(huge_secret_line) == "[line omitted]"
+    assert source_evidence.source_reason_text(huge_secret_line) == "[line omitted]"
+
+    keep_after_secret = "token=" + ("Z" * 5000) + "\nConnection refused"
+    kept = redact(keep_after_secret, 1000)
+    assert kept == "token=[redacted]\nConnection refused"
+    assert "Connection refused" in kept
+    assert "Z" * 20 not in kept
+    assert source_evidence.sanitize_reason(keep_after_secret) == "token=[redacted] Connection refused"
+    assert source_evidence.source_reason_text(keep_after_secret) == "token=[redacted] Connection refused"
+
+    settings = _settings(tmp_path, "line_omitted.db")
+    initialize(settings.database_path)
+    with connect(settings.database_path) as conn:
+        r_huge = IngestRun.start(conn, "codex_local")
+        r_huge.finish(status="failed", error=huge_secret_line)
+        stored_huge = conn.execute(
+            "SELECT error FROM ingest_runs WHERE id=?", (r_huge.id,)
+        ).fetchone()[0]
+        r_keep = IngestRun.start(conn, "claude_local")
+        r_keep.finish(status="failed", error=keep_after_secret)
+        stored_keep = conn.execute(
+            "SELECT error FROM ingest_runs WHERE id=?", (r_keep.id,)
+        ).fetchone()[0]
+
+    assert stored_huge == "[line omitted]"
+    _assert_none_survive(stored_huge, ("ghp_", "Ab9SensitiveValue1234", "Z" * 20))
+    assert stored_keep == "token=[redacted]\nConnection refused"
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "dashboard.log").write_text(
+        f"{huge_secret_line}\n{keep_after_secret}\n", encoding="utf-8"
+    )
+    report = support_report.build_report(settings, log_dir=logs)
+    assert "[line omitted]" in report
+    assert "Connection refused" in report
+    _assert_none_survive(report, ("ghp_", "Ab9SensitiveValue1234", "Z" * 20))
+
+
+def test_line_and_input_caps_fail_closed() -> None:
+    assert redact("x" * 8192) == "x" * 8192
+    assert redact("x" * 8193) == "[line omitted]"
+
+    # 256 KiB cap drops only whole trailing lines and emits a single [truncated] marker
+    line = "line " + ("x" * 8000)
+    many_lines = (line + "\n") * 40
+    cleaned = redact(many_lines)
+    assert cleaned.endswith("\n[truncated]")
+    assert cleaned.count("[truncated]") == 1
+    kept_lines = cleaned.split("\n")[:-1]
+    assert len(kept_lines) == 32
+    assert all(item == line for item in kept_lines)
+
+
+def test_adversarial_long_inputs_finish_linearly() -> None:
+    timing_cases = [
+        ("dots_65k", "token: missing" + ("." * 65536) + "SyntheticSuffix", "[line omitted]"),
+        ("z_16k", "Z" * 16384, "[line omitted]"),
+        ("z_65k", "Z" * 65536, "[line omitted]"),
+        ("dots_8k", "token: missing" + ("." * 8000) + "SyntheticSuffix", "token: [redacted]"),
+    ]
+    for label, payload, expected in timing_cases:
+        t0 = time.perf_counter()
+        cleaned = redact(payload)
+        elapsed = time.perf_counter() - t0
+        assert elapsed < 0.5, f"{label} took {elapsed:.3f}s"
+        assert cleaned == expected
+        assert "SyntheticSuffix" not in cleaned
+
+    # Adversarial in-line-cap inputs with '@' / dots also stay fast
+    for label, payload in (
+        ("at_8k", ("a" * 8000) + "@"),
+        ("email_dots_8k", "a@" + ("b." * 4000)),
+        ("many_ats_8k", "a@" * 4000),
+    ):
+        t0 = time.perf_counter()
+        redact(payload)
+        elapsed = time.perf_counter() - t0
+        assert elapsed < 0.5, f"{label} took {elapsed:.3f}s"
