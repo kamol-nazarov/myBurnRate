@@ -50,7 +50,8 @@ def reduce_records(records):
 def files(root, budget=100000):
     from spend_app.connection_paths import source_files
     root = Path(root)
-    return source_files(root, ("sessions/*.jsonl",) if root.name == "antigravity-cache" else ("*.jsonl",), budget)
+    broader = root.name == "antigravity-cache" or (root.is_dir() and (root / "sessions").is_dir())
+    return source_files(root, ("sessions/*.jsonl",) if broader else ("*.jsonl",), budget)
 
 
 def read_file(path, *, limit=None):

@@ -85,7 +85,17 @@ def ingest(*, database_path: Path, pricing: PricingEngine, source_database: Path
     from spend_app.connection_paths import source_files, confined
     from spend_app.adapters.zcode_transcript import reduce_records, reconcile
     from spend_app.adapters.event_identity import Observation
-    patterns = ("cli/db/db.sqlite", "projects/**/*.jsonl") if source_database.name == ".zcode" else ("**/*.jsonl",)
+    broader = (
+        source_database.name == ".zcode"
+        or (
+            source_database.is_dir()
+            and (
+                (source_database / "cli" / "db" / "db.sqlite").is_file()
+                or (source_database / "projects").is_dir()
+            )
+        )
+    )
+    patterns = ("cli/db/db.sqlite", "projects/**/*.jsonl") if broader else ("**/*.jsonl",)
     cache_key, current, replayed = unchanged.check(
         database_path, SOURCE, source_database, lambda: list(source_files(source_database, patterns)), pricing)
     if replayed is not None:
