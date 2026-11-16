@@ -32,31 +32,40 @@ def reduce_payload(payload, *, scope, now):
     return {"version": 1, "scope": scope, "observed": now, "windows": windows}
 
 
+def _database_root(database) -> Path:
+    return Path(os.path.abspath(Path(database).expanduser())).parent
+
+
 def snapshot_path(database):
-    return Path(database).absolute().parent / "snapshots" / ("claude-statusline-" + scope_id(database)[:16] + ".json")
+    return Path(database).expanduser().absolute().parent / "snapshots" / ("claude-statusline-" + scope_id(database)[:16] + ".json")
 
 
-def _snapshot_root(parent: Path) -> tuple[Path, bool]:
-    """Return ``(root, inclusive)`` bounding ancestor link checks for ``parent``.
+def _snapshot_root(parent: Path, *, root: Path | None = None) -> tuple[Path, bool]:
+    """Return ``(bound, inclusive)`` bounding ancestor link checks for ``parent``.
 
-    Checks stop at the BURNRATE data directory when ``parent`` lives under it
-    (including the root itself) so system junctions above the user's profile do
-    not break legitimate setups. Callers outside the configured data directory
-    (for example tests using ``tmp_path``) still check ancestors up to the temp
-    directory, user home, or drive anchor without crossing above it.
+    Checks stop at the BURNRATE data directory or an explicit database root when
+    ``parent`` lives under it (including the root itself) so system or profile
+    junctions above that root do not break legitimate setups. Callers without a
+    determined root (for example direct ``atomic_write`` calls outside configured
+    data directories) still check ancestors up to the temp directory, user home,
+    or drive anchor without crossing above it.
     """
     from spend_app.config import default_app_dir, default_database_path
 
-    candidates = []
-    for candidate in (
+    roots = [
         default_app_dir().expanduser(),
         default_database_path().expanduser().parent,
-    ):
-        root = Path(os.path.abspath(candidate))
-        if parent == root or parent.is_relative_to(root):
-            candidates.append(root)
+    ]
+    if root is not None:
+        roots.append(Path(root).expanduser())
+
+    candidates = []
+    for candidate in roots:
+        normalized = Path(os.path.abspath(candidate))
+        if parent == normalized or parent.is_relative_to(normalized):
+            candidates.append(normalized)
     if candidates:
-        return min(candidates, key=lambda root: len(root.parts)), True
+        return min(candidates, key=lambda item: len(item.parts)), True
 
     for boundary in (
         Path(os.path.abspath(tempfile.gettempdir())),
@@ -68,28 +77,28 @@ def _snapshot_root(parent: Path) -> tuple[Path, bool]:
     return Path(parent.anchor), False
 
 
-def _check_snapshot_ancestors(parent: Path) -> None:
+def _check_snapshot_ancestors(parent: Path, *, root: Path | None = None) -> None:
     from spend_app.connection_paths import is_junction
 
     target_dir = Path(os.path.abspath(parent))
-    root, inclusive = _snapshot_root(target_dir)
+    bound, inclusive = _snapshot_root(target_dir, root=root)
     current = target_dir
     while True:
-        if not inclusive and current == root:
+        if not inclusive and current == bound:
             break
         if current.is_symlink() or is_junction(current):
             raise ValueError("Snapshot directory cannot be a link.")
-        if current == root or current.parent == current:
+        if current == bound or current.parent == current:
             break
         current = current.parent
 
 
-def atomic_write(path, snapshot):
+def atomic_write(path, snapshot, *, root=None):
     path = Path(path)
     parent = path.parent
-    _check_snapshot_ancestors(parent)
+    _check_snapshot_ancestors(parent, root=root)
     parent.mkdir(parents=True, exist_ok=True)
-    _check_snapshot_ancestors(parent)
+    _check_snapshot_ancestors(parent, root=root)
     temporary = None
     try:
         with tempfile.NamedTemporaryFile("w", dir=parent, prefix=".claude-statusline-", suffix=".tmp", delete=False, encoding="utf-8") as stream:
@@ -125,10 +134,11 @@ def read_snapshot(database):
     require("claude_statusline_snapshot")
     root = os.getenv("CLAUDE_CONFIG_DIR") or Path.home() / ".claude"
     path = snapshot_path(database)
+    db_root = _database_root(database)
     try:
         from spend_app.connection_paths import is_junction
 
-        _check_snapshot_ancestors(path.parent)
+        _check_snapshot_ancestors(path.parent, root=db_root)
         if path.is_symlink() or is_junction(path):
             raise ValueError("Snapshot links are not supported.")
         with path.open("rb") as stream:
@@ -154,7 +164,7 @@ def main():
     scope = scope_id(os.getenv("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
     snapshot = reduce_payload(payload, scope=scope, now=datetime.now(UTC).timestamp())
     del payload, raw
-    atomic_write(snapshot_path(args.database), snapshot)
+    atomic_write(snapshot_path(args.database), snapshot, root=_database_root(args.database))
 
 
 if __name__ == "__main__":

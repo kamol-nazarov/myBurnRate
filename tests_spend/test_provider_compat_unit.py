@@ -827,11 +827,12 @@ def test_statusline_refuses_real_windows_junction_ancestor_above_existing_snapsh
     assert bridge.read_snapshot(database)['status'] == 'unavailable'
     opener.assert_not_called()
 
-    # Without BURNRATE_DATA_ROOT override, temp ancestors are still checked below tempdir.
+    # Without BURNRATE_DATA_ROOT or explicit root, direct atomic_write still checks temp ancestors below tempdir,
+    # and read_snapshot still checks the database root itself inclusively.
     monkeypatch.delenv('BURNRATE_DATA_ROOT', raising=False)
     with pytest.raises(ValueError, match='link'):
         bridge.atomic_write(target, snapshot)
-    assert bridge.read_snapshot(database)['status'] == 'unavailable'
+    assert bridge.read_snapshot(linked / 'spend.db')['status'] == 'unavailable'
     opener.assert_not_called()
 
 
@@ -866,3 +867,75 @@ def test_statusline_does_not_walk_above_trusted_root(tmp_path, monkeypatch):
     read = bridge.read_snapshot(database)
     assert read['status'] == 'exact'
     assert read['windows'][0]['usedPct'] == 42
+
+
+def test_statusline_custom_database_under_junctioned_parent_works_and_child_junction_refused(tmp_path, monkeypatch):
+    import io
+    import json
+    import os
+    import sys
+    if os.name != 'nt':
+        pytest.skip('Windows junction test')
+    from spend_app import claude_statusline as bridge
+
+    claude_dir = tmp_path / '.claude'
+    claude_dir.mkdir()
+    real_profile = tmp_path / 'real_profile'
+    custom_real = real_profile / 'custom_db_dir'
+    custom_real.mkdir(parents=True)
+    linked_profile = tmp_path / 'linked_profile'
+    _create_windows_junction(real_profile, linked_profile)
+
+    # Custom --database sits outside any BURNRATE_DATA_ROOT / default data directory,
+    # under a legitimate junctioned parent above the database's directory.
+    monkeypatch.delenv('BURNRATE_DATA_ROOT', raising=False)
+    monkeypatch.setenv('BURNRATE_ENABLE_CLAUDE_STATUSLINE', '1')
+    monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(claude_dir))
+
+    custom_root = linked_profile / 'custom_db_dir'
+    custom_db = custom_root / 'spend.db'
+    now = datetime.now(UTC).timestamp()
+    payload = {'rate_limits': {'five_hour': {'used_percentage': 42, 'resets_at': now + 3600}}}
+
+    monkeypatch.setattr(sys, 'argv', ['claude_statusline', '--database', str(custom_db)])
+    monkeypatch.setattr(sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(json.dumps(payload).encode('utf-8'))))
+    bridge.main()
+
+    target = bridge.snapshot_path(custom_db)
+    assert target.is_file()
+    read = bridge.read_snapshot(custom_db)
+    assert read['status'] == 'exact'
+    assert read['windows'][0]['usedPct'] == 42
+
+    # A junction between that custom database root and snapshots (or at snapshots itself) is refused.
+    mid_real = tmp_path / 'mid_real'
+    (mid_real / 'snapshots').mkdir(parents=True)
+    mid_link = custom_root / 'mid_link'
+    _create_windows_junction(mid_real, mid_link)
+    snapshot = bridge.reduce_payload(payload, scope=bridge.scope_id(claude_dir), now=now)
+    with pytest.raises(ValueError, match='link'):
+        bridge.atomic_write(mid_link / 'snapshots' / 'probe.json', snapshot, root=custom_root)
+
+    # Replace snapshots with a junction under custom_root and verify both --database write and read refuse.
+    linked_snapshots_target = tmp_path / 'redirected_snapshots'
+    linked_snapshots_target.mkdir()
+    target.unlink()
+    target.parent.rmdir()
+    _create_windows_junction(linked_snapshots_target, target.parent)
+
+    monkeypatch.setattr(sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(json.dumps(payload).encode('utf-8'))))
+    with pytest.raises(ValueError, match='link'):
+        bridge.main()
+    opener = Mock(side_effect=AssertionError('read_snapshot must not open junction under custom root'))
+    monkeypatch.setattr(type(target), 'open', opener)
+    assert bridge.read_snapshot(custom_db)['status'] == 'unavailable'
+    opener.assert_not_called()
+
+    # The custom database root itself is also checked inclusively.
+    junction_root_db = linked_profile / 'spend.db'
+    monkeypatch.setattr(sys, 'argv', ['claude_statusline', '--database', str(junction_root_db)])
+    monkeypatch.setattr(sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(json.dumps(payload).encode('utf-8'))))
+    with pytest.raises(ValueError, match='link'):
+        bridge.main()
+    assert bridge.read_snapshot(junction_root_db)['status'] == 'unavailable'
+    opener.assert_not_called()
