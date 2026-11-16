@@ -2,7 +2,8 @@
 
 Security release for the v0.5.7 audit. It closes the High finding (the source
 installer started an unverified desktop app), the three Medium findings and the
-Low findings, plus four issues found while verifying them.
+Low findings, plus four issues found while verifying them. It also adds source
+profiles: several profile folders per local tool, found automatically.
 
 ## Security
 
@@ -43,6 +44,31 @@ Low findings, plus four issues found while verifying them.
   fail-closed junction checks, capped agent-run names and home-relative paths
   in `burnrate doctor`.
 
+## Source profiles
+
+- **More than one profile per tool.** Claude Code, Codex, OpenCode, ZCode, Grok
+  Build, Antigravity and Muse can each track several profile folders, such as a
+  personal and a work account. Each profile gets its own usage card and, when
+  signed in, its own usage limits, including Codex.
+- **Found for you, added by you.** BURNRATE looks for `~/.claude-*`,
+  `~/.codex-*` and `~/.opencode-*` folders and those listed in
+  `BURNRATE_CLAUDE_ACCOUNT_DIRS`, `BURNRATE_CODEX_PROFILE_DIRS` and
+  `BURNRATE_OPENCODE_PROFILE_DIRS`. The default folder is tracked
+  automatically; any other folder shows as **detected** and is read only after
+  you click **Add**.
+- **One account, counted once.** Two folders signed in to the same account share
+  one limit reading, and the second is shown as "Same account as …". A folder
+  can belong to only one profile.
+- **Grouped Settings.** Settings → Sources groups profiles under each tool, with
+  **+ Add profile**, **Rename**, and **Remove** (**Stop tracking** for the
+  default).
+- **Privacy.** Detection reads only each folder's sign-in file, never
+  transcripts. Account ids are stored as SHA-256 digests; tokens and email
+  addresses are never stored or shown.
+- **Moved folders stop.** If an approved folder is moved or replaced by a
+  junction, BURNRATE stops reading it and shows it as needing attention until
+  you reconnect it.
+
 ## Upgrade notes
 
 1. **Back up the hub before upgrading.** Use SQLite's backup API while running,
@@ -61,7 +87,14 @@ Low findings, plus four issues found while verifying them.
    read the session from the `burnrate_access` cookie instead of the body.
 7. **`BURNRATE_NATIVE_PUBLISHERS` is removed.** Use
    `BURNRATE_NATIVE_THUMBPRINTS` to trust a specific signing certificate.
-8. The 0.5.8 hub image digest is published after the tag build; the reference
+8. **Source profiles.** Extra profiles you were already tracking stay tracked.
+   On a new install, extra folders appear as **detected** until you add them.
+   **Claude Code (second instance)** becomes a Claude Code profile: usage it
+   recorded before the upgrade stays on the main Claude Code card, and only
+   new usage is kept separate. Connection settings move to
+   `connections.v2`; `connections.v1` and its credential references are kept so
+   that an older binary still works after a rollback.
+9. The 0.5.8 hub image digest is published after the tag build; the reference
    Compose file is pinned to that digest in a follow-up release-metadata commit.
 
 See [upgrade and rollback](../self-hosting.md#auth-model-upgrade-and-rollback).
@@ -93,4 +126,6 @@ in-memory self-signed certificate, and the pinned launch thumbprint list is
 empty until SignPath signing is in place, so unsigned desktop builds still launch
 unless `BURNRATE_REQUIRE_SIGNED_NATIVE=1`. Redaction is defence in depth:
 anything after a secret field on the same line is removed, and lines over 8 KiB
-in stored errors are omitted.
+in stored errors are omitted. The stricter folder checks behind source profiles
+make reading very large transcript folders slower: in a synthetic test with
+5,000 files, a full read took about 2 seconds longer.

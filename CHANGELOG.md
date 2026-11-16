@@ -48,12 +48,39 @@ This project is licensed under Apache-2.0.
   `taskkill` from System32; a failed junction check is treated as a link; agent-run names are
   capped at 120 characters; `burnrate doctor` prints home-relative paths.
 
+### Added
+
+- **Several profiles per local tool.** Claude Code, Codex, OpenCode, ZCode, Grok Build,
+  Antigravity and Muse can each track more than one profile folder. Every profile's usage is kept
+  under its own card, and profiles signed in to the same account share one limit reading instead
+  of being counted twice. Traycer and API-key providers stay single-profile.
+- **Profile auto-detection.** BURNRATE finds Claude Code (`~/.claude-*`), Codex (`~/.codex-*`)
+  and OpenCode (`~/.opencode-*`) profile folders, plus folders listed in
+  `BURNRATE_CLAUDE_ACCOUNT_DIRS`, `BURNRATE_CODEX_PROFILE_DIRS` and
+  `BURNRATE_OPENCODE_PROFILE_DIRS`. Each tool's default folder is tracked automatically; other
+  folders are shown as **detected** and are read only after you add them. Detection reads each
+  folder's sign-in file only, never transcripts, and stores account ids as SHA-256 digests.
+- **Usage limits per signed-in profile**, including Codex: each extra Codex profile gets its own
+  weekly window.
+- **Grouped sources in Settings.** Sources are grouped by provider, with **+ Add profile**,
+  **Add** and **Dismiss** for detected folders, and **Rename** and **Remove** (**Stop tracking**
+  for the default) on each profile.
+
 ### Changed
 
 - The HUD no longer shows an "update available" button. Install updates from the tray menu or
   Settings.
 - `BURNRATE_NATIVE_PUBLISHERS` is replaced by `BURNRATE_NATIVE_THUMBPRINTS`.
 - The admin audit table and its triggers are recreated on start if missing.
+- "Claude Code (second instance)" is replaced by profiles. A configured second instance becomes a
+  Claude Code profile; usage it recorded before the upgrade stays with the main Claude Code card,
+  and only new usage is kept separate.
+- Source status reflects what is actually found: `receiving`, `added`, `detected`, `not found`,
+  `disabled` or `error`, replacing "already monitored".
+- Connection settings move to `connections.v2`. The previous `connections.v1` is left in place,
+  including its credential references, so an older binary can still read it after a rollback.
+- If a profile's approved folder is moved or replaced by a junction, BURNRATE stops reading it and
+  marks it as needing attention until you reconnect it.
 
 ## [0.5.7] - 2026-11-14
 
