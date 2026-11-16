@@ -33,14 +33,33 @@ PS_TRUST_FILES = (
 )
 
 
+def _ps5_default_module_path(env: dict[str, str]) -> str:
+    env_ci = {k.lower(): v for k, v in env.items()}
+    user_profile = env_ci.get("userprofile") or str(Path.home())
+    program_files = env_ci.get("programfiles") or r"C:\Program Files"
+    system_root = env_ci.get("systemroot") or r"C:\Windows"
+    return os.pathsep.join(
+        [
+            str(Path(user_profile) / "Documents" / "WindowsPowerShell" / "Modules"),
+            str(Path(program_files) / "WindowsPowerShell" / "Modules"),
+            str(Path(system_root) / "system32" / "WindowsPowerShell" / "v1.0" / "Modules"),
+        ]
+    )
+
+
 def _ps_run(shell: str, script: str, *, env: dict[str, str] | None = None, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    run_env = dict(env if env is not None else os.environ)
+    if Path(shell).stem.lower() == "powershell":
+        for key in [k for k in run_env if k.lower() == "psmodulepath"]:
+            del run_env[key]
+        run_env["PSModulePath"] = _ps5_default_module_path(run_env)
     return subprocess.run(
         [shell, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
         capture_output=True,
         text=True,
         timeout=60,
-        env=env,
+        env=run_env,
         cwd=str(cwd) if cwd else None,
         check=False,
     )
