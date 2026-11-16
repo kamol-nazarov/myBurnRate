@@ -637,8 +637,23 @@ class DemoClient:
                     {
                         "source": r["key"],
                         "name": r["name"],
+                        "kind": "local",
                         "state": "receiving_usage",
                         "location": "Example location",
+                        "supportsProfiles": True,
+                        "profiles": [
+                            {
+                                "key": "default",
+                                "name": "Default",
+                                "location": f"~/.{r['key']}",
+                                "origin": "default",
+                                "state": "receiving",
+                                "revision": 1,
+                                "plan": None,
+                                "sharesLimitsWith": None,
+                            }
+                        ],
+                        "detected": [],
                     }
                     for r in demo_report()["tools"]
                 ]
@@ -650,6 +665,20 @@ class DemoClient:
                         "capabilities": ["balance"],
                         "state": "connected",
                         "detail": "Prepaid credits connected",
+                        "supportsProfiles": False,
+                        "profiles": [
+                            {
+                                "key": "default",
+                                "name": "Default",
+                                "location": "",
+                                "origin": "default",
+                                "state": "receiving",
+                                "revision": 1,
+                                "plan": None,
+                                "sharesLimitsWith": None,
+                            }
+                        ],
+                        "detected": [],
                     },
                     {
                         "source": "deepseek",
@@ -658,6 +687,20 @@ class DemoClient:
                         "capabilities": ["balance"],
                         "state": "connected",
                         "detail": "Prepaid USD balance connected",
+                        "supportsProfiles": False,
+                        "profiles": [
+                            {
+                                "key": "default",
+                                "name": "Default",
+                                "location": "",
+                                "origin": "default",
+                                "state": "receiving",
+                                "revision": 1,
+                                "plan": None,
+                                "sharesLimitsWith": None,
+                            }
+                        ],
+                        "detected": [],
                     },
                 ]
             }
@@ -1481,10 +1524,13 @@ class SettingsWindow:
                 listing.delete(*listing.get_children())
                 rows.clear()
                 for row in data[0].get("connections") or []:
+                    profiles = [p for p in (row.get("profiles") or []) if isinstance(p, dict)]
+                    extra_count = max(0, len(profiles) - 1)
+                    label = row["name"] if not extra_count else f"{row['name']} (+{extra_count})"
                     key = listing.insert(
                         "",
                         "end",
-                        text=row["name"],
+                        text=label,
                         values=(
                             str(row.get("state") or "Unknown")
                             .replace("_", " ")
@@ -1511,16 +1557,20 @@ class SettingsWindow:
 
         def describe(_=None):
             row = selected()
-            details.configure(
-                text=(
-                    row.get("detail")
-                    or row.get("location")
-                    or row.get("capabilityNote")
-                    or ""
-                )
-                if row
-                else ""
+            if not row:
+                details.configure(text="")
+                return
+            base = (
+                row.get("detail")
+                or row.get("location")
+                or row.get("capabilityNote")
+                or ""
             )
+            profiles = [p for p in (row.get("profiles") or []) if isinstance(p, dict)]
+            if len(profiles) > 1:
+                names = ", ".join(str(p.get("name") or p.get("key") or "") for p in profiles)
+                base = f"{base} \u00b7 Profiles: {names}" if base else f"Profiles: {names}"
+            details.configure(text=base)
 
         listing.bind("<<TreeviewSelect>>", describe)
 
@@ -1577,10 +1627,16 @@ class SettingsWindow:
             ).pack(anchor="w", pady=10)
 
             def connect_source():
+                profiles = [p for p in (row.get("profiles") or []) if isinstance(p, dict)]
+                primary_profile = next((p.get("key") for p in profiles if p.get("key")), "default")
+                revision = row.get("revision")
+                if revision is None and profiles:
+                    revision = profiles[0].get("revision", 0)
                 body = {
                     "source": row["source"],
+                    "profile": primary_profile,
                     "operation": "connect",
-                    "revision": row.get("revision", 0),
+                    "revision": revision or 0,
                     "mode": "api" if api else "manual",
                     "secret" if api else "location": text.get(),
                 }
@@ -1648,10 +1704,16 @@ class SettingsWindow:
                 parent=window,
             ):
                 return
+            profiles = [p for p in (row.get("profiles") or []) if isinstance(p, dict)]
+            primary_profile = next((p.get("key") for p in profiles if p.get("key")), "default")
+            revision = row.get("revision")
+            if revision is None and profiles:
+                revision = profiles[0].get("revision", 0)
             body = {
                 "source": row["source"],
+                "profile": primary_profile,
                 "operation": "disable",
-                "revision": row.get("revision", 0),
+                "revision": revision or 0,
             }
             disconnect_button.configure(state="disabled")
 

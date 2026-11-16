@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from spend_app import claude_accounts, opencode_profiles
-from spend_app.connection_paths import LocationError, identity
+from spend_app.connection_paths import LocationError, _resolve, identity
 
 KEY = "connections.v2"
 V1_KEY = "connections.v1"
@@ -42,6 +42,10 @@ DEFAULT_TOOL_KEYS: dict[str, str] = {
     "antigravity_local": "antigravity",
     "muse_local": "muse",
 }
+
+
+class FolderInUse(ValueError):
+    """Raised when a resolved folder already belongs to another profile."""
 
 
 def supports_profiles(provider: str) -> bool:
@@ -97,6 +101,83 @@ def profile_key_for_folder(
     while f"{base}-{counter}" in used:
         counter += 1
     return f"{base}-{counter}"
+
+
+def _resolve_soft(raw: str | Path) -> Path:
+    path = Path(raw).expanduser()
+    try:
+        return _resolve(path, strict=False)
+    except (OSError, ValueError):
+        return path
+
+
+def _folder_identities(raw: str | Path | None, provider: str | None = None) -> set[str]:
+    """Return normalized identities for ``raw`` and its provider profile root."""
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return set()
+    resolved = _resolve_soft(raw)
+    ids = {identity(resolved)}
+    name = resolved.name.lower()
+    if provider in (None, "claude_local") and name in {"projects", "transcripts"}:
+        if resolved.parent != resolved:
+            ids.add(identity(resolved.parent))
+    if provider in (None, "codex_local") and name in {"sessions", "archived_sessions"}:
+        if resolved.parent != resolved:
+            ids.add(identity(resolved.parent))
+    if provider in (None, "opencode_local") and name.endswith((".db", ".sqlite", ".json")):
+        if resolved.parent != resolved:
+            ids.add(identity(resolved.parent))
+            if (
+                resolved.parent.name.lower() == "opencode"
+                and resolved.parent.parent != resolved.parent
+                and resolved.parent.parent.name.lower().startswith(".opencode-")
+            ):
+                ids.add(identity(resolved.parent.parent))
+    if provider in (None, "zcode_local") and len(resolved.parts) >= 3:
+        if tuple(part.lower() for part in resolved.parts[-3:]) == ("cli", "db", "db.sqlite"):
+            ids.add(identity(resolved.parents[2]))
+    return ids
+
+
+def assert_folder_free(
+    state: dict,
+    provider: str,
+    folder: str | Path,
+    exclude_key: str | None = None,
+) -> None:
+    """Raise ``FolderInUse`` when ``folder`` already belongs to another profile."""
+    target_ids = _folder_identities(folder, provider)
+    if not target_ids:
+        return
+
+    raw_profiles = (state or {}).get("profiles") or {}
+    for prov, provider_map in raw_profiles.items():
+        if not isinstance(provider_map, dict):
+            continue
+        for key, record in provider_map.items():
+            if prov == provider and exclude_key is not None and key == exclude_key:
+                continue
+            if not isinstance(record, dict):
+                continue
+            loc = record.get("location")
+            if not loc:
+                continue
+            if target_ids & _folder_identities(loc, prov):
+                raise FolderInUse("This folder is already used by another profile.")
+
+    raw_bindings = (state or {}).get("bindings") or {}
+    for prov, record in raw_bindings.items():
+        if prov in raw_profiles and isinstance(raw_profiles[prov], dict) and "default" in raw_profiles[prov]:
+            continue
+        if prov == provider and exclude_key == "default":
+            continue
+        if not isinstance(record, dict):
+            continue
+        loc = record.get("location")
+        if not loc:
+            continue
+        if target_ids & _folder_identities(loc, prov):
+            raise FolderInUse("This folder is already used by another profile.")
 
 
 def empty_state() -> dict:
@@ -529,7 +610,6 @@ def load_bindings_map(connection: sqlite3.Connection) -> dict[str, dict]:
     return {}
 
 
-
 def default_binding_from_records(records: dict[str, str], provider: str) -> dict | None:
     """Extract a provider's default binding from raw ``app_meta`` records."""
     raw_v2 = records.get(KEY)
@@ -659,10 +739,12 @@ def enabled_profiles(database_path: str | Path) -> list[Profile]:
 
 __all__ = (
     "DEFAULT_TOOL_KEYS",
+    "FolderInUse",
     "KEY",
     "MIGRATED_KEY",
     "Profile",
     "V1_KEY",
+    "assert_folder_free",
     "decode",
     "default_binding_from_records",
     "empty_state",
