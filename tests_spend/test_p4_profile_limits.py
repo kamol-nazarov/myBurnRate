@@ -1365,3 +1365,171 @@ def test_codex_read_rows_respects_default_vs_custom_or_disabled_binding(
     assert disabled_rows[("codex", "weekly")]["pct"] is None
     assert disabled_rows[("codex", "weekly")]["unit"] == "unavailable"
     assert "disabled" in disabled_rows[("codex", "weekly")]["label"]
+
+
+def test_extra_codex_quota_expires_at_read_time(tmp_path: Path) -> None:
+    """Ported review probe: expired extra Codex quota is masked at read time even when later poll returns []."""
+    work_sessions = tmp_path / "codex-work" / "sessions"
+    work_sessions.mkdir(parents=True, exist_ok=True)
+    db_path = _seed_profiles_db(
+        tmp_path / "spend.db",
+        {
+            "codex_local": {
+                "codex-work": _profile_record(
+                    "codex_local",
+                    "codex-work",
+                    name="Work",
+                    location=str(work_sessions),
+                    enabled=True,
+                    tool_key="codex-work",
+                ),
+            }
+        },
+    )
+    sample = QuotaSample(
+        provider_key="codex-work",
+        limit_key="weekly",
+        label="Codex weekly window",
+        unit="pct",
+        source="codex_local_telemetry",
+        pct=42.0,
+        resets_at=_iso(NOW + timedelta(hours=2)),
+        observed_at=_iso(NOW),
+        pool_id="codex",
+        scope=codex_quota.scope(work_sessions),
+    )
+    poll_quotas(db_path, collectors={"codex-work": lambda: [sample]}, now=lambda: _iso(NOW))
+
+    with connect(db_path) as conn:
+        fresh_rows = codex_quota.read_rows(conn, now=NOW)
+    fresh_work = next(r for r in fresh_rows if r["provider_key"] == "codex-work")
+    assert fresh_work["pct"] == 42.0
+
+    # Later poll after reset passes returns no fresh sample (extra lanes return []).
+    poll_quotas(db_path, collectors={"codex-work": lambda: []}, now=lambda: _iso(NOW + timedelta(days=1)))
+    with connect(db_path) as conn:
+        expired_rows = codex_quota.read_rows(conn, now=NOW + timedelta(days=1))
+    work = next(r for r in expired_rows if r["provider_key"] == "codex-work")
+    assert work["pct"] is None
+    assert work["unit"] == "unavailable"
+    assert work["resets_at"] is None
+    assert "expired" in work["label"]
+
+    snap = {p["key"]: p for p in limits.snapshot_limits(db_path, now=NOW + timedelta(days=1))["providers"]}
+    assert snap["codex-work"]["status"] == "unavailable"
+    assert snap["codex-work"]["windows"] == []
+
+
+def test_extra_codex_quota_validates_stale_root_disabled_and_removed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from spend_app.aggregate import _capacity_from_rows, _load_quota_rows
+
+    _freeze_codex_clock(monkeypatch)
+    monkeypatch.setattr("spend_app.quotas.datetime", FixedClock)
+    home = _isolate_default_poll_sources(tmp_path, monkeypatch)
+
+    default_sessions = home / ".codex" / "sessions"
+    work_sessions = tmp_path / "codex-work" / "sessions"
+    work_moved = tmp_path / "codex-work-moved" / "sessions"
+    studio_sessions = tmp_path / "studio-codex" / "sessions"
+    _write_codex_session(default_sessions, used_pct=15.0)
+    _write_codex_session(work_sessions, used_pct=42.0)
+    _write_codex_session(studio_sessions, used_pct=68.0)
+
+    db_path = _seed_profiles_db(
+        tmp_path / "spend.db",
+        {
+            "codex_local": {
+                "codex-work": _profile_record(
+                    "codex_local",
+                    "codex-work",
+                    name="Work",
+                    location=str(work_sessions),
+                    enabled=True,
+                    account_digest=_sha256("acct-work"),
+                    tool_key="codex-work",
+                ),
+                "studio": _profile_record(
+                    "codex_local",
+                    "studio",
+                    name="Studio",
+                    location=str(studio_sessions),
+                    enabled=True,
+                    account_digest=_sha256("acct-studio"),
+                    tool_key="studio-codex",
+                ),
+            }
+        },
+    )
+
+    poll_quotas(db_path, now=lambda: _iso(NOW))
+
+    with connect(db_path) as conn:
+        meta_keys = {
+            row[0]: json.loads(row[1])
+            for row in conn.execute(
+                "SELECT key, value FROM app_meta WHERE key LIKE ?",
+                (f"{codex_quota.KEY}%",),
+            )
+        }
+        assert codex_quota.KEY in meta_keys
+        assert f"{codex_quota.KEY}:codex-work" in meta_keys
+        assert f"{codex_quota.KEY}:studio-codex" in meta_keys
+        assert meta_keys[codex_quota.KEY]["scope"] == codex_quota.scope(default_sessions)
+        assert meta_keys[f"{codex_quota.KEY}:codex-work"]["scope"] == codex_quota.scope(work_sessions)
+        assert meta_keys[f"{codex_quota.KEY}:studio-codex"]["scope"] == codex_quota.scope(studio_sessions)
+
+        # Fresh read keeps all three lanes exact.
+        fresh = {r["provider_key"]: r for r in codex_quota.read_rows(conn, now=NOW)}
+        assert fresh["codex"]["pct"] == 15.0
+        assert fresh["codex-work"]["pct"] == 42.0
+        assert fresh["studio-codex"]["pct"] == 68.0
+
+        # 1) Stale (>6h) masks extra Codex rows even before reset passes.
+        stale = {r["provider_key"]: r for r in codex_quota.read_rows(conn, now=NOW + timedelta(hours=7))}
+        assert stale["codex"]["pct"] is None
+        assert stale["codex-work"]["pct"] is None
+        assert stale["codex-work"]["unit"] == "unavailable"
+        assert "six hours" in stale["codex-work"]["label"]
+        assert stale["studio-codex"]["pct"] is None
+        assert "six hours" in stale["studio-codex"]["label"]
+
+        cap_rows = _load_quota_rows(conn, now=NOW + timedelta(hours=7))
+        cap_cards = {c["providerKey"]: c for c in _capacity_from_rows(cap_rows, now=NOW + timedelta(hours=7), month_to_date={})}
+        assert cap_cards["codex-work"]["primaryPct"] is None
+
+        # 2) Root change on codex-work hides codex-work only; codex & studio-codex remain exact.
+        state = profile_store.load(conn)
+        state["profiles"]["codex_local"]["codex-work"]["location"] = str(work_moved)
+        conn.execute("UPDATE app_meta SET value=? WHERE key=?", (profile_store.encode(state), profile_store.KEY))
+        root_changed = {r["provider_key"]: r for r in codex_quota.read_rows(conn, now=NOW)}
+        assert root_changed["codex"]["pct"] == 15.0
+        assert root_changed["studio-codex"]["pct"] == 68.0
+        assert root_changed["codex-work"]["pct"] is None
+        assert root_changed["codex-work"]["unit"] == "unavailable"
+        assert "unverified" in root_changed["codex-work"]["label"]
+
+        # 3) Disabling codex-work masks it.
+        state["profiles"]["codex_local"]["codex-work"]["location"] = str(work_sessions)
+        state["profiles"]["codex_local"]["codex-work"]["enabled"] = False
+        conn.execute("UPDATE app_meta SET value=? WHERE key=?", (profile_store.encode(state), profile_store.KEY))
+        disabled = {r["provider_key"]: r for r in codex_quota.read_rows(conn, now=NOW)}
+        assert disabled["codex"]["pct"] == 15.0
+        assert disabled["studio-codex"]["pct"] == 68.0
+        assert disabled["codex-work"]["pct"] is None
+        assert disabled["codex-work"]["unit"] == "unavailable"
+        assert "disabled" in disabled["codex-work"]["label"]
+
+        # 4) Removing codex-work and studio-codex masks both while default codex remains exact.
+        state["profiles"]["codex_local"].pop("codex-work")
+        state["profiles"]["codex_local"].pop("studio")
+        conn.execute("UPDATE app_meta SET value=? WHERE key=?", (profile_store.encode(state), profile_store.KEY))
+        removed = {r["provider_key"]: r for r in codex_quota.read_rows(conn, now=NOW)}
+        assert removed["codex"]["pct"] == 15.0
+        assert removed["codex-work"]["pct"] is None
+        assert removed["codex-work"]["unit"] == "unavailable"
+        assert "removed" in removed["codex-work"]["label"]
+        assert removed["studio-codex"]["pct"] is None
+        assert removed["studio-codex"]["unit"] == "unavailable"
+        assert "removed" in removed["studio-codex"]["label"]
