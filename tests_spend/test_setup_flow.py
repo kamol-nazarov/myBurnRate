@@ -19,7 +19,7 @@ from spend_app.pricing import PricingEngine
 from spend_app.setup_wizard import setup_router
 
 ROOT = Path(__file__).resolve().parents[1]
-SETUP = {"X-BURNRATE-Request": "1"}
+SETUP = {"X-BURNRATE-Request": "1", "Origin": "http://testserver"}
 
 
 def iso(moment: datetime) -> str:
@@ -74,13 +74,13 @@ def test_set_up_later_stops_the_wizard_opening_on_every_launch(client: TestClien
 
 
 def test_signing_in_never_creates_an_account(client: TestClient) -> None:
-    unknown = client.post("/api/account/login", json={"username": "alex", "password": "long-enough-1"})
+    unknown = client.post("/api/account/login", headers=SETUP, json={"username": "alex", "password": "long-enough-1"})
     assert unknown.status_code == 401 and "invalid username or password" in unknown.json()["error"].lower()
-    short = client.post("/api/account/register", json={"username": "alex", "password": "short"})
+    short = client.post("/api/account/register", headers=SETUP, json={"username": "alex", "password": "short"})
     assert short.status_code == 422 and "12 characters" in short.json()["error"]
-    assert client.post("/api/account/register", json={"username": "alex", "password": "long-enough-1"}).status_code == 200
-    assert client.post("/api/account/login", json={"username": "alex", "password": "long-enough-1"}).status_code == 200
-    assert client.post("/api/account/login", json={"username": "alex", "password": "wrong-password"}).status_code == 401
+    assert client.post("/api/account/register", headers=SETUP, json={"username": "alex", "password": "long-enough-1"}).status_code == 200
+    assert client.post("/api/account/login", headers=SETUP, json={"username": "alex", "password": "long-enough-1"}).status_code == 200
+    assert client.post("/api/account/login", headers=SETUP, json={"username": "alex", "password": "wrong-password"}).status_code == 401
 
 
 def test_registering_from_the_wizard_checks_the_password_before_calling_the_hub(client: TestClient) -> None:
@@ -234,12 +234,14 @@ def test_the_hub_applies_a_plan_change_forwarded_by_a_spoke(client: TestClient, 
     _add_plan(settings, "Muse Code", "custom", "15")
     token = register_machine(settings.database_path, name="Laptop", os_name="win32")["token"]
     plan = client.get("/api/subscriptions").json()["plans"][0]
-    response = client.post("/api/account/subscriptions", headers={"Authorization": f"Bearer {token}"}, json={
+    response = client.post("/api/account/subscriptions", headers={"Authorization": f"Bearer {token}", "X-BURNRATE-Request": "1"}, json={
         "action": "plan", "operation": "end", "request_id": "spoke-end-muse", "plan_id": plan["id"],
         "expected_version": plan["version"], "end_date": "2026-10-26"})
     assert response.status_code == 403
-    session = client.post("/api/account/register", json={"username": "owner", "password": "synthetic-long-password", "sessionOnly": True}).json()["sessionToken"]
-    response = client.post("/api/account/subscriptions", headers={"Authorization": f"Bearer {session}"}, json={
+    registered = client.post("/api/account/register", headers=SETUP, json={"username": "owner", "password": "synthetic-long-password", "sessionOnly": True})
+    assert "sessionToken" not in registered.json()
+    session = registered.cookies["burnrate_access"]
+    response = client.post("/api/account/subscriptions", headers={"Authorization": f"Bearer {session}", "X-BURNRATE-Request": "1"}, json={
         "action": "plan", "operation": "end", "request_id": "spoke-end-muse", "plan_id": plan["id"],
         "expected_version": plan["version"], "end_date": "2026-10-26"})
     assert response.status_code == 200, response.text
@@ -248,13 +250,13 @@ def test_the_hub_applies_a_plan_change_forwarded_by_a_spoke(client: TestClient, 
 
 def test_a_hub_with_an_account_accepts_no_new_ones(client: TestClient, monkeypatch) -> None:
     monkeypatch.delenv("BURNRATE_ALLOW_REGISTRATION", raising=False)
-    assert client.post("/api/account/register", json={"username": "owner", "password": "long-enough-1"}).status_code == 200
-    stranger = client.post("/api/account/register", json={"username": "stranger", "password": "long-enough-2"})
+    assert client.post("/api/account/register", headers=SETUP, json={"username": "owner", "password": "long-enough-1"}).status_code == 200
+    stranger = client.post("/api/account/register", headers=SETUP, json={"username": "stranger", "password": "long-enough-2"})
     assert stranger.status_code == 403 and "pairing code" in stranger.json()["error"]
     # The owner registering again from another computer still signs in.
-    assert client.post("/api/account/register", json={"username": "owner", "password": "long-enough-1"}).status_code == 200
+    assert client.post("/api/account/register", headers=SETUP, json={"username": "owner", "password": "long-enough-1"}).status_code == 200
     monkeypatch.setenv("BURNRATE_ALLOW_REGISTRATION", "1")
-    assert client.post("/api/account/register", json={"username": "second", "password": "long-enough-3"}).status_code == 200
+    assert client.post("/api/account/register", headers=SETUP, json={"username": "second", "password": "long-enough-3"}).status_code == 200
 
 
 def test_there_is_no_built_in_hub_address(client: TestClient, monkeypatch) -> None:

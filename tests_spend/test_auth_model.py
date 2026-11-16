@@ -14,9 +14,10 @@ from spend_app.config import Settings
 from spend_app.db import connect, initialize
 
 ROOT = Path(__file__).resolve().parents[1]
-ORIGIN = "http://hub.test"
+ORIGIN = "https://hub.test"
+SETUP_TOKEN = "synthetic-setup-token-32-chars-00"
 PASSWORD = "synthetic-long-password"
-ADMIN = {"Authorization": "Bearer synthetic-break-glass"}
+ADMIN = {"Authorization": "Bearer synthetic-break-glass", "X-BURNRATE-Request": "1"}
 UI = {"Origin": ORIGIN, "X-BURNRATE-Request": "1"}
 
 
@@ -30,7 +31,7 @@ def settings_at(path):
 def hub(tmp_path, monkeypatch):
     monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "synthetic-break-glass")
-    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", "synthetic-setup")
+    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", SETUP_TOKEN)
     monkeypatch.setenv("BURNRATE_ALLOW_ADMIN_BEARER", "1")
     auth_throttle.reset()
     setup_wizard._GLOBAL_THROTTLE.reset()
@@ -44,8 +45,8 @@ def hub(tmp_path, monkeypatch):
 
 
 def owner(client):
-    result = client.post("/api/account/register", json={"username": "synthetic-owner", "password": PASSWORD,
-                         "setupToken": "synthetic-setup", "sessionOnly": True, "deviceLabel": "Synthetic browser"})
+    result = client.post("/api/account/register", headers=UI, json={"username": "synthetic-owner", "password": PASSWORD,
+                         "setupToken": SETUP_TOKEN, "sessionOnly": True, "deviceLabel": "Synthetic browser"})
     assert result.status_code == 200, result.text
     return result
 
@@ -62,7 +63,7 @@ def test_machine_reads_are_own_projection_and_other_actions_forbidden(hub):
     own = sync.register_machine(settings.database_path, name="Own computer")
     other = sync.register_machine(settings.database_path, name="PRIVATE-other-computer")
     mid, other_id = own["machine"]["id"], other["machine"]["id"]
-    headers = {"Authorization": "Bearer " + own["token"]}
+    headers = {"Authorization": "Bearer " + own["token"], "X-BURNRATE-Request": "1"}
     for path in ("/api/spend/usage", "/api/spend/summary", "/api/spend/entity"):
         response = client.get(path, params={"machine": mid, "kind": "tool", "key": "codex"}, headers=headers)
         assert response.status_code == 200
@@ -94,14 +95,14 @@ def test_machine_expired_and_revoked_are_401(hub, condition):
 def test_machine_rotation_is_atomic_requires_current_token_and_invalidates_old(hub):
     settings, client = hub
     reg = sync.register_machine(settings.database_path, name="Rotating device")
-    headers = {"Authorization": "Bearer " + reg["token"]}
+    headers = {"Authorization": "Bearer " + reg["token"], "X-BURNRATE-Request": "1"}
     with ThreadPoolExecutor(2) as pool:
         responses = list(pool.map(lambda _: client.post("/api/auth/machine/rotate", headers=headers, json={}), range(2)))
     assert sorted(r.status_code for r in responses) == [200, 401]
     replacement = next(r.json() for r in responses if r.status_code == 200)
     assert auth.parse(replacement["expiresAt"]) > auth.moment() + timedelta(days=89)
     assert client.post("/api/sync/push", headers=headers, json={}).status_code == 401
-    assert client.post("/api/auth/machine/rotate", headers={"Authorization": "Bearer br_m_invalid_synthetic"}, json={}).status_code == 401
+    assert client.post("/api/auth/machine/rotate", headers={"Authorization": "Bearer br_m_invalid_synthetic", "X-BURNRATE-Request": "1"}, json={}).status_code == 401
     assert client.post("/api/sync/push", headers={"Authorization": "Bearer " + replacement["token"]}, json={}).status_code == 200
     with connect(settings.database_path) as connection:
         row = sync._read_state(connection)["machines"][reg["machine"]["id"]]
@@ -112,36 +113,40 @@ def test_machine_rotation_is_atomic_requires_current_token_and_invalidates_old(h
 def test_login_cookie_foreign_origin_logout_and_reuse(hub):
     _, client = hub
     first = owner(client)
+    first_token = first.cookies[auth.COOKIE]
     client.cookies.clear()
-    login = client.post("/api/account/login", json={"username": "synthetic-owner", "password": PASSWORD, "sessionOnly": True})
+    login = client.post("/api/account/login", headers=UI, json={"username": "synthetic-owner", "password": PASSWORD, "sessionOnly": True})
     assert login.status_code == 200
+    assert "sessionToken" not in login.json()
     cookie = login.headers["set-cookie"].lower()
     assert "httponly" in cookie and "samesite=lax" in cookie and "path=/" in cookie
-    token = login.json()["sessionToken"]
+    token = login.cookies[auth.COOKIE]
     assert token != "synthetic-break-glass" and len(token) >= 43
-    assert client.post("/api/machines", headers={"Origin": "https://foreign.invalid"}, json={"name": "No"}).status_code == 403
-    assert client.post("/api/machines", headers={"Origin": "null"}, json={"name": "No"}).status_code == 403
+    assert client.post("/api/machines", headers={"Origin": "https://foreign.invalid", "X-BURNRATE-Request": "1"}, json={"name": "No"}).status_code == 403
+    assert client.post("/api/machines", headers={"Origin": "null", "X-BURNRATE-Request": "1"}, json={"name": "No"}).status_code == 403
     assert client.post("/api/machines", headers=UI, json={"name": "Yes"}).status_code == 200
     assert client.post("/api/auth/logout", headers=UI, json={}).status_code == 200
     assert client.get("/api/machines", headers={"Authorization": "Bearer " + token}).status_code == 401
     client.cookies.set(auth.COOKIE, token, path="/api")
     assert client.get("/api/machines").status_code == 401
-    assert client.get("/api/machines", headers={"Authorization": "Bearer " + first.json()["sessionToken"]}).status_code == 200
+    assert client.get("/api/machines", headers={"Authorization": "Bearer " + first_token}).status_code == 200
 
 
 def test_session_expiry_revocation_rotation_and_future_roles(hub):
     settings, client = hub
-    session = owner(client).json()
-    token = session["sessionToken"]
+    first = owner(client)
+    token = first.cookies[auth.COOKIE]
     rotated = client.post("/api/auth/session/rotate", headers=UI, json={})
     assert rotated.status_code == 200
+    assert "sessionToken" not in rotated.json()
+    new_token = rotated.cookies[auth.COOKIE]
     assert client.get("/api/machines", headers={"Authorization": "Bearer " + token}).status_code == 401
     current = rotated.json()
     revoked = client.post("/api/auth/sessions/revoke", headers=UI, json={"id": current["sessionId"]})
     assert revoked.status_code == 200
-    assert client.get("/api/machines", headers={"Authorization": "Bearer " + current["sessionToken"]}).status_code == 401
+    assert client.get("/api/machines", headers={"Authorization": "Bearer " + new_token}).status_code == 401
     client.cookies.clear()
-    login = client.post("/api/account/login", json={"username": "synthetic-owner", "password": PASSWORD, "sessionOnly": True}).json()
+    login = client.post("/api/account/login", headers=UI, json={"username": "synthetic-owner", "password": PASSWORD, "sessionOnly": True}).json()
     with connect(settings.database_path) as connection:
         connection.execute("UPDATE owner_sessions SET expires_at=? WHERE id=?", (auth.stamp(auth.moment() - timedelta(seconds=1)), login["sessionId"]))
     assert client.get("/api/machines").status_code == 401
@@ -189,7 +194,8 @@ def test_break_glass_bootstrap_automation_opt_out_and_rotation(hub, monkeypatch)
     monkeypatch.setenv("BURNRATE_ALLOW_ADMIN_BEARER", "0")
     assert client.get("/api/machines", headers=ADMIN).status_code == 401
     bootstrap = client.post("/api/auth/bootstrap", headers=ADMIN)
-    assert bootstrap.status_code == 200 and bootstrap.json()["sessionToken"].startswith("br_s_")
+    assert bootstrap.status_code == 200 and "sessionToken" not in bootstrap.json()
+    assert bootstrap.cookies[auth.COOKIE].startswith("br_s_")
     assert client.get("/api/machines").status_code == 200
     rotated = client.post("/api/auth/rotate", headers=UI).json()
     client.cookies.clear()
@@ -210,38 +216,39 @@ def test_pairing_expiry_single_use_host_binding_and_repair(hub):
     invitation = pairing(client)
     assert auth.moment() + timedelta(minutes=14) < auth.parse(invitation["expiresAt"]) <= auth.moment() + timedelta(minutes=15)
     payload = {"pairingCode": invitation["pairingCode"]}
-    assert client.post("/api/pairing/redeem", headers={"Host": "other.invalid"}, json=payload).status_code == 403
+    assert client.post("/api/pairing/redeem", headers={"Host": "other.invalid", "X-BURNRATE-Request": "1"}, json=payload).status_code == 403
     # Another allowed Host also fails: allowlisting is not grant binding.
-    assert client.post("/api/pairing/redeem", headers={"Host": "localhost"}, json=payload).status_code == 403
-    result = client.post("/api/pairing/redeem", json=payload)
+    assert client.post("/api/pairing/redeem", headers={"Host": "localhost", "X-BURNRATE-Request": "1"}, json=payload).status_code == 403
+    result = client.post("/api/pairing/redeem", headers=UI, json=payload)
     assert result.status_code == 200
     reg = result.json()
     assert auth.parse(reg["expiresAt"]) > auth.moment() + timedelta(days=89)
-    assert client.post("/api/pairing/redeem", json=payload).status_code == 403
+    assert client.post("/api/pairing/redeem", headers=UI, json=payload).status_code == 403
     sync.revoke_machine(settings.database_path, machine_id=reg["machine"]["id"])
     repaired = pairing(client, machineId=reg["machine"]["id"])
-    new = client.post("/api/pairing/redeem", json={"pairingCode": repaired["pairingCode"]})
+    new = client.post("/api/pairing/redeem", headers=UI, json={"pairingCode": repaired["pairingCode"]})
     assert new.status_code == 200 and new.json()["machine"]["id"] == reg["machine"]["id"]
     assert new.json()["token"] != reg["token"]
     expiring = pairing(client, name="Expiring device")
     with connect(settings.database_path) as connection:
         connection.execute("UPDATE pairing_grants SET expires_at=? WHERE used_at IS NULL", (auth.stamp(auth.moment() - timedelta(seconds=1)),))
-    assert client.post("/api/pairing/redeem", json={"pairingCode": expiring["pairingCode"]}).status_code == 403
+    assert client.post("/api/pairing/redeem", headers=UI, json={"pairingCode": expiring["pairingCode"]}).status_code == 403
 
 
 def test_pairing_concurrent_redemption_only_one_succeeds(hub):
     _, client = hub
     code = pairing(client)["pairingCode"]
     with ThreadPoolExecutor(2) as pool:
-        results = list(pool.map(lambda _: client.post("/api/pairing/redeem", json={"pairingCode": code}), range(2)))
+        results = list(pool.map(lambda _: client.post("/api/pairing/redeem", headers=UI, json={"pairingCode": code}), range(2)))
     assert sorted(r.status_code for r in results) == [200, 403]
 
 
 def test_audit_actor_exactly_once_append_only_and_no_credential_material(hub):
     settings, client = hub
-    session = owner(client).json()
+    first = owner(client)
+    first_token = first.cookies[auth.COOKIE]
     client.cookies.clear()
-    assert client.post("/api/account/login", json={"username": "synthetic-owner", "password": "synthetic-wrong-password"}).status_code == 401
+    assert client.post("/api/account/login", headers=UI, json={"username": "synthetic-owner", "password": "synthetic-wrong-password"}).status_code == 401
     reg = client.post("/api/machines", headers=ADMIN, json={"name": "Synthetic device"}).json()
     mid = reg["machine"]["id"]
     for action in ("rename", "revoke"):
@@ -254,7 +261,7 @@ def test_audit_actor_exactly_once_append_only_and_no_credential_material(hub):
         assert machine_audit["actor_type"] == "owner" and machine_audit["actor_id"] == "break-glass"
         assert any(row["action"] == "login" and row["outcome"] == "failure" and row["actor_type"] == "unauthenticated" for row in rows)
         material = json.dumps(rows)
-        assert all(secret not in material for secret in (PASSWORD, session["sessionToken"], reg["token"], "synthetic-break-glass", "synthetic-owner"))
+        assert all(secret not in material for secret in (PASSWORD, first_token, reg["token"], "synthetic-break-glass", "synthetic-owner"))
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):
             connection.execute("DELETE FROM admin_audit")
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):
@@ -289,4 +296,4 @@ def test_legacy_migration_once_and_055_spoke_push_without_new_setup_token(tmp_pa
         assert connection.execute("SELECT count(*) FROM admin_audit").fetchone()[0] == count == 1
     with TestClient(create_app(settings, enable_scheduler=False), base_url=ORIGIN) as client:
         assert client.post("/api/sync/push", headers={"Authorization": "Bearer " + token}, json={"machine": {"name": "Legacy"}, "usageEvents": [], "sessions": [], "agentRuns": []}).status_code == 200
-        assert client.post("/api/account/login", json={"username": "synthetic-owner", "password": PASSWORD, "sessionOnly": True}).status_code == 200
+        assert client.post("/api/account/login", headers=UI, json={"username": "synthetic-owner", "password": PASSWORD, "sessionOnly": True}).status_code == 200

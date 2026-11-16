@@ -16,7 +16,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from spend_app import aggregate, auth_throttle
@@ -269,6 +269,14 @@ def _throttled(retry_after: int) -> JSONResponse:
 
 async def _bounded_json(request: Request, limit: int = 65536) -> dict:
     """Read a small JSON object without letting an anonymous body exhaust memory."""
+    if request.headers.get("x-burnrate-request") != "1":
+        raise HTTPException(
+            status_code=403,
+            detail="Request rejected: use the configured BURNRATE origin.",
+        )
+    content_type = request.headers.get("content-type", "").split(";")[0].strip().lower()
+    if content_type != "application/json":
+        raise HTTPException(status_code=415, detail="Use application/json.")
     declared = request.headers.get("content-length", "")
     if declared.isdigit() and int(declared) > limit:
         raise ValueError("Request too large.")
@@ -293,7 +301,12 @@ def _setup_token_allowed(request: Request, body: dict) -> bool:
         request.headers.get("x-burnrate-setup-token", "")
         or str(body.get("setupToken") or "")
     ).strip()
-    return bool(supplied) and hmac.compare_digest(supplied, expected)
+    if not supplied:
+        return False
+    return hmac.compare_digest(
+        hashlib.sha256(supplied.encode("utf-8")).digest(),
+        hashlib.sha256(expected.encode("utf-8")).digest(),
+    )
 
 
 def _setup_token_required_message() -> str:
@@ -563,12 +576,14 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
     spoke = state.get("spokeConfig") or {}
     if state.get("role") != "spoke" or not spoke.get("enabled"):
         return None
-    hub_url = str(spoke.get("hubUrl") or "").strip().rstrip("/")
+    configured_hub_url = str(spoke.get("hubUrl") or "").strip().rstrip("/")
     token = str(spoke.get("token") or "").strip()
-    if not hub_url or not token:
+    if not configured_hub_url or not token:
         return None
-    resolved_client = client or _HUB_TEST_CLIENTS.get(hub_url)
+    from spend_app.pairing import hub_origin
     try:
+        hub_url = hub_origin(configured_hub_url)
+        resolved_client = client or _HUB_TEST_CLIENTS.get(hub_url)
         result = sync_once(
             settings,
             pricing,
@@ -584,7 +599,7 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
         with connect(settings.database_path) as connection:
             connection.execute("BEGIN IMMEDIATE")
             latest = read_setup_state(connection)
-            if latest["spokeConfig"].get("token") != token or latest["spokeConfig"].get("hubUrl") != hub_url:
+            if latest["spokeConfig"].get("token") != token or str(latest["spokeConfig"].get("hubUrl") or "").strip().rstrip("/") != configured_hub_url:
                 return {"ok": False, "error": "Pairing changed; retry sync with the current configuration."}
             latest["spokeConfig"]["lastSyncAt"] = utc_now()
             latest["spokeConfig"]["lastSyncError"] = None
@@ -600,7 +615,7 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
         with connect(settings.database_path) as connection:
             connection.execute("BEGIN IMMEDIATE")
             latest = read_setup_state(connection)
-            if latest["spokeConfig"].get("token") != token or latest["spokeConfig"].get("hubUrl") != hub_url:
+            if latest["spokeConfig"].get("token") != token or str(latest["spokeConfig"].get("hubUrl") or "").strip().rstrip("/") != configured_hub_url:
                 return {"ok": False, "error": "Pairing changed; retry sync with the current configuration."}
             latest["spokeConfig"]["lastSyncError"] = str(exc)[:240]
             write_setup_state(connection, latest)
@@ -672,34 +687,51 @@ def _call_central_server_account(
     server_url: str,
     endpoint_path: str,
     payload: dict,
-) -> tuple[str, dict]:
+) -> tuple[str, dict, str]:
     """Call `/api/account/register` or `/api/account/login` on the central server with fallback."""
     clean_primary = (server_url or "").strip().rstrip("/") or default_central_server_url()
     if not clean_primary:
         raise ValueError("Enter your hub's address, or join with a pairing code instead.")
-    candidates = [clean_primary]
-    for fallback in DEFAULT_CENTRAL_SERVER_URLS:
-        if clean_primary in DEFAULT_CENTRAL_SERVER_URLS and fallback not in candidates:
-            candidates.append(fallback)
+    from spend_app.pairing import hub_origin
 
+    clean_primary = hub_origin(clean_primary)
+    raw_candidates = [clean_primary]
+    for fallback in DEFAULT_CENTRAL_SERVER_URLS:
+        if clean_primary in DEFAULT_CENTRAL_SERVER_URLS and fallback not in raw_candidates:
+            raw_candidates.append(fallback)
+    candidates = [hub_origin(candidate) for candidate in raw_candidates]
+
+    headers = {"X-BURNRATE-Request": "1", "Content-Type": "application/json"}
+    from spend_app.auth_model import extract_cookie
     last_error = "Could not reach central account server."
     for base_url in candidates:
         test_client = _HUB_TEST_CLIENTS.get(base_url)
         try:
             if test_client is not None:
-                res = test_client.post(endpoint_path, json=payload)
+                cookies = getattr(test_client, "cookies", None)
+                saved_jar = list(cookies.jar) if cookies is not None and hasattr(cookies, "jar") else None
+                if cookies is not None:
+                    cookies.clear()
+                try:
+                    res = test_client.post(endpoint_path, json=payload, headers=headers)
+                finally:
+                    if cookies is not None and saved_jar is not None:
+                        cookies.clear()
+                        for cookie in saved_jar:
+                            cookies.jar.set_cookie(cookie)
             else:
                 import httpx
 
                 with httpx.Client(timeout=8.0, trust_env=False) as http:
-                    res = http.post(f"{base_url}{endpoint_path}", json=payload)
+                    res = http.post(f"{base_url}{endpoint_path}", json=payload, headers=headers)
             data = res.json() if res.content else {}
             if res.status_code >= 400:
                 err_msg = data.get("error") if isinstance(data, dict) else None
                 raise ValueError(err_msg or f"Server returned HTTP {res.status_code}")
-            if not isinstance(data, dict) or not (data.get("token") or data.get("sessionToken")):
+            session_token = extract_cookie(res)
+            if not isinstance(data, dict) or not session_token:
                 raise ValueError("Invalid response from central account server.")
-            return base_url, data
+            return base_url, data, session_token
         except ValueError:
             raise
         except Exception as exc:
@@ -1023,6 +1055,10 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     first_account = not accounts["users"]
                     if first_account and central_server_for_accounts():
                         if not _setup_token_allowed(request, body):
+                            global_retry = _GLOBAL_THROTTLE.fail(global_key)
+                            retry = auth_throttle.fail(key)
+                            if global_retry or retry:
+                                return _throttled(max(global_retry, retry))
                             return JSONResponse(
                                 {"error": _setup_token_required_message()},
                                 status_code=403,
@@ -1033,6 +1069,10 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                         ).fetchone())
                         if (protected and not request.state.principal.permits("credentials.manage")
                                 and not _setup_token_allowed(request, body)):
+                            global_retry = _GLOBAL_THROTTLE.fail(global_key)
+                            retry = auth_throttle.fail(key)
+                            if global_retry or retry:
+                                return _throttled(max(global_retry, retry))
                             return JSONResponse({"error": "Bootstrap authorization required."}, status_code=403)
                     salt_hex, hash_hex = _hash_password(password)
                     accounts["users"][user_key] = {
@@ -1063,26 +1103,21 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 request.state.principal = actor
                 session = create_session(connection, actor, str(body.get("deviceLabel") or computer_name))
 
-            if body.get("sessionOnly"):
-                from spend_app.auth_model import set_session_cookie
-                return set_session_cookie(JSONResponse({"ok": True, **session}), request, session)
-            reg = register_or_reconnect_machine(
-                settings.database_path,
-                name=computer_name,
-                os_name=os_name,
-                actor=actor,
-            )
             from spend_app.auth_model import set_session_cookie
+            public_session = {"sessionId": session["sessionId"], "expiresAt": session["expiresAt"]}
+            if body.get("sessionOnly"):
+                return set_session_cookie(
+                    JSONResponse({"ok": True, **public_session}, headers={"Cache-Control": "no-store"}),
+                    request,
+                    session,
+                )
             aggregate.reset_memo()
             return set_session_cookie(JSONResponse(
                 {
                     "ok": True,
-                    **session,
+                    **public_session,
                     "account": {"username": username},
                     "addedPlans": added_plans,
-                    "machine": reg["machine"],
-                    "token": reg["token"],
-                    "machines": reg["machines"],
                     "subscriptions": plans_out,
                 },
                 headers={"Cache-Control": "no-store"},
@@ -1176,25 +1211,20 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 request.state.principal = actor
                 session = create_session(connection, actor, str(body.get("deviceLabel") or computer_name))
 
-            if body.get("sessionOnly"):
-                from spend_app.auth_model import set_session_cookie
-                return set_session_cookie(JSONResponse({"ok": True, **session}), request, session)
-            reg = register_or_reconnect_machine(
-                settings.database_path,
-                name=computer_name,
-                os_name=os_name,
-                actor=actor,
-            )
             from spend_app.auth_model import set_session_cookie
+            public_session = {"sessionId": session["sessionId"], "expiresAt": session["expiresAt"]}
+            if body.get("sessionOnly"):
+                return set_session_cookie(
+                    JSONResponse({"ok": True, **public_session}, headers={"Cache-Control": "no-store"}),
+                    request,
+                    session,
+                )
             aggregate.reset_memo()
             return set_session_cookie(JSONResponse(
                 {
                     "ok": True,
-                    **session,
+                    **public_session,
                     "account": {"username": display_username},
-                    "machine": reg["machine"],
-                    "token": reg["token"],
-                    "machines": reg["machines"],
                     "subscriptions": plans_out,
                 },
                 headers={"Cache-Control": "no-store"},
@@ -1256,7 +1286,12 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             spoke = state["spokeConfig"]
             if state.get("role") != "spoke" or not spoke.get("enabled"):
                 return JSONResponse({"error": "Pair this computer first."}, status_code=409)
-            _, remote = _call_central_server_account(spoke["hubUrl"], "/api/account/login", {
+            from spend_app.pairing import hub_origin
+            try:
+                validated_hub_url = hub_origin(str(spoke.get("hubUrl") or ""))
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=422)
+            _, remote, owner_session = _call_central_server_account(validated_hub_url, "/api/account/login", {
                 "username": str(body.get("username") or ""), "password": str(body.get("password") or ""),
                 "sessionOnly": True, "deviceLabel": state.get("computerName") or "Paired computer",
             })
@@ -1265,7 +1300,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 state = read_setup_state(connection)
                 if state["spokeConfig"].get("hubUrl") != spoke.get("hubUrl"):
                     return JSONResponse({"error": "Hub changed during sign-in. Retry on the selected hub."}, status_code=409)
-                state["spokeConfig"]["ownerSession"] = remote["sessionToken"]
+                state["spokeConfig"]["ownerSession"] = owner_session
                 state["spokeConfig"]["ownerSessionExpiresAt"] = remote["expiresAt"]
                 write_setup_state(connection, state)
                 from spend_app.auth_model import create_local_session, set_local_cookie
@@ -1286,8 +1321,12 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
         spoke = state["spokeConfig"]
         if state.get("role") != "spoke" or not spoke.get("enabled"):
             return JSONResponse({"error": "Pair this computer first."}, status_code=409)
-        headers = {"Authorization": "Bearer " + str(spoke.get("token") or "")}
-        hub_url = spoke["hubUrl"]
+        headers = {"Authorization": "Bearer " + str(spoke.get("token") or ""), "X-BURNRATE-Request": "1", "Content-Type": "application/json"}
+        from spend_app.pairing import hub_origin
+        try:
+            hub_url = hub_origin(str(spoke.get("hubUrl") or ""))
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=422)
         from spend_app.sync import read_sync_cursor
         prior_generation = read_sync_cursor(settings.database_path, hub_url).get("generation")
         client = _HUB_TEST_CLIENTS.get(hub_url)
@@ -1337,7 +1376,12 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             if mode == "register" and len(password) < MIN_PASSWORD_LENGTH:
                 raise ValueError(f"Choose a password of at least {MIN_PASSWORD_LENGTH} characters.")
             computer_name = str(body.get("computerName") or "").strip() or _default_computer_name()
-            server_url = str(body.get("serverUrl") or "").strip() or default_central_server_url()
+            raw_server_url = str(body.get("serverUrl") or "").strip() or default_central_server_url()
+            if not raw_server_url:
+                raise ValueError("Enter your hub's address, or join with a pairing code instead.")
+            from spend_app.pairing import hub_origin
+
+            server_url = hub_origin(raw_server_url)
             setup_token = str(body.get("setupToken") or "").strip()
             preset_keys = [str(k) for k in (body.get("presetKeys") or []) if k]
             custom_plans = list(body.get("customPlans")) if isinstance(body.get("customPlans"), list) else []
@@ -1370,12 +1414,51 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             previous_spoke = previous["spokeConfig"]
             reuse_machine = (mode == "login" and previous.get("role") == "spoke"
                             and previous_spoke.get("enabled")
-                            and str(previous_spoke.get("hubUrl") or "").rstrip("/") == server_url.rstrip("/"))
+                            and str(previous_spoke.get("hubUrl") or "").rstrip("/").lower() == server_url)
             if reuse_machine:
                 remote_payload["sessionOnly"] = True
-            working_url, remote_data = _call_central_server_account(server_url, endpoint, remote_payload)
-            token = str(remote_data.get("token") or (previous_spoke.get("token") if reuse_machine else "") or "").strip()
-            machine = remote_data.get("machine") or ({"id": previous["account"].get("machineId")} if reuse_machine else {})
+            working_url, remote_data, owner_session = _call_central_server_account(server_url, endpoint, remote_payload)
+            working_url = hub_origin(working_url)
+            if reuse_machine:
+                token = str(previous_spoke.get("token") or "").strip()
+                machine = {"id": previous["account"].get("machineId")}
+                machines_list = []
+            else:
+                reg_headers = {
+                    "Authorization": f"Bearer {owner_session}",
+                    "X-BURNRATE-Request": "1",
+                    "Content-Type": "application/json",
+                }
+                reg_payload = {"action": "register", "name": computer_name, "os": sys.platform}
+                reg_client = _HUB_TEST_CLIENTS.get(working_url)
+                try:
+                    if reg_client is not None:
+                        cookies = getattr(reg_client, "cookies", None)
+                        saved_jar = list(cookies.jar) if cookies is not None and hasattr(cookies, "jar") else None
+                        if cookies is not None:
+                            cookies.clear()
+                        try:
+                            reg_res = reg_client.post("/api/machines", json=reg_payload, headers=reg_headers)
+                        finally:
+                            if cookies is not None and saved_jar is not None:
+                                cookies.clear()
+                                for cookie in saved_jar:
+                                    cookies.jar.set_cookie(cookie)
+                    else:
+                        import httpx
+                        with httpx.Client(timeout=8.0, trust_env=False) as http:
+                            reg_res = http.post(f"{working_url}/api/machines", json=reg_payload, headers=reg_headers)
+                except Exception as exc:
+                    raise ValueError(f"Could not register computer with hub ({working_url}): {exc}") from exc
+                reg_data = reg_res.json() if reg_res.content else {}
+                if reg_res.status_code >= 400:
+                    err_msg = reg_data.get("error") if isinstance(reg_data, dict) else None
+                    raise ValueError(err_msg or f"Server returned HTTP {reg_res.status_code}")
+                if not isinstance(reg_data, dict) or not str(reg_data.get("token") or "").strip():
+                    raise ValueError("Invalid machine registration response from hub.")
+                token = str(reg_data["token"]).strip()
+                machine = reg_data.get("machine") or {}
+                machines_list = reg_data.get("machines") or []
             remote_subs = remote_data.get("subscriptions") if isinstance(remote_data.get("subscriptions"), list) else []
             account_info = remote_data.get("account") if isinstance(remote_data.get("account"), dict) else {"username": username}
 
@@ -1425,7 +1508,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 state["spokeConfig"] = {
                     "hubUrl": working_url,
                     "token": token,
-                    "ownerSession": str(remote_data.get("sessionToken") or ""),
+                    "ownerSession": owner_session,
                     "ownerSessionExpiresAt": remote_data.get("expiresAt"),
                     "enabled": True,
                     "lastSyncAt": utc_now() if sync_result and sync_result.get("ok") else state["spokeConfig"].get("lastSyncAt"),
@@ -1445,7 +1528,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     "account": state["account"],
                     "setup": public_setup_state(saved),
                     "subscriptions": remote_subs or local_subs,
-                    "machines": remote_data.get("machines") or [],
+                    "machines": machines_list,
                     "syncResult": sync_result,
                 },
                 headers={"Cache-Control": "no-store"},
@@ -1509,18 +1592,21 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 raise ValueError("Expected a JSON object.")
             pairing_code = str(body.get("pairingCode") or "").strip()
             paired_id = ""
+            from spend_app.pairing import exchange_remote, hub_origin
             if pairing_code:
                 decoded = decode_pairing_code(pairing_code)
-                hub_url = str(decoded["hubUrl"]).strip().rstrip("/")
-                from spend_app.pairing import exchange_remote
+                hub_url = hub_origin(str(decoded["hubUrl"]))
                 redeemed = exchange_remote(hub_url, pairing_code)
                 token = str(redeemed["token"]).strip()
                 decoded["machineId"] = redeemed["machine"]["id"]
                 default_name = str(decoded.get("machineName") or "")
                 paired_id = str(decoded.get("machineId") or "")
             else:
-                hub_url = str(body.get("hubUrl") or "").strip().rstrip("/")
+                raw_hub_url = str(body.get("hubUrl") or "").strip()
                 token = str(body.get("token") or "").strip()
+                if not raw_hub_url and not token:
+                    raise ValueError("Provide a Pairing Code (brpair_...) or both Hub URL and Token.")
+                hub_url = hub_origin(raw_hub_url) if raw_hub_url else ""
                 default_name = ""
             if not hub_url or not token:
                 raise ValueError("Provide a Pairing Code (brpair_...) or both Hub URL and Token.")
@@ -1598,6 +1684,8 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 },
                 headers={"Cache-Control": "no-store"},
             )
+        except HTTPException:
+            raise
         except Exception as exc:
             return JSONResponse({"error": str(exc)}, status_code=422)
 

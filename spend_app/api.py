@@ -10,7 +10,7 @@ from contextlib import ExitStack, asynccontextmanager
 from datetime import UTC, datetime
 from importlib.resources import as_file, files
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
@@ -24,6 +24,9 @@ from spend_app.native_launch import locked_binary
 
 
 ASSET_IMMUTABLE_CACHE = "public, max-age=31536000, immutable"
+
+
+from spend_app.db import UserFacingError  # re-exported
 ASSET_REVALIDATE_CACHE = "no-cache"
 GZIP_MINIMUM_SIZE = 1024
 ASSET_SETTLE_SECONDS = 5
@@ -268,7 +271,7 @@ def create_app(
                 finally:
                     resource_stack.close()
 
-    app = FastAPI(title="BURNRATE", version=__version__, lifespan=lifespan)
+    app = FastAPI(title="BURNRATE", version=__version__, lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.history_demand = history_demand
     app.state.scheduler = scheduler
     app.state.collector_worker = getattr(scheduler, "collector_worker", None)
@@ -335,6 +338,10 @@ def create_app(
     from spend_app.connection_api import central_server
 
     _central = central_server()
+    if _central:
+        _setup_token = os.getenv("BURNRATE_SETUP_TOKEN", "").strip()
+        if _setup_token and len(_setup_token) < 32:
+            raise RuntimeError("BURNRATE_SETUP_TOKEN must be at least 32 characters.")
     with connect(settings.database_path) as connection:
         _protected = bool(_access_token or connection.execute(
             "SELECT 1 FROM app_meta WHERE key='auth.break_glass.v1'"
@@ -422,7 +429,6 @@ def create_app(
         if not csrf_mutation_allowed(request, bearer_ok=bearer_ok):
             return await recorded(boundary_error(403, "Request rejected: use the configured BURNRATE origin."))
         if (principal.via == "cookie" and request.method not in {"GET", "HEAD", "OPTIONS"}
-                and request.url.path not in {"/api/account/login", "/api/account/register"}
                 and (not trusted(request) or urlsplit(request.headers.get("origin", "")).scheme != request.url.scheme)):
             return await recorded(boundary_error(403, "Cookie mutations require the same origin."))
         protected = _protected
@@ -435,21 +441,31 @@ def create_app(
         if principal.kind == "machine" and request.method in {"GET", "HEAD"} and request.url.path in _MACHINE_READ_PATHS:
             data = await asyncio.to_thread(scoped_machine_read, settings, pricing, principal, request)
             return JSONResponse(data, headers={"Cache-Control": "no-store"})
-        response = await call_next(request)
         if request.method == "GET" and request.url.path in {"/", "/hud", "/setup"}:
             candidate = request.query_params.get("token", "").strip()
-            if candidate and trusted(request, mutation=False) and await asyncio.to_thread(
-                    break_glass_matches, settings.database_path, candidate, _access_token):
-                with connect(settings.database_path) as connection:
-                    actor = Principal("owner", "break-glass", "owner", via="break-glass")
-                    data = create_session(connection, actor, "Bootstrap browser", subject_id=owner_id(connection))
-                    audit(connection, actor, "login", "bootstrap")
-                set_session_cookie(response, request, data)
+            if candidate:
+                remaining = [(k, v) for k, v in request.query_params.multi_items() if k != "token"]
+                clean_url = request.url.path + ("?" + urlencode(remaining) if remaining else "")
+                if principal.kind != "unauthenticated":
+                    return await recorded(RedirectResponse(clean_url, status_code=303))
+                if trusted(request, mutation=False) and await asyncio.to_thread(
+                        break_glass_matches, settings.database_path, candidate, _access_token):
+                    with connect(settings.database_path) as connection:
+                        actor = Principal("owner", "break-glass", "owner", via="break-glass")
+                        data = create_session(connection, actor, "Bootstrap browser", subject_id=owner_id(connection))
+                        audit(connection, actor, "login", "bootstrap")
+                    redirect = RedirectResponse(clean_url, status_code=303)
+                    set_session_cookie(redirect, request, data)
+                    return await recorded(redirect)
+        response = await call_next(request)
         return await recorded(response)
 
     @app.exception_handler(ValueError)
     async def value_error_handler(_request, exc: ValueError):
-        return JSONResponse(status_code=400, content={"error": str(exc)})
+        if isinstance(exc, UserFacingError):
+            return JSONResponse(status_code=400, content={"error": str(exc)})
+        logging.getLogger("burnrate.api").exception("Unhandled ValueError in request handler")
+        return JSONResponse(status_code=400, content={"error": "invalid_request"})
 
     def _window_or_400(window: str) -> str:
         if window not in SPEND_WINDOWS:

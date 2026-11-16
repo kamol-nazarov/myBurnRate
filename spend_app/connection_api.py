@@ -92,7 +92,7 @@ def access_allowed(
         principal = (Principal("machine", machine_id) if machine_id else
                      Principal("owner", "break-glass", "owner", via="break-glass")
                      if isinstance(token, str) and _bearer_matches(request, token) else Principal())
-    if request.url.path in _PUBLIC_ACCOUNT_PATHS:
+    if request.url.path in _PUBLIC_ACCOUNT_PATHS and getattr(request, "method", "GET") == "POST":
         return True
     if not request.url.path.startswith("/api/"):
         return True
@@ -119,8 +119,6 @@ def access_allowed(
 def csrf_mutation_allowed(request, *, bearer_ok: bool = False) -> bool:
     """Reject cross-origin CSRF and DNS-rebinding mutations across all /api/* routes."""
     if getattr(request, "method", "GET") in {"GET", "HEAD", "OPTIONS"} or not request.url.path.startswith("/api/"):
-        return True
-    if request.url.path in _PUBLIC_ACCOUNT_PATHS:
         return True
     if bearer_ok:
         return True

@@ -21,6 +21,10 @@ from spend_app.subscriptions import (
 
 SCHEMA_VERSION = 12
 
+
+class UserFacingError(ValueError):
+    """Validation error whose message is safe to return to the client."""
+
 EXACT_USAGE_SOURCES = ("codex_local", "openai_admin", "claude_local", "anthropic_admin")
 
 SCHEMA_SQL = """
