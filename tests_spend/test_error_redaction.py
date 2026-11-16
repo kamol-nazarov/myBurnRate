@@ -1699,3 +1699,34 @@ def test_adversarial_long_inputs_finish_linearly() -> None:
         redact(payload)
         elapsed = time.perf_counter() - t0
         assert elapsed < 0.5, f"{label} took {elapsed:.3f}s"
+
+def test_whitespace_only_line_over_limit_preserves_crossline_pending(tmp_path: Path) -> None:
+    spaces_line = " " * 8193
+    payload = f"password:\n{spaces_line}\nAb9SensitiveValue"
+    cleaned = redact(payload)
+    assert cleaned == f"password:\n{spaces_line}\n[redacted]"
+    assert "Ab9SensitiveValue" not in cleaned
+
+    assert source_evidence.sanitize_reason(payload) == "password:"
+    assert source_evidence.source_reason_text(payload) == "password:"
+
+    settings = _settings(tmp_path, "blank_over_limit.db")
+    initialize(settings.database_path)
+    with connect(settings.database_path) as conn:
+        run = IngestRun.start(conn, "codex_local")
+        run.finish(status="failed", error=payload)
+        stored = conn.execute(
+            "SELECT error FROM ingest_runs WHERE id=?", (run.id,)
+        ).fetchone()[0]
+    assert "Ab9SensitiveValue" not in stored
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "dashboard.log").write_text(payload + "\n", encoding="utf-8")
+    report = support_report.build_report(settings, log_dir=logs)
+    assert "Ab9SensitiveValue" not in report
+    assert "password:\n" in report
+
+    # Non-blank line over 8192 chars is omitted and clears pending state
+    non_blank_omitted = "password:\n" + ("x" * 8193) + "\nAb9SensitiveValue"
+    assert redact(non_blank_omitted) == "password:\n[line omitted]\nAb9SensitiveValue"

@@ -259,11 +259,11 @@ def redact(
 
         total_bytes += line_bytes + sep_bytes
 
-        if len(line) > _MAX_LINE_CHARS:
+        if not line.strip():
+            scrubbed_line = line
+        elif len(line) > _MAX_LINE_CHARS:
             scrubbed_line = "[line omitted]"
             expect_crossline_secret = False
-        elif not line.strip():
-            scrubbed_line = line
         else:
             working_line = line
             if expect_crossline_secret:
