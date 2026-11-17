@@ -39,8 +39,8 @@ Optional keys in `.env` (all empty by default — copy `.env.example` to `.env` 
 | `DEEPSEEK_BALANCE_KEY` | DeepSeek key for the balance card (prefer connecting it in setup's **Plans & balances**) |
 | `BURNRATE_ACCESS_TOKEN` | Bootstrap/break-glass credential and explicitly configured legacy bearer automation. Normal UI uses a 30-day owner session at `/auth`. Rotation persists only a hash and invalidates the old environment value |
 | `BURNRATE_ALLOW_ADMIN_BEARER` | Default `0` restricts the static credential to `/api/auth/bootstrap` and `/api/auth/rotate`. Set `1` only when automation must use the static bearer for other API calls |
-| `BURNRATE_SETUP_TOKEN` | One-time token required to create the first account on a hub |
-| `BURNRATE_ALLOW_REGISTRATION` | Deprecated; hubs accept registration only while zero accounts exist |
+| `BURNRATE_HUB_ALLOW_PUBLIC` | Hub mode only (`BURNRATE_CENTRAL_SERVER=1`): set to `1` to allow binding to a public/wildcard interface instead of loopback, RFC 1918, or Tailscale interfaces |
+| `BURNRATE_TRUSTED_PROXIES` | Comma-separated reverse-proxy IPs or CIDRs whose `X-Forwarded-For` / `X-Forwarded-Proto` headers are trusted (falls back to `FORWARDED_ALLOW_IPS`, default `127.0.0.1,::1`; wildcards `*`, `0.0.0.0/0`, `::/0` are rejected; `none` disables) |
 | `BURNRATE_HUB_URL` | Optional hub address override (e.g. in `%LOCALAPPDATA%\BURNRATE\.env` for testing). Takes precedence over the build-time address in `spend_app/_build_config.py` |
 | `BURNRATE_HUB_SSH` / `BURNRATE_HUB_PATH` / `BURNRATE_HUB_SERVICE` | Defaults for `burnrate hub update` |
 | `BURNRATE_DESKTOP_NOTIFICATIONS` | Desktop notifications from the desktop service; `0` turns them off (the CLI never sends them) |
@@ -86,17 +86,21 @@ BURNRATE never turns on Tailscale, Serve or Funnel. To reach the HUD from your t
 
 ## Hub authentication migration
 
-No new dependency is required. Sessions last 30 days and machine tokens last 90 days (fixed policy
-constants). `machines.v1` and `accounts.v1` migrate automatically, in one transaction with marker
-`auth_model.v1`. The obsolete `pairing_grants` table is dropped automatically on upgrade; computers
+No new dependency is required. Sessions last 30 days; machine tokens last 90 days;
+these durations are fixed policy constants.
+`machines.v1` and `accounts.v1` migrate automatically, in one transaction with marker `auth_model.v1`.
+The obsolete `pairing_grants` table is dropped automatically on upgrade; computers
 that were already paired keep their machine tokens and keep syncing.
 Legacy machine hashes are retained; expiry is the original `created_at` plus 180 days (not 180 days
-from upgrade), with `rotation_required=true`. Account password hashes and creation dates stay intact;
-stable IDs and owner roles are added.
+from upgrade), with `rotation_required=true`. A token already older than that needs reconnection.
+Account password hashes and creation dates stay intact; stable IDs and owner roles are added.
 
-The hub never asks an existing owner for the setup token again. Old 0.5.5 spokes can still push
+The hub never asks an existing owner for a setup token (`BURNRATE_SETUP_TOKEN` and
+`BURNRATE_ALLOW_REGISTRATION` are deprecated and ignored). Old 0.5.5 spokes can still push
 with unexpired migrated tokens, but must upgrade/sign in for hub-wide reads. `/auth` on a spoke
 stores a separate owner session server-side; it is excluded from public setup state and diagnostics.
-Spokes automatically rotate their machine token before expiry; an expired or revoked computer signs
-in again to re-register and resend a fresh usage snapshot.
+Use **Rotate this computer's token** before machine expiry; after expiry reconnect from the app.
+Explicit reconnection resends a usage snapshot so a replacement machine identity never reuses the old
+sync cursor. Same-hub reconnection keeps a separate owner session; sign-in and token rotation keep
+the machine cursor intact.
 See [self-hosting](self-hosting.md#auth-model-upgrade-and-rollback) for backups and rollback.

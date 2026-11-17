@@ -197,7 +197,7 @@ def health_conditions(freshness: dict) -> list[dict]:
                 continue
             conditions.append({"kinds": ["held"], "keys": [f"held|{issue.get('key')}"],
                                "titles": {"held": f"{issue.get('short') or issue.get('name')} meter has not updated for {_span(age)}"},
-                               "body": f"{detail} Open setup's Check step to see the fix.", "urgent": False})
+                               "body": f"{detail} Open BURNRATE to see the fix.", "urgent": False})
         elif issue.get("kind") == "sync" and issue.get("state") == "failed" and (age is None or age > SYNC_FAILING_AFTER_SECONDS):
             since = f" Last sync {_span(age)} ago." if age is not None else ""
             conditions.append({"kinds": ["sync"], "keys": ["sync|hub"], "titles": {"sync": "Hub sync is failing"},
@@ -294,7 +294,7 @@ $ErrorActionPreference = 'Stop'
 [void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
 [void][Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime]
 function Esc([string]$text) { [Security.SecurityElement]::Escape($text) }
-$xml = '<toast activationType="protocol" launch="' + (Esc $env:BURNRATE_TOAST_URL) + '"><visual><binding template="ToastGeneric"><text>' +
+$xml = '<toast><visual><binding template="ToastGeneric"><text>' +
   (Esc $env:BURNRATE_TOAST_TITLE) + '</text><text>' + (Esc $env:BURNRATE_TOAST_BODY) + '</text></binding></visual></toast>'
 $doc = New-Object Windows.Data.Xml.Dom.XmlDocument
 $doc.LoadXml($xml)
@@ -339,10 +339,8 @@ def show_toast(title: str, body: str, *, tag: str = "burnrate", run=subprocess.r
         _show_posix(title, body, run)
         return
     shell = Path(os.getenv("SystemRoot", r"C:\Windows")) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
-    port = os.getenv("BURNRATE_PORT", "17331")
     env = {**os.environ, "BURNRATE_TOAST_TITLE": title[:200], "BURNRATE_TOAST_BODY": body[:600],
-           "BURNRATE_TOAST_TAG": tag[:16], "BURNRATE_TOAST_APP": _app_id(),
-           "BURNRATE_TOAST_URL": f"http://127.0.0.1:{port}/setup?step=4"}
+           "BURNRATE_TOAST_TAG": tag[:16], "BURNRATE_TOAST_APP": _app_id()}
     encoded = base64.b64encode(_TOAST_SCRIPT.encode("utf-16-le")).decode("ascii")
     completed = run([str(shell), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
                     env=env, capture_output=True, text=True, timeout=30,

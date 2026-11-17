@@ -15,11 +15,10 @@ def test_packaged_asset_inventory_matches_generated_files():
         ast.literal_eval(node.value)
         for node in cli.body
         if isinstance(node, ast.Assign)
-        and any(isinstance(target, ast.Name) and target.id == "_WEB_ASSETS" for target in node.targets)
+        and any(isinstance(target, ast.Name) and target.id == "_DESKTOP_ASSETS" for target in node.targets)
     )
-    manifest = json.loads((WEB / "assets.json").read_text(encoding="utf-8"))
-    assert set(assets) == set(manifest["outputs"]) | {"favicon.svg"}
-    assert all((WEB / name).is_file() for name in assets)
+    assert assets == ("wealthfront_ui.html",)
+    assert all((ROOT / "spend_app" / name).is_file() for name in assets)
 
 
 def test_sources_and_shipped_outputs_match_recorded_generation():

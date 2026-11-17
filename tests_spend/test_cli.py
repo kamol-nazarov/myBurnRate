@@ -252,7 +252,7 @@ def test_cli_doctor(monkeypatch, tmp_path: Path, capsys) -> None:
     assert payload["ok"] is True
     assert not any(str(Path.home()) in str(check["detail"]) for check in payload["checks"])
     by_id = {check["id"]: check for check in payload["checks"]}
-    for key in ("python", "imports", "tzdata", "database", "pricing", "web_assets", "bind"):
+    for key in ("python", "imports", "tzdata", "database", "pricing", "desktop_assets", "bind"):
         assert by_id[key]["status"] == "ok", by_id[key]
     assert "127.0.0.1" in by_id["bind"]["detail"]
     assert "17331" in by_id["bind"]["detail"]

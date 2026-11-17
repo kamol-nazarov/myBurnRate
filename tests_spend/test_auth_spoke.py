@@ -9,8 +9,11 @@ from fastapi.testclient import TestClient
 from spend_app import aggregate, auth_model, auth_throttle, setup_wizard, sync
 from spend_app.api import create_app
 from spend_app.config import Settings
+from spend_app.connection_paths import LocationError
 from spend_app.db import UsageEvent, connect, upsert_usage_event
+from spend_app.native_desktop import NativeClient
 from spend_app.pricing import PricingEngine
+from spend_app.wealthfront_window import DesktopBridge
 
 ROOT = Path(__file__).resolve().parents[1]
 HUB = "https://hub.test"
@@ -19,6 +22,24 @@ PASSWORD = "synthetic-password-long"
 UI = {"Origin": "http://testserver", "X-BURNRATE-Request": "1"}
 HUB_UI = {"Origin": HUB, "X-BURNRATE-Request": "1"}
 ADMIN = {**HUB_UI, "Authorization": "Bearer synthetic-admin"}
+
+
+class _MemoryVault:
+    def __init__(self):
+        self._items: dict[str, str] = {}
+
+    def put(self, secret: str, ref: str | None = None) -> str:
+        ref = ref or "burnrate-mem"
+        self._items[ref] = secret
+        return ref
+
+    def get(self, ref: str) -> str:
+        if ref not in self._items:
+            raise LocationError("Saved credential unavailable.")
+        return self._items[ref]
+
+    def delete(self, ref: str) -> None:
+        self._items.pop(ref, None)
 
 
 def settings(path):
@@ -117,24 +138,46 @@ def test_spoke_local_session_gates_hub_owner_actions(pair):
         assert response.status_code == expected, (path, response.status_code, response.text)
         assert "br_bg_" not in response.text and "br_s_" not in response.text
 
-    signed = sign_in(spoke)
-    assert auth_model.LOCAL_COOKIE in spoke.cookies
-    local_cookie = signed.headers.get("set-cookie", "").lower()
-    assert "httponly" in local_cookie and "samesite=lax" in local_cookie and "path=/api" in local_cookie
+    ctx = anonymous.get("/api/auth/context")
+    assert ctx.status_code == 200
+    assert ctx.json() == {"spoke": True, "hasOwner": False, "localSession": False}
+
+    bridge = DesktopBridge(NativeClient(ss, port=17331), vault=_MemoryVault())
+    signed = bridge.sign_in_owner("owner@example.com", PASSWORD)
+    assert signed["ok"] is True
+    assert signed["sessionId"] and signed["expiresAt"]
+    assert "br_s_" not in str(signed)
+
+    status = bridge.owner_session_status()
+    assert status == {"ok": True, "hasOwnerSession": True, "expiresAt": signed["expiresAt"]}
+
+    # Spoke HTTP /api/auth/* endpoints remain 401 (and /api/auth/rotate stays 403) even while signed in.
+    for method, path, body, expected in (
+        ("GET", "/api/auth/sessions", None, 401),
+        ("POST", "/api/auth/sessions/revoke", {"id": "unknown"}, 401),
+        ("POST", "/api/auth/logout", {}, 401),
+        ("POST", "/api/auth/session/rotate", {}, 401),
+        ("GET", "/api/auth/audit", None, 401),
+        ("POST", "/api/auth/rotate", {}, 403),
+    ):
+        response = (spoke.get(path, headers=UI) if method == "GET"
+                    else spoke.post(path, headers=UI, json=body))
+        assert response.status_code == expected, (path, response.status_code, response.text)
+        assert "br_bg_" not in response.text and "br_s_" not in response.text
 
     # Break-glass rotation is never relayed from a paired computer.
-    blocked = spoke.post("/api/auth/rotate", headers=UI, json={})
-    assert blocked.status_code == 403
-    assert "br_bg_" not in blocked.text and "token" not in blocked.text
     with connect(hs.database_path) as conn:
         assert conn.execute("SELECT 1 FROM app_meta WHERE key='auth.break_glass.v1'").fetchone() is None
 
-    listed = spoke.get("/api/auth/sessions")
-    assert listed.status_code == 200 and listed.json()["sessions"]
+    listed = bridge.list_owner_sessions()
+    assert listed["ok"] is True and listed["sessions"]
+    assert listed["currentSessionId"] == signed["sessionId"]
 
-    logged_out = spoke.post("/api/auth/logout", headers=UI, json={})
-    assert logged_out.status_code == 200
+    logged_out = bridge.sign_out_owner()
+    assert logged_out == {"ok": True}
     assert not state(ss).get("ownerSession")
+    assert bridge.owner_session_status() == {"ok": True, "hasOwnerSession": False, "expiresAt": None}
+    assert bridge.list_owner_sessions()["code"] == "AUTH-107"
     assert spoke.get("/api/auth/sessions", headers=UI).status_code == 401
 
 
@@ -144,14 +187,17 @@ def test_paired_spoke_owner_signin_logout_and_machine_sync(pair):
     assert before["totals"]["tokens"] == 7000
     machine_token = state(ss)["token"]
     response = sign_in(spoke)
+    assert response.json()["ok"] is True and response.json().get("expiresAt")
     owner_token = state(ss)["ownerSession"]
     assert owner_token and owner_token != machine_token and owner_token not in response.text
     wide = summary(spoke)
     assert wide["totals"]["tokens"] == 18000
     assert len(wide["machines"]) == 2
-    logout = spoke.post("/api/auth/logout", headers=UI, json={})
-    assert logout.status_code == 200, logout.text
+    bridge = DesktopBridge(NativeClient(ss, port=17331), vault=_MemoryVault())
+    logout = bridge.sign_out_owner()
+    assert logout == {"ok": True}
     assert not state(ss).get("ownerSession")
+    assert bridge.owner_session_status()["hasOwnerSession"] is False
     hub.cookies.clear()
     assert hub.get("/api/machines", headers={"Authorization": "Bearer " + owner_token}).status_code == 401
     assert summary(spoke)["totals"]["tokens"] == 7000
@@ -499,7 +545,6 @@ def test_old_inflight_sync_cannot_overwrite_new_hub_connection(pair, monkeypatch
     old_generation = old_cursor["generation"]
     entered, resume = Event(), Event()
     original_write = sync.write_sync_cursor
-    rejected = []
 
     def paused_write(path, url, cursor, **kwargs):
         if kwargs.get("expected_generation") == old_generation:
@@ -512,6 +557,7 @@ def test_old_inflight_sync_cannot_overwrite_new_hub_connection(pair, monkeypatch
                 raise
         return original_write(path, url, cursor, **kwargs)
 
+    rejected = []
     monkeypatch.setattr(sync, "write_sync_cursor", paused_write)
     pricing = PricingEngine.load(ss.pricing_path)
     with ThreadPoolExecutor(max_workers=1) as pool:
