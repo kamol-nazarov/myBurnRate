@@ -588,7 +588,8 @@ def test_h5_sign_out_revokes_session_clears_vault_disables_spoke_and_handles_off
         _wait_for_first_sync(bridge)
         owner_tok = vault.get(DesktopBridge.OWNER_SESSION_VAULT_REF)
 
-        # If hub becomes unreachable while signed in, sign_out returns NET-001 and keeps local state
+        # If hub becomes unreachable while signed in, sign_out clears local state first,
+        # queues pending hub revocation in the vault, and returns NET-001.
         sync._HUB_TEST_CLIENTS.clear()
 
         class _OfflineClient:
@@ -608,12 +609,15 @@ def test_h5_sign_out_revokes_session_clears_vault_disables_spoke_and_handles_off
         offline_out = bridge.sign_out()
         assert offline_out["ok"] is False
         assert offline_out["code"] == "NET-001"
-        assert DesktopBridge.OWNER_SESSION_VAULT_REF in vault.items
+        assert DesktopBridge.OWNER_SESSION_VAULT_REF not in vault.items
+        assert DesktopBridge.MACHINE_TOKEN_VAULT_REF not in vault.items
+        assert DesktopBridge.PENDING_REVOKE_VAULT_REF in vault.items
 
-        # Restore hub reachability and sign out cleanly
+        # Restore hub reachability and sign out cleanly (flushes pending revoke)
         monkeypatch.setitem(sync._HUB_TEST_CLIENTS, HUB_URL, hub_client)
         ok_out = bridge.sign_out()
         assert ok_out == {"ok": True}
+        assert DesktopBridge.PENDING_REVOKE_VAULT_REF not in vault.items
 
         # Vault & in-memory secrets cleared
         assert DesktopBridge.OWNER_SESSION_VAULT_REF not in vault.items

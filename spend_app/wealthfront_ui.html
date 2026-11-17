@@ -7485,11 +7485,11 @@ window.h5SignOut = async function() {
   try {
     const res = await window.pywebview.api.sign_out();
     state.signOutBusy = false;
-    if (res && res.ok) {
+    if (res && (res.ok || res.code === "NET-001")) {
       state.changePwOpen = false;
       state.changePwError = null;
       state.removeConfirmId = null;
-      state.accountError = null;
+      state.accountError = res.ok ? null : h5NormalizeErr(res, "Could not sign out.");
       state.accountDraft.password = "";
       if (state.settingsData) {
         state.settingsData.hasOwnerSession = false;
@@ -7514,7 +7514,7 @@ window.h5SignOut = async function() {
         });
         state.onboarding.sig = JSON.stringify(state.onboarding.data);
       }
-      showToast("Signed out");
+      if (res.ok) showToast("Signed out");
       h5RenderAccountSurfaces();
       await refreshSettingsData();
       loadUsage(false, false);

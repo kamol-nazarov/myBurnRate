@@ -36,6 +36,7 @@ from spend_app.wealthfront_window import DesktopBridge
 from tests_spend.test_h5_desktop_account_ui import (
     _h5_api_js,
     _h5_settings_fixture,
+    _wait_for_first_sync,
 )
 from tests_spend.test_h6_bridge_and_packaging import (
     HUB_URL,
@@ -1347,3 +1348,426 @@ def test_b4_sqlite_commit_failure_restores_prior_vault_refs_and_preserves_metada
     assert read_vault_secret(db_empty, OWNER_SESSION_VAULT_REF, vault=empty_vault) is None
     assert read_vault_secret(db_empty, MACHINE_TOKEN_VAULT_REF, vault=empty_vault) is None
 
+
+
+# ---------------------------------------------------------------------------
+# Round 3 ? S8 residual: Clear-first sign-out & vault-only pending revoke
+# ---------------------------------------------------------------------------
+
+
+def test_s8_r3_rotation_publishes_before_clear_then_sign_out_revokes_new_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from spend_app.connection_secrets import PENDING_REVOKE_VAULT_REF
+
+    _hub_settings, hub_client, spoke_settings, _spoke_app = _create_paired_hub_and_spoke(
+        tmp_path, monkeypatch
+    )
+    db_path = spoke_settings.database_path
+    vault = _MemoryVault()
+    bridge = DesktopBridge(
+        NativeClient(spoke_settings, port=17380),
+        preferences=tmp_path / "s8_r3_before_clear.json",
+        vault=vault,
+    )
+
+    with hub_client:
+        res_in = bridge.sign_in("owner@example.com", PASSWORD, "R3PC1")
+        assert res_in["ok"] is True
+        _wait_for_first_sync(bridge)
+        old_tok = read_vault_secret(db_path, OWNER_SESSION_VAULT_REF, vault=vault) or ""
+        assert old_tok.startswith("br_s_")
+
+        # Mark rotation required as if legacy session/expiry triggered auto-rotation
+        with connect(db_path) as conn:
+            st = setup_wizard.read_setup_state(conn)
+            st["spokeConfig"]["ownerSessionRotationRequired"] = True
+            setup_wizard.write_setup_state(conn, st)
+
+        # Pause sign_out right before clear_spoke_credentials so rotation publishes N first
+        signout_ready = threading.Event()
+        rotation_done = threading.Event()
+        real_clear = connection_secrets.clear_spoke_credentials
+
+        def _paused_clear(*args, **kwargs):
+            signout_ready.set()
+            assert rotation_done.wait(timeout=4.0)
+            return real_clear(*args, **kwargs)
+
+        monkeypatch.setattr(connection_secrets, "clear_spoke_credentials", _paused_clear)
+
+        out_box: list[dict] = []
+        t_so = threading.Thread(target=lambda: out_box.append(bridge.sign_out()))
+        t_so.start()
+        assert signout_ready.wait(timeout=3.0)
+
+        new_tok = sync.ensure_fresh_owner_session(
+            db_path, HUB_URL, old_tok, vault=vault, client=hub_client
+        )
+        assert new_tok != old_tok
+        assert read_vault_secret(db_path, OWNER_SESSION_VAULT_REF, vault=vault) == new_tok
+        rotation_done.set()
+        t_so.join(timeout=4.0)
+
+        assert out_box == [{"ok": True}]
+        assert read_vault_secret(db_path, OWNER_SESSION_VAULT_REF, vault=vault) is None
+        assert read_vault_secret(db_path, MACHINE_TOKEN_VAULT_REF, vault=vault) is None
+        assert read_vault_secret(db_path, PENDING_REVOKE_VAULT_REF, vault=vault) is None
+        assert bridge.owner_session_status()["hasOwnerSession"] is False
+        with connect(db_path) as conn:
+            sc = setup_wizard.read_setup_state(conn).get("spokeConfig") or {}
+        assert sc.get("signedOut") is True
+        assert sc.get("enabled") is False
+
+        for tok in (old_tok, new_tok):
+            probe_res = hub_client.get(
+                "/api/machines",
+                headers={
+                    "Authorization": f"Bearer {tok}",
+                    "X-BURNRATE-Request": "1",
+                    "X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION),
+                },
+            )
+            assert probe_res.status_code == 401
+
+
+def test_s8_r3_rotation_publishes_after_sign_out_clear_is_revoked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from spend_app.connection_secrets import PENDING_REVOKE_VAULT_REF
+
+    _hub_settings, hub_client, spoke_settings, _spoke_app = _create_paired_hub_and_spoke(
+        tmp_path, monkeypatch
+    )
+    db_path = spoke_settings.database_path
+    vault = _MemoryVault()
+    bridge = DesktopBridge(
+        NativeClient(spoke_settings, port=17381),
+        preferences=tmp_path / "s8_r3_after_clear.json",
+        vault=vault,
+    )
+
+    with hub_client:
+        res_in = bridge.sign_in("owner@example.com", PASSWORD, "R3PC2")
+        assert res_in["ok"] is True
+        _wait_for_first_sync(bridge)
+        old_tok = read_vault_secret(db_path, OWNER_SESSION_VAULT_REF, vault=vault) or ""
+
+        rot_issued = threading.Event()
+        allow_publish = threading.Event()
+        issued_tokens: list[str] = []
+        real_pub = bridge._publish_owner_session
+
+        def _paused_publish(new_tok, *args, **kwargs):
+            issued_tokens.append(new_tok)
+            rot_issued.set()
+            assert allow_publish.wait(timeout=4.0)
+            return real_pub(new_tok, *args, **kwargs)
+
+        monkeypatch.setattr(bridge, "_publish_owner_session", _paused_publish)
+
+        rot_box: list[dict] = []
+        t_rot = threading.Thread(target=lambda: rot_box.append(bridge.rotate_owner_session()))
+        t_rot.start()
+        assert rot_issued.wait(timeout=3.0)
+
+        # Sign out clears locally first (sets signedOut & bumps generation), then logs out old_tok
+        so_res = bridge.sign_out()
+        assert so_res == {"ok": True}
+        assert read_vault_secret(db_path, OWNER_SESSION_VAULT_REF, vault=vault) is None
+
+        allow_publish.set()
+        t_rot.join(timeout=4.0)
+
+        assert len(rot_box) == 1
+        assert rot_box[0]["ok"] is False
+        assert rot_box[0]["code"] == "AUTH-107"
+        assert len(issued_tokens) == 1
+        new_tok = issued_tokens[0]
+        assert read_vault_secret(db_path, OWNER_SESSION_VAULT_REF, vault=vault) is None
+        assert read_vault_secret(db_path, MACHINE_TOKEN_VAULT_REF, vault=vault) is None
+        assert read_vault_secret(db_path, PENDING_REVOKE_VAULT_REF, vault=vault) is None
+        assert bridge.owner_session_status()["hasOwnerSession"] is False
+        with connect(db_path) as conn:
+            sc = setup_wizard.read_setup_state(conn).get("spokeConfig") or {}
+        assert sc.get("signedOut") is True
+
+        for tok in (old_tok, new_tok):
+            probe_res = hub_client.get(
+                "/api/machines",
+                headers={
+                    "Authorization": f"Bearer {tok}",
+                    "X-BURNRATE-Request": "1",
+                    "X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION),
+                },
+            )
+            assert probe_res.status_code == 401
+
+
+def test_s8_r3_offline_revoke_queues_in_vault_only_and_flushes_on_next_hub_contact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import httpx
+    from spend_app.connection_secrets import PENDING_REVOKE_VAULT_REF, read_pending_revokes
+
+    _hub_settings, hub_client, spoke_settings, _spoke_app = _create_paired_hub_and_spoke(
+        tmp_path, monkeypatch
+    )
+    db_path = spoke_settings.database_path
+    vault = _MemoryVault()
+    prev_factory = set_vault_factory(lambda _db: vault)
+    try:
+        bridge = DesktopBridge(
+            NativeClient(spoke_settings, port=17382),
+            preferences=tmp_path / "s8_r3_offline.json",
+            vault=vault,
+        )
+        with hub_client:
+            # 1) sign_out_owner offline leaves machine token intact; next sync_once flushes pending revoke
+            res_in = bridge.sign_in("owner@example.com", PASSWORD, "R3OfflinePC")
+            assert res_in["ok"] is True
+            _wait_for_first_sync(bridge)
+            tok1 = read_vault_secret(db_path, OWNER_SESSION_VAULT_REF, vault=vault) or ""
+            mtok1 = read_vault_secret(db_path, MACHINE_TOKEN_VAULT_REF, vault=vault) or ""
+            assert tok1 and mtok1
+
+            sync._HUB_TEST_CLIENTS.clear()
+
+            class _OfflineClient:
+                def __init__(self, *_a, **_kw):
+                    pass
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_a):
+                    return False
+
+                def post(self, *_a, **_kw):
+                    raise httpx.ConnectError("offline")
+
+            monkeypatch.setattr(httpx, "Client", _OfflineClient)
+            so_owner = bridge.sign_out_owner()
+            assert so_owner["ok"] is False
+            assert so_owner["code"] == "NET-001"
+            assert read_vault_secret(db_path, OWNER_SESSION_VAULT_REF, vault=vault) is None
+            assert bridge.owner_session_status()["hasOwnerSession"] is False
+
+            pending = read_pending_revokes(db_path, vault=vault)
+            assert any(item["token"] == tok1 for item in pending)
+            with connect(db_path) as conn:
+                rows = conn.execute("SELECT key, value FROM app_meta").fetchall()
+            joined = " ".join(f"{k}:{v}" for k, v in rows)
+            assert tok1 not in joined
+            assert "pending-revoke" not in joined.lower()
+            assert "pendingRevoke" not in joined
+
+            # Restore hub reachability; next hub contact via sync_once flushes pending revoke
+            monkeypatch.setitem(sync._HUB_TEST_CLIENTS, HUB_URL, hub_client)
+            probe_before = hub_client.get(
+                "/api/machines",
+                headers={"Authorization": f"Bearer {tok1}", "X-BURNRATE-Request": "1"},
+            )
+            assert probe_before.status_code == 200
+
+            sync.sync_once(
+                spoke_settings,
+                PricingEngine.load(spoke_settings.pricing_path),
+                hub_url=HUB_URL,
+                token=mtok1,
+                machine_name="R3OfflinePC",
+                collect_local=False,
+                client=hub_client,
+            )
+            assert PENDING_REVOKE_VAULT_REF not in vault.items
+            probe_after = hub_client.get(
+                "/api/machines",
+                headers={"Authorization": f"Bearer {tok1}", "X-BURNRATE-Request": "1"},
+            )
+            assert probe_after.status_code == 401
+
+            # 2) Full sign_out offline clears both vault refs, queues machine+owner, and flushes on next bridge hub call
+            res_in2 = bridge.sign_in("owner@example.com", PASSWORD, "R3OfflinePC")
+            assert res_in2["ok"] is True
+            _wait_for_first_sync(bridge)
+            tok2 = read_vault_secret(db_path, OWNER_SESSION_VAULT_REF, vault=vault) or ""
+            assert tok2
+
+            sync._HUB_TEST_CLIENTS.clear()
+            so_full = bridge.sign_out()
+            assert so_full["ok"] is False
+            assert so_full["code"] == "NET-001"
+            assert OWNER_SESSION_VAULT_REF not in vault.items
+            assert MACHINE_TOKEN_VAULT_REF not in vault.items
+            assert PENDING_REVOKE_VAULT_REF in vault.items
+            assert bridge.owner_session_status()["hasOwnerSession"] is False
+
+            with connect(db_path) as conn:
+                st = setup_wizard.read_setup_state(conn)
+                rows = conn.execute("SELECT key, value FROM app_meta").fetchall()
+            assert st["role"] == "local"
+            assert st["spokeConfig"]["enabled"] is False
+            assert st["spokeConfig"].get("signedOut") is True
+            assert tok2 not in " ".join(f"{k}:{v}" for k, v in rows)
+
+            # Next hub contact via list_owner_sessions / sign_in flushes tok2 + machine revoke
+            monkeypatch.setitem(sync._HUB_TEST_CLIENTS, HUB_URL, hub_client)
+            res_in3 = bridge.sign_in("owner@example.com", PASSWORD, "R3OfflinePC")
+            assert res_in3["ok"] is True
+            _wait_for_first_sync(bridge)
+            assert PENDING_REVOKE_VAULT_REF not in vault.items
+            probe_tok2 = hub_client.get(
+                "/api/machines",
+                headers={"Authorization": f"Bearer {tok2}", "X-BURNRATE-Request": "1"},
+            )
+            assert probe_tok2.status_code == 401
+    finally:
+        set_vault_factory(prev_factory)
+
+
+# ---------------------------------------------------------------------------
+# Round 3 ? B4 residual: Fenced compensation when another process wins
+# ---------------------------------------------------------------------------
+
+
+def test_b4_r3_commit_failure_does_not_clobber_concurrent_winner_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "b4_r3_concurrent.db"
+    initialize(db_path)
+    vault = _MemoryVault()
+
+    class _NoOpLock:
+        def acquire(self): pass
+        def release(self): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+
+    monkeypatch.setattr(connection_secrets, "db_secret_lock", lambda _p: _NoOpLock())
+
+    publish_spoke_credentials(
+        db_path,
+        owner_session="br_s_initial",
+        machine_token="br_m_initial",
+        vault=vault,
+    )
+
+    real_connect = db_mod.connect
+    race_done = False
+
+    class _RaceOnCommitConn:
+        def __init__(self, inner) -> None:
+            self._inner = inner
+            self._conn = None
+            self._is_publish_tx = False
+
+        def __enter__(self):
+            self._conn = self._inner.__enter__()
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return self._inner.__exit__(exc_type, exc, tb)
+
+        def execute(self, sql, *args, **kwargs):
+            if "BEGIN IMMEDIATE" in str(sql):
+                self._is_publish_tx = True
+            return self._conn.execute(sql, *args, **kwargs)
+
+        def commit(self):
+            nonlocal race_done
+            if self._is_publish_tx and not race_done:
+                race_done = True
+                # Release A's SQLite write lock (simulating A's commit aborting) so B can win
+                # in the gap before A runs _compensate_publish_failure.
+                self._conn.rollback()
+                monkeypatch.setattr(db_mod, "connect", real_connect)
+                publish_spoke_credentials(
+                    db_path,
+                    owner_session="br_s_winner_b",
+                    machine_token="br_m_winner_b",
+                    vault=vault,
+                    apply_state=lambda _c, st: st.update({"computerName": "WinnerB"}),
+                )
+                raise sqlite3.OperationalError("process A commit failed after B won")
+            return self._conn.commit()
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+    def _connect_race(path):
+        return _RaceOnCommitConn(real_connect(path))
+
+    monkeypatch.setattr(db_mod, "connect", _connect_race)
+
+    with pytest.raises(sqlite3.OperationalError, match="process A commit failed"):
+        publish_spoke_credentials(
+            db_path,
+            owner_session="br_s_loser_a",
+            machine_token="br_m_loser_a",
+            vault=vault,
+        )
+
+    assert vault.get(OWNER_SESSION_VAULT_REF) == "br_s_winner_b"
+    assert vault.get(MACHINE_TOKEN_VAULT_REF) == "br_m_winner_b"
+    with real_connect(db_path) as conn:
+        st = setup_wizard.read_setup_state(conn)
+        assert st.get("computerName") == "WinnerB"
+
+    # Case 2: Process B wins only on owner_session while machine_token was empty beforehand;
+    # A's compensation must keep B's owner_session AND delete A's uncommitted machine_token.
+    db_partial = tmp_path / "b4_r3_partial.db"
+    initialize(db_partial)
+    v_partial = _MemoryVault()
+    publish_spoke_credentials(db_partial, owner_session="br_s_old", vault=v_partial)
+
+    race_done_2 = False
+
+    class _PartialRaceConn:
+        def __init__(self, inner) -> None:
+            self._inner = inner
+            self._conn = None
+            self._is_publish_tx = False
+
+        def __enter__(self):
+            self._conn = self._inner.__enter__()
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return self._inner.__exit__(exc_type, exc, tb)
+
+        def execute(self, sql, *args, **kwargs):
+            if "BEGIN IMMEDIATE" in str(sql):
+                self._is_publish_tx = True
+            return self._conn.execute(sql, *args, **kwargs)
+
+        def commit(self):
+            nonlocal race_done_2
+            if self._is_publish_tx and not race_done_2:
+                race_done_2 = True
+                self._conn.rollback()
+                monkeypatch.setattr(db_mod, "connect", real_connect)
+                publish_spoke_credentials(
+                    db_partial,
+                    owner_session="br_s_partial_b",
+                    vault=v_partial,
+                )
+                raise sqlite3.OperationalError("process A partial commit failed")
+            return self._conn.commit()
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+    def _connect_partial(path):
+        return _PartialRaceConn(real_connect(path))
+
+    monkeypatch.setattr(db_mod, "connect", _connect_partial)
+    with pytest.raises(sqlite3.OperationalError, match="partial commit failed"):
+        publish_spoke_credentials(
+            db_partial,
+            owner_session="br_s_orphan_a",
+            machine_token="br_m_orphan_a",
+            vault=v_partial,
+        )
+
+    assert v_partial.get(OWNER_SESSION_VAULT_REF) == "br_s_partial_b"
+    assert read_vault_secret(db_partial, MACHINE_TOKEN_VAULT_REF, vault=v_partial) is None

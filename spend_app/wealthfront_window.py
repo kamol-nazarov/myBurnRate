@@ -1078,6 +1078,7 @@ class DesktopBridge:
 
     OWNER_SESSION_VAULT_REF = "burnrate-owner-session"
     MACHINE_TOKEN_VAULT_REF = "burnrate-machine-token"
+    PENDING_REVOKE_VAULT_REF = "burnrate-pending-revoke"
 
     def __init__(
         self,
@@ -2208,6 +2209,8 @@ class DesktopBridge:
 
                 def _prepare(_conn, current_state):
                     sp = current_state.get("spokeConfig") or {}
+                    if sp.get("signedOut"):
+                        raise _StaleOwnerLifecycle()
                     cur_gen = int(sp.get("credentialGeneration") or 0)
                     if expected_gen is not None and cur_gen != expected_gen:
                         raise _StaleOwnerLifecycle()
@@ -2244,6 +2247,8 @@ class DesktopBridge:
             else:
                 from spend_app.connection_secrets import verified_vault_put
 
+                if expected_gen is not None and self._owner_session_gen != expected_gen:
+                    raise _StaleOwnerLifecycle()
                 if expected_token is not _CREDENTIAL_UNSET and (self._owner_session or "") != str(
                     expected_token or ""
                 ).strip():
@@ -2358,6 +2363,7 @@ class DesktopBridge:
         token: str | None = None,
         handshake: bool = False,
         fresh_session: bool = False,
+        flush_pending: bool = True,
     ) -> tuple[dict | None, object | None, dict | None]:
         import httpx
         from spend_app.setup_wizard import _hub_protocol_handshake
@@ -2374,6 +2380,18 @@ class DesktopBridge:
         try:
             if handshake:
                 _hub_protocol_handshake(hub_url, test_client)
+            if flush_pending and path != "/api/auth/logout":
+                try:
+                    from spend_app.connection_secrets import flush_pending_revokes
+
+                    flush_pending_revokes(
+                        self._db_path(),
+                        hub_url,
+                        vault=self._resolve_vault(),
+                        client=test_client,
+                    )
+                except Exception:
+                    pass
             if token and not fresh_session and path not in {"/api/auth/session/rotate", "/api/auth/logout"}:
                 db_path = self._db_path()
                 if db_path is not None and db_path.is_file():
@@ -3017,110 +3035,164 @@ class DesktopBridge:
         if self._demo:
             return self._h5_err("HUB-501", message="Account actions are disabled in demo mode.")
 
-        token, _, captured_gen = self._capture_owner_session_with_gen()
-        local_mid = self._local_machine_id()
-        logout_token = token
-        if token:
-            hub_url, err = self._resolve_hub_origin()
-            if err is not None:
-                return self._h5_err(str(err.get("code") or "NET-001"))
-            if local_mid:
+        from spend_app.connection_secrets import (
+            clear_spoke_credentials,
+            enqueue_pending_revokes,
+            flush_pending_revokes,
+            read_pending_revokes,
+            read_vault_secret,
+        )
+        from spend_app.sync import _HUB_TEST_CLIENTS, clear_hub_proxy_cache
+
+        db_path = self._db_path()
+        vault = self._resolve_vault()
+
+        def _apply_signout(_conn, state):
+            if state.get("role") == "spoke":
+                state["role"] = "local"
+            state["account"] = {}
+            spoke = dict(state.get("spokeConfig") or {})
+            spoke.pop("lastSyncError", None)
+            spoke["enabled"] = False
+            state["spokeConfig"] = spoke
+
+        with self._owner_session_lock:
+            mem_owner = self._owner_session
+            owner_tokens: list[str] = []
+            local_mid = ""
+            cleared_hub_url = ""
+            if db_path is not None and db_path.is_file():
+                try:
+                    cleared = clear_spoke_credentials(
+                        db_path,
+                        clear_owner_session=True,
+                        clear_machine_token=True,
+                        mark_signed_out=True,
+                        vault=vault,
+                        apply_state=_apply_signout,
+                    )
+                    clear_hub_proxy_cache()
+                    owner_tokens = list(cleared.get("ownerTokens") or [])
+                    local_mid = str(cleared.get("machineId") or "").strip()
+                    cleared_hub_url = str(cleared.get("hubUrl") or "").strip()
+                except Exception:
+                    LOGGER.debug("Could not clear local spoke state", exc_info=True)
+            else:
+                v_owner = read_vault_secret(None, self.OWNER_SESSION_VAULT_REF, vault=vault)
+                if v_owner:
+                    owner_tokens.append(v_owner)
+                if vault is not None:
+                    for ref in (self.OWNER_SESSION_VAULT_REF, self.MACHINE_TOKEN_VAULT_REF):
+                        try:
+                            vault.delete(ref)
+                        except Exception:
+                            pass
+
+            if mem_owner and mem_owner not in owner_tokens:
+                owner_tokens.append(mem_owner)
+
+            self._owner_session = None
+            self._owner_session_expires_at = None
+            self._owner_session_gen = None
+            self._machine_token = None
+            self._machine_token_gen = None
+            self._sync_gen += 1
+            self._sync_status = "idle"
+            self._sync_error_code = None
+            self._sync_error_message = None
+
+        existing_pending = read_pending_revokes(db_path, vault=vault)
+        if not owner_tokens and not existing_pending:
+            return {"ok": True}
+
+        hub_url, err = self._resolve_hub_origin()
+        if err is not None:
+            if owner_tokens:
+                enqueue_pending_revokes(
+                    db_path,
+                    [
+                        {
+                            "kind": "owner",
+                            "token": tok,
+                            **({"machineId": local_mid} if (idx == 0 and local_mid) else {}),
+                            **({"hubUrl": cleared_hub_url} if cleared_hub_url else {}),
+                        }
+                        for idx, tok in enumerate(owner_tokens)
+                    ],
+                    vault=vault,
+                )
+            return self._h5_err(str(err.get("code") or "NET-001"))
+
+        if local_mid and owner_tokens:
+            machine_revoked = False
+            machine_err: dict | None = None
+            for tok in owner_tokens:
                 _, rev_res, rev_err = self._call_hub(
                     hub_url,
                     "POST",
                     "/api/machines",
                     json_body={"action": "revoke", "id": local_mid},
-                    token=token,
+                    token=tok,
+                    fresh_session=True,
+                    flush_pending=False,
                 )
-                if rev_err is not None:
-                    rev_code = str(rev_err.get("code") or "")
-                    if rev_code not in {"DEV-301", "AUTH-107"} and (
-                        rev_res is None or rev_res.status_code not in {401, 404}
-                    ):
-                        return self._h5_err_from_call(rev_err)
-            cur_tok, _, cur_gen = self._capture_owner_session_with_gen()
-            if cur_tok:
-                logout_token = cur_tok
-                captured_gen = cur_gen
+                if rev_err is None:
+                    machine_revoked = True
+                    break
+                rev_code = str(rev_err.get("code") or "")
+                if rev_code == "DEV-301" or (rev_res is not None and rev_res.status_code == 404):
+                    machine_revoked = True
+                    break
+                if rev_code == "AUTH-107" or (rev_res is not None and rev_res.status_code == 401):
+                    machine_err = None
+                    continue
+                machine_err = rev_err
+                break
+            if not machine_revoked and machine_err is not None:
+                enqueue_pending_revokes(
+                    db_path,
+                    [
+                        {
+                            "kind": "owner",
+                            "token": tok,
+                            **({"machineId": local_mid} if idx == 0 else {}),
+                            "hubUrl": hub_url,
+                        }
+                        for idx, tok in enumerate(owner_tokens)
+                    ],
+                    vault=vault,
+                )
+                return self._h5_err_from_call(machine_err)
+
+        failed_entries: list[dict] = []
+        first_err: dict | None = None
+        for tok in owner_tokens:
             _, res, call_err = self._call_hub(
                 hub_url,
                 "POST",
                 "/api/auth/logout",
                 json_body={},
-                token=logout_token,
+                token=tok,
                 fresh_session=True,
+                flush_pending=False,
             )
             if (
                 call_err is not None
                 and call_err.get("code") != "AUTH-107"
                 and (res is None or res.status_code != 401)
             ):
-                return self._h5_err_from_call(call_err)
+                failed_entries.append({"kind": "owner", "token": tok, "hubUrl": hub_url})
+                if first_err is None:
+                    first_err = call_err
 
-        db_path = self._db_path()
-        if db_path is not None and db_path.is_file():
-            try:
-                from spend_app.connection_secrets import clear_spoke_credentials, read_vault_secret
-                from spend_app.sync import clear_hub_proxy_cache
+        if failed_entries:
+            enqueue_pending_revokes(db_path, failed_entries, vault=vault)
+            return self._h5_err_from_call(first_err)
 
-                vault = self._resolve_vault()
-
-                def _prepare_signout(_conn, current_state):
-                    sp = current_state.get("spokeConfig") or {}
-                    cur_gen = int(sp.get("credentialGeneration") or 0)
-                    if captured_gen is not None and cur_gen != captured_gen:
-                        raise _StaleOwnerLifecycle()
-                    if logout_token:
-                        cur_tok = (
-                            read_vault_secret(db_path, self.OWNER_SESSION_VAULT_REF, vault=vault)
-                            or str(sp.get("ownerSession") or "").strip()
-                        )
-                        if cur_tok and cur_tok != logout_token:
-                            raise _StaleOwnerLifecycle()
-
-                def _apply_signout(_conn, state):
-                    if state.get("role") == "spoke":
-                        state["role"] = "local"
-                    state["account"] = {}
-                    spoke = dict(state.get("spokeConfig") or {})
-                    spoke.pop("lastSyncError", None)
-                    spoke["enabled"] = False
-                    state["spokeConfig"] = spoke
-
-                with self._owner_session_lock:
-                    clear_spoke_credentials(
-                        db_path,
-                        clear_owner_session=True,
-                        clear_machine_token=True,
-                        vault=vault,
-                        prepare_state=_prepare_signout,
-                        apply_state=_apply_signout,
-                    )
-                    clear_hub_proxy_cache()
-                    self._owner_session = None
-                    self._owner_session_expires_at = None
-                    self._owner_session_gen = None
-                    self._machine_token = None
-                    self._machine_token_gen = None
-                    self._sync_gen += 1
-                    self._sync_status = "idle"
-                    self._sync_error_code = None
-                    self._sync_error_message = None
-            except _StaleOwnerLifecycle:
-                return {"ok": True}
-            except Exception:
-                LOGGER.debug("Could not clear local spoke state", exc_info=True)
-        else:
-            self._clear_owner_session(
-                expected_token=logout_token or _CREDENTIAL_UNSET,
-                expected_gen=captured_gen,
-            )
-            self._clear_machine_token()
-            with self._owner_session_lock:
-                self._sync_gen += 1
-                self._sync_status = "idle"
-                self._sync_error_code = None
-                self._sync_error_message = None
+        if existing_pending:
+            test_client = _HUB_TEST_CLIENTS.get(hub_url)
+            if not flush_pending_revokes(db_path, hub_url, vault=vault, client=test_client):
+                return self._h5_err("NET-001")
 
         return {"ok": True}
 
@@ -3375,14 +3447,30 @@ class DesktopBridge:
                 expected_gen=captured_gen,
             )
         except _StaleOwnerLifecycle:
-            self._call_hub(
+            _, res_stale, err_stale = self._call_hub(
                 hub_url,
                 "POST",
                 "/api/auth/logout",
                 json_body={},
                 token=new_token,
                 fresh_session=True,
+                flush_pending=False,
             )
+            if (
+                err_stale is not None
+                and err_stale.get("code") != "AUTH-107"
+                and (res_stale is None or res_stale.status_code != 401)
+            ):
+                try:
+                    from spend_app.connection_secrets import enqueue_pending_revokes
+
+                    enqueue_pending_revokes(
+                        self._db_path(),
+                        [{"kind": "owner", "token": new_token, "hubUrl": hub_url}],
+                        vault=self._resolve_vault(),
+                    )
+                except Exception:
+                    pass
             return {"ok": False, "code": "AUTH-107", "error": format_error("AUTH-107")}
         except CodedError as exc:
             return {"ok": False, "code": exc.code, "message": error_message(exc.code), "error": format_error(exc.code)}
@@ -3397,26 +3485,101 @@ class DesktopBridge:
     def sign_out_owner(self) -> dict:
         if self._demo:
             return {"ok": False, "error": "Owner sessions are disabled in demo mode."}
+
+        from spend_app.connection_secrets import (
+            clear_spoke_credentials,
+            enqueue_pending_revokes,
+            flush_pending_revokes,
+            read_pending_revokes,
+            read_vault_secret,
+        )
+        from spend_app.sync import _HUB_TEST_CLIENTS, clear_hub_proxy_cache
+
+        db_path = self._db_path()
+        vault = self._resolve_vault()
+        with self._owner_session_lock:
+            mem_owner = self._owner_session
+            removed_owner: list[str] = []
+            cleared_hub_url = ""
+            if db_path is not None and db_path.is_file():
+                try:
+                    cleared = clear_spoke_credentials(
+                        db_path,
+                        clear_owner_session=True,
+                        mark_signed_out=True,
+                        vault=vault,
+                    )
+                    clear_hub_proxy_cache()
+                    removed_owner = list(cleared.get("ownerTokens") or [])
+                    cleared_hub_url = str(cleared.get("hubUrl") or "").strip()
+                except Exception:
+                    LOGGER.debug("Could not clear owner session in SQLite", exc_info=True)
+            else:
+                v_tok = read_vault_secret(None, self.OWNER_SESSION_VAULT_REF, vault=vault)
+                if v_tok:
+                    removed_owner.append(v_tok)
+                if vault is not None:
+                    try:
+                        vault.delete(self.OWNER_SESSION_VAULT_REF)
+                    except Exception:
+                        pass
+            if mem_owner and mem_owner not in removed_owner:
+                removed_owner.append(mem_owner)
+            self._owner_session = None
+            self._owner_session_expires_at = None
+            self._owner_session_gen = None
+
         hub_url, err = self._resolve_hub_origin()
         if err is not None:
+            if removed_owner:
+                enqueue_pending_revokes(
+                    db_path,
+                    [
+                        {
+                            "kind": "owner",
+                            "token": tok,
+                            **({"hubUrl": cleared_hub_url} if cleared_hub_url else {}),
+                        }
+                        for tok in removed_owner
+                    ],
+                    vault=vault,
+                )
             return err
-        token, _, captured_gen = self._capture_owner_session_with_gen()
-        if token:
+
+        failed_entries: list[dict] = []
+        first_err: dict | None = None
+        for tok in removed_owner:
             _, res, call_err = self._call_hub(
                 hub_url,
                 "POST",
                 "/api/auth/logout",
                 json_body={},
-                token=token,
+                token=tok,
                 fresh_session=True,
+                flush_pending=False,
             )
             if (
                 call_err is not None
                 and call_err.get("code") != "AUTH-107"
                 and (res is None or res.status_code != 401)
             ):
-                return call_err
-        self._clear_owner_session(expected_token=token, expected_gen=captured_gen)
+                failed_entries.append({"kind": "owner", "token": tok, "hubUrl": hub_url})
+                if first_err is None:
+                    first_err = call_err
+
+        if failed_entries:
+            enqueue_pending_revokes(db_path, failed_entries, vault=vault)
+            return first_err  # type: ignore[return-value]
+
+        if read_pending_revokes(db_path, vault=vault):
+            test_client = _HUB_TEST_CLIENTS.get(hub_url)
+            if not flush_pending_revokes(db_path, hub_url, vault=vault, client=test_client):
+                return {
+                    "ok": False,
+                    "code": "NET-001",
+                    "message": error_message("NET-001"),
+                    "error": format_error("NET-001"),
+                }
         return {"ok": True}
 
     def get_owner_audit(self) -> dict:
