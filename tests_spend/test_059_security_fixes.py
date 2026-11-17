@@ -1,8 +1,11 @@
-"""Regression tests for 0.5.9 security findings S1, S2, S4, S6, and S7."""
+"""Regression tests for 0.5.9 security findings S1, S2, S4, S6, S7, S8, B3, and B4."""
 
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
+import sqlite3
 from pathlib import Path
 import re
 import threading
@@ -13,7 +16,7 @@ from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 import pytest
 
-from spend_app import aggregate, auth_throttle, cli, setup_wizard, sync
+from spend_app import aggregate, auth_model, auth_throttle, cli, connection_secrets, db as db_mod, setup_wizard, sync
 from spend_app.api import create_app
 from spend_app.connection_paths import LocationError
 from spend_app.connection_secrets import (
@@ -26,7 +29,7 @@ from spend_app.connection_secrets import (
     set_vault_factory,
 )
 from spend_app.db import connect, initialize
-from spend_app.error_codes import error_message
+from spend_app.error_codes import HUB_PROTOCOL_VERSION, CodedError, error_message
 from spend_app.native_desktop import NativeClient
 from spend_app.pricing import PricingEngine
 from spend_app.wealthfront_window import DesktopBridge
@@ -708,3 +711,639 @@ def test_s7_hostile_404_error_detail_never_reaches_bridge_output(
         assert res_list["message"] == error_message("HUB-501")
         for forbidden in ("secret.db", "/var/lib", "br_s_leak456"):
             assert forbidden not in json.dumps(res_list)
+
+
+# ---------------------------------------------------------------------------
+# Round 2 · Residual S4: durable & retryable cleanup marker and WAL/VACUUM
+# ---------------------------------------------------------------------------
+
+
+def test_s4_busy_checkpoint_keeps_cleanup_marker_and_retries_cleanly(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "s4_busy.db"
+    initialize(db_path)
+    vault = _MemoryVault()
+
+    legacy_tok = "br_m_busy_legacy_token_12345"
+    legacy_sess = "br_s_busy_legacy_session_67890"
+    with connect(db_path) as conn:
+        state = setup_wizard.read_setup_state(conn)
+        state["role"] = "spoke"
+        state["spokeConfig"] = {
+            **dict(state.get("spokeConfig") or {}),
+            "enabled": True,
+            "hubConfigured": True,
+            "hubUrl": HUB_URL,
+            "token": legacy_tok,
+            "ownerSession": legacy_sess,
+        }
+        setup_wizard.write_setup_state(conn, state)
+
+    # Pin the WAL with an active reader snapshot so wal_checkpoint(TRUNCATE) reports busy=1.
+    reader = sqlite3.connect(db_path, isolation_level=None)
+    try:
+        reader.execute("BEGIN")
+        reader.execute("SELECT key FROM app_meta LIMIT 1").fetchall()
+
+        outcome = sync.migrate_legacy_spoke_secrets(db_path, vault=vault)
+        assert outcome == {"token": True, "ownerSession": True}
+        assert vault.get(MACHINE_TOKEN_VAULT_REF) == legacy_tok
+        assert vault.get(OWNER_SESSION_VAULT_REF) == legacy_sess
+
+        with connect(db_path) as conn:
+            raw_row = conn.execute(
+                "SELECT value FROM app_meta WHERE key=?", (setup_wizard.SETUP_META_KEY,)
+            ).fetchone()
+            sc = (json.loads(raw_row[0]).get("spokeConfig") or {}) if raw_row else {}
+            assert "token" not in sc
+            assert "ownerSession" not in sc
+            marker = conn.execute(
+                "SELECT value FROM app_meta WHERE key=?",
+                (connection_secrets.CLEANUP_PENDING_META_KEY,),
+            ).fetchone()
+            assert marker is not None
+    finally:
+        reader.execute("COMMIT")
+        reader.close()
+
+    # Subsequent migration retries sanitation even though JSON secrets are already removed.
+    outcome2 = sync.migrate_legacy_spoke_secrets(db_path, vault=vault)
+    assert outcome2 == {"token": False, "ownerSession": False}
+
+    with connect(db_path) as conn:
+        marker_after = conn.execute(
+            "SELECT value FROM app_meta WHERE key=?",
+            (connection_secrets.CLEANUP_PENDING_META_KEY,),
+        ).fetchone()
+        assert marker_after is None
+
+    raw_bytes = db_path.read_bytes()
+    wal_path = Path(f"{db_path}-wal")
+    if wal_path.exists():
+        raw_bytes += wal_path.read_bytes()
+    assert legacy_tok.encode("utf-8") not in raw_bytes
+    assert legacy_sess.encode("utf-8") not in raw_bytes
+
+
+def test_s4_vacuum_failure_logs_redacted_warning_preserves_marker_and_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    db_path = tmp_path / "s4_vacuum_fail.db"
+    initialize(db_path)
+    vault = _MemoryVault()
+
+    legacy_tok = "br_m_vac_legacy_token_abcde"
+    legacy_sess = "br_s_vac_legacy_session_fghij"
+    secret_hub = "https://secret-hub.example.com"
+    with connect(db_path) as conn:
+        state = setup_wizard.read_setup_state(conn)
+        state["role"] = "spoke"
+        state["spokeConfig"] = {
+            **dict(state.get("spokeConfig") or {}),
+            "enabled": True,
+            "hubConfigured": True,
+            "hubUrl": secret_hub,
+            "token": legacy_tok,
+            "ownerSession": legacy_sess,
+        }
+        setup_wizard.write_setup_state(conn, state)
+
+    real_connect = sync.connect
+
+    class _FailVacuumConn:
+        def __init__(self, inner) -> None:
+            self._inner = inner
+            self._conn = None
+
+        def __enter__(self):
+            self._conn = self._inner.__enter__()
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return self._inner.__exit__(exc_type, exc, tb)
+
+        def execute(self, sql, *args, **kwargs):
+            if str(sql).strip().upper() == "VACUUM":
+                raise sqlite3.OperationalError(
+                    f"disk full while compacting {secret_hub} with {legacy_tok}"
+                )
+            return self._conn.execute(sql, *args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+    monkeypatch.setattr(sync, "connect", lambda path: _FailVacuumConn(real_connect(path)))
+
+    with caplog.at_level(logging.WARNING, logger="spend_app.sync"):
+        outcome = sync.migrate_legacy_spoke_secrets(db_path, vault=vault)
+    assert outcome == {"token": True, "ownerSession": True}
+    assert any("cleanup marker" in rec.message for rec in caplog.records)
+    assert secret_hub not in caplog.text
+    assert legacy_tok not in caplog.text
+    assert legacy_sess not in caplog.text
+
+    with real_connect(db_path) as conn:
+        marker = conn.execute(
+            "SELECT value FROM app_meta WHERE key=?",
+            (connection_secrets.CLEANUP_PENDING_META_KEY,),
+        ).fetchone()
+        assert marker is not None
+
+    # Restore normal connect and verify retry clears the marker cleanly.
+    monkeypatch.setattr(sync, "connect", real_connect)
+    sync.migrate_legacy_spoke_secrets(db_path, vault=vault)
+    with real_connect(db_path) as conn:
+        marker_after = conn.execute(
+            "SELECT value FROM app_meta WHERE key=?",
+            (connection_secrets.CLEANUP_PENDING_META_KEY,),
+        ).fetchone()
+        assert marker_after is None
+
+
+# ---------------------------------------------------------------------------
+# Round 2 · S8: lifecycle fencing for owner rotation, clearing & fresh login
+# ---------------------------------------------------------------------------
+
+
+def test_s8_delayed_rotation_success_after_sign_out_owner_revokes_new_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _hub_settings, hub_client, spoke_settings, _spoke_app = _create_paired_hub_and_spoke(
+        tmp_path, monkeypatch
+    )
+    login = hub_client.post(
+        "/api/account/login",
+        headers={"X-BURNRATE-Request": "1", "X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION)},
+        json={"username": "owner@example.com", "password": PASSWORD, "sessionOnly": True},
+    )
+    assert login.status_code == 200
+    old_session = auth_model.extract_cookie(login) or ""
+    assert old_session.startswith("br_s_")
+    hub_client.cookies.clear()
+
+    db_path = spoke_settings.database_path
+    vault = _MemoryVault()
+    publish_spoke_credentials(
+        db_path,
+        owner_session=old_session,
+        vault=vault,
+        apply_state=lambda _c, st: st["spokeConfig"].update(
+            {"hubConfigured": True, "ownerSessionRotationRequired": True}
+        ),
+    )
+
+    bridge = DesktopBridge(
+        NativeClient(spoke_settings, port=17364),
+        preferences=tmp_path / "s8_rot_prefs.json",
+        vault=vault,
+    )
+
+    real_post = sync._hub_post_with_cookie_isolation
+    rotated_on_hub = threading.Event()
+    allow_return = threading.Event()
+    issued_tokens: list[str] = []
+
+    def _delayed_rotate(hub_url, path, headers, *, client=None, timeout=8.0):
+        res = real_post(hub_url, path, headers, client=client, timeout=timeout)
+        if path == "/api/auth/session/rotate":
+            tok = auth_model.extract_cookie(res) or ""
+            if tok:
+                issued_tokens.append(tok)
+            rotated_on_hub.set()
+            assert allow_return.wait(timeout=3.0)
+        return res
+
+    monkeypatch.setattr(sync, "_hub_post_with_cookie_isolation", _delayed_rotate)
+
+    rot_error: list[str] = []
+
+    def _run_rotation():
+        try:
+            sync.ensure_fresh_owner_session(
+                db_path, HUB_URL, old_session, vault=vault, client=hub_client
+            )
+        except CodedError as exc:
+            rot_error.append(exc.code)
+
+    t_rot = threading.Thread(target=_run_rotation)
+    t_rot.start()
+    assert rotated_on_hub.wait(timeout=3.0)
+
+    # Owner signs out while the delayed rotation response is still in flight.
+    signout_res = bridge.sign_out_owner()
+    assert signout_res["ok"] is True
+    assert read_vault_secret(db_path, OWNER_SESSION_VAULT_REF, vault=vault) is None
+
+    allow_return.set()
+    t_rot.join(timeout=3.0)
+
+    assert rot_error == ["AUTH-107"]
+    assert read_vault_secret(db_path, OWNER_SESSION_VAULT_REF, vault=vault) is None
+    assert bridge.owner_session_status()["hasOwnerSession"] is False
+    assert len(issued_tokens) == 1
+    probe_new = hub_client.get(
+        "/api/machines",
+        headers={
+            "Authorization": f"Bearer {issued_tokens[0]}",
+            "X-BURNRATE-Request": "1",
+            "X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION),
+        },
+    )
+    assert probe_new.status_code == 401
+
+
+def test_s8_stale_rotation_rejection_does_not_delete_newer_sign_in_credential(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _hub_settings, hub_client, spoke_settings, _spoke_app = _create_paired_hub_and_spoke(
+        tmp_path, monkeypatch
+    )
+    db_path = spoke_settings.database_path
+    vault = _MemoryVault()
+    old_session = "br_s_stale_legacy_session"
+    publish_spoke_credentials(
+        db_path,
+        owner_session=old_session,
+        vault=vault,
+        apply_state=lambda _c, st: st["spokeConfig"].update(
+            {"hubConfigured": True, "ownerSessionRotationRequired": True}
+        ),
+    )
+
+    bridge = DesktopBridge(
+        NativeClient(spoke_settings, port=17365),
+        preferences=tmp_path / "s8_rej_prefs.json",
+        vault=vault,
+    )
+
+    rotate_started = threading.Event()
+    allow_reject = threading.Event()
+
+    class _Fake401:
+        status_code = 401
+        content = b'{"code":"AUTH-107","error":"Unauthorized"}'
+        headers: dict[str, str] = {}
+        cookies: dict[str, str] = {}
+
+        def json(self):
+            return {"code": "AUTH-107", "error": "Unauthorized"}
+
+    def _delayed_reject(hub_url, path, headers, *, client=None, timeout=8.0):
+        if path == "/api/auth/session/rotate":
+            rotate_started.set()
+            assert allow_reject.wait(timeout=3.0)
+            return _Fake401()
+        raise AssertionError(f"Unexpected call {path}")
+
+    monkeypatch.setattr(sync, "_hub_post_with_cookie_isolation", _delayed_reject)
+
+    rot_error: list[str] = []
+
+    def _run_rotation():
+        try:
+            sync.ensure_fresh_owner_session(
+                db_path, HUB_URL, old_session, vault=vault, client=hub_client
+            )
+        except CodedError as exc:
+            rot_error.append(exc.code)
+
+    t_rot = threading.Thread(target=_run_rotation)
+    t_rot.start()
+    assert rotate_started.wait(timeout=3.0)
+
+    # Fresh sign-in replaces the legacy session before the stale rejection returns.
+    signin = bridge.sign_in_owner("owner@example.com", PASSWORD, "WinnerPC")
+    assert signin["ok"] is True
+    winner_tok = read_vault_secret(db_path, OWNER_SESSION_VAULT_REF, vault=vault)
+    assert winner_tok and winner_tok != old_session
+
+    allow_reject.set()
+    t_rot.join(timeout=3.0)
+
+    assert rot_error == ["AUTH-107"]
+    assert read_vault_secret(db_path, OWNER_SESSION_VAULT_REF, vault=vault) == winner_tok
+    assert bridge.owner_session_status()["hasOwnerSession"] is True
+    with connect(db_path) as conn:
+        sc = setup_wizard.read_setup_state(conn).get("spokeConfig") or {}
+        assert sc.get("ownerSessionRotationRequired") is False
+
+
+def test_s8_cross_process_clear_and_publish_stay_consistent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "s8_cross_proc.db"
+    initialize(db_path)
+    vault = _MemoryVault()
+
+    # Disable in-process threading lock so SQLite BEGIN IMMEDIATE carries serialization across
+    # simulated separate processes.
+    class _NoOpLock:
+        def acquire(self): pass
+        def release(self): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+
+    monkeypatch.setattr(connection_secrets, "db_secret_lock", lambda _p: _NoOpLock())
+
+    publish_spoke_credentials(
+        db_path,
+        owner_session="br_s_initial_cross",
+        vault=vault,
+        apply_state=lambda _c, st: st["spokeConfig"].update({"ownerSessionRotationRequired": False}),
+    )
+
+    # Case 1: publish holds BEGIN IMMEDIATE while clear arrives concurrently.
+    pub_entered = threading.Event()
+    allow_pub_commit = threading.Event()
+
+    def _slow_apply(_conn, st):
+        st["spokeConfig"]["ownerSessionRotationRequired"] = False
+        pub_entered.set()
+        assert allow_pub_commit.wait(timeout=3.0)
+
+    t_pub = threading.Thread(
+        target=publish_spoke_credentials,
+        args=(db_path,),
+        kwargs={"owner_session": "br_s_mid_winner", "vault": vault, "apply_state": _slow_apply},
+    )
+    t_pub.start()
+    assert pub_entered.wait(timeout=3.0)
+
+    t_clr = threading.Thread(
+        target=clear_spoke_credentials,
+        args=(db_path,),
+        kwargs={"clear_owner_session": True, "vault": vault},
+    )
+    t_clr.start()
+    time.sleep(0.05)
+    # Clear must NOT delete the vault entry before acquiring BEGIN IMMEDIATE.
+    assert vault.get(OWNER_SESSION_VAULT_REF) == "br_s_mid_winner"
+
+    allow_pub_commit.set()
+    t_pub.join(timeout=3.0)
+    t_clr.join(timeout=3.0)
+
+    # Clear ran after publish committed, so BOTH vault and DB metadata are cleared.
+    assert read_vault_secret(db_path, OWNER_SESSION_VAULT_REF, vault=vault) is None
+    with connect(db_path) as conn:
+        sc = setup_wizard.read_setup_state(conn).get("spokeConfig") or {}
+        assert "ownerSession" not in sc
+        gen_after_clear = int(sc.get("credentialGeneration") or 0)
+
+    # Case 2: clear holds BEGIN IMMEDIATE while publish arrives concurrently.
+    clr_entered = threading.Event()
+    allow_clr_commit = threading.Event()
+
+    def _slow_clear_prepare(_conn, _st):
+        clr_entered.set()
+        assert allow_clr_commit.wait(timeout=3.0)
+
+    t_clr2 = threading.Thread(
+        target=clear_spoke_credentials,
+        args=(db_path,),
+        kwargs={
+            "clear_owner_session": True,
+            "vault": vault,
+            "prepare_state": _slow_clear_prepare,
+        },
+    )
+    t_clr2.start()
+    assert clr_entered.wait(timeout=3.0)
+
+    t_pub2 = threading.Thread(
+        target=publish_spoke_credentials,
+        args=(db_path,),
+        kwargs={
+            "owner_session": "br_s_final_winner",
+            "vault": vault,
+            "apply_state": lambda _c, st: st["spokeConfig"].update(
+                {"ownerSessionRotationRequired": False}
+            ),
+        },
+    )
+    t_pub2.start()
+    time.sleep(0.05)
+    # Publish is blocked behind clear's SQLite lock.
+    assert read_vault_secret(db_path, OWNER_SESSION_VAULT_REF, vault=vault) is None
+
+    allow_clr_commit.set()
+    t_clr2.join(timeout=3.0)
+    t_pub2.join(timeout=3.0)
+
+    assert read_vault_secret(db_path, OWNER_SESSION_VAULT_REF, vault=vault) == "br_s_final_winner"
+    with connect(db_path) as conn:
+        sc2 = setup_wizard.read_setup_state(conn).get("spokeConfig") or {}
+        assert int(sc2.get("credentialGeneration") or 0) == gen_after_clear + 2
+        assert sc2.get("ownerSessionRotationRequired") is False
+
+
+def test_s8_fresh_sign_in_uses_supplied_session_even_when_revoked_legacy_stored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _hub_settings, hub_client, spoke_settings, _spoke_app = _create_paired_hub_and_spoke(
+        tmp_path, monkeypatch
+    )
+    db_path = spoke_settings.database_path
+    vault = _MemoryVault()
+
+    # Seed an invalid/revoked legacy session with ownerSessionRotationRequired=True.
+    publish_spoke_credentials(
+        db_path,
+        owner_session="br_s_revoked_legacy_token",
+        vault=vault,
+        apply_state=lambda _c, st: st["spokeConfig"].update(
+            {"hubConfigured": True, "ownerSessionRotationRequired": True}
+        ),
+    )
+
+    # Distinct fresh token passed directly to ensure_fresh_owner_session must pass through untouched.
+    assert (
+        sync.ensure_fresh_owner_session(
+            db_path,
+            HUB_URL,
+            "br_s_distinct_fresh_login",
+            vault=vault,
+            client=hub_client,
+        )
+        == "br_s_distinct_fresh_login"
+    )
+
+    bridge = DesktopBridge(
+        NativeClient(spoke_settings, port=17366),
+        preferences=tmp_path / "s8_fresh_prefs.json",
+        vault=vault,
+    )
+    res = bridge.sign_in("owner@example.com", PASSWORD, "FreshReconnectPC")
+    assert res["ok"] is True, res
+    stored_sess = read_vault_secret(db_path, OWNER_SESSION_VAULT_REF, vault=vault)
+    stored_mach = read_vault_secret(db_path, MACHINE_TOKEN_VAULT_REF, vault=vault)
+    assert stored_sess and stored_sess != "br_s_revoked_legacy_token"
+    assert stored_mach and stored_mach.startswith("br_m_")
+    with connect(db_path) as conn:
+        sc = setup_wizard.read_setup_state(conn).get("spokeConfig") or {}
+        assert sc.get("ownerSessionRotationRequired") is False
+
+
+# ---------------------------------------------------------------------------
+# Round 2 · B3: partial publication migrates or preserves untouched legacy
+# ---------------------------------------------------------------------------
+
+
+def test_b3_partial_publish_migrates_untouched_legacy_and_preserves_on_failure(
+    tmp_path: Path,
+) -> None:
+    # 1) Legacy machine-only upgrade: publishing owner_session migrates DB token cleanly.
+    db_m = tmp_path / "b3_machine_legacy.db"
+    initialize(db_m)
+    with connect(db_m) as conn:
+        st = setup_wizard.read_setup_state(conn)
+        st["role"] = "spoke"
+        st["spokeConfig"] = {**dict(st.get("spokeConfig") or {}), "enabled": True, "token": "br_m_legacy_keep"}
+        setup_wizard.write_setup_state(conn, st)
+
+    v1 = _MemoryVault()
+    publish_spoke_credentials(db_m, owner_session="br_s_new_owner", vault=v1)
+    assert v1.get(OWNER_SESSION_VAULT_REF) == "br_s_new_owner"
+    assert v1.get(MACHINE_TOKEN_VAULT_REF) == "br_m_legacy_keep"
+    with connect(db_m) as conn:
+        raw_row = conn.execute(
+            "SELECT value FROM app_meta WHERE key=?", (setup_wizard.SETUP_META_KEY,)
+        ).fetchone()
+        sc = (json.loads(raw_row[0]).get("spokeConfig") or {}) if raw_row else {}
+        assert "token" not in sc
+        assert "ownerSession" not in sc
+        assert sc.get("rotationRequired") is True
+
+    # 2) Legacy owner-only upgrade: publishing machine_token migrates DB ownerSession cleanly.
+    db_o = tmp_path / "b3_owner_legacy.db"
+    initialize(db_o)
+    with connect(db_o) as conn:
+        st = setup_wizard.read_setup_state(conn)
+        st["role"] = "spoke"
+        st["spokeConfig"] = {
+            **dict(st.get("spokeConfig") or {}),
+            "enabled": True,
+            "ownerSession": "br_s_legacy_keep",
+        }
+        setup_wizard.write_setup_state(conn, st)
+
+    v2 = _MemoryVault()
+    publish_spoke_credentials(db_o, machine_token="br_m_new_machine", vault=v2)
+    assert v2.get(MACHINE_TOKEN_VAULT_REF) == "br_m_new_machine"
+    assert v2.get(OWNER_SESSION_VAULT_REF) == "br_s_legacy_keep"
+    with connect(db_o) as conn:
+        raw_row = conn.execute(
+            "SELECT value FROM app_meta WHERE key=?", (setup_wizard.SETUP_META_KEY,)
+        ).fetchone()
+        sc = (json.loads(raw_row[0]).get("spokeConfig") or {}) if raw_row else {}
+        assert "token" not in sc
+        assert "ownerSession" not in sc
+        assert sc.get("ownerSessionRotationRequired") is True
+
+    # 3) Counterpart migration failure must preserve the unmigrated DB secret rather than dropping it.
+    db_fail = tmp_path / "b3_counterpart_fail.db"
+    initialize(db_fail)
+    with connect(db_fail) as conn:
+        st = setup_wizard.read_setup_state(conn)
+        st["role"] = "spoke"
+        st["spokeConfig"] = {
+            **dict(st.get("spokeConfig") or {}),
+            "enabled": True,
+            "token": "br_m_must_not_be_lost",
+        }
+        setup_wizard.write_setup_state(conn, st)
+
+    class _FailMachineRefVault(_MemoryVault):
+        def put(self, secret: str, ref: str | None = None) -> str:
+            if ref == MACHINE_TOKEN_VAULT_REF:
+                raise LocationError("Keychain write refused for machine ref")
+            return super().put(secret, ref)
+
+    v3 = _FailMachineRefVault()
+    publish_spoke_credentials(db_fail, owner_session="br_s_owner_ok", vault=v3)
+    assert v3.get(OWNER_SESSION_VAULT_REF) == "br_s_owner_ok"
+    with connect(db_fail) as conn:
+        sc = setup_wizard.read_setup_state(conn).get("spokeConfig") or {}
+        assert sc.get("token") == "br_m_must_not_be_lost"
+
+
+# ---------------------------------------------------------------------------
+# Round 2 · B4: SQLite commit failure restores prior vault refs & state
+# ---------------------------------------------------------------------------
+
+
+def test_b4_sqlite_commit_failure_restores_prior_vault_refs_and_preserves_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "b4_commit_fail.db"
+    initialize(db_path)
+    vault = _MemoryVault()
+
+    publish_spoke_credentials(
+        db_path,
+        owner_session="br_s_prior_owner",
+        machine_token="br_m_prior_machine",
+        vault=vault,
+        apply_state=lambda _c, st: st.update({"computerName": "PriorPC"}),
+    )
+    with connect(db_path) as conn:
+        st_before = setup_wizard.read_setup_state(conn)
+        gen_before = int((st_before.get("spokeConfig") or {}).get("credentialGeneration") or 0)
+        assert st_before.get("computerName") == "PriorPC"
+
+    real_connect = db_mod.connect
+
+    class _FailCommitConn:
+        def __init__(self, inner) -> None:
+            self._inner = inner
+            self._conn = None
+
+        def __enter__(self):
+            self._conn = self._inner.__enter__()
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return self._inner.__exit__(exc_type, exc, tb)
+
+        def commit(self):
+            raise sqlite3.OperationalError("simulated disk I/O error on commit")
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+    monkeypatch.setattr(db_mod, "connect", lambda path: _FailCommitConn(real_connect(path)))
+
+    with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+        publish_spoke_credentials(
+            db_path,
+            owner_session="br_s_new_rolled_back",
+            machine_token="br_m_new_rolled_back",
+            vault=vault,
+            apply_state=lambda _c, st: st.update({"computerName": "UpdatedPC"}),
+        )
+
+    assert vault.get(OWNER_SESSION_VAULT_REF) == "br_s_prior_owner"
+    assert vault.get(MACHINE_TOKEN_VAULT_REF) == "br_m_prior_machine"
+
+    monkeypatch.setattr(db_mod, "connect", real_connect)
+    with real_connect(db_path) as conn:
+        st_after = setup_wizard.read_setup_state(conn)
+        assert st_after.get("computerName") == "PriorPC"
+        assert int((st_after.get("spokeConfig") or {}).get("credentialGeneration") or 0) == gen_before
+
+    # Also verify empty prior vault refs are deleted again on commit failure.
+    db_empty = tmp_path / "b4_empty_prior.db"
+    initialize(db_empty)
+    empty_vault = _MemoryVault()
+    monkeypatch.setattr(db_mod, "connect", lambda path: _FailCommitConn(real_connect(path)))
+    with pytest.raises(sqlite3.OperationalError):
+        publish_spoke_credentials(
+            db_empty,
+            owner_session="br_s_temp",
+            machine_token="br_m_temp",
+            vault=empty_vault,
+        )
+    assert read_vault_secret(db_empty, OWNER_SESSION_VAULT_REF, vault=empty_vault) is None
+    assert read_vault_secret(db_empty, MACHINE_TOKEN_VAULT_REF, vault=empty_vault) is None
+

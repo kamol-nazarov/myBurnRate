@@ -138,6 +138,7 @@ def default_setup_state() -> dict:
             "eventsPushed": 0,
             "tokenExpiresAt": None,
             "rotationRequired": False,
+            "credentialGeneration": 0,
         },
         "hudConfig": {
             "autoOpen": True,
@@ -562,6 +563,7 @@ def rotate_spoke_machine_token(settings, *, client=None) -> dict | None:
     from spend_app.hub_origin import hub_origin
     from spend_app.connection_secrets import (
         MACHINE_TOKEN_VAULT_REF,
+        mark_cleanup_pending_in_tx,
         publish_spoke_credentials,
         read_vault_secret,
     )
@@ -624,6 +626,7 @@ def rotate_spoke_machine_token(settings, *, client=None) -> dict | None:
         sc["rotationRequired"] = False
         current["spokeConfig"] = sc
         rotate_spoke_sync_credential(connection, hub_url, replacement["token"])
+        mark_cleanup_pending_in_tx(connection, token_invalidated=True, state=current)
 
     try:
         publish_spoke_credentials(
@@ -1847,6 +1850,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             state = read_setup_state(connection)
         from spend_app.connection_secrets import (
             MACHINE_TOKEN_VAULT_REF,
+            mark_cleanup_pending_in_tx,
             publish_spoke_credentials,
             read_vault_secret,
         )
@@ -1923,6 +1927,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 sc["rotationRequired"] = False
                 current["spokeConfig"] = sc
                 rotate_spoke_sync_credential(connection, hub_url, replacement["token"])
+                mark_cleanup_pending_in_tx(connection, token_invalidated=True, state=current)
 
             publish_spoke_credentials(
                 settings.database_path,
