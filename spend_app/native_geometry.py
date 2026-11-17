@@ -196,6 +196,9 @@ def _monitor_for(rect: Rect, monitors: list[Monitor]) -> Monitor | None:
     )
 
 
+monitor_for = _monitor_for
+
+
 def keep_on_screen(
     rect: tuple[int, int, int, int], monitors: list[Monitor]
 ) -> tuple[int, int]:

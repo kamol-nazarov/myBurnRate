@@ -118,7 +118,8 @@ html[data-theme="dark"] .brand-chip { background: var(--bd-bg); color: var(--bd-
 .l-warn .st { color: var(--warn); }
 .l-balance .top b { color: var(--bal); }
 .l-balance .fuel i { background: var(--bal); opacity: 0.6; }
-.l-idle { opacity: 0.6; }
+.l-idle .logo { opacity: 0.55; }
+.l-idle .fuel { opacity: 0.5; }
 .l-idle .top b { font-size: 12px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; }
 .l-idle .st { font-weight: 600; }
 
@@ -126,6 +127,9 @@ html[data-theme="dark"] .brand-chip { background: var(--bd-bg); color: var(--bd-
 .fine span { font-size: 10.5px; font-weight: 800; padding: 5px 8px; border-radius: 99px; background: var(--hover); color: var(--muted); white-space: nowrap; }
 .fine:hover span, .fine.on span { color: var(--ink); }
 
+.urgentpill { flex: none; width: 92px; height: 48px; display: flex; align-items: center; justify-content: center; border-radius: 10px; }
+.urgentpill span { font-size: 10.5px; font-weight: 800; padding: 5px 9px; border-radius: 99px; background: var(--soon); color: var(--badge-ink); white-space: nowrap; }
+.urgentpill:hover, .urgentpill.on { background: var(--hover); }
 .status { flex: none; height: 48px; display: flex; align-items: center; padding: 0 12px; border-radius: 10px; font-size: 12px; font-weight: 700; color: var(--muted); white-space: nowrap; }
 button.status:hover { background: var(--hover); color: var(--ink); }
 .status b { color: var(--ink); font-weight: 800; margin-right: 6px; }
@@ -135,7 +139,9 @@ button.status:hover { background: var(--hover); color: var(--ink); }
   display: flex; align-items: center; gap: 7px;
 }
 .chip svg { flex: none; }
-.stale .segs, .stale .fine { opacity: 0.5; }
+/* Dimmed, not faded: text keeps a 4.5:1 colour, only the logos and bars fade. */
+.stale .logo, .stale .fuel { opacity: 0.5; }
+.stale .top b, .stale .st { color: var(--muted); }
 .spacer { flex: 1; }
 .open { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; color: var(--muted); flex: none; margin-left: 2px; }
 .open:hover { background: var(--hover); color: var(--ink); }
@@ -156,7 +162,7 @@ body.up .card-wrap { padding: 0 0 6px; }
 .pb i { display: block; height: 100%; background: var(--ok); border-radius: 9px; }
 .pw.l-out .pb i, .pw.l-soon .pb i { background: var(--soon); }
 .pw.l-warn .pb i { background: var(--warn); }
-.pw.muted { opacity: 0.65; }
+.pw.muted .pl span, .pw.muted .pl b { color: var(--muted); }
 .pc { display: flex; gap: 6px; align-items: flex-start; font-size: 11px; font-weight: 700; line-height: 1.35; }
 .pc svg { flex: none; margin-top: 1px; }
 .pc.soon { color: var(--soon); }
@@ -178,6 +184,7 @@ body.up .card-wrap { padding: 0 0 6px; }
     <span class="badge" id="badge" hidden></span>
   </div>
   <ul class="segs" id="segs" aria-label="What is left per provider, most urgent first"></ul>
+  <button class="urgentpill" id="urgentPill" type="button" hidden></button>
   <button class="fine" id="fine" type="button" hidden></button>
   <div id="status"></div>
   <div class="chip" id="chip" role="status" hidden></div>
@@ -191,6 +198,7 @@ body.up .card-wrap { padding: 0 0 6px; }
   "use strict";
   var HIDE_DELAY = 220, SHOW_DELAY = 140;
   var state = null, openKey = null, showTimer = 0, hideTimer = 0, ready = false;
+  var lastSig = null, restoring = false, rebuilding = false;
   var $ = function (id) { return document.getElementById(id); };
 
   function esc(value) {
@@ -223,7 +231,42 @@ body.up .card-wrap { padding: 0 0 6px; }
       '<span class="st">' + esc(s.status) + "</span></div></button></li>";
   }
 
+  /* Updates never take the keyboard's place: an unchanged payload touches no
+     DOM, and a changed one puts focus back on the same provider or action. */
+  function focusToken() {
+    var el = document.activeElement;
+    if (!el || el === document.body) return null;
+    if (el.classList.contains("seg")) {
+      var seg = state && state.segments[Number(el.dataset.i)];
+      return seg ? { k: "seg", key: seg.key } : null;
+    }
+    if (el.id === "fine" || el.id === "urgentPill" || el.id === "open" || el.id === "emptyBtn") return { k: el.id };
+    if (el.hasAttribute && el.hasAttribute("data-open")) return { k: "card-open" };
+    return null;
+  }
+  function restoreFocus(token) {
+    if (!token) return;
+    var target = null;
+    if (token.k === "seg") {
+      var index = segIndex(token.key);
+      target = index >= 0 ? document.querySelector('.seg[data-i="' + index + '"]') : null;
+    } else if (token.k === "card-open") {
+      target = document.querySelector("#card [data-open]");
+    } else {
+      target = $(token.k);
+    }
+    if (!target || target.hidden) return;
+    restoring = true;
+    try { target.focus({ preventScroll: true }); } finally { restoring = false; }
+  }
+  function pillHtml(count, noun) { return "<span>+" + esc(count) + " " + noun + "</span>"; }
+
   function render(next) {
+    var sig = JSON.stringify(next);
+    if (sig === lastSig) return;
+    lastSig = sig;
+    var token = focusToken();
+    rebuilding = true;
     state = next;
     if (window.burnrateTabTheme) window.burnrateTabTheme.setDark(!!next.dark);
     var tab = $("tab");
@@ -236,9 +279,15 @@ body.up .card-wrap { padding: 0 0 6px; }
     var fine = $("fine");
     if (next.fine) {
       fine.hidden = false;
-      fine.innerHTML = "<span>+" + esc(next.fine.count) + " fine</span>";
+      fine.innerHTML = pillHtml(next.fine.count, "fine");
       fine.setAttribute("aria-label", next.fine.count + " more providers, all fine");
     } else { fine.hidden = true; fine.innerHTML = ""; }
+    var urgentPill = $("urgentPill");
+    if (next.urgentMore) {
+      urgentPill.hidden = false;
+      urgentPill.innerHTML = pillHtml(next.urgentMore.count, "urgent");
+      urgentPill.setAttribute("aria-label", next.urgentMore.count + " more providers about to run out");
+    } else { urgentPill.hidden = true; urgentPill.innerHTML = ""; }
     var status = $("status");
     if (next.state === "loading") {
       status.innerHTML = '<div class="status"><b>BURNRATE</b>Loading…</div>';
@@ -257,12 +306,15 @@ body.up .card-wrap { padding: 0 0 6px; }
       var still = cardFor(openKey);
       if (still) fillCard(still); else hideCard();
     }
+    restoreFocus(token);
+    rebuilding = false;
   }
 
   /* ---- hover card ---------------------------------------------------- */
   function cardFor(key) {
     if (!state) return null;
-    if (key === "__fine__") return state.fine ? { fine: state.fine } : null;
+    if (key === "__fine__") return state.fine ? { pill: state.fine, kind: "fine" } : null;
+    if (key === "__urgent__") return state.urgentMore ? { pill: state.urgentMore, kind: "urgent" } : null;
     var list = state.segments || [];
     for (var i = 0; i < list.length; i++) if (list[i].key === key) return list[i];
     return null;
@@ -280,9 +332,13 @@ body.up .card-wrap { padding: 0 0 6px; }
       '<div class="pr"><span>' + esc(r.resets) + "</span><span>" + esc(r.usedPct) + "% used</span></div>" + pace + "</div>";
   }
   function cardHtml(seg) {
-    if (seg.fine) {
-      return '<div class="ph"><div><b>' + esc(seg.fine.count) + ' more, all fine</b><small>Nothing close to running out</small></div></div>' +
-        seg.fine.items.map(function (it) {
+    if (seg.pill) {
+      var heading = seg.kind === "urgent"
+        ? esc(seg.pill.count) + " more need attention"
+        : esc(seg.pill.count) + " more, all fine";
+      var sub = seg.kind === "urgent" ? "Open BURNRATE for the full picture" : "Nothing close to running out";
+      return '<div class="ph"><div><b>' + heading + "</b><small>" + sub + "</small></div></div>" +
+        seg.pill.items.map(function (it) {
           return '<div class="fine-row">' + logo(it.key) + "<b>" + esc(it.title) + "</b><span>" + esc(it.text) + "</span></div>";
         }).join("") + '<button class="po" type="button" data-open>Open BURNRATE</button>';
     }
@@ -298,11 +354,21 @@ body.up .card-wrap { padding: 0 0 6px; }
   }
   function fillCard(seg) {
     var card = $("card");
-    card.innerHTML = cardHtml(seg);
+    var html = cardHtml(seg);
+    if (card.dataset.html !== html) {
+      var token = focusToken();
+      rebuilding = true;
+      card.innerHTML = html;
+      card.dataset.html = html;
+      restoreFocus(token);
+      rebuilding = false;
+    }
     $("cardWrap").hidden = false;
     var layout = (state && state.layout) || {};
     var cardW = layout.cardWidth || 300;
-    var seat = openKey === "__fine__" ? $("fine") : document.querySelector('.seg[data-i="' + segIndex(openKey) + '"]');
+    var seat = openKey === "__fine__" ? $("fine")
+      : openKey === "__urgent__" ? $("urgentPill")
+      : document.querySelector('.seg[data-i="' + segIndex(openKey) + '"]');
     var left = 0;
     if (seat) left = Math.max(0, Math.min(seat.getBoundingClientRect().left, (layout.width || cardW) - cardW));
     card.style.marginLeft = left + "px";
@@ -322,7 +388,7 @@ body.up .card-wrap { padding: 0 0 6px; }
     var seg = cardFor(key);
     if (!seg) return;
     openKey = key;
-    document.querySelectorAll(".seg.on, .fine.on").forEach(function (el) { el.classList.remove("on"); });
+    document.querySelectorAll(".seg.on, .fine.on, .urgentpill.on").forEach(function (el) { el.classList.remove("on"); });
     if (seat) seat.classList.add("on");
     fillCard(seg);
   }
@@ -330,7 +396,8 @@ body.up .card-wrap { padding: 0 0 6px; }
     clearTimeout(showTimer);
     if (openKey === null) return;
     openKey = null;
-    document.querySelectorAll(".seg.on, .fine.on").forEach(function (el) { el.classList.remove("on"); });
+    document.querySelectorAll(".seg.on, .fine.on, .urgentpill.on").forEach(function (el) { el.classList.remove("on"); });
+    $("card").dataset.html = "";
     $("cardWrap").hidden = true;
     document.body.classList.remove("up");
     call("collapse");
@@ -357,6 +424,7 @@ body.up .card-wrap { padding: 0 0 6px; }
     if (seg) scheduleShow(seg.key, seat);
   });
   segsEl.addEventListener("focusin", function (e) {
+    if (restoring) return;
     var seat = segFrom(e.target);
     if (!seat || !state) return;
     var seg = state.segments[Number(seat.dataset.i)];
@@ -364,8 +432,11 @@ body.up .card-wrap { padding: 0 0 6px; }
   });
   segsEl.addEventListener("click", function (e) { if (segFrom(e.target)) call("open_full"); });
   $("fine").addEventListener("mouseenter", function () { scheduleShow("__fine__", $("fine")); });
-  $("fine").addEventListener("focus", function () { clearTimeout(hideTimer); showCard("__fine__", $("fine")); });
+  $("fine").addEventListener("focus", function () { if (restoring) return; clearTimeout(hideTimer); showCard("__fine__", $("fine")); });
   $("fine").addEventListener("click", function () { call("open_full"); });
+  $("urgentPill").addEventListener("mouseenter", function () { scheduleShow("__urgent__", $("urgentPill")); });
+  $("urgentPill").addEventListener("focus", function () { if (restoring) return; clearTimeout(hideTimer); showCard("__urgent__", $("urgentPill")); });
+  $("urgentPill").addEventListener("click", function () { call("open_full"); });
   $("open").addEventListener("click", function () { call("open_full"); });
   $("cardWrap").addEventListener("click", function (e) {
     if (e.target.closest && e.target.closest("[data-open]")) call("open_full");
@@ -376,6 +447,7 @@ body.up .card-wrap { padding: 0 0 6px; }
     if (e.key === "Escape" && openKey !== null) { hideCard(); }
   });
   document.addEventListener("focusout", function (e) {
+    if (rebuilding) return;
     if (e.relatedTarget === null || !document.body.contains(e.relatedTarget)) scheduleHide();
   });
   $("tab").addEventListener("mousedown", function (e) {

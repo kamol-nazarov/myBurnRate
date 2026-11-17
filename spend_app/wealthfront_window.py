@@ -31,6 +31,7 @@ from spend_app.error_codes import (
 )
 from spend_app.redact import redact_hub_urls
 from spend_app.native_alerts import QuotaWatcher
+from spend_app.native_activation import ActivationListener, signal_running_instance
 from spend_app.native_autoupdate import UpdateChecker
 from spend_app.native_desktop import (
     PERIOD_LABELS,
@@ -46,6 +47,7 @@ from spend_app.native_tray import TrayController, run_on_ui
 from spend_app.opencode_providers import provider_tool_name
 from spend_app.provider_urgency import (
     PROFILE_FAMILIES,
+    assign_display_rank,
     build_funds_runway,
     build_pace,
     compute_urgency,
@@ -729,6 +731,7 @@ def merge_provider_entries(
             *_default_provider_rank(item["key"]),
         )
     )
+    assign_display_rank(providers)
     return providers
 
 
@@ -1179,6 +1182,12 @@ class DesktopBridge:
             self._prefs.update({SURFACE_KEY: surface, "hudMini": None})
         self._tab_model = TabModel()
         self._surfaces: SurfaceController | None = None
+        # How many fetch_usage calls are running; the tab waits on this rather
+        # than starting a refresh of its own.
+        self._refresh_state = threading.Lock()
+        self._refreshes_running = 0
+        self._refresh_idle = threading.Event()
+        self._refresh_idle.set()
         raw_density = str(saved.get("hudDensity") or "compact").strip().lower()
         self._hud_density = raw_density if raw_density in {"compact", "comfortable"} else "compact"
         if not self._demo:
@@ -1201,10 +1210,6 @@ class DesktopBridge:
     @property
     def effective_dark(self) -> bool | None:
         return self._effective_dark
-
-    @property
-    def current_period(self) -> str:
-        return self._period
 
     def _remember_surface(self, surface: str) -> None:
         if surface in SURFACES and surface != self._surface:
@@ -1612,6 +1617,24 @@ class DesktopBridge:
             return None
 
     def fetch_usage(
+        self, period: str = "today", machine: str = "all", restart: bool = False
+    ) -> dict:
+        with self._refresh_state:
+            self._refreshes_running += 1
+            self._refresh_idle.clear()
+        try:
+            return self._fetch_usage(period, machine, restart)
+        finally:
+            with self._refresh_state:
+                self._refreshes_running -= 1
+                if self._refreshes_running == 0:
+                    self._refresh_idle.set()
+
+    def _wait_for_refresh(self, timeout: float) -> bool:
+        """Block until no refresh is running (True), or ``timeout`` passes (False)."""
+        return self._refresh_idle.wait(timeout)
+
+    def _fetch_usage(
         self, period: str = "today", machine: str = "all", restart: bool = False
     ) -> dict:
         use_period = period if period in PERIOD_LABELS else "today"
@@ -4065,9 +4088,16 @@ def _find_icon() -> Path | None:
 
 
 def _focus_existing_window(title: str) -> bool:
-    """Bring a running BURNRATE window forward, un-hiding it from the tray."""
+    """Bring a running BURNRATE window forward, un-hiding it from the tray.
+
+    The running process is asked to open its full window through its own
+    surface controller (it remembers which window is up); only a running build
+    without that listener falls back to poking the windows directly.
+    """
     if sys.platform != "win32":
         return False
+    if signal_running_instance():
+        return True
     try:
         import ctypes
 
@@ -4241,12 +4271,17 @@ class WindowHost:
     def _finish_quit(self) -> None:
         self.tracker.flush()
         self._stop_workers()
-        if self.surfaces is not None:
-            self.surfaces.tab.destroy()
+        self._shutdown_surfaces()
         try:
             self.window.destroy()
         except Exception:
             LOGGER.debug("Destroy skipped", exc_info=True)
+
+    def _shutdown_surfaces(self) -> None:
+        """Drop queued transitions and destroy the tab (idempotent). Every way of
+        closing the full window ends here, so the tab can never be orphaned."""
+        if self.surfaces is not None:
+            self.surfaces.shutdown()
 
     def _stop_workers(self) -> None:
         self.tracker.disable()
@@ -4263,6 +4298,7 @@ class WindowHost:
         """Idempotent final cleanup, also reached when the window died early."""
         self.quitting = True
         self._stop_workers()
+        self._shutdown_surfaces()
         if self.tray is not None:
             self.tray.dispose()
 
@@ -4366,6 +4402,7 @@ class WindowHost:
             self.quitting = True
             self.tracker.flush()  # still visible here: the last rectangle
             self._stop_workers()
+            self._shutdown_surfaces()  # the tab goes with the window
 
         def on_closed(_sender, _args) -> None:
             # On the UI thread, so the icon is removed before the loop exits.
@@ -4550,6 +4587,11 @@ def run_webview(
         tab_host.push(payload)
 
     bridge._tab_model.subscribe(push_tab)
+    tab_host.on_reflow = push_tab  # a new monitor or DPI means a new width budget
+    # A second launch asks this process (not the raw windows) to open the full one.
+    activation = ActivationListener(surfaces.show_full)
+    if not demo and not smoke_test:
+        activation.start()
     result = [0]
 
     def on_shown():
@@ -4569,6 +4611,7 @@ def run_webview(
 
     def on_tab_moved(*_position):
         tab_host.tracker.notify_changed()
+        tab_host.check_budget()
 
     def on_moved(*_position):
         tracker.notify_changed()
@@ -4660,6 +4703,7 @@ def run_webview(
             storage_path=str(storage_dir),
         )
     finally:
+        activation.stop()
         host.shutdown()
         _remove_tree(storage_dir)
     return result[0]
