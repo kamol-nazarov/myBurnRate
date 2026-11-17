@@ -609,7 +609,7 @@ def create_app(
             machines = list_machines(connection)
             raw_setup = read_setup_state(connection)
             setup_completed = bool(raw_setup.get("completed"))
-            public_setup = public_setup_state(raw_setup)
+            public_setup = public_setup_state(raw_setup, database_path=settings.database_path)
         hub_onboarding = fetch_from_configured_hub(settings, "/api/onboarding")
         if hub_onboarding is not None:
             if isinstance(hub_onboarding.get("machines"), list):

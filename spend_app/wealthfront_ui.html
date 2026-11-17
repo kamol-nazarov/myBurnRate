@@ -6269,7 +6269,7 @@ function toggleScopePopover() {
   const machines = state.report?.machines || [];
   const items = [{ id: "all", name: "All computers", online: true }, ...machines];
   pop.innerHTML = items.map(m => `
-    <button class="scope-opt ${state.machine === m.id ? "selected" : ""}" type="button" role="menuitemradio" aria-checked="${state.machine === m.id}" onclick="selectScope('${esc(m.id)}')">
+    <button class="scope-opt ${state.machine === m.id ? "selected" : ""}" type="button" role="menuitemradio" aria-checked="${state.machine === m.id}" data-scope-id="${esc(m.id)}">
       <span>
         ${m.id !== "all" ? `<span class="scope-dot ${m.online === false ? "offline" : ""}" aria-hidden="true"></span>` : ""}
         ${esc(m.name || m.id)}
@@ -6379,14 +6379,14 @@ function renderSettingsBody() {
   if (target && state.settingsOpen) target.focus();
 }
 
-function switchRow(id, title, desc, on, handler) {
+function switchRow(id, title, desc, on, action) {
   return `
     <div class="toggle-row">
       <div>
         <div class="source-name" id="${id}Label">${title}</div>
         <div class="source-meta" id="${id}Desc">${desc}</div>
       </div>
-      <button class="switch ${on ? "on" : ""}" id="${id}" type="button" role="switch" aria-checked="${on ? "true" : "false"}" aria-labelledby="${id}Label" aria-describedby="${id}Desc" onclick="${handler}"></button>
+      <button class="switch ${on ? "on" : ""}" id="${id}" type="button" role="switch" aria-checked="${on ? "true" : "false"}" aria-labelledby="${id}Label" aria-describedby="${id}Desc" data-switch-action="${esc(action)}"></button>
     </div>`;
 }
 
@@ -6514,24 +6514,24 @@ function paintSettingsBody() {
         </div>
         <div class="opacity-pills" role="radiogroup" aria-labelledby="themeLabel">
           ${themes.map(([val, lbl]) => `
-            <button class="btn-secondary ${pref === val ? "active" : ""}" id="theme_${val}" type="button" role="radio" aria-checked="${pref === val}" tabindex="${pref === val ? 0 : -1}" onclick="selectTheme('${val}')">${lbl}</button>
+            <button class="btn-secondary ${pref === val ? "active" : ""}" id="theme_${val}" type="button" role="radio" aria-checked="${pref === val}" tabindex="${pref === val ? 0 : -1}" data-theme-pref="${esc(val)}">${lbl}</button>
           `).join("")}
         </div>
       </div>
-      ${switchRow("sw_topmost", "Keep window on top", "Pin BURNRATE above your editor and terminal windows", state.topmost, "toggleTopmost()")}
-      ${switchRow("sw_autofade", "Transparent when not hovered", "Fade when the pointer leaves, including while pinned", state.autoFade, "toggleAutoFade()")}
+      ${switchRow("sw_topmost", "Keep window on top", "Pin BURNRATE above your editor and terminal windows", state.topmost, "toggleTopmost")}
+      ${switchRow("sw_autofade", "Transparent when not hovered", "Fade when the pointer leaves, including while pinned", state.autoFade, "toggleAutoFade")}
       ${state.autoFade ? `
         <div class="opacity-presets">
           <span class="source-meta" id="idleOpacityLabel">Idle opacity</span>
           <div class="opacity-pills" role="group" aria-labelledby="idleOpacityLabel">
             ${presets.map(([val, lbl]) => `
-              <button class="btn-secondary ${Math.abs(state.idleOpacity - val) < 0.05 ? "active" : ""}" id="opacity_${Math.round(val * 100)}" type="button" aria-pressed="${Math.abs(state.idleOpacity - val) < 0.05}" onclick="selectIdleOpacity(${val})">${lbl}</button>
+              <button class="btn-secondary ${Math.abs(state.idleOpacity - val) < 0.05 ? "active" : ""}" id="opacity_${Math.round(val * 100)}" type="button" aria-pressed="${Math.abs(state.idleOpacity - val) < 0.05}" data-idle-opacity="${Number(val)}">${lbl}</button>
             `).join("")}
           </div>
         </div>
       ` : ""}
-      ${showTray ? switchRow("sw_tray", "Keep running in the tray when closed", "Closing the window hides BURNRATE instead of quitting", state.closeToTray, "toggleCloseToTray()") : ""}
-      ${showAlerts ? switchRow("sw_alerts", "Low-quota notifications", "Warn when a plan or balance is about to run out", state.lowQuotaAlerts, "toggleLowQuotaAlerts()") : ""}
+      ${showTray ? switchRow("sw_tray", "Keep running in the tray when closed", "Closing the window hides BURNRATE instead of quitting", state.closeToTray, "toggleCloseToTray") : ""}
+      ${showAlerts ? switchRow("sw_alerts", "Low-quota notifications", "Warn when a plan or balance is about to run out", state.lowQuotaAlerts, "toggleLowQuotaAlerts") : ""}
       ${state.providerOrder.length ? `
         <div class="toggle-row">
           <div>
@@ -7243,7 +7243,7 @@ function h5MachinesListHtml(machines, currentMachineId, canRemove) {
           </div>
           ${canRemove && !isCur && !confirming ? `
             <div class="h5-comp-actions">
-              <button class="btn-secondary" type="button" data-h5-remove-ask="${esc(mid)}" onclick="h5AskRemoveComputer('${esc(mid)}')" ${removing ? "disabled" : ""}>${removing ? "Removing…" : "Remove"}</button>
+              <button class="btn-secondary" type="button" data-h5-remove-ask="${esc(mid)}" ${removing ? "disabled" : ""}>${removing ? "Removing…" : "Remove"}</button>
             </div>
           ` : ""}
           ${confirming ? `
@@ -7251,7 +7251,7 @@ function h5MachinesListHtml(machines, currentMachineId, canRemove) {
               <span>Remove ${esc(m.name || mid)}?</span>
               <div class="h5-comp-actions">
                 <button class="btn-secondary" type="button" onclick="h5CancelRemoveComputer()" ${removing ? "disabled" : ""}>Cancel</button>
-                <button class="btn-danger-quiet" type="button" data-h5-remove-confirm="${esc(mid)}" onclick="h5ConfirmRemoveComputer('${esc(mid)}')" ${removing ? "disabled" : ""}>${removing ? "Removing…" : "Confirm"}</button>
+                <button class="btn-danger-quiet" type="button" data-h5-remove-confirm="${esc(mid)}" ${removing ? "disabled" : ""}>${removing ? "Removing…" : "Confirm"}</button>
               </div>
             </div>
           ` : ""}
@@ -7344,7 +7344,7 @@ function h5HubAccountHtml(context = "settings") {
       <button class="h5-seg-btn ${mode === "register" ? "on" : ""}" id="${prefix}authMode_register" type="button" role="tab" aria-selected="${mode === "register"}" onclick="setAccountAuthMode('register')">Create account</button>
     </div>
     ${state.accountError ? h5RenderErrBanner(state.accountError) : ""}
-    <form class="h5-form hub-form" autocomplete="off" novalidate onsubmit="event.preventDefault();submitHubAccount('${ctx}')">
+    <form class="h5-form hub-form" autocomplete="off" novalidate data-hub-account-ctx="${esc(ctx)}">
       <div class="h5-field">
         <label for="${idUser}">Email</label>
         <input class="text-input" id="${idUser}" type="email" autocomplete="email" spellcheck="false" placeholder="you@example.com" value="${esc(emailVal)}" oninput="h5UpdateDraft('email', this.value)"/>
@@ -10583,6 +10583,45 @@ document.getElementById("fullModeBtn")?.addEventListener("click", () => applyHud
 document.getElementById("miniModeBtn")?.addEventListener("click", () => applyHudMode(true, state.hudDensity, true));
 document.getElementById("densityBtn")?.addEventListener("click", () => applyHudMode(state.hudMini, state.hudDensity === "comfortable" ? "compact" : "comfortable", true));
 document.getElementById("hudMiniBar")?.addEventListener("click", () => applyHudMode(false, state.hudDensity, true));
+document.getElementById("scopePopover")?.addEventListener("click", (e) => {
+  const opt = e.target.closest("[data-scope-id]");
+  if (opt && typeof window.selectScope === "function") window.selectScope(opt.dataset.scopeId);
+});
+document.addEventListener("click", (e) => {
+  const sw = e.target.closest("[data-switch-action]");
+  if (sw) {
+    const fn = window[sw.dataset.switchAction];
+    if (typeof fn === "function") fn();
+    return;
+  }
+  const themeBtn = e.target.closest("button[data-theme-pref]");
+  if (themeBtn && typeof window.selectTheme === "function") {
+    window.selectTheme(themeBtn.dataset.themePref);
+    return;
+  }
+  const opBtn = e.target.closest("[data-idle-opacity]");
+  if (opBtn && typeof window.selectIdleOpacity === "function") {
+    window.selectIdleOpacity(Number(opBtn.dataset.idleOpacity));
+    return;
+  }
+  const askBtn = e.target.closest("[data-h5-remove-ask]");
+  if (askBtn && !askBtn.disabled && typeof window.h5AskRemoveComputer === "function") {
+    window.h5AskRemoveComputer(askBtn.dataset.h5RemoveAsk);
+    return;
+  }
+  const confirmBtn = e.target.closest("[data-h5-remove-confirm]");
+  if (confirmBtn && !confirmBtn.disabled && typeof window.h5ConfirmRemoveComputer === "function") {
+    window.h5ConfirmRemoveComputer(confirmBtn.dataset.h5RemoveConfirm);
+  }
+});
+document.addEventListener("submit", (e) => {
+  const form = e.target.closest("form[data-hub-account-ctx]");
+  if (!form) return;
+  e.preventDefault();
+  if (typeof window.submitHubAccount === "function") {
+    window.submitHubAccount(form.dataset.hubAccountCtx || "settings");
+  }
+});
 
 if (window.pywebview && window.pywebview.api) {
   boot();

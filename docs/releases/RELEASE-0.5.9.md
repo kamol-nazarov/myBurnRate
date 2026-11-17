@@ -17,8 +17,11 @@ moved into the app.
   signing in again reconnects the same computer instead of adding a duplicate.
   Machine tokens refresh themselves before they expire.
 - **Settings → Hub account** shows your Computers with **Remove**, plus **Sign
-  in**, **Create account**, **Change password** and **Sign out**. Signing in
-  returns right away; the first sync runs in the background.
+  in**, **Create account**, **Change password** and **Sign out**. **Remove**
+  revokes that computer's machine sync token only; an existing owner session on
+  that device stays valid until you sign out there or change your account
+  password (which signs other sessions out). Signing in returns right away; the
+  first sync runs in the background.
 - **Stored in your keychain.** The owner session and machine token live only in
   the OS keychain, never in the database. Older installs move over on first start.
 

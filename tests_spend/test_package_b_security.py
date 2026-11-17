@@ -613,10 +613,20 @@ def test_l7_spoke_join_register_login_owner_session_and_rotate_end_to_end(
         assert body1["account"]["machineId"]
         assert any(m["name"] == "Spoke One" for m in body1["machines"])
 
+        from spend_app.connection_secrets import (
+            MACHINE_TOKEN_VAULT_REF,
+            OWNER_SESSION_VAULT_REF,
+            get_vault,
+        )
+
         with connect(spoke1_settings.database_path) as conn:
             sc1 = setup_wizard.read_setup_state(conn)["spokeConfig"]
-        assert sc1["ownerSession"].startswith("br_s_")
-        assert sc1["token"].startswith("br_m_")
+        assert "ownerSession" not in sc1
+        assert not sc1.get("token")
+        spoke1_vault = get_vault(spoke1_settings.database_path)
+        initial_owner_session = spoke1_vault.get(OWNER_SESSION_VAULT_REF)
+        assert initial_owner_session.startswith("br_s_")
+        assert spoke1_vault.get(MACHINE_TOKEN_VAULT_REF).startswith("br_m_")
 
         # 2) Spoke 2 joins via /api/setup/account (mode=login)
         res2 = spoke2.post(
@@ -646,8 +656,7 @@ def test_l7_spoke_join_register_login_owner_session_and_rotate_end_to_end(
         assert hub_summary.json()["totals"]["tokens"] == 10000
 
         # 3) Spoke 1 signs in owner via DesktopBridge (never exposing br_s_ to caller)
-        vault = _MemoryVault()
-        bridge = DesktopBridge(NativeClient(spoke1_settings, port=17331), vault=vault)
+        bridge = DesktopBridge(NativeClient(spoke1_settings, port=17331), vault=spoke1_vault)
         sign_in = bridge.sign_in_owner(
             "owner@example.com", PASSWORD, device_label="Spoke One Desktop"
         )
@@ -657,10 +666,11 @@ def test_l7_spoke_join_register_login_owner_session_and_rotate_end_to_end(
         assert "sessionToken" not in sign_in
         assert "br_s_" not in str(sign_in)
         with connect(spoke1_settings.database_path) as conn:
-            session_before = setup_wizard.read_setup_state(conn)["spokeConfig"]["ownerSession"]
+            sc_after_signin = setup_wizard.read_setup_state(conn)["spokeConfig"]
+        assert "ownerSession" not in sc_after_signin
+        session_before = spoke1_vault.get(DesktopBridge.OWNER_SESSION_VAULT_REF)
         assert session_before.startswith("br_s_")
-        assert session_before != sc1["ownerSession"]
-        assert vault.get(DesktopBridge.OWNER_SESSION_VAULT_REF) == session_before
+        assert session_before != initial_owner_session
 
         listed = bridge.list_owner_sessions()
         assert listed["ok"] is True, listed
@@ -675,10 +685,11 @@ def test_l7_spoke_join_register_login_owner_session_and_rotate_end_to_end(
         assert "br_s_" not in str(rot)
         assert rot["sessionId"] != sign_in["sessionId"]
         with connect(spoke1_settings.database_path) as conn:
-            session_after = setup_wizard.read_setup_state(conn)["spokeConfig"]["ownerSession"]
+            sc_after_rot = setup_wizard.read_setup_state(conn)["spokeConfig"]
+        assert "ownerSession" not in sc_after_rot
+        session_after = spoke1_vault.get(DesktopBridge.OWNER_SESSION_VAULT_REF)
         assert session_after.startswith("br_s_")
         assert session_after != session_before
-        assert vault.get(DesktopBridge.OWNER_SESSION_VAULT_REF) == session_after
 
         # Old hub session is revoked; new hub session is valid on hub
         hub_client.cookies.clear()

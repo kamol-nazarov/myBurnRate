@@ -2003,7 +2003,12 @@ class DesktopBridge:
                 self._client.request("/api/setup/defer", {})
             except DesktopError:
                 pass
-            self._sync_owner_session_from_db()
+            with self._owner_session_lock:
+                self._owner_session = None
+                self._owner_session_expires_at = None
+                self._machine_token = None
+            self._get_owner_session_info()
+            self._get_machine_token()
             out = {
                 "ok": True,
                 "account": res.get("account") or {},
@@ -2093,7 +2098,7 @@ class DesktopBridge:
         return get_vault(db_path)
 
     def _migrate_legacy_secrets(self) -> None:
-        if self._vault is not None:
+        if self._demo or self._vault is not None:
             return
         db_path = self._db_path()
         if db_path is None or not db_path.is_file():
@@ -2104,34 +2109,6 @@ class DesktopBridge:
             migrate_legacy_spoke_secrets(db_path)
         except Exception:
             LOGGER.debug("Legacy spoke secret migration skipped", exc_info=True)
-
-    def _sync_owner_session_from_db(self) -> None:
-        db_path = self._db_path()
-        if db_path is None or not db_path.is_file():
-            return
-        from spend_app.db import connect
-        from spend_app.setup_wizard import read_setup_state
-
-        try:
-            with connect(db_path) as conn:
-                state = read_setup_state(conn)
-        except Exception:
-            return
-        spoke = state.get("spokeConfig") or {}
-        token = str(spoke.get("ownerSession") or "").strip() or None
-        expires_at = spoke.get("ownerSessionExpiresAt")
-        with self._owner_session_lock:
-            self._owner_session = token
-            self._owner_session_expires_at = expires_at if token else None
-        if token:
-            vault = self._resolve_vault()
-            if vault is not None:
-                try:
-                    from spend_app.connection_secrets import verified_vault_put
-
-                    verified_vault_put(vault, token, self.OWNER_SESSION_VAULT_REF)
-                except Exception:
-                    pass
 
     def _get_owner_session_info(self) -> tuple[str | None, str | None]:
         db_path = self._db_path()
@@ -2177,74 +2154,61 @@ class DesktopBridge:
         token, _ = self._get_owner_session_info()
         return token
 
-    def _save_owner_session(self, token: str, expires_at: str | None = None) -> None:
+    def _publish_owner_session(self, token: str, expires_at: str | None = None) -> None:
         clean_token = str(token or "").strip()
         if not clean_token:
             self._clear_owner_session()
             return
         with self._owner_session_lock:
+            vault = self._resolve_vault()
+            db_path = self._db_path()
+            if db_path is not None:
+                from spend_app.connection_secrets import publish_spoke_credentials
+                from spend_app.sync import clear_hub_proxy_cache
+
+                def _apply(_conn, state):
+                    spoke = dict(state.get("spokeConfig") or {})
+                    spoke["ownerSessionExpiresAt"] = expires_at
+                    spoke["ownerSessionRotationRequired"] = False
+                    state["spokeConfig"] = spoke
+
+                publish_spoke_credentials(
+                    db_path,
+                    owner_session=clean_token,
+                    vault=vault,
+                    apply_state=_apply,
+                )
+                clear_hub_proxy_cache()
+            else:
+                from spend_app.connection_secrets import verified_vault_put
+
+                verified_vault_put(vault, clean_token, self.OWNER_SESSION_VAULT_REF)
             self._owner_session = clean_token
             self._owner_session_expires_at = expires_at
-            vault = self._resolve_vault()
-            if vault is not None:
-                try:
-                    vault.put(clean_token, self.OWNER_SESSION_VAULT_REF)
-                except Exception:
-                    pass
-            db_path = self._db_path()
-            if db_path is not None and db_path.is_file():
-                try:
-                    from spend_app.db import connect
-                    from spend_app.setup_wizard import read_setup_state, write_setup_state
-                    from spend_app.sync import clear_hub_proxy_cache
-
-                    with connect(db_path) as conn:
-                        conn.execute("BEGIN IMMEDIATE")
-                        state = read_setup_state(conn)
-                        spoke = state.get("spokeConfig") or {}
-                        if (
-                            state.get("role") == "spoke"
-                            or spoke.get("enabled")
-                            or spoke.get("hubUrl")
-                        ):
-                            spoke["ownerSession"] = clean_token
-                            spoke["ownerSessionExpiresAt"] = expires_at
-                            state["spokeConfig"] = spoke
-                            write_setup_state(conn, state)
-                    clear_hub_proxy_cache()
-                except Exception:
-                    pass
 
     def _clear_owner_session(self) -> None:
         with self._owner_session_lock:
             self._owner_session = None
             self._owner_session_expires_at = None
             vault = self._resolve_vault()
-            if vault is not None:
-                try:
-                    vault.delete(self.OWNER_SESSION_VAULT_REF)
-                except Exception:
-                    pass
             db_path = self._db_path()
             if db_path is not None and db_path.is_file():
                 try:
-                    from spend_app.db import connect
-                    from spend_app.setup_wizard import read_setup_state, write_setup_state
+                    from spend_app.connection_secrets import clear_spoke_credentials
                     from spend_app.sync import clear_hub_proxy_cache
 
-                    with connect(db_path) as conn:
-                        conn.execute("BEGIN IMMEDIATE")
-                        state = read_setup_state(conn)
-                        spoke = state.get("spokeConfig") or {}
-                        if (
-                            "ownerSession" in spoke
-                            or "ownerSessionExpiresAt" in spoke
-                        ):
-                            spoke.pop("ownerSession", None)
-                            spoke.pop("ownerSessionExpiresAt", None)
-                            state["spokeConfig"] = spoke
-                            write_setup_state(conn, state)
+                    clear_spoke_credentials(
+                        db_path,
+                        clear_owner_session=True,
+                        vault=vault,
+                    )
                     clear_hub_proxy_cache()
+                    return
+                except Exception:
+                    pass
+            if vault is not None:
+                try:
+                    vault.delete(self.OWNER_SESSION_VAULT_REF)
                 except Exception:
                     pass
 
@@ -2301,12 +2265,29 @@ class DesktopBridge:
         }
         if json_body is not None:
             headers["Content-Type"] = "application/json"
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
 
         try:
             if handshake:
                 _hub_protocol_handshake(hub_url, test_client)
+            if token and path not in {"/api/auth/session/rotate", "/api/auth/logout"}:
+                db_path = self._db_path()
+                if db_path is not None and db_path.is_file():
+                    from spend_app.sync import ensure_fresh_owner_session
+
+                    fresh_token = ensure_fresh_owner_session(
+                        db_path,
+                        hub_url,
+                        token,
+                        vault=self._resolve_vault(),
+                        client=test_client,
+                    )
+                    if fresh_token != token:
+                        with self._owner_session_lock:
+                            if self._owner_session == token:
+                                self._owner_session = fresh_token
+                        token = fresh_token
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
             if test_client is not None:
                 cookies = getattr(test_client, "cookies", None)
                 saved_jar = (
@@ -2334,6 +2315,10 @@ class DesktopBridge:
                     else:
                         res = http.post(url, json=json_body, headers=headers)
         except CodedError as exc:
+            if token and exc.code == "AUTH-107":
+                with self._owner_session_lock:
+                    self._owner_session = None
+                    self._owner_session_expires_at = None
             msg = redact_hub_urls(error_message(exc.code, retry_after=exc.retry_after))
             return None, None, {
                 "ok": False,
@@ -2365,19 +2350,6 @@ class DesktopBridge:
             )
             if token and mapped.code == "AUTH-107":
                 self._clear_owner_session()
-            if (
-                res.status_code == 404
-                and isinstance(data, dict)
-                and isinstance(data.get("error"), str)
-            ):
-                safe_detail = redact_hub_urls(data["error"])
-                return None, res, {
-                    "ok": False,
-                    "code": mapped.code,
-                    "message": safe_detail,
-                    "error": safe_detail,
-                    "retryAfter": mapped.retry_after,
-                }
             return None, res, {
                 "ok": False,
                 "code": mapped.code,
@@ -2440,35 +2412,7 @@ class DesktopBridge:
     def _save_owner_session_vault_only(
         self, token: str, expires_at: str | None = None
     ) -> None:
-        clean_token = str(token or "").strip()
-        if not clean_token:
-            self._clear_owner_session()
-            return
-        with self._owner_session_lock:
-            vault = self._resolve_vault()
-            from spend_app.connection_secrets import verified_vault_put
-
-            verified_vault_put(vault, clean_token, self.OWNER_SESSION_VAULT_REF)
-            self._owner_session = clean_token
-            self._owner_session_expires_at = expires_at
-            db_path = self._db_path()
-            if db_path is not None and db_path.is_file():
-                try:
-                    from spend_app.db import connect
-                    from spend_app.setup_wizard import read_setup_state, write_setup_state
-                    from spend_app.sync import clear_hub_proxy_cache
-
-                    with connect(db_path) as conn:
-                        conn.execute("BEGIN IMMEDIATE")
-                        state = read_setup_state(conn)
-                        spoke = state.get("spokeConfig") or {}
-                        if "ownerSession" in spoke:
-                            spoke.pop("ownerSession", None)
-                            state["spokeConfig"] = spoke
-                            write_setup_state(conn, state)
-                    clear_hub_proxy_cache()
-                except Exception:
-                    pass
+        self._publish_owner_session(token, expires_at)
 
     def _get_machine_token(self) -> str | None:
         with self._owner_session_lock:
@@ -2507,54 +2451,45 @@ class DesktopBridge:
             return
         with self._owner_session_lock:
             vault = self._resolve_vault()
-            from spend_app.connection_secrets import verified_vault_put
-
-            verified_vault_put(vault, clean_token, self.MACHINE_TOKEN_VAULT_REF)
-            self._machine_token = clean_token
             db_path = self._db_path()
-            if db_path is not None and db_path.is_file():
-                try:
-                    from spend_app.db import connect
-                    from spend_app.setup_wizard import read_setup_state, write_setup_state
-                    from spend_app.sync import clear_hub_proxy_cache
+            if db_path is not None:
+                from spend_app.connection_secrets import publish_spoke_credentials
+                from spend_app.sync import clear_hub_proxy_cache
 
-                    with connect(db_path) as conn:
-                        conn.execute("BEGIN IMMEDIATE")
-                        state = read_setup_state(conn)
-                        spoke = state.get("spokeConfig") or {}
-                        if "token" in spoke:
-                            spoke.pop("token", None)
-                            state["spokeConfig"] = spoke
-                            write_setup_state(conn, state)
-                    clear_hub_proxy_cache()
-                except Exception:
-                    pass
+                publish_spoke_credentials(
+                    db_path,
+                    machine_token=clean_token,
+                    vault=vault,
+                )
+                clear_hub_proxy_cache()
+            else:
+                from spend_app.connection_secrets import verified_vault_put
+
+                verified_vault_put(vault, clean_token, self.MACHINE_TOKEN_VAULT_REF)
+            self._machine_token = clean_token
 
     def _clear_machine_token(self) -> None:
         with self._owner_session_lock:
             self._machine_token = None
             vault = self._resolve_vault()
-            if vault is not None:
-                try:
-                    vault.delete(self.MACHINE_TOKEN_VAULT_REF)
-                except Exception:
-                    pass
             db_path = self._db_path()
             if db_path is not None and db_path.is_file():
                 try:
-                    from spend_app.db import connect
-                    from spend_app.setup_wizard import read_setup_state, write_setup_state
+                    from spend_app.connection_secrets import clear_spoke_credentials
                     from spend_app.sync import clear_hub_proxy_cache
 
-                    with connect(db_path) as conn:
-                        conn.execute("BEGIN IMMEDIATE")
-                        state = read_setup_state(conn)
-                        spoke = state.get("spokeConfig") or {}
-                        if "token" in spoke:
-                            spoke.pop("token", None)
-                            state["spokeConfig"] = spoke
-                            write_setup_state(conn, state)
+                    clear_spoke_credentials(
+                        db_path,
+                        clear_machine_token=True,
+                        vault=vault,
+                    )
                     clear_hub_proxy_cache()
+                    return
+                except Exception:
+                    pass
+            if vault is not None:
+                try:
+                    vault.delete(self.MACHINE_TOKEN_VAULT_REF)
                 except Exception:
                     pass
 
@@ -2817,52 +2752,6 @@ class DesktopBridge:
             return self._h5_err("HUB-501")
 
         expires_at = auth_data.get("expiresAt")
-        with self._owner_session_lock:
-            prev_session = self._owner_session
-            prev_expires = self._owner_session_expires_at
-            prev_machine = self._machine_token
-            prev_vault_session = None
-            vault = self._resolve_vault()
-            if vault is not None:
-                try:
-                    raw_prev = vault.get(self.OWNER_SESSION_VAULT_REF)
-                    if isinstance(raw_prev, str) and raw_prev.strip():
-                        prev_vault_session = raw_prev.strip()
-                except Exception:
-                    prev_vault_session = None
-        try:
-            self._save_owner_session_vault_only(session_token, expires_at)
-        except Exception:
-            LOGGER.debug("Owner session vault write failed (APP-903)", exc_info=True)
-            return self._h5_err("APP-903")
-        try:
-            self._save_machine_token(machine_token)
-        except Exception:
-            LOGGER.debug("Machine token vault write failed (APP-903)", exc_info=True)
-            with self._owner_session_lock:
-                self._owner_session = prev_session
-                self._owner_session_expires_at = prev_expires
-                self._machine_token = prev_machine
-                if prev_vault_session:
-                    try:
-                        from spend_app.connection_secrets import verified_vault_put
-
-                        verified_vault_put(
-                            self._resolve_vault(),
-                            prev_vault_session,
-                            self.OWNER_SESSION_VAULT_REF,
-                        )
-                    except Exception:
-                        pass
-                else:
-                    v = self._resolve_vault()
-                    if v is not None:
-                        try:
-                            v.delete(self.OWNER_SESSION_VAULT_REF)
-                        except Exception:
-                            pass
-            return self._h5_err("APP-903")
-
         acct_raw = dict(auth_data.get("account") or {}) if isinstance(auth_data.get("account"), dict) else {}
         acct_email = str(acct_raw.get("email") or acct_raw.get("username") or clean_user).strip()
         account_meta = {
@@ -2872,32 +2761,64 @@ class DesktopBridge:
             "machineId": machine_id,
         }
 
-        if db_path is not None:
+        with self._owner_session_lock:
+            vault = self._resolve_vault()
             try:
-                from spend_app.db import connect, initialize
-                from spend_app.setup_wizard import read_setup_state, write_setup_state
-                from spend_app.sync import clear_hub_proxy_cache, prepare_spoke_sync
+                if db_path is not None:
+                    from spend_app.connection_secrets import publish_spoke_credentials
+                    from spend_app.sync import clear_hub_proxy_cache, prepare_spoke_sync_tx
 
-                initialize(db_path)
-                with connect(db_path) as conn:
-                    conn.execute("BEGIN IMMEDIATE")
-                    state = read_setup_state(conn)
-                    state["role"] = "spoke"
-                    state["computerName"] = clean_comp
-                    state["account"] = account_meta
-                    spoke = dict(state.get("spokeConfig") or {})
-                    spoke.pop("token", None)
-                    spoke.pop("ownerSession", None)
-                    spoke.pop("hubUrl", None)
-                    spoke["enabled"] = True
-                    spoke["hubConfigured"] = True
-                    spoke["ownerSessionExpiresAt"] = expires_at
-                    state["spokeConfig"] = spoke
-                    write_setup_state(conn, state)
-                prepare_spoke_sync(db_path, hub_url, machine_token)
-                clear_hub_proxy_cache()
+                    def _apply_auth_state(conn, state):
+                        state["role"] = "spoke"
+                        state["computerName"] = clean_comp
+                        state["account"] = account_meta
+                        spoke = dict(state.get("spokeConfig") or {})
+                        spoke.pop("token", None)
+                        spoke.pop("ownerSession", None)
+                        spoke.pop("hubUrl", None)
+                        spoke["enabled"] = True
+                        spoke["hubConfigured"] = True
+                        spoke["ownerSessionExpiresAt"] = expires_at
+                        spoke["ownerSessionRotationRequired"] = False
+                        spoke["rotationRequired"] = False
+                        state["spokeConfig"] = spoke
+                        prepare_spoke_sync_tx(conn, hub_url, machine_token)
+
+                    publish_spoke_credentials(
+                        db_path,
+                        owner_session=session_token,
+                        machine_token=machine_token,
+                        vault=vault,
+                        apply_state=_apply_auth_state,
+                    )
+                    clear_hub_proxy_cache()
+                else:
+                    from spend_app.connection_secrets import _restore_vault_secret, verified_vault_put
+
+                    prev_owner = None
+                    if vault is not None:
+                        try:
+                            raw_prev = vault.get(self.OWNER_SESSION_VAULT_REF)
+                            if isinstance(raw_prev, str) and raw_prev.strip():
+                                prev_owner = raw_prev.strip()
+                        except Exception:
+                            prev_owner = None
+                    verified_vault_put(vault, session_token, self.OWNER_SESSION_VAULT_REF)
+                    try:
+                        verified_vault_put(vault, machine_token, self.MACHINE_TOKEN_VAULT_REF)
+                    except Exception:
+                        _restore_vault_secret(vault, self.OWNER_SESSION_VAULT_REF, prev_owner)
+                        raise
+            except CodedError as exc:
+                LOGGER.debug("Credential vault publication failed (%s)", exc.code, exc_info=True)
+                return self._h5_err(exc.code)
             except Exception:
-                LOGGER.debug("Could not persist local spoke metadata", exc_info=True)
+                LOGGER.debug("Credential vault publication failed (APP-903)", exc_info=True)
+                return self._h5_err("APP-903")
+
+            self._owner_session = session_token
+            self._owner_session_expires_at = expires_at
+            self._machine_token = machine_token
 
         with self._owner_session_lock:
             self._sync_gen += 1
@@ -2983,12 +2904,13 @@ class DesktopBridge:
                         rev_res is None or rev_res.status_code not in {401, 404}
                     ):
                         return self._h5_err_from_call(rev_err)
+            logout_token = self._get_owner_session_token() or token
             _, res, call_err = self._call_hub(
                 hub_url,
                 "POST",
                 "/api/auth/logout",
                 json_body={},
-                token=token,
+                token=logout_token,
             )
             if (
                 call_err is not None
@@ -3192,7 +3114,12 @@ class DesktopBridge:
             return {"ok": False, "code": "HUB-501", "error": format_error("HUB-501")}
 
         expires_at = data.get("expiresAt")
-        self._save_owner_session(token, expires_at)
+        try:
+            self._publish_owner_session(token, expires_at)
+        except CodedError as exc:
+            return {"ok": False, "code": exc.code, "message": error_message(exc.code), "error": format_error(exc.code)}
+        except Exception:
+            return {"ok": False, "code": "APP-903", "message": error_message("APP-903"), "error": format_error("APP-903")}
         return {
             "ok": True,
             "sessionId": data.get("sessionId"),
@@ -3271,7 +3198,12 @@ class DesktopBridge:
             return {"ok": False, "code": "HUB-501", "error": format_error("HUB-501")}
 
         expires_at = data.get("expiresAt")
-        self._save_owner_session(new_token, expires_at)
+        try:
+            self._publish_owner_session(new_token, expires_at)
+        except CodedError as exc:
+            return {"ok": False, "code": exc.code, "message": error_message(exc.code), "error": format_error(exc.code)}
+        except Exception:
+            return {"ok": False, "code": "APP-903", "message": error_message("APP-903"), "error": format_error("APP-903")}
         return {
             "ok": True,
             "sessionId": data.get("sessionId"),
