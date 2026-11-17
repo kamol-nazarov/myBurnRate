@@ -24,12 +24,11 @@ from spend_app.error_codes import ERROR_CATALOG
 from spend_app.provider_urgency import (
     LEVEL_RANK,
     compute_urgency,
+    display_order,
     focus_window,
     format_hours,
-    profile_family,
     format_reset,
     grade_window,
-    sort_key,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -46,9 +45,16 @@ HOME_WIDTH = 42
 SEGMENT_WIDTH = 124
 #: A segment that names its profile ("Primary · 5-hour") needs a longer label line.
 PROFILE_EXTRA = 36
+#: An idle segment says "Awaiting reading", which needs a little more room.
+IDLE_EXTRA = 20
 FINE_WIDTH = 60
 OPEN_WIDTH = 36
 CHIP_WIDTH = 212
+#: The red "+N urgent" pill (urgent providers that do not fit the monitor).
+URGENT_PILL_WIDTH = 92
+#: Never plan a layout for less than this, nor closer than this to the screen edge.
+MIN_BUDGET = 480
+BUDGET_MARGIN = 16
 #: Gap between the strip and its hover card, and the two corner radii.
 CARD_GAP = 6
 TAB_RADIUS = 14
@@ -206,7 +212,7 @@ def build_segment(provider: dict, now: datetime) -> dict:
         "title": title,
         "plan": provider.get("plan") or "",
         "level": level,
-        "width": SEGMENT_WIDTH + (PROFILE_EXTRA if profile else 0),
+        "width": SEGMENT_WIDTH + (PROFILE_EXTRA if profile else 0) + (IDLE_EXTRA if level == "idle" else 0),
         "limitKey": urgency.get("limitKey"),
         "big": big,
         "unit": unit_label,
@@ -224,48 +230,95 @@ def build_segment(provider: dict, now: datetime) -> dict:
 
 
 def tab_providers(providers) -> list[dict]:
-    """Providers the tab can say something about, most urgent first."""
+    """Providers the tab can say something about, most urgent first.
+
+    The order is the one Python stamps on every provider (``displayRank``), so
+    the tab and the full window can never disagree; providers without a rank
+    (a hand-built list) are ordered by the same rule here.
+    """
     usable = [
         p
         for p in providers or []
         if isinstance(p, dict) and (p.get("remaining") or {}).get("kind") != "usage_only"
     ]
-    ordered = sorted(usable, key=sort_key)
-    # The profiles of one provider sit together, at the spot of the most urgent.
-    families: dict[str, list[dict]] = {}
-    for provider in ordered:
-        families.setdefault(profile_family(provider.get("key")), []).append(provider)
-    grouped: list[dict] = []
-    for provider in ordered:
-        family = profile_family(provider.get("key"))
-        if family in families:
-            grouped.extend(families.pop(family))
-    return grouped
+    if usable and all(isinstance(p.get("displayRank"), int) for p in usable):
+        return sorted(usable, key=lambda p: p["displayRank"])
+    return display_order(usable)
 
 
 def split_overflow(segments: list[dict], cap: int = MAX_SEGMENTS) -> tuple[list[dict], list[dict]]:
     """Keep every urgent segment; fill to ``cap`` from the rest; fold the remainder."""
-    if len(segments) <= cap:
-        return segments, []
+    shown, folded, _ = plan_segments(segments, cap=cap)
+    return shown, folded
+
+
+def plan_segments(
+    segments: list[dict],
+    *,
+    budget: float | None = None,
+    fixed: int = 0,
+    cap: int = MAX_SEGMENTS,
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """Choose what the strip shows: ``(shown, folded, urgent_hidden)``.
+
+    Out/soon/warn segments always show, even beyond ``cap``. The rest fill the
+    remaining slots and fold into "+N fine". ``budget`` is the logical width the
+    monitor can spare and ``fixed`` the width of everything that is not a
+    segment: more calm segments fold until it fits, and if the urgent ones
+    alone do not fit, the last of them move into a "+N urgent" pill. Nothing
+    is ever sized past the budget.
+    """
     urgent = [s for s in segments if s["level"] not in FOLDABLE_LEVELS]
-    room = max(0, cap - len(urgent))
-    foldable = [s for s in segments if s["level"] in FOLDABLE_LEVELS]
-    kept_fine = {id(s) for s in foldable[:room]}
-    shown = [s for s in segments if s["level"] not in FOLDABLE_LEVELS or id(s) in kept_fine]
-    return shown, foldable[room:]
+    calm = [s for s in segments if s["level"] in FOLDABLE_LEVELS]
+
+    def total(shown_urgent, shown_calm, folded, urgent_more) -> int:
+        width = fixed + sum(s["width"] for s in shown_urgent) + sum(s["width"] for s in shown_calm)
+        return width + (FINE_WIDTH if folded else 0) + (URGENT_PILL_WIDTH if urgent_more else 0)
+
+    room = len(calm) if len(segments) <= cap else max(0, cap - len(urgent))
+    for kept in range(min(room, len(calm)), -1, -1):
+        shown_calm, folded = calm[:kept], calm[kept:]
+        if budget is None or total(urgent, shown_calm, folded, False) <= budget:
+            keep = {id(s) for s in urgent + shown_calm}
+            return [s for s in segments if id(s) in keep], folded, []
+    for count in range(len(urgent) - 1, -1, -1):
+        shown_urgent, hidden = urgent[:count], urgent[count:]
+        if count == 0 or total(shown_urgent, [], calm, True) <= budget:
+            return shown_urgent, calm, hidden
+    return [], calm, urgent
 
 
 def layout_width(
-    shown: int, fine: bool, *, chip: bool = False, status: int = 0, extra: int = 0
+    shown: int,
+    fine: bool,
+    *,
+    chip: bool = False,
+    status: int = 0,
+    extra: int = 0,
+    urgent_pill: bool = False,
 ) -> int:
-    """Window width for ``shown`` segments, an optional fine pill, error chip
-    and status text (``status`` is that text's width in pixels)."""
+    """Window width for ``shown`` segments, the pills, an error chip and status
+    text (``status`` is that text's width in pixels)."""
     width = HOME_WIDTH + shown * SEGMENT_WIDTH + extra + OPEN_WIDTH + status
     if fine:
         width += FINE_WIDTH
+    if urgent_pill:
+        width += URGENT_PILL_WIDTH
     if chip:
         width += CHIP_WIDTH
     return width
+
+
+def _pill_info(items: list[dict]) -> dict | None:
+    if not items:
+        return None
+    return {
+        "count": len(items),
+        "items": [
+            {"key": s["key"], "title": s["title"], "level": s["level"], "text": f"{s['big']} {s['unit']}".strip()}
+            for s in items
+        ],
+    }
 
 
 class TabModel:
@@ -318,35 +371,38 @@ class TabModel:
             except Exception:  # noqa: BLE001 -- a dead tab must not break a refresh
                 LOGGER.debug("Tab listener failed", exc_info=True)
 
-    def payload(self, *, dark: bool, demo: bool = False, now: datetime | None = None) -> dict:
+    def payload(
+        self,
+        *,
+        dark: bool,
+        demo: bool = False,
+        now: datetime | None = None,
+        budget: float | None = None,
+    ) -> dict:
+        """What the tab page draws. ``budget`` is the logical width the current
+        monitor can spare; the layout never exceeds it."""
         now = now or datetime.now(UTC)
         with self._lock:
             providers = list(self._providers)
             loaded = self._loaded
             error = dict(self._error) if self._error else None
         segments = [build_segment(p, now) for p in tab_providers(providers)]
-        shown, fine = split_overflow(segments)
         if not loaded and error is None:
             state = "loading"
         elif not segments:
             state = "error" if error else "empty"
         else:
             state = "ready"
-        urgent = sum(1 for s in segments if s["level"] in URGENT_LEVELS)
-        fine_info = (
-            {
-                "count": len(fine),
-                "items": [
-                    {"key": s["key"], "title": s["title"], "level": s["level"], "text": f"{s['big']} {s['unit']}".strip()}
-                    for s in fine
-                ],
-            }
-            if fine
-            else None
-        )
         status = {"loading": LOADING_WIDTH, "empty": EMPTY_WIDTH}.get(state, 0)
-        extra = PROFILE_EXTRA * sum(1 for s in shown if s["profile"])
-        width = layout_width(len(shown), bool(fine), chip=bool(error), status=status, extra=extra)
+        fixed = HOME_WIDTH + OPEN_WIDTH + status + (CHIP_WIDTH if error else 0)
+        limit = max(budget, MIN_BUDGET) if budget is not None else None
+        shown, fine, urgent_more = plan_segments(segments, budget=limit, fixed=fixed)
+        urgent = sum(1 for s in segments if s["level"] in URGENT_LEVELS)
+        extra = sum(s["width"] - SEGMENT_WIDTH for s in shown)
+        width = layout_width(
+            len(shown), bool(fine), chip=bool(error), status=status, extra=extra,
+            urgent_pill=bool(urgent_more),
+        )
         return {
             "state": state,
             "dark": bool(dark),
@@ -354,11 +410,13 @@ class TabModel:
             "stale": bool(error) and bool(segments),
             "error": error,
             "segments": shown,
-            "fine": fine_info,
+            "fine": _pill_info(fine),
+            "urgentMore": _pill_info(urgent_more),
             "urgentCount": urgent,
             "layout": {
                 "height": TAB_HEIGHT,
                 "width": width,
+                "budget": limit,
                 "segmentWidth": SEGMENT_WIDTH,
                 "cardWidth": CARD_WIDTH,
                 "cardGap": CARD_GAP,
@@ -405,17 +463,20 @@ def load_tab_html(theme_pref: str = "system") -> str:
 
 
 class TabBridge:
-    """``js_api`` of the tab window. Every public method is callable from JS."""
+    """``js_api`` of the tab window. Every public method is callable from JS.
 
-    #: Re-read usage on the page's own poll when nothing refreshed for this long
-    #: (the full window is hidden, so its page is not driving refreshes).
-    LAZY_REFRESH_AFTER = 120.0
+    The tab never refreshes anything: the full window's page owns refreshing
+    (it keeps polling while hidden), and every result lands in the model that
+    this bridge only reads.
+    """
+
+    #: Longest a getter waits for a refresh the main window already started.
+    REFRESH_WAIT = 3.0
 
     def __init__(self, bridge, model: TabModel, controller=None) -> None:
         self._bridge = bridge
         self._model = model
         self._controller = controller
-        self._refreshing = threading.Lock()
 
     def attach_controller(self, controller) -> None:
         self._controller = controller
@@ -427,21 +488,14 @@ class TabBridge:
         return bool(effective) if effective is not None else resolve_dark(self._bridge.theme)
 
     def build_payload(self) -> dict:
-        return self._model.payload(dark=self._dark(), demo=self._bridge.demo)
+        budget = self._controller.tab.logical_budget() if self._controller is not None else None
+        return self._model.payload(dark=self._dark(), demo=self._bridge.demo, budget=budget)
 
     def get_state(self) -> dict:
-        """The current payload; kicks one background refresh when it is stale."""
-        if self._model.age > self.LAZY_REFRESH_AFTER and self._refreshing.acquire(blocking=False):
-            threading.Thread(target=self._lazy_refresh, name="burnrate-tab-refresh", daemon=True).start()
+        """The current payload. If a refresh is already in flight, wait for its
+        result instead of reading stale data; never start one."""
+        self._bridge._wait_for_refresh(self.REFRESH_WAIT)
         return self.build_payload()
-
-    def _lazy_refresh(self) -> None:
-        try:
-            self._bridge.fetch_usage(self._bridge.current_period, "all")
-        except Exception:  # noqa: BLE001 -- the model already holds the error
-            LOGGER.debug("Tab refresh failed", exc_info=True)
-        finally:
-            self._refreshing.release()
 
     def open_full(self) -> dict:
         if self._controller is not None:
@@ -550,7 +604,11 @@ class TabHost:
         self._expanded: tuple[float, float] | None = None
         self._card: tuple[float, float, float] | None = None
         self._up = False
-        self._origin_before_expand: tuple[int, int] | None = None
+        #: Physical top-left of the collapsed tab for the whole expansion session.
+        self._anchor: tuple[int, int] | None = None
+        self.on_reflow = None
+        self._last_budget: float | None = None
+        self._reflowing = False
         self.visible = False
         self.quitting = False
         self._lock = threading.RLock()
@@ -616,9 +674,29 @@ class TabHost:
     def _current(self) -> native_geometry.Rect | None:
         return native_geometry.window_rect(self.hwnd)
 
+    def _base_size(self) -> tuple[int, int]:
+        dpi = self._dpi()
+        return _scaled(self._base[0], dpi), _scaled(self._base[1], dpi)
+
+    def _place_session(self) -> tuple[int, int, bool]:
+        """Position of the grown window, always computed from the collapsed anchor."""
+        width, height = self._target_size()
+        base_w, base_h = self._base_size()
+        return native_geometry.place_expanded(
+            (self._anchor[0], self._anchor[1], base_w, base_h),
+            (width, height),
+            native_geometry.enum_monitors(),
+        )
+
     def fit(self, *, keep_visible: bool = True) -> None:
         """Re-apply the wanted size (DPI changes rescale it) and pull on screen."""
         width, height = self._target_size()
+        if self._anchor is not None and self._expanded is not None:
+            x, y, self._up = self._place_session()
+            self._apply(x, y, width, height)
+            self._apply_shape()
+            self.check_budget()
+            return
         rect = self._current()
         if rect is None:
             self._apply(None, None, width, height)
@@ -631,6 +709,7 @@ class TabHost:
             )
         self._apply(x, y, width, height)
         self._apply_shape()
+        self.check_budget()
 
     def set_base(self, width: float, height: float = TAB_HEIGHT) -> None:
         """The window's content width changed (a refresh added or dropped a segment)."""
@@ -641,6 +720,48 @@ class TabHost:
                 self._expanded = (max(width, self._expanded[0]), self._expanded[1])
             self.fit()
 
+    # -- the monitor's width budget ------------------------------------------
+
+    def _budget_now(self) -> float | None:
+        monitors = native_geometry.enum_monitors()
+        if not monitors:
+            return None
+        rect = self._current()
+        if self._anchor is not None:
+            base_w, base_h = self._base_size()
+            rect = native_geometry.Rect(
+                self._anchor[0], self._anchor[1], self._anchor[0] + base_w, self._anchor[1] + base_h
+            )
+        if rect is not None:
+            monitor = native_geometry.monitor_for(rect, monitors)
+        else:
+            monitor = next((m for m in monitors if m.primary), None) or monitors[0]
+        scale = max(self._dpi(), 1) / 96
+        return monitor.work.width / scale - BUDGET_MARGIN
+
+    def logical_budget(self) -> float | None:
+        """Logical width the tab may use on its current monitor (None: unknown)."""
+        budget = self._budget_now()
+        self._last_budget = budget
+        return budget
+
+    def check_budget(self) -> None:
+        """A move or DPI change may give the tab a different monitor budget:
+        ask for a fresh layout when it did."""
+        callback = self.on_reflow
+        if callback is None or self._reflowing:
+            return
+        budget = self._budget_now()
+        if budget is None or (self._last_budget is not None and abs(budget - self._last_budget) < 1):
+            return
+        self._reflowing = True
+        try:
+            callback()
+        except Exception:  # noqa: BLE001 -- a stale layout beats a crashed handler
+            LOGGER.debug("Tab reflow failed", exc_info=True)
+        finally:
+            self._reflowing = False
+
     def expand(
         self,
         width: float,
@@ -650,46 +771,45 @@ class TabHost:
         """Grow downward (or upward near the bottom edge) to hold a hover card.
 
         ``card`` is the card's ``(x, width, height)`` in logical pixels; the
-        window region then shows only the strip and the card.
+        window region then shows only the strip and the card. Every expansion
+        in one session is placed from the same collapsed anchor, so repeated or
+        switching cards never drift the tab.
         """
         width = clamp_number(width, self._base[0], 2400)
         height = clamp_number(height, self._base[1], 1200)
         with self._lock:
-            rect = self._current()
+            if self._anchor is None:
+                rect = self._current()
+                if rect is not None:
+                    self._anchor = (rect.left, rect.top)
             self._expanded = (width, height)
             self._card = card
-            dpi = self._dpi()
-            new_w, new_h = _scaled(width, dpi), _scaled(height, dpi)
-            if rect is None:
+            new_w, new_h = self._target_size()
+            if self._anchor is None:
                 self._up = False
                 self._apply(None, None, new_w, new_h)
                 self._apply_shape()
                 return {"up": False}
-            self._origin_before_expand = (rect.left, rect.top)
-            x, y, up = native_geometry.place_expanded(
-                (rect.left, rect.top, rect.width, rect.height),
-                (new_w, new_h),
-                native_geometry.enum_monitors(),
-            )
-            self._up = up
+            x, y, self._up = self._place_session()
             self._apply(x, y, new_w, new_h)
             self._apply_shape()
-            return {"up": up}
+            return {"up": self._up}
 
     def collapse(self) -> None:
+        """End the session: back to the strip at the anchor."""
         with self._lock:
             if self._expanded is None:
                 return
+            anchor = self._anchor
             self._expanded = None
             self._card = None
             self._up = False
-            origin = self._origin_before_expand
-            self._origin_before_expand = None
+            self._anchor = None
             width, height = self._target_size()
-            if origin is None:
+            if anchor is None:
                 self._apply(None, None, width, height)
             else:
-                self._apply(origin[0], origin[1], width, height)
+                self._apply(anchor[0], anchor[1], width, height)
             self._apply_shape()
 
     def drop_dwm_frame(self) -> None:
@@ -758,6 +878,8 @@ class TabHost:
             self._apply(position[0], position[1], width, height)
 
     def show(self, *, activate: bool = True) -> None:
+        if self.quitting:
+            return
         with self._lock:
             self.fit()
             self.visible = True
@@ -774,21 +896,20 @@ class TabHost:
             LOGGER.debug("Tab show skipped", exc_info=True)
 
     def hide(self) -> None:
+        if self.quitting:
+            return
+        self.collapse()  # back to the anchor, so the next show is not displaced
         self.tracker.flush()
         with self._lock:
             self.visible = False
-            self._expanded = None
-            self._card = None
-            self._up = False
-            self._origin_before_expand = None
         try:
             self.window.hide()
         except Exception:  # noqa: BLE001
             LOGGER.debug("Tab hide skipped", exc_info=True)
 
     def destroy(self) -> None:
-        self.tracker.disable()
         self.quitting = True
+        self.tracker.disable()
         try:
             self.window.destroy()
         except Exception:  # noqa: BLE001
@@ -826,10 +947,22 @@ class TabHost:
         def on_closing(_sender, args) -> None:
             if self.quitting:
                 return
-            args.Cancel = True
-            on_close_request()
+            if args.CloseReason in user_closing:
+                args.Cancel = True  # Alt+F4 or Close: park the tab (or quit) instead
+                on_close_request()
+                return
+            # Windows shutdown, application exit, owner close: let it through.
+            self.quitting = True
+            self.tracker.flush()
+            self.tracker.disable()
 
         try:
+            import System.Windows.Forms as WinForms  # type: ignore[import-not-found]
+
+            user_closing = (
+                WinForms.CloseReason.UserClosing,
+                WinForms.CloseReason.TaskManagerClosing,
+            )
             native.FormClosing += on_closing
             native.DpiChanged += lambda *_args: self.fit()
         except Exception:  # noqa: BLE001
@@ -840,48 +973,125 @@ class TabHost:
 
 
 class SurfaceController:
-    """Decides which of the two windows is up and remembers it."""
+    """Decides which of the two windows is up and remembers it.
+
+    Every transition (shrink to tab, open full, tray toggle, launch restore,
+    closing the tab) is a request on one queue that a single worker applies in
+    order. The latest absolute request (tab/full) supersedes everything queued
+    before it, so the last click wins and the windows can never end up both
+    visible. Callers never block and no lock is held across a GUI call, so a
+    request made from the UI thread cannot deadlock against the worker.
+    """
+
+    ABSOLUTE = ("tab", "full")
 
     def __init__(self, main_host, tab: TabHost, bridge, store) -> None:
         self.main = main_host
         self.tab = tab
         self.bridge = bridge
         self.store = store
+        self._lock = threading.Lock()
+        self._pending: list[str] = []
+        self._worker_alive = False
+        self._closing = False
+        self._idle = threading.Event()
+        self._idle.set()
 
     @property
     def surface(self) -> str:
         return self.bridge.surface
 
+    # -- requests (any thread, never blocking) ---------------------------------
+
     def show_tab(self) -> None:
-        self.bridge._remember_surface("tab")
-        self.main.hide()
-        self.tab.show()
+        self._request("tab")
 
     def show_full(self) -> None:
-        self.bridge._remember_surface("full")
-        self.tab.hide()
-        self.main.show()
+        self._request("full")
 
     def toggle(self) -> None:
         """Tray click: hide whatever is up, or bring the remembered surface back."""
-        if self.tab.visible:
-            self.tab.hide()
-        elif self.main.is_visible():
-            self.main.hide()
-        elif self.surface == "tab":
-            self.tab.show()
-        else:
-            self.main.show()
+        self._request("toggle")
 
     def restore_on_launch(self) -> None:
         """The main window is already up for a ``full`` launch; bring the tab up
         (without stealing focus) for a ``tab`` one."""
-        if self.surface == "tab":
-            self.tab.show(activate=False)
+        self._request("restore")
 
     def close_tab(self) -> None:
         """Alt+F4 on the tab: park in the tray, or quit when there is none."""
-        if self.main.can_hide_to_tray():
+        self._request("close-tab")
+
+    def flush(self, timeout: float = 5.0) -> bool:
+        """Wait until every queued transition has been applied (tests, shutdown)."""
+        return self._idle.wait(timeout)
+
+    def shutdown(self) -> None:
+        """Drop queued transitions and take the tab down with the app."""
+        with self._lock:
+            self._closing = True
+            self._pending.clear()
+        self.tab.destroy()
+
+    # -- the queue --------------------------------------------------------------
+
+    def _request(self, action: str) -> None:
+        with self._lock:
+            if self._closing:
+                return
+            self._pending.append(action)
+            self._idle.clear()
+            if self._worker_alive:
+                return
+            self._worker_alive = True
+        threading.Thread(target=self._drain, name="burnrate-surface", daemon=True).start()
+
+    def _next(self) -> str | None:
+        with self._lock:
+            if self._closing or not self._pending:
+                self._worker_alive = False
+                self._idle.set()
+                return None
+            last_absolute = max(
+                (i for i, a in enumerate(self._pending) if a in self.ABSOLUTE), default=-1
+            )
+            if last_absolute > 0:
+                del self._pending[:last_absolute]  # the later absolute request wins
+            return self._pending.pop(0)
+
+    def _drain(self) -> None:
+        while True:
+            action = self._next()
+            if action is None:
+                return
+            try:
+                self._apply(action)
+            except Exception:  # noqa: BLE001 -- one bad transition must not stop the rest
+                LOGGER.warning("Surface transition %s failed", action, exc_info=True)
+
+    def _apply(self, action: str) -> None:
+        if action == "tab":
+            self.bridge._remember_surface("tab")
+            self.main.hide()
+            self.tab.show()
+        elif action == "full":
+            self.bridge._remember_surface("full")
             self.tab.hide()
-        else:
-            self.main.quit()
+            self.main.show()
+        elif action == "toggle":
+            if self.tab.visible:
+                self.tab.hide()
+            elif self.main.is_visible():
+                self.main.hide()
+            elif self.surface == "tab":
+                self.tab.show()
+            else:
+                self.main.show()
+        elif action == "restore":
+            if self.surface == "tab":
+                self.tab.show(activate=False)
+        elif action == "close-tab":
+            if self.main.can_hide_to_tray():
+                self.tab.hide()
+            else:
+                self.main.quit()

@@ -222,15 +222,53 @@ def grade_window(window: dict) -> str:
     return "soon" if left <= SOON_PCT else "ok"
 
 
+def _sort_hours(window: dict | None) -> float:
+    """Hours to dry for ordering: only a window that really runs dry before it
+    resets (pace ``tight``/``dry``) has any. A ``safe`` forecast's projected
+    hours say nothing about urgency, so it sorts as none."""
+    if window is None or not _is_drying(window):
+        return math.inf
+    return _hours_to_dry(window)
+
+
 def sort_key(provider: dict) -> tuple:
-    """Tab order: level, then soonest dry, then least left, then smallest balance."""
+    """The contract's order: level, then soonest dry (``tight``/``dry`` pace
+    only), then least left, then smallest balance."""
     urgency = provider.get("urgency") or {}
     level = urgency.get("level") or "idle"
     window = focus_window(provider)
     balance = _balance(provider)
     return (
         LEVEL_RANK.get(level, len(LEVELS)),
-        _hours_to_dry(window) if window else math.inf,
+        _sort_hours(window),
         _remaining_pct(window) if window else math.inf,
         balance if balance is not None else math.inf,
     )
+
+
+def display_order(providers) -> list[dict]:
+    """Providers most urgent first, the one order every surface shows.
+
+    Sorted by ``sort_key``. Only when two providers tie exactly do the profiles
+    of one family sit together (at the spot of the family's first member in
+    the given order); a healthy profile never precedes a more urgent provider.
+    """
+    items = [p for p in providers if isinstance(p, dict)]
+    first_seen: dict[str, int] = {}
+    for index, provider in enumerate(items):
+        first_seen.setdefault(profile_family(provider.get("key")), index)
+    indexed = list(enumerate(items))
+    indexed.sort(
+        key=lambda pair: (
+            *sort_key(pair[1]),
+            first_seen[profile_family(pair[1].get("key"))],
+            pair[0],
+        )
+    )
+    return [provider for _, provider in indexed]
+
+
+def assign_display_rank(providers: list[dict]) -> None:
+    """Stamp ``provider["displayRank"]`` (0..n-1) from :func:`display_order`."""
+    for rank, provider in enumerate(display_order(providers)):
+        provider["displayRank"] = rank

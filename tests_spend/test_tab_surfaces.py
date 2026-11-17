@@ -64,7 +64,15 @@ class Opacity:
         pass
 
 
-def make(tmp_path=None, *, surface=None, demo=True, tray=True):
+class SyncSurfaces(SurfaceController):
+    """The real queue and worker, but every request returns once it is applied."""
+
+    def _request(self, action):
+        super()._request(action)
+        self.flush()
+
+
+def make(tmp_path=None, *, surface=None, demo=True, tray=True, controller=SyncSurfaces):
     prefs = None
     if tmp_path is not None:
         prefs = tmp_path / "native-window.json"
@@ -80,7 +88,7 @@ def make(tmp_path=None, *, surface=None, demo=True, tray=True):
     host.is_visible = lambda: main_win.visible
     bridge.attach_host(host)
     tab = TabHost(tab_win, store=PreferenceStore(prefs), persist=False)
-    surfaces = SurfaceController(host, tab, bridge, PreferenceStore(prefs))
+    surfaces = controller(host, tab, bridge, PreferenceStore(prefs))
     host.surfaces = surfaces
     bridge.attach_surfaces(surfaces)
     return bridge, host, tab, surfaces, main_win, tab_win, prefs
@@ -197,6 +205,9 @@ def test_quit_takes_the_tab_down_too():
     bridge.quit_app()
     assert wait_for(lambda: "destroy" in main_win.calls)
     assert tab_win.calls.count("destroy") == 1 and tab.quitting is True
+    surfaces_after = host.surfaces
+    surfaces_after.show_tab()  # nothing is shown once the app is closing
+    assert tab_win.calls.count("show") == 0
 
 
 # ---- the model follows the main bridge -------------------------------------
@@ -284,18 +295,53 @@ def test_tab_bridge_expand_reports_the_growth_direction(monkeypatch):
     assert TabBridge(bridge, bridge._tab_model).expand(1, 2) == {"ok": False}
 
 
-def test_tab_bridge_lazily_refreshes_when_nothing_has_for_a_while():
-    bridge, *_ = make()
-    tab_bridge = TabBridge(bridge, bridge._tab_model)
-    assert bridge._tab_model.loaded is False
-    tab_bridge.get_state()  # nothing loaded yet: this kicks one background refresh
-    assert wait_for(lambda: bridge._tab_model.loaded)
-    refreshed = []
-    original = bridge.fetch_usage
-    bridge.fetch_usage = lambda *a, **k: refreshed.append(1) or original(*a, **k)
-    tab_bridge.get_state()  # fresh data: no second refresh
-    time.sleep(0.1)
-    assert refreshed == []
+def test_the_tab_getter_never_starts_a_refresh():
+    bridge, _, _, surfaces, *_ = make()
+    started = []
+    bridge.fetch_usage = lambda *a, **k: started.append(a) or {"ok": True}
+    tab_bridge = TabBridge(bridge, bridge._tab_model, surfaces)
+    state = tab_bridge.get_state()
+    assert state["state"] == "loading"  # nothing loaded yet, and the getter only reads
+    assert tab_bridge.get_state()["state"] == "loading"
+    assert started == []
+
+
+def test_the_tab_getter_waits_for_a_main_refresh_already_in_flight():
+    bridge, _, _, surfaces, *_ = make()
+    tab_bridge = TabBridge(bridge, bridge._tab_model, surfaces)
+    entered, release = threading.Event(), threading.Event()
+    callers = []
+    original = bridge._client.snapshot
+
+    def slow_snapshot(period, machine):
+        callers.append(threading.current_thread().name)
+        entered.set()
+        release.wait(5)
+        return original(period, machine)
+
+    bridge._client.snapshot = slow_snapshot
+    main = threading.Thread(target=lambda: bridge.fetch_usage("today", "all"), name="main-refresh")
+    main.start()
+    assert entered.wait(3)
+    results = []
+    getter = threading.Thread(target=lambda: results.append(tab_bridge.get_state()), name="tab-getter")
+    getter.start()
+    time.sleep(0.2)
+    assert getter.is_alive() and results == []  # waiting for the main refresh, not racing it
+    release.set()
+    main.join(5)
+    getter.join(5)
+    assert results and results[0]["state"] == "ready"  # it got the main refresh's result
+    assert set(callers) == {"main-refresh"}  # the getter never fetched anything itself
+
+
+def test_a_getter_does_not_wait_when_no_refresh_is_running():
+    bridge, _, _, surfaces, *_ = make()
+    tab_bridge = TabBridge(bridge, bridge._tab_model, surfaces)
+    began = time.monotonic()
+    tab_bridge.get_state()
+    assert time.monotonic() - began < 1.0
+    assert bridge._wait_for_refresh(0) is True
 
 
 def test_tab_bridge_only_exposes_the_methods_the_page_uses():
@@ -438,7 +484,7 @@ def test_a_full_launch_creates_the_main_window_visible(monkeypatch, tmp_path):
     fake.start = start
     ww.run_webview(DemoClient(), demo=True)
     assert fake.windows[0].kwargs["hidden"] is False
-    assert fake.windows[1].calls == []
+    assert fake.windows[1].calls == ["destroy"]  # never shown; torn down with the app
 
 
 def test_the_second_launch_puts_the_tab_away(monkeypatch):

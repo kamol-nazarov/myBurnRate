@@ -63,29 +63,47 @@ def demo_payload():
     return model.payload(dark=True)
 
 
-def test_demo_tab_keeps_each_provider_s_profiles_together():
+def test_demo_tab_orders_by_urgency_with_profiles_only_breaking_ties():
     data = demo_payload()
     keys = [s["key"] for s in data["segments"]]
-    assert keys == ["claude-code", "claude-code-work", "codex", "opencode-go", "opencode-go-2"]
+    # soon, warn, warn first; then the two tied ok providers, the Claude profile first
+    assert keys == ["claude-code", "codex", "opencode-go", "claude-code-work", "grok"]
     by_key = {s["key"]: s for s in data["segments"]}
-    assert (by_key["claude-code"]["big"], by_key["claude-code"]["unit"]) == ("54%", "Primary · 5-hour")
+    assert (by_key["claude-code"]["big"], by_key["claude-code"]["unit"]) == ("54%", "Primary \u00b7 5-hour")
     assert by_key["claude-code"]["level"] == "soon" and by_key["claude-code"]["status"] == "dry in ~1h"
-    assert by_key["claude-code-work"]["unit"] == "Work · weekly"
+    assert by_key["claude-code-work"]["unit"] == "Work \u00b7 weekly"
     assert (by_key["codex"]["level"], by_key["codex"]["status"]) == ("warn", "dry in ~14h")
     assert (by_key["opencode-go"]["level"], by_key["opencode-go"]["status"]) == ("warn", "dry in ~32h")
     assert data["urgentCount"] == 1
     assert data["state"] == "ready"
     assert data["fine"]["count"] == 5
     assert data["layout"]["width"] <= 910  # five segments and the pill, about 900 px
+    ranks = [LEVEL_RANK_OF[s["level"]] for s in data["segments"]]
+    assert ranks == sorted(ranks)
 
 
-def test_profiles_stay_adjacent_even_when_their_levels_differ():
+LEVEL_RANK_OF = {"out": 0, "soon": 1, "warn": 2, "ok": 3, "balance": 4, "idle": 5}
+
+
+def test_a_healthy_profile_never_precedes_a_more_urgent_provider():
     data = payload(
-        card("claude-code", 20.0, dry(30.0, 40.0), title="Claude Code"),
-        card("grok", 50.0, dry(10.0, 40.0)),
-        card("claude-code-work", 5.0, None, title="Claude Code · Work", label="Work"),
+        card("claude-code", 100.0, dry(0.0, 40.0), title="Claude Code", resets=24.0),  # out
+        card("claude-code-work", 5.0, None, title="Claude Code \u00b7 Work", label="Work"),  # ok
+        card("codex", 50.0, dry(1.5, 40.0)),  # soon
     )
-    assert [s["key"] for s in data["segments"]] == ["grok", "claude-code", "claude-code-work"]
+    assert [s["key"] for s in data["segments"]] == ["claude-code", "codex", "claude-code-work"]
+    ranks = [LEVEL_RANK_OF[s["level"]] for s in data["segments"]]
+    assert ranks == sorted(ranks) and ranks == [0, 1, 3]
+
+
+def test_profiles_sit_together_only_among_equal_sort_keys():
+    data = payload(
+        card("claude-code", 50.0, None, title="Claude Code"),
+        card("grok", 50.0, None),
+        card("claude-code-work", 50.0, None, title="Claude Code \u00b7 Work", label="Work"),
+    )
+    # all three tie exactly: the Claude profiles sit together, at the first one's place
+    assert [s["key"] for s in data["segments"]] == ["claude-code", "claude-code-work", "grok"]
 
 
 # ---- states -------------------------------------------------------------
