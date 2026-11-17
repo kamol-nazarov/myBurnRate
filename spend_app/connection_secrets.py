@@ -99,6 +99,7 @@ class Vault:
 
 OWNER_SESSION_VAULT_REF = "burnrate-owner-session"
 MACHINE_TOKEN_VAULT_REF = "burnrate-machine-token"
+PENDING_REVOKE_VAULT_REF = "burnrate-pending-revoke"
 
 _VAULT_FACTORY = None
 _DB_SECRET_LOCKS_GUARD = threading.Lock()
@@ -193,6 +194,332 @@ def _restore_vault_secret(vault, ref: str, previous: str | None) -> None:
             pass
 
 
+def _delete_vault_if_matches(vault, ref: str, expected_val: str | None) -> None:
+    if vault is None or not expected_val:
+        return
+    try:
+        current = vault.get(ref)
+        if isinstance(current, str) and current.strip() == expected_val:
+            vault.delete(ref)
+    except Exception:
+        pass
+
+
+def _compensate_publish_failure(
+    db_file: Path,
+    use_vault,
+    *,
+    snap_gen: int,
+    snap_legacy_owner: str,
+    snap_legacy_machine: str,
+    prev_owner: str | None,
+    prev_machine: str | None,
+    wrote_owner: bool,
+    wrote_machine: bool,
+    written_owner_val: str | None,
+    written_machine_val: str | None,
+) -> None:
+    """Fenced B4 compensation under a fresh SQLite BEGIN IMMEDIATE lock.
+
+    Restores previous vault refs only when nobody else has published or cleared
+    since the failed transaction's snapshot. If another process won, leaves its
+    credentials intact and only deletes uncommitted refs still matching ours.
+    """
+    from spend_app.db import connect
+    from spend_app.setup_wizard import read_setup_state
+
+    try:
+        with connect(db_file) as comp_conn:
+            comp_conn.execute("BEGIN IMMEDIATE")
+            cur_state = read_setup_state(comp_conn)
+            cur_spoke = dict(cur_state.get("spokeConfig") or {})
+            cur_gen = int(cur_spoke.get("credentialGeneration") or 0)
+            cur_legacy_owner = str(cur_spoke.get("ownerSession") or "").strip()
+            cur_legacy_machine = str(cur_spoke.get("token") or "").strip()
+            cur_vault_owner = read_vault_secret(db_file, OWNER_SESSION_VAULT_REF, vault=use_vault)
+            cur_vault_machine = read_vault_secret(db_file, MACHINE_TOKEN_VAULT_REF, vault=use_vault)
+
+            owner_uncontested = (
+                cur_vault_owner == written_owner_val
+                if wrote_owner
+                else cur_vault_owner == prev_owner
+            )
+            machine_uncontested = (
+                cur_vault_machine == written_machine_val
+                if wrote_machine
+                else cur_vault_machine == prev_machine
+            )
+            nobody_else_won = (
+                cur_gen == snap_gen
+                and cur_legacy_owner == snap_legacy_owner
+                and cur_legacy_machine == snap_legacy_machine
+                and owner_uncontested
+                and machine_uncontested
+            )
+            if nobody_else_won:
+                if wrote_owner:
+                    _restore_vault_secret(use_vault, OWNER_SESSION_VAULT_REF, prev_owner)
+                if wrote_machine:
+                    _restore_vault_secret(use_vault, MACHINE_TOKEN_VAULT_REF, prev_machine)
+            else:
+                if wrote_owner and written_owner_val != prev_owner:
+                    _delete_vault_if_matches(use_vault, OWNER_SESSION_VAULT_REF, written_owner_val)
+                if wrote_machine and written_machine_val != prev_machine:
+                    _delete_vault_if_matches(use_vault, MACHINE_TOKEN_VAULT_REF, written_machine_val)
+            try:
+                comp_conn.commit()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _parse_pending_revokes(raw: str | None) -> list[dict]:
+    import json
+
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    out: list[dict] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        tok = str(item.get("token") or "").strip()
+        if not tok:
+            continue
+        entry: dict[str, str] = {
+            "kind": str(item.get("kind") or "owner").strip() or "owner",
+            "token": tok,
+        }
+        mid = str(item.get("machineId") or "").strip()
+        if mid:
+            entry["machineId"] = mid
+        hub_url = str(item.get("hubUrl") or "").strip()
+        if hub_url:
+            entry["hubUrl"] = hub_url
+        out.append(entry)
+    return out
+
+
+def _merge_pending_revokes(existing: list[dict], new_entries: list[dict]) -> list[dict]:
+    merged: dict[tuple[str, str], dict] = {}
+    order: list[tuple[str, str]] = []
+    for item in [*existing, *new_entries]:
+        if not isinstance(item, dict):
+            continue
+        tok = str(item.get("token") or "").strip()
+        if not tok:
+            continue
+        hub_url = str(item.get("hubUrl") or "").strip()
+        mid = str(item.get("machineId") or "").strip()
+        key = (tok, hub_url)
+        if key not in merged:
+            entry: dict[str, str] = {
+                "kind": str(item.get("kind") or "owner").strip() or "owner",
+                "token": tok,
+            }
+            if mid:
+                entry["machineId"] = mid
+            if hub_url:
+                entry["hubUrl"] = hub_url
+            merged[key] = entry
+            order.append(key)
+        elif mid and not merged[key].get("machineId"):
+            merged[key]["machineId"] = mid
+    return [merged[k] for k in order]
+
+
+def _write_pending_revokes(use_vault, entries: list[dict]) -> None:
+    import json
+
+    if use_vault is None:
+        return
+    if entries:
+        try:
+            verified_vault_put(
+                use_vault,
+                json.dumps(entries, separators=(",", ":"), sort_keys=True),
+                PENDING_REVOKE_VAULT_REF,
+            )
+        except Exception:
+            pass
+    else:
+        try:
+            use_vault.delete(PENDING_REVOKE_VAULT_REF)
+        except Exception:
+            pass
+
+
+def read_pending_revokes(database_path: Path | str | None, *, vault=None) -> list[dict]:
+    """Read pending revoke entries from the vault only (never SQLite)."""
+    raw = read_vault_secret(database_path, PENDING_REVOKE_VAULT_REF, vault=vault)
+    return _parse_pending_revokes(raw)
+
+
+def enqueue_pending_revokes(
+    database_path: Path | str | None,
+    entries: list[dict],
+    *,
+    vault=None,
+) -> None:
+    """Persist unrevoked tokens in vault-only ``burnrate-pending-revoke``."""
+    clean_entries = [e for e in (entries or []) if isinstance(e, dict) and str(e.get("token") or "").strip()]
+    if not clean_entries:
+        return
+    db_file = Path(database_path) if database_path is not None else None
+    lock_cm = db_secret_lock(db_file) if db_file is not None else None
+    if lock_cm is not None:
+        lock_cm.acquire()
+    try:
+        use_vault = vault
+        if use_vault is None and db_file is not None:
+            try:
+                use_vault = get_vault(db_file)
+            except Exception:
+                use_vault = None
+        if use_vault is None:
+            return
+        existing = _parse_pending_revokes(
+            read_vault_secret(db_file, PENDING_REVOKE_VAULT_REF, vault=use_vault)
+        )
+        merged = _merge_pending_revokes(existing, clean_entries)
+        _write_pending_revokes(use_vault, merged)
+    finally:
+        if lock_cm is not None:
+            lock_cm.release()
+
+
+def flush_pending_revokes(
+    database_path: Path | str | None,
+    hub_url: str | None = None,
+    *,
+    vault=None,
+    client=None,
+) -> bool:
+    """Retry any vault-stored pending revokes against the hub.
+
+    Returns True when no pending revokes remain (or all retried cleanly),
+    False if any revoke failed due to network/hub error.
+    """
+    from spend_app.error_codes import HUB_PROTOCOL_VERSION
+    from spend_app.hub_origin import hub_origin
+    from spend_app.sync import _hub_post_with_cookie_isolation
+
+    db_file = Path(database_path) if database_path is not None else None
+    lock_cm = db_secret_lock(db_file) if db_file is not None else None
+    if lock_cm is not None:
+        lock_cm.acquire()
+    try:
+        use_vault = vault
+        if use_vault is None and db_file is not None:
+            try:
+                use_vault = get_vault(db_file)
+            except Exception:
+                use_vault = None
+        if use_vault is None:
+            return True
+        pending = _parse_pending_revokes(
+            read_vault_secret(db_file, PENDING_REVOKE_VAULT_REF, vault=use_vault)
+        )
+    finally:
+        if lock_cm is not None:
+            lock_cm.release()
+
+    if not pending:
+        return True
+
+    fallback_origin = None
+    if hub_url:
+        try:
+            fallback_origin = hub_origin(hub_url)
+        except ValueError:
+            fallback_origin = None
+
+    done_keys: set[tuple[str, str]] = set()
+    cleared_machine_keys: set[tuple[str, str]] = set()
+    any_failed = False
+
+    for item in pending:
+        tok = str(item.get("token") or "").strip()
+        raw_item_hub = str(item.get("hubUrl") or "").strip()
+        key = (tok, raw_item_hub)
+        target_raw = raw_item_hub or fallback_origin or ""
+        if not target_raw:
+            any_failed = True
+            continue
+        try:
+            target_origin = hub_origin(target_raw)
+        except ValueError:
+            any_failed = True
+            continue
+        use_client = client if (client is not None and fallback_origin == target_origin) else None
+        headers = {
+            "Authorization": f"Bearer {tok}",
+            "Content-Type": "application/json",
+            "X-BURNRATE-Request": "1",
+            "X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION),
+        }
+        mid = str(item.get("machineId") or "").strip()
+        if mid:
+            try:
+                rev_res = _hub_post_with_cookie_isolation(
+                    target_origin,
+                    "/api/machines",
+                    headers,
+                    json_body={"action": "revoke", "id": mid},
+                    client=use_client,
+                    timeout=6.0,
+                )
+            except Exception:
+                any_failed = True
+                continue
+            if rev_res.status_code >= 500:
+                any_failed = True
+                continue
+            cleared_machine_keys.add(key)
+        try:
+            res = _hub_post_with_cookie_isolation(
+                target_origin,
+                "/api/auth/logout",
+                headers,
+                client=use_client,
+                timeout=6.0,
+            )
+        except Exception:
+            any_failed = True
+            continue
+        if res.status_code >= 500:
+            any_failed = True
+            continue
+        done_keys.add(key)
+
+    if lock_cm is not None:
+        lock_cm.acquire()
+    try:
+        latest = _parse_pending_revokes(
+            read_vault_secret(db_file, PENDING_REVOKE_VAULT_REF, vault=use_vault)
+        )
+        updated: list[dict] = []
+        for item in latest:
+            k = (str(item.get("token") or "").strip(), str(item.get("hubUrl") or "").strip())
+            if k in done_keys:
+                continue
+            if k in cleared_machine_keys and "machineId" in item:
+                item = {ik: iv for ik, iv in item.items() if ik != "machineId"}
+            updated.append(item)
+        _write_pending_revokes(use_vault, updated)
+    finally:
+        if lock_cm is not None:
+            lock_cm.release()
+
+    return not any_failed
+
+
 CLEANUP_PENDING_META_KEY = "secrets.cleanup_pending.v1"
 
 
@@ -283,8 +610,13 @@ def publish_spoke_credentials(
 
         prev_machine = None
         prev_owner = None
+        prev_gen = 0
+        legacy_machine = ""
+        legacy_owner = ""
         wrote_machine = False
         wrote_owner = False
+        written_machine_val = None
+        written_owner_val = None
         try:
             with connect(db_file) as connection:
                 connection.execute("PRAGMA secure_delete = ON")
@@ -305,9 +637,11 @@ def publish_spoke_credentials(
                     if clean_machine:
                         verified_vault_put(use_vault, clean_machine, MACHINE_TOKEN_VAULT_REF)
                         wrote_machine = True
+                        written_machine_val = clean_machine
                     if clean_owner:
                         verified_vault_put(use_vault, clean_owner, OWNER_SESSION_VAULT_REF)
                         wrote_owner = True
+                        written_owner_val = clean_owner
                 except Exception as exc:
                     if wrote_owner:
                         _restore_vault_secret(use_vault, OWNER_SESSION_VAULT_REF, prev_owner)
@@ -328,6 +662,7 @@ def publish_spoke_credentials(
                         try:
                             verified_vault_put(use_vault, legacy_machine, MACHINE_TOKEN_VAULT_REF)
                             wrote_machine = True
+                            written_machine_val = legacy_machine
                             migrated_legacy_machine = True
                         except Exception:
                             preserve_legacy_machine = True
@@ -341,6 +676,7 @@ def publish_spoke_credentials(
                         try:
                             verified_vault_put(use_vault, legacy_owner, OWNER_SESSION_VAULT_REF)
                             wrote_owner = True
+                            written_owner_val = legacy_owner
                             migrated_legacy_owner = True
                         except Exception:
                             preserve_legacy_owner = True
@@ -354,6 +690,8 @@ def publish_spoke_credentials(
                     spoke.pop("ownerSession", None)
                     if migrated_legacy_owner and not clean_owner:
                         spoke["ownerSessionRotationRequired"] = True
+                if clean_owner:
+                    spoke.pop("signedOut", None)
                 state["spokeConfig"] = spoke
 
                 if apply_state is not None:
@@ -374,6 +712,9 @@ def publish_spoke_credentials(
                 elif preserve_legacy_owner:
                     spoke["ownerSession"] = legacy_owner
 
+                if clean_owner:
+                    spoke.pop("signedOut", None)
+
                 spoke["credentialGeneration"] = max(prev_gen, int(spoke.get("credentialGeneration") or 0)) + 1
                 state["spokeConfig"] = spoke
 
@@ -389,10 +730,20 @@ def publish_spoke_credentials(
                 connection.commit()
                 return saved
         except Exception:
-            if wrote_owner:
-                _restore_vault_secret(use_vault, OWNER_SESSION_VAULT_REF, prev_owner)
-            if wrote_machine:
-                _restore_vault_secret(use_vault, MACHINE_TOKEN_VAULT_REF, prev_machine)
+            if wrote_owner or wrote_machine:
+                _compensate_publish_failure(
+                    db_file,
+                    use_vault,
+                    snap_gen=prev_gen,
+                    snap_legacy_owner=legacy_owner,
+                    snap_legacy_machine=legacy_machine,
+                    prev_owner=prev_owner,
+                    prev_machine=prev_machine,
+                    wrote_owner=wrote_owner,
+                    wrote_machine=wrote_machine,
+                    written_owner_val=written_owner_val,
+                    written_machine_val=written_machine_val,
+                )
             raise
 
 
@@ -401,15 +752,27 @@ def clear_spoke_credentials(
     *,
     clear_owner_session: bool = False,
     clear_machine_token: bool = False,
+    mark_signed_out: bool = False,
     vault=None,
     prepare_state=None,
     apply_state=None,
-) -> None:
-    """Clear vault credentials and SQLite spoke state under the shared DB lock."""
+) -> dict:
+    """Clear vault credentials and SQLite spoke state under the shared DB lock.
+
+    Reads all stored owner/machine credentials (vault + SQLite state) inside the
+    same BEGIN IMMEDIATE transaction, deletes them from the vault, bumps
+    credentialGeneration, optionally sets ``signedOut``, and returns the exact
+    removed tokens and metadata so sign-out can revoke whatever won.
+    """
     db_file = Path(database_path) if database_path is not None else None
     lock_cm = db_secret_lock(db_file) if db_file is not None else None
     if lock_cm is not None:
         lock_cm.acquire()
+    removed_owner: list[str] = []
+    removed_machine: list[str] = []
+    machine_id: str | None = None
+    hub_url: str | None = None
+    new_gen: int | None = None
     try:
         use_vault = vault
         if use_vault is None and db_file is not None:
@@ -428,6 +791,20 @@ def clear_spoke_credentials(
                 state = read_setup_state(connection)
                 if prepare_state is not None:
                     prepare_state(connection, state)
+
+                orig_spoke = dict(state.get("spokeConfig") or {})
+                orig_account = dict(state.get("account") or {})
+                machine_id = str(orig_account.get("machineId") or "").strip() or None
+                hub_url = str(orig_spoke.get("hubUrl") or "").strip() or None
+
+                if clear_owner_session:
+                    v_owner = read_vault_secret(db_file, OWNER_SESSION_VAULT_REF, vault=use_vault)
+                    s_owner = str(orig_spoke.get("ownerSession") or "").strip() or None
+                    removed_owner = list(dict.fromkeys(t for t in (v_owner, s_owner) if t))
+                if clear_machine_token:
+                    v_machine = read_vault_secret(db_file, MACHINE_TOKEN_VAULT_REF, vault=use_vault)
+                    s_machine = str(orig_spoke.get("token") or "").strip() or None
+                    removed_machine = list(dict.fromkeys(t for t in (v_machine, s_machine) if t))
 
                 if use_vault is not None:
                     if clear_owner_session:
@@ -451,21 +828,32 @@ def clear_spoke_credentials(
                     spoke.pop("token", None)
                     spoke.pop("tokenExpiresAt", None)
                     spoke.pop("rotationRequired", None)
+                if mark_signed_out:
+                    spoke["signedOut"] = True
                 state["spokeConfig"] = spoke
                 if apply_state is not None:
                     apply_state(connection, state)
                 spoke = dict(state.get("spokeConfig") or {})
-                spoke["credentialGeneration"] = max(prev_gen, int(spoke.get("credentialGeneration") or 0)) + 1
+                if mark_signed_out:
+                    spoke["signedOut"] = True
+                new_gen = max(prev_gen, int(spoke.get("credentialGeneration") or 0)) + 1
+                spoke["credentialGeneration"] = new_gen
                 state["spokeConfig"] = spoke
                 write_setup_state(connection, state)
                 connection.commit()
         elif use_vault is not None:
             if clear_owner_session:
+                v_owner = read_vault_secret(None, OWNER_SESSION_VAULT_REF, vault=use_vault)
+                if v_owner:
+                    removed_owner = [v_owner]
                 try:
                     use_vault.delete(OWNER_SESSION_VAULT_REF)
                 except Exception:
                     pass
             if clear_machine_token:
+                v_machine = read_vault_secret(None, MACHINE_TOKEN_VAULT_REF, vault=use_vault)
+                if v_machine:
+                    removed_machine = [v_machine]
                 try:
                     use_vault.delete(MACHINE_TOKEN_VAULT_REF)
                 except Exception:
@@ -473,6 +861,13 @@ def clear_spoke_credentials(
     finally:
         if lock_cm is not None:
             lock_cm.release()
+    return {
+        "ownerTokens": removed_owner,
+        "machineTokens": removed_machine,
+        "machineId": machine_id,
+        "hubUrl": hub_url,
+        "credentialGeneration": new_gen,
+    }
 
 
 def test_provider(source, key):

@@ -1241,6 +1241,11 @@ def sync_once(
         except Exception:
             pass
 
+    try:
+        from spend_app.connection_secrets import flush_pending_revokes
+        flush_pending_revokes(settings.database_path, hub_url, client=client)
+    except Exception:
+        pass
     cursor = read_sync_cursor(settings.database_path, hub_url)
     generation = cursor.get("generation")
     if cursor.get("credential_hash") and not hmac.compare_digest(cursor["credential_hash"], _token_hash(token.strip())):
@@ -1524,7 +1529,7 @@ def migrate_legacy_spoke_secrets(database_path: Path, *, vault=None) -> dict[str
     return outcome
 
 
-def _hub_post_with_cookie_isolation(hub_url: str, path: str, headers: dict, *, client=None, timeout: float = 8.0):
+def _hub_post_with_cookie_isolation(hub_url: str, path: str, headers: dict, *, json_body: dict | None = None, client=None, timeout: float = 8.0):
     resolved_client = client if client is not None else _HUB_TEST_CLIENTS.get(hub_url)
     if resolved_client is not None:
         cookies = getattr(resolved_client, "cookies", None)
@@ -1532,7 +1537,7 @@ def _hub_post_with_cookie_isolation(hub_url: str, path: str, headers: dict, *, c
         if cookies is not None:
             cookies.clear()
         try:
-            return resolved_client.post(path, json={}, headers=headers)
+            return resolved_client.post(path, json=(json_body if json_body is not None else {}), headers=headers)
         finally:
             if cookies is not None and saved_jar is not None:
                 cookies.clear()
@@ -1540,7 +1545,7 @@ def _hub_post_with_cookie_isolation(hub_url: str, path: str, headers: dict, *, c
                     cookies.jar.set_cookie(cookie)
     import httpx
     with httpx.Client(timeout=timeout, trust_env=False, follow_redirects=False) as http:
-        return http.post(f"{hub_url}{path}", json={}, headers=headers)
+        return http.post(f"{hub_url}{path}", json=(json_body if json_body is not None else {}), headers=headers)
 
 
 def ensure_fresh_owner_session(
@@ -1569,6 +1574,7 @@ def ensure_fresh_owner_session(
     from spend_app.connection_secrets import (
         OWNER_SESSION_VAULT_REF,
         clear_spoke_credentials,
+        enqueue_pending_revokes,
         mark_cleanup_pending_in_tx,
         publish_spoke_credentials,
         read_vault_secret,
@@ -1637,6 +1643,7 @@ def ensure_fresh_owner_session(
                 cur_gen != captured_gen
                 or cur_tok != captured_token
                 or not sp.get("ownerSessionRotationRequired")
+                or sp.get("signedOut")
             ):
                 raise _StaleOwnerLifecycle()
 
@@ -1677,8 +1684,9 @@ def ensure_fresh_owner_session(
                 apply_state=_apply,
             )
         except _StaleOwnerLifecycle:
+            revoke_ok = False
             try:
-                _hub_post_with_cookie_isolation(
+                logout_res = _hub_post_with_cookie_isolation(
                     hub_url,
                     "/api/auth/logout",
                     {
@@ -1690,8 +1698,15 @@ def ensure_fresh_owner_session(
                     client=client,
                     timeout=4.0,
                 )
+                revoke_ok = logout_res.status_code < 500
             except Exception:
-                pass
+                revoke_ok = False
+            if not revoke_ok:
+                enqueue_pending_revokes(
+                    db_file,
+                    [{"kind": "owner", "token": new_token, "hubUrl": hub_url}],
+                    vault=vault,
+                )
             raise CodedError("AUTH-107", status_code=401) from None
         except CodedError:
             def _fence_clear_on_err(_conn, current_state) -> None:
@@ -1800,6 +1815,11 @@ def post_to_configured_hub(
         if strict:
             raise HubMutationError("Reconnect this computer to its hub before saving plans.")
         return None
+    try:
+        from spend_app.connection_secrets import flush_pending_revokes
+        flush_pending_revokes(settings.database_path, hub_url)
+    except Exception:
+        pass
     if using_owner_session:
         try:
             token = ensure_fresh_owner_session(settings.database_path, hub_url, token)
@@ -2161,6 +2181,11 @@ def fetch_from_configured_hub(
         return None
     if not hub_url or not token:
         return None
+    try:
+        from spend_app.connection_secrets import flush_pending_revokes
+        flush_pending_revokes(settings.database_path, hub_url)
+    except Exception:
+        pass
     try:
         token = ensure_fresh_owner_session(settings.database_path, hub_url, token)
     except Exception:
