@@ -218,6 +218,14 @@ def pill_payload(dark):
     return model.payload(dark=dark, now=NOW, budget=700)
 
 
+def red_pill_payload(dark):
+    from tests_spend.test_tab_review import out_cards
+
+    model = TabModel()
+    model.publish_report({"providers": providers(*out_cards(8))})
+    return model.payload(dark=dark, now=NOW, budget=420)
+
+
 def status_payload(state, dark):
     model = TabModel()
     if state == "empty":
@@ -237,6 +245,7 @@ def test_every_text_in_every_state_has_at_least_4_5_to_1_including_ancestor_opac
         audit_script("idle hover", json.dumps(idle_payload(dark)), hover="claude-code"),
         audit_script("stale", json.dumps(stale_payload(dark))),
         audit_script("urgent pill", json.dumps(pill_payload(dark))),
+        audit_script("urgent pill red", json.dumps(red_pill_payload(dark))),
         audit_script("empty", json.dumps(status_payload("empty", dark))),
         audit_script("loading", json.dumps(status_payload("loading", dark))),
         audit_script("error", json.dumps(status_payload("error", dark))),

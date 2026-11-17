@@ -52,9 +52,19 @@ OPEN_WIDTH = 36
 CHIP_WIDTH = 212
 #: The red "+N urgent" pill (urgent providers that do not fit the monitor).
 URGENT_PILL_WIDTH = 92
-#: Never plan a layout for less than this, nor closer than this to the screen edge.
-MIN_BUDGET = 480
+#: How close the tab may come to the work area's edge, in logical pixels.
 BUDGET_MARGIN = 16
+#: The compact fallbacks, used only when the monitor is too narrow for the normal
+#: layout: the error chip shrinks to its code, then to its icon; segments drop their
+#: secondary label; the brand, the pills and the open button tighten.
+CHIP_CODE_WIDTH = 88
+CHIP_ICON_WIDTH = 34
+COMPACT_SEGMENT_WIDTH = 96
+TIGHT_HOME_WIDTH = 38
+TIGHT_OPEN_WIDTH = 32
+TIGHT_FINE_WIDTH = 54
+TIGHT_URGENT_WIDTH = 76
+COMPACT_EMPTY_WIDTH = 140
 #: Gap between the strip and its hover card, and the two corner radii.
 CARD_GAP = 6
 TAB_RADIUS = 14
@@ -258,29 +268,37 @@ def plan_segments(
     budget: float | None = None,
     fixed: int = 0,
     cap: int = MAX_SEGMENTS,
-) -> tuple[list[dict], list[dict], list[dict]]:
+    fold_calm: bool = True,
+    fold_urgent: bool = True,
+    fine_width: int = FINE_WIDTH,
+    urgent_width: int = URGENT_PILL_WIDTH,
+) -> tuple[list[dict], list[dict], list[dict]] | None:
     """Choose what the strip shows: ``(shown, folded, urgent_hidden)``.
 
     Out/soon/warn segments always show, even beyond ``cap``. The rest fill the
-    remaining slots and fold into "+N fine". ``budget`` is the logical width the
-    monitor can spare and ``fixed`` the width of everything that is not a
-    segment: more calm segments fold until it fits, and if the urgent ones
-    alone do not fit, the last of them move into a "+N urgent" pill. Nothing
-    is ever sized past the budget.
+    remaining slots and fold into "+N fine". With a ``budget`` (the logical
+    width the monitor can spare; ``fixed`` is everything that is not a segment
+    or a pill) more calm segments fold until it fits (``fold_calm``), and if
+    the urgent ones alone do not fit the last of them move into a "+N urgent"
+    pill (``fold_urgent``). ``None`` means no plan fits under those rules.
     """
     urgent = [s for s in segments if s["level"] not in FOLDABLE_LEVELS]
     calm = [s for s in segments if s["level"] in FOLDABLE_LEVELS]
 
     def total(shown_urgent, shown_calm, folded, urgent_more) -> int:
         width = fixed + sum(s["width"] for s in shown_urgent) + sum(s["width"] for s in shown_calm)
-        return width + (FINE_WIDTH if folded else 0) + (URGENT_PILL_WIDTH if urgent_more else 0)
+        return width + (fine_width if folded else 0) + (urgent_width if urgent_more else 0)
 
     room = len(calm) if len(segments) <= cap else max(0, cap - len(urgent))
-    for kept in range(min(room, len(calm)), -1, -1):
+    room = min(room, len(calm))
+    lowest = 0 if (budget is not None and fold_calm) else room
+    for kept in range(room, lowest - 1, -1):
         shown_calm, folded = calm[:kept], calm[kept:]
         if budget is None or total(urgent, shown_calm, folded, False) <= budget:
             keep = {id(s) for s in urgent + shown_calm}
             return [s for s in segments if id(s) in keep], folded, []
+    if budget is None or not fold_urgent:
+        return None
     for count in range(len(urgent) - 1, -1, -1):
         shown_urgent, hidden = urgent[:count], urgent[count:]
         if count == 0 or total(shown_urgent, [], calm, True) <= budget:
@@ -309,16 +327,95 @@ def layout_width(
     return width
 
 
-def _pill_info(items: list[dict]) -> dict | None:
+class _Step:
+    """One rung of the fit ladder: how compact the strip is, and what may fold."""
+
+    def __init__(self, chip, *, fold_calm, fold_urgent, compact, tight):
+        self.chip, self.fold_calm, self.fold_urgent = chip, fold_calm, fold_urgent
+        self.compact, self.tight = compact, tight
+
+
+#: Tried in order until the strip fits the monitor: shorten the error chip to its
+#: code, fold calm providers, fold urgent ones into "+N urgent", drop the
+#: segments' secondary label, tighten the chrome, and finally keep only the
+#: chip's icon.
+FIT_LADDER = (
+    _Step("full", fold_calm=False, fold_urgent=False, compact=False, tight=False),
+    _Step("code", fold_calm=False, fold_urgent=False, compact=False, tight=False),
+    _Step("code", fold_calm=True, fold_urgent=False, compact=False, tight=False),
+    _Step("code", fold_calm=True, fold_urgent=True, compact=False, tight=False),
+    _Step("code", fold_calm=True, fold_urgent=True, compact=True, tight=False),
+    _Step("code", fold_calm=True, fold_urgent=True, compact=True, tight=True),
+    _Step("icon", fold_calm=True, fold_urgent=True, compact=True, tight=True),
+)
+_CHIP_WIDTHS = {"full": CHIP_WIDTH, "code": CHIP_CODE_WIDTH, "icon": CHIP_ICON_WIDTH}
+
+
+def fit_layout(segments: list[dict], *, state: str, has_error: bool, has_code: bool, budget: float | None) -> dict:
+    """Plan the whole strip for ``budget`` logical pixels (``None``: no limit).
+
+    Returns ``shown``/``folded``/``hidden`` segments plus the chosen ``mode`` and
+    the resulting ``width``. Nothing is ever wider than the budget unless even
+    the minimal strip (brand, pills, the chip's icon, the open button) cannot fit,
+    which takes a budget under about 240 logical pixels.
+    """
+    last = None
+    for step in FIT_LADDER:
+        if step.chip == "code" and not has_code and has_error:
+            chip_mode = "icon"  # nothing to show but the icon
+        else:
+            chip_mode = step.chip
+        home, open_w = (TIGHT_HOME_WIDTH, TIGHT_OPEN_WIDTH) if step.tight else (HOME_WIDTH, OPEN_WIDTH)
+        fine_w = TIGHT_FINE_WIDTH if step.tight else FINE_WIDTH
+        urgent_w = TIGHT_URGENT_WIDTH if step.tight else URGENT_PILL_WIDTH
+        status = {"loading": LOADING_WIDTH, "empty": COMPACT_EMPTY_WIDTH if step.compact else EMPTY_WIDTH}.get(state, 0)
+        chip_w = _CHIP_WIDTHS[chip_mode] if has_error else 0
+        fixed = home + open_w + status + chip_w
+        sized = [dict(s, width=COMPACT_SEGMENT_WIDTH if step.compact else s["width"]) for s in segments]
+        plan = plan_segments(
+            sized, budget=budget, fixed=fixed, fold_calm=step.fold_calm,
+            fold_urgent=step.fold_urgent, fine_width=fine_w, urgent_width=urgent_w,
+        )
+        last = (step, chip_mode, fixed, fine_w, urgent_w, sized, plan)
+        if plan is not None and (
+            budget is None
+            or (
+                fixed + sum(s["width"] for s in plan[0]) + (fine_w if plan[1] else 0) + (urgent_w if plan[2] else 0) <= budget
+                # a strip with only pills is the last resort: try a more compact one first
+                and (plan[0] or not segments)
+            )
+        ):
+            break
+    step, chip_mode, fixed, fine_w, urgent_w, sized, plan = last
+    if plan is None:  # nothing fit: the most compact strip with everything in pills
+        urgent = [s for s in sized if s["level"] not in FOLDABLE_LEVELS]
+        calm = [s for s in sized if s["level"] in FOLDABLE_LEVELS]
+        plan = ([], calm, urgent)
+    shown, folded, hidden = plan
+    width = fixed + sum(s["width"] for s in shown) + (fine_w if folded else 0) + (urgent_w if hidden else 0)
+    return {
+        "shown": shown,
+        "folded": folded,
+        "hidden": hidden,
+        "width": width,
+        "mode": {"chip": chip_mode, "compact": step.compact, "tight": step.tight},
+    }
+
+
+def _pill_info(items: list[dict], *, severity: bool = False) -> dict | None:
     if not items:
         return None
-    return {
+    info = {
         "count": len(items),
         "items": [
             {"key": s["key"], "title": s["title"], "level": s["level"], "text": f"{s['big']} {s['unit']}".strip()}
             for s in items
         ],
     }
+    if severity:
+        # red only when something inside is about to run out; amber for "dries before refill"
+        info["severity"] = "soon" if any(s["level"] in URGENT_LEVELS for s in items) else "warn"
+    return info
 
 
 class TabModel:
@@ -380,7 +477,8 @@ class TabModel:
         budget: float | None = None,
     ) -> dict:
         """What the tab page draws. ``budget`` is the logical width the current
-        monitor can spare; the layout never exceeds it."""
+        monitor can spare; the strip is planned against it with compact fallbacks
+        (see ``FIT_LADDER``), so nothing is ever cut off."""
         now = now or datetime.now(UTC)
         with self._lock:
             providers = list(self._providers)
@@ -393,32 +491,32 @@ class TabModel:
             state = "error" if error else "empty"
         else:
             state = "ready"
-        status = {"loading": LOADING_WIDTH, "empty": EMPTY_WIDTH}.get(state, 0)
-        fixed = HOME_WIDTH + OPEN_WIDTH + status + (CHIP_WIDTH if error else 0)
-        limit = max(budget, MIN_BUDGET) if budget is not None else None
-        shown, fine, urgent_more = plan_segments(segments, budget=limit, fixed=fixed)
-        urgent = sum(1 for s in segments if s["level"] in URGENT_LEVELS)
-        extra = sum(s["width"] - SEGMENT_WIDTH for s in shown)
-        width = layout_width(
-            len(shown), bool(fine), chip=bool(error), status=status, extra=extra,
-            urgent_pill=bool(urgent_more),
+        plan = fit_layout(
+            segments,
+            state=state,
+            has_error=bool(error),
+            has_code=bool(error and error.get("code")),
+            budget=budget,
         )
+        urgent = sum(1 for s in segments if s["level"] in URGENT_LEVELS)
+        card_width = CARD_WIDTH if budget is None else int(max(1, min(CARD_WIDTH, budget)))
         return {
             "state": state,
             "dark": bool(dark),
             "demo": bool(demo),
             "stale": bool(error) and bool(segments),
             "error": error,
-            "segments": shown,
-            "fine": _pill_info(fine),
-            "urgentMore": _pill_info(urgent_more),
+            "segments": plan["shown"],
+            "fine": _pill_info(plan["folded"]),
+            "urgentMore": _pill_info(plan["hidden"], severity=True),
             "urgentCount": urgent,
             "layout": {
                 "height": TAB_HEIGHT,
-                "width": width,
-                "budget": limit,
+                "width": plan["width"],
+                "budget": budget,
+                "mode": plan["mode"],
                 "segmentWidth": SEGMENT_WIDTH,
-                "cardWidth": CARD_WIDTH,
+                "cardWidth": card_width,
                 "cardGap": CARD_GAP,
             },
         }

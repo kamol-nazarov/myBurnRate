@@ -129,17 +129,30 @@ html[data-theme="dark"] .brand-chip { background: var(--bd-bg); color: var(--bd-
 
 .urgentpill { flex: none; width: 92px; height: 48px; display: flex; align-items: center; justify-content: center; border-radius: 10px; }
 .urgentpill span { font-size: 10.5px; font-weight: 800; padding: 5px 9px; border-radius: 99px; background: var(--soon); color: var(--badge-ink); white-space: nowrap; }
+.urgentpill.warn span { background: var(--warn); }
 .urgentpill:hover, .urgentpill.on { background: var(--hover); }
 .status { flex: none; height: 48px; display: flex; align-items: center; padding: 0 12px; border-radius: 10px; font-size: 12px; font-weight: 700; color: var(--muted); white-space: nowrap; }
 button.status:hover { background: var(--hover); color: var(--ink); }
 .status b { color: var(--ink); font-weight: 800; margin-right: 6px; }
 .chip {
-  flex: none; width: 212px; margin: 0 2px 0 4px; padding: 6px 9px; border-radius: 10px;
+  flex: none; width: 212px; margin: 0; padding: 6px 9px; border-radius: 10px; overflow: hidden;
   background: var(--chip-bg); color: var(--chip-ink); font-size: 10.5px; font-weight: 700; line-height: 1.3;
   display: flex; align-items: center; gap: 7px;
 }
 .chip svg { flex: none; }
 /* Dimmed, not faded: text keeps a 4.5:1 colour, only the logos and bars fade. */
+/* Fallbacks for a monitor too narrow for the normal strip (sizes match tab_window.py). */
+.tab[data-chip="code"] .chip { width: 88px; padding: 6px 7px; justify-content: center; }
+.tab[data-chip="icon"] .chip { width: 34px; padding: 0; justify-content: center; }
+.tab[data-compact] .top span { display: none; }
+.tab[data-compact] .seg { padding: 0 6px; gap: 6px; }
+.tab[data-compact] .status .more { display: none; }
+.tab[data-tight] .home { width: 30px; }
+.tab[data-tight] .badge { left: 12px; }
+.tab[data-tight] .open { width: 28px; margin-left: 0; }
+.tab[data-tight] .fine { width: 54px; }
+.tab[data-tight] .urgentpill { width: 76px; }
+.tab[data-tight] .fine span, .tab[data-tight] .urgentpill span { padding: 5px 6px; font-size: 10px; }
 .stale .logo, .stale .fuel { opacity: 0.5; }
 .stale .top b, .stale .st { color: var(--muted); }
 .spacer { flex: 1; }
@@ -244,12 +257,17 @@ body.up .card-wrap { padding: 0 0 6px; }
     if (el.hasAttribute && el.hasAttribute("data-open")) return { k: "card-open" };
     return null;
   }
+  function inPill(info, key) {
+    return !!info && info.items.some(function (it) { return it.key === key; });
+  }
   function restoreFocus(token) {
     if (!token) return;
     var target = null;
     if (token.k === "seg") {
       var index = segIndex(token.key);
-      target = index >= 0 ? document.querySelector('.seg[data-i="' + index + '"]') : null;
+      if (index >= 0) target = document.querySelector('.seg[data-i="' + index + '"]');
+      else if (inPill(state && state.urgentMore, token.key)) target = $("urgentPill");
+      else if (inPill(state && state.fine, token.key)) target = $("fine");
     } else if (token.k === "card-open") {
       target = document.querySelector("#card [data-open]");
     } else {
@@ -271,6 +289,10 @@ body.up .card-wrap { padding: 0 0 6px; }
     if (window.burnrateTabTheme) window.burnrateTabTheme.setDark(!!next.dark);
     var tab = $("tab");
     tab.classList.toggle("stale", !!next.stale);
+    var mode = (next.layout && next.layout.mode) || {};
+    tab.dataset.chip = mode.chip || "full";
+    if (mode.compact) tab.dataset.compact = "1"; else delete tab.dataset.compact;
+    if (mode.tight) tab.dataset.tight = "1"; else delete tab.dataset.tight;
     $("segs").innerHTML = (next.segments || []).map(segHtml).join("");
     var badge = $("badge");
     badge.hidden = !(next.urgentCount > 0);
@@ -285,20 +307,24 @@ body.up .card-wrap { padding: 0 0 6px; }
     var urgentPill = $("urgentPill");
     if (next.urgentMore) {
       urgentPill.hidden = false;
-      urgentPill.innerHTML = pillHtml(next.urgentMore.count, "urgent");
-      urgentPill.setAttribute("aria-label", next.urgentMore.count + " more providers about to run out");
+      var watching = next.urgentMore.severity === "warn";
+      urgentPill.classList.toggle("warn", watching);
+      urgentPill.innerHTML = pillHtml(next.urgentMore.count, watching ? "to watch" : "urgent");
+      urgentPill.setAttribute("aria-label", next.urgentMore.count + (watching ? " more providers to watch" : " more providers about to run out"));
     } else { urgentPill.hidden = true; urgentPill.innerHTML = ""; }
     var status = $("status");
     if (next.state === "loading") {
       status.innerHTML = '<div class="status"><b>BURNRATE</b>Loading…</div>';
     } else if (next.state === "empty") {
-      status.innerHTML = '<button class="status" type="button" id="emptyBtn"><b>No limits yet</b>· Open BURNRATE to add a source</button>';
+      status.innerHTML = '<button class="status" type="button" id="emptyBtn" title="Open BURNRATE to add a source"><b>No limits yet</b><span class="more">· Open BURNRATE to add a source</span></button>';
     } else { status.innerHTML = ""; }
     var chip = $("chip");
     if (next.error) {
       chip.hidden = false;
-      chip.title = next.error.message || "";
-      chip.innerHTML = WARN + "<span>" + esc(next.error.text) + "</span>";
+      chip.title = next.error.message ? next.error.text + " \u2014 " + next.error.message : next.error.text;
+      chip.setAttribute("aria-label", next.error.text);
+      var chipText = mode.chip === "icon" ? "" : mode.chip === "code" ? (next.error.code || "") : next.error.text;
+      chip.innerHTML = WARN + (chipText ? "<span>" + esc(chipText) + "</span>" : "");
     } else { chip.hidden = true; chip.innerHTML = ""; }
     var emptyBtn = $("emptyBtn");
     if (emptyBtn) emptyBtn.addEventListener("click", function () { call("open_full"); });
@@ -366,6 +392,7 @@ body.up .card-wrap { padding: 0 0 6px; }
     $("cardWrap").hidden = false;
     var layout = (state && state.layout) || {};
     var cardW = layout.cardWidth || 300;
+    card.style.width = cardW + "px";
     var seat = openKey === "__fine__" ? $("fine")
       : openKey === "__urgent__" ? $("urgentPill")
       : document.querySelector('.seg[data-i="' + segIndex(openKey) + '"]');

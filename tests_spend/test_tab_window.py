@@ -281,7 +281,7 @@ def test_page_escapes_every_value():
     assert "function esc(" in source
     assert "innerHTML" in source
     # Every dynamic piece in the markup builders goes through esc() or Number().
-    for needle in ("s.name", "s.status", "s.unit", "s.aria", "r.label", "r.note", "r.resets", "seg.title", "seg.plan", "it.title", "next.error.text"):
+    for needle in ("s.name", "s.status", "s.unit", "s.aria", "r.label", "r.note", "r.resets", "seg.title", "seg.plan", "it.title", "chipText"):
         assert f"esc({needle})" in source
 
 
