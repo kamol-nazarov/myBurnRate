@@ -229,6 +229,11 @@ def d2_report(variant: str = "default") -> dict:
         codex["windows"] = [_window("weekly", "Weekly", 50.0, 100.0, pace=_pace("tight", 1.5, 98.0))]
         report["providers"] = [primary, work, codex]
         _rank(report, ["claude-code", "codex", "claude-code-work"])
+    elif variant == "level-only":
+        # no forecast anywhere: every measured lane is a level bar and none uses the time axis
+        for prov in report["providers"]:
+            for win in prov["windows"]:
+                win["pace"] = None
     elif variant == "lane-states":
         report["providers"] = [lane_states_provider()]
         _rank(report, ["lane-states"])

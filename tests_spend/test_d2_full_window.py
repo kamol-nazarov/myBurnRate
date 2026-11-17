@@ -689,3 +689,44 @@ def test_the_default_canvas_state_has_no_level_lanes_so_the_extra_legend_stays_h
     for prov in build()["providers"]:
         for win in prov["windows"]:
             assert win["unit"] == "usd" or win["pace"] is not None
+
+
+RULER_PROBE = """
+await until(() => document.querySelectorAll('#providerList .provider-item').length >= 5);
+const snap = () => ({
+  ruler: !document.getElementById('limitTicks').hidden && document.getElementById('limitTicks').offsetParent !== null,
+  legend: !document.getElementById('limitLegend').hidden,
+  timelineItems: [...document.querySelectorAll('#limitLegend .leg-time')].map(el => el.offsetParent !== null),
+  levelItem: document.getElementById('limitLegendLevel').offsetParent !== null,
+  levelLanes: document.querySelectorAll('#providerList .lane-track.is-level').length,
+  timelineLanes: document.querySelectorAll('#providerList .lane:not(.is-muted) .lane-track:not(.is-level)').length,
+});
+const out = { levelOnly: snap() };
+// one lane gets a forecast: the ruler and the timeline legend come back
+state.report.providers[0].windows[0].pace = { state: 'tight', hoursToDry: 1.2, hoursDryBeforeReset: 1, runsDryAt: null };
+renderReport(state.report, false);
+out.withTimeline = snap();
+// and go again when the forecast goes
+state.report.providers[0].windows[0].pace = null;
+renderReport(state.report, false);
+out.levelOnlyAgain = snap();
+report(out);
+"""
+
+
+@needs_chrome
+@browser
+def test_the_time_ruler_and_timeline_legend_only_show_while_a_lane_uses_the_time_axis(tmp_path):
+    report = d2_report("level-only")
+    # keep it simple: no balance row or exhausted lane, just the measured windows
+    html = build_page(pref="light", report=report, probe=RULER_PROBE, extra_css=FAST)
+    r = probe(html, 440, tmp_path, height=640)
+
+    for case in ("levelOnly", "levelOnlyAgain"):
+        s = r[case]
+        assert s["timelineLanes"] == 0 and s["levelLanes"] > 0, (case, s)
+        assert s["ruler"] is False and s["timelineItems"] == [False, False, False], (case, s)
+        assert s["levelItem"] is True and s["legend"] is True, (case, s)
+    s = r["withTimeline"]
+    assert s["timelineLanes"] == 1
+    assert s["ruler"] is True and s["timelineItems"] == [True, True, True] and s["levelItem"] is True
