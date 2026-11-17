@@ -2093,13 +2093,15 @@ class DesktopBridge:
         return get_vault(db_path)
 
     def _migrate_legacy_secrets(self) -> None:
+        if self._vault is not None:
+            return
         db_path = self._db_path()
         if db_path is None or not db_path.is_file():
             return
         try:
             from spend_app.sync import migrate_legacy_spoke_secrets
 
-            migrate_legacy_spoke_secrets(db_path, vault=self._resolve_vault())
+            migrate_legacy_spoke_secrets(db_path)
         except Exception:
             LOGGER.debug("Legacy spoke secret migration skipped", exc_info=True)
 

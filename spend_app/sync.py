@@ -1417,8 +1417,6 @@ def migrate_legacy_spoke_secrets(database_path: Path, *, vault=None) -> dict[str
             if changed:
                 latest["spokeConfig"] = latest_spoke
                 write_setup_state(connection, latest)
-        if changed:
-            clear_hub_proxy_cache()
     except Exception:
         pass
     return outcome

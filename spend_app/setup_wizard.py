@@ -2099,9 +2099,13 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             spoke = state.get("spokeConfig") or {}
             if state.get("role") != "spoke" or not spoke.get("enabled"):
                 return error_response("AUTH-107", status_code=409)
-            if not str(spoke.get("ownerSession") or "").strip():
+            from spend_app.sync import HubMutationError, _vault_get_secret
+
+            if not (
+                str(spoke.get("ownerSession") or "").strip()
+                or (_vault_get_secret(settings.database_path, "burnrate-owner-session") or "").strip()
+            ):
                 return error_response("AUTH-107", status_code=401)
-            from spend_app.sync import HubMutationError
             from starlette.concurrency import run_in_threadpool
 
             try:
@@ -2179,9 +2183,13 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             spoke = state.get("spokeConfig") or {}
             if state.get("role") != "spoke" or not spoke.get("enabled"):
                 return error_response("AUTH-107", status_code=409)
-            if not str(spoke.get("ownerSession") or "").strip():
+            from spend_app.sync import HubMutationError, _vault_get_secret
+
+            if not (
+                str(spoke.get("ownerSession") or "").strip()
+                or (_vault_get_secret(settings.database_path, "burnrate-owner-session") or "").strip()
+            ):
                 return error_response("AUTH-107", status_code=401)
-            from spend_app.sync import HubMutationError
             from starlette.concurrency import run_in_threadpool
 
             try:
