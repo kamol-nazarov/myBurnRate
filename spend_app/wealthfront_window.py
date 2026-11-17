@@ -44,6 +44,11 @@ from spend_app.native_onboarding import build_onboarding_data, build_setup_scan_
 from spend_app.native_prefs import PreferenceStore, store_for
 from spend_app.native_tray import TrayController, run_on_ui
 from spend_app.opencode_providers import provider_tool_name
+from spend_app.provider_urgency import (
+    build_funds_runway,
+    build_pace,
+    compute_urgency,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -448,6 +453,7 @@ def merge_provider_entries(
                     "windowTokens": win_tok,
                     "forecast": forecast_line,
                     "runway": runway_line,
+                    "pace": build_pace(row.get("forecast")),
                 }
             )
 
@@ -585,36 +591,43 @@ def merge_provider_entries(
                 "summary": summary,
             }
 
-        providers.append(
-            {
-                "key": key,
-                "name": display_name,
-                "badge": badge,
-                "plan": str(card.get("plan") or ""),
-                "inUse": bool(card.get("inUse")),
-                "isPayg": bool(card.get("isPayg")),
-                "fundsRemainingUsd": float(funds_usd) if has_funds else None,
-                "organization": bool(period_entry.get("organization")),
-                "remaining": remaining,
-                "burn": {
-                    "dayTokens": day_tokens,
-                    "sessionTokens": session_tokens,
-                    "hasSession": has_session,
-                    "weekTokens": week_tokens,
-                    "weekBasis": week_basis,
-                },
-                "windows": windows,
-                "tokens": int(period_entry.get("tokens") or 0),
-                "valueUsd": period_entry.get("valueUsd"),
-                "complete": period_entry.get("complete", True),
-                "input": int(period_entry.get("input") or 0),
-                "cached": int(period_entry.get("cached") or 0),
-                "writes": int(period_entry.get("writes") or 0),
-                "output": int(period_entry.get("output") or 0),
-                "reasoning": period_entry.get("reasoning"),
-                "models": period_entry.get("models") or [],
-            }
+        is_profile_member = key in multi_primary_keys or any(
+            key.startswith(pk + "-") for pk in _MULTI_PRIMARY_KEYS
         )
+        provider = {
+            "key": key,
+            "name": display_name,
+            "badge": badge,
+            "profile": badge if is_profile_member and badge else None,
+            "plan": str(card.get("plan") or ""),
+            "inUse": bool(card.get("inUse")),
+            "isPayg": bool(card.get("isPayg")),
+            "fundsRemainingUsd": float(funds_usd) if has_funds else None,
+            "fundsRunwayInfo": build_funds_runway(card.get("fundsRunway"))
+            if has_funds
+            else None,
+            "organization": bool(period_entry.get("organization")),
+            "remaining": remaining,
+            "burn": {
+                "dayTokens": day_tokens,
+                "sessionTokens": session_tokens,
+                "hasSession": has_session,
+                "weekTokens": week_tokens,
+                "weekBasis": week_basis,
+            },
+            "windows": windows,
+            "tokens": int(period_entry.get("tokens") or 0),
+            "valueUsd": period_entry.get("valueUsd"),
+            "complete": period_entry.get("complete", True),
+            "input": int(period_entry.get("input") or 0),
+            "cached": int(period_entry.get("cached") or 0),
+            "writes": int(period_entry.get("writes") or 0),
+            "output": int(period_entry.get("output") or 0),
+            "reasoning": period_entry.get("reasoning"),
+            "models": period_entry.get("models") or [],
+        }
+        provider["urgency"] = compute_urgency(provider)
+        providers.append(provider)
 
     # Include any recorded-usage tools that do not have a quota card (e.g. Org API feeds)
     for key, tool in period_tools.items():
@@ -657,46 +670,48 @@ def merge_provider_entries(
         val_usd = tool.get("valueUsd")
         has_val = isinstance(val_usd, (int, float)) and math.isfinite(float(val_usd))
         headline = f"${float(val_usd):,.2f}" if has_val else "Tracked"
-        providers.append(
-            {
-                "key": key,
-                "name": name,
-                "badge": badge,
-                "plan": plan_label,
-                "inUse": False,
-                "isPayg": is_payg,
-                "fundsRemainingUsd": None,
-                "organization": bool(tool.get("organization")),
-                "remaining": {
-                    "kind": "usage_only",
-                    "headline": headline,
-                    "sub": "API value" if has_val else "usage only",
-                    "barPct": 100.0 if day_tok is not None and day_tok > 0 else 0.0,
-                    "tone": "muted",
-                    "resetsAt": None,
-                    "summary": "Organization API feed"
-                    if tool.get("organization")
-                    else f"{len(tool.get('models') or [])} models recorded",
-                },
-                "burn": {
-                    "dayTokens": day_tok,
-                    "sessionTokens": None,
-                    "hasSession": False,
-                    "weekTokens": week_tok,
-                    "weekBasis": "rolling" if week_tok is not None else None,
-                },
-                "windows": [],
-                "tokens": int(tool.get("tokens") or 0),
-                "valueUsd": val_usd,
-                "complete": tool.get("complete", True),
-                "input": int(tool.get("input") or 0),
-                "cached": int(tool.get("cached") or 0),
-                "writes": int(tool.get("writes") or 0),
-                "output": int(tool.get("output") or 0),
-                "reasoning": tool.get("reasoning"),
-                "models": tool.get("models") or [],
-            }
-        )
+        provider = {
+            "key": key,
+            "name": name,
+            "badge": badge,
+            "profile": badge if is_extra_profile and badge else None,
+            "plan": plan_label,
+            "inUse": False,
+            "isPayg": is_payg,
+            "fundsRemainingUsd": None,
+            "fundsRunwayInfo": None,
+            "organization": bool(tool.get("organization")),
+            "remaining": {
+                "kind": "usage_only",
+                "headline": headline,
+                "sub": "API value" if has_val else "usage only",
+                "barPct": 100.0 if day_tok is not None and day_tok > 0 else 0.0,
+                "tone": "muted",
+                "resetsAt": None,
+                "summary": "Organization API feed"
+                if tool.get("organization")
+                else f"{len(tool.get('models') or [])} models recorded",
+            },
+            "burn": {
+                "dayTokens": day_tok,
+                "sessionTokens": None,
+                "hasSession": False,
+                "weekTokens": week_tok,
+                "weekBasis": "rolling" if week_tok is not None else None,
+            },
+            "windows": [],
+            "tokens": int(tool.get("tokens") or 0),
+            "valueUsd": val_usd,
+            "complete": tool.get("complete", True),
+            "input": int(tool.get("input") or 0),
+            "cached": int(tool.get("cached") or 0),
+            "writes": int(tool.get("writes") or 0),
+            "output": int(tool.get("output") or 0),
+            "reasoning": tool.get("reasoning"),
+            "models": tool.get("models") or [],
+        }
+        provider["urgency"] = compute_urgency(provider)
+        providers.append(provider)
 
     order_list = [
         str(k) for k in (provider_order or []) if isinstance(k, str) and k.strip()
