@@ -114,6 +114,11 @@ class NativeClient:
                             "/api/spend/quotas/refresh",
                             "/api/setup/account",
                             "/api/setup/connect-spoke",
+                            # H11 settings
+                            "/api/setup/scan",
+                            "/api/setup/notifications/test",
+                            "/api/setup/diagnostics",
+                            "/api/sync/trigger",
                         )
                     )
                     else 20,
