@@ -78,7 +78,7 @@ computer.
   DNS-rebinding defenses, path handling, injection).
 - The native desktop window: the WebView2/pywebview JavaScript bridge, local file loading, and theme and
   settings persistence.
-- Hub and spoke: pairing codes, machine bearer tokens, account authentication, sync ingestion,
+- Hub and spoke: machine bearer tokens, email account authentication, sync ingestion,
   per-machine isolation, and upgrade handling.
 - Credential handling: storage in the OS keychain, reuse of provider-owned keys, redaction in logs,
   API responses, `burnrate doctor` output and copied diagnostics.
@@ -133,7 +133,7 @@ These are invariants, not aspirations. A change that breaks one is a security bu
   The `burnrate_access` cookie contains the session, never the static bearer; it is HttpOnly,
   SameSite=Lax, Secure on HTTPS. Cookie mutations require the same origin.
   `/auth` provides sign-in, session listing/revocation, logout and credential rotation.
-- **Spoke session management.** A paired computer's loopback API is anonymous for local data, but
+- **Spoke session management.** A connected computer's loopback API is anonymous for local data, but
   hub session listing, revocation, rotation and sign-out require a separate local sign-in cookie
   (`burnrate_local`, HttpOnly, SameSite=Lax, scoped to `/api`). Break-glass rotation is refused on a
   spoke and must happen on the hub. A local caller without that cookie gets 401.
@@ -143,17 +143,16 @@ These are invariants, not aspirations. A change that breaks one is a security bu
   bearer automation. `/api/auth/rotate` replaces it with a hash persisted in SQLite; the old
   environment value cannot regain access on restart. The replacement is returned once. The old
   `?token=` entry point is deprecated and exchanges it for an expiring session, never a static cookie.
-  A paired computer never relays break-glass rotation; do it on the hub.
-- **Single-use pairing.** Codes expire after **15 minutes**, are bound to the issuing hub origin/Host
-  and exchange once, transactionally, for a 90-day machine token. Codes contain an invitation secret,
-  never a machine token. Owners can re-pair by machine ID (including expired/revoked machines), or
-  matching name, without editing SQLite. A lost rotation/redemption response requires re-pairing.
+  A connected computer never relays break-glass rotation; do it on the hub.
+- **Machine credentials.** Each connected computer registers with its persistent device ID for a
+  90-day machine token (auto-rotated in the background before expiry). Revoking a computer
+  invalidates its machine token immediately; signing in again on that computer issues a new one.
 - **Admin audit.** `admin_audit` records actor type/ID, fixed action, target ID, outcome and UTC time
-  for login, sessions, machine management, pairing, setup/registration and credential rotation.
-  SQLite triggers reject UPDATE/DELETE. Tokens, hashes, passwords, pairing codes, labels, request
+  for login, sessions, machine management, setup/registration and credential rotation.
+  SQLite triggers reject UPDATE/DELETE. Tokens, hashes, passwords, labels, request
   bodies and conversation content are never audit payloads. This is a local append-only record,
   not a tamper-proof external ledger against a database administrator.
-- **Owner view on spokes.** Pairing grants sync and own-machine reads. For All computers, the owner
+- **Owner view on spokes.** A machine token grants sync and own-machine reads. For All computers, the owner
   signs in once on each spoke; a separate revocable owner session is saved in the spoke's private
   SQLite configuration and used as a bearer to the hub. The hub stores its hash. On sign-out,
   expiry or rejected access, show this computer's recorded usage and a sign-in notice. A freshly

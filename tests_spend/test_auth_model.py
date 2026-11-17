@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from spend_app import auth_model as auth, auth_throttle, pairing as pairing_module, setup_wizard, sync
+from spend_app import auth_model as auth, auth_throttle, setup_wizard, sync
 from spend_app.api import create_app
 from spend_app.config import Settings
 from spend_app.db import connect, initialize
@@ -203,47 +203,7 @@ def test_break_glass_bootstrap_automation_opt_out_and_rotation(hub, monkeypatch)
     assert client.post("/api/auth/bootstrap", headers={"Authorization": "Bearer " + rotated["token"]}).status_code == 200
 
 
-def pairing(client, **kwargs):
-    result = client.post("/api/setup/pair-hub", headers={**ADMIN, "X-BURNRATE-Request": "1"},
-                         json={"name": "Paired device", "hubUrl": ORIGIN, **kwargs})
-    assert result.status_code == 200, result.text
-    assert "br_m_" not in result.text
-    return result.json()
-
-
-def test_pairing_expiry_single_use_host_binding_and_repair(hub):
-    settings, client = hub
-    invitation = pairing(client)
-    assert auth.moment() + timedelta(minutes=14) < auth.parse(invitation["expiresAt"]) <= auth.moment() + timedelta(minutes=15)
-    payload = {"pairingCode": invitation["pairingCode"]}
-    assert client.post("/api/pairing/redeem", headers={"Host": "other.invalid", "X-BURNRATE-Request": "1"}, json=payload).status_code == 403
-    # Another allowed Host also fails: allowlisting is not grant binding.
-    assert client.post("/api/pairing/redeem", headers={"Host": "localhost", "X-BURNRATE-Request": "1"}, json=payload).status_code == 403
-    result = client.post("/api/pairing/redeem", headers=UI, json=payload)
-    assert result.status_code == 200
-    reg = result.json()
-    assert auth.parse(reg["expiresAt"]) > auth.moment() + timedelta(days=89)
-    assert client.post("/api/pairing/redeem", headers=UI, json=payload).status_code == 403
-    sync.revoke_machine(settings.database_path, machine_id=reg["machine"]["id"])
-    repaired = pairing(client, machineId=reg["machine"]["id"])
-    new = client.post("/api/pairing/redeem", headers=UI, json={"pairingCode": repaired["pairingCode"]})
-    assert new.status_code == 200 and new.json()["machine"]["id"] == reg["machine"]["id"]
-    assert new.json()["token"] != reg["token"]
-    expiring = pairing(client, name="Expiring device")
-    with connect(settings.database_path) as connection:
-        connection.execute("UPDATE pairing_grants SET expires_at=? WHERE used_at IS NULL", (auth.stamp(auth.moment() - timedelta(seconds=1)),))
-    assert client.post("/api/pairing/redeem", headers=UI, json={"pairingCode": expiring["pairingCode"]}).status_code == 403
-
-
-def test_pairing_concurrent_redemption_only_one_succeeds(hub):
-    _, client = hub
-    code = pairing(client)["pairingCode"]
-    with ThreadPoolExecutor(2) as pool:
-        results = list(pool.map(lambda _: client.post("/api/pairing/redeem", headers=UI, json={"pairingCode": code}), range(2)))
-    assert sorted(r.status_code for r in results) == [200, 403]
-
-
-def test_pairing_and_registration_enforce_active_name_uniqueness(hub):
+def test_registration_and_rename_enforce_active_name_uniqueness(hub):
     settings, client = hub
     first = sync.register_machine(settings.database_path, name="Workstation")
     first_id = first["machine"]["id"]
@@ -261,24 +221,8 @@ def test_pairing_and_registration_enforce_active_name_uniqueness(hub):
     assert first_token != first["token"]
     assert client.post("/api/sync/push", headers={"Authorization": "Bearer " + first["token"]}, json={}).status_code == 401
 
-    # Invite -> rename One -> rename Two to One -> redeem old invite is refused (403).
-    one = sync.register_machine(settings.database_path, name="One")
-    two = sync.register_machine(settings.database_path, name="Two")
-    stale_invite = pairing(client, name="One")
-    sync.rename_machine(settings.database_path, machine_id=one["machine"]["id"], name="Renamed One")
-    sync.rename_machine(settings.database_path, machine_id=two["machine"]["id"], name="One")
-    stale_redeem = client.post("/api/pairing/redeem", headers=UI, json={"pairingCode": stale_invite["pairingCode"]})
-    assert stale_redeem.status_code == 403
-    with connect(settings.database_path) as connection:
-        machines = sync._read_state(connection)["machines"]
-        active_ones = [
-            mid for mid, rec in machines.items()
-            if not rec.get("revoked") and rec["name"].lower() == "one"
-        ]
-        assert active_ones == [two["machine"]["id"]]
-
-    # Seed legacy colliding active records directly to verify name-only pairing/reconnect
-    # rejects ambiguity while explicit machineId succeeds (for non-colliding name).
+    # Seed legacy colliding active records directly to verify name-only reconnect
+    # rejects ambiguity while resolving ambiguity allows reconnecting cleanly.
     second_id = "machine-legacy-dup"
     with connect(settings.database_path) as connection:
         state = sync._read_state(connection)
@@ -290,70 +234,24 @@ def test_pairing_and_registration_enforce_active_name_uniqueness(hub):
         }
         sync._write_state(connection, state)
 
-    actor = auth.Principal("owner", "break-glass", "owner")
-    with pytest.raises(ValueError, match="machine ID"):
-        pairing_module.issue(settings.database_path, actor, hub_url=ORIGIN, name="WORKSTATION")
-
-    refused = client.post(
-        "/api/setup/pair-hub",
-        headers={**ADMIN, "X-BURNRATE-Request": "1"},
-        json={"name": "WORKSTATION", "hubUrl": ORIGIN},
-    )
-    assert refused.status_code == 422
-    assert "pairingCode" not in refused.text
-
     # Name-only reconnect and token rotation against colliding active names both refuse.
     with pytest.raises(ValueError, match="machine ID"):
         sync.register_or_reconnect_machine(settings.database_path, name="WORKSTATION")
     with pytest.raises(ValueError, match="already exists"):
         sync.rotate_machine_token(settings.database_path, first_token)
 
-    # Explicit machineId with a unique name succeeds cleanly.
+    # Once the duplicate is renamed away, registering by name reconnects cleanly.
     sync.rename_machine(settings.database_path, machine_id=second_id, name="Workstation Two")
-    explicit = pairing(client, name="WORKSTATION", machineId=first_id)
-    redeemed = client.post("/api/pairing/redeem", headers=UI, json={"pairingCode": explicit["pairingCode"]})
-    assert redeemed.status_code == 200
-    assert redeemed.json()["machine"]["id"] == first_id
+    reconnected = client.post(
+        "/api/machines",
+        headers=ADMIN,
+        json={"action": "register", "name": "WORKSTATION"},
+    )
+    assert reconnected.status_code == 200
+    assert reconnected.json()["machine"]["id"] == first_id
 
 
-def test_spare_name_only_invitation_invalidated_when_machine_revoked(hub):
-    settings, client = hub
-    invite_one = pairing(client, name="Review Box")
-    invite_two = pairing(client, name="review box")
-
-    # Both name-only invites for the new machine reserve the exact same machine_id.
-    with connect(settings.database_path) as connection:
-        rows = connection.execute(
-            "SELECT machine_id, by_name, used_at FROM pairing_grants ORDER BY created_at"
-        ).fetchall()
-        assert len(rows) == 2
-        assert rows[0]["machine_id"] and rows[0]["machine_id"] == rows[1]["machine_id"]
-        assert rows[0]["by_name"] == 1 and rows[1]["by_name"] == 1
-
-    # Redeem the first invitation -> creates machine with that reserved id.
-    first_redeem = client.post("/api/pairing/redeem", headers=UI, json={"pairingCode": invite_one["pairingCode"]})
-    assert first_redeem.status_code == 200
-    reserved_id = first_redeem.json()["machine"]["id"]
-    assert reserved_id == rows[0]["machine_id"]
-
-    # Revoking the machine invalidates the spare invitation and blocks redeeming it.
-    sync.revoke_machine(settings.database_path, machine_id=reserved_id)
-    with connect(settings.database_path) as connection:
-        used_vals = [r["used_at"] for r in connection.execute("SELECT used_at FROM pairing_grants").fetchall()]
-        assert all(used_vals)
-    spare_redeem = client.post("/api/pairing/redeem", headers=UI, json={"pairingCode": invite_two["pairingCode"]})
-    assert spare_redeem.status_code == 403
-
-    # Even if a reserved name-only invite wasn't bound to an existing machine yet,
-    # creating and revoking a different machine with that name blocks redeeming it.
-    reserved_invite = pairing(client, name="Raced Box")
-    other = sync.register_machine(settings.database_path, name="Raced Box")
-    sync.revoke_machine(settings.database_path, machine_id=other["machine"]["id"])
-    raced_redeem = client.post("/api/pairing/redeem", headers=UI, json={"pairingCode": reserved_invite["pairingCode"]})
-    assert raced_redeem.status_code == 403
-
-
-def test_revoked_machine_cannot_be_revived_by_name_only_pairing_or_reconnect(hub):
+def test_revoked_machine_cannot_be_revived_by_name_only_reconnect(hub):
     settings, client = hub
     owner(client)
     client.cookies.clear()
@@ -361,18 +259,6 @@ def test_revoked_machine_cannot_be_revived_by_name_only_pairing_or_reconnect(hub
     reg = sync.register_machine(settings.database_path, name="Revoked Box")
     mid = reg["machine"]["id"]
     sync.revoke_machine(settings.database_path, machine_id=mid)
-
-    actor = auth.Principal("owner", "break-glass", "owner")
-    with pytest.raises(ValueError, match="machine ID"):
-        pairing_module.issue(settings.database_path, actor, hub_url=ORIGIN, name="revoked box")
-
-    refused_pair = client.post(
-        "/api/setup/pair-hub",
-        headers={**ADMIN, "X-BURNRATE-Request": "1"},
-        json={"name": "revoked box", "hubUrl": ORIGIN},
-    )
-    assert refused_pair.status_code == 422
-    assert "pairingCode" not in refused_pair.text
 
     with pytest.raises(ValueError, match="machine ID"):
         sync.register_or_reconnect_machine(settings.database_path, name="revoked box")
@@ -406,14 +292,6 @@ def test_revoked_machine_cannot_be_revived_by_name_only_pairing_or_reconnect(hub
                 connection, name="Revoked Box", reconnect=True, machine_id=mid
             )
         assert sync._read_state(connection)["machines"][mid]["revoked"] is True
-
-    # Fresh pairing with explicit machineId still works and restores sync.
-    repaired = pairing(client, name="Revoked Box", machineId=mid)
-    redeemed = client.post("/api/pairing/redeem", headers=UI, json={"pairingCode": repaired["pairingCode"]})
-    assert redeemed.status_code == 200
-    new_token = redeemed.json()["token"]
-    assert redeemed.json()["machine"]["id"] == mid
-    assert client.post("/api/sync/push", headers={"Authorization": "Bearer " + new_token}, json={}).status_code == 200
 
 
 def test_audit_actor_exactly_once_append_only_and_no_credential_material(hub):
@@ -678,91 +556,3 @@ def test_owner_session_machines_register_follows_reconnect_rules(hub):
     assert ambiguous.status_code == 422
 
 
-def test_legacy_null_machine_id_grants_expired_on_migration_and_refused_by_redeem(tmp_path, monkeypatch):
-    monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
-    monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "synthetic-break-glass")
-    monkeypatch.setenv("BURNRATE_ALLOW_ADMIN_BEARER", "1")
-    settings = settings_at(tmp_path)
-    from spend_app.db import _initialize_base
-    from spend_app.setup_wizard import encode_pairing_code
-
-    _initialize_base(settings.database_path)
-    now = auth.moment()
-    future = auth.stamp(now + timedelta(minutes=10))
-    past_created = auth.stamp(now)
-    legacy_secret = "br_p_legacy-null-secret"
-    explicit_secret = "br_p_legacy-explicit-secret"
-    existing_machine = sync.register_machine(settings.database_path, name="Existing Legacy")
-    existing_id = existing_machine["machine"]["id"]
-
-    # Simulate a pre-E pairing_grants table without by_name column and an unused NULL machine_id grant.
-    with connect(settings.database_path) as connection:
-        connection.execute("DROP TABLE IF EXISTS pairing_grants")
-        connection.execute(
-            "CREATE TABLE pairing_grants (id TEXT PRIMARY KEY, secret_hash TEXT NOT NULL, "
-            "hub_origin TEXT NOT NULL, machine_id TEXT, machine_name TEXT NOT NULL, os_name TEXT NOT NULL, "
-            "created_at TEXT NOT NULL, expires_at TEXT NOT NULL, used_at TEXT)"
-        )
-        connection.execute(
-            "INSERT INTO pairing_grants VALUES(?,?,?,?,?,?,?,?,?)",
-            ("grant-null", auth.digest(legacy_secret), ORIGIN, None, "Legacy Null", "", past_created, future, None),
-        )
-        connection.execute(
-            "INSERT INTO pairing_grants VALUES(?,?,?,?,?,?,?,?,?)",
-            ("grant-explicit", auth.digest(explicit_secret), ORIGIN, existing_id, "Existing Legacy", "", past_created, future, None),
-        )
-
-    auth.ensure_schema(settings.database_path)
-    with connect(settings.database_path) as connection:
-        cols = {row[1] for row in connection.execute("PRAGMA table_info(pairing_grants)")}
-        assert "by_name" in cols
-        null_row = connection.execute("SELECT expires_at FROM pairing_grants WHERE id='grant-null'").fetchone()
-        assert auth.parse(null_row["expires_at"]) <= auth.moment()
-        explicit_row = connection.execute("SELECT expires_at FROM pairing_grants WHERE id='grant-explicit'").fetchone()
-        assert auth.parse(explicit_row["expires_at"]) > auth.moment()
-
-    null_code = encode_pairing_code(hub_url=ORIGIN, token=legacy_secret, machine_id="grant-null", machine_name="Legacy Null", hub_name="Hub")
-    explicit_code = encode_pairing_code(hub_url=ORIGIN, token=explicit_secret, machine_id="grant-explicit", machine_name="Existing Legacy", hub_name="Hub")
-
-    with TestClient(create_app(settings, enable_scheduler=False), base_url=ORIGIN) as client:
-        assert client.post("/api/pairing/redeem", headers=UI, json={"pairingCode": null_code}).status_code == 403
-
-        # Defence in depth: even if a NULL machine_id grant is unexpired, redeem still refuses it.
-        with connect(settings.database_path) as connection:
-            connection.execute("UPDATE pairing_grants SET expires_at=? WHERE id='grant-null'", (future,))
-        assert client.post("/api/pairing/redeem", headers=UI, json={"pairingCode": null_code}).status_code == 403
-
-        # Explicit legacy machine_id grant remains redeemable.
-        ok = client.post("/api/pairing/redeem", headers=UI, json={"pairingCode": explicit_code})
-        assert ok.status_code == 200
-        assert ok.json()["machine"]["id"] == existing_id
-
-
-def test_pairing_reservation_does_not_reuse_renamed_machine_id(hub):
-    settings, client = hub
-    orig = sync.register_machine(settings.database_path, name="Old Name")
-    orig_id = orig["machine"]["id"]
-    orig_token = orig["token"]
-
-    old_invite = pairing(client, name="Old Name")
-    sync.rename_machine(settings.database_path, machine_id=orig_id, name="Renamed Machine")
-
-    fresh_invite = pairing(client, name="Old Name")
-    with connect(settings.database_path) as connection:
-        rows = connection.execute("SELECT id, machine_id FROM pairing_grants ORDER BY created_at").fetchall()
-        assert len(rows) == 2
-        assert rows[0]["machine_id"] == orig_id
-        assert rows[1]["machine_id"] and rows[1]["machine_id"] != orig_id
-
-    # Redeeming the fresh invite creates a new machine instead of rotating Renamed Machine.
-    fresh_redeem = client.post("/api/pairing/redeem", headers=UI, json={"pairingCode": fresh_invite["pairingCode"]})
-    assert fresh_redeem.status_code == 200
-    assert fresh_redeem.json()["machine"]["id"] != orig_id
-    assert fresh_redeem.json()["machine"]["name"] == "Old Name"
-
-    # Redeeming the pre-rename by_name invite for the renamed machine is refused, and Renamed Machine keeps its token.
-    stale_redeem = client.post("/api/pairing/redeem", headers=UI, json={"pairingCode": old_invite["pairingCode"]})
-    assert stale_redeem.status_code == 403
-    assert client.post("/api/sync/push", headers={"Authorization": "Bearer " + orig_token}, json={}).status_code == 200
-    with connect(settings.database_path) as connection:
-        assert sync._read_state(connection)["machines"][orig_id]["name"] == "Renamed Machine"

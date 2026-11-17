@@ -81,8 +81,9 @@ HTTPS over your tailnet; do not put credentials in URLs or shell history.
    create a recovery session with `BURNRATE_ACCESS_TOKEN` or rotate credentials.
    The static bearer is restricted to bootstrap and rotation by default; set
    `BURNRATE_ALLOW_ADMIN_BEARER=1` only while automation still needs it for
-   other API calls. Credential rotation stores only the replacement hash in
-   SQLite; updating the environment variable alone does not override it.
+   other API calls. Credential rotation happens on the hub and stores only the
+   replacement hash in SQLite; updating the environment variable alone does not
+   override it.
 
 - **Update:** the reference compose file pins both images by digest. Set
   `BURNRATE_HUB_IMAGE` to the new `tag@sha256:...` from the release
@@ -153,7 +154,8 @@ On first start the additive auth tables and legacy metadata migration commit ato
 start does not change migrated metadata or add a second migration audit row. Existing machine
 hashes keep working for pushes until `created_at + 180 days`; old tokens are flagged for rotation.
 Expired older tokens must be re-connected from the desktop app. Existing account passwords still
-work and need no setup token.
+work and need no setup token; already-paired computers keep their machine tokens and keep syncing,
+and the unused `pairing_grants` table is dropped on upgrade.
 
 Run synthetic checks before rollout, then check anonymous reads return 401, own-machine reads
 work, aggregate machine reads return 403 and an owner session sees all expected computers.

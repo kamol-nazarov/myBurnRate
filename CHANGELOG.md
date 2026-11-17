@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 This project is licensed under Apache-2.0.
 
+## [0.5.9] - Unreleased
+
+### Removed
+
+- **Pairing codes and pairing routes removed.** Computers now join the hub solely by signing in
+  to your hub account. Removed `spend_app/pairing.py` (keeping `hub_origin` in
+  `spend_app/hub_origin.py`), `/api/pairing/redeem`, `/api/setup/pair-hub`,
+  `/api/setup/connect-spoke`, `PAIRING_PREFIX`, `encode_pairing_code`, `decode_pairing_code`,
+  `ensure_tailscale_hub_proxy`, `detect_network_addresses`, `PAIRING_MINUTES`, desktop pairing UI
+  and bridge methods (`create_pairing_code`, `join_with_code`), and CLI `machines register`,
+  `sync --hub --token`, and `desktop --hub --token`. Redaction keeps masking historical `brpair_`
+  tokens in old logs.
+
+### Changed
+
+- **Upgrade migration drops `pairing_grants`.** Existing databases drop the obsolete `pairing_grants`
+  table idempotently on startup (discarding any unused pairing codes), while already-paired
+  computers retain their machine tokens and keep syncing without re-authentication.
+
 ## [0.5.8] - 2026-11-16
 
 ### Security

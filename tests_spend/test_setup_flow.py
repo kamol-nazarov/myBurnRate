@@ -55,7 +55,7 @@ def test_the_wizard_has_four_steps_and_no_dead_end(client: TestClient) -> None:
 
 def test_setup_changes_need_the_burnrate_header(client: TestClient) -> None:
     for path in ("/api/setup/complete", "/api/setup/defer", "/api/setup/consent", "/api/setup/scan",
-                 "/api/setup/pair-hub", "/api/setup/connect-spoke", "/api/setup/account"):
+                 "/api/setup/account"):
         response = client.post(path, json={})
         assert response.status_code == 403, path
         assert "setup page" in response.json()["error"]

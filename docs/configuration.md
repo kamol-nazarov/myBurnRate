@@ -12,9 +12,8 @@ burnrate demo [--port 17377] [--data-root DIR] # Serve made-up data on 127.0.0.1
 
 # Multi-computer management & sync
 burnrate machines list
-burnrate machines register --name "MacBook Pro"
 burnrate machines revoke --id <machine_id>
-burnrate sync [--hub https://<hub>] --token-file <path-to-token> [--once]
+burnrate sync --token-file <path-to-token> [--once]
 # or: set BURNRATE_SYNC_TOKEN and omit both flags
 burnrate hub update --ssh <host> [--push-local] [--dry-run]  # Fast-forward a self-hosted hub, restart it, print its build
 
@@ -90,6 +89,8 @@ BURNRATE never turns on Tailscale, Serve or Funnel. To reach the HUD from your t
 No new dependency is required. Sessions last 30 days; machine tokens last 90 days;
 these durations are fixed policy constants.
 `machines.v1` and `accounts.v1` migrate automatically, in one transaction with marker `auth_model.v1`.
+The obsolete `pairing_grants` table is dropped automatically on upgrade; computers
+that were already paired keep their machine tokens and keep syncing.
 Legacy machine hashes are retained; expiry is the original `created_at` plus 180 days (not 180 days
 from upgrade), with `rotation_required=true`. A token already older than that needs reconnection.
 Account password hashes and creation dates stay intact; stable IDs and owner roles are added.

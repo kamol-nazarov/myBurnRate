@@ -228,10 +228,8 @@ def _cmd_doctor(settings: Settings) -> int:
     return 0 if payload["ok"] else 1
 
 
-def _resolve_sync_token(token: str | None, token_file: str | None) -> str:
-    """Prefer a file or the environment so the token stays out of process lists."""
-    if token and token.strip():
-        return token.strip()
+def _resolve_sync_token(token_file: str | None = None) -> str:
+    """Read the machine token from BURNRATE_SYNC_TOKEN or a private token file."""
     env_token = os.getenv("BURNRATE_SYNC_TOKEN", "").strip()
     if env_token:
         return env_token
@@ -342,9 +340,8 @@ def _main() -> int:
     sync_parser = subparsers.add_parser(
         "sync",
         help="Stream local usage and agent activity from this computer to a BURNRATE hub",
+        allow_abbrev=False,
     )
-    sync_parser.add_argument("--hub", default="", help="Optional hub base URL override (defaults to configured hub)")
-    sync_parser.add_argument("--token", help="Machine bearer token (br_m_...); prefer --token-file or BURNRATE_SYNC_TOKEN")
     sync_parser.add_argument("--token-file", help="Read the machine bearer token from this file")
     sync_parser.add_argument("--name", help="Optional display name override for this computer")
     sync_parser.add_argument("--interval", type=float, default=5.0, help="Sync interval in seconds")
@@ -354,17 +351,13 @@ def _main() -> int:
     machines_parser = subparsers.add_parser("machines", help="Manage connected computers on the hub")
     machines_sub = machines_parser.add_subparsers(dest="machines_command", required=True)
     machines_sub.add_parser("list")
-    m_reg = machines_sub.add_parser("register")
-    m_reg.add_argument("--name", required=True)
-    m_reg.add_argument("--os", default="")
     m_rev = machines_sub.add_parser("revoke")
     m_rev.add_argument("--id", required=True)
     desktop_parser = subparsers.add_parser(
         "desktop",
         help="Open the compact native usage application",
+        allow_abbrev=False,
     )
-    desktop_parser.add_argument("--hub", help="Optional remote hub URL to sync local telemetry to")
-    desktop_parser.add_argument("--token", help="Optional machine bearer token for remote hub sync; prefer --token-file")
     desktop_parser.add_argument("--token-file", help="Read the machine bearer token from this file")
     desktop_parser.add_argument("--check-only", action="store_true", help="Verify native widget support and exit")
     desktop_parser.add_argument("--demo", action="store_true", help="Show sample data without starting collection")
@@ -560,14 +553,9 @@ def _main() -> int:
         from spend_app.hub_update import reset_hub_password
         return reset_hub_password(settings.database_path, args.email)
     if args.command == "machines":
-        from spend_app.sync import list_machines, register_machine, revoke_machine
+        from spend_app.sync import list_machines, revoke_machine
 
         initialize(settings.database_path)
-        if args.machines_command == "register":
-            from spend_app.auth_model import Principal
-            out = register_machine(settings.database_path, name=args.name, os_name=args.os, actor=Principal("system", "local-cli"))
-            print(json.dumps(out, indent=2))
-            return 0
         if args.machines_command == "revoke":
             from spend_app.auth_model import Principal
             out = revoke_machine(settings.database_path, machine_id=args.id, actor=Principal("system", "local-cli"))
@@ -583,7 +571,7 @@ def _main() -> int:
         from spend_app.sync import sync_once
 
         try:
-            hub_url = (args.hub or "").strip() or resolve_hub_url()
+            hub_url = resolve_hub_url()
         except ValueError as exc:
             print(json.dumps({"ok": False, "error": redact(exc)}), file=sys.stderr)
             return 2
@@ -592,14 +580,14 @@ def _main() -> int:
                 json.dumps(
                     {
                         "ok": False,
-                        "error": "No hub is configured. Set BURNRATE_HUB_URL or pass --hub.",
+                        "error": "No hub is configured. Set BURNRATE_HUB_URL.",
                     }
                 ),
                 file=sys.stderr,
             )
             return 2
         try:
-            token = _resolve_sync_token(args.token, args.token_file)
+            token = _resolve_sync_token(args.token_file)
         except ValueError as exc:
             print(json.dumps({"ok": False, "error": redact(exc)}), file=sys.stderr)
             return 2
@@ -608,17 +596,12 @@ def _main() -> int:
                 json.dumps(
                     {
                         "ok": False,
-                        "error": "Provide --token-file, BURNRATE_SYNC_TOKEN, or --token.",
+                        "error": "Provide --token-file or BURNRATE_SYNC_TOKEN.",
                     }
                 ),
                 file=sys.stderr,
             )
             return 2
-        if args.token and not args.token_file:
-            print(
-                "Warning: --token is visible in process listings; prefer --token-file or BURNRATE_SYNC_TOKEN.",
-                file=sys.stderr,
-            )
         pricing = PricingEngine.load(settings.pricing_path)
         while True:
             try:
@@ -647,18 +630,18 @@ def _main() -> int:
                 return 2
             print(json.dumps({"ok": True, "interface": "native", "toolkit": "ttk", "tkVersion": TkVersion}))
             return 0
-        if not args.demo and (args.hub or args.token or args.token_file):
+        if not args.demo and args.token_file:
             from spend_app.config import resolve_hub_url
             from spend_app.redact import redact
 
             try:
-                hub_url = (args.hub or "").strip() or resolve_hub_url()
-                token = _resolve_sync_token(args.token, args.token_file)
+                hub_url = resolve_hub_url()
+                token = _resolve_sync_token(args.token_file)
             except ValueError as exc:
                 print(json.dumps({"error": redact(exc)}))
                 return 2
             if not hub_url or not token:
-                print(json.dumps({"error": "Configure a hub and provide a token (file or environment), or sign in from Settings."}))
+                print(json.dumps({"error": "Configure a hub and provide --token-file, or sign in from Settings."}))
                 return 2
             from spend_app.setup_wizard import read_setup_state, write_setup_state
             initialize(settings.database_path)

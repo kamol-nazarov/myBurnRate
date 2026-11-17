@@ -1952,41 +1952,6 @@ class DesktopBridge:
         except (OSError, RuntimeError, ValueError, KeyError, TypeError):
             return {"ok": False, "code": "HUB-501", "error": format_error("HUB-501")}
 
-    def create_pairing_code(self, name: str) -> dict:
-        if self._demo:
-            return {"ok": False, "error": "Pairing is disabled in demo mode."}
-        clean_name = (name or "").strip()
-        if not clean_name:
-            return {"ok": False, "error": "Enter a computer name."}
-        try:
-            res = self._client.request(
-                "/api/setup/pair-hub", {"name": clean_name}
-            )
-            return {"ok": True, "pairingCode": res.get("pairingCode", "")}
-        except DesktopError as exc:
-            code = getattr(exc, "code", None)
-            if code:
-                return {"ok": False, "code": code, "error": str(exc)}
-            return {"ok": False, "code": "HUB-501", "error": format_error("HUB-501")}
-        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
-            return {"ok": False, "code": "HUB-501", "error": format_error("HUB-501")}
-
-    def join_with_code(self, code: str) -> dict:
-        if self._demo:
-            return {"ok": False, "error": "Pairing is disabled in demo mode."}
-        try:
-            self._client.request(
-                "/api/setup/connect-spoke",
-                {"pairingCode": code.strip(), "testSync": True},
-            )
-            return {"ok": True}
-        except DesktopError as exc:
-            code = getattr(exc, "code", None)
-            if code:
-                return {"ok": False, "code": code, "error": str(exc)}
-            return {"ok": False, "code": "HUB-501", "error": format_error("HUB-501")}
-        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
-            return {"ok": False, "code": "HUB-501", "error": format_error("HUB-501")}
 
     def _db_path(self) -> Path | None:
         settings = getattr(self._client, "settings", None)
@@ -2149,7 +2114,7 @@ class DesktopBridge:
     def _resolve_hub_origin(self) -> tuple[str | None, dict | None]:
         from spend_app.config import resolve_hub_url
         from spend_app.db import connect
-        from spend_app.pairing import hub_origin
+        from spend_app.hub_origin import hub_origin
         from spend_app.setup_wizard import read_setup_state
 
         raw_hub_url = ""

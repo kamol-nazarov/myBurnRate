@@ -14,7 +14,7 @@ multiple computers work, and what the numbers mean.
 - **Always-on-Top Sidecar HUD (`/hud`)**: Frameless floating window in a graphite or paper theme. It leads with today's API-rate value, followed by subscription meters and a separate Balances section. Mini mode shows each plan's tightest window; its chevron reveals the others. Machine selection, data freshness and attention status remain visible. A held meter keeps its last reading until reset, with a visible age label. Drag the window from an empty surface; its controls remain clickable.
 - **Cost per repository**: the HUD lists today's value by the repository each session ran in, worktrees included.
 - **Weekly card**: the share button copies the last seven days as an image (value, plans, tokens, cache hit, top tools; never repository names).
-- **Single-Account Multi-Computer Sync**: Pair laptops and secondary desktops to your primary Hub using a 1-click `brpair_...` pairing code. Spokes automatically push incremental token usage, sessions, and live agent state into your Hub database.
+- **Single-Account Multi-Computer Sync**: Sign in with your hub account on laptops and secondary desktops so each computer automatically pushes incremental token usage, sessions, and live agent state into your Hub database.
 
 ## Reading and arranging the HUD
 
@@ -31,8 +31,8 @@ The native app opens its first-run setup screen on launch. You can also open set
 
 1. **This computer** — name it, then choose how it works:
    - **Just this computer:** usage stays here; no account.
-   - **Join my hub:** paste a pairing code from your hub (or sign in to a hub account) and this computer's usage syncs in the background.
-   - **Make this the hub:** pick the address other computers use to reach it and create a pairing code for each one.
+   - **Join my hub:** sign in to your hub account (or create the first account) and this computer's usage syncs in the background.
+   - **Make this the hub:** host the hub so your other computers can send their usage here.
 2. **What we found** — one row per HUD card: whether the tool's usage is being read, whether its plan meter has a current reading, and what to do when it does not ("Open Antigravity…"). Extra Claude accounts and OpenCode profiles appear on their own rows. The two meters that use a key another app stores (Z.AI and OpenCode Go) show their switch right there.
 3. **Plans & balances** — plans are suggested from what the meters report (for example **Claude Max 20x** from Claude Code's account tier); check each price before adding it. Connect OpenRouter and DeepSeek keys here; they are tested, then stored in your system's credential store (Windows Credential Manager, the macOS Keychain, or the Secret Service on Linux). [http://127.0.0.1:17331/connections](http://127.0.0.1:17331/connections) opens this step directly.
 4. **Check** — a live preview of your HUD cards and a list of anything that still needs you, switches for desktop notifications (with **Send a test**), **Copy diagnostics**, then **Finish setup**.
@@ -47,25 +47,18 @@ The first collection runs in the background while you go through the steps; the 
 
 BURNRATE supports single-account, self-hosted multi-computer synchronization without any external cloud service:
 
-1. **On your hub computer:** open setup, choose **Make this the hub**, pick the address your other computers can reach (Tailscale or LAN), name the other computer and click **Create pairing code**. The invitation expires in 15 minutes and works once. It yields a 90-day sync token for that computer; share it only with your own computers.
-2. **On the other computer:** install BURNRATE, open setup, choose **Join my hub** and paste the code. Its background scheduler then pushes usage, sessions and live agents to the hub every ingest cycle.
-   - A hub account works too: choose **Account** under **Join my hub**. Signing in never creates an account; use **Create an account instead** (at least 12 characters).
-   - Or run the lightweight CLI sync agent directly:
+1. **On your first computer:** open setup or **Settings → Computers**, create your hub account (at least 12 characters) and name this computer. Its background scheduler then pushes usage, sessions and live agents to the hub every ingest cycle.
+2. **On every other computer:** sign in to the same hub account under **Join my hub** (or **Settings → Computers**). Each computer registers with its own device ID and receives a 90-day machine token plus a 30-day owner session.
+   - Or run the lightweight CLI sync agent directly with a configured hub URL:
      ```powershell
-     burnrate sync --hub http://<hub-ip>:17331 --token-file <path-to-token>
-    # Or set BURNRATE_SYNC_TOKEN in the service environment.
+     burnrate sync --token-file <path-to-token>
+     # Or set BURNRATE_SYNC_TOKEN in the service environment.
      ```
-3. **All computers:** sign in at `/auth` on the paired computer, or use **Account** in setup. The
-   spoke stores a separate 30-day owner session for the shared view. Pairing alone shows this
-   computer's recorded usage; an expired/revoked owner session shows a sign-in notice. Re-signing
-   in on an already paired computer preserves its sync identity and cursor.
-4. **Credential management:** `/auth` lists device sessions and lets the owner revoke them or sign
-   out. Sign-out removes owner access while sync continues with its own token. Rotate this
-   computer's machine token before 90 days; if expired or revoked, ask the hub for a fresh pairing
-   code using the same computer name or machine ID. Rotation invalidates the old token immediately.
-   A code already redeemed keeps its new sync credential if the first push is temporarily unavailable;
-   background sync retries and Settings reports the sync error. A bad pasted token preserves the
-   prior working connection. If a rotation reply is lost, re-pair. Recovery credentials are shown once when rotated: save the
+3. **Credential management:** `/auth` lists device sessions and lets the owner revoke them or sign
+   out. Sign-out removes owner access while sync continues with its own machine token. Machine
+   tokens rotate automatically in the background before expiry; if a machine token is expired or
+   revoked, sign in again on that computer. Re-signing in on an already connected computer preserves
+   its sync identity and cursor. Recovery credentials are shown once when rotated: save the
    replacement securely, and never paste it into logs or bug reports.
 
 ## The HUD and the dashboard

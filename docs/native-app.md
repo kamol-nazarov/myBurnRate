@@ -44,17 +44,15 @@ and reopen the new application so it can start the matching backend.
   total is marked as a known subtotal. A measured zero stays distinct from missing
   usage. Organization API feeds appear separately because they may overlap tool
   sessions.
-- **All computers** combines paired machines. Selecting a computer filters the
+- **All computers** combines connected machines. Selecting a computer filters the
   same view. Offline machines retain their last synced history. If the hub cannot
   be reached and no cached result exists, the app explicitly labels a local-only
   fallback; another computer's unknown history never becomes a measured zero.
 
 **Settings → Sources** lists the readers on this computer and supports connecting,
 changing, and disconnecting a source through the existing verified connection
-service. Existing history is preserved. **Settings → Computers** lists the paired
-machines and provides native pairing-code creation and joining. Generate codes on
-the main computer using an address the other machines can reach. Keep pairing
-codes private.
+service. Existing history is preserved. **Settings → Computers** lets you create or sign in to your hub account and
+lists the connected machines.
 
 The window can stay on top. Closing it leaves the tracker collecting in the
 background. Reopen BURNRATE to view usage. When started by the native app, a new

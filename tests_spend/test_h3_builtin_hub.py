@@ -485,43 +485,32 @@ def test_cli_sync_uses_resolve_hub_url_when_hub_omitted(
         return {"ok": True, "eventsWritten": 0}
 
     monkeypatch.setattr(sync, "sync_once", fake_sync_once)
+    token_file = tmp_path / "sync-token.txt"
+    token_file.write_text("br_m_testtoken\n", encoding="utf-8")
     monkeypatch.setenv("BURNRATE_HUB_URL", "https://cli-hub.example:8449")
-    monkeypatch.setattr(sys, "argv", ["burnrate", "sync", "--token", "br_m_testtoken", "--once"])
+    monkeypatch.setattr(sys, "argv", ["burnrate", "sync", "--token-file", str(token_file), "--once"])
     assert cli._main() == 0
     assert seen_calls == [{"hub_url": "https://cli-hub.example:8449", "token": "br_m_testtoken", "machine_name": None}]
     capsys.readouterr()
 
-    # Without --hub and without configured hub, exit code 2 with clear message.
+    # Without configured hub, exit code 2 with clear message.
     monkeypatch.delenv("BURNRATE_HUB_URL", raising=False)
     monkeypatch.setitem(
         sys.modules,
         "spend_app._build_config",
         types.SimpleNamespace(BUILTIN_HUB_URL=""),
     )
-    monkeypatch.setattr(sys, "argv", ["burnrate", "sync", "--token", "br_m_testtoken", "--once"])
+    monkeypatch.setattr(sys, "argv", ["burnrate", "sync", "--token-file", str(token_file), "--once"])
     assert cli._main() == 2
     err = capsys.readouterr().err
     assert "No hub is configured" in err
 
 
-def test_machines_sync_command_and_pairing_omit_hub_url(
+def test_machines_sync_command_omits_hub_url(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from spend_app import pairing
-    from spend_app.auth_model import Principal
-
     settings = _make_settings(tmp_path / "hub.db")
     initialize(settings.database_path)
-
-    issued = pairing.issue(
-        settings.database_path,
-        Principal("local", "local"),
-        hub_url="https://hub.example:8449",
-        name="Paired Laptop",
-    )
-    assert issued["ok"] is True
-    assert "hubUrl" not in issued
-    assert issued["pairingCode"].startswith("brpair_")
 
     monkeypatch.setenv("BURNRATE_HUB_URL", "https://hub.example:8449")
     with TestClient(create_app(settings, enable_scheduler=False)) as client:
@@ -534,16 +523,7 @@ def test_machines_sync_command_and_pairing_omit_hub_url(
         machine_body = machine_res.json()
         assert "--hub" not in machine_body["syncCommand"]
         assert "python -m spend_app sync --token-file" in machine_body["syncCommand"]
-
-        pair_res = client.post(
-            "/api/setup/pair-hub",
-            headers=SETUP_HEADERS,
-            json={"name": "Second Laptop"},
-        )
-        assert pair_res.status_code == 200, pair_res.text
-        pair_body = pair_res.json()
-        assert pair_body["ok"] is True
-        assert "hubUrl" not in pair_body
+        assert "https://hub.example:8449" not in machine_res.text
 
 
 def test_setup_account_ignores_server_url_in_request_body(
@@ -758,15 +738,6 @@ def test_acceptance_sentinel_hub_url_never_leaks(
         assert acct_err.json() == {"error": {"code": "NET-001"}}
         _assert_no_leak(acct_err.text, context="/api/setup/account connection error")
 
-        # 4. /api/setup/pair-hub
-        pair_res = hub_client.post(
-            "/api/setup/pair-hub",
-            headers=SETUP_HEADERS,
-            json={"name": "ThirdNode"},
-        )
-        assert pair_res.status_code == 200, pair_res.text
-        _assert_no_leak(pair_res.text, context="/api/setup/pair-hub")
-
         # 5. /api/machines
         machines_post = hub_client.post(
             "/api/machines",
@@ -780,18 +751,6 @@ def test_acceptance_sentinel_hub_url_never_leaks(
         assert machines_get.status_code == 200
         _assert_no_leak(machines_get.text, context="GET /api/machines")
 
-        # 6. /api/setup/connect-spoke error
-        connect_err = spoke_client.post(
-            "/api/setup/connect-spoke",
-            headers=SETUP_HEADERS,
-            json={
-                "token": "br_m_synthetic_token",
-                "computerName": "BrokenSpoke",
-                "testSync": True,
-            },
-        )
-        assert connect_err.status_code == 422
-        _assert_no_leak(connect_err.text, context="/api/setup/connect-spoke error")
 
     # 7. RedactingFormatter + HubUrlRedactingFilter on burnrate.api and httpx loggers
     redact_mod.install_log_redaction()

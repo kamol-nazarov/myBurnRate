@@ -1,12 +1,12 @@
 """Comprehensive security tests for Package B (Account and session surface).
 
 Covers audit items M1, L2, L3, L5, L7, L15, L16, and N1:
-- M1: CSRF and content-type/header gates on account, pairing, and setup routes
+- M1: CSRF and content-type/header gates on account and setup routes
 - L2: Break-glass GET ?token= redirect, query stripping, and no duplicate sessions
 - L3: OpenAPI / Swagger / ReDoc disabled (404)
 - L5: value_error_handler logging + fixed error body vs. UserFacingError pass-through
 - L7: Cookie-only sessions, no machine token on register/login, spoke join & NativeClient
-- L15: pairing.hub_origin HTTPS enforcement for non-loopback hosts
+- L15: hub_origin.hub_origin HTTPS enforcement for non-loopback hosts
 - L16: Setup token min length, non-ASCII safety, and per-user + global throttling
 - N1: Static bearer disabled by default without conftest override
 """
@@ -20,7 +20,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from spend_app import aggregate, auth_model, auth_throttle, pairing, setup_wizard, sync
+from spend_app import aggregate, auth_model, auth_throttle, hub_origin, setup_wizard, sync
 from spend_app.api import create_app
 from spend_app.config import Settings
 from spend_app.connection_paths import LocationError
@@ -157,7 +157,7 @@ def _make_local_client(
 
 @pytest.mark.parametrize(
     "path",
-    ["/api/account/register", "/api/account/login", "/api/pairing/redeem"],
+    ["/api/account/register", "/api/account/login"],
 )
 def test_m1_cross_site_and_form_posts_rejected_and_no_owner_created(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str
@@ -291,9 +291,9 @@ def test_m1_cookie_authenticated_account_post_requires_same_origin(
 
 @pytest.mark.parametrize(
     "path",
-    ["/api/account/register", "/api/account/login", "/api/pairing/redeem"],
+    ["/api/account/register", "/api/account/login"],
 )
-def test_m1_get_on_public_account_and_pairing_paths_not_allowed(
+def test_m1_get_on_public_account_paths_not_allowed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str
 ) -> None:
     _, client = _make_hub_client(tmp_path, monkeypatch)
@@ -305,12 +305,12 @@ def test_m1_get_on_public_account_and_pairing_paths_not_allowed(
         assert auth_get.status_code == 405
 
 
-def test_m1_bounded_json_gates_across_account_pairing_and_connect_spoke(
+def test_m1_bounded_json_gates_across_account_and_setup_account(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _, hub_client = _make_hub_client(tmp_path, monkeypatch)
     with hub_client:
-        for path in ("/api/account/register", "/api/account/login", "/api/pairing/redeem"):
+        for path in ("/api/account/register", "/api/account/login"):
             missing_hdr = hub_client.post(
                 path,
                 headers={"Origin": HUB_URL, "Content-Type": "application/json"},
@@ -332,14 +332,14 @@ def test_m1_bounded_json_gates_across_account_pairing_and_connect_spoke(
     _, local_client = _make_local_client(tmp_path, monkeypatch)
     with local_client:
         missing_hdr = local_client.post(
-            "/api/setup/connect-spoke",
+            "/api/setup/account",
             headers={"Origin": "http://127.0.0.1:17331", "Content-Type": "application/json"},
             content="{}",
         )
         assert missing_hdr.status_code == 403
 
         wrong_ct = local_client.post(
-            "/api/setup/connect-spoke",
+            "/api/setup/account",
             headers={
                 "Origin": "http://127.0.0.1:17331",
                 "X-BURNRATE-Request": "1",
@@ -839,7 +839,7 @@ def test_l7_native_client_extracts_cookie_from_set_cookie_header_and_cookies_jar
 )
 def test_l15_hub_origin_rejects_plain_http_non_loopback(bad_url: str) -> None:
     with pytest.raises(ValueError, match="HTTPS"):
-        pairing.hub_origin(bad_url)
+        hub_origin.hub_origin(bad_url)
 
 
 @pytest.mark.parametrize(
@@ -853,38 +853,7 @@ def test_l15_hub_origin_rejects_plain_http_non_loopback(bad_url: str) -> None:
     ],
 )
 def test_l15_hub_origin_allows_https_and_loopback(good_url: str, expected: str) -> None:
-    assert pairing.hub_origin(good_url) == expected
-
-
-def test_l15_pair_hub_and_pairing_redeem_reject_plain_http_non_loopback(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("BURNRATE_ALLOWED_HOSTS", "hub.test,hub.example")
-    settings, https_client = _make_hub_client(tmp_path, monkeypatch, base_url=HUB_URL)
-    with https_client:
-        bad_pair = https_client.post(
-            "/api/setup/pair-hub",
-            headers={**HUB_UI, "Authorization": f"Bearer {ACCESS_TOKEN}"},
-            json={"name": "Remote", "hubUrl": "http://hub.example"},
-        )
-        assert bad_pair.status_code == 422
-
-        good_pair = https_client.post(
-            "/api/setup/pair-hub",
-            headers={**HUB_UI, "Authorization": f"Bearer {ACCESS_TOKEN}"},
-            json={"name": "Remote", "hubUrl": HUB_URL},
-        )
-        assert good_pair.status_code == 200
-        code = good_pair.json()["pairingCode"]
-
-    http_app = create_app(settings, enable_scheduler=False)
-    with TestClient(http_app, base_url="http://hub.example") as http_client:
-        redeem_res = http_client.post(
-            "/api/pairing/redeem",
-            headers={"Origin": "http://hub.example", "X-BURNRATE-Request": "1"},
-            json={"pairingCode": code},
-        )
-        assert redeem_res.status_code == 403
+    assert hub_origin.hub_origin(good_url) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -1107,66 +1076,6 @@ def test_l15_setup_account_rejects_plain_http_without_outbound_call_or_persisten
     assert "serverUrl" not in state["account"]
 
 
-def test_l15_connect_spoke_manual_rejects_plain_http_without_outbound_call_or_persistence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    spoke_settings, spoke_client = _make_local_client(tmp_path, monkeypatch, db_name="spoke_manual.db")
-    with spoke_client:
-        httpx_calls, test_client_calls = _install_recording_hub_transport(monkeypatch, "http://hub.example")
-        res = spoke_client.post(
-            "/api/setup/connect-spoke",
-            headers={"Origin": "http://127.0.0.1:17331", "X-BURNRATE-Request": "1"},
-            json={
-                "hubUrl": "http://hub.example",
-                "token": "br_m_synthetic_token",
-                "computerName": "Laptop",
-                "testSync": True,
-            },
-        )
-    assert res.status_code == 422
-    assert res.json()["error"] == {"code": "NET-003"}
-    assert httpx_calls == []
-    assert test_client_calls == []
-    with connect(spoke_settings.database_path) as conn:
-        state = setup_wizard.read_setup_state(conn)
-    assert state["role"] == "hub"
-    assert state["spokeConfig"]["enabled"] is False
-    assert state["spokeConfig"]["hubUrl"] == ""
-    assert state["spokeConfig"]["token"] == ""
-
-
-def test_l15_connect_spoke_pairing_code_rejects_plain_http_without_outbound_call_or_persistence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    bad_code = setup_wizard.encode_pairing_code(
-        hub_url="http://hub.example",
-        token="br_p_synthetic_pairing_secret",
-        machine_id="grant-1",
-        machine_name="Laptop",
-        hub_name="Hub",
-    )
-    spoke_settings, spoke_client = _make_local_client(tmp_path, monkeypatch, db_name="spoke_code.db")
-    with spoke_client:
-        httpx_calls, test_client_calls = _install_recording_hub_transport(monkeypatch, "http://hub.example")
-        res = spoke_client.post(
-            "/api/setup/connect-spoke",
-            headers={"Origin": "http://127.0.0.1:17331", "X-BURNRATE-Request": "1"},
-            json={"pairingCode": bad_code, "testSync": True},
-        )
-        with pytest.raises(ValueError, match="HTTPS"):
-            pairing.exchange_remote("http://hub.example", bad_code)
-    assert res.status_code == 422
-    assert res.json()["error"] == {"code": "NET-003"}
-    assert httpx_calls == []
-    assert test_client_calls == []
-    with connect(spoke_settings.database_path) as conn:
-        state = setup_wizard.read_setup_state(conn)
-    assert state["role"] == "hub"
-    assert state["spokeConfig"]["enabled"] is False
-    assert state["spokeConfig"]["hubUrl"] == ""
-    assert state["spokeConfig"]["token"] == ""
-
-
 def test_l15_saved_plain_http_config_blocked_at_egress_without_sending_tokens(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1305,16 +1214,3 @@ def test_l15_loopback_http_stays_allowed_across_setup_and_egress(
             spoke_settings, PricingEngine.load(spoke_settings.pricing_path)
         )
         assert bg_sync is not None and bg_sync.get("ok") is True
-
-        pair_res = hub_client.post(
-            "/api/setup/pair-hub",
-            headers={"Origin": loopback_url, "X-BURNRATE-Request": "1", "Authorization": f"Bearer {ACCESS_TOKEN}"},
-            json={"name": "Loopback Paired", "hubUrl": loopback_url},
-        )
-        assert pair_res.status_code == 200, pair_res.text
-        connect_res = spoke_client.post(
-            "/api/setup/connect-spoke",
-            headers={"Origin": "http://127.0.0.1:17331", "X-BURNRATE-Request": "1"},
-            json={"pairingCode": pair_res.json()["pairingCode"], "testSync": True},
-        )
-        assert connect_res.status_code == 200, connect_res.text

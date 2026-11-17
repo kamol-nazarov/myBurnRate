@@ -503,11 +503,12 @@ def test_sidecar_hud_and_native_scaffold(tmp_path: Path, monkeypatch) -> None:
 SETUP_HEADERS = {"X-BURNRATE-Request": "1"}
 
 
-def test_setup_wizard_pairing_and_complete(tmp_path: Path) -> None:
-    from decimal import Decimal
-    from spend_app.setup_wizard import decode_pairing_code, maybe_run_configured_spoke_sync
+def test_setup_wizard_account_and_complete(tmp_path: Path, monkeypatch) -> None:
+    from spend_app.setup_wizard import maybe_run_configured_spoke_sync
 
+    monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
     hub_settings = _make_settings(tmp_path / "hub")
+    monkeypatch.delenv("BURNRATE_CENTRAL_SERVER", raising=False)
     spoke_settings = _make_settings(tmp_path / "spoke")
     pricing = PricingEngine.load(hub_settings.pricing_path)
 
@@ -534,23 +535,24 @@ def test_setup_wizard_pairing_and_complete(tmp_path: Path) -> None:
     assert state_res["setup"]["completed"] is False
     assert len(state_res["presets"]) >= 4
 
-    # 3. Hub generates 1-click pairing code for Spoke
-    pair_res = hub_client.post(
-        "/api/setup/pair-hub",
-        headers=SETUP_HEADERS,
-        json={"remoteName": "Studio Laptop", "hubHost": "https://testserver"},
+    # 3. Register hub account and configure spoke to point at the hub
+    reg_owner = hub_client.post(
+        "/api/account/register",
+        headers={**SETUP_HEADERS, "Origin": "https://testserver"},
+        json={
+            "username": "owner@example.com",
+            "password": "synthetic-wizard-password",
+            "sessionOnly": True,
+        },
     )
-    assert pair_res.status_code == 200
-    pair_data = pair_res.json()
-    assert pair_data["ok"] is True
-    assert pair_data["pairingCode"].startswith("brpair_")
-    decoded = decode_pairing_code(pair_data["pairingCode"])
-    assert decoded["hubUrl"] == "https://testserver"
-    assert decoded["token"].startswith("br_p_")
+    assert reg_owner.status_code == 200, reg_owner.text
+    hub_client.cookies.clear()
+
     from spend_app.sync import register_hub_test_client
     register_hub_test_client("https://testserver", hub_client)
+    monkeypatch.setenv("BURNRATE_HUB_URL", "https://testserver")
 
-    # 4. Seed an event on the Spoke and connect Spoke via pairing code
+    # 4. Seed an event on the Spoke and connect Spoke via hub account login
     initialize(spoke_settings.database_path)
     with connect(spoke_settings.database_path) as conn:
         upsert_usage_event(
@@ -577,17 +579,20 @@ def test_setup_wizard_pairing_and_complete(tmp_path: Path) -> None:
         )
 
     connect_res = spoke_client.post(
-        "/api/setup/connect-spoke",
+        "/api/setup/account",
         headers=SETUP_HEADERS,
         json={
-            "pairingCode": pair_data["pairingCode"],
+            "mode": "login",
+            "username": "owner@example.com",
+            "password": "synthetic-wizard-password",
             "computerName": "Studio Laptop",
             "testSync": False,
         },
     )
-    assert connect_res.status_code == 200
+    assert connect_res.status_code == 200, connect_res.text
     assert connect_res.json()["setup"]["role"] == "spoke"
     assert connect_res.json()["setup"]["spokeConfig"]["hasToken"] is True
+    assert connect_res.json()["setup"]["spokeConfig"]["hasOwnerSession"] is True
 
     # Background spoke sync pushes spoke events to hub
     bg_sync = maybe_run_configured_spoke_sync(spoke_settings, pricing, client=hub_client)
@@ -621,19 +626,7 @@ def test_setup_wizard_pairing_and_complete(tmp_path: Path) -> None:
     assert local_machine["name"] == "Main Workstation"
 
     # 6. Spoke read-through returns unified Hub machines and usage (both Hub + Spoke)
-    from spend_app.sync import register_hub_test_client
-
     register_hub_test_client("https://testserver", hub_client)
-    # Pairing conveys sync only; explicitly sign in to unlock the owner view.
-    from spend_app.auth_model import Principal, create_session
-    from spend_app.setup_wizard import read_setup_state, write_setup_state
-    with connect(hub_settings.database_path) as conn:
-        owner_session = create_session(conn, Principal("owner", "synthetic-owner", "owner"), "Test spoke")
-    with connect(spoke_settings.database_path) as conn:
-        state = read_setup_state(conn)
-        state["spokeConfig"]["ownerSession"] = owner_session["sessionToken"]
-        state["spokeConfig"]["ownerSessionExpiresAt"] = owner_session["expiresAt"]
-        write_setup_state(conn, state)
     spoke_machines = spoke_client.get("/api/machines").json()["machines"]
     spoke_machine_names = {m["name"] for m in spoke_machines}
     assert "Main Workstation" in spoke_machine_names
