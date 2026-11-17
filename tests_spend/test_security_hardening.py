@@ -43,7 +43,7 @@ def _assert_compose_images_pinned(
             re.MULTILINE,
         )
     )
-    digest_re = re.compile(r"^\d+\.\d+\.\d+@sha256:[0-9a-f]{64}$")
+    digest_re = re.compile(r"^\d+\.\d+\.\d+(?:-rc\.\d+)?@sha256:[0-9a-f]{64}$")
     tag_only_re = re.compile(r"^(\d+\.\d+\.\d+)$")
     for ref in hub_refs:
         if digest_re.fullmatch(ref):
@@ -334,6 +334,12 @@ def test_compose_image_pin_rule_rejects_tag_only_on_dated_changelog_or_version_m
         + ("b" * 64)
         + "}\n"
     )
+    rc_digest_compose = (
+        caddy_line
+        + "image: ${BURNRATE_HUB_IMAGE:-ghcr.io/kamol-nazarov/myburnrate-hub:0.5.9-rc.1@sha256:"
+        + ("b" * 64)
+        + "}\n"
+    )
     unreleased_changelog = "# Changelog\n\n## [0.5.9] - Unreleased\n"
     dated_changelog = "# Changelog\n\n## [0.5.9] - 2026-11-17\n"
 
@@ -357,13 +363,33 @@ def test_compose_image_pin_rule_rejects_tag_only_on_dated_changelog_or_version_m
             app_version="0.5.9",
         )
 
-    # Positive: digest-pinned passes regardless of changelog dating
-    _assert_compose_images_pinned(
-        digest_compose, changelog=unreleased_changelog, app_version="0.5.9"
-    )
-    _assert_compose_images_pinned(
-        digest_compose, changelog=dated_changelog, app_version="0.5.9"
-    )
+    # Negative 3: tag-only rc pin (without @sha256:) must fail even when Unreleased
+    with pytest.raises(AssertionError):
+        _assert_compose_images_pinned(
+            caddy_line + "image: ${BURNRATE_HUB_IMAGE:-ghcr.io/kamol-nazarov/myburnrate-hub:0.5.9-rc.1}\n",
+            changelog=unreleased_changelog,
+            app_version="0.5.9",
+        )
+
+    # Negative 4: non-rc suffix with digest must fail
+    with pytest.raises(AssertionError):
+        _assert_compose_images_pinned(
+            caddy_line
+            + "image: ${BURNRATE_HUB_IMAGE:-ghcr.io/kamol-nazarov/myburnrate-hub:0.5.9-dirty@sha256:"
+            + ("b" * 64)
+            + "}\n",
+            changelog=unreleased_changelog,
+            app_version="0.5.9",
+        )
+
+    # Positive: digest-pinned (final or rc candidate) passes regardless of changelog dating
+    for good_compose in (digest_compose, rc_digest_compose):
+        _assert_compose_images_pinned(
+            good_compose, changelog=unreleased_changelog, app_version="0.5.9"
+        )
+        _assert_compose_images_pinned(
+            good_compose, changelog=dated_changelog, app_version="0.5.9"
+        )
 
 
 def test_installer_verifies_the_minisign_signature() -> None:

@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
 import pytest
+import yaml
 
 from spend_app import build, service
 
@@ -42,7 +43,7 @@ def _parse_dockerfile_copy_sources(dockerfile_text: str) -> tuple[list[tuple[int
         if pip_install_line == -1 and re.search(r"\bpip\s+install\b", stmt):
             pip_install_line = line_no
         upper = stmt.upper()
-        if upper.startswith("COPY ") or upper.startswith("COPY\t"):
+        if upper.startswith(("COPY ", "COPY\t")):
             rest = stmt[4:].strip()
             if rest.startswith("["):
                 tokens = json.loads(rest)
@@ -253,6 +254,64 @@ def test_b1_hatch_build_hook_imports_packaging_build_config_and_validates_url(
         bad_hook.initialize("standard", {})
 
 
+def test_b2_hub_image_workflow_candidate_and_tag_promotion() -> None:
+    wf_path = ROOT / ".github" / "workflows" / "hub-image.yml"
+    data = yaml.safe_load(wf_path.read_text(encoding="utf-8"))
+    assert isinstance(data, dict)
+
+    triggers = data["on"]
+    assert triggers["push"]["tags"] == ["v*"]
+
+    version_input = triggers["workflow_dispatch"]["inputs"]["version"]
+    assert version_input["required"] is True
+    assert version_input["type"] == "string"
+    assert "spend_app.__version__" in version_input["description"]
+
+    steps = data["jobs"]["image"]["steps"]
+    by_id = {step["id"]: step for step in steps if "id" in step}
+
+    release_step = by_id["release_ref"]
+    assert "${{ inputs.version }}" in release_step["env"]["INPUT_VERSION"]
+    release_run = release_step["run"]
+    assert 'Path("spend_app/__init__.py")' in release_run
+    assert "ver != app_version" in release_run
+    assert "-rc." in release_run
+    assert "candidate_tag=" in release_run
+    assert "pinned_digest=" in release_run
+
+    meta_step = by_id["meta"]
+    assert meta_step["if"] == "github.event_name == 'workflow_dispatch'"
+    assert "steps.release_ref.outputs.candidate_tag" in meta_step["with"]["tags"]
+
+    push_step = by_id["push"]
+    assert push_step["if"] == "github.event_name == 'workflow_dispatch'"
+    assert push_step["with"]["push"] is True
+
+    print_step = next(
+        step for step in steps if step.get("name") == "Print candidate digest"
+    )
+    assert print_step["if"] == "github.event_name == 'workflow_dispatch'"
+    assert "steps.release_ref.outputs.candidate_tag" in print_step["run"]
+    assert "steps.push.outputs.digest" in print_step["run"]
+
+    retag_step = by_id["retag"]
+    assert retag_step["if"] == "github.event_name == 'push'"
+    retag_run = retag_step["run"]
+    assert 'docker buildx imagetools inspect "${IMAGE}:${CANDIDATE_TAG}"' in retag_run
+    assert "docker buildx imagetools create" in retag_run
+    assert '--tag "${IMAGE}:${VERSION}"' in retag_run
+    assert '--tag "${IMAGE}:latest"' in retag_run
+    assert '"${IMAGE}@${PINNED_DIGEST}"' in retag_run
+    assert 'docker buildx imagetools inspect "${IMAGE}:${VERSION}"' in retag_run
+
+    attest_step = next(
+        step
+        for step in steps
+        if str(step.get("uses", "")).startswith("actions/attest-build-provenance@")
+    )
+    assert "steps.resolve_digest.outputs.digest" in attest_step["with"]["subject-digest"]
+
+
 def test_the_update_feed_points_each_platform_at_its_signed_bundle(tmp_path: Path) -> None:
     spec = importlib.util.spec_from_file_location("make_latest_json", ROOT / "packaging" / "make_latest_json.py")
     module = importlib.util.module_from_spec(spec)
@@ -267,7 +326,7 @@ def test_the_update_feed_points_each_platform_at_its_signed_bundle(tmp_path: Pat
             "RUR0\n"
             f"trusted comment: timestamp:1\tfile:{name}\n"
             "AAAA\n"
-        ).encode("utf-8")
+        ).encode()
     ).decode("ascii")
     (tmp_path / (name + ".sig")).write_text(sig_text + "\n", encoding="utf-8")
 
