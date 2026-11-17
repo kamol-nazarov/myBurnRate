@@ -108,7 +108,7 @@ html[data-theme="dark"] .brand-chip { background: var(--bd-bg); color: var(--bd-
 .top { display: flex; align-items: baseline; gap: 5px; min-width: 0; white-space: nowrap; }
 .top b { font-size: 15px; font-weight: 800; letter-spacing: -0.02em; }
 .top span { font-size: 10px; color: var(--muted); font-weight: 600; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.top b { flex: none; }
+.top b { flex: none; white-space: nowrap; }
 .fuel { display: block; width: 100%; max-width: 72px; height: 4px; border-radius: 9px; background: var(--track); overflow: hidden; }
 .fuel i { display: block; height: 100%; border-radius: 9px; background: var(--ok); }
 .st { font-size: 10px; font-weight: 700; white-space: nowrap; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
@@ -279,6 +279,23 @@ body.up .card-wrap { padding: 0 0 6px; }
   }
   function pillHtml(count, noun) { return "<span>+" + esc(count) + " " + noun + "</span>"; }
 
+  /* Whatever the headline says, it never draws past its segment: shrink the type a
+     little, then cut the text with an ellipsis (the full text is in the tooltip). */
+  function fitHeadlines() {
+    document.querySelectorAll("#segs .seg").forEach(function (seg) {
+      var b = seg.querySelector(".top b"), txt = seg.querySelector(".txt");
+      if (!b || !txt) return;
+      var size = parseFloat(getComputedStyle(b).fontSize) || 15, full = b.textContent;
+      b.style.fontSize = "";
+      while (b.scrollWidth > txt.clientWidth && size > 10) { size -= 0.5; b.style.fontSize = size + "px"; }
+      var text = full;
+      while (b.scrollWidth > txt.clientWidth && text.length > 2) {
+        text = text.slice(0, -2).replace(/\s+$/, "") + "\u2026";
+        b.textContent = text;
+      }
+    });
+  }
+
   function render(next) {
     var sig = JSON.stringify(next);
     if (sig === lastSig) return;
@@ -332,6 +349,7 @@ body.up .card-wrap { padding: 0 0 6px; }
       var still = cardFor(openKey);
       if (still) fillCard(still); else hideCard();
     }
+    fitHeadlines();
     restoreFocus(token);
     rebuilding = false;
   }
@@ -489,6 +507,7 @@ body.up .card-wrap { padding: 0 0 6px; }
   function poll() {
     call("get_state").then(function (next) { if (next) render(next); });
   }
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(function () { if (state) { lastSig = null; render(state); } });
   window.burnrateTab = { update: render, show: showCard, hide: hideCard, get state() { return state; } };
   window.addEventListener("pywebviewready", function () { ready = true; poll(); });
   setInterval(function () { if (ready) poll(); }, 20000);

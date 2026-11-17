@@ -180,8 +180,36 @@ def _balance_card(provider: dict) -> dict:
     return {"amount": provider.get("fundsRemainingUsd"), "summary": summary}
 
 
+#: How many characters a headline can hold before it would be drawn past its segment.
+HEADLINE_CHARS = 9
+COMPACT_HEADLINE_CHARS = 6
+NAME_CHARS = 13
+COMPACT_NAME_CHARS = 8
+
+
+def abbreviate_money(amount: float, *, compact: bool = False) -> str:
+    """A balance headline that fits its segment: exact up to $9,999.99, then
+    ``$12.3K`` / ``$1.2M``. A compact segment is tighter: exact to $99.99, whole
+    dollars to $999, then ``$2.0K``. The exact amount stays in the tooltip, the
+    aria-label and the hover card."""
+    amount = max(0.0, float(amount))
+    if amount < (100 if compact else 10_000):
+        return f"${amount:,.2f}"
+    if compact and amount < 1_000:
+        return f"${amount:,.0f}"
+    thousands = round(amount / 1_000, 1)
+    if thousands >= 1_000:
+        return f"${amount / 1_000_000:.1f}M"
+    return f"${thousands:.1f}K"
+
+
+def shorten(text: str, limit: int) -> str:
+    text = str(text)
+    return text if len(text) <= limit else text[: max(1, limit - 1)].rstrip() + "\u2026"
+
+
 def _headline(provider: dict, window: dict | None) -> tuple[str, str, float]:
-    """``(big text, small unit label, fuel percent)`` for a segment."""
+    """``(exact text, small unit label, fuel percent)`` for a segment."""
     if (provider.get("remaining") or {}).get("kind") == "balance":
         balance = provider.get("fundsRemainingUsd")
         amount = max(0.0, float(balance)) if isinstance(balance, (int, float)) else 0.0
@@ -191,6 +219,17 @@ def _headline(provider: dict, window: dict | None) -> tuple[str, str, float]:
         return "—", "", 0.0
     left = _pct(window.get("remainingPct")) or 0.0
     return f"{round(left)}%", window_label(window).lower(), left
+
+
+def _headline_forms(provider: dict, exact: str, level: str, name: str) -> tuple[str, str]:
+    """``(normal, compact)`` headline: abbreviated only when it would not fit."""
+    if level == "idle":  # the headline of an idle segment is its name
+        return shorten(name, NAME_CHARS), shorten(name, COMPACT_NAME_CHARS)
+    if (provider.get("remaining") or {}).get("kind") == "balance":
+        balance = provider.get("fundsRemainingUsd")
+        amount = float(balance) if isinstance(balance, (int, float)) else 0.0
+        return abbreviate_money(amount), abbreviate_money(amount, compact=True)
+    return shorten(exact, HEADLINE_CHARS), shorten(exact, COMPACT_HEADLINE_CHARS)
 
 
 def build_segment(provider: dict, now: datetime) -> dict:
@@ -203,8 +242,10 @@ def build_segment(provider: dict, now: datetime) -> dict:
     if profile and unit == "balance":
         unit_label = f"{profile} · balance"
     status = detail = str(urgency.get("text") or "")
+    exact_big = big
     if level == "idle":
         big, unit_label, fuel = str(provider.get("name") or provider.get("key") or ""), profile or "", 0.0
+        exact_big = big
         status = status or "Awaiting reading"
         if len(status) > IDLE_STATUS_LIMIT:
             status = "Awaiting reading"
@@ -214,7 +255,8 @@ def build_segment(provider: dict, now: datetime) -> dict:
         status = f"~{round(days)}d runway" if isinstance(days, (int, float)) else "pay as you go"
     name = str(provider.get("name") or provider.get("key") or "")
     title = f"{name} · {profile}" if profile else name
-    aria = f"{title}: {big} {unit}".strip() + (f", {status}" if status else "")
+    aria = f"{title}: {exact_big} {unit}".strip() + (f", {status}" if status else "")
+    big_normal, big_compact = _headline_forms(provider, exact_big, level, name)
     return {
         "key": provider.get("key"),
         "name": name,
@@ -224,7 +266,9 @@ def build_segment(provider: dict, now: datetime) -> dict:
         "level": level,
         "width": SEGMENT_WIDTH + (PROFILE_EXTRA if profile else 0) + (IDLE_EXTRA if level == "idle" else 0),
         "limitKey": urgency.get("limitKey"),
-        "big": big,
+        "big": big_normal,
+        "bigCompact": big_compact,
+        "exact": exact_big,
         "unit": unit_label,
         "fuel": round(fuel, 1),
         "status": status,
@@ -371,7 +415,10 @@ def fit_layout(segments: list[dict], *, state: str, has_error: bool, has_code: b
         status = {"loading": LOADING_WIDTH, "empty": COMPACT_EMPTY_WIDTH if step.compact else EMPTY_WIDTH}.get(state, 0)
         chip_w = _CHIP_WIDTHS[chip_mode] if has_error else 0
         fixed = home + open_w + status + chip_w
-        sized = [dict(s, width=COMPACT_SEGMENT_WIDTH if step.compact else s["width"]) for s in segments]
+        sized = [
+            dict(s, width=COMPACT_SEGMENT_WIDTH, big=s.get("bigCompact", s["big"])) if step.compact else dict(s)
+            for s in segments
+        ]
         plan = plan_segments(
             sized, budget=budget, fixed=fixed, fold_calm=step.fold_calm,
             fold_urgent=step.fold_urgent, fine_width=fine_w, urgent_width=urgent_w,
@@ -408,7 +455,8 @@ def _pill_info(items: list[dict], *, severity: bool = False) -> dict | None:
     info = {
         "count": len(items),
         "items": [
-            {"key": s["key"], "title": s["title"], "level": s["level"], "text": f"{s['big']} {s['unit']}".strip()}
+            {"key": s["key"], "title": s["title"], "level": s["level"],
+             "text": f"{s.get('exact', s['big'])} {s['unit']}".strip()}
             for s in items
         ],
     }
