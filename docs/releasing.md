@@ -56,6 +56,28 @@ maintainer's computer, so every download traces back to a tagged commit.
    and pin that `tag@sha256:...` in `deploy/hub/compose.yaml`. Commit this release metadata
    on `release/<version>` and fast-forward `prod` to it; keep the published tag unchanged. The image's
    digest is available only after its tag build, so do not guess it before tagging.
+
+## Built-in hub address
+
+Release builds read `BURNRATE_BUILTIN_HUB_URL` at build time and embed it into the
+git-ignored `spend_app/_build_config.py` (`BUILTIN_HUB_URL`) via `packaging/build_config.py`:
+
+- **Wheel builds:** `hatch_build.py` (configured under `[tool.hatch.build.hooks.custom]` in
+  `pyproject.toml`) validates `BURNRATE_BUILTIN_HUB_URL` for all targets and writes
+  `spend_app/_build_config.py` into non-editable wheels without leaving generated files
+  in the source tree.
+- **Native Windows builds:** `packaging/build_native.py` validates and writes
+  `spend_app/_build_config.py` before invoking PyInstaller and removes it in a `finally`
+  block afterwards.
+- **Release workflow:** `.github/workflows/release.yml` sets `BURNRATE_BUILTIN_HUB_URL`
+  from the `vars.BURNRATE_BUILTIN_HUB_URL` repository variable (defaulting to
+  `https://ai-harness-vps.tail982d0e.ts.net:8449`) in the native Windows installer step
+  and the wheel/sdist step.
+
+The build fails if `BURNRATE_BUILTIN_HUB_URL` is set to anything other than a bare
+`https://` origin (non-HTTPS schemes, embedded credentials, paths, query strings, and
+fragments are rejected). Leaving it empty or unset builds an app with no built-in hub.
+
 ## The update-signing key
 
 In-app updates and `scripts/install-native.ps1` are verified with an Ed25519

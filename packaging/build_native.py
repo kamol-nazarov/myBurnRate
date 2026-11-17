@@ -26,6 +26,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / "packaging" / "build"
 NSIS_SCRIPT = ROOT / "packaging" / "burnrate-native.nsi"
+GENERATED_BUILD_CONFIG = ROOT / "spend_app" / "_build_config.py"
 ICON_PATH = ROOT / "assets" / "icons" / "icon.ico"
 
 
@@ -102,6 +103,7 @@ def main(argv: list[str] | None = None) -> int:
 
     sys.path.insert(0, str(ROOT))
     sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from build_config import write_build_config
     from sign_windows import Signer, SigningError
 
     from spend_app import __version__
@@ -121,50 +123,59 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    BUILD.mkdir(parents=True, exist_ok=True)
-    (BUILD / "BUILD_COMMIT").write_text(commit(), encoding="utf-8")
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "PyInstaller",
-            "--noconfirm",
-            "--distpath",
-            str(BUILD / "native"),
-            "--workpath",
-            str(BUILD / "native-work"),
-            str(ROOT / "packaging" / "burnrate-native.spec"),
-        ],
-        check=True,
-    )
-    bundle = BUILD / "native" / "BURNRATE"
-    shutil.copy2(ICON_PATH, bundle / "_internal" / "burnrate.ico")
-    for name in ("LICENSE", "NOTICE"):
-        shutil.copy2(ROOT / name, bundle / name)
-
     try:
-        signed = [signer.sign(bundle / "BURNRATE.exe")]
-        archive = shutil.make_archive(
-            str(BUILD / "BURNRATE-native"),
-            "zip",
-            root_dir=bundle.parent,
-            base_dir=bundle.name,
-        )
-        installer = BUILD / installer_name(__version__)
-        if makensis is None:
-            print(
-                "NSIS (makensis) not found: skipping the installer. The portable zip is still built."
-            )
-        else:
-            build_installer(makensis, bundle, __version__, installer)
-            signed.append(signer.sign(installer))
-        if args.require_signature:
-            signer.require_signed(
-                [bundle / "BURNRATE.exe", *([installer] if makensis else [])]
-            )
-    except (SigningError, subprocess.CalledProcessError, SystemExit) as exc:
+        write_build_config(GENERATED_BUILD_CONFIG)
+    except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+
+    try:
+        BUILD.mkdir(parents=True, exist_ok=True)
+        (BUILD / "BUILD_COMMIT").write_text(commit(), encoding="utf-8")
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "PyInstaller",
+                "--noconfirm",
+                "--distpath",
+                str(BUILD / "native"),
+                "--workpath",
+                str(BUILD / "native-work"),
+                str(ROOT / "packaging" / "burnrate-native.spec"),
+            ],
+            check=True,
+        )
+        bundle = BUILD / "native" / "BURNRATE"
+        shutil.copy2(ICON_PATH, bundle / "_internal" / "burnrate.ico")
+        for name in ("LICENSE", "NOTICE"):
+            shutil.copy2(ROOT / name, bundle / name)
+
+        try:
+            signed = [signer.sign(bundle / "BURNRATE.exe")]
+            archive = shutil.make_archive(
+                str(BUILD / "BURNRATE-native"),
+                "zip",
+                root_dir=bundle.parent,
+                base_dir=bundle.name,
+            )
+            installer = BUILD / installer_name(__version__)
+            if makensis is None:
+                print(
+                    "NSIS (makensis) not found: skipping the installer. The portable zip is still built."
+                )
+            else:
+                build_installer(makensis, bundle, __version__, installer)
+                signed.append(signer.sign(installer))
+            if args.require_signature:
+                signer.require_signed(
+                    [bundle / "BURNRATE.exe", *([installer] if makensis else [])]
+                )
+        except (SigningError, subprocess.CalledProcessError, SystemExit) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+    finally:
+        GENERATED_BUILD_CONFIG.unlink(missing_ok=True)
 
     print(f"Native application: {bundle}")
     print(f"Portable package: {archive}")

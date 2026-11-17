@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import importlib
+import ipaddress
+import logging
+import os
 import re
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
 _MAX_LINE_CHARS = 8192
 _MAX_DECODED_BYTES = 256 * 1024
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 _LINE_SPLIT = re.compile(r"(\r\n|\r|\n)")
 
@@ -95,6 +100,61 @@ _USER_DIR = re.compile(r"(?i)([A-Z]:[\\/]+Users[\\/]+)[^\\/\s\"']+")
 _UNIX_HOME = re.compile(r"(/(?:home|Users)/)[^/\s\"']+")
 
 
+def _is_loopback_host(hostname: str) -> bool:
+    clean = (hostname or "").strip().lower()
+    if clean in _LOOPBACK_HOSTS:
+        return True
+    try:
+        return ipaddress.ip_address(clean).is_loopback
+    except ValueError:
+        return False
+
+
+def configured_hub_terms() -> list[str]:
+    """Return configured/built-in hub origins, netlocs, and non-loopback hosts."""
+    raw_values: list[str] = []
+    env_url = os.getenv("BURNRATE_HUB_URL", "").strip()
+    if env_url:
+        raw_values.append(env_url)
+    try:
+        mod = importlib.import_module("spend_app._build_config")
+        builtin_url = str(getattr(mod, "BUILTIN_HUB_URL", "") or "").strip()
+        if builtin_url:
+            raw_values.append(builtin_url)
+    except ImportError:
+        pass
+
+    terms: set[str] = set()
+    for raw in raw_values:
+        clean = raw.strip().rstrip("/")
+        if not clean:
+            continue
+        terms.add(clean)
+        try:
+            parsed = urlsplit(clean)
+        except ValueError:
+            continue
+        if parsed.scheme and parsed.netloc:
+            terms.add(f"{parsed.scheme}://{parsed.netloc}")
+        if parsed.netloc:
+            terms.add(parsed.netloc)
+        host = (parsed.hostname or "").strip()
+        if host and len(host) > 3 and not _is_loopback_host(host):
+            terms.add(host)
+    return sorted(terms, key=len, reverse=True)
+
+
+def redact_hub_urls(text: str, terms: list[str] | None = None) -> str:
+    """Replace any configured/built-in hub URL or host in ``text``."""
+    hub_terms = configured_hub_terms() if terms is None else terms
+    if not hub_terms or not text:
+        return text
+    out = text
+    for term in hub_terms:
+        out = re.sub(re.escape(term), "[redacted]", out, flags=re.IGNORECASE)
+    return out
+
+
 def _is_safe_status_value(rest: str) -> bool:
     """Return True if rest (after ':') is strictly a known-safe phrase plus optional trailing punctuation."""
     candidate = rest.rstrip(_SAFE_TRAILING_PUNCT_CHARS).rstrip()
@@ -155,11 +215,16 @@ def _is_separator_only_line(line: str) -> bool:
     return rest in ("", ",", "}")
 
 
-def _redact_line(line: str, home_forms: list[str]) -> str:
+def _redact_line(
+    line: str,
+    home_forms: list[str],
+    hub_terms: list[str] | None = None,
+) -> str:
     line = _redact_secret_field_to_eol(line)
     for form in home_forms:
         line = re.sub(re.escape(form), "~", line, flags=re.IGNORECASE)
 
+    line = redact_hub_urls(line, hub_terms if hub_terms is not None else [])
     line = _URL_USERINFO.sub(r"\1[redacted]\2", line)
     line = _CREDENTIAL_TOKENS.sub("[redacted]", line)
     if "@" in line:
@@ -185,9 +250,10 @@ def redact(
     *,
     home: Path | None = None,
 ) -> str:
-    """Percent-decode, scrub credentials/emails/home paths per line, and cap length."""
+    """Percent-decode, scrub credentials/emails/home paths/hub URLs per line, and cap length."""
     value = "" if text is None else str(text)
     value = _percent_decode(value, max_passes=3)
+    hub_terms = configured_hub_terms()
 
     home_forms: list[str] = []
     if home is not None:
@@ -238,7 +304,7 @@ def redact(
             if expect_crossline_secret:
                 scrubbed_line = "[redacted]"
             else:
-                scrubbed_line = _redact_line(line, home_forms)
+                scrubbed_line = _redact_line(line, home_forms, hub_terms)
             expect_crossline_secret = next_pending
 
         out_parts.append(scrubbed_line)
@@ -256,3 +322,62 @@ def redact(
     if limit is not None:
         return result[: max(0, limit)]
     return result
+
+
+class RedactingFormatter(logging.Formatter):
+    """Log formatter that scrubs credentials, home paths, and configured hub URLs."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        return redact(super().format(record))
+
+
+class HubUrlRedactingFilter(logging.Filter):
+    """Scrub configured/built-in hub URLs from log records before formatting."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        terms = configured_hub_terms()
+        if not terms:
+            return True
+        try:
+            message = record.getMessage()
+        except Exception:
+            message = str(record.msg)
+        lowered = [t.lower() for t in terms]
+        if any(t in message.lower() for t in lowered):
+            record.msg = redact_hub_urls(message, terms)
+            record.args = ()
+        if record.exc_text and any(t in record.exc_text.lower() for t in lowered):
+            record.exc_text = redact_hub_urls(record.exc_text, terms)
+        if record.exc_info:
+            formatted_exc = logging.Formatter().formatException(record.exc_info)
+            if any(t in formatted_exc.lower() for t in lowered):
+                record.exc_text = redact_hub_urls(formatted_exc, terms)
+                record.exc_info = None
+        return True
+
+
+_HUB_LOG_FILTER = HubUrlRedactingFilter()
+
+
+def install_log_redaction() -> None:
+    """Attach the hub-URL log filter to root, handlers, and known HTTP/service loggers."""
+    root = logging.getLogger()
+    if _HUB_LOG_FILTER not in root.filters:
+        root.addFilter(_HUB_LOG_FILTER)
+    for handler in root.handlers:
+        if _HUB_LOG_FILTER not in handler.filters:
+            handler.addFilter(_HUB_LOG_FILTER)
+    for name in (
+        "burnrate",
+        "burnrate.api",
+        "burnrate.watchdog",
+        "spend_app",
+        "httpx",
+        "httpcore",
+        "uvicorn",
+        "uvicorn.error",
+        "uvicorn.access",
+    ):
+        logger = logging.getLogger(name)
+        if _HUB_LOG_FILTER not in logger.filters:
+            logger.addFilter(_HUB_LOG_FILTER)

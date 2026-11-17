@@ -209,7 +209,7 @@ def build_page(
                 "connections": [],
                 "machines": [],
                 "setup": {},
-                "centralServerUrl": "",
+                "hubAvailable": False,
             }
         ),
         "api_js": api_js,
@@ -591,15 +591,15 @@ SETTINGS_FIXTURE = {
         {"id": "lt", "name": "Laptop", "online": False},
     ],
     "setup": {
-        "account": {"username": "me", "serverUrl": "https://hub.example"},
+        "account": {"username": "me"},
         "spokeConfig": {
             "enabled": True,
-            "hubUrl": "https://hub.example",
+            "hubConfigured": True,
             "lastSyncError": "Timed out",
         },
         "computerName": "Desk PC",
     },
-    "centralServerUrl": "https://hub.example",
+    "hubAvailable": True,
 }
 
 

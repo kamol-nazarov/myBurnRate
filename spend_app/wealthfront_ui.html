@@ -2570,7 +2570,7 @@ const state = {
   update: null,
   updateInfo: null,
   updateCheck: { status: "idle", error: "" },
-  settingsData: { connections: [], machines: [], setup: {}, centralServerUrl: "" },
+  settingsData: { connections: [], machines: [], setup: {}, hubAvailable: false },
   editingSource: null,
   editingProfile: null,
   addingProvider: null,
@@ -4066,7 +4066,7 @@ function paintSettingsBody() {
     const setup = state.settingsData.setup || {};
     const account = setup.account || {};
     const spoke = setup.spokeConfig || {};
-    const hubConnected = !!(spoke.enabled && spoke.hubUrl);
+    const hubConnected = !!(spoke.enabled && (spoke.hubConfigured || spoke.hubUrl));
     const syncErrMap = {
       hub_unreachable: "Could not reach the hub",
       hub_rejected: "Hub rejected this computer's sync credential",
@@ -4074,7 +4074,6 @@ function paintSettingsBody() {
     };
     const syncErrRaw = spoke.lastSyncError ? String(spoke.lastSyncError) : "";
     const syncErr = syncErrRaw ? (syncErrMap[syncErrRaw] || "Sync failed") : "";
-    const defaultHubUrl = account.serverUrl || spoke.hubUrl || state.settingsData.centralServerUrl || "";
     const defaultUser = account.username || "";
     const defaultComp = setup.computerName || "";
     const ownerSignedIn = !!spoke.hasOwnerSession && (!spoke.ownerSessionExpiresAt || Date.parse(spoke.ownerSessionExpiresAt) > Date.now());
@@ -4096,7 +4095,7 @@ function paintSettingsBody() {
             </span>
             <div class="source-info">
               <div class="source-name">${esc(account.username || "Paired spoke")}</div>
-              <div class="source-meta" title="${esc(spoke.hubUrl)}">${esc(spoke.hubUrl)}${defaultComp ? " · " + esc(defaultComp) : ""}</div>
+              <div class="source-meta">${esc(defaultComp || "Connected to hub")}</div>
             </div>
             <button class="btn-secondary" id="accountToggleBtn" type="button" onclick="toggleAccountForm()">
               ${state.accountFormOpen ? "Cancel" : ownerSignedIn ? "Reconnect" : "Sign in"}
@@ -4115,7 +4114,6 @@ function paintSettingsBody() {
               <button class="btn-secondary ${state.accountAuthMode === "login" ? "active" : ""}" id="authMode_login" type="button" aria-pressed="${state.accountAuthMode === "login"}" onclick="setAccountAuthMode('login')">Sign in</button>
               <button class="btn-secondary ${state.accountAuthMode === "register" ? "active" : ""}" id="authMode_register" type="button" aria-pressed="${state.accountAuthMode === "register"}" onclick="setAccountAuthMode('register')">Create hub account</button>
             </div>
-            <input class="text-input" id="hubAccountUrl" type="url" autocomplete="off" spellcheck="false" placeholder="VPS Hub URL (e.g. https://your-hub.ts.net:8449)" value="${esc(defaultHubUrl)}"/>
             <input class="text-input" id="hubAccountUser" autocomplete="off" spellcheck="false" placeholder="Account email or username" value="${esc(defaultUser)}"/>
             <input class="text-input" id="hubAccountPass" type="password" autocomplete="new-password" placeholder="Account password"/>
             ${state.accountAuthMode === "register" ? `<input class="text-input" id="hubAccountSetupToken" type="password" autocomplete="off" placeholder="Hub setup token (first account only)"/>` : ""}
@@ -4160,7 +4158,6 @@ function paintSettingsBody() {
         </div>
         ${state.pairMode === "create" ? `
           <form autocomplete="off" novalidate onsubmit="event.preventDefault();submitCreatePair()" style="display:grid;gap:6px;margin-top:2px">
-            <input class="text-input" id="pairHubUrl" placeholder="Reachable hub URL (e.g. https://your-hub.ts.net:8449)" value="${esc(defaultHubUrl)}"/>
             <input class="text-input" id="pairCompName" placeholder="Name of new computer (e.g. MacBook Pro)"/>
             <div><button class="btn-primary" type="submit">Generate code</button></div>
           </form>
@@ -4801,12 +4798,10 @@ window.setAccountAuthMode = function(mode) {
 
 window.submitHubAccount = async function() {
   if (!apiAvailable() || state.accountBusy) return;
-  const serverUrl = document.getElementById("hubAccountUrl")?.value.trim() || "";
   const username = document.getElementById("hubAccountUser")?.value.trim() || "";
   const password = document.getElementById("hubAccountPass")?.value || "";
   const setupToken = document.getElementById("hubAccountSetupToken")?.value || "";
   const computerName = document.getElementById("hubAccountComp")?.value.trim() || "";
-  if (!serverUrl) { showToast("Enter your VPS hub URL"); return; }
   if (!username || !password) { showToast("Enter your account username and password"); return; }
 
   state.accountBusy = true;
@@ -4817,7 +4812,6 @@ window.submitHubAccount = async function() {
   }
   try {
     const res = await window.pywebview.api.connect_hub_account(
-      serverUrl,
       username,
       password,
       computerName,
@@ -4854,10 +4848,9 @@ window.setPairMode = function(mode) {
 };
 
 window.submitCreatePair = async function() {
-  const url = document.getElementById("pairHubUrl")?.value.trim() || "";
   const name = document.getElementById("pairCompName")?.value.trim() || "";
-  if (!url || !name) { showToast("Enter both hub URL and computer name"); return; }
-  const res = await window.pywebview.api.create_pairing_code(url, name);
+  if (!name) { showToast("Enter computer name"); return; }
+  const res = await window.pywebview.api.create_pairing_code(name);
   if (res && res.ok) {
     state.generatedCode = res.pairingCode;
     state.pairMode = null;

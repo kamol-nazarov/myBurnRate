@@ -60,16 +60,18 @@ SETUP_TOKEN_ENV = "BURNRATE_SETUP_TOKEN"
 PBKDF2_ITERATIONS = 600_000
 LEGACY_PBKDF2_ITERATIONS = 120_000
 
-# No built-in hub: a computer joins the hub its owner names (pairing code,
-# saved account, or BURNRATE_CENTRAL_SERVER_URL).
-DEFAULT_CENTRAL_SERVER_URLS: tuple[str, ...] = ()
 # A hub that already has an account accepts no new ones (one owner, many
 # computers); computers join with a pairing code. Opt out deliberately.
 ALLOW_REGISTRATION_ENV = "BURNRATE_ALLOW_REGISTRATION"
 
 
-def default_central_server_url() -> str:
-    return os.getenv("BURNRATE_CENTRAL_SERVER_URL", "").strip().rstrip("/")
+def _safe_resolve_hub_url() -> str:
+    from spend_app.config import resolve_hub_url
+
+    try:
+        return resolve_hub_url()
+    except ValueError:
+        return ""
 
 
 HARNESS_CATALOG = {
@@ -127,7 +129,6 @@ def default_setup_state() -> dict:
         "computerName": _default_computer_name(),
         "account": {
             "username": "",
-            "serverUrl": default_central_server_url(),
             "machineId": "",
             "connectedAt": None,
         },
@@ -164,6 +165,7 @@ def read_setup_state(connection) -> dict:
             **base["account"],
             **(parsed.get("account") if isinstance(parsed.get("account"), dict) else {}),
         }
+        merged["account"].pop("serverUrl", None)
         merged["spokeConfig"] = {
             **base["spokeConfig"],
             **(parsed.get("spokeConfig") if isinstance(parsed.get("spokeConfig"), dict) else {}),
@@ -182,6 +184,8 @@ def write_setup_state(connection, state: dict) -> dict:
         **default_setup_state(),
         **state,
     }
+    if isinstance(clean.get("account"), dict):
+        clean["account"] = {k: v for k, v in clean["account"].items() if k != "serverUrl"}
     connection.execute(
         "INSERT INTO app_meta(key, value) VALUES(?, ?) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -207,16 +211,17 @@ def normalize_spoke_sync_error(value: object) -> str | None:
 
 def public_setup_state(state: dict) -> dict:
     spoke = dict(state.get("spokeConfig") or {})
+    raw_hub_url = str(spoke.pop("hubUrl", "") or "").strip()
+    spoke["hubConfigured"] = bool(raw_hub_url)
     raw_token = str(spoke.get("token") or "")
     spoke["hasToken"] = bool(raw_token)
-    spoke["tokenPreview"] = (
-        f"{raw_token[:12]}…{raw_token[-4:]}" if len(raw_token) > 18 else ("configured" if raw_token else "")
-    )
     spoke.pop("token", None)
     spoke["hasOwnerSession"] = bool(spoke.pop("ownerSession", None))
     spoke["tokenPreview"] = "configured" if raw_token else ""
     spoke["lastSyncError"] = normalize_spoke_sync_error(spoke.get("lastSyncError"))
-    return {**state, "spokeConfig": spoke}
+    account = dict(state.get("account") or {})
+    account.pop("serverUrl", None)
+    return {**state, "account": account, "spokeConfig": spoke}
 
 
 def _read_accounts(connection) -> dict:
@@ -289,6 +294,10 @@ def _throttled(retry_after: int) -> JSONResponse:
     return error_response("AUTH-102", status_code=429, retry_after=retry_after)
 
 
+class RequestTooLargeError(ValueError):
+    """Raised when an incoming JSON request body exceeds the allowed byte limit."""
+
+
 async def _bounded_json(request: Request, limit: int = 65536) -> dict:
     """Read a small JSON object without letting an anonymous body exhaust memory."""
     if request.headers.get("x-burnrate-request") != "1":
@@ -301,11 +310,11 @@ async def _bounded_json(request: Request, limit: int = 65536) -> dict:
         raise HTTPException(status_code=415, detail="Use application/json.")
     declared = request.headers.get("content-length", "")
     if declared.isdigit() and int(declared) > limit:
-        raise ValueError("Request too large.")
+        raise RequestTooLargeError("Request too large.")
     chunks = bytearray()
     async for chunk in request.stream():
         if len(chunks) + len(chunk) > limit:
-            raise ValueError("Request too large.")
+            raise RequestTooLargeError("Request too large.")
         chunks.extend(chunk)
     value = json.loads(
         chunks, parse_constant=lambda _: (_ for _ in ()).throw(ValueError())
@@ -598,12 +607,16 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
     spoke = state.get("spokeConfig") or {}
     if state.get("role") != "spoke" or not spoke.get("enabled"):
         return None
-    configured_hub_url = str(spoke.get("hubUrl") or "").strip().rstrip("/")
-    token = str(spoke.get("token") or "").strip()
-    if not configured_hub_url or not token:
-        return None
+    from spend_app.config import resolve_hub_url
     from spend_app.pairing import hub_origin
+
+    token = str(spoke.get("token") or "").strip()
+    if not token:
+        return None
     try:
+        configured_hub_url = resolve_hub_url() or str(spoke.get("hubUrl") or "").strip().rstrip("/")
+        if not configured_hub_url:
+            return None
         hub_url = hub_origin(configured_hub_url)
         resolved_client = client or _HUB_TEST_CLIENTS.get(hub_url)
         result = sync_once(
@@ -621,12 +634,13 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
         with connect(settings.database_path) as connection:
             connection.execute("BEGIN IMMEDIATE")
             latest = read_setup_state(connection)
-            if latest["spokeConfig"].get("token") != token or str(latest["spokeConfig"].get("hubUrl") or "").strip().rstrip("/") != configured_hub_url:
+            latest_hub = _safe_resolve_hub_url() or str(latest["spokeConfig"].get("hubUrl") or "").strip().rstrip("/")
+            if latest["spokeConfig"].get("token") != token or latest_hub != configured_hub_url:
                 return {"ok": False, "error": "Pairing changed; retry sync with the current configuration."}
             latest["spokeConfig"]["lastSyncAt"] = utc_now()
             latest["spokeConfig"]["lastSyncError"] = None
             if isinstance(result.get("machineId"), str) and result["machineId"]:
-                latest["account"] = {**latest.get("account", {}), "machineId": result["machineId"], "serverUrl": hub_url}
+                latest["account"] = {**latest.get("account", {}), "machineId": result["machineId"]}
             latest["spokeConfig"]["usageChangesPending"] = bool(result.get("usageChangesPending"))
             latest["spokeConfig"]["eventsPushed"] = int(
                 latest["spokeConfig"].get("eventsPushed") or 0
@@ -646,7 +660,8 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
         with connect(settings.database_path) as connection:
             connection.execute("BEGIN IMMEDIATE")
             latest = read_setup_state(connection)
-            if latest["spokeConfig"].get("token") != token or str(latest["spokeConfig"].get("hubUrl") or "").strip().rstrip("/") != configured_hub_url:
+            latest_hub = _safe_resolve_hub_url() or str(latest["spokeConfig"].get("hubUrl") or "").strip().rstrip("/")
+            if latest["spokeConfig"].get("token") != token or latest_hub != configured_hub_url:
                 return {"ok": False, "error": "Pairing changed; retry sync with the current configuration."}
             latest["spokeConfig"]["lastSyncError"] = code
             write_setup_state(connection, latest)
@@ -805,21 +820,20 @@ def _call_central_server_account(
     endpoint_path: str,
     payload: dict,
 ) -> tuple[str, dict, str]:
-    """Call `/api/account/register` or `/api/account/login` on the central server with fallback."""
-    clean_primary = (server_url or "").strip().rstrip("/") or default_central_server_url()
-    if not clean_primary:
-        raise CodedError("NET-001", status_code=422)
+    """Call `/api/account/register` or `/api/account/login` on the configured hub."""
+    from spend_app.config import resolve_hub_url
     from spend_app.pairing import hub_origin
 
     try:
+        clean_primary = (server_url or "").strip().rstrip("/") or resolve_hub_url()
+        if not clean_primary:
+            raise CodedError("NET-001", status_code=422)
         clean_primary = hub_origin(clean_primary)
     except ValueError as exc:
+        if isinstance(exc, CodedError):
+            raise
         raise CodedError("NET-003" if "HTTPS" in str(exc) else "NET-001", status_code=422) from exc
-    raw_candidates = [clean_primary]
-    for fallback in DEFAULT_CENTRAL_SERVER_URLS:
-        if clean_primary in DEFAULT_CENTRAL_SERVER_URLS and fallback not in raw_candidates:
-            raw_candidates.append(fallback)
-    candidates = [hub_origin(candidate) for candidate in raw_candidates]
+    candidates = [clean_primary]
 
     headers = {
         "X-BURNRATE-Request": "1",
@@ -956,7 +970,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
         return JSONResponse(
             {
                 "setup": public_setup_state(state),
-                "centralServerUrl": default_central_server_url(),
+                "hubAvailable": bool(_safe_resolve_hub_url()),
                 "os": sys.platform,
                 "timezone": settings.timezone,
                 "networkAddresses": detect_network_addresses(port),
@@ -1152,6 +1166,8 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
         try:
             try:
                 body = await _bounded_json(request)
+            except RequestTooLargeError:
+                return error_response("REQ-401", status_code=422)
             except HTTPException as exc:
                 return error_response(
                     "NET-002" if exc.status_code == 403 else "APP-901",
@@ -1295,6 +1311,8 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
         try:
             try:
                 body = await _bounded_json(request)
+            except RequestTooLargeError:
+                return error_response("REQ-401", status_code=422)
             except HTTPException as exc:
                 return error_response(
                     "NET-002" if exc.status_code == 403 else "APP-901",
@@ -1453,19 +1471,26 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
         try:
             try:
                 body = await _bounded_json(request)
+            except RequestTooLargeError:
+                return error_response("REQ-401", status_code=422)
             except HTTPException as exc:
                 return error_response(
                     "NET-002" if exc.status_code == 403 else "APP-901",
                     status_code=exc.status_code,
                 )
+            except ValueError:
+                return error_response("APP-901", status_code=422)
             with connect(settings.database_path) as connection:
                 state = read_setup_state(connection)
             spoke = state["spokeConfig"]
             if state.get("role") != "spoke" or not spoke.get("enabled"):
                 return error_response("AUTH-107", status_code=409)
             from spend_app.pairing import hub_origin
+            from spend_app.config import resolve_hub_url
+
             try:
-                validated_hub_url = hub_origin(str(spoke.get("hubUrl") or ""))
+                raw_hub_url = resolve_hub_url() or str(spoke.get("hubUrl") or "").strip()
+                validated_hub_url = hub_origin(raw_hub_url)
             except ValueError as exc:
                 return error_response(
                     "NET-003" if "HTTPS" in str(exc) else "NET-001",
@@ -1510,8 +1535,11 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             "Content-Type": "application/json",
         }
         from spend_app.pairing import hub_origin
+        from spend_app.config import resolve_hub_url
+
         try:
-            hub_url = hub_origin(str(spoke.get("hubUrl") or ""))
+            raw_hub_url = resolve_hub_url() or str(spoke.get("hubUrl") or "").strip()
+            hub_url = hub_origin(raw_hub_url)
         except ValueError as exc:
             return error_response(
                 "NET-003" if "HTTPS" in str(exc) else "NET-001",
@@ -1573,6 +1601,8 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
         try:
             try:
                 body = await _bounded_json(request)
+            except RequestTooLargeError:
+                return error_response("REQ-401", status_code=422)
             except HTTPException as exc:
                 return error_response(
                     "NET-002" if exc.status_code == 403 else "APP-901",
@@ -1594,12 +1624,13 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             if mode == "register" and len(password) < MIN_PASSWORD_LENGTH:
                 return error_response("AUTH-105", status_code=422)
             computer_name = str(body.get("computerName") or "").strip() or _default_computer_name()
-            raw_server_url = str(body.get("serverUrl") or "").strip() or default_central_server_url()
-            if not raw_server_url:
-                return error_response("NET-001", status_code=422)
+            from spend_app.config import resolve_hub_url
             from spend_app.pairing import hub_origin
 
             try:
+                raw_server_url = resolve_hub_url()
+                if not raw_server_url:
+                    return error_response("NET-001", status_code=422)
                 server_url = hub_origin(raw_server_url)
             except ValueError as exc:
                 return error_response(
@@ -1738,7 +1769,6 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 state["computerName"] = computer_name
                 state["account"] = {
                     "username": str(account_info.get("username") or username),
-                    "serverUrl": working_url,
                     "machineId": str(machine.get("id") or ""),
                     "connectedAt": utc_now(),
                 }
@@ -1812,10 +1842,15 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             if not isinstance(body, dict):
                 raise ValueError("Expected a JSON object.")
             remote_name = str(body.get("name") or body.get("remoteName") or "Remote Computer").strip()
-            hub_url = str(
-                body.get("hubUrl")
-                or body.get("hubHost")
-                or f"{request.url.scheme}://{request.headers.get('host', '127.0.0.1:17331')}"
+            from spend_app.config import resolve_hub_url
+
+            hub_url = (
+                resolve_hub_url()
+                or str(
+                    body.get("hubUrl")
+                    or body.get("hubHost")
+                    or f"{request.url.scheme}://{request.headers.get('host', '127.0.0.1:17331')}"
+                )
             ).strip().rstrip("/")
             from spend_app.pairing import issue
             reg = issue(settings.database_path, request.state.principal, hub_url=hub_url,
@@ -1846,7 +1881,9 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 default_name = str(decoded.get("machineName") or "")
                 paired_id = str(decoded.get("machineId") or "")
             else:
-                raw_hub_url = str(body.get("hubUrl") or "").strip()
+                from spend_app.config import resolve_hub_url
+
+                raw_hub_url = resolve_hub_url() or str(body.get("hubUrl") or "").strip()
                 token = str(body.get("token") or "").strip()
                 if not raw_hub_url and not token:
                     raise ValueError("Provide a Pairing Code (brpair_...) or both Hub URL and Token.")
@@ -1902,7 +1939,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 state = read_setup_state(connection)
                 state["role"] = "spoke"
                 state["computerName"] = computer_name
-                state["account"] = {**state.get("account", {}), "machineId": paired_id, "serverUrl": hub_url}
+                state["account"] = {**state.get("account", {}), "machineId": paired_id}
                 previous_spoke = state["spokeConfig"]
                 owner_session = ({key: previous_spoke[key] for key in ("ownerSession", "ownerSessionExpiresAt")
                                   if key in previous_spoke}
@@ -1928,6 +1965,8 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 },
                 headers={"Cache-Control": "no-store"},
             )
+        except RequestTooLargeError:
+            return error_response("REQ-401", status_code=422)
         except CodedError as exc:
             return error_response(exc.code, status_code=exc.status_code, retry_after=exc.retry_after)
         except HTTPException as exc:
@@ -2731,13 +2770,6 @@ SETUP_WIZARD_HTML = """<!doctype html>
                 <span class="hint">Only for the first account on a new hub. The hub operator sets BURNRATE_SETUP_TOKEN.</span>
               </div>
               <button type="button" class="link-btn" id="wiz-auth-switch">Create an account instead</button>
-              <details class="advanced-server">
-                <summary>Hub address: <code id="wiz-server-label"></code></summary>
-                <div class="field-group">
-                  <label for="wiz-server-url">Hub address</label>
-                  <input id="wiz-server-url" class="text-input mono" spellcheck="false">
-                </div>
-              </details>
             </div>
           </div>
 
@@ -2989,7 +3021,7 @@ SETUP_WIZARD_HTML = """<!doctype html>
           connected = Boolean(spoke.enabled && spoke.hasToken && s.role === "spoke");
           $("wiz-current").hidden = !connected;
           if (connected) {
-            let text = "This computer sends its usage to your hub at " + spoke.hubUrl;
+            let text = "This computer sends its usage to your hub";
             if (s.account?.username) text += " as " + s.account.username;
             const SYNC_ERROR_TEXT = {
               hub_unreachable: "could not reach the hub",
@@ -3015,9 +3047,8 @@ SETUP_WIZARD_HTML = """<!doctype html>
           $("wiz-password").autocomplete = authMode === "register" ? "new-password" : "current-password";
           $("wiz-auth-switch").textContent = authMode === "register" ? "I already have an account" : "Create an account instead";
           $("wiz-password-hint").textContent = "At least " + (stateData?.minPasswordLength || 12) + " characters.";
-          $("wiz-server-label").textContent = $("wiz-server-url").value || "";
           const leaving = connected && changingRole && role !== "spoke";
-          banner("wiz-role-warning", "err", leaving ? "When you finish, this computer stops sending its usage to " + spoke.hubUrl + "." : "");
+          banner("wiz-role-warning", "err", leaving ? "When you finish, this computer stops sending its usage to your hub." : "");
         }
 
         function renderHubAddresses() {
@@ -3082,7 +3113,7 @@ SETUP_WIZARD_HTML = """<!doctype html>
             banner("wiz-step1-status", "", authMode === "register" ? "Creating your account…" : "Signing in…");
             const res = await api("/api/setup/account", "POST", {
               mode: authMode, username, password, computerName,
-              serverUrl: $("wiz-server-url").value.trim(), testSync: false,
+              testSync: false,
               setupToken: $("wiz-setup-token").value.trim()
             });
             stateData.setup = res.setup;
@@ -3575,7 +3606,6 @@ SETUP_WIZARD_HTML = """<!doctype html>
         $("wiz-join-code-tab").addEventListener("click", () => { joinMode = "code"; renderStep1(); });
         $("wiz-join-account-tab").addEventListener("click", () => { joinMode = "account"; renderStep1(); });
         $("wiz-auth-switch").addEventListener("click", () => { authMode = authMode === "register" ? "login" : "register"; renderStep1(); });
-        $("wiz-server-url").addEventListener("input", () => { $("wiz-server-label").textContent = $("wiz-server-url").value; });
         $("wiz-pair-create").addEventListener("click", createPairingCode);
         $("wiz-pair-copy").addEventListener("click", async () => {
           try { await navigator.clipboard.writeText($("wiz-pair-code").textContent); $("wiz-pair-copy").textContent = "Copied"; } catch {}
@@ -3625,7 +3655,6 @@ SETUP_WIZARD_HTML = """<!doctype html>
           const s = stateData.setup || {};
           $("wiz-computer-name").value = s.computerName || "";
           $("wiz-username").value = s.account?.username || "";
-          $("wiz-server-url").value = s.account?.serverUrl || stateData.centralServerUrl || "";
           $("wiz-hud-auto").checked = s.hudConfig?.autoOpen !== false;
           $("wiz-hud-top").checked = s.hudConfig?.alwaysOnTop !== false;
           role = s.role === "spoke" ? "spoke" : (s.completed && s.role === "hub" ? "hub" : "standalone");

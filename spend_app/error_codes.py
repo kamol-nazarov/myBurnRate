@@ -59,6 +59,10 @@ ERROR_CATALOG: dict[str, dict[str, object]] = {
         "message": "Another computer already uses this name. Pick a different name.",
         "status": 422,
     },
+    "REQ-401": {
+        "message": "That request was too large.",
+        "status": 413,
+    },
     "SYNC-201": {
         "message": "Signed in, but the first sync didn't finish. It will retry.",
         "status": 502,

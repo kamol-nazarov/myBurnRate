@@ -47,6 +47,7 @@ EXPECTED_CODES = {
     "AUTH-107",
     "DEV-301",
     "DEV-302",
+    "REQ-401",
     "SYNC-201",
     "HUB-501",
     "HUB-502",
@@ -161,6 +162,7 @@ def _clean_shared_state(monkeypatch):
     monkeypatch.delenv("BURNRATE_ACCESS_TOKEN", raising=False)
     monkeypatch.delenv("BURNRATE_SETUP_TOKEN", raising=False)
     monkeypatch.delenv("BURNRATE_ALLOW_REGISTRATION", raising=False)
+    monkeypatch.delenv("BURNRATE_HUB_URL", raising=False)
     yield
     auth_throttle.reset()
     setup_wizard._GLOBAL_THROTTLE.reset()
@@ -195,6 +197,7 @@ def _create_hub_and_local(tmp_path: Path, monkeypatch, *, register_owner: bool =
     local_settings = _make_settings(tmp_path / "local.db")
     local_app = create_app(local_settings, enable_scheduler=False)
     local_client = TestClient(local_app, base_url="http://testserver")
+    monkeypatch.setenv("BURNRATE_HUB_URL", HUB_URL)
     monkeypatch.setitem(sync._HUB_TEST_CLIENTS, HUB_URL, hub_client)
     return hub_settings, hub_app, hub_client, local_settings, local_app, local_client
 
@@ -237,9 +240,9 @@ def _patch_httpx_for_fake_responses(monkeypatch, handler):
 # ---------------------------------------------------------------------------
 
 
-def test_error_catalog_has_all_17_codes() -> None:
+def test_error_catalog_has_all_18_codes() -> None:
     assert set(ERROR_CATALOG) == EXPECTED_CODES
-    assert len(ERROR_CATALOG) == 17
+    assert len(ERROR_CATALOG) == 18
 
 
 def test_net_001_transport_and_invalid_url_paths(tmp_path: Path, monkeypatch) -> None:
@@ -248,20 +251,22 @@ def test_net_001_transport_and_invalid_url_paths(tmp_path: Path, monkeypatch) ->
     local_client = TestClient(local_app, base_url="http://testserver")
     bridge, _native, _tc = _make_bridge(local_settings, monkeypatch, local_app)
 
-    # 1a. Missing / invalid serverUrl on DesktopBridge.connect_hub_account
+    # 1a. Missing / invalid BURNRATE_HUB_URL on DesktopBridge.connect_hub_account
     for bad_url in ("", "   ", "ftp://hub.test", "://missing", "https://:8443"):
-        res = bridge.connect_hub_account(bad_url, "owner@example.com", PASSWORD)
+        monkeypatch.setenv("BURNRATE_HUB_URL", bad_url)
+        res = bridge.connect_hub_account("owner@example.com", PASSWORD)
         assert res["ok"] is False
         assert res["code"] == "NET-001"
         assert res["error"] == format_error("NET-001")
 
-    # 1b. Missing / invalid serverUrl on /api/setup/account when no default fallback URL is set
-    monkeypatch.setattr(setup_wizard, "default_central_server_url", lambda: "")
+    # 1b. Missing / invalid BURNRATE_HUB_URL on /api/setup/account
+    monkeypatch.delenv("BURNRATE_HUB_URL", raising=False)
     for bad_url in ("", "ftp://hub.test", "https://"):
+        monkeypatch.setenv("BURNRATE_HUB_URL", bad_url)
         missing_url_res = local_client.post(
             "/api/setup/account",
             headers=LOCAL_HEADERS,
-            json={"mode": "login", "username": "owner@example.com", "password": PASSWORD, "serverUrl": bad_url},
+            json={"mode": "login", "username": "owner@example.com", "password": PASSWORD},
         )
         assert missing_url_res.status_code == 422
         assert missing_url_res.json() == {"error": {"code": "NET-001"}}
@@ -274,6 +279,7 @@ def test_net_001_transport_and_invalid_url_paths(tmp_path: Path, monkeypatch) ->
         def post(self, _path, **_kwargs):
             raise httpx.ConnectError("Connection refused")
 
+    monkeypatch.setenv("BURNRATE_HUB_URL", HUB_URL)
     monkeypatch.setitem(sync._HUB_TEST_CLIENTS, HUB_URL, _UnreachableHub())
     with pytest.raises(CodedError) as exc_info:
         _call_central_server_account(HUB_URL, "/api/account/login", {"username": "a", "password": "b"})
@@ -282,12 +288,12 @@ def test_net_001_transport_and_invalid_url_paths(tmp_path: Path, monkeypatch) ->
     setup_res = local_client.post(
         "/api/setup/account",
         headers=LOCAL_HEADERS,
-        json={"mode": "login", "username": "owner@example.com", "password": PASSWORD, "serverUrl": HUB_URL},
+        json={"mode": "login", "username": "owner@example.com", "password": PASSWORD},
     )
     assert setup_res.status_code == 503
     assert setup_res.json() == {"error": {"code": "NET-001"}}
 
-    bridge_res = bridge.connect_hub_account(HUB_URL, "owner@example.com", PASSWORD)
+    bridge_res = bridge.connect_hub_account("owner@example.com", PASSWORD)
     assert bridge_res["ok"] is False
     assert bridge_res["code"] == "NET-001"
     assert "Error NET-001" in bridge_res["error"]
@@ -336,13 +342,13 @@ def test_net_002_host_and_origin_rejection(tmp_path: Path, monkeypatch) -> None:
     setup_res = local_client.post(
         "/api/setup/account",
         headers=LOCAL_HEADERS,
-        json={"mode": "login", "username": "owner@example.com", "password": PASSWORD, "serverUrl": HUB_URL},
+        json={"mode": "login", "username": "owner@example.com", "password": PASSWORD},
     )
     assert setup_res.status_code == 403
     assert setup_res.json() == {"error": {"code": "NET-002"}}
 
     bridge, _native, _tc = _make_bridge(local_settings, monkeypatch, local_app)
-    bridge_res = bridge.connect_hub_account(HUB_URL, "owner@example.com", PASSWORD)
+    bridge_res = bridge.connect_hub_account("owner@example.com", PASSWORD)
     assert bridge_res["ok"] is False
     assert bridge_res["code"] == "NET-002"
     assert "Error NET-002" in bridge_res["error"]
@@ -364,6 +370,7 @@ def test_net_003_tls_ssl_error_and_plain_http_rejection(tmp_path: Path, monkeypa
         def post(self, _path, **_kwargs):
             raise ssl.SSLError("CERTIFICATE_VERIFY_FAILED")
 
+    monkeypatch.setenv("BURNRATE_HUB_URL", HUB_URL)
     monkeypatch.setitem(sync._HUB_TEST_CLIENTS, HUB_URL, _TlsFailingHub())
     with pytest.raises(CodedError) as exc_info:
         _call_central_server_account(HUB_URL, "/api/account/login", {"username": "a", "password": "b"})
@@ -372,12 +379,12 @@ def test_net_003_tls_ssl_error_and_plain_http_rejection(tmp_path: Path, monkeypa
     setup_res = local_client.post(
         "/api/setup/account",
         headers=LOCAL_HEADERS,
-        json={"mode": "login", "username": "owner@example.com", "password": PASSWORD, "serverUrl": HUB_URL},
+        json={"mode": "login", "username": "owner@example.com", "password": PASSWORD},
     )
     assert setup_res.status_code == 502
     assert setup_res.json() == {"error": {"code": "NET-003"}}
 
-    bridge_tls = bridge.connect_hub_account(HUB_URL, "owner@example.com", PASSWORD)
+    bridge_tls = bridge.connect_hub_account("owner@example.com", PASSWORD)
     assert bridge_tls["ok"] is False
     assert bridge_tls["code"] == "NET-003"
     assert "Error NET-003" in bridge_tls["error"]
@@ -387,15 +394,16 @@ def test_net_003_tls_ssl_error_and_plain_http_rejection(tmp_path: Path, monkeypa
         _call_central_server_account("http://hub.test", "/api/account/login", {"username": "a", "password": "b"})
     assert exc_http.value.code == "NET-003"
 
+    monkeypatch.setenv("BURNRATE_HUB_URL", "http://hub.test")
     http_setup = local_client.post(
         "/api/setup/account",
         headers=LOCAL_HEADERS,
-        json={"mode": "login", "username": "owner@example.com", "password": PASSWORD, "serverUrl": "http://hub.test"},
+        json={"mode": "login", "username": "owner@example.com", "password": PASSWORD},
     )
     assert http_setup.status_code == 422
     assert http_setup.json() == {"error": {"code": "NET-003"}}
 
-    bridge_http = bridge.connect_hub_account("http://hub.test", "owner@example.com", PASSWORD)
+    bridge_http = bridge.connect_hub_account("owner@example.com", PASSWORD)
     assert bridge_http["ok"] is False
     assert bridge_http["code"] == "NET-003"
     assert "Error NET-003" in bridge_http["error"]
@@ -423,12 +431,12 @@ def test_auth_101_wrong_password_and_unknown_user(tmp_path: Path, monkeypatch) -
     assert unknown_user.json() == {"error": {"code": "AUTH-101"}}
 
     bridge, _native, _tc = _make_bridge(local_settings, monkeypatch, local_app)
-    res_wrong = bridge.connect_hub_account(HUB_URL, "owner@example.com", "wrong-password-123")
+    res_wrong = bridge.connect_hub_account("owner@example.com", "wrong-password-123")
     assert res_wrong["ok"] is False
     assert res_wrong["code"] == "AUTH-101"
     assert "Error AUTH-101" in res_wrong["error"]
 
-    res_unknown = bridge.connect_hub_account(HUB_URL, "other@example.com", PASSWORD)
+    res_unknown = bridge.connect_hub_account("other@example.com", PASSWORD)
     assert res_unknown["ok"] is False
     assert res_unknown["code"] == "AUTH-101"
     assert "Error AUTH-101" in res_unknown["error"]
@@ -479,7 +487,7 @@ def test_auth_102_throttling_and_minute_pluralization(tmp_path: Path, monkeypatc
         assert "Error AUTH-102" in str(exc_info.value)
 
         bridge = DesktopBridge(native, preferences=tmp_path / "prefs.json")
-        bridge_res = bridge.connect_hub_account(HUB_URL, "owner@example.com", PASSWORD)
+        bridge_res = bridge.connect_hub_account("owner@example.com", PASSWORD)
         assert bridge_res["ok"] is False
         assert bridge_res["code"] == "AUTH-102"
         assert expected_unit in bridge_res["error"]
@@ -506,7 +514,6 @@ def test_auth_103_hub_already_has_account(tmp_path: Path, monkeypatch) -> None:
             "mode": "register",
             "username": "second@example.com",
             "password": PASSWORD,
-            "serverUrl": HUB_URL,
         },
     )
     assert setup_reg.status_code == 403
@@ -514,7 +521,7 @@ def test_auth_103_hub_already_has_account(tmp_path: Path, monkeypatch) -> None:
 
     bridge, _native, _tc = _make_bridge(local_settings, monkeypatch, local_app)
     bridge_res = bridge.connect_hub_account(
-        HUB_URL, "second@example.com", PASSWORD, mode="register"
+        "second@example.com", PASSWORD, mode="register"
     )
     assert bridge_res["ok"] is False
     assert bridge_res["code"] == "AUTH-103"
@@ -541,14 +548,13 @@ def test_auth_104_no_accounts_yet_on_hub(tmp_path: Path, monkeypatch) -> None:
             "mode": "login",
             "username": "owner@example.com",
             "password": PASSWORD,
-            "serverUrl": HUB_URL,
         },
     )
     assert setup_login.status_code == 401
     assert setup_login.json() == {"error": {"code": "AUTH-104"}}
 
     bridge, _native, _tc = _make_bridge(local_settings, monkeypatch, local_app)
-    bridge_res = bridge.connect_hub_account(HUB_URL, "owner@example.com", PASSWORD, mode="login")
+    bridge_res = bridge.connect_hub_account("owner@example.com", PASSWORD, mode="login")
     assert bridge_res["ok"] is False
     assert bridge_res["code"] == "AUTH-104"
     assert "Error AUTH-104" in bridge_res["error"]
@@ -574,7 +580,6 @@ def test_auth_105_short_password(tmp_path: Path, monkeypatch) -> None:
             "mode": "register",
             "username": "owner@example.com",
             "password": "short-11-ch",
-            "serverUrl": HUB_URL,
         },
     )
     assert setup_short.status_code == 422
@@ -582,7 +587,7 @@ def test_auth_105_short_password(tmp_path: Path, monkeypatch) -> None:
 
     bridge, _native, _tc = _make_bridge(local_settings, monkeypatch, local_app)
     bridge_res = bridge.connect_hub_account(
-        HUB_URL, "owner@example.com", "short-11-ch", mode="register"
+        "owner@example.com", "short-11-ch", mode="register"
     )
     assert bridge_res["ok"] is False
     assert bridge_res["code"] == "AUTH-105"
@@ -614,13 +619,13 @@ def test_auth_106_invalid_or_empty_username(tmp_path: Path, monkeypatch) -> None
     setup_empty = local_client.post(
         "/api/setup/account",
         headers=LOCAL_HEADERS,
-        json={"mode": "login", "username": "", "password": PASSWORD, "serverUrl": HUB_URL},
+        json={"mode": "login", "username": "", "password": PASSWORD},
     )
     assert setup_empty.status_code == 422
     assert setup_empty.json() == {"error": {"code": "AUTH-106"}}
 
     bridge, _native, _tc = _make_bridge(local_settings, monkeypatch, local_app)
-    bridge_res = bridge.connect_hub_account(HUB_URL, "   ", PASSWORD)
+    bridge_res = bridge.connect_hub_account("   ", PASSWORD)
     assert bridge_res["ok"] is False
     assert bridge_res["code"] == "AUTH-106"
     assert "Error AUTH-106" in bridge_res["error"]
@@ -650,7 +655,6 @@ def test_auth_107_expired_revoked_session_relay_and_b2_native_client_mapping(
             "username": "owner@example.com",
             "password": PASSWORD,
             "computerName": "SpokeOne",
-            "serverUrl": HUB_URL,
             "testSync": False,
         },
     )
@@ -711,7 +715,6 @@ def test_dev_301_revoked_invalid_machine_token(tmp_path: Path, monkeypatch) -> N
             "username": "owner@example.com",
             "password": PASSWORD,
             "computerName": "RevokeTarget",
-            "serverUrl": HUB_URL,
             "testSync": False,
         },
     )
@@ -807,7 +810,6 @@ def test_dev_302_duplicate_machine_name_propagation(tmp_path: Path, monkeypatch)
             "username": "owner@example.com",
             "password": PASSWORD,
             "computerName": "SharedName",
-            "serverUrl": HUB_URL,
             "testSync": False,
         },
     )
@@ -816,7 +818,7 @@ def test_dev_302_duplicate_machine_name_propagation(tmp_path: Path, monkeypatch)
 
     bridge, _native, _tc = _make_bridge(local_settings, monkeypatch, local_app)
     bridge_res = bridge.connect_hub_account(
-        HUB_URL, "owner@example.com", PASSWORD, computer_name="SharedName"
+        "owner@example.com", PASSWORD, computer_name="SharedName"
     )
     assert bridge_res["ok"] is False
     assert bridge_res["code"] == "DEV-302"
@@ -841,7 +843,6 @@ def test_sync_201_initial_sync_failure_warning(tmp_path: Path, monkeypatch) -> N
             "username": "owner@example.com",
             "password": PASSWORD,
             "computerName": "SpokeSyncFail",
-            "serverUrl": HUB_URL,
             "testSync": True,
         },
     )
@@ -857,7 +858,7 @@ def test_sync_201_initial_sync_failure_warning(tmp_path: Path, monkeypatch) -> N
     local_app_2 = create_app(local_settings_2, enable_scheduler=False)
     bridge, _native, _tc = _make_bridge(local_settings_2, monkeypatch, local_app_2)
     bridge_res = bridge.connect_hub_account(
-        HUB_URL, "owner@example.com", PASSWORD, computer_name="SpokeSyncFail2"
+        "owner@example.com", PASSWORD, computer_name="SpokeSyncFail2"
     )
     assert bridge_res["ok"] is True
     assert bridge_res["warningCode"] == "SYNC-201"
@@ -890,6 +891,7 @@ def test_hub_501_server_error_and_invalid_json(tmp_path: Path, monkeypatch) -> N
             def post(self, _path, **_kwargs):
                 return self._resp
 
+        monkeypatch.setenv("BURNRATE_HUB_URL", HUB_URL)
         monkeypatch.setitem(sync._HUB_TEST_CLIENTS, HUB_URL, _BrokenHub(fake_resp))
 
         with pytest.raises(CodedError) as exc_info:
@@ -899,12 +901,12 @@ def test_hub_501_server_error_and_invalid_json(tmp_path: Path, monkeypatch) -> N
         setup_res = local_client.post(
             "/api/setup/account",
             headers=LOCAL_HEADERS,
-            json={"mode": "login", "username": "owner@example.com", "password": PASSWORD, "serverUrl": HUB_URL},
+            json={"mode": "login", "username": "owner@example.com", "password": PASSWORD},
         )
         assert setup_res.status_code == 502
         assert setup_res.json() == {"error": {"code": "HUB-501"}}
 
-        bridge_res = bridge.connect_hub_account(HUB_URL, "owner@example.com", PASSWORD)
+        bridge_res = bridge.connect_hub_account("owner@example.com", PASSWORD)
         assert bridge_res["ok"] is False
         assert bridge_res["code"] == "HUB-501"
         assert "Error HUB-501" in bridge_res["error"]
@@ -962,12 +964,12 @@ def test_hub_502_b3_version_handshake_and_protocol_header(tmp_path: Path, monkey
         setup_res = local_client.post(
             "/api/setup/account",
             headers=LOCAL_HEADERS,
-            json={"mode": "login", "username": "owner@example.com", "password": PASSWORD, "serverUrl": HUB_URL},
+            json={"mode": "login", "username": "owner@example.com", "password": PASSWORD},
         )
         assert setup_res.status_code == 426
         assert setup_res.json() == {"error": {"code": "HUB-502"}}
 
-        bridge_res = bridge.connect_hub_account(HUB_URL, "owner@example.com", PASSWORD)
+        bridge_res = bridge.connect_hub_account("owner@example.com", PASSWORD)
         assert bridge_res["ok"] is False
         assert bridge_res["code"] == "HUB-502"
         assert "Error HUB-502" in bridge_res["error"]
@@ -1000,7 +1002,7 @@ def test_app_901_native_client_and_oversized_json(tmp_path: Path, monkeypatch) -
         assert exc_info.value.code == "APP-901"
         assert exc_info.value.status_code == expected_status
 
-    # 16b. Oversized JSON (>64 KiB) -> 422 APP-901
+    # 16b. Oversized JSON (>64 KiB) -> 422 REQ-401
     huge_payload = {"mode": "register", "username": "owner@example.com", "password": PASSWORD, "pad": "x" * 70000}
     oversized_hub = hub_client.post(
         "/api/account/register",
@@ -1008,15 +1010,15 @@ def test_app_901_native_client_and_oversized_json(tmp_path: Path, monkeypatch) -
         json=huge_payload,
     )
     assert oversized_hub.status_code == 422
-    assert oversized_hub.json() == {"error": {"code": "APP-901"}}
+    assert oversized_hub.json() == {"error": {"code": "REQ-401"}}
 
     oversized_setup = local_client.post(
         "/api/setup/account",
         headers=LOCAL_HEADERS,
-        json={**huge_payload, "serverUrl": HUB_URL},
+        json=huge_payload,
     )
     assert oversized_setup.status_code == 422
-    assert oversized_setup.json() == {"error": {"code": "APP-901"}}
+    assert oversized_setup.json() == {"error": {"code": "REQ-401"}}
 
 
 def test_app_902_b3_version_handshake_and_old_client_header(tmp_path: Path, monkeypatch) -> None:
@@ -1058,12 +1060,12 @@ def test_app_902_b3_version_handshake_and_old_client_header(tmp_path: Path, monk
     setup_res = local_client.post(
         "/api/setup/account",
         headers=LOCAL_HEADERS,
-        json={"mode": "login", "username": "owner@example.com", "password": PASSWORD, "serverUrl": HUB_URL},
+        json={"mode": "login", "username": "owner@example.com", "password": PASSWORD},
     )
     assert setup_res.status_code == 426
     assert setup_res.json() == {"error": {"code": "APP-902"}}
 
-    bridge_res = bridge.connect_hub_account(HUB_URL, "owner@example.com", PASSWORD)
+    bridge_res = bridge.connect_hub_account("owner@example.com", PASSWORD)
     assert bridge_res["ok"] is False
     assert bridge_res["code"] == "APP-902"
     assert "Error APP-902" in bridge_res["error"]
@@ -1083,7 +1085,7 @@ def test_app_902_b3_version_handshake_and_old_client_header(tmp_path: Path, monk
         _call_central_server_account(HUB_URL, "/api/account/login", {"username": "a", "password": "b"})
     assert exc_post.value.code == "APP-902"
 
-    bridge_post = bridge.connect_hub_account(HUB_URL, "owner@example.com", PASSWORD)
+    bridge_post = bridge.connect_hub_account("owner@example.com", PASSWORD)
     assert bridge_post["ok"] is False
     assert bridge_post["code"] == "APP-902"
 
@@ -1125,6 +1127,7 @@ def test_never_leak_raw_hub_text(
                 return _FakeResponse(status_code, text=payload, invalid_json=True)
             return _FakeResponse(status_code, payload)
 
+    monkeypatch.setenv("BURNRATE_HUB_URL", HUB_URL)
     monkeypatch.setitem(sync._HUB_TEST_CLIENTS, HUB_URL, _LeakyHub())
 
     with pytest.raises(CodedError) as exc_call:
@@ -1135,11 +1138,11 @@ def test_never_leak_raw_hub_text(
     setup_res = local_client.post(
         "/api/setup/account",
         headers=LOCAL_HEADERS,
-        json={"mode": "login", "username": "owner@example.com", "password": PASSWORD, "serverUrl": HUB_URL},
+        json={"mode": "login", "username": "owner@example.com", "password": PASSWORD},
     )
     assert SENTINEL not in setup_res.text
 
-    bridge_res = bridge.connect_hub_account(HUB_URL, "owner@example.com", PASSWORD)
+    bridge_res = bridge.connect_hub_account("owner@example.com", PASSWORD)
     assert bridge_res["ok"] is False
     assert SENTINEL not in json.dumps(bridge_res)
 
@@ -1163,7 +1166,7 @@ def test_never_leak_raw_local_tracker_503_text(tmp_path: Path, monkeypatch) -> N
         bridge = DesktopBridge(native, preferences=tmp_path / "prefs.json")
         monkeypatch.setattr(native, "ensure_service", lambda: None)
 
-        res_connect = bridge.connect_hub_account(HUB_URL, "owner@example.com", PASSWORD)
+        res_connect = bridge.connect_hub_account("owner@example.com", PASSWORD)
         assert res_connect["ok"] is False
         assert SENTINEL not in json.dumps(res_connect)
 
@@ -1171,7 +1174,7 @@ def test_never_leak_raw_local_tracker_503_text(tmp_path: Path, monkeypatch) -> N
         assert res_settings["ok"] is False
         assert SENTINEL not in json.dumps(res_settings)
 
-        res_pair = bridge.create_pairing_code(HUB_URL, "OtherComputer")
+        res_pair = bridge.create_pairing_code("OtherComputer")
         assert res_pair["ok"] is False
         assert SENTINEL not in json.dumps(res_pair)
 

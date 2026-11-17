@@ -14,7 +14,7 @@ burnrate demo [--port 17377] [--data-root DIR] # Serve made-up data on 127.0.0.1
 burnrate machines list
 burnrate machines register --name "MacBook Pro"
 burnrate machines revoke --id <machine_id>
-burnrate sync --hub http://<hub>:17331 --token-file <path-to-token> [--once]
+burnrate sync [--hub https://<hub>] --token-file <path-to-token> [--once]
 # or: set BURNRATE_SYNC_TOKEN and omit both flags
 burnrate hub update --ssh <host> [--push-local] [--dry-run]  # Fast-forward a self-hosted hub, restart it, print its build
 
@@ -42,7 +42,7 @@ Optional keys in `.env` (all empty by default — copy `.env.example` to `.env` 
 | `BURNRATE_ALLOW_ADMIN_BEARER` | Default `0` restricts the static credential to `/api/auth/bootstrap` and `/api/auth/rotate`. Set `1` only when automation must use the static bearer for other API calls |
 | `BURNRATE_SETUP_TOKEN` | One-time token required to create the first account on a hub |
 | `BURNRATE_ALLOW_REGISTRATION` | Set to `1` on a hub to accept new accounts after the first. A new account is another **owner** with full credential control; turn it off immediately after use (off: computers join with pairing codes) |
-| `BURNRATE_CENTRAL_SERVER_URL` | Default hub address offered when signing in (no built-in hub) |
+| `BURNRATE_HUB_URL` | Optional hub address override (e.g. in `%LOCALAPPDATA%\BURNRATE\.env` for testing). Takes precedence over the build-time address in `spend_app/_build_config.py` |
 | `BURNRATE_HUB_SSH` / `BURNRATE_HUB_PATH` / `BURNRATE_HUB_SERVICE` | Defaults for `burnrate hub update` |
 | `BURNRATE_DESKTOP_NOTIFICATIONS` | Desktop notifications from the desktop service; `0` turns them off (the CLI never sends them) |
 | `SPEND_DATABASE_PATH` | SQLite path (default `%LOCALAPPDATA%\BURNRATE`) |
@@ -62,6 +62,23 @@ burnrate subscription list
 `--cadence` is `monthly`, `quarterly`, or `annual`. Daily cost is `amount / days in the period`. That proration is not provider billing and is excluded from API-equivalent fields.
 
 BURNRATE no longer collects Cursor usage or polls Cursor quota. Cursor usage duplicates SuperGrok usage, so it is not counted: on first start each database (this computer's and the Hub's) removes its recorded Cursor rows after saving a verified backup to `backups/pre-cursor-removal-*.db`, and a Hub drops Cursor rows pushed by computers still on an older version.
+
+## Hub address resolution
+
+Release builds embed the hub address at build time into the git-ignored module
+`spend_app/_build_config.py` (`BUILTIN_HUB_URL`). At runtime, BURNRATE resolves
+the hub address in this order:
+
+1. `BURNRATE_HUB_URL` from the environment or per-user `.env`
+   (`%LOCALAPPDATA%\BURNRATE\.env`, skipped under `pytest` so tests stay hermetic);
+2. `spend_app._build_config.BUILTIN_HUB_URL` when `_build_config.py` was generated
+   during packaging.
+
+Source checkouts do not commit `spend_app/_build_config.py`, so with neither file
+nor `BURNRATE_HUB_URL` set, the app runs without a hub. When a hub address is
+configured, any existing `spokeConfig.hubUrl` saved in SQLite migrates to the
+resolved address on startup, and the resolved address is redacted from API
+responses, `syncCommand`, logs, error messages, and diagnostics reports.
 
 ## Tailscale
 

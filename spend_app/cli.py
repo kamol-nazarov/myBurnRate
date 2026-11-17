@@ -339,7 +339,7 @@ def _main() -> int:
         "sync",
         help="Stream local usage and agent activity from this computer to a BURNRATE hub",
     )
-    sync_parser.add_argument("--hub", required=True, help="Hub base URL (e.g. http://100.x.y.z:17331)")
+    sync_parser.add_argument("--hub", default="", help="Optional hub base URL override (defaults to configured hub)")
     sync_parser.add_argument("--token", help="Machine bearer token (br_m_...); prefer --token-file or BURNRATE_SYNC_TOKEN")
     sync_parser.add_argument("--token-file", help="Read the machine bearer token from this file")
     sync_parser.add_argument("--name", help="Optional display name override for this computer")
@@ -571,12 +571,30 @@ def _main() -> int:
         return 0
     if args.command == "sync":
         import time as _time
+        from spend_app.config import resolve_hub_url
+        from spend_app.redact import redact
         from spend_app.sync import sync_once
 
         try:
+            hub_url = (args.hub or "").strip() or resolve_hub_url()
+        except ValueError as exc:
+            print(json.dumps({"ok": False, "error": redact(exc)}), file=sys.stderr)
+            return 2
+        if not hub_url:
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": "No hub is configured. Set BURNRATE_HUB_URL or pass --hub.",
+                    }
+                ),
+                file=sys.stderr,
+            )
+            return 2
+        try:
             token = _resolve_sync_token(args.token, args.token_file)
         except ValueError as exc:
-            print(json.dumps({"ok": False, "error": str(exc)}), file=sys.stderr)
+            print(json.dumps({"ok": False, "error": redact(exc)}), file=sys.stderr)
             return 2
         if not token:
             print(
@@ -600,7 +618,7 @@ def _main() -> int:
                 out = sync_once(
                     settings,
                     pricing,
-                    hub_url=args.hub,
+                    hub_url=hub_url,
                     token=token,
                     machine_name=args.name,
                 )
@@ -608,7 +626,7 @@ def _main() -> int:
                 if args.once:
                     return 0
             except Exception as exc:
-                print(json.dumps({"ok": False, "error": str(exc)}), file=sys.stderr, flush=True)
+                print(json.dumps({"ok": False, "error": redact(exc)}), file=sys.stderr, flush=True)
                 if args.once:
                     return 2
             _time.sleep(max(1.0, float(args.interval)))
@@ -623,20 +641,24 @@ def _main() -> int:
             print(json.dumps({"ok": True, "interface": "native", "toolkit": "ttk", "tkVersion": TkVersion}))
             return 0
         if not args.demo and (args.hub or args.token or args.token_file):
+            from spend_app.config import resolve_hub_url
+            from spend_app.redact import redact
+
             try:
+                hub_url = (args.hub or "").strip() or resolve_hub_url()
                 token = _resolve_sync_token(args.token, args.token_file)
             except ValueError as exc:
-                print(json.dumps({"error": str(exc)}))
+                print(json.dumps({"error": redact(exc)}))
                 return 2
-            if not args.hub or not token:
-                print(json.dumps({"error": "Provide both --hub and a token (file or environment), or pair in Settings."}))
+            if not hub_url or not token:
+                print(json.dumps({"error": "Configure a hub and provide a token (file or environment), or sign in from Settings."}))
                 return 2
             from spend_app.setup_wizard import read_setup_state, write_setup_state
             initialize(settings.database_path)
             with connect(settings.database_path) as connection:
                 state = read_setup_state(connection)
                 state["role"] = "spoke"
-                state["spokeConfig"].update(hubUrl=args.hub, token=token, enabled=True)
+                state["spokeConfig"].update(hubUrl=hub_url, token=token, enabled=True)
                 write_setup_state(connection, state)
         from spend_app.native_desktop import main as native_main
         return native_main(settings, demo=args.demo, port=args.port, smoke_test=args.smoke_test)

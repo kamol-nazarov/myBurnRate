@@ -893,6 +893,64 @@ def redact_legacy_ingest_errors(
                 return updated
 
 
+def migrate_setup_hub_url(path: Path) -> bool:
+    """Migrate saved setup state to the resolved hub URL and drop legacy serverUrl."""
+    from spend_app.config import resolve_hub_url
+    from spend_app.setup_wizard import SETUP_META_KEY
+
+    try:
+        resolved = resolve_hub_url()
+    except ValueError:
+        resolved = ""
+
+    def _needs_update(state: dict) -> bool:
+        account = state.get("account")
+        if isinstance(account, dict) and "serverUrl" in account:
+            return True
+        spoke = state.get("spokeConfig")
+        if resolved and isinstance(spoke, dict) and (spoke.get("hubUrl") or spoke.get("enabled")):
+            if str(spoke.get("hubUrl") or "").strip().rstrip("/") != resolved:
+                return True
+        return False
+
+    with connect(path) as connection:
+        row = connection.execute(
+            "SELECT value FROM app_meta WHERE key=?", (SETUP_META_KEY,)
+        ).fetchone()
+        if not row or not row[0]:
+            return False
+        try:
+            parsed = json.loads(row[0])
+        except ValueError:
+            return False
+        if not isinstance(parsed, dict) or not _needs_update(parsed):
+            return False
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            "SELECT value FROM app_meta WHERE key=?", (SETUP_META_KEY,)
+        ).fetchone()
+        if not row or not row[0]:
+            return False
+        try:
+            parsed = json.loads(row[0])
+        except ValueError:
+            return False
+        if not isinstance(parsed, dict) or not _needs_update(parsed):
+            return False
+        account = parsed.get("account")
+        if isinstance(account, dict):
+            account.pop("serverUrl", None)
+        spoke = parsed.get("spokeConfig")
+        if resolved and isinstance(spoke, dict) and (spoke.get("hubUrl") or spoke.get("enabled")):
+            spoke["hubUrl"] = resolved
+        connection.execute(
+            "INSERT INTO app_meta(key, value) VALUES(?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (SETUP_META_KEY, json.dumps(parsed, separators=(",", ":"), sort_keys=True)),
+        )
+        return True
+
+
 def initialize(path: Path) -> None:
     from spend_app.subscription_schema import upgrade_database
     upgrade_database(path, _initialize_base)
@@ -903,6 +961,7 @@ def initialize(path: Path) -> None:
     dedupe_grok_calls(path)
     retire_muse_rollup_events(path)
     redact_legacy_ingest_errors(path)
+    migrate_setup_hub_url(path)
     from spend_app.auth_model import ensure_schema
     ensure_schema(path)
     from spend_app.connections import Store

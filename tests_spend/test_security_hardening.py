@@ -449,4 +449,4 @@ def test_anonymous_account_bodies_are_bounded(tmp_path, monkeypatch) -> None:
             content=oversized,
         )
         assert response.status_code == 422
-        assert response.json()["error"] == {"code": "APP-901"}
+        assert response.json()["error"] == {"code": "REQ-401"}
