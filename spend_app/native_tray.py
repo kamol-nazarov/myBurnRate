@@ -58,6 +58,7 @@ class TrayController:
         on_refresh: Callable[[], None],
         on_settings: Callable[[], None],
         on_quit: Callable[[], None],
+        on_tab: Callable[[], None] | None = None,
         tooltip: str = "BURNRATE",
     ) -> None:
         self._native = native
@@ -65,6 +66,7 @@ class TrayController:
         self._handlers = {
             "toggle": on_toggle,
             "show": on_show,
+            "tab": on_tab or on_show,
             "refresh": on_refresh,
             "settings": on_settings,
             "quit": on_quit,
@@ -97,12 +99,13 @@ class TrayController:
                 return False
 
             menu = WinForms.ContextMenuStrip()
-            show_item = WinForms.ToolStripMenuItem("Show BURNRATE")
+            show_item = WinForms.ToolStripMenuItem("Open BURNRATE")
             show_item.Font = System.Drawing.Font(
                 show_item.Font, System.Drawing.FontStyle.Bold
             )
             items = (
                 (show_item, "show"),
+                (WinForms.ToolStripMenuItem("Show tab"), "tab"),
                 (WinForms.ToolStripMenuItem("Refresh now"), "refresh"),
                 (WinForms.ToolStripMenuItem("Settings"), "settings"),
                 (None, None),

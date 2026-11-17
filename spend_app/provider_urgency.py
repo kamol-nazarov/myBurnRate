@@ -16,10 +16,31 @@ PACE_STATES = ("tight", "dry", "safe")
 RUNWAY_STATES = ("learning", "idle", "estimate")
 DRYING_STATES = ("tight", "dry")
 
+#: Providers that can have several profiles; a profile's key is the family
+#: key plus ``-<name>`` (``claude-code-work``).
+PROFILE_FAMILIES = (
+    "claude-code",
+    "opencode-go",
+    "zcode",
+    "codex",
+    "antigravity",
+    "grok",
+    "muse",
+)
+
 SOON_HOURS = 2.0
 SOON_PCT = 10.0
 SOON_BALANCE = 1.0
 WARN_BALANCE = 5.0
+
+
+def profile_family(key) -> str:
+    """``claude-code`` for ``claude-code`` and ``claude-code-work``; else the key."""
+    text = str(key or "")
+    for family in PROFILE_FAMILIES:
+        if text == family or text.startswith(family + "-"):
+            return family
+    return text
 
 
 def _number(value) -> float | None:

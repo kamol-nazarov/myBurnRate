@@ -25,8 +25,8 @@ from spend_app.native_prefs import PreferenceStore
 LOGGER = logging.getLogger(__name__)
 
 PREFERENCE_KEY = "window"
-DEFAULT_SIZE = (380, 556)
-MIN_SIZE = (336, 440)
+DEFAULT_SIZE = (440, 640)
+MIN_SIZE = (380, 520)
 #: A restored window must overlap a monitor by at least this much (physical px)
 #: in both directions, otherwise the position is treated as off-screen.
 MIN_VISIBLE = (48, 32)
@@ -175,6 +175,92 @@ def plan_restore(
     return RestorePlan(width, height, (x, y))
 
 
+# --- the tab window: a position-only restore --------------------------------
+
+#: Gap between the tab and the work-area edge when it has no saved position.
+TAB_MARGIN = 16
+
+
+def _monitor_for(rect: Rect, monitors: list[Monitor]) -> Monitor | None:
+    """The monitor ``rect`` overlaps most, else the primary one."""
+    best: Monitor | None = None
+    best_area = 0
+    for monitor in monitors:
+        ow, oh = _overlap(rect, monitor.rect)
+        if ow >= MIN_VISIBLE[0] and oh >= MIN_VISIBLE[1] and ow * oh > best_area:
+            best, best_area = monitor, ow * oh
+    if best is not None:
+        return best
+    return next((m for m in monitors if m.primary), None) or (
+        monitors[0] if monitors else None
+    )
+
+
+def keep_on_screen(
+    rect: tuple[int, int, int, int], monitors: list[Monitor]
+) -> tuple[int, int]:
+    """Move ``(x, y, width, height)`` fully inside the work area it belongs to."""
+    x, y, width, height = rect
+    monitor = _monitor_for(Rect(x, y, x + width, y + height), monitors)
+    if monitor is None:
+        return x, y
+    work = monitor.work
+    return (
+        _clamp(x, work.left, work.right - width),
+        _clamp(y, work.top, work.bottom - height),
+    )
+
+
+def plan_tab_position(
+    saved: SavedGeometry | None,
+    monitors: list[Monitor],
+    dpi: int,
+    size: tuple[int, int],
+) -> tuple[int, int] | None:
+    """Where the tab goes at launch: its saved spot, kept on screen, else the
+    top-right corner of the primary work area. ``size`` is physical pixels."""
+    width, height = size
+    if saved is not None:
+        ratio = (dpi if dpi > 0 else 96) / saved.dpi
+        x, y = round(saved.x * ratio), round(saved.y * ratio)
+        return keep_on_screen((x, y, width, height), monitors)
+    primary = next((m for m in monitors if m.primary), None) or (
+        monitors[0] if monitors else None
+    )
+    if primary is None:
+        return None
+    margin = round(TAB_MARGIN * (dpi if dpi > 0 else 96) / 96)
+    return keep_on_screen(
+        (primary.work.right - width - margin, primary.work.top + margin, width, height),
+        monitors,
+    )
+
+
+def place_expanded(
+    rect: tuple[int, int, int, int],
+    new_size: tuple[int, int],
+    monitors: list[Monitor],
+) -> tuple[int, int, bool]:
+    """Position for a tab grown to ``new_size``: down by default, shifted left at
+    the right edge, and grown upward when there is no room below.
+
+    Returns ``(x, y, grows_up)``.
+    """
+    x, y, width, height = rect
+    new_w, new_h = new_size
+    monitor = _monitor_for(Rect(x, y, x + width, y + height), monitors)
+    if monitor is None:
+        return x, y, False
+    work = monitor.work
+    x = _clamp(x, work.left, work.right - new_w)
+    if y + new_h <= work.bottom:
+        return x, y, False
+    up_y = y + height - new_h
+    if up_y >= work.top:
+        return x, up_y, True
+    return x, _clamp(y, work.top, work.bottom - new_h), False
+
+
 # --- Win32 plumbing (exercised by the unit tests only through fakes) ---------
 
 
@@ -320,7 +406,9 @@ class GeometryTracker:
         *,
         snapshotter=snapshot,
         delay: float = SAVE_DELAY,
+        key: str = PREFERENCE_KEY,
     ) -> None:
+        self._key = key
         self._store = store
         self._hwnd_getter = hwnd_getter
         self._snapshotter = snapshotter
@@ -360,6 +448,6 @@ class GeometryTracker:
         if current is None:
             return False
         if current != self._last:
-            self._store.update({PREFERENCE_KEY: current.as_preference()})
+            self._store.update({self._key: current.as_preference()})
             self._last = current
         return True
