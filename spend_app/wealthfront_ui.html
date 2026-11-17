@@ -4028,6 +4028,10 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
 .ticks span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
 .ticks span.is-first { transform: none; }
 .ticks span.is-last { transform: translateX(-100%); }
+@media (max-width: 420px) {
+  /* on a narrow track the 6h label would sit on top of "now" */
+  .ticks span:nth-child(2) { display: none; }
+}
 
 .logo-badge {
   width: 24px;

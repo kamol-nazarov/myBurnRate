@@ -368,6 +368,10 @@ for (const width of [440, 380, 360]) {
     scopeInside: scope.right <= inner + 0.5,
     laneOverlap: lanes.some(l => l.querySelector('.lane-name').getBoundingClientRect().right > l.querySelector('.lane-track').getBoundingClientRect().left + 1),
     trackWidths: lanes.slice(0, 1).map(l => Math.round(l.querySelector('.lane-track').getBoundingClientRect().width)),
+    tickOverlap: (() => {
+      const spans = [...document.querySelectorAll('#limitTicks span')].filter(s => getComputedStyle(s).display !== 'none').map(s => s.getBoundingClientRect());
+      return spans.some((a, i) => i && spans[i - 1].right > a.left - 2);
+    })(),
   });
 }
 report(out);
@@ -387,6 +391,7 @@ def test_no_horizontal_overflow_at_440_380_and_360(tmp_path, pref):
         assert case["bodyScroll"] <= 1, case
         assert case["over"] == [], case
         assert case["scopeInside"] is True and case["laneOverlap"] is False, case
+        assert case["tickOverlap"] is False, case
     assert r[0]["scopeLabelClipped"] is False, r[0]  # the computer selector fits at 440 without an ellipsis
     assert r[0]["trackWidths"][0] > r[2]["trackWidths"][0] > 120
 
