@@ -84,7 +84,22 @@ This project is licensed under Apache-2.0.
   exposed or brute-forced by accident. Deploy it on your tailnet and create the account right
   away.
 - **Credentials leave the database.** Owner sessions and machine tokens sit in the OS keychain
-  only, not in SQLite.
+  only, not in SQLite. After an upgrade moves old copies to the keychain, the database is
+  securely vacuumed (retried until it completes) and the moved credentials are rotated on the
+  next hub contact, so a copy of the old database file can't be used to sign in.
+- **Signing out revokes on the hub, not just locally.** **Sign out** clears this computer first,
+  then revokes its owner session and machine token on the hub. A computer can revoke its own
+  machine token (`POST /api/machines/self/revoke`) when no owner session is available. If the hub
+  can't be reached, the revocations wait in the keychain and run on the next hub contact.
+  Credentials minted by a sign-in or rotation that lost a race are revoked the same way.
+- **Password and email changes share the sign-in guess limit.** While sign-in is locked out
+  (`AUTH-102`), changing the password or email is refused without checking the current password.
+- **Compose refuses public addresses.** The hub Compose file runs a `publish-check` step before
+  Caddy and the hub start, and refuses wildcard, public or hostname addresses unless
+  `BURNRATE_HUB_ALLOW_PUBLIC=1`.
+- **Fewer ways in from the app window.** The legacy owner-session bridge methods and the
+  `/api/setup/owner-session` and `/api/setup/rotate-machine` routes are gone; the desktop app's
+  callable methods are fixed by a test.
 - **No hub address in the app's output.** The built-in address is redacted from the UI, API,
   logs and diagnostics.
 - **Errors never carry server text.** The desktop app shows fixed messages and codes, not raw
