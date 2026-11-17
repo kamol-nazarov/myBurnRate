@@ -653,7 +653,6 @@ def test_central_server_account_login_subscriptions_and_multi_computer_sync(
     aggregate.reset_memo()
     monkeypatch.setattr(sync, "_default_hub_name", lambda: "Synthetic Hub")
     monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
-    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", "setup-secret-at-least-32-chars-1")
 
     central_settings = _make_settings(tmp_path / "hub")
     desktop_settings = _make_settings(tmp_path / "mydesktop")
@@ -715,10 +714,9 @@ def test_central_server_account_login_subscriptions_and_multi_computer_sync(
         headers=SETUP_HEADERS,
         json={
             "mode": "register",
-            "username": "alex",
+            "username": "alex@example.com",
             "password": "secret-password",
             "computerName": "MyDesktop",
-            "setupToken": "setup-secret-at-least-32-chars-1",
             "presetKeys": ["claude_max", "grok_super"],
             "customPlans": [
                 {"tool_key": "opencode", "name": "Z.AI Coding Plan", "amount_usd": 10.0, "cadence": "monthly"}
@@ -729,7 +727,7 @@ def test_central_server_account_login_subscriptions_and_multi_computer_sync(
     assert reg_res.status_code == 200
     reg_data = reg_res.json()
     assert reg_data["ok"] is True
-    assert reg_data["account"]["username"] == "alex"
+    assert reg_data["account"]["username"] == "alex@example.com"
     assert len(reg_data["subscriptions"]) == 3
 
     # 2. Seed local usage on MacBook and just sign in (no need to re-enter subscriptions)
@@ -762,7 +760,7 @@ def test_central_server_account_login_subscriptions_and_multi_computer_sync(
         headers=SETUP_HEADERS,
         json={
             "mode": "login",
-            "username": "alex",
+            "username": "alex@example.com",
             "password": "secret-password",
             "computerName": "MacBook Pro",
             "testSync": True,

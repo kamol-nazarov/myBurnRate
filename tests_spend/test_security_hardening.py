@@ -152,46 +152,44 @@ def test_test_hostname_is_not_trusted_in_production(tmp_path, monkeypatch) -> No
         assert client.get("/api/spend/summary?window=1d").status_code == 403
 
 
-def test_first_account_requires_the_setup_token(tmp_path, monkeypatch) -> None:
+def test_first_account_requires_no_setup_token_and_closes_afterward(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "admin-secret")
-    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", "setup-secret-at-least-32-chars-1")
+    monkeypatch.delenv("BURNRATE_SETUP_TOKEN", raising=False)
     settings = _settings(tmp_path)
     app = create_app(settings=settings, enable_scheduler=False)
     headers = {"Content-Type": "application/json", "X-BURNRATE-Request": "1", "Origin": "http://127.0.0.1:17331"}
     body = {
-        "username": "owner",
+        "username": "owner@example.com",
         "password": "long-enough-password",
         "computerName": "Hub",
     }
     with TestClient(app, base_url="http://127.0.0.1:17331") as client:
-        assert client.post("/api/account/register", headers=headers, json=body).status_code == 403
-        wrong = dict(headers, **{"X-BURNRATE-Setup-Token": "wrong"})
-        assert client.post("/api/account/register", headers=wrong, json=body).status_code == 403
-        right = dict(headers, **{"X-BURNRATE-Setup-Token": "setup-secret-at-least-32-chars-1"})
-        created = client.post("/api/account/register", headers=right, json=body)
+        created = client.post("/api/account/register", headers=headers, json=body)
         assert created.status_code == 200
         assert "token" not in created.json() and "sessionToken" not in created.json()
         machine = client.post("/api/machines", headers=headers, json={"action": "register", "name": "Hub"})
         assert machine.status_code == 200
         assert machine.json()["token"].startswith("br_m_")
-        intruder = dict(body, username="intruder")
-        assert client.post("/api/account/register", headers=right, json=intruder).status_code == 403
+        intruder = dict(body, username="intruder@example.com")
+        closed = client.post("/api/account/register", headers=headers, json=intruder)
+        assert closed.status_code == 403 and closed.json()["error"] == {"code": "AUTH-103"}
+        same = client.post("/api/account/register", headers=headers, json=body)
+        assert same.status_code == 403 and same.json()["error"] == {"code": "AUTH-103"}
 
 
 def test_login_is_throttled_and_answers_generically(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "admin-secret")
-    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", "setup-secret-at-least-32-chars-1")
     settings = _settings(tmp_path)
     app = create_app(settings=settings, enable_scheduler=False)
     headers = {"Content-Type": "application/json", "X-BURNRATE-Request": "1", "Origin": "http://127.0.0.1:17331"}
     with TestClient(app, base_url="http://127.0.0.1:17331") as client:
         created = client.post(
             "/api/account/register",
-            headers=dict(headers, **{"X-BURNRATE-Setup-Token": "setup-secret-at-least-32-chars-1"}),
+            headers=headers,
             json={
-                "username": "owner",
+                "username": "owner@example.com",
                 "password": "long-enough-password",
                 "computerName": "Hub",
             },
@@ -200,7 +198,7 @@ def test_login_is_throttled_and_answers_generically(tmp_path, monkeypatch) -> No
         unknown = client.post(
             "/api/account/login",
             headers=headers,
-            json={"username": "nobody", "password": "wrong-password"},
+            json={"username": "nobody@example.com", "password": "wrong-password"},
         )
         assert unknown.status_code == 401
         assert unknown.json()["error"] == {"code": "AUTH-101"}
@@ -208,7 +206,7 @@ def test_login_is_throttled_and_answers_generically(tmp_path, monkeypatch) -> No
             response = client.post(
                 "/api/account/login",
                 headers=headers,
-                json={"username": "owner", "password": "wrong-password"},
+                json={"username": "owner@example.com", "password": "wrong-password"},
             )
         assert response.status_code == 429
         assert response.headers["retry-after"]
@@ -345,7 +343,7 @@ def test_anonymous_cannot_reach_any_hub_data_or_setup_route(tmp_path, monkeypatc
             ), path
 
 
-def test_setup_token_can_arrive_in_the_body(tmp_path, monkeypatch) -> None:
+def test_setup_token_in_body_is_ignored_on_first_registration(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "admin-secret")
     monkeypatch.setenv("BURNRATE_SETUP_TOKEN", "setup-secret-at-least-32-chars-1")
@@ -356,7 +354,7 @@ def test_setup_token_can_arrive_in_the_body(tmp_path, monkeypatch) -> None:
             "/api/account/register",
             headers={"Content-Type": "application/json", "X-BURNRATE-Request": "1"},
             json={
-                "username": "owner",
+                "username": "owner@example.com",
                 "password": "long-enough-password",
                 "computerName": "Hub",
                 "setupToken": "setup-secret-at-least-32-chars-1",
@@ -391,9 +389,15 @@ def test_global_login_budget_applies_across_usernames(tmp_path, monkeypatch) -> 
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "admin-secret")
     settings = _settings(tmp_path)
     app = create_app(settings=settings, enable_scheduler=False)
-    headers = {"Content-Type": "application/json", "X-BURNRATE-Request": "1"}
+    headers = {"Content-Type": "application/json", "X-BURNRATE-Request": "1", "Origin": "http://127.0.0.1:17331"}
     with TestClient(app, base_url="http://127.0.0.1:17331") as client:
-        for username in ("one", "two", "three"):
+        assert client.post(
+            "/api/account/register",
+            headers=headers,
+            json={"username": "owner@example.com", "password": "long-enough-password", "computerName": "Hub"},
+        ).status_code == 200
+        client.cookies.clear()
+        for username in ("one@example.com", "two@example.com", "three@example.com"):
             response = client.post(
                 "/api/account/login",
                 headers=headers,

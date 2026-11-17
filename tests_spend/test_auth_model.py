@@ -45,8 +45,8 @@ def hub(tmp_path, monkeypatch):
 
 
 def owner(client):
-    result = client.post("/api/account/register", headers=UI, json={"username": "synthetic-owner", "password": PASSWORD,
-                         "setupToken": SETUP_TOKEN, "sessionOnly": True, "deviceLabel": "Synthetic browser"})
+    result = client.post("/api/account/register", headers=UI, json={"username": "synthetic-owner@example.com", "password": PASSWORD,
+                         "sessionOnly": True, "deviceLabel": "Synthetic browser"})
     assert result.status_code == 200, result.text
     return result
 
@@ -115,7 +115,7 @@ def test_login_cookie_foreign_origin_logout_and_reuse(hub):
     first = owner(client)
     first_token = first.cookies[auth.COOKIE]
     client.cookies.clear()
-    login = client.post("/api/account/login", headers=UI, json={"username": "synthetic-owner", "password": PASSWORD, "sessionOnly": True})
+    login = client.post("/api/account/login", headers=UI, json={"username": "synthetic-owner@example.com", "password": PASSWORD, "sessionOnly": True})
     assert login.status_code == 200
     assert "sessionToken" not in login.json()
     cookie = login.headers["set-cookie"].lower()
@@ -146,7 +146,7 @@ def test_session_expiry_revocation_rotation_and_future_roles(hub):
     assert revoked.status_code == 200
     assert client.get("/api/machines", headers={"Authorization": "Bearer " + new_token}).status_code == 401
     client.cookies.clear()
-    login = client.post("/api/account/login", headers=UI, json={"username": "synthetic-owner", "password": PASSWORD, "sessionOnly": True}).json()
+    login = client.post("/api/account/login", headers=UI, json={"username": "synthetic-owner@example.com", "password": PASSWORD, "sessionOnly": True}).json()
     with connect(settings.database_path) as connection:
         connection.execute("UPDATE owner_sessions SET expires_at=? WHERE id=?", (auth.stamp(auth.moment() - timedelta(seconds=1)), login["sessionId"]))
     assert client.get("/api/machines").status_code == 401
@@ -388,7 +388,7 @@ def test_revoked_machine_cannot_be_revived_by_name_only_pairing_or_reconnect(hub
     login = client.post(
         "/api/account/login",
         headers=UI,
-        json={"username": "synthetic-owner", "password": PASSWORD, "sessionOnly": True},
+        json={"username": "synthetic-owner@example.com", "password": PASSWORD, "sessionOnly": True},
     )
     assert login.status_code == 200
     refused_owner_reg = client.post(
@@ -421,7 +421,7 @@ def test_audit_actor_exactly_once_append_only_and_no_credential_material(hub):
     first = owner(client)
     first_token = first.cookies[auth.COOKIE]
     client.cookies.clear()
-    assert client.post("/api/account/login", headers=UI, json={"username": "synthetic-owner", "password": "synthetic-wrong-password"}).status_code == 401
+    assert client.post("/api/account/login", headers=UI, json={"username": "synthetic-owner@example.com", "password": "synthetic-wrong-password"}).status_code == 401
     reg = client.post("/api/machines", headers=ADMIN, json={"name": "Synthetic device"}).json()
     mid = reg["machine"]["id"]
     for action in ("rename", "revoke"):
@@ -434,7 +434,7 @@ def test_audit_actor_exactly_once_append_only_and_no_credential_material(hub):
         assert machine_audit["actor_type"] == "owner" and machine_audit["actor_id"] == "break-glass"
         assert any(row["action"] == "login" and row["outcome"] == "failure" and row["actor_type"] == "unauthenticated" for row in rows)
         material = json.dumps(rows)
-        assert all(secret not in material for secret in (PASSWORD, first_token, reg["token"], "synthetic-break-glass", "synthetic-owner"))
+        assert all(secret not in material for secret in (PASSWORD, first_token, reg["token"], "synthetic-break-glass", "synthetic-owner@example.com", "synthetic-owner"))
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):
             connection.execute("DELETE FROM admin_audit")
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):

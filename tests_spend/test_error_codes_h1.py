@@ -801,7 +801,7 @@ def test_dev_302_duplicate_machine_name_propagation(tmp_path: Path, monkeypatch)
     assert rename_dup.status_code == 422
     assert rename_dup.json() == {"error": {"code": "DEV-302"}}
 
-    # Propagated via /api/setup/account and DesktopBridge.connect_hub_account
+    # Propagated via /api/setup/account and DesktopBridge.connect_hub_account (clash with active Alpha)
     setup_dup = local_client.post(
         "/api/setup/account",
         headers=LOCAL_HEADERS,
@@ -809,7 +809,7 @@ def test_dev_302_duplicate_machine_name_propagation(tmp_path: Path, monkeypatch)
             "mode": "login",
             "username": "owner@example.com",
             "password": PASSWORD,
-            "computerName": "SharedName",
+            "computerName": "Alpha",
             "testSync": False,
         },
     )
@@ -818,7 +818,7 @@ def test_dev_302_duplicate_machine_name_propagation(tmp_path: Path, monkeypatch)
 
     bridge, _native, _tc = _make_bridge(local_settings, monkeypatch, local_app)
     bridge_res = bridge.connect_hub_account(
-        "owner@example.com", PASSWORD, computer_name="SharedName"
+        "owner@example.com", PASSWORD, computer_name="Alpha"
     )
     assert bridge_res["ok"] is False
     assert bridge_res["code"] == "DEV-302"

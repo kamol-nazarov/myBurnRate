@@ -571,7 +571,7 @@ def test_setup_account_ignores_server_url_in_request_body(
             "/api/account/register",
             headers={"X-BURNRATE-Request": "1"},
             json={
-                "username": "owner",
+                "username": "owner@example.com",
                 "password": "correct-horse-88",
                 "computerName": "HubBox",
                 "os": "win32",
@@ -584,7 +584,7 @@ def test_setup_account_ignores_server_url_in_request_body(
             headers=SETUP_HEADERS,
             json={
                 "mode": "login",
-                "username": "owner",
+                "username": "owner@example.com",
                 "password": "correct-horse-88",
                 "computerName": "SpokeBox",
                 "serverUrl": "https://attacker-override.invalid:9999",
@@ -703,7 +703,7 @@ def test_acceptance_sentinel_hub_url_never_leaks(
             "/api/account/register",
             headers={"X-BURNRATE-Request": "1"},
             json={
-                "username": "owner",
+                "username": "owner@example.com",
                 "password": "correct-horse-88",
                 "computerName": "HubNode",
                 "os": "win32",
@@ -717,7 +717,7 @@ def test_acceptance_sentinel_hub_url_never_leaks(
             headers=SETUP_HEADERS,
             json={
                 "mode": "login",
-                "username": "owner",
+                "username": "owner@example.com",
                 "password": "correct-horse-88",
                 "computerName": "SpokeNode",
                 "testSync": True,
@@ -748,7 +748,7 @@ def test_acceptance_sentinel_hub_url_never_leaks(
             headers=SETUP_HEADERS,
             json={
                 "mode": "login",
-                "username": "owner",
+                "username": "owner@example.com",
                 "password": "correct-horse-88",
                 "computerName": "SpokeNode",
                 "testSync": False,

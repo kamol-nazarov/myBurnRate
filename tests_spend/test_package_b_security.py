@@ -234,9 +234,8 @@ def test_m1_cookie_authenticated_account_post_requires_same_origin(
             "/api/account/register",
             headers=HUB_UI,
             json={
-                "username": "owner",
+                "username": "owner@example.com",
                 "password": PASSWORD,
-                "setupToken": SETUP_TOKEN,
                 "sessionOnly": True,
             },
         )
@@ -248,7 +247,7 @@ def test_m1_cookie_authenticated_account_post_requires_same_origin(
             res = client.post(
                 path,
                 headers={"X-BURNRATE-Request": "1"},
-                json={"username": "owner", "password": PASSWORD, "sessionOnly": True},
+                json={"username": "owner@example.com", "password": PASSWORD, "sessionOnly": True},
             )
             assert res.status_code == 403
             assert res.json()["error"] == "Cookie mutations require the same origin."
@@ -257,7 +256,7 @@ def test_m1_cookie_authenticated_account_post_requires_same_origin(
             res_scheme = client.post(
                 path,
                 headers={"Origin": "http://hub.test", "X-BURNRATE-Request": "1"},
-                json={"username": "owner", "password": PASSWORD, "sessionOnly": True},
+                json={"username": "owner@example.com", "password": PASSWORD, "sessionOnly": True},
             )
             assert res_scheme.status_code == 403
             assert res_scheme.json()["error"] == "Cookie mutations require the same origin."
@@ -266,7 +265,7 @@ def test_m1_cookie_authenticated_account_post_requires_same_origin(
         ok_login = client.post(
             "/api/account/login",
             headers=HUB_UI,
-            json={"username": "owner", "password": PASSWORD, "sessionOnly": True},
+            json={"username": "owner@example.com", "password": PASSWORD, "sessionOnly": True},
         )
         assert ok_login.status_code == 200
 
@@ -505,9 +504,8 @@ def test_l7_auth_endpoints_omit_session_token_and_machine_fields(
             "/api/account/register",
             headers=HUB_UI,
             json={
-                "username": "owner",
+                "username": "owner@example.com",
                 "password": PASSWORD,
-                "setupToken": SETUP_TOKEN,
                 "sessionOnly": False,
             },
         )
@@ -518,29 +516,28 @@ def test_l7_auth_endpoints_omit_session_token_and_machine_fields(
             assert forbidden not in reg_json
         assert "burnrate_access=br_s_" in reg_full.headers.get("set-cookie", "")
 
-        # Register with sessionOnly=True (re-authenticating existing owner)
+        # Subsequent register fails closed (AUTH-103) and leaks nothing
         client.cookies.clear()
-        reg_sess = client.post(
+        reg_closed = client.post(
             "/api/account/register",
             headers=HUB_UI,
             json={
-                "username": "owner",
+                "username": "owner@example.com",
                 "password": PASSWORD,
                 "sessionOnly": True,
             },
         )
-        assert reg_sess.status_code == 200, reg_sess.text
-        assert "sessionToken" not in reg_sess.json()
-        for forbidden in ("machine", "token", "machines"):
-            assert forbidden not in reg_sess.json()
-        assert "burnrate_access=br_s_" in reg_sess.headers.get("set-cookie", "")
+        assert reg_closed.status_code == 403, reg_closed.text
+        assert reg_closed.json()["error"] == {"code": "AUTH-103"}
+        for forbidden in ("sessionToken", "machine", "token", "machines"):
+            assert forbidden not in reg_closed.json()
 
         # Login with sessionOnly=False
         client.cookies.clear()
         login_full = client.post(
             "/api/account/login",
             headers=HUB_UI,
-            json={"username": "owner", "password": PASSWORD, "sessionOnly": False},
+            json={"username": "owner@example.com", "password": PASSWORD, "sessionOnly": False},
         )
         assert login_full.status_code == 200, login_full.text
         login_json = login_full.json()
@@ -554,7 +551,7 @@ def test_l7_auth_endpoints_omit_session_token_and_machine_fields(
         login_sess = client.post(
             "/api/account/login",
             headers=HUB_UI,
-            json={"username": "owner", "password": PASSWORD, "sessionOnly": True},
+            json={"username": "owner@example.com", "password": PASSWORD, "sessionOnly": True},
         )
         assert login_sess.status_code == 200, login_sess.text
         assert "sessionToken" not in login_sess.json()
@@ -615,10 +612,9 @@ def test_l7_spoke_join_register_login_owner_session_and_rotate_end_to_end(
             headers=local_ui,
             json={
                 "mode": "register",
-                "username": "owner",
+                "username": "owner@example.com",
                 "password": PASSWORD,
                 "computerName": "Spoke One",
-                "setupToken": SETUP_TOKEN,
                 "testSync": True,
             },
         )
@@ -642,7 +638,7 @@ def test_l7_spoke_join_register_login_owner_session_and_rotate_end_to_end(
             headers=local_ui,
             json={
                 "mode": "login",
-                "username": "owner",
+                "username": "owner@example.com",
                 "password": PASSWORD,
                 "computerName": "Spoke Two",
                 "testSync": True,
@@ -667,7 +663,7 @@ def test_l7_spoke_join_register_login_owner_session_and_rotate_end_to_end(
         sign_in = spoke1.post(
             "/api/setup/owner-session",
             headers=local_ui,
-            json={"username": "owner", "password": PASSWORD},
+            json={"username": "owner@example.com", "password": PASSWORD},
         )
         assert sign_in.status_code == 200, sign_in.text
         assert auth_model.LOCAL_COOKIE in spoke1.cookies
@@ -847,79 +843,75 @@ def test_l15_pair_hub_and_pairing_redeem_reject_plain_http_non_loopback(
 # ---------------------------------------------------------------------------
 
 
-def test_l16_create_app_validates_setup_token_length_in_hub_mode_only(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_l16_deprecated_setup_env_vars_warn_without_blocking_startup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
     monkeypatch.setenv("BURNRATE_SETUP_TOKEN", "x" * 31)
-    with pytest.raises(RuntimeError, match="32 characters"):
-        create_app(_settings(tmp_path, "short.db"), enable_scheduler=False)
+    monkeypatch.setenv("BURNRATE_ALLOW_REGISTRATION", "1")
+    with caplog.at_level(logging.WARNING, logger="burnrate.setup"):
+        create_app(_settings(tmp_path, "deprecated_hub.db"), enable_scheduler=False)
+    messages = [rec.message for rec in caplog.records if rec.name == "burnrate.setup"]
+    assert any("BURNRATE_SETUP_TOKEN" in m and "deprecated" in m.lower() for m in messages)
+    assert any("BURNRATE_ALLOW_REGISTRATION" in m and "deprecated" in m.lower() for m in messages)
 
-    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", "x" * 32)
-    create_app(_settings(tmp_path, "exact32.db"), enable_scheduler=False)
-
-    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", "")
-    create_app(_settings(tmp_path, "empty.db"), enable_scheduler=False)
-
-    monkeypatch.delenv("BURNRATE_SETUP_TOKEN", raising=False)
-    create_app(_settings(tmp_path, "unset.db"), enable_scheduler=False)
-
-    # Non-hub mode does not raise on short setup token
+    caplog.clear()
     monkeypatch.delenv("BURNRATE_CENTRAL_SERVER", raising=False)
-    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", "short")
-    create_app(_settings(tmp_path, "local_short.db"), enable_scheduler=False)
+    with caplog.at_level(logging.WARNING, logger="burnrate.setup"):
+        create_app(_settings(tmp_path, "local_short.db"), enable_scheduler=False)
 
 
-def test_l16_non_ascii_setup_token_returns_403_never_500(
+def test_l16_non_ascii_setup_token_never_returns_500(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _, client = _make_hub_client(tmp_path, monkeypatch)
     with client:
-        # Non-ASCII UTF-8 in JSON body setupToken -> 403
+        # Non-ASCII UTF-8 in JSON body setupToken -> ignored on first registration (200), never 500
         res_body = client.post(
             "/api/account/register",
             headers=HUB_UI,
             json={
-                "username": "owner",
+                "username": "owner@example.com",
                 "password": PASSWORD,
                 "setupToken": "tökën-ünicode-🔑-32-chars-padding",
             },
         )
-        assert res_body.status_code == 403
+        assert res_body.status_code == 200
 
-        # Non-ASCII latin-1 in header X-BURNRATE-Setup-Token -> 403
+        # Non-ASCII latin-1 in header X-BURNRATE-Setup-Token -> 403 AUTH-103 (closed), never 500
         res_hdr = client.post(
             "/api/account/register",
             headers=[(b"origin", HUB_URL.encode()), (b"x-burnrate-request", b"1"), (b"x-burnrate-setup-token", b"tok\xe9n-non-ascii-header")],
-            json={"username": "owner", "password": PASSWORD},
+            json={"username": "owner@example.com", "password": PASSWORD},
         )
         assert res_hdr.status_code == 403
 
-    # Direct _setup_token_allowed with arbitrary Unicode header value
-    fake_req = SimpleNamespace(
-        headers={"x-burnrate-setup-token": "tökën-ünicode-🔑-not-ascii"}
-    )
-    assert setup_wizard._setup_token_allowed(fake_req, {}) is False
 
-
-def test_l16_wrong_or_missing_setup_token_throttles_per_user_and_global(
+def test_l16_failed_login_throttles_per_user_and_global(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _, client = _make_hub_client(tmp_path, monkeypatch)
     with client:
+        assert client.post(
+            "/api/account/register",
+            headers=HUB_UI,
+            json={"username": "owner@example.com", "password": PASSWORD},
+        ).status_code == 200
+        client.cookies.clear()
+
         # Per-user throttle: MAX_FAILURES = 5
         for attempt in range(4):
             res = client.post(
-                "/api/account/register",
+                "/api/account/login",
                 headers=HUB_UI,
-                json={"username": "alice", "password": PASSWORD, "setupToken": "wrong-token"},
+                json={"username": "alice@example.com", "password": "wrong-password"},
             )
-            assert res.status_code == 403, (attempt, res.text)
+            assert res.status_code == 401, (attempt, res.text)
 
         locked = client.post(
-            "/api/account/register",
+            "/api/account/login",
             headers=HUB_UI,
-            json={"username": "alice", "password": PASSWORD},
+            json={"username": "alice@example.com", "password": "wrong-password"},
         )
         assert locked.status_code == 429
         assert int(locked.headers["Retry-After"]) >= 1
@@ -929,20 +921,19 @@ def test_l16_wrong_or_missing_setup_token_throttles_per_user_and_global(
         setup_wizard._GLOBAL_THROTTLE.reset()
         for idx in range(29):
             res = client.post(
-                "/api/account/register",
+                "/api/account/login",
                 headers=HUB_UI,
                 json={
-                    "username": f"user-{idx:02d}",
-                    "password": PASSWORD,
-                    "setupToken": "wrong-token",
+                    "username": f"user-{idx:02d}@example.com",
+                    "password": "wrong-password",
                 },
             )
-            assert res.status_code == 403, (idx, res.text)
+            assert res.status_code == 401, (idx, res.text)
 
         global_locked = client.post(
-            "/api/account/register",
+            "/api/account/login",
             headers=HUB_UI,
-            json={"username": "brand-new-user", "password": PASSWORD, "setupToken": "wrong-token"},
+            json={"username": "brand-new-user@example.com", "password": "wrong-password"},
         )
         assert global_locked.status_code == 429
         assert int(global_locked.headers["Retry-After"]) >= 1
@@ -1049,10 +1040,9 @@ def test_l15_setup_account_rejects_plain_http_without_outbound_call_or_persisten
             headers={"Origin": "http://127.0.0.1:17331", "X-BURNRATE-Request": "1"},
             json={
                 "mode": mode,
-                "username": "owner",
+                "username": "owner@example.com",
                 "password": PASSWORD,
                 "computerName": "Laptop",
-                "setupToken": SETUP_TOKEN,
             },
         )
     assert res.status_code == 422
@@ -1242,10 +1232,9 @@ def test_l15_loopback_http_stays_allowed_across_setup_and_egress(
             headers={"Origin": "http://127.0.0.1:17331", "X-BURNRATE-Request": "1"},
             json={
                 "mode": "register",
-                "username": "owner",
+                "username": "owner@example.com",
                 "password": PASSWORD,
                 "computerName": "Loopback Spoke",
-                "setupToken": SETUP_TOKEN,
                 "testSync": True,
             },
         )
