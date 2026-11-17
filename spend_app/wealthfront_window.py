@@ -9,7 +9,11 @@ import logging
 import math
 import os
 import shutil
+import struct
 import sys
+from datetime import UTC, datetime, timedelta
+from uuid import uuid4
+import zlib
 import tempfile
 import threading
 import time
@@ -1053,6 +1057,10 @@ class DesktopBridge:
         self._theme = normalize_theme(saved.get("theme"))
         self._close_to_tray = bool(saved.get("closeToTray", True))
         self._low_quota_alerts = bool(saved.get("lowQuotaAlerts", True))
+        # H10 ops/hud
+        self._hud_mini = bool(saved.get("hudMini", False))
+        raw_density = str(saved.get("hudDensity") or "compact").strip().lower()
+        self._hud_density = raw_density if raw_density in {"compact", "comfortable"} else "compact"
 
     def attach(self, window, hwnd_getter) -> None:
         self._window = window
@@ -1100,6 +1108,8 @@ class DesktopBridge:
                 "theme": self._theme,
                 "closeToTray": self._close_to_tray,
                 "lowQuotaAlerts": self._low_quota_alerts,
+                "hudMini": self._hud_mini,
+                "hudDensity": self._hud_density,
             }
         )
 
@@ -1117,6 +1127,8 @@ class DesktopBridge:
             "trayAvailable": self._tray_available,
             "version": __version__,
             "update": self.update_summary(),
+            "hudMini": self._hud_mini,
+            "hudDensity": self._hud_density,
         }
 
     # -- theme -------------------------------------------------------------
@@ -1507,6 +1519,17 @@ class DesktopBridge:
                     provider_order=self._provider_order,
                     connections=connections,
                 )
+                # H10 ops/hud
+                report["activity"] = (
+                    hud.get("activity")
+                    if isinstance(hud, dict) and isinstance(hud.get("activity"), list)
+                    else (_demo_activity() if self._demo else [])
+                )
+                today_total = (
+                    today_report.get("total") if isinstance(today_report, dict) else None
+                )
+                if isinstance(today_total, dict):
+                    report["todayTotal"] = today_total
             return {"ok": True, "report": report}
         except DesktopError as exc:
             return {"ok": False, "error": str(exc)}
@@ -1979,6 +2002,430 @@ class DesktopBridge:
         except OSError:
             pass
 
+
+    # H10 ops/hud
+
+    def set_hud_mini(self, enabled: bool) -> dict:
+        self._hud_mini = bool(enabled)
+        self._write_preferences()
+        return {"ok": True, "hudMini": self._hud_mini}
+
+    def set_hud_density(self, density: str) -> dict:
+        val = str(density or "").strip().lower()
+        self._hud_density = val if val in {"compact", "comfortable"} else "compact"
+        self._write_preferences()
+        return {"ok": True, "hudDensity": self._hud_density}
+
+    def copy_image_to_clipboard(self, data_url: str) -> dict:
+        if not isinstance(data_url, str) or not data_url.startswith("data:image/png;base64,"):
+            return {"ok": False, "error": "Expected a PNG data URL."}
+        b64 = data_url.split(",", 1)[1].strip()
+        if not b64 or len(b64) > 16_000_000:
+            return {"ok": False, "error": "Image payload size out of bounds."}
+        try:
+            png_bytes = base64.b64decode(b64, validate=True)
+            dib_bytes = _png_to_cf_dib(png_bytes)
+            _write_win32_clipboard(png_bytes, dib_bytes)
+        except Exception as exc:  # noqa: BLE001 -- surfaced cleanly to UI
+            LOGGER.debug("Copy image to clipboard failed", exc_info=True)
+            return {"ok": False, "error": str(exc) or "Could not copy image to clipboard."}
+        return {"ok": True}
+
+    def get_diagnostics_data(self) -> dict:
+        if self._demo:
+            return {
+                "ok": True,
+                "health": _demo_health(),
+                "freshness": _demo_freshness(),
+            }
+        try:
+            with self._lock:
+                if not self._service_ready:
+                    self._client.ensure_service()
+                    self._service_ready = True
+                health = self._safe_request("/api/spend/health")
+                freshness = self._safe_request("/api/spend/freshness")
+            if health is None and freshness is None:
+                return {"ok": False, "error": "Diagnostics unavailable."}
+            return {"ok": True, "health": health, "freshness": freshness}
+        except DesktopError as exc:
+            return {"ok": False, "error": str(exc)}
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "error": "Could not load diagnostics."}
+
+    def get_week_share_data(self, machine: str = "all") -> dict:
+        if self._demo:
+            return {"ok": True, "week": _demo_week_share()}
+        use_machine = machine or "all"
+        try:
+            with self._lock:
+                if not self._service_ready:
+                    self._client.ensure_service()
+                    self._service_ready = True
+                data = self._client.request(
+                    "/api/spend/share/week?" + urlencode({"machine": use_machine})
+                )
+            return {"ok": True, "week": data}
+        except DesktopError as exc:
+            return {"ok": False, "error": str(exc)}
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "error": "Could not build weekly share card."}
+
+    def get_setup_check(self) -> dict:
+        if self._demo:
+            return {"ok": True, "check": {"plans": {"active": [], "suggestions": []}}}
+        try:
+            with self._lock:
+                if not self._service_ready:
+                    self._client.ensure_service()
+                    self._service_ready = True
+                data = self._safe_request("/api/setup/check")
+            if not isinstance(data, dict):
+                return {"ok": False, "error": "Setup check unavailable."}
+            return {"ok": True, "check": data}
+        except DesktopError as exc:
+            return {"ok": False, "error": str(exc)}
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "error": "Could not check suggested plans."}
+
+    def confirm_suggested_plan(self, suggestion: dict) -> dict:
+        if self._demo:
+            return {"ok": False, "error": "Plan changes are disabled in demo mode."}
+        if not isinstance(suggestion, dict):
+            return {"ok": False, "error": "Invalid plan suggestion."}
+        name = str(suggestion.get("name") or "").strip()
+        tool_key = str(suggestion.get("tool_key") or "").strip()
+        cadence = str(suggestion.get("cadence") or "monthly").strip() or "monthly"
+        try:
+            amount = float(suggestion.get("amount_usd"))
+        except (TypeError, ValueError):
+            amount = 0.0
+        if not name or not tool_key or not math.isfinite(amount) or amount <= 0:
+            return {"ok": False, "error": "Invalid plan amount or provider."}
+        now_utc = datetime.now(UTC)
+        month_start = f"{now_utc.year:04d}-{now_utc.month:02d}-01"
+        body = {
+            "operation": "add",
+            "request_id": f"desktop-hud-plan-{uuid4()}",
+            "values": {
+                "name": name,
+                "tool_key": tool_key,
+                "amount_usd": f"{amount:.2f}",
+                "cadence": cadence,
+                "start_date": month_start,
+                "end_date": None,
+            },
+        }
+        try:
+            with self._lock:
+                if not self._service_ready:
+                    self._client.ensure_service()
+                    self._service_ready = True
+                res = self._client.request("/api/subscriptions", body)
+            return {"ok": True, "result": res}
+        except DesktopError as exc:
+            return {"ok": False, "error": str(exc)}
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "error": "Could not save plan."}
+
+
+# H10 ops/hud helpers
+
+
+def _paeth_predictor(a: int, b: int, c: int) -> int:
+    p = a + b - c
+    pa = abs(p - a)
+    pb = abs(p - b)
+    pc = abs(p - c)
+    if pa <= pb and pa <= pc:
+        return a
+    if pb <= pc:
+        return b
+    return c
+
+
+def _png_to_cf_dib(png_bytes: bytes) -> bytes:
+    """Decode an 8-bit RGB/RGBA PNG into Windows CF_DIB (32-bit BGRA)."""
+    if len(png_bytes) < 24 or png_bytes[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("Invalid PNG signature.")
+    pos = 8
+    width = height = bit_depth = color_type = 0
+    saw_ihdr = False
+    idat_parts: list[bytes] = []
+    while pos + 8 <= len(png_bytes):
+        length, ctype = struct.unpack(">I4s", png_bytes[pos : pos + 8])
+        pos += 8
+        if pos + length + 4 > len(png_bytes):
+            raise ValueError("Truncated PNG chunk.")
+        cdata = png_bytes[pos : pos + length]
+        pos += length + 4  # skip CRC
+        if ctype == b"IHDR":
+            if length != 13:
+                raise ValueError("Invalid IHDR chunk.")
+            width, height, bit_depth, color_type, comp, filt, interlace = struct.unpack(
+                ">IIBBBBB", cdata
+            )
+            if width <= 0 or height <= 0 or bit_depth != 8 or color_type not in (2, 6):
+                raise ValueError("Unsupported PNG format.")
+            if comp != 0 or filt != 0 or interlace != 0:
+                raise ValueError("Unsupported PNG compression or interlacing.")
+            saw_ihdr = True
+        elif ctype == b"IDAT":
+            idat_parts.append(cdata)
+        elif ctype == b"IEND":
+            break
+    if not saw_ihdr or not idat_parts:
+        raise ValueError("Missing PNG image data.")
+
+    raw = zlib.decompress(b"".join(idat_parts))
+    bpp = 4 if color_type == 6 else 3
+    stride = width * bpp
+    expected = height * (1 + stride)
+    if len(raw) != expected:
+        raise ValueError("Corrupt PNG scanline length.")
+
+    rows: list[bytes] = []
+    prev = bytes(stride)
+    idx = 0
+    for _ in range(height):
+        ftype = raw[idx]
+        idx += 1
+        scan = bytearray(raw[idx : idx + stride])
+        idx += stride
+        if ftype == 0:
+            pass
+        elif ftype == 1:
+            for i in range(bpp, stride):
+                scan[i] = (scan[i] + scan[i - bpp]) & 0xFF
+        elif ftype == 2:
+            for i in range(stride):
+                scan[i] = (scan[i] + prev[i]) & 0xFF
+        elif ftype == 3:
+            for i in range(stride):
+                left = scan[i - bpp] if i >= bpp else 0
+                scan[i] = (scan[i] + ((left + prev[i]) >> 1)) & 0xFF
+        elif ftype == 4:
+            for i in range(stride):
+                left = scan[i - bpp] if i >= bpp else 0
+                up = prev[i]
+                up_left = prev[i - bpp] if i >= bpp else 0
+                scan[i] = (scan[i] + _paeth_predictor(left, up, up_left)) & 0xFF
+        else:
+            raise ValueError(f"Unsupported PNG filter type {ftype}.")
+        row_bytes = bytes(scan)
+        rows.append(row_bytes)
+        prev = row_bytes
+
+    pixels = bytearray(width * height * 4)
+    out_pos = 0
+    for y in range(height - 1, -1, -1):
+        row = rows[y]
+        if bpp == 4:
+            for x in range(0, stride, 4):
+                pixels[out_pos] = row[x + 2]
+                pixels[out_pos + 1] = row[x + 1]
+                pixels[out_pos + 2] = row[x]
+                pixels[out_pos + 3] = row[x + 3]
+                out_pos += 4
+        else:
+            for x in range(0, stride, 3):
+                pixels[out_pos] = row[x + 2]
+                pixels[out_pos + 1] = row[x + 1]
+                pixels[out_pos + 2] = row[x]
+                pixels[out_pos + 3] = 255
+                out_pos += 4
+
+    header = struct.pack(
+        "<IiiHHIIiiII",
+        40,
+        width,
+        height,
+        1,
+        32,
+        0,
+        len(pixels),
+        0,
+        0,
+        0,
+        0,
+    )
+    return header + bytes(pixels)
+
+
+def _alloc_hglobal(kernel32, data: bytes) -> int:
+    import ctypes
+
+    hglobal = kernel32.GlobalAlloc(0x0042, len(data))  # GMEM_MOVEABLE | GMEM_ZEROINIT
+    if not hglobal:
+        raise OSError("GlobalAlloc failed for clipboard image.")
+    ptr = kernel32.GlobalLock(hglobal)
+    if not ptr:
+        kernel32.GlobalFree(hglobal)
+        raise OSError("GlobalLock failed for clipboard image.")
+    try:
+        ctypes.memmove(ptr, data, len(data))
+    finally:
+        kernel32.GlobalUnlock(hglobal)
+    return hglobal
+
+
+def _write_win32_clipboard(png_bytes: bytes, dib_bytes: bytes) -> None:
+    if sys.platform != "win32":
+        raise RuntimeError("Clipboard image copy is only supported on Windows.")
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    user32 = ctypes.windll.user32
+
+    kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
+    kernel32.GlobalAlloc.restype = ctypes.c_void_p
+    kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+    kernel32.GlobalUnlock.restype = ctypes.c_int
+    kernel32.GlobalFree.argtypes = [ctypes.c_void_p]
+    kernel32.GlobalFree.restype = ctypes.c_void_p
+
+    user32.OpenClipboard.argtypes = [ctypes.c_void_p]
+    user32.OpenClipboard.restype = ctypes.c_int
+    user32.CloseClipboard.argtypes = []
+    user32.CloseClipboard.restype = ctypes.c_int
+    user32.EmptyClipboard.argtypes = []
+    user32.EmptyClipboard.restype = ctypes.c_int
+    user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+    user32.SetClipboardData.restype = ctypes.c_void_p
+    user32.RegisterClipboardFormatW.argtypes = [ctypes.c_wchar_p]
+    user32.RegisterClipboardFormatW.restype = ctypes.c_uint
+
+    opened = False
+    for _ in range(5):
+        if user32.OpenClipboard(None):
+            opened = True
+            break
+        time.sleep(0.01)
+    if not opened:
+        raise OSError("Could not open Windows clipboard.")
+    try:
+        user32.EmptyClipboard()
+        h_dib = _alloc_hglobal(kernel32, dib_bytes)
+        if not user32.SetClipboardData(8, h_dib):  # CF_DIB
+            kernel32.GlobalFree(h_dib)
+            raise OSError("SetClipboardData(CF_DIB) failed.")
+        png_fmt = user32.RegisterClipboardFormatW("PNG")
+        if png_fmt:
+            h_png = _alloc_hglobal(kernel32, png_bytes)
+            if not user32.SetClipboardData(png_fmt, h_png):
+                kernel32.GlobalFree(h_png)
+    finally:
+        user32.CloseClipboard()
+
+
+def _demo_activity() -> list[dict]:
+    now = datetime.now(UTC)
+    return [
+        {
+            "id": "demo-claude-1",
+            "name": "Refactor HUD bridge and clipboard export",
+            "state": "LIVE",
+            "modelKey": "claude-opus-4-1",
+            "machineId": "local",
+            "machineName": "Desktop",
+            "startedAt": (now - timedelta(minutes=34)).isoformat().replace("+00:00", "Z"),
+        },
+        {
+            "id": "demo-codex-2",
+            "name": "Run integration verification suite",
+            "state": "LIVE",
+            "modelKey": "gpt-5-codex",
+            "machineId": "example-laptop",
+            "machineName": "Laptop",
+            "startedAt": (now - timedelta(minutes=14)).isoformat().replace("+00:00", "Z"),
+        },
+        {
+            "id": "demo-gemini-3",
+            "name": "Audit diagnostics pricing coverage",
+            "state": "LIVE",
+            "modelKey": "gemini-2.5-pro",
+            "machineId": "local",
+            "machineName": "Desktop",
+            "startedAt": (now - timedelta(minutes=5)).isoformat().replace("+00:00", "Z"),
+        },
+    ]
+
+
+def _demo_health() -> dict:
+    now = datetime.now(UTC)
+    stamp = now.isoformat().replace("+00:00", "Z")
+    return {
+        "generatedAt": stamp,
+        "ingest": [
+            {
+                "source": "claude_local",
+                "status": "success",
+                "eventsLast24h": 142,
+                "lastSuccess": stamp,
+            },
+            {
+                "source": "codex_local",
+                "status": "success",
+                "eventsLast24h": 98,
+                "lastSuccess": stamp,
+            },
+        ],
+        "quotas": [
+            {
+                "providerKey": "claude-code",
+                "status": "ok",
+                "lastPoll": stamp,
+            },
+            {
+                "providerKey": "codex",
+                "status": "ok",
+                "lastPoll": stamp,
+            },
+        ],
+        "sources": [],
+        "pricingGaps": [],
+        "providerVsComputedVariancePct": 1.4,
+    }
+
+
+def _demo_freshness() -> dict:
+    now = datetime.now(UTC)
+    stamp = now.isoformat().replace("+00:00", "Z")
+    return {
+        "generatedAt": stamp,
+        "version": __version__,
+        "status": "ok",
+        "issues": [],
+        "ingest": {"lastPassSeconds": 1.2, "lastPassAgeSeconds": 12},
+        "machines": [
+            {"key": "Desktop", "state": "online", "ageSeconds": 12, "lastSeenAt": stamp},
+            {"key": "Laptop", "state": "online", "ageSeconds": 45, "lastSeenAt": stamp},
+        ],
+    }
+
+
+def _demo_week_share() -> dict:
+    now = datetime.now(UTC)
+    start = now - timedelta(days=7)
+    return {
+        "from": start.isoformat().replace("+00:00", "Z"),
+        "to": now.isoformat().replace("+00:00", "Z"),
+        "days": 7,
+        "usd": 127.34,
+        "complete": True,
+        "planUsd": 60.0,
+        "tokens": 8_200_000,
+        "sessions": 50,
+        "cacheReusePct": 68.0,
+        "tools": [
+            {"name": "Claude Code", "usd": 52.10, "sharePct": 40.9},
+            {"name": "Codex", "usd": 41.82, "sharePct": 32.8},
+            {"name": "OpenCode", "usd": 18.60, "sharePct": 14.6},
+            {"name": "Muse Code", "usd": 9.72, "sharePct": 7.6},
+        ],
+    }
 
 def _find_icon() -> Path | None:
     resource_root = Path(__file__).resolve().parents[1]

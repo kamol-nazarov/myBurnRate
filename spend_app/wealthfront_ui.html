@@ -2245,6 +2245,326 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
   }
 }
 
+/* H10 ops/hud */
+.ops-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px 6px;
+  background: var(--bg-hero);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.ops-pill {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-subtle);
+  color: var(--ink-secondary);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.16s ease, color 0.16s ease, border-color 0.16s ease;
+}
+.ops-pill:hover {
+  background: var(--surface-raised);
+  color: var(--ink);
+  border-color: var(--border-input);
+}
+.ops-pill.active,
+.ops-pill[aria-pressed="true"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: var(--accent-border);
+}
+.ops-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--mint);
+  display: none;
+  flex-shrink: 0;
+}
+.ops-pill.has-warn .ops-dot { display: inline-block; background: var(--warn); }
+.ops-pill.has-alarm .ops-dot { display: inline-block; background: var(--danger); }
+
+.hud-mini-bar {
+  display: none;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  box-shadow: var(--shadow-card);
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  color: inherit;
+}
+.hud-mini-bar:hover { border-color: var(--accent-border); background: var(--row-hover); }
+.hud-mini-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; }
+.hud-mini-spend-wrap { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.hud-mini-today {
+  font-family: var(--display);
+  font-size: 20px;
+  font-weight: 750;
+  letter-spacing: -0.025em;
+  line-height: 1.05;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums lining-nums;
+}
+.hud-mini-today-lbl { font-size: 11px; font-weight: 500; color: var(--ink-secondary); }
+.hud-mini-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--mint-bg);
+  color: var(--mint);
+  font-size: 10.5px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.hud-mini-lead-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding-top: 4px;
+  border-top: 1px solid var(--divider);
+}
+.hud-mini-lead {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ink-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.hud-mini-pct { font-size: 11.5px; font-weight: 700; white-space: nowrap; flex-shrink: 0; }
+.hud-mini-pct.tone-mint { color: var(--mint); }
+.hud-mini-pct.tone-warn { color: var(--warn); }
+.hud-mini-pct.tone-danger { color: var(--danger); }
+.hud-mini-pct.tone-accent { color: var(--accent); }
+
+html.is-mini #heroSection,
+html.is-mini #providersCard,
+html.is-mini #noticeBanner,
+html.is-mini #footerStatus { display: none !important; }
+html.is-mini .hud-mini-bar { display: grid; }
+
+.running-section { display: grid; gap: 5px; min-width: 0; }
+.running-section[hidden] { display: none !important; }
+.running-section > .card-header { padding: 0 2px; }
+.running-list {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+  display: grid;
+}
+.running-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  min-width: 0;
+}
+.running-row + .running-row { border-top: 1px solid var(--divider); }
+.running-main { min-width: 0; display: grid; gap: 3px; }
+.running-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.running-meta {
+  font-size: 10.5px;
+  color: var(--ink-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.running-track { height: 4px; width: 100%; border-radius: 999px; background: var(--track); overflow: hidden; }
+.running-fill { display: block; height: 100%; border-radius: inherit; background: var(--live); transition: width 0.25s var(--spring); }
+.running-age {
+  font-size: 10.5px;
+  font-weight: 650;
+  color: var(--mint);
+  background: var(--mint-bg);
+  padding: 2px 6.5px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.quick-plan-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  border-radius: 11px;
+  min-width: 0;
+}
+.quick-plan-banner[hidden] { display: none !important; }
+.quick-plan-copy { min-width: 0; font-size: 11.5px; color: var(--ink); line-height: 1.35; }
+.quick-plan-copy small { display: block; font-size: 10.5px; color: var(--ink-secondary); margin-top: 1px; }
+.quick-plan-actions { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.ops-confirm-btn {
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 7px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.ops-confirm-btn:hover { background: var(--accent-hover); }
+.ops-confirm-btn:disabled { opacity: 0.6; cursor: default; }
+.ops-dismiss-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink-secondary);
+  font-size: 13px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.ops-dismiss-btn:hover { color: var(--ink); background: var(--surface-raised); }
+
+html.is-comfortable .ops-bar { padding: 6px 14px 8px; gap: 6px; }
+html.is-comfortable .ops-pill { min-height: 28px; padding: 3px 10px; font-size: 11px; }
+html.is-comfortable .section-stack { gap: 12px; padding: 12px 14px 18px; }
+html.is-comfortable .provider-row { padding: 11px 12px; gap: 7px; }
+html.is-comfortable .running-row { padding: 11px 12px; gap: 10px; }
+html.is-comfortable .hud-mini-bar { padding: 13px 14px; gap: 9px; }
+html.is-comfortable .quick-plan-banner { padding: 11px 12px; }
+
+.diagnostics-view {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 10px 12px 18px;
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+.diagnostics-view[hidden] { display: none !important; }
+.diag-topbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.diag-back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 26px;
+  padding: 3px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.diag-back-btn:hover { border-color: var(--accent-border); background: var(--row-hover); }
+.diag-view-title { font-family: var(--display); font-size: 13px; font-weight: 700; color: var(--ink); }
+.diag-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  box-shadow: var(--shadow-card);
+  padding: 10px 12px;
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+.diag-eyebrow {
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+}
+.diag-heading { font-family: var(--display); font-size: 13px; font-weight: 700; color: var(--ink); }
+.diag-note { font-size: 11.5px; color: var(--ink-secondary); line-height: 1.4; overflow-wrap: anywhere; }
+.diag-list { display: grid; gap: 6px; }
+.diag-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--divider);
+  min-width: 0;
+}
+.diag-item:first-child { padding-top: 0; border-top: none; }
+.diag-item-main { min-width: 0; display: grid; gap: 2px; }
+.diag-item-main strong { font-size: 11.5px; font-weight: 650; color: var(--ink); overflow-wrap: anywhere; }
+.diag-item-main small { font-size: 10.5px; color: var(--ink-secondary); line-height: 1.35; overflow-wrap: anywhere; }
+.diag-tag {
+  font-size: 10.5px;
+  font-weight: 650;
+  padding: 1.5px 6.5px;
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--ink-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.diag-tag.tone-mint { background: var(--mint-bg); color: var(--mint); }
+.diag-tag.tone-warn { background: var(--warn-bg); color: var(--warn); }
+.diag-tag.tone-danger { background: var(--danger-bg); color: var(--danger); }
+.diag-ingest-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.diag-ingest-card {
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 9px;
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.diag-ingest-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.diag-ingest-source {
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.diag-ingest-status { font-size: 11.5px; font-weight: 700; text-transform: capitalize; }
+.diag-ingest-status.tone-mint { color: var(--mint); }
+.diag-ingest-status.tone-warn { color: var(--warn); }
+.diag-ingest-status.tone-danger { color: var(--danger); }
+.diag-ingest-meta { font-size: 10.5px; color: var(--ink-secondary); line-height: 1.35; overflow-wrap: anywhere; }
+@media (max-width: 350px) {
+  .diag-ingest-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
 /* Reduced motion: no loops, no slides or springs; hero and chart snap */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
@@ -2335,6 +2655,17 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
     </div>
   </header>
 
+  <!-- H10 ops/hud -->
+  <div class="ops-bar" id="opsBar" role="toolbar" aria-label="HUD controls">
+    <button class="ops-pill" id="diagBtn" type="button" aria-label="Open diagnostics">
+      <span class="ops-dot" aria-hidden="true"></span>
+      <span>Diagnostics</span>
+    </button>
+    <button class="ops-pill" id="shareWeekBtn" type="button" aria-label="Copy weekly share card">Share week</button>
+    <button class="ops-pill" id="miniModeBtn" type="button" aria-pressed="false" aria-label="Toggle compact mini view">Compact</button>
+    <button class="ops-pill" id="densityBtn" type="button" aria-pressed="false" aria-label="Toggle comfortable density">Compact spacing</button>
+  </div>
+
   <!-- Main scrollable feed -->
   <div class="scroll-body" id="scrollBody">
     <section class="hero is-loading" id="heroSection" aria-busy="true">
@@ -2398,6 +2729,34 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
     </section>
 
     <div class="section-stack">
+      <!-- H10 ops/hud -->
+      <button class="hud-mini-bar" id="hudMiniBar" type="button" aria-label="Compact summary. Click to expand full overview">
+        <div class="hud-mini-top">
+          <div class="hud-mini-spend-wrap">
+            <strong class="hud-mini-today" id="hudMiniToday">—</strong>
+            <span class="hud-mini-today-lbl">today</span>
+          </div>
+          <span class="hud-mini-live" id="hudMiniLive" hidden></span>
+        </div>
+        <div class="hud-mini-lead-row">
+          <span class="hud-mini-lead" id="hudMiniLead">All subscription limits healthy</span>
+          <span class="hud-mini-pct tone-accent" id="hudMiniPct">—</span>
+        </div>
+      </button>
+
+      <div class="quick-plan-banner" id="hudQuickPlan" role="region" aria-label="Suggested subscription plan" hidden></div>
+
+      <section class="running-section" id="runningNowCard" aria-label="Running now" hidden>
+        <div class="card-header">
+          <div class="card-title-wrap">
+            <span class="card-title">Running now</span>
+            <span class="card-hint" id="runningNowHint"></span>
+          </div>
+          <span class="card-subtitle" id="runningNowCount">0 live</span>
+        </div>
+        <div class="running-list" id="runningNowList"></div>
+      </section>
+
       <div class="notice-banner" id="noticeBanner"></div>
 
       <!-- Providers Holdings Grid -->
@@ -2417,6 +2776,46 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
       <div class="footer-note" id="footerStatus">Hover a provider for token burn · click for full limits</div>
     </div>
   </div>
+
+  <!-- H10 ops/hud -->
+  <section class="diagnostics-view" id="diagnosticsView" aria-label="Diagnostics" hidden>
+    <div class="diag-topbar">
+      <button class="diag-back-btn" id="diagnosticsBackBtn" type="button">← Overview</button>
+      <span class="diag-view-title">Diagnostics</span>
+      <button class="ops-pill" id="diagRefreshBtn" type="button" aria-label="Refresh diagnostics">Refresh</button>
+    </div>
+
+    <article class="diag-card">
+      <span class="diag-eyebrow">Computers &amp; collection</span>
+      <h2 class="diag-heading">Freshness</h2>
+      <p class="diag-note" id="diagFreshnessNote">—</p>
+      <div class="diag-list" id="diagFreshnessList"></div>
+    </article>
+
+    <article class="diag-card">
+      <span class="diag-eyebrow">Ingest</span>
+      <h2 class="diag-heading">Ingest passes</h2>
+      <div class="diag-ingest-grid" id="diagIngestGrid"></div>
+    </article>
+
+    <article class="diag-card">
+      <span class="diag-eyebrow">Quotas</span>
+      <h2 class="diag-heading">Quota pollers</h2>
+      <div class="diag-list" id="diagQuotasList"></div>
+    </article>
+
+    <article class="diag-card">
+      <span class="diag-eyebrow">Pricing</span>
+      <h2 class="diag-heading">Unpriced models</h2>
+      <div class="diag-list" id="diagPricingList"></div>
+    </article>
+
+    <article class="diag-card">
+      <span class="diag-eyebrow">Variance</span>
+      <h2 class="diag-heading">Provider vs computed</h2>
+      <p class="diag-note" id="diagVarianceNote">—</p>
+    </article>
+  </section>
 </div>
 
 <!-- Scope Selector Popover -->
@@ -2568,6 +2967,12 @@ const state = {
   trayAvailable: false,
   version: "",
   update: null,
+  /* H10 ops/hud */
+  hudMini: false,
+  hudDensity: "compact",
+  diagnosticsOpen: false,
+  diagnostics: null,
+  lastPlanCheckAt: 0,
   updateInfo: null,
   updateCheck: { status: "idle", error: "" },
   settingsData: { connections: [], machines: [], setup: {}, hubAvailable: false },
@@ -3102,6 +3507,7 @@ function renderReport(data, animateChart = false) {
   const ordinary = providers.filter(p => !p.organization);
   const machines = data.machines || [];
   paintSummary(data);
+  if (typeof renderHudOps === "function") renderHudOps(data);
 
   const notices = [];
   if (data.warning) notices.push(data.warning);
@@ -3808,6 +4214,8 @@ async function loadUsage(restart = false, animateChart = false) {
       const res = await window.pywebview.api.fetch_usage(state.period, state.machine, restart);
       if (res && res.ok) {
         renderReport(res.report, animateChart);
+        if (typeof checkSuggestedPlan === "function") checkSuggestedPlan();
+        if (state.diagnosticsOpen && typeof loadDiagnostics === "function") loadDiagnostics(true);
       } else {
         showToast((res && res.error) || "Could not refresh usage");
         document.getElementById("liveBadge").classList.remove("pending");
@@ -5114,6 +5522,7 @@ document.getElementById("sheetBody").addEventListener("keydown", (e) => {
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (closeScopePopover(true)) { e.preventDefault(); return; }
+  if (state.diagnosticsOpen && !state.settingsOpen) { e.preventDefault(); closeDiagnostics(true); return; }
   if (state.settingsOpen) {
     e.preventDefault();
     if (state.editingSource) {
@@ -5229,11 +5638,612 @@ async function boot() {
     state.update = init.update && typeof init.update === "object" ? init.update : null;
     document.querySelectorAll(".period-pill").forEach(b => b.classList.toggle("active", b.dataset.period === state.period));
     updatePeriodIndicator();
+    if (typeof applyHudMode === "function") applyHudMode(!!init.hudMini, init.hudDensity || "compact", false);
   }
   reportEffectiveTheme();
   await loadUsage(false, true);
   setInterval(() => loadUsage(false, false), 15000);
 }
+
+/* H10 ops/hud */
+function isLiveRow(row) {
+  const flag = String(row?.state || "").toLowerCase().replace(/\s+/g, "_");
+  return flag === "live" || flag === "running";
+}
+
+function fmtSessionAge(iso) {
+  const ms = Date.parse(iso || "");
+  if (!Number.isFinite(ms)) return "";
+  const mins = Math.max(0, Math.round((Date.now() - ms) / 60000));
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m`;
+  return `${Math.round(mins / 60)}h`;
+}
+
+function renderRunningNow(data) {
+  const rows = Array.isArray(data?.activity) ? data.activity.filter(isLiveRow) : [];
+  const card = document.getElementById("runningNowCard");
+  const list = document.getElementById("runningNowList");
+  const countEl = document.getElementById("runningNowCount");
+  const hintEl = document.getElementById("runningNowHint");
+  const miniLive = document.getElementById("hudMiniLive");
+  if (!card || !list) return;
+
+  if (miniLive) {
+    miniLive.hidden = !rows.length;
+    miniLive.textContent = rows.length ? `${rows.length} live` : "";
+  }
+
+  if (!rows.length) {
+    card.hidden = true;
+    list.innerHTML = "";
+    return;
+  }
+
+  const visible = state.hudMini ? rows.slice(0, 3) : rows;
+  const minsAll = rows.map(r => {
+    const t = Date.parse(r.startedAt || "");
+    return Number.isFinite(t) ? Math.max(0, Math.round((Date.now() - t) / 60000)) : null;
+  });
+  const longest = Math.max(1, ...minsAll.filter(v => v != null));
+
+  card.hidden = false;
+  if (countEl) countEl.textContent = `${rows.length} live`;
+  if (hintEl) hintEl.textContent = state.hudMini && rows.length > 3 ? `top 3 of ${rows.length}` : "";
+
+  list.innerHTML = visible.map((row, idx) => {
+    const rawName = String(row.name || "Active session").replace(/\s+/g, " ").replace(/^[\x23*>-]+\s*/, "").trim() || "Active session";
+    const shortName = rawName.length > 56 ? rawName.slice(0, 55).trimEnd() + "…" : rawName;
+    const model = String(row.modelKey || "live");
+    const computer = String(row.machineName || row.machineId || "Local");
+    const age = fmtSessionAge(row.startedAt);
+    const mins = minsAll[idx];
+    const fillPct = mins == null ? 8 : Math.max(8, Math.round((mins / longest) * 100));
+    const logoKey = model || row.toolKey || "custom";
+    return `
+      <div class="running-row">
+        ${logoHtml(logoKey, "logo-badge", true)}
+        <div class="running-main">
+          <span class="running-title" title="${esc(rawName)}">${esc(shortName)}</span>
+          <span class="running-meta">${esc(model)} · ${esc(computer)}</span>
+          <div class="running-track"><span class="running-fill" style="width:${fillPct}%"></span></div>
+        </div>
+        <span class="running-age">${esc(age || "Live")}</span>
+      </div>
+    `;
+  }).join("");
+}
+
+function renderMiniBar(data) {
+  const todayEl = document.getElementById("hudMiniToday");
+  const leadEl = document.getElementById("hudMiniLead");
+  const pctEl = document.getElementById("hudMiniPct");
+  if (!todayEl || !leadEl || !pctEl) return;
+
+  const t = data?.todayTotal || (state.period === "today" ? data?.total : null);
+  if (t && t.valueUsd !== null && t.valueUsd !== undefined) {
+    const prefix = t.complete === false ? "≥" : "";
+    todayEl.textContent = prefix + fmtMoney(t.valueUsd, true, true);
+  } else {
+    todayEl.textContent = "—";
+  }
+
+  const providers = getNormalizedProviders(data || {});
+  let best = null;
+  for (const prov of providers) {
+    for (const w of (prov.windows || [])) {
+      if (w.unavailable || w.usedPct === null || w.usedPct === undefined) continue;
+      const used = Number(w.usedPct);
+      if (!Number.isFinite(used)) continue;
+      if (!best || used > best.used) {
+        best = { prov, w, used };
+      }
+    }
+  }
+
+  pctEl.classList.remove("tone-mint", "tone-warn", "tone-danger", "tone-accent");
+  if (best) {
+    const rem = Math.max(0, Math.round(best.w.remainingPct ?? (100 - best.used)));
+    const cd = fmtCountdown(best.w.resetsAt);
+    const label = best.w.shortLabel || best.w.label || "Quota";
+    const provLabel = best.prov.badge ? `${best.prov.name} · ${best.prov.badge}` : best.prov.name;
+    leadEl.textContent = `${provLabel} · ${label}${cd ? ` (${cd})` : ""}`;
+    pctEl.textContent = `${rem}% left`;
+    pctEl.classList.add(rem <= 8 ? "tone-danger" : rem <= 20 ? "tone-warn" : "tone-mint");
+  } else {
+    leadEl.textContent = "All subscription limits healthy";
+    pctEl.textContent = "—";
+    pctEl.classList.add("tone-accent");
+  }
+}
+
+function renderHudOps(data) {
+  renderRunningNow(data);
+  renderMiniBar(data);
+}
+
+function applyHudMode(mini, density, persist = true) {
+  state.hudMini = !!mini;
+  state.hudDensity = density === "comfortable" ? "comfortable" : "compact";
+  document.documentElement.classList.toggle("is-mini", state.hudMini);
+  document.documentElement.classList.toggle("is-comfortable", state.hudDensity === "comfortable");
+
+  const miniBtn = document.getElementById("miniModeBtn");
+  if (miniBtn) {
+    miniBtn.setAttribute("aria-pressed", String(state.hudMini));
+    miniBtn.textContent = state.hudMini ? "Full view" : "Compact";
+  }
+  const densBtn = document.getElementById("densityBtn");
+  if (densBtn) {
+    const comfy = state.hudDensity === "comfortable";
+    densBtn.setAttribute("aria-pressed", String(comfy));
+    densBtn.textContent = comfy ? "Comfortable" : "Compact spacing";
+  }
+  if (state.report) {
+    renderHudOps(state.report);
+  }
+  if (persist && apiAvailable()) {
+    if (window.pywebview.api.set_hud_mini) window.pywebview.api.set_hud_mini(state.hudMini);
+    if (window.pywebview.api.set_hud_density) window.pywebview.api.set_hud_density(state.hudDensity);
+  }
+}
+
+function diagAgoText(seconds) {
+  const n = Number(seconds);
+  if (seconds === null || seconds === undefined || !Number.isFinite(n)) return "—";
+  if (n < 90) return `${Math.round(n)}s`;
+  if (n < 5400) return `${Math.round(n / 60)}m`;
+  if (n < 172800) return `${Math.round(n / 3600)}h`;
+  return `${Math.round(n / 86400)}d`;
+}
+
+function pricingGuidanceRows(data) {
+  const labels = {
+    unknown_model_identity: "Model identity unavailable",
+    missing_current_rate: "Current rate unavailable",
+    missing_historical_rate: "Historical rate unavailable",
+    incomplete_telemetry: "Token details incomplete",
+    invalid_timestamp: "Usage date unavailable"
+  };
+  const rows = [];
+  const covered = new Set();
+  for (const source of (data?.sources || [])) {
+    for (const model of (source?.pricingCoverage?.models || [])) {
+      covered.add(model.model);
+      if (!model.reasons?.length) continue;
+      const detail = [...new Set(model.reasons.map(r => labels[r.code] || r.message || "Pricing unavailable"))].join(" · ");
+      rows.push({
+        key: `${source.source}:${model.model}`,
+        label: model.model,
+        detail,
+        records: model.records
+      });
+    }
+  }
+  for (const model of (data?.pricingGaps || [])) {
+    if (!covered.has(model)) {
+      rows.push({ key: `legacy:${model}`, label: model, detail: "Pricing unavailable", records: null });
+    }
+  }
+  return rows;
+}
+
+function renderDiagnosticsView() {
+  const payload = state.diagnostics;
+  const fresh = payload?.freshness || null;
+  const health = payload?.health || null;
+
+  const diagBtn = document.getElementById("diagBtn");
+  if (diagBtn && fresh) {
+    diagBtn.classList.toggle("has-alarm", fresh.status === "alarm");
+    diagBtn.classList.toggle("has-warn", fresh.status === "warn");
+  }
+
+  const noteEl = document.getElementById("diagFreshnessNote");
+  const freshList = document.getElementById("diagFreshnessList");
+  if (noteEl && freshList) {
+    const beat = fresh?.ingest || {};
+    const parts = [];
+    if (beat.lastPassSeconds !== null && beat.lastPassSeconds !== undefined) {
+      parts.push(`Last collection pass ${beat.lastPassSeconds}s, ${diagAgoText(beat.lastPassAgeSeconds)} ago`);
+    }
+    if (fresh?.sync) {
+      parts.push(fresh.sync.failing ? "Hub sync failing" : `Hub sync ${diagAgoText(fresh.sync.ageSeconds)} ago`);
+    }
+    if (fresh?.hub?.version) {
+      parts.push(`Hub ${fresh.hub.version}${fresh.hub.matches === false && fresh.version ? `, this computer ${fresh.version}` : ""}`);
+    }
+    noteEl.textContent = fresh ? (parts.join(" · ") || "Every source on this computer is current.") : "Freshness unavailable.";
+
+    const machineRows = (fresh?.machines || []).map(item => ({
+      short: item.key,
+      state: item.state || "online",
+      severity: item.state === "online" ? "info" : "warn",
+      ageSeconds: item.ageSeconds,
+      detail: item.lastSeenAt ? `Last synced ${new Date(item.lastSeenAt).toLocaleString()}` : "Never synced"
+    }));
+    const issueRows = (fresh?.issues || []).map(item => ({
+      short: item.short || item.name || item.key,
+      state: item.state || "issue",
+      severity: item.severity || "warn",
+      ageSeconds: item.ageSeconds,
+      detail: item.detail || ""
+    }));
+    const combined = [...issueRows, ...machineRows];
+    if (!combined.length) {
+      freshList.innerHTML = `<p class="diag-note">Every source on this computer is current.</p>`;
+    } else {
+      freshList.innerHTML = combined.map(item => {
+        const tone = item.severity === "alarm" ? "tone-danger" : item.severity === "warn" ? "tone-warn" : item.state === "online" ? "tone-mint" : "";
+        const ageTag = item.ageSeconds !== null && item.ageSeconds !== undefined ? ` · ${diagAgoText(item.ageSeconds)}` : "";
+        return `
+          <div class="diag-item">
+            <div class="diag-item-main">
+              <strong>${esc(item.short)}</strong>
+              <small>${esc(item.detail)}</small>
+            </div>
+            <span class="diag-tag ${tone}">${esc(item.state + ageTag)}</span>
+          </div>
+        `;
+      }).join("");
+    }
+  }
+
+  const grid = document.getElementById("diagIngestGrid");
+  if (grid) {
+    const ingest = Array.isArray(health?.ingest) ? health.ingest : [];
+    if (!ingest.length) {
+      grid.innerHTML = `<p class="diag-note">No ingest runs recorded.</p>`;
+    } else {
+      grid.innerHTML = ingest.map(item => {
+        const st = String(item.status || "unknown");
+        const tone = (st === "success" || st === "partial") ? "tone-mint" : (st === "skipped" || st === "unavailable") ? "tone-warn" : "tone-danger";
+        const srcKey = String(item.source || "").split(/[_:]/)[0];
+        const detail = item.lastSuccess ? `Last success ${new Date(item.lastSuccess).toLocaleString()}` : (item.error || "No successful run");
+        const count = item.eventsLast24h !== null && item.eventsLast24h !== undefined ? Number(item.eventsLast24h).toLocaleString() : "0";
+        return `
+          <div class="diag-ingest-card">
+            <div class="diag-ingest-head">
+              ${srcKey !== "sync" ? logoHtml(srcKey, "logo-badge", false) : ""}
+              <span class="diag-ingest-source">${esc(item.source)}</span>
+            </div>
+            <span class="diag-ingest-status ${tone}">${esc(st)}</span>
+            <span class="diag-ingest-meta">${esc(count)} events in 24h</span>
+            <span class="diag-ingest-meta">${esc(detail)}</span>
+          </div>
+        `;
+      }).join("");
+    }
+  }
+
+  const quotasEl = document.getElementById("diagQuotasList");
+  if (quotasEl) {
+    const quotas = Array.isArray(health?.quotas) ? health.quotas : [];
+    if (!quotas.length) {
+      quotasEl.innerHTML = `<p class="diag-note">No quota pollers reported.</p>`;
+    } else {
+      quotasEl.innerHTML = quotas.map(item => {
+        const st = String(item.status || "unknown");
+        const tone = st === "ok" || st === "live" ? "tone-mint" : st === "error" || st === "failed" ? "tone-danger" : "tone-warn";
+        const sub = item.reason || (item.lastPoll ? `polled ${item.lastPoll}` : "no poll");
+        return `
+          <div class="diag-item">
+            <div class="diag-item-main">
+              <strong>${esc(item.providerKey)}</strong>
+              <small>${esc(sub)}</small>
+            </div>
+            <span class="diag-tag ${tone}">${esc(st)}</span>
+          </div>
+        `;
+      }).join("");
+    }
+  }
+
+  const pricingEl = document.getElementById("diagPricingList");
+  if (pricingEl) {
+    const rows = pricingGuidanceRows(health || {});
+    if (!rows.length) {
+      pricingEl.innerHTML = `<p class="diag-note">No pricing gaps.</p>`;
+    } else {
+      pricingEl.innerHTML = rows.map(row => `
+        <div class="diag-item">
+          <div class="diag-item-main">
+            <strong>${esc(row.label)}</strong>
+            <small>${esc(row.detail)}</small>
+          </div>
+          <span class="diag-tag">${row.records === null || row.records === undefined ? "—" : esc(Number(row.records).toLocaleString() + " records")}</span>
+        </div>
+      `).join("");
+    }
+  }
+
+  const varEl = document.getElementById("diagVarianceNote");
+  if (varEl) {
+    const v = health?.providerVsComputedVariancePct;
+    varEl.textContent = (v === null || v === undefined || !Number.isFinite(Number(v)))
+      ? "Variance unavailable."
+      : `Provider-reported versus computed cost differs by ${Number(v).toFixed(1)}%.`;
+  }
+}
+
+async function loadDiagnostics(background = false) {
+  if (!apiHas("get_diagnostics_data")) {
+    if (!background) showToast("Diagnostics unavailable");
+    return;
+  }
+  try {
+    const res = await window.pywebview.api.get_diagnostics_data();
+    if (res && res.ok) {
+      state.diagnostics = { health: res.health || null, freshness: res.freshness || null };
+      renderDiagnosticsView();
+    } else if (!background) {
+      showToast((res && res.error) || "Diagnostics unavailable");
+    }
+  } catch (err) {
+    if (!background) showToast("Could not load diagnostics");
+  }
+}
+
+window.openDiagnostics = async function() {
+  closeScopePopover(false);
+  state.diagnosticsOpen = true;
+  document.getElementById("opsBar").hidden = true;
+  document.getElementById("scrollBody").hidden = true;
+  const view = document.getElementById("diagnosticsView");
+  view.hidden = false;
+  renderDiagnosticsView();
+  await loadDiagnostics(false);
+  document.getElementById("diagnosticsBackBtn")?.focus();
+};
+
+window.closeDiagnostics = function(returnFocus = true) {
+  if (!state.diagnosticsOpen) return;
+  state.diagnosticsOpen = false;
+  document.getElementById("diagnosticsView").hidden = true;
+  document.getElementById("opsBar").hidden = false;
+  document.getElementById("scrollBody").hidden = false;
+  if (state.report) renderChart(false);
+  if (returnFocus) document.getElementById("diagBtn")?.focus();
+};
+
+function drawWeekCard(week) {
+  const cs = getComputedStyle(document.documentElement);
+  const tok = (name) => cs.getPropertyValue(name).trim();
+  const bgCanvas = tok("--bg-canvas");
+  const surface = tok("--surface");
+  const ink = tok("--ink");
+  const muted = tok("--ink-secondary");
+  const accent = tok("--accent");
+  const line = tok("--border");
+  const track = tok("--track");
+  const displayFont = tok("--display");
+  const bodyFont = tok("--font");
+
+  const canvas = document.createElement("canvas");
+  canvas.width = 1200;
+  canvas.height = 630;
+  const ctx = canvas.getContext("2d");
+
+  ctx.fillStyle = bgCanvas;
+  ctx.fillRect(0, 0, 1200, 630);
+  ctx.fillStyle = surface;
+  ctx.fillRect(40, 40, 1120, 550);
+  ctx.strokeStyle = line;
+  ctx.strokeRect(40.5, 40.5, 1119, 549);
+
+  ctx.fillStyle = accent;
+  ctx.fillRect(80, 82, 34, 34);
+  ctx.fillStyle = tok("--on-accent");
+  ctx.font = "700 20px " + displayFont;
+  ctx.fillText("↗", 89, 106);
+
+  ctx.fillStyle = ink;
+  ctx.font = "700 22px " + displayFont;
+  if ("letterSpacing" in ctx) ctx.letterSpacing = "4px";
+  ctx.fillText("BURNRATE", 128, 108);
+  if ("letterSpacing" in ctx) ctx.letterSpacing = "0px";
+
+  const from = new Date(week.from || Date.now());
+  const to = new Date(week.to || Date.now());
+  const range = from.toLocaleDateString("en-US", { month: "short", day: "numeric" }) + " – " +
+    to.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  ctx.fillStyle = muted;
+  ctx.font = "20px " + bodyFont;
+  ctx.textAlign = "right";
+  ctx.fillText("Last 7 days · " + range, 1120, 108);
+  ctx.textAlign = "left";
+
+  ctx.fillStyle = ink;
+  ctx.font = "700 112px " + displayFont;
+  const valuePrefix = week.complete === false && week.usd != null ? "≥" : "";
+  ctx.fillText(valuePrefix + fmtMoney(week.usd, true, true), 80, 265);
+  ctx.fillStyle = muted;
+  ctx.font = "25px " + bodyFont;
+  ctx.fillText("of AI coding at published API rates", 84, 312);
+  if (week.planUsd && week.usd != null) {
+    ctx.fillStyle = accent;
+    ctx.font = "600 25px " + bodyFont;
+    const times = Number(week.usd) / Number(week.planUsd);
+    ctx.fillText(
+      "on " + fmtMoney(week.planUsd, true, true) + " of plans" + (times >= 1.5 ? " · " + times.toFixed(1) + "× the plan cost" : ""),
+      84,
+      352
+    );
+  }
+
+  const stats = [
+    ["Tokens", fmtTokens(week.tokens)],
+    ["Cache hit", week.cacheReusePct == null ? "—" : Math.round(Number(week.cacheReusePct)) + "%"],
+    ["Sessions", String(week.sessions || 0)]
+  ];
+  stats.forEach(([label, value], index) => {
+    const x = 84 + index * 190;
+    ctx.fillStyle = muted;
+    ctx.font = "600 15px " + displayFont;
+    if ("letterSpacing" in ctx) ctx.letterSpacing = "2px";
+    ctx.fillText(label.toUpperCase(), x, 444);
+    if ("letterSpacing" in ctx) ctx.letterSpacing = "0px";
+    ctx.fillStyle = ink;
+    ctx.font = "700 42px " + displayFont;
+    ctx.fillText(value, x, 494);
+  });
+
+  const tools = (week.tools || []).slice(0, 4);
+  const top = Math.max(...tools.map(t => Number(t.usd) || 0), 0);
+  ctx.fillStyle = muted;
+  ctx.font = "600 15px " + displayFont;
+  if ("letterSpacing" in ctx) ctx.letterSpacing = "2px";
+  ctx.fillText("TOP TOOLS", 760, 196);
+  if ("letterSpacing" in ctx) ctx.letterSpacing = "0px";
+  tools.forEach((tool, index) => {
+    const y = 240 + index * 70;
+    ctx.fillStyle = ink;
+    ctx.font = "600 22px " + bodyFont;
+    ctx.fillText(String(tool.name || ""), 760, y);
+    ctx.fillStyle = muted;
+    ctx.font = "20px " + bodyFont;
+    ctx.textAlign = "right";
+    ctx.fillText(fmtMoney(tool.usd, true, true), 1120, y);
+    ctx.textAlign = "left";
+    ctx.fillStyle = track;
+    ctx.fillRect(760, y + 14, 360, 6);
+    ctx.fillStyle = accent;
+    ctx.fillRect(760, y + 14, top ? Math.max(4, (360 * (Number(tool.usd) || 0)) / top) : 0, 6);
+  });
+
+  ctx.strokeStyle = line;
+  ctx.beginPath();
+  ctx.moveTo(80, 540.5);
+  ctx.lineTo(1120, 540.5);
+  ctx.stroke();
+  ctx.fillStyle = muted;
+  ctx.font = "18px " + bodyFont;
+  ctx.fillText("Measured locally with BURNRATE · nothing left my computer", 80, 572);
+  ctx.textAlign = "right";
+  ctx.fillText("github.com/kamol-nazarov/myBurnRate", 1120, 572);
+  ctx.textAlign = "left";
+  return canvas;
+}
+
+async function shareWeek() {
+  if (!apiHas("get_week_share_data")) {
+    showToast("Weekly share unavailable");
+    return;
+  }
+  const btn = document.getElementById("shareWeekBtn");
+  if (btn) btn.disabled = true;
+  try {
+    const res = await window.pywebview.api.get_week_share_data(state.machine || "all");
+    if (!res || !res.ok || !res.week) {
+      showToast((res && res.error) || "This week's card could not be made");
+      return;
+    }
+    const canvas = drawWeekCard(res.week);
+    const dataUrl = canvas.toDataURL("image/png");
+    if (apiHas("copy_image_to_clipboard")) {
+      const clipRes = await window.pywebview.api.copy_image_to_clipboard(dataUrl);
+      if (clipRes && clipRes.ok) {
+        showToast("This week's card copied to clipboard");
+      } else {
+        showToast((clipRes && clipRes.error) || "Could not copy card to clipboard");
+      }
+    } else {
+      showToast("Weekly card rendered");
+    }
+  } catch (err) {
+    showToast("This week's card could not be made");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function getDismissedPlans() {
+  try {
+    const raw = JSON.parse(localStorage.getItem("burnrate:hud-dismissed-plans") || "[]");
+    return Array.isArray(raw) ? raw.map(String) : [];
+  } catch (err) {
+    return [];
+  }
+}
+
+async function checkSuggestedPlan(force = false) {
+  const banner = document.getElementById("hudQuickPlan");
+  if (!banner || !apiHas("get_setup_check")) return;
+  if (!force && Date.now() - state.lastPlanCheckAt < 60000) return;
+  state.lastPlanCheckAt = Date.now();
+  try {
+    const res = await window.pywebview.api.get_setup_check();
+    if (!res || !res.ok || !res.check) return;
+    const suggestions = res.check.plans?.suggestions || [];
+    const dismissed = new Set(getDismissedPlans());
+    const sug = suggestions.find(item => !dismissed.has(String(item.lane || item.tool_key || "")));
+    if (!sug) {
+      banner.hidden = true;
+      banner.innerHTML = "";
+      return;
+    }
+    const amount = Number(sug.amount_usd || 0);
+    const priceLabel = amount > 0 ? `$${amount.toFixed(amount % 1 === 0 ? 0 : 2)}` : "";
+    const cadence = String(sug.cadence || "monthly");
+    const laneKey = String(sug.lane || sug.tool_key || "");
+    banner.innerHTML = `
+      <div class="quick-plan-copy">
+        <span>Track <strong>${esc(sug.name)}</strong>${priceLabel ? ` (${esc(priceLabel)}/${esc(cadence)})` : ""}?</span>
+        ${sug.basis ? `<small>${esc(sug.basis)}</small>` : ""}
+      </div>
+      <div class="quick-plan-actions">
+        <button class="ops-confirm-btn" id="quickPlanConfirmBtn" type="button">Confirm</button>
+        <button class="ops-dismiss-btn" id="quickPlanDismissBtn" type="button" aria-label="Dismiss plan suggestion">×</button>
+      </div>
+    `;
+    banner.hidden = false;
+
+    document.getElementById("quickPlanConfirmBtn").addEventListener("click", async () => {
+      const btn = document.getElementById("quickPlanConfirmBtn");
+      if (!apiHas("confirm_suggested_plan")) {
+        showToast("Plan saving unavailable");
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = "Saving…";
+      try {
+        const saveRes = await window.pywebview.api.confirm_suggested_plan(sug);
+        if (saveRes && saveRes.ok) {
+          banner.hidden = true;
+          banner.innerHTML = "";
+          showToast(`Added ${sug.name}`);
+          loadUsage(true, false);
+          setTimeout(() => checkSuggestedPlan(true), 250);
+        } else {
+          btn.disabled = false;
+          btn.textContent = "Confirm";
+          showToast((saveRes && saveRes.error) || "Could not save plan");
+        }
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = "Confirm";
+        showToast("Could not save plan");
+      }
+    });
+
+    document.getElementById("quickPlanDismissBtn").addEventListener("click", () => {
+      const next = [...new Set([...getDismissedPlans(), laneKey])];
+      try { localStorage.setItem("burnrate:hud-dismissed-plans", JSON.stringify(next)); } catch (err) {}
+      banner.hidden = true;
+      banner.innerHTML = "";
+      setTimeout(() => checkSuggestedPlan(true), 100);
+    });
+  } catch (err) {
+  }
+}
+
+document.getElementById("diagBtn")?.addEventListener("click", () => openDiagnostics());
+document.getElementById("diagnosticsBackBtn")?.addEventListener("click", () => closeDiagnostics(true));
+document.getElementById("diagRefreshBtn")?.addEventListener("click", () => loadDiagnostics(false));
+document.getElementById("shareWeekBtn")?.addEventListener("click", () => shareWeek());
+document.getElementById("miniModeBtn")?.addEventListener("click", () => applyHudMode(!state.hudMini, state.hudDensity, true));
+document.getElementById("densityBtn")?.addEventListener("click", () => applyHudMode(state.hudMini, state.hudDensity === "comfortable" ? "compact" : "comfortable", true));
+document.getElementById("hudMiniBar")?.addEventListener("click", () => applyHudMode(false, state.hudDensity, true));
 
 if (window.pywebview && window.pywebview.api) {
   boot();
