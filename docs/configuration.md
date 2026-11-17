@@ -34,10 +34,10 @@ Optional keys in `.env` (all empty by default — copy `.env.example` to `.env` 
 | `OPENAI_ADMIN_KEY` | OpenAI organization usage + cost |
 | `ANTHROPIC_ADMIN_KEY` | Anthropic organization usage + cost |
 | `OPENROUTER_MANAGEMENT_KEY` | OpenRouter credits (dedicated; not the inference key) |
-| `BURNRATE_ENABLE_ZAI_QUOTA` | Z.AI credit reads using a stored Coding Plan key. On by default in the desktop service, which sets it to `1` on first start; setup's **What we found** step shows it as a switch that writes `1`/`0` to the per-user `.env`. Unset (off) for the CLI |
-| `BURNRATE_ENABLE_OPENCODE_GO_QUOTA` | OpenCode Go usage reads using OpenCode's stored Console key. On by default in the desktop service, which sets it to `1` on first start; setup's **What we found** step shows it as a switch that writes `1`/`0` to the per-user `.env`. Unset (off) for the CLI |
-| `DEEPSEEK_BALANCE_KEY` | DeepSeek key for the balance card (prefer connecting it in setup's **Plans & balances**) |
-| `BURNRATE_ACCESS_TOKEN` | Bootstrap/break-glass credential and explicitly configured legacy bearer automation. Normal UI uses a 30-day owner session at `/auth`. Rotation persists only a hash and invalidates the old environment value |
+| `BURNRATE_ENABLE_ZAI_QUOTA` | Z.AI credit reads using a stored Coding Plan key. On by default in the desktop service, which sets it to `1` on first start; desktop **Settings → Sources** (and first-run scan) shows it as a switch that writes `1`/`0` to the per-user `.env`. Unset (off) for the CLI |
+| `BURNRATE_ENABLE_OPENCODE_GO_QUOTA` | OpenCode Go usage reads using OpenCode's stored Console key. On by default in the desktop service, which sets it to `1` on first start; desktop **Settings → Sources** (and first-run scan) shows it as a switch that writes `1`/`0` to the per-user `.env`. Unset (off) for the CLI |
+| `DEEPSEEK_BALANCE_KEY` | DeepSeek key for the balance card (prefer connecting it in **Settings → Sources**) |
+| `BURNRATE_ACCESS_TOKEN` | Bootstrap/break-glass credential and explicitly configured legacy bearer automation. Normal UI uses a 30-day owner session. Rotation persists only a hash and invalidates the old environment value |
 | `BURNRATE_ALLOW_ADMIN_BEARER` | Default `0` restricts the static credential to `/api/auth/bootstrap` and `/api/auth/rotate`. Set `1` only when automation must use the static bearer for other API calls |
 | `BURNRATE_HUB_ALLOW_PUBLIC` | Hub mode only (`BURNRATE_CENTRAL_SERVER=1`): set to `1` to allow binding to a public/wildcard interface instead of loopback, RFC 1918, or Tailscale interfaces |
 | `BURNRATE_TRUSTED_PROXIES` | Comma-separated reverse-proxy IPs or CIDRs whose `X-Forwarded-For` / `X-Forwarded-Proto` headers are trusted (falls back to `FORWARDED_ALLOW_IPS`, default `127.0.0.1,::1`; wildcards `*`, `0.0.0.0/0`, `::/0` are rejected; `none` disables) |
@@ -47,11 +47,10 @@ Optional keys in `.env` (all empty by default — copy `.env.example` to `.env` 
 | `SPEND_DATABASE_PATH` | SQLite path (default `%LOCALAPPDATA%\BURNRATE`) |
 | `SPEND_PRICING_PATH` | YAML cards (packaged default) |
 | `SPEND_TIMEZONE` | IANA zone for midnight and windows (default `UTC`) |
-| `BURNRATE_ENABLE_DASHBOARD` | Set to `1` to serve the full dashboard at `/` (off by default; the HUD is the product) |
-| `BURNRATE_REQUIRE_SIGNED_NATIVE` | Set to `1` to refuse the HUD's native-window launch unless the desktop binary carries a valid Authenticode signature matching a pinned certificate thumbprint |
+| `BURNRATE_REQUIRE_SIGNED_NATIVE` | Set to `1` to refuse `/api/hud/native` launching the desktop binary unless it carries a valid Authenticode signature matching a pinned certificate thumbprint |
 | `BURNRATE_NATIVE_THUMBPRINTS` | Comma-separated, case-insensitive SHA-1 certificate thumbprints (spaces stripped) trusted to sign the desktop binary (empty by default until SignPath enrolment) |
 
-Fresh `burnrate init` does **not** seed plan prices automatically. You can pick plans interactively in the **Setup Wizard (`/setup`)**, in the dashboard's **Plans & Value** dialog (when the dashboard is enabled), or via the CLI:
+Fresh `burnrate init` does **not** seed plan prices automatically. You can add quick plan suggestions in the desktop app or manage effective-dated plans via the CLI:
 
 ```powershell
 burnrate subscription add --tool-key codex --name "Codex" --amount-usd 20 --cadence monthly --start-date 2026-09-01
@@ -81,7 +80,7 @@ responses, `syncCommand`, logs, error messages, and diagnostics reports.
 
 ## Tailscale
 
-BURNRATE never turns on Tailscale, Serve or Funnel. To reach the HUD from your tailnet, see
+BURNRATE never turns on Tailscale, Serve or Funnel. To reach a hub API from your tailnet, see
 [Optional Tailscale Serve](tailscale.md).
 
 ## Hub authentication migration
@@ -97,8 +96,8 @@ Account password hashes and creation dates stay intact; stable IDs and owner rol
 
 The hub never asks an existing owner for a setup token (`BURNRATE_SETUP_TOKEN` and
 `BURNRATE_ALLOW_REGISTRATION` are deprecated and ignored). Old 0.5.5 spokes can still push
-with unexpired migrated tokens, but must upgrade/sign in for hub-wide reads. `/auth` on a spoke
-stores a separate owner session server-side; it is excluded from public setup state and diagnostics.
+with unexpired migrated tokens, but must upgrade/sign in for hub-wide reads. A spoke's desktop bridge
+holds a separate owner session; it is excluded from public setup state and diagnostics.
 Use **Rotate this computer's token** before machine expiry; after expiry reconnect from the app.
 Explicit reconnection resends a usage snapshot so a replacement machine identity never reuses the old
 sync cursor. Same-hub reconnection keeps a separate owner session; sign-in and token rotation keep

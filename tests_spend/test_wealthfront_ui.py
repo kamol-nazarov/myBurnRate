@@ -16,8 +16,7 @@ from pathlib import Path
 
 from spend_app.native_desktop import DemoClient, demo_hud, demo_hud_usage
 from spend_app.wealthfront_window import load_ui_html, merge_provider_entries
-from tests_spend.browser_runtime import CHROME
-from tests_spend.test_frontend_viewports import _probe
+from tests_spend.browser_runtime import CHROME, _probe
 
 THEME_ATTR = 'data-theme-pref="system"'
 REDUCE_MEDIA = "@media (prefers-reduced-motion: reduce)"

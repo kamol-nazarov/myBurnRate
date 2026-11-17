@@ -366,15 +366,16 @@ def test_hud_fallback_excludes_old_hub_imports_and_shows_signin(pair):
         assert response.status_code == 200, response.text
         payload = response.json()
         assert payload["scope"] == "local-fallback"
-        assert payload["warning"] and payload["authUrl"] == "/auth"
+        assert payload["warning"]
+        assert "authUrl" not in payload
         if path.endswith("/usage"):
             assert payload["navigation"]["todayTokens"] == 7000
         else:
             assert payload["selectedMachine"] == "local"
         assert "PRIVATE_IMPORTED_USAGE" not in response.text
-    html = spoke.get("/hud")
-    assert html.status_code == 200
-    assert 'href="/auth"' in html.text
+    removed = spoke.get("/hud")
+    assert removed.status_code == 404
+    assert removed.json()["error"]["code"] == "REQ-404"
 
 
 def test_local_token_protected_first_registration_requires_owner(tmp_path, monkeypatch):
@@ -487,9 +488,8 @@ def test_session_rotation_and_revocation_failures_are_audited_once(pair):
 def test_paired_spoke_blocks_local_owner_creation_but_hub_signin_works(pair):
     _, _, ss, spoke = pair
     page = spoke.get("/auth")
-    assert page.status_code == 200 and 'data-spoke="true"' in page.text
-    assert 'id="first-owner" hidden' in page.text
-    assert "if(spoke){status('Create the owner account on your hub.');return;}" in page.text
+    assert page.status_code == 404
+    assert page.json()["error"]["code"] == "REQ-404"
     before = state(ss).get("ownerSession")
     with connect(ss.database_path) as conn:
         assert not setup_wizard._read_accounts(conn)["users"]

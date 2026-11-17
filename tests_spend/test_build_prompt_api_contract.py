@@ -10,7 +10,6 @@ from tests_spend.test_build_prompt_harness import (
     client_for,
     complete_world,
     require_keys,
-    sources,
 )
 
 
@@ -126,18 +125,3 @@ def test_money_over_the_wire_is_numeric_usd_not_formatted_strings(tmp_path: Path
     ).json()
     assert isinstance(entity["value"], (int, float))
     assert "$" not in str(entity["value"])
-
-
-def test_frontend_consumes_only_the_three_prompt_payloads() -> None:
-    _html, _css, js = sources()
-    assert "/api/spend/summary" in js
-    assert "/api/spend/entity" in js
-    assert "/api/spend/health" in js
-    assert "/api/spend/nav" not in js
-    assert "/api/spend/limits" not in js
-    for key in ("15m", "30m", "1h", "3h", "6h", "12h", "1d", "1w", "1mo", "mtd", "ytd", "all"):
-        assert f'key:"{key}"' in js.replace(" ", "")
-    assert 'label:"MTD"' in js.replace(" ", "")
-    assert 'label:"YTD"' in js.replace(" ", "")
-    assert 'label:"All"' in js.replace(" ", "")
-    assert "params.get(\"window\")" in js or "params.get('window')" in js

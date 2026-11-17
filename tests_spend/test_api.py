@@ -1,6 +1,5 @@
 import json
 from datetime import UTC, datetime
-from importlib.resources import files
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -279,6 +278,22 @@ def test_api_title_is_burnrate(tmp_path: Path) -> None:
     assert payload["version"] == __version__
 
 
+def _assert_api_only_csp(csp: str) -> None:
+    directives = {
+        part.strip().split()[0]: part.strip()
+        for part in csp.split(";")
+        if part.strip()
+    }
+    assert directives["default-src"] == "default-src 'none'"
+    assert directives["base-uri"] == "base-uri 'none'"
+    assert directives["form-action"] == "form-action 'none'"
+    assert directives["object-src"] == "object-src 'none'"
+    assert directives["frame-ancestors"] == "frame-ancestors 'none'"
+    assert "'unsafe-inline'" not in csp
+    assert "fonts.googleapis.com" not in csp
+    assert "fonts.gstatic.com" not in csp
+
+
 def test_api_security_headers_include_csp(tmp_path: Path) -> None:
     database = tmp_path / "spend.db"
     initialize(database)
@@ -287,14 +302,7 @@ def test_api_security_headers_include_csp(tmp_path: Path) -> None:
     assert response.headers["X-Content-Type-Options"] == "nosniff"
     assert response.headers["Referrer-Policy"] == "no-referrer"
     assert response.headers["X-Frame-Options"] == "DENY"
-    csp = response.headers["Content-Security-Policy"]
-    assert "default-src 'self'" in csp
-    assert "style-src 'self' 'unsafe-inline'" in csp
-    assert "base-uri 'none'" in csp
-    assert "object-src 'none'" in csp
-    assert "frame-ancestors 'none'" in csp
-    assert "fonts.googleapis.com" not in csp
-    assert "fonts.gstatic.com" not in csp
+    _assert_api_only_csp(response.headers["Content-Security-Policy"])
 
 
 def test_api_boundary_error_response_includes_hardened_csp(tmp_path: Path, monkeypatch) -> None:
@@ -310,10 +318,7 @@ def test_api_boundary_error_response_includes_hardened_csp(tmp_path: Path, monke
     assert response.headers["X-Content-Type-Options"] == "nosniff"
     assert response.headers["Referrer-Policy"] == "no-referrer"
     assert response.headers["X-Frame-Options"] == "DENY"
-    csp = response.headers["Content-Security-Policy"]
-    assert "base-uri 'none'" in csp
-    assert "object-src 'none'" in csp
-    assert "frame-ancestors 'none'" in csp
+    _assert_api_only_csp(response.headers["Content-Security-Policy"])
 
 
 def test_api_csp_variate_dev_gating(tmp_path: Path, monkeypatch) -> None:
@@ -328,38 +333,99 @@ def test_api_csp_variate_dev_gating(tmp_path: Path, monkeypatch) -> None:
     initialize(database)
     client = TestClient(create_app(make_settings(database), enable_scheduler=False))
 
-    monkeypatch.delenv("BURNRATE_DEV", raising=False)
-    csp_unset = client.get("/healthz").headers["Content-Security-Policy"]
-    assert "http://127.0.0.1:43210" not in csp_unset
-    assert "base-uri 'none'" in csp_unset
-    assert "object-src 'none'" in csp_unset
-
-    monkeypatch.setenv("BURNRATE_DEV", "0")
-    csp_zero = client.get("/healthz").headers["Content-Security-Policy"]
-    assert "http://127.0.0.1:43210" not in csp_zero
-
-    monkeypatch.setenv("BURNRATE_DEV", "1")
-    csp_dev = client.get("/healthz").headers["Content-Security-Policy"]
-    directives = {
-        part.strip().split()[0]: part.strip()
-        for part in csp_dev.split(";")
-        if part.strip()
-    }
-    assert "http://127.0.0.1:43210" in directives["script-src"]
-    assert "http://127.0.0.1:43210" in directives["connect-src"]
-    assert "http://127.0.0.1:43210" not in directives["default-src"]
-    assert "base-uri 'none'" in csp_dev
-    assert "object-src 'none'" in csp_dev
+    for dev_val in (None, "0", "1"):
+        if dev_val is None:
+            monkeypatch.delenv("BURNRATE_DEV", raising=False)
+        else:
+            monkeypatch.setenv("BURNRATE_DEV", dev_val)
+        csp = client.get("/healthz").headers["Content-Security-Policy"]
+        _assert_api_only_csp(csp)
+        assert "http://127.0.0.1:43210" not in csp
+        assert "script-src" not in csp
+        assert "connect-src" not in csp
 
 
-def test_frontend_served_from_packaged_spend_web(tmp_path: Path) -> None:
-    database = tmp_path / "spend.db"
-    initialize(database)
-    client = TestClient(create_app(make_settings(database), enable_scheduler=False))
-    html = client.get("/")
-    assert html.status_code == 200
-    assert "BURNRATE" in html.text
-    packaged_css = files("spend_web").joinpath("spend.css").read_bytes()
-    css = client.get("/spend.css")
-    assert css.status_code == 200
-    assert css.content == packaged_css
+def _iter_routes(routes, prefix: str = ""):
+    for route in routes:
+        if hasattr(route, "original_router"):
+            ctx_prefix = getattr(getattr(route, "include_context", None), "prefix", "") or ""
+            yield from _iter_routes(route.original_router.routes, prefix + ctx_prefix)
+        else:
+            yield prefix + (getattr(route, "path", "") or ""), route
+
+
+def test_no_html_routes_registered_in_local_or_hub_mode(tmp_path: Path, monkeypatch) -> None:
+    from fastapi.responses import HTMLResponse
+    from starlette.responses import HTMLResponse as StarletteHTMLResponse
+
+    for central in ("0", "1"):
+        monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", central)
+        if central == "1":
+            monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "synthetic-break-glass")
+        else:
+            monkeypatch.delenv("BURNRATE_ACCESS_TOKEN", raising=False)
+        database = tmp_path / f"routes_{central}.db"
+        initialize(database)
+        app = create_app(make_settings(database), enable_scheduler=False)
+        discovered = list(_iter_routes(app.routes))
+        assert discovered, "expected registered routes"
+        paths = [path for path, _ in discovered]
+        assert "/healthz" in paths
+        assert "/api/spend" in paths
+        for page in ("/", "/hud", "/setup", "/auth", "/connections", "/spend.css", "/spend.js"):
+            assert page not in paths, (central, page)
+        for path, route in discovered:
+            assert path == "/healthz" or path.startswith("/api/"), (central, path)
+            response_class = getattr(route, "response_class", None)
+            actual = getattr(response_class, "value", response_class)
+            assert actual not in (HTMLResponse, StarletteHTMLResponse), (central, path, actual)
+            assert getattr(actual, "media_type", None) != "text/html", (central, path, actual)
+            methods = set(getattr(route, "methods", None) or ())
+            if "GET" in methods:
+                assert path == "/healthz" or path.startswith("/api/"), (central, path)
+
+
+def test_removed_web_pages_return_req_404_json_in_local_and_hub_modes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    removed_paths = (
+        "/",
+        "/hud",
+        "/setup",
+        "/auth",
+        "/connections",
+        "/spend.css",
+        "/spend.js",
+        "/request-state.js",
+        "/dialogs.js",
+        "/product.js",
+        "/favicon.svg",
+        "/logos.svg",
+        "/favicon.ico",
+        "/nonexistent-page",
+    )
+    for central in ("0", "1"):
+        monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", central)
+        if central == "1":
+            monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "synthetic-break-glass")
+            base_url = "http://hub.test"
+        else:
+            monkeypatch.delenv("BURNRATE_ACCESS_TOKEN", raising=False)
+            base_url = "http://127.0.0.1:17331"
+        database = tmp_path / f"pages404_{central}.db"
+        initialize(database)
+        app = create_app(make_settings(database), enable_scheduler=False)
+        with TestClient(app, base_url=base_url) as client:
+            for path in removed_paths:
+                res = client.get(path, follow_redirects=False)
+                assert res.status_code == 404, (central, path, res.status_code)
+                assert res.headers["content-type"].startswith("application/json"), (central, path)
+                assert res.headers["X-Content-Type-Options"] == "nosniff"
+                assert res.headers["Referrer-Policy"] == "no-referrer"
+                assert res.headers["X-Frame-Options"] == "DENY"
+                _assert_api_only_csp(res.headers["Content-Security-Policy"])
+                body = res.json()
+                assert body["error"]["code"] == "REQ-404"
+                assert isinstance(body["error"].get("message"), str)
+                assert body["error"]["message"].strip()
+                assert "desktop app" in body["error"]["message"].lower()

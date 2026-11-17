@@ -480,20 +480,8 @@ def test_sidecar_hud_and_native_scaffold(tmp_path: Path, monkeypatch) -> None:
 
     for path in ("/hud", "/?hud=1"):
         res = client.get(path)
-        assert res.status_code == 200
-        body = res.text
-        assert "BURNRATE · Sidecar HUD" in body
-        assert "data-tauri-drag-region" in body
-        assert "toggle_hud_pin" in body
-        assert "show_dashboard" in body
-        assert "hide_hud" in body
-        assert "/api/spend/stream" in body
-        assert 'id="hud-machines"' in body
-        assert 'id="hud-agents"' in body
-        assert 'id="hud-quotas"' in body
-
-    repo_root = Path(__file__).resolve().parents[1]
-    assert (repo_root / "spend_web" / "starting.html").is_file()
+        assert res.status_code == 404
+        assert res.json()["error"]["code"] == "REQ-404"
 
     monkeypatch.setattr(sys, "argv", ["spend_app", "desktop", "--check-only"])
     assert cli_main() == 0
@@ -518,17 +506,11 @@ def test_setup_wizard_account_and_complete(tmp_path: Path, monkeypatch) -> None:
     spoke_app = create_app(spoke_settings, enable_scheduler=False)
     spoke_client = TestClient(spoke_app)
 
-    # 1. Setup Wizard HTML served at /setup, /?setup=1, and automatically on /?app=1 before completion
-    for path in ("/setup", "/?setup=1", "/?app=1"):
+    # 1. Removed web pages and static browser assets return REQ-404 JSON
+    for path in ("/", "/setup", "/?setup=1", "/?app=1", "/favicon.ico"):
         res = hub_client.get(path)
-        assert res.status_code == 200
-        assert "BURNRATE · Application Setup Wizard" in res.text
-        assert 'id="wizard-stepper"' in res.text
-        assert "/api/setup/complete" in res.text
-
-    fav_res = hub_client.get("/favicon.ico")
-    assert fav_res.status_code == 200
-    assert len(fav_res.content) > 100
+        assert res.status_code == 404
+        assert res.json()["error"]["code"] == "REQ-404"
 
     # 2. Initial setup state
     state_res = hub_client.get("/api/setup/state").json()
@@ -892,18 +874,10 @@ def test_usability_roadmap_endpoints_and_ui_controls(tmp_path: Path) -> None:
         for row in card.get("rows", []):
             assert "polledAt" in row
 
-    # 5. HUD HTML includes Poll Now, Mini mode, Dark mode, Pace tick, and Deep-link drilldown
-    hud_html = client.get("/hud").text
-    for token in (
-        'id="hud-poll-btn"',
-        'id="hud-mini-btn"',
-        'id="hud-theme-btn"',
-        'id="hud-mini-bar"',
-        "openToolInDashboard",
-        "windowElapsedPct",
-        "win-pace-tick",
-    ):
-        assert token in hud_html, token
+    # 5. /hud web page route is removed and returns REQ-404 JSON
+    hud_res = client.get("/hud")
+    assert hud_res.status_code == 404
+    assert hud_res.json()["error"]["code"] == "REQ-404"
 
 
 def _spoke_with_fake_hub(tmp_path: Path, monkeypatch, payloads: dict[str, dict]):

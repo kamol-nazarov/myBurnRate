@@ -4,7 +4,7 @@ import hmac
 import os
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import JSONResponse
 
 from spend_app.auth_model import (
     COOKIE, Principal, audit, create_session, digest, owner_id,
@@ -31,15 +31,6 @@ def auth_router(settings):
             has_owner = bool(_read_accounts(connection)["users"])
         spoke = state.get("role") == "spoke" and bool(state["spokeConfig"].get("enabled"))
         return {"spoke": spoke, "hasOwner": has_owner, "localSession": False}
-
-    @router.get("/auth")
-    def page(request: Request):
-        from spend_app.auth_page import AUTH_HTML
-        state = context(request)
-        html = AUTH_HTML.replace('data-spoke="false"', 'data-spoke="' + str(state["spoke"]).lower() + '"')
-        html = html.replace('data-owner="false"', 'data-owner="' + str(state["hasOwner"]).lower() + '"')
-        html = html.replace('data-local="false"', 'data-local="' + str(state["localSession"]).lower() + '"')
-        return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
     @router.post("/api/auth/bootstrap")
     def bootstrap(request: Request):

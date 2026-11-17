@@ -5,14 +5,8 @@ multiple computers work, and what the numbers mean.
 
 ## What's in the app
 
-- **Setup Wizard (`/setup`)**: Choose how this computer works (on its own, joined to your hub, or as the hub), see every HUD card's real state with the fix for anything missing, add plans suggested from your meters, connect pay-as-you-go balances, and check the live HUD before finishing.
-- **Unified Spend & Capacity Dashboard (optional)**: Off by default. With `BURNRATE_ENABLE_DASHBOARD=1` it is served at `/`; otherwise `/` opens the HUD.
-  - **Live Capacity & Run-Dry Forecasting**: Per-provider quota gauges sorted by *what runs out first*, projecting when a 5-hour or weekly window will exhaust based on your recent burn pace, with configurable in-app and browser alerts.
-  - **Plans & Value**: Compare `This month` or `Last month` subscription expense against recorded API-equivalent usage, shared tool associations, and value multiples.
-  - **Action Center**: Tracks quota thresholds, monitored-source issues, and unpriced models with snooze/acknowledge workflows.
-  - **Token & Unit Economics**: Breakdown of fresh input, cached input, cache writes, output, and reasoning tokens by tool, model, project, and session, plus counterfactual cache-savings calculations.
-- **Always-on-Top Sidecar HUD (`/hud`)**: Frameless floating window in a graphite or paper theme. It leads with today's API-rate value, followed by subscription meters and a separate Balances section. Mini mode shows each plan's tightest window; its chevron reveals the others. Machine selection, data freshness and attention status remain visible. A held meter keeps its last reading until reset, with a visible age label. Drag the window from an empty surface; its controls remain clickable.
-- **Cost per repository**: the HUD lists today's value by the repository each session ran in, worktrees included.
+- **Native desktop window**: Frameless floating window in a Light, Dark, or System theme, with Mini and Expanded modes, compact/comfortable density, live meters, running agents, charts across time ranges and tools, cost-by-model drilldowns, insights, diagnostics, weekly share card, and Settings.
+- **First-run scan & Sources**: Discover local tools, toggle optional quota switches, configure API-key balances (OpenRouter, DeepSeek), and tune desktop notifications.
 - **Weekly card**: the share button copies the last seven days as an image (value, plans, tokens, cache hit, top tools; never repository names).
 - **Single-Account Multi-Computer Sync**: Sign in with your hub account on laptops and secondary desktops so each computer automatically pushes incremental token usage, sessions, and live agent state into your Hub database.
 
@@ -27,14 +21,14 @@ multiple computers work, and what the numbers mean.
 
 ## First-run setup
 
-The native app opens its first-run setup screen on launch. You can also open setup in a browser at [http://127.0.0.1:17331/setup](http://127.0.0.1:17331/setup). **Set up later** closes it until you open it yourself.
+The native app opens its first-run setup screen on launch. **Set up later** closes it until you open it yourself.
 
 1. **This computer** — name it, then choose how it works:
    - **Just this computer:** usage stays here; no account.
    - **Join my hub:** sign in to your hub account (or create the first account) and this computer's usage syncs in the background.
    - **Make this the hub:** host the hub so your other computers can send their usage here.
 2. **What we found** — one row per HUD card: whether the tool's usage is being read, whether its plan meter has a current reading, and what to do when it does not ("Open Antigravity…"). Extra Claude accounts and OpenCode profiles appear on their own rows. The two meters that use a key another app stores (Z.AI and OpenCode Go) show their switch right there.
-3. **Plans & balances** — plans are suggested from what the meters report (for example **Claude Max 20x** from Claude Code's account tier); check each price before adding it. Connect OpenRouter and DeepSeek keys here; they are tested, then stored in your system's credential store (Windows Credential Manager, the macOS Keychain, or the Secret Service on Linux). [http://127.0.0.1:17331/connections](http://127.0.0.1:17331/connections) opens this step directly.
+3. **Plans & balances** — plans are suggested from what the meters report (for example **Claude Max 20x** from Claude Code's account tier); check each price before adding it. Connect OpenRouter and DeepSeek keys in **Settings → Sources**; they are tested, then stored in your system's credential store (Windows Credential Manager, the macOS Keychain, or the Secret Service on Linux).
 4. **Check** — a live preview of your HUD cards and a list of anything that still needs you, switches for desktop notifications (with **Send a test**), **Copy diagnostics**, then **Finish setup**.
 
 **Desktop notifications.** The desktop service sends a desktop notification when a plan passes its alert level (90% unless set otherwise), when a plan will run out before it resets, when a meter has not updated for over an hour, or when hub sync keeps failing. Each is sent once per window or stretch, and quiet hours (22:00–07:00 by default) hold them back unless a run-out is under two hours away. A closed Antigravity or an idle Muse Code does not count as a stuck meter. Turn each kind off in the Check step, or all of them with `BURNRATE_DESKTOP_NOTIFICATIONS=0` in the per-user `.env` (`%LOCALAPPDATA%\BURNRATE\.env` on Windows).
@@ -54,18 +48,15 @@ BURNRATE supports single-account, self-hosted multi-computer synchronization wit
      burnrate sync --token-file <path-to-token>
      # Or set BURNRATE_SYNC_TOKEN in the service environment.
      ```
-3. **Credential management:** `/auth` lists device sessions and lets the owner revoke them or sign
-   out. Sign-out removes owner access while sync continues with its own machine token. Machine
+3. **Credential management:** Manage owner sign-in from the desktop app (or `/api/auth/*` on a hub). Sign-out removes owner access while sync continues with its own machine token. Machine
    tokens rotate automatically in the background before expiry; if a machine token is expired or
    revoked, sign in again on that computer. Re-signing in on an already connected computer preserves
    its sync identity and cursor. Recovery credentials are shown once when rotated: save the
    replacement securely, and never paste it into logs or bug reports.
 
-## The HUD and the dashboard
+## Inside the desktop app
 
-![The dashboard with made-up data from burnrate demo](images/dashboard.png)
-
-The dashboard is off by default (`BURNRATE_ENABLE_DASHBOARD=1` turns it back on). It is a single-page app titled **BURNRATE · AI Cost Intelligence**, styled like an instrument panel: a graphite (dark) or paper (light) ground that follows your OS until you pick one with the theme button, DIN-style Bahnschrift numerals, hairline grids instead of cards, and a single ember accent reserved for what needs your eye. Quota meters are segmented gauges; sections are numbered `01`, `02`, … After `burnrate serve`, open [http://127.0.0.1:17331](http://127.0.0.1:17331).
+The desktop app runs in Light or Dark mode (or follows your OS), with segmented quota gauges, interactive charts, model breakdowns, and an always-on-top Mini HUD mode.
 
 A typical overview (synthetic demo data — not a real account):
 
@@ -79,7 +70,7 @@ A typical overview (synthetic demo data — not a real account):
 - **Recoverable / forecast.** Cache savings versus a no-cache counterfactual, and a labeled forecast of plan cost versus published-rate value.
 - **Unit economics.** Cost by model (click through for a tool or model detail page), token mix (cached input / fresh input / output), and any subscriptions you configured, as hairline tables with inline share bars.
 
-The Sidecar HUD at [http://127.0.0.1:17331/hud](http://127.0.0.1:17331/hud) uses the same system in a narrow window. Expanded mode adds burn rate, cache, tokens, live agents and repository totals. Mini keeps the cost label, coverage, machine/freshness context, source attention, subscription windows and balances.
+Mini mode keeps the cost label, coverage, machine/freshness context, and subscription windows compact in a narrow floating window.
 
 Public screenshots use the made-up data from `burnrate demo` (fictional Northwind-style project names and placeholder figures), never a live database.
 
@@ -180,7 +171,7 @@ OpenRouter and DeepSeek show the money left on the account. Connect each one in 
 burnrate doctor
 ```
 
-Doctor checks CPython 3.12, required imports, timezone data, a read-only SQLite integrity check, packaged pricing YAML, packaged web assets, and that the default bind is loopback. It does not migrate, does not walk provider paths, does not inspect credentials, and does not print secrets. Run `burnrate init` first; doctor will not create `spend.db`.
+Doctor checks CPython 3.12, required imports, timezone data, a read-only SQLite integrity check, packaged desktop assets, packaged pricing YAML, and that the default bind is loopback. It does not migrate, does not walk provider paths, does not inspect credentials, and does not print secrets. Run `burnrate init` first; doctor will not create `spend.db`.
 
 Common cases:
 

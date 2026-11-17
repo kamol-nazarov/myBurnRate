@@ -1,4 +1,4 @@
-"""Phase A tests for H6: DesktopBridge owner-session keychain/vault lifecycle, demo mode, audit, doctor, and packaging."""
+"""Phase A/B tests for H6: DesktopBridge owner-session keychain/vault lifecycle, demo mode, audit, doctor, and packaging."""
 
 from __future__ import annotations
 
@@ -422,26 +422,23 @@ def test_desktop_bridge_get_owner_audit_authenticated_and_signed_out(
         assert any("account" in str(a.get("action") or "") for a in audit["actions"])
 
 
-def test_pyproject_wheel_packages_and_hatch_build_spend_web_inclusion(
+def test_pyproject_wheel_packages_and_hatch_build_exclude_spend_web(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    assert pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"] == ["spend_app"]
+    pyproject_text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    pyproject = tomllib.loads(pyproject_text)
+    wheel_cfg = pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]
+    assert wheel_cfg["packages"] == ["spend_app"]
+    force_include_cfg = wheel_cfg.get("force-include", {})
+    assert not any("spend_web" in str(k) or "spend_web" in str(v) for k, v in force_include_cfg.items())
+    assert not (ROOT / "spend_web").exists()
 
     hatch_build = _load_hatch_build_module(monkeypatch)
 
-    # 1) Wheel standard build with spend_web/ present includes non-__pycache__ / non-.pyc files
+    # 1) Even if spend_web/ existed on disk, wheel standard build only includes _build_config.py
     root_with_web = tmp_path / "with_web"
-    (root_with_web / "spend_web" / "sub").mkdir(parents=True)
-    (root_with_web / "spend_web" / "__pycache__").mkdir(parents=True)
-    index_file = root_with_web / "spend_web" / "index.html"
-    sub_file = root_with_web / "spend_web" / "sub" / "app.js"
-    pyc_file = root_with_web / "spend_web" / "ignored.pyc"
-    cache_file = root_with_web / "spend_web" / "__pycache__" / "mod.cpython-312.pyc"
-    index_file.write_text("<html></html>", encoding="utf-8")
-    sub_file.write_text("console.log(1);", encoding="utf-8")
-    pyc_file.write_bytes(b"pyc")
-    cache_file.write_bytes(b"cache")
+    (root_with_web / "spend_web").mkdir(parents=True)
+    (root_with_web / "spend_web" / "index.html").write_text("<html></html>", encoding="utf-8")
 
     hook_with = hatch_build.CustomBuildHook(
         str(root_with_web), {}, {}, None, str(tmp_path / "dist"), "wheel"
@@ -452,28 +449,10 @@ def test_pyproject_wheel_packages_and_hatch_build_spend_web_inclusion(
     finally:
         hook_with.finalize("standard", build_data_with, "")
     fi_with = build_data_with["force_include"]
-    assert fi_with[str(index_file)] == "spend_web/index.html"
-    assert fi_with[str(sub_file)] == "spend_web/sub/app.js"
-    assert str(pyc_file) not in fi_with
-    assert str(cache_file) not in fi_with
-    assert "spend_app/_build_config.py" in fi_with.values()
+    assert list(fi_with.values()) == ["spend_app/_build_config.py"]
+    assert not any("spend_web" in v for v in fi_with.values())
 
-    # 2) Wheel standard build without spend_web/ skips spend_web cleanly
-    root_without_web = tmp_path / "without_web"
-    root_without_web.mkdir()
-    hook_without = hatch_build.CustomBuildHook(
-        str(root_without_web), {}, {}, None, str(tmp_path / "dist"), "wheel"
-    )
-    build_data_without: dict = {}
-    try:
-        hook_without.initialize("standard", build_data_without)
-    finally:
-        hook_without.finalize("standard", build_data_without, "")
-    fi_without = build_data_without["force_include"]
-    assert not any(v.startswith("spend_web/") for v in fi_without.values())
-    assert "spend_app/_build_config.py" in fi_without.values()
-
-    # 3) Editable wheel build skips force_include
+    # 2) Editable wheel build skips force_include
     hook_editable = hatch_build.CustomBuildHook(
         str(root_with_web), {}, {}, None, str(tmp_path / "dist"), "wheel"
     )
@@ -484,7 +463,7 @@ def test_pyproject_wheel_packages_and_hatch_build_spend_web_inclusion(
         hook_editable.finalize("editable", build_data_editable, "")
     assert "force_include" not in build_data_editable
 
-    # 4) sdist build skips force_include
+    # 3) sdist build skips force_include
     hook_sdist = hatch_build.CustomBuildHook(
         str(root_with_web), {}, {}, None, str(tmp_path / "dist"), "sdist"
     )
@@ -499,6 +478,7 @@ def test_pyproject_wheel_packages_and_hatch_build_spend_web_inclusion(
 def test_cli_check_desktop_assets_ok_and_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    assert cli._DESKTOP_ASSETS == ("wealthfront_ui.html",)
     ok_check = cli._check_desktop_assets()
     assert ok_check["id"] == "desktop_assets"
     assert ok_check["status"] == "ok"

@@ -120,7 +120,20 @@ def test_central_server_with_token_authenticates_reads_and_cookie_mutations(tmp_
             ).status_code
             == 200
         )
-        assert client.get("/?token=admin-secret").status_code == 200
+        removed = client.get("/?token=admin-secret")
+        assert removed.status_code == 404
+        assert removed.json()["error"]["code"] == "REQ-404"
+        assert "burnrate_access" not in client.cookies
+        boot = client.post(
+            "/api/auth/bootstrap",
+            headers={
+                "Authorization": "Bearer admin-secret",
+                "Origin": "http://127.0.0.1:17331",
+                "X-BURNRATE-Request": "1",
+            },
+            json={},
+        )
+        assert boot.status_code == 200
         created = client.post(
             "/api/machines",
             headers={"Origin": "http://127.0.0.1:17331", "X-BURNRATE-Request": "1"},

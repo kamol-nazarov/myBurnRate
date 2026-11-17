@@ -108,9 +108,8 @@ Verify a download with:
 
 Before releasing the auth-model change, run all synthetic auth/migration/spoke regressions and the
 existing hardening/launch tests on Windows, macOS and Linux. No runtime dependency was added.
-Communicate the fixed 90-day machine / 30-day owner / 15-minute invitation lifetimes, one-time
-`created_at + 180 days` legacy grace, the new `/auth` controls and the static bearer now being
+Communicate the fixed 90-day machine / 30-day owner lifetimes, one-time
+`created_at + 180 days` legacy grace, and the static bearer now being
 restricted by default (set `BURNRATE_ALLOW_ADMIN_BEARER=1` only for automation). Preserve a consistent pre-upgrade SQLite/config backup before
 any deployment. See [upgrade and rollback](self-hosting.md#auth-model-upgrade-and-rollback): an old
 binary does not enforce the new scope/expiry, and restoring a backup may revive old credentials.
-The old `?token=` bootstrap is deprecated; it now issues a session cookie, never a static cookie.

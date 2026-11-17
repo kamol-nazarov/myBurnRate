@@ -11,8 +11,7 @@ import pytest
 
 from spend_app.native_desktop import DemoClient
 from spend_app.wealthfront_window import load_ui_html, merge_provider_entries
-from tests_spend.browser_runtime import CHROME
-from tests_spend.test_frontend_viewports import _chrome_dump, _probe
+from tests_spend.browser_runtime import CHROME, _chrome_dump, _probe
 from tests_spend.test_wealthfront_ui import build_page, probe
 
 pytestmark = pytest.mark.browser

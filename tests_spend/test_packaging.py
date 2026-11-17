@@ -42,13 +42,13 @@ def test_the_spec_ships_what_the_service_reads() -> None:
     spec = (root / "packaging" / "burnrate-native.spec").read_text(encoding="utf-8")
     for needed in (
         '"pricing"',
-        'collect_data_files("spend_web")',
         'collect_data_files("tzdata")',
         'copy_metadata("APScheduler")',
         "console=False",
         "assets",
     ):
         assert needed in spec
+    assert "spend_web" not in spec
     entry = (root / "packaging" / "burnrate_native.py").read_text(encoding="utf-8")
     assert "multiprocessing.freeze_support()" in entry
 

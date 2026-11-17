@@ -6348,7 +6348,7 @@ function paintSettingsBody() {
             Sign in to your VPS hub so this computer counts toward <strong>All computers</strong> automatically.
           </div>
         `}
-        <div style="padding:8px 12px"><button class="btn-secondary" type="button" onclick="openOwnerAccess()">Owner access and sessions…</button></div>
+        <!-- H5 stub: owner session list, revoke, and audit controls move here -->
         ${showAccountForm ? `
           <form class="hub-form" autocomplete="off" novalidate onsubmit="event.preventDefault();submitHubAccount()" style="padding:4px 12px 11px;display:grid;gap:6px;border-top:${hubConnected ? "1px solid var(--divider)" : "none"}">
             <div style="display:flex;gap:5px">
@@ -6994,11 +6994,6 @@ window.dismissCandidate = async function(source, candidateId) {
   } else {
     showToast((res && res.error) || "Could not dismiss candidate");
   }
-};
-
-window.openOwnerAccess = async function() {
-  const result = await window.pywebview?.api?.open_owner_access();
-  if (!result?.ok) showToast(result?.error || "Open /auth on your local tracker for owner access.");
 };
 
 window.toggleAccountForm = function() {

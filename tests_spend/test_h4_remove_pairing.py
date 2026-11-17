@@ -137,13 +137,10 @@ def test_setup_state_html_ui_and_bridge_omit_pairing_controls(tmp_path: Path) ->
         assert "networkAddresses" not in state_json
         assert "port" not in state_json
 
-        setup_html = client.get("/setup").text
-        for removed in ("/api/setup/pair-hub", "/api/setup/connect-spoke", "/api/pairing/redeem", "networkAddresses"):
-            assert removed not in setup_html
-
-        auth_html = client.get("/auth").text
-        assert "must sign in again" in auth_html
-        assert "pairing code" not in auth_html.lower()
+        for removed_page in ("/setup", "/auth"):
+            page_res = client.get(removed_page)
+            assert page_res.status_code == 404
+            assert page_res.json()["error"]["code"] == "REQ-404"
 
     wf_html = load_ui_html()
     for removed in (

@@ -584,11 +584,10 @@ def test_setup_account_ignores_server_url_in_request_body(
         assert saved["spokeConfig"]["hubUrl"] == configured_hub
 
 
-def test_ui_html_and_setup_wizard_have_no_hub_url_inputs() -> None:
+def test_ui_html_has_no_hub_url_inputs() -> None:
     from spend_app.wealthfront_window import load_ui_html
 
     wealthfront_html = load_ui_html()
-    wizard_html = setup_wizard.SETUP_WIZARD_HTML
 
     for forbidden in (
         "#hubAccountUrl",
@@ -599,9 +598,6 @@ def test_ui_html_and_setup_wizard_have_no_hub_url_inputs() -> None:
         "defaultHubUrl",
     ):
         assert forbidden not in wealthfront_html
-
-    for forbidden in ("#wiz-server-url", 'id="wiz-server-url"', "spoke.hubUrl"):
-        assert forbidden not in wizard_html
 
 
 def test_native_onboarding_recognizes_spoke_hub_configured(tmp_path: Path) -> None:

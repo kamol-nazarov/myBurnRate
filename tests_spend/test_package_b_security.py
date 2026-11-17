@@ -351,60 +351,27 @@ def test_m1_bounded_json_gates_across_account_and_setup_account(
 
 
 # ---------------------------------------------------------------------------
-# 2. L2: Break-glass GET ?token=
+# 2. L2: Removed ?token= web-page redirects return REQ-404 and mint no cookies
 # ---------------------------------------------------------------------------
 
 
-def test_l2_break_glass_get_redirects_strips_token_and_sets_cookie(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _, client = _make_hub_client(tmp_path, monkeypatch)
-    with client:
-        res = client.get(f"/?token={ACCESS_TOKEN}", follow_redirects=False)
-        assert res.status_code == 303
-        assert res.headers["location"] == "/"
-        set_cookie = res.headers.get("set-cookie", "")
-        assert "burnrate_access=br_s_" in set_cookie
-        assert ACCESS_TOKEN not in set_cookie
-        assert ACCESS_TOKEN not in res.headers["location"]
-
-        # Follow-up authenticated page load succeeds with the cookie
-        landing = client.get("/", follow_redirects=False)
-        assert landing.status_code == 200
-
-
-def test_l2_break_glass_get_preserves_other_query_params(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _, client = _make_hub_client(tmp_path, monkeypatch)
-    with client:
-        res = client.get(f"/hud?token={ACCESS_TOKEN}&foo=bar", follow_redirects=False)
-        assert res.status_code == 303
-        assert res.headers["location"] == "/hud?foo=bar"
-        assert "burnrate_access=br_s_" in res.headers.get("set-cookie", "")
-
-
-def test_l2_break_glass_get_with_existing_session_does_not_mint_second_session(
+def test_l2_break_glass_get_token_returns_req_404_and_sets_no_cookie(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     settings, client = _make_hub_client(tmp_path, monkeypatch)
     with client:
-        first = client.get(f"/?token={ACCESS_TOKEN}", follow_redirects=False)
-        assert first.status_code == 303
-        assert auth_model.COOKIE in client.cookies
+        for path in (f"/?token={ACCESS_TOKEN}", f"/hud?token={ACCESS_TOKEN}&foo=bar"):
+            res = client.get(path, follow_redirects=False)
+            assert res.status_code == 404
+            assert res.json()["error"]["code"] == "REQ-404"
+            assert "location" not in res.headers
+            assert "set-cookie" not in res.headers
+            assert auth_model.COOKIE not in client.cookies
+            assert ACCESS_TOKEN not in res.text
 
         with connect(settings.database_path) as conn:
-            count_before = conn.execute("SELECT COUNT(*) FROM owner_sessions").fetchone()[0]
-        assert count_before == 1
-
-        second = client.get(f"/?token={ACCESS_TOKEN}", follow_redirects=False)
-        assert second.status_code == 303
-        assert second.headers["location"] == "/"
-        assert "set-cookie" not in second.headers
-
-        with connect(settings.database_path) as conn:
-            count_after = conn.execute("SELECT COUNT(*) FROM owner_sessions").fetchone()[0]
-        assert count_after == 1
+            session_count = conn.execute("SELECT COUNT(*) FROM owner_sessions").fetchone()[0]
+        assert session_count == 0
 
 
 # ---------------------------------------------------------------------------

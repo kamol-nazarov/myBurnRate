@@ -55,8 +55,6 @@ jobs:
             --ignore=tests_spend/test_s01_real_db.py `
             --ignore=tests_spend/test_s02_real_db.py `
             --ignore=tests_spend/test_s03_real_db.py `
-            --ignore=tests_spend/test_frontend_viewports.py `
-            --ignore=tests_spend/test_performance_phase2.py `
             -m "not real_db and not browser"
 
   lint:
@@ -91,9 +89,9 @@ jobs:
 
       - name: Lint new product modules and release helpers
         run: |
-          python -m ruff check spend_app/plan_service.py spend_app/product_api.py spend_app/subscription_schema.py spend_app/diagnostics.py tests_spend/test_plan_management.py tests_spend/test_onboarding.py tests_spend/test_product_browser_plans.py tests_spend/test_product_browser_setup.py scripts/validate-browser.py scripts/smoke-install.py
+          python -m ruff check spend_app/plan_service.py spend_app/product_api.py spend_app/subscription_schema.py spend_app/diagnostics.py tests_spend/test_plan_management.py tests_spend/test_onboarding.py scripts/validate-browser.py scripts/smoke-install.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -m ruff format --check spend_app/plan_service.py spend_app/product_api.py spend_app/subscription_schema.py spend_app/diagnostics.py tests_spend/test_plan_management.py tests_spend/test_onboarding.py tests_spend/test_product_browser_plans.py tests_spend/test_product_browser_setup.py scripts/validate-browser.py scripts/smoke-install.py
+          python -m ruff format --check spend_app/plan_service.py spend_app/product_api.py spend_app/subscription_schema.py spend_app/diagnostics.py tests_spend/test_plan_management.py tests_spend/test_onboarding.py scripts/validate-browser.py scripts/smoke-install.py
 
   supply-chain:
     name: supply chain (lock, npm)
@@ -117,9 +115,8 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "20"
-      - name: npm audit (asset tooling and updater signer CLI)
+      - name: npm audit (updater signer CLI)
         run: |
-          npm audit --prefix scripts/asset-tools --audit-level=high
           npm audit --prefix tools/tauri --audit-level=high
 
   pip-audit:
@@ -172,54 +169,16 @@ jobs:
       - name: Install Python dependencies
         run: ./.github/scripts/install-python-ci.ps1
 
-      - name: node --check (skip if node missing)
-        run: |
-          if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
-            Write-Host "node not available; skipping node --check"
-            exit 0
-          }
-          $scripts = Get-ChildItem -Path spend_web -Filter *.js -File -Recurse -ErrorAction SilentlyContinue
-          if (-not $scripts) {
-            Write-Host "no spend_web/*.js files"
-            exit 0
-          }
-          foreach ($script in $scripts) {
-            Write-Host "node --check $($script.FullName)"
-            node --check $script.FullName
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
-
-      - name: Dialog unit and fake-DOM contracts
-        run: |
-          node tests_spend/connections_state_unit.cjs
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node tests_spend/product_dialog_unit.cjs
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node tests_spend/product_dialog_flow_unit.cjs
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node tests_spend/test_plans_value_ui.cjs
-          exit $LASTEXITCODE
-
-      - name: Frontend contract tests
+      - name: Desktop UI and API contract tests
         run: |
           python -m pytest -q `
-            tests_spend/test_frontend_contract.py `
-            tests_spend/test_frontend_states.py `
-            tests_spend/test_navbar.py `
-            tests_spend/test_capacity_strip.py `
-            tests_spend/test_chart_polish.py `
             tests_spend/test_build_prompt_api_contract.py `
             tests_spend/test_build_prompt_consistency.py `
-            tests_spend/test_build_prompt_motion.py `
-            tests_spend/test_build_prompt_responsive.py `
             tests_spend/test_build_prompt_null_zero_approx.py `
             tests_spend/test_build_prompt_quota_activity.py `
-            tests_spend/test_performance_phase1.py `
-            tests_spend/test_performance_phase3.py `
-            tests_spend/test_performance_phase4.py `
-            tests_spend/test_performance_phase5.py
+            tests_spend/test_performance_phase3.py
 
-      - name: Required browser validation (including request races)
+      - name: Required browser validation (desktop UI)
         run: python scripts/validate-browser.py
 
       - name: Upload sanitized browser report

@@ -63,6 +63,10 @@ ERROR_CATALOG: dict[str, dict[str, object]] = {
         "message": "That request was too large.",
         "status": 413,
     },
+    "REQ-404": {
+        "message": "That page isn't here. BURNRATE runs in the desktop app.",
+        "status": 404,
+    },
     "SYNC-201": {
         "message": "Signed in, but the first sync didn't finish. It will retry.",
         "status": 502,
@@ -116,9 +120,16 @@ def format_error(code: str, *, retry_after: int | None = None) -> str:
     return f"{error_message(resolved, retry_after=retry_after)} Error {resolved}"
 
 
-def error_payload(code: str, *, retry_after: int | None = None) -> dict[str, object]:
+def error_payload(
+    code: str,
+    *,
+    retry_after: int | None = None,
+    include_message: bool = False,
+) -> dict[str, object]:
     resolved = code if code in ERROR_CATALOG else "HUB-501"
     inner: dict[str, object] = {"code": resolved}
+    if include_message:
+        inner["message"] = error_message(resolved, retry_after=retry_after)
     if retry_after is not None:
         try:
             seconds = int(retry_after)
@@ -135,6 +146,7 @@ def error_response(
     status_code: int | None = None,
     headers: Mapping[str, str] | None = None,
     retry_after: int | None = None,
+    include_message: bool = False,
 ) -> JSONResponse:
     resolved = code if code in ERROR_CATALOG else "HUB-501"
     status = int(status_code if status_code is not None else default_status_for_code(resolved))
@@ -146,7 +158,7 @@ def error_response(
             seconds = 1
         merged_headers["Retry-After"] = str(seconds)
     return JSONResponse(
-        error_payload(resolved, retry_after=retry_after),
+        error_payload(resolved, retry_after=retry_after, include_message=include_message),
         status_code=status,
         headers=merged_headers,
     )
