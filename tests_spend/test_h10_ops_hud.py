@@ -1133,7 +1133,7 @@ def test_browser_hud_boots_saved_comfortable_ignores_stale_mini_and_shows_empty_
     assert r == {
         "isMini": False,
         "isComfy": True,
-        "emptyTitle": "No limits yet",
+        "emptyTitle": "Waiting for the first readings",
         "addSource": "Add a source",
         "lanes": 5,  # one muted lane per idle provider, each with its reason
         "ticksHidden": True,

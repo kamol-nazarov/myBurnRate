@@ -190,6 +190,8 @@ const rows = [...document.querySelectorAll('#providerList .provider-item')];
 const out = {
   title: card.querySelector('b').textContent,
   button: btn.textContent,
+  buttonClass: btn.className,
+  sub: card.querySelector('span').textContent,
   groups: rows.length,
   mutedLanes: document.querySelectorAll('#providerList .lane.is-muted').length,
   reasons: [...new Set([...document.querySelectorAll('#providerList .lane.is-muted .lane-note')].map(n => n.textContent))],
@@ -207,12 +209,14 @@ report(out);
 
 @needs_chrome
 @browser
-def test_no_limits_yet_offers_add_a_source_only_when_nothing_can_be_read(tmp_path):
+def test_connected_but_idle_sources_wait_for_readings_with_add_a_source_as_a_link(tmp_path):
     html = build_page(pref="light", report=d2_report("no-limits"), probe=EMPTY_PROBE, extra_css=FAST)
     r = probe(html, 440, tmp_path, height=640)
     assert r == {
-        "title": "No limits yet",
+        "title": "Waiting for the first readings",
         "button": "Add a source",
+        "buttonClass": "limits-empty-link",
+        "sub": "Limits show here as each source reports.",
         "groups": 5,
         "mutedLanes": 5,
         "reasons": ["Waiting for fresh reading"],
