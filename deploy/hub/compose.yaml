@@ -17,7 +17,7 @@ services:
   # Refuse to publish ports on empty, wildcard (0.0.0.0 / ::), public, or
   # hostname targets unless BURNRATE_HUB_ALLOW_PUBLIC=1 is explicitly set.
   publish-check:
-    image: ${BURNRATE_HUB_IMAGE:-ghcr.io/kamol-nazarov/myburnrate-hub:0.6.0}
+    image: ${BURNRATE_HUB_IMAGE:-ghcr.io/kamol-nazarov/myburnrate-hub:0.6.0-rc.11@sha256:39078c2e7e62cfeb1e485fb95a580d461df1964634cdfa9a0be5968987303146}
     restart: "no"
     environment:
       BURNRATE_TAILNET_IP: ${BURNRATE_TAILNET_IP:?Set BURNRATE_TAILNET_IP to this machine's Tailscale IP (e.g. 100.x.y.z)}
@@ -25,12 +25,10 @@ services:
     command: ["sh", "-c", "exec python -m spend_app.exposure check-publish \"$BURNRATE_TAILNET_IP\""]
 
   hub:
-    # Unreleased builds reference the 0.6.0 tag. Before dating CHANGELOG.md and
-    # tagging, dispatch the candidate hub-image build and pin this to
-    # "0.6.0-rc.<run_number>@sha256:..." (which the release tag re-tags as
-    # "0.6.0"). To upgrade later, set BURNRATE_HUB_IMAGE to the new
+    # Pinned to the 0.6.0 candidate digest, which the v0.6.0 tag re-tags as
+    # "0.6.0". To upgrade later, set BURNRATE_HUB_IMAGE to the new
     # "tag@sha256:..." published with the release.
-    image: ${BURNRATE_HUB_IMAGE:-ghcr.io/kamol-nazarov/myburnrate-hub:0.6.0}
+    image: ${BURNRATE_HUB_IMAGE:-ghcr.io/kamol-nazarov/myburnrate-hub:0.6.0-rc.11@sha256:39078c2e7e62cfeb1e485fb95a580d461df1964634cdfa9a0be5968987303146}
     restart: unless-stopped
     depends_on:
       publish-check:
