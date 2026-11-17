@@ -5,9 +5,10 @@ multiple computers work, and what the numbers mean.
 
 ## What's in the app
 
-- **Native desktop window**: Frameless floating window in a Light, Dark, or System theme, with Mini and Expanded modes, compact/comfortable density, live meters, running agents, charts across time ranges and tools, cost-by-model drilldowns, insights, diagnostics, weekly share card, and Settings.
+- **Native desktop window**: Frameless floating window in a Light, Dark, or System theme, limits first, with a refill timeline per window, compact/comfortable density, live meters, running agents, charts across time ranges and tools, cost-by-model drilldowns, insights, diagnostics, weekly share card, and Settings.
 - **First-run scan & Sources**: Discover local tools, toggle optional quota switches, configure API-key balances (OpenRouter, DeepSeek), and tune desktop notifications.
 - **Weekly card**: the share button copies the last seven days as an image (value, plans, tokens, cache hit, top tools; never repository names).
+- **The tab**: a small always-on-top strip that shows, per provider, the limit or balance that runs out first. Open it with **Shrink to tab** in the window or **Show tab** in the tray.
 - **Single-Account Multi-Computer Sync**: Sign in with your hub account on laptops and secondary desktops so each computer automatically pushes incremental token usage, sessions, and live agent state into your Hub database.
 
 ## Reading and arranging the HUD
@@ -15,9 +16,13 @@ multiple computers work, and what the numbers mean.
 - **API value today** estimates recorded usage at published API rates, not a bill. Select **Partial** to see why some usage cannot be valued. An unavailable amount remains a dash.
 - **Source attention** opens a panel with the affected source, its last known update, an explanation and actions to recheck or open source settings. Escape or Close returns focus to the control that opened it.
 - **Plan windows** show the percentage used and a labeled reset countdown. Select the name/chevron button to reveal the remaining windows; Tab and Enter/Space work too. When the dashboard is enabled, its detail button is separate.
-- **Provider pins** keep favorite subscription providers first in the order you pinned them. Other providers use a stable alphabetical order. The **Closest limit** summary still identifies the most urgent quota independently of that order. The window's top pin button separately controls always-on-top behavior.
+- **Order** is most urgent first: about to run out (red), then running dry before the refill (amber), then the rest. Drag providers to set your own order instead; **Settings → Custom provider order → Reset** goes back to urgency order. The tab always uses urgency order. **Keep on top** in the footer controls always-on-top behavior.
 - **Balances** show pay-as-you-go money remaining and estimated runway without a quota gauge.
-- **Compact / Comfortable** changes text size, spacing and width independently of Mini/Expanded mode. Mini uses one line per provider, with short window/reset labels; open a provider to see additional windows. Select the machine/freshness line to reveal computer choices and density controls. Mini is 296 pixels wide in Compact and 344 in Comfortable; expanded is 380 or 420. Density and provider pins are remembered on this computer; pin controls are in the expanded view.
+- **Compact / Comfortable** (the **Density** button in the footer) changes text size and spacing. The window opens at 440 × 640 and can shrink to 380 × 520. Density and your provider order are remembered on this computer.
+
+## The tab
+
+**Shrink to tab** in the window's title bar (or **Show tab** in the tray menu) swaps the window for a small strip that stays on top. Each provider shows the window that will run out first at your current pace, with what is left and when it runs dry or resets; a balance shows its dollar amount. Red means about to run out (within about 2 hours, 10% or less left, or a balance under $1); amber means it runs dry before it refills or a balance is under $5. Calm providers fold into **+N fine**. Hover or focus a provider for every window, its reset time and the pace line. Drag the tab from anywhere to move it; a click opens the full window. With **Transparent when not hovered** on, the tab fades when the pointer leaves. BURNRATE reopens whichever of the two you left open.
 
 ## First-run setup
 
@@ -56,7 +61,7 @@ BURNRATE supports single-account, self-hosted multi-computer synchronization wit
 
 ## Inside the desktop app
 
-The desktop app runs in Light or Dark mode (or follows your OS), with segmented quota gauges, interactive charts, model breakdowns, and an always-on-top Mini HUD mode.
+The desktop app runs in Light or Dark mode (or follows your OS), with segmented quota gauges, interactive charts, model breakdowns, and an always-on-top tab.
 
 A typical overview (synthetic demo data — not a real account):
 
@@ -70,7 +75,7 @@ A typical overview (synthetic demo data — not a real account):
 - **Recoverable / forecast.** Cache savings versus a no-cache counterfactual, and a labeled forecast of plan cost versus published-rate value.
 - **Unit economics.** Cost by model (click through for a tool or model detail page), token mix (cached input / fresh input / output), and any subscriptions you configured, as hairline tables with inline share bars.
 
-Mini mode keeps the cost label, coverage, machine/freshness context, and subscription windows compact in a narrow floating window.
+The tab keeps the limit or balance that runs out first for each provider in a small strip that stays on top.
 
 Public screenshots use the made-up data from `burnrate demo` (fictional Northwind-style project names and placeholder figures), never a live database.
 
@@ -121,7 +126,7 @@ More: [docs/pricing.md](pricing.md).
 
 ### More than one Claude account
 
-Claude Code keeps one signed-in account per config directory. Run a second account with `CLAUDE_CONFIG_DIR=%USERPROFILE%\.claude-work` (any `.claude-<name>` works), sign in once, and BURNRATE shows it as its own plan lane, **Claude Code · Work**, beside the default account in the dashboard, the Sidecar HUD, and the Mini HUD.
+Claude Code keeps one signed-in account per config directory. Run a second account with `CLAUDE_CONFIG_DIR=%USERPROFILE%\.claude-work` (any `.claude-<name>` works), sign in once, and BURNRATE shows it as its own plan lane, **Claude Code · Work**, beside the default account in the window and the tab.
 
 - Profiles are found automatically in `~/.claude-*`. Put other directories in `BURNRATE_CLAUDE_ACCOUNT_DIRS` (separated by `;` on Windows).
 - A profile signed in to the same account as the default lane is ignored, so nothing is shown twice.

@@ -488,7 +488,7 @@ def test_the_desktop_log_records_warnings_and_redacts_secrets(tmp_path):
     try:
         assert path == tmp_path / "desktop.log"
         logging.getLogger("spend_app.tab_window").warning(
-            "Shrink to tab failed in C:\\Users\\kamol\\secret with Bearer abcdefghijklmnop1234567890"
+            "Shrink to tab failed in C:\\Users\\kamol\\secret with Bearer " + "abcdefghijklmnop1234567890"
         )
         try:
             raise RuntimeError("boom")

@@ -7,6 +7,128 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 This project is licensed under Apache-2.0.
 
+## [0.6.0] - Unreleased
+
+### Added
+
+- **A small always-on-top tab for glancing at your limits.** It is a frameless strip with no taskbar
+  button that replaces the old in-page Mini mode. Open it with **Shrink to tab** in the full window
+  (`#tabBtn`) or **Show tab** in the tray menu. Clicking a provider, the open button or **Open
+  BURNRATE** in a hover card brings the full window back. It lives in `spend_app/tab_window.py` and
+  `spend_app/tab_ui.html`.
+- **Each provider shows the window that runs out first.** The tab picks the window that will dry up
+  soonest at your current pace (or, with no pace forecast, the one with the least left) and shows
+  its % left, a fuel bar and a short status such as `dry in ~1h` or `resets in 5d`. A prepaid or
+  pay-as-you-go balance shows its dollar figure. Usage-only feeds, which have no limit or balance to
+  watch, are left off.
+- **Colour says how urgent it is.** Red means about to run out: dry within about 2 hours at your
+  current pace, 10% or less left, or a balance under $1. Amber means the window will run dry before
+  it refills, or a balance is under $5. The badge on the brand icon counts the providers about to
+  run out.
+- **Real provider logos and profile names.** The tab reuses the full window's logo sprite and brand
+  colours, so the two always match. A provider with several profiles gets one segment per profile,
+  labelled like `Primary · 5-hour` or `Work · weekly`.
+- **A hover card with every window.** Hover a segment, or focus it with the keyboard, to see each
+  window with its % left, % used, reset time and a pace line such as "At this pace: dry in ~1h, 1h
+  before it resets", plus an **Open BURNRATE** button. The window is clipped to the strip plus the
+  card, so the rest of the screen stays clickable.
+- **It fits the monitor it is on.** The tab shows up to five providers and folds calm ones into
+  **+N fine**; providers that need attention are never folded just to make room. If the monitor's
+  usable width cannot hold all of them, the rest fold into **+N to watch** (amber) or **+N urgent**
+  (red). It is planned against that width at any
+  display scaling, with compact fallbacks: the error chip shortens to its code, secondary labels
+  drop, the controls tighten, and large balances are abbreviated (`$2.0K`) while the exact amount
+  stays in the tooltip and the hover card.
+- **Drag it from anywhere.** Press and move more than about 4 px to drag; a click without movement
+  still opens the full window. The position is remembered (as `tabWindow`, separate from the full
+  window) and kept on screen across monitor and display-scaling changes.
+- **The tab follows Auto-fade.** With **Transparent when not hovered** on, it fades to your idle
+  opacity about 1.5 seconds after the pointer leaves, and stays solid while the pointer is over the
+  strip or its card, or keyboard focus is inside. With that setting off, it never fades.
+- **Every state is covered.** Loading shows the brand mark and "Loading…" with no placeholder
+  values. With no sources or limits it reads "No limits yet · Open BURNRATE to add a source". After
+  a failed refresh the last values are dimmed and a chip shows the plain message with its code, for
+  example "Can't reach your hub · NET-001". A provider with no reading yet is muted and says
+  "Awaiting reading" (or a short reason such as "No key").
+- **Keyboard accessible.** Segments, the overflow pills and the card's button are all reachable with
+  Tab, focus opens the hover card and **Esc** closes it. Focus stays on the same provider or action
+  when the tab refreshes.
+- **The app remembers which window you left open.** The last surface (the tab or the full window)
+  is saved as `surface` and restored on launch. A second launch asks the running app, through a
+  named event (`spend_app/native_activation.py`), to open its full window. Switching is
+  transactional: the tab appears first and the full window hides only once the tab is really
+  showing, so a failure leaves the full window up rather than no window at all.
+- **Limits first, with a refill timeline for every window.** The full window groups providers most
+  urgent first and tags them **About to run out**, **Dry before refill** or **Out of quota**. Each
+  window gets a timeline from now to its reset: usable time at your pace, the stretch where it is
+  dry before refilling, and a refill marker, with a note like "Dry in ~1h · refills in 2h". A window
+  with no pace forecast shows a soft level bar of what is left ("Refills in 3h"), and an exhausted
+  one reads "Out · refills in 2h". The time ruler and its legend appear only while at least one lane
+  is drawn on the time axis. Balances show the amount, "balance left" and the runway.
+- **Pace and urgency data, computed once.** `merge_provider_entries` now adds a `pace` object to
+  every window (`state`, `hoursToDry`, `hoursDryBeforeReset`, `runsDryAt`; `null` when there is no
+  fresh forecast) and `urgency`, `profile`, `fundsRunwayInfo` and `displayRank` to every provider.
+  `spend_app/provider_urgency.py` holds the one rule. The tab and the full window use the same
+  Python-computed order (`displayRank`), and the page has no JavaScript copy of the rule. Profiles
+  of one provider sit together only when they are exactly tied. The existing `forecast` and
+  `runway` text lines are unchanged.
+- **A desktop log.** The desktop app now writes
+  `%LOCALAPPDATA%\BURNRATE\logs\desktop.log` with its warnings and window transitions (such as
+  Shrink to tab), rotating at 512 KB with three backups and redacted like the other logs. It is not
+  written in `--demo` or `--smoke-test` runs.
+
+### Changed
+
+- **The full window is 440 × 640.** It opens at 440 × 640 (it was 380 × 556) with a minimum of
+  380 × 520 (it was 336 × 440), set by `DEFAULT_SIZE` and `MIN_SIZE` in
+  `spend_app/native_geometry.py`. Today, Running now, cost by model with its drilldown, token mix,
+  the activity heatmap and plans are all still there, restyled for the new size and the limits-first
+  layout. Plans show prices such as `$200/mo` from the analytics summary's subscriptions.
+- **Window actions moved to the footer.** The footer holds Diagnostics, Share week, **Keep on top**
+  (moved out of the title bar), the density toggle and Settings. The title bar keeps the
+  live/Sample/Offline pill, the computer selector, refresh, **Shrink to tab** and close.
+- **Clearer full-window states.** When no source has reported yet, the limits card says "Waiting for
+  the first readings" with an **Add a source** link. A failed refresh shows a banner with the plain
+  message and its error code, keeps the last values and marks them stale. An unavailable provider is
+  a muted lane that says why.
+- **Urgency order, unless you chose your own.** The full window sorts most urgent first. A saved
+  drag-to-sort order still wins there (the hint reads "your order"); the tab always uses urgency
+  order.
+- **The tab never refreshes on its own.** It shows what the full window last fetched and updates
+  when that changes, so the two agree and the hub gets no extra requests.
+- **Tray menu.** **Show BURNRATE** is now **Open BURNRATE**, and there is a new **Show tab** item.
+  Clicking the tray icon hides whichever window is up, or brings back the one you used last.
+- **The sample data shows the new design.** `burnrate desktop --demo` now has Claude Code about to
+  run out (54% left on its 5-hour window), Codex and OpenCode Go drying before they refill, Grok
+  Build healthy and OpenRouter on a $23.40 balance.
+- **`burnrate doctor` checks the tab page.** Its `desktop_assets` check now also looks for
+  `tab_ui.html`.
+
+### Fixed
+
+- **The window opens at its true default size.** The frameless window used to come up a little
+  smaller than its default size when nothing had been saved. It is now sized before it is shown.
+
+### Removed
+
+- **The in-page Mini mode.** The mini bar and the Full/Mini toggle are gone from the full window,
+  replaced by the tab. An old saved `hudMini` preference moves to the tab surface and is removed.
+  The bridge method `set_hud_mini` stays as a no-op so an old page can't fail.
+
+### Upgrade notes
+
+- **The window opens at the new size unless you saved one.** A saved size is kept, except that
+  anything below the new 380 × 520 minimum is raised to it.
+- **If you left the app in Mini mode, it opens as the tab.** The old `hudMini` preference becomes
+  the tab surface on first start. Otherwise it opens as the full window; use **Shrink to tab** once
+  and the app remembers.
+- **A saved provider order keeps overriding urgency order in the full window.** Dragging providers
+  defines your own order. To go back to most urgent first, use **Reset** under Settings → Custom
+  provider order (it shows only while a custom order is saved). The tab is not affected: it always
+  sorts by urgency.
+- **No hub or protocol change.** The protocol version stays at 2, the same as 0.5.9, and no hub
+  code, setting or database migration changed. A 0.6.0 desktop works with a 0.5.9 hub.
+
 ## [0.5.9] - 2026-11-17
 
 ### Added
