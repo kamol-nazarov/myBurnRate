@@ -468,10 +468,13 @@ def _parse_pending_revokes(raw: str | None) -> list[dict]:
     return out
 
 
-def _merge_pending_revokes(existing: list[dict], new_entries: list[dict]) -> list[dict]:
+def _merge_pending_revokes_with_ids(
+    existing: list[dict], new_entries: list[dict]
+) -> tuple[list[dict], list[dict]]:
     now_iso = _format_pending_iso(datetime.now(UTC))
     merged: dict[tuple[str, str, str, str], dict] = {}
     order: list[tuple[str, str, str, str]] = []
+    matched_keys: list[tuple[str, str, str, str]] = []
     for item in existing:
         norm = _normalize_pending_entry(item, now_iso=now_iso, generate_id=False)
         if norm is None:
@@ -494,7 +497,14 @@ def _merge_pending_revokes(existing: list[dict], new_entries: list[dict]) -> lis
                 cur["machineId"] = norm["machineId"]
             if norm.get("hubUrl") and not cur.get("hubUrl"):
                 cur["hubUrl"] = norm["hubUrl"]
-    return [merged[k] for k in order]
+        if k not in matched_keys:
+            matched_keys.append(k)
+    return [merged[k] for k in order], [dict(merged[k]) for k in matched_keys]
+
+
+def _merge_pending_revokes(existing: list[dict], new_entries: list[dict]) -> list[dict]:
+    merged, _ = _merge_pending_revokes_with_ids(existing, new_entries)
+    return merged
 
 
 def _write_pending_revokes(use_vault, entries: list[dict], *, database_path: Path | str | None = None) -> None:
@@ -623,6 +633,158 @@ def enqueue_pending_revokes(
     raise CodedError("APP-903", status_code=503)
 
 
+def ack_pending_revokes(
+    database_path: Path | str | None,
+    acked_ids: set[str] | list[str] | tuple[str, ...],
+    *,
+    vault=None,
+) -> None:
+    """Atomically remove acknowledged pending revoke IDs under the shared lock."""
+    from spend_app.error_codes import CodedError
+
+    clean_ids = {str(i).strip() for i in (acked_ids or ()) if str(i).strip()}
+    if not clean_ids:
+        return
+    db_file = Path(database_path) if database_path is not None else None
+    lock_cm = db_secret_lock(db_file) if db_file is not None else None
+    if lock_cm is not None:
+        lock_cm.acquire()
+    try:
+        use_vault = _resolve_vault_for_pending(db_file, vault)
+        if use_vault is None:
+            raise CodedError("APP-903", status_code=503)
+        if db_file is not None:
+            from spend_app.db import connect, initialize
+
+            initialize(db_file)
+            with connect(db_file) as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                latest = _parse_pending_revokes(
+                    read_vault_secret(db_file, PENDING_REVOKE_VAULT_REF, vault=use_vault)
+                )
+                remaining = [item for item in latest if str(item.get("id") or "") not in clean_ids]
+                if len(remaining) != len(latest):
+                    _write_pending_revokes(use_vault, remaining, database_path=db_file)
+                conn.commit()
+        else:
+            latest = _parse_pending_revokes(
+                read_vault_secret(None, PENDING_REVOKE_VAULT_REF, vault=use_vault)
+            )
+            remaining = [item for item in latest if str(item.get("id") or "") not in clean_ids]
+            if len(remaining) != len(latest):
+                _write_pending_revokes(use_vault, remaining, database_path=None)
+    finally:
+        if lock_cm is not None:
+            lock_cm.release()
+
+
+def _revoke_or_queue_token(
+    database_path: Path | str | None,
+    hub_url: str | None,
+    token: str,
+    *,
+    kind: str,
+    endpoint: str,
+    machine_id: str | None = None,
+    vault=None,
+    client=None,
+    suppress_queue_error: bool = False,
+) -> bool:
+    from spend_app.error_codes import HUB_PROTOCOL_VERSION, CodedError
+    from spend_app.sync import _hub_post_with_cookie_isolation
+
+    clean_token = str(token or "").strip()
+    if not clean_token:
+        return True
+    clean_hub = str(hub_url or "").strip()
+    revoke_ok = False
+    if clean_hub:
+        headers = {
+            "Authorization": f"Bearer {clean_token}",
+            "Content-Type": "application/json",
+            "X-BURNRATE-Request": "1",
+            "X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION),
+        }
+        try:
+            res = _hub_post_with_cookie_isolation(
+                clean_hub,
+                endpoint,
+                headers,
+                json_body={},
+                client=client,
+                timeout=PENDING_REVOKE_CALL_TIMEOUT,
+            )
+            revoke_ok = response_is_terminal_revoke(kind, res)
+        except Exception:
+            revoke_ok = False
+    if revoke_ok:
+        return True
+    entry: dict = {"kind": kind, "token": clean_token}
+    if clean_hub:
+        entry["hubUrl"] = clean_hub
+    clean_mid = str(machine_id or "").strip()
+    if clean_mid:
+        entry["machineId"] = clean_mid
+    try:
+        enqueue_pending_revokes(
+            database_path,
+            [entry],
+            vault=vault,
+            hub_url=clean_hub or None,
+            client=client,
+        )
+    except CodedError:
+        if not suppress_queue_error:
+            raise
+    return False
+
+
+def revoke_or_queue_machine_token(
+    database_path: Path | str | None,
+    hub_url: str | None,
+    token: str,
+    *,
+    machine_id: str | None = None,
+    vault=None,
+    client=None,
+    suppress_queue_error: bool = False,
+) -> bool:
+    """Best-effort self-revoke a newly issued/fenced machine token, or queue it durably."""
+    return _revoke_or_queue_token(
+        database_path,
+        hub_url,
+        token,
+        kind="machine_self_revoke",
+        endpoint="/api/machines/self/revoke",
+        machine_id=machine_id,
+        vault=vault,
+        client=client,
+        suppress_queue_error=suppress_queue_error,
+    )
+
+
+def revoke_or_queue_owner_session(
+    database_path: Path | str | None,
+    hub_url: str | None,
+    token: str,
+    *,
+    vault=None,
+    client=None,
+    suppress_queue_error: bool = False,
+) -> bool:
+    """Best-effort logout a newly issued/fenced owner session, or queue it durably."""
+    return _revoke_or_queue_token(
+        database_path,
+        hub_url,
+        token,
+        kind="owner_logout",
+        endpoint="/api/auth/logout",
+        vault=vault,
+        client=client,
+        suppress_queue_error=suppress_queue_error,
+    )
+
+
 def flush_pending_revokes(
     database_path: Path | str | None,
     hub_url: str | None = None,
@@ -630,6 +792,7 @@ def flush_pending_revokes(
     vault=None,
     client=None,
     now: datetime | None = None,
+    clock=None,
     ignore_backoff: bool = False,
 ) -> bool:
     """Retry up to ``MAX_FLUSH_BATCH`` due pending revokes against the hub.
@@ -647,7 +810,18 @@ def flush_pending_revokes(
     from spend_app.hub_origin import hub_origin
     from spend_app.sync import _hub_post_with_cookie_isolation
 
-    moment = (now or datetime.now(UTC)).astimezone(UTC)
+    if clock is not None:
+        def _now_utc() -> datetime:
+            return clock().astimezone(UTC)
+    elif now is not None:
+        _fixed_now = now.astimezone(UTC)
+        def _now_utc() -> datetime:
+            return _fixed_now
+    else:
+        def _now_utc() -> datetime:
+            return datetime.now(UTC)
+
+    moment = _now_utc()
     db_file = Path(database_path) if database_path is not None else None
     lock_cm = db_secret_lock(db_file) if db_file is not None else None
 
@@ -702,7 +876,7 @@ def flush_pending_revokes(
 
     done_ids: set[str] = set()
     converted_to_owner_logout: set[str] = set()
-    retry_updates: dict[str, tuple[str, int | None]] = {}
+    retry_updates: dict[str, tuple[str, int | None, datetime]] = {}
     any_failed = False
 
     def _call_revoke(target_origin: str, endpoint: str, headers: dict, json_body: dict, kind: str, use_client):
@@ -748,14 +922,14 @@ def flush_pending_revokes(
         raw_item_hub = str(item.get("hubUrl") or "").strip()
         target_raw = raw_item_hub or fallback_origin or ""
         if not target_raw:
-            retry_updates[item_id] = ("NET-001", None)
+            retry_updates[item_id] = ("NET-001", None, _now_utc())
             any_failed = True
             continue
         try:
             target_origin = hub_origin(target_raw)
         except ValueError:
             err_c = "NET-003" if target_raw.lower().startswith("http://") else "NET-001"
-            retry_updates[item_id] = (err_c, None)
+            retry_updates[item_id] = (err_c, None, _now_utc())
             any_failed = True
             continue
         use_client = client if (client is not None and fallback_origin == target_origin) else None
@@ -782,7 +956,7 @@ def flush_pending_revokes(
             if ok_rev:
                 done_ids.add(item_id)
             else:
-                retry_updates[item_id] = (err_c or "HUB-501", retry_after)
+                retry_updates[item_id] = (err_c or "HUB-501", retry_after, _now_utc())
                 any_failed = True
         elif kind == "machine_self_revoke":
             ok_rev, err_c, retry_after = _call_revoke(
@@ -796,7 +970,7 @@ def flush_pending_revokes(
             if ok_rev:
                 done_ids.add(item_id)
             else:
-                retry_updates[item_id] = (err_c or "HUB-501", retry_after)
+                retry_updates[item_id] = (err_c or "HUB-501", retry_after, _now_utc())
                 any_failed = True
         elif kind == "owner" and mid:
             ok_m, err_m, ra_m = _call_revoke(
@@ -808,7 +982,7 @@ def flush_pending_revokes(
                 use_client,
             )
             if not ok_m:
-                retry_updates[item_id] = (err_m or "HUB-501", ra_m)
+                retry_updates[item_id] = (err_m or "HUB-501", ra_m, _now_utc())
                 any_failed = True
                 continue
             ok_o, err_o, ra_o = _call_revoke(
@@ -823,7 +997,7 @@ def flush_pending_revokes(
                 done_ids.add(item_id)
             else:
                 converted_to_owner_logout.add(item_id)
-                retry_updates[item_id] = (err_o or "HUB-501", ra_o)
+                retry_updates[item_id] = (err_o or "HUB-501", ra_o, _now_utc())
                 any_failed = True
         else:
             ok_o, err_o, ra_o = _call_revoke(
@@ -837,10 +1011,10 @@ def flush_pending_revokes(
             if ok_o:
                 done_ids.add(item_id)
             else:
-                retry_updates[item_id] = (err_o or "HUB-501", ra_o)
+                retry_updates[item_id] = (err_o or "HUB-501", ra_o, _now_utc())
                 any_failed = True
 
-    def _reconcile(latest: list[dict]) -> list[dict]:
+    def _reconcile(latest: list[dict], reconcile_at: datetime) -> list[dict]:
         updated: list[dict] = []
         for cur in latest:
             cid = str(cur["id"])
@@ -851,12 +1025,13 @@ def flush_pending_revokes(
                 item_copy["kind"] = "owner_logout"
                 item_copy.pop("machineId", None)
             if cid in retry_updates:
-                err_code, retry_after = retry_updates[cid]
+                err_code, retry_after, observed_at = retry_updates[cid]
                 new_attempts = int(item_copy.get("attempts") or 0) + 1
                 item_copy["attempts"] = new_attempts
                 item_copy["lastError"] = err_code
+                cooldown_base = reconcile_at if reconcile_at >= observed_at else observed_at
                 item_copy["nextAttemptAt"] = _backoff_next_attempt(
-                    moment, new_attempts, retry_after=retry_after
+                    cooldown_base, new_attempts, retry_after=retry_after
                 )
             updated.append(item_copy)
         return updated
@@ -872,14 +1047,14 @@ def flush_pending_revokes(
                 latest = _parse_pending_revokes(
                     read_vault_secret(db_file, PENDING_REVOKE_VAULT_REF, vault=use_vault)
                 )
-                updated = _reconcile(latest)
+                updated = _reconcile(latest, _now_utc())
                 _write_pending_revokes(use_vault, updated, database_path=db_file)
                 conn.commit()
         else:
             latest = _parse_pending_revokes(
                 read_vault_secret(None, PENDING_REVOKE_VAULT_REF, vault=use_vault)
             )
-            updated = _reconcile(latest)
+            updated = _reconcile(latest, _now_utc())
             _write_pending_revokes(use_vault, updated, database_path=None)
     finally:
         if lock_cm is not None:
@@ -1115,6 +1290,44 @@ def publish_spoke_credentials(
             raise
 
 
+def _build_clear_revoke_tasks(
+    queue_revokes_mode: str | None,
+    owner_tokens: list[str],
+    machine_tokens: list[str],
+    machine_id: str | None,
+    effective_hub_url: str | None,
+) -> list[dict]:
+    if not queue_revokes_mode:
+        return []
+    tasks: list[dict] = []
+    clean_hub = str(effective_hub_url or "").strip()
+    clean_mid = str(machine_id or "").strip()
+    if queue_revokes_mode == "full_sign_out":
+        if machine_tokens:
+            for mtok in machine_tokens:
+                entry: dict = {"kind": "machine_self_revoke", "token": mtok}
+                if clean_mid:
+                    entry["machineId"] = clean_mid
+                if clean_hub:
+                    entry["hubUrl"] = clean_hub
+                tasks.append(entry)
+        elif clean_mid and owner_tokens:
+            entry = {
+                "kind": "machine_revoke_owner",
+                "token": owner_tokens[0],
+                "machineId": clean_mid,
+            }
+            if clean_hub:
+                entry["hubUrl"] = clean_hub
+            tasks.append(entry)
+    for tok in owner_tokens:
+        entry = {"kind": "owner_logout", "token": tok}
+        if clean_hub:
+            entry["hubUrl"] = clean_hub
+        tasks.append(entry)
+    return tasks
+
+
 def clear_spoke_credentials(
     database_path: Path | str | None,
     *,
@@ -1124,55 +1337,169 @@ def clear_spoke_credentials(
     vault=None,
     prepare_state=None,
     apply_state=None,
+    queue_revokes_mode: str | None = None,
+    hub_url: str | None = None,
+    extra_owner_tokens: list[str] | None = None,
+    extra_machine_tokens: list[str] | None = None,
+    client=None,
+    allow_flush_on_overflow: bool = True,
 ) -> dict:
     """Clear vault credentials and SQLite spoke state under the shared DB lock.
 
-    Reads all stored owner/machine credentials (vault + SQLite state) inside the
-    same BEGIN IMMEDIATE transaction, deletes them from the vault, bumps
-    credentialGeneration, optionally sets ``signedOut``, and returns the exact
-    removed tokens and metadata so sign-out can revoke whatever won.
+    When ``queue_revokes_mode`` (``"owner_only"`` or ``"full_sign_out"``) is set,
+    computes exact revocation tasks inside the same ``BEGIN IMMEDIATE`` transaction,
+    merges & writes them to the verified pending-revoke vault entry FIRST, and
+    only deletes local credential refs / commits after durable persistence succeeds.
+    If capacity (``MAX_PENDING_REVOKES``) is exceeded or the vault write fails,
+    aborts with ``CodedError("APP-903", status_code=503)`` leaving local
+    credentials intact.
     """
+    from spend_app.error_codes import CodedError
+
     db_file = Path(database_path) if database_path is not None else None
     lock_cm = db_secret_lock(db_file) if db_file is not None else None
-    if lock_cm is not None:
-        lock_cm.acquire()
-    removed_owner: list[str] = []
-    removed_machine: list[str] = []
-    machine_id: str | None = None
-    hub_url: str | None = None
-    new_gen: int | None = None
-    try:
-        use_vault = vault
-        if use_vault is None and db_file is not None:
-            try:
-                use_vault = get_vault(db_file)
-            except Exception:
-                use_vault = None
+    clean_extra_owner = [str(t).strip() for t in (extra_owner_tokens or ()) if str(t).strip()]
+    clean_extra_machine = [str(t).strip() for t in (extra_machine_tokens or ()) if str(t).strip()]
 
-        if db_file is not None and db_file.is_file():
-            from spend_app.db import connect
-            from spend_app.setup_wizard import read_setup_state, write_setup_state
+    def _try_clear_once() -> tuple[bool, dict | None, str | None, object]:
+        if lock_cm is not None:
+            lock_cm.acquire()
+        removed_owner: list[str] = []
+        removed_machine: list[str] = []
+        machine_id: str | None = None
+        stored_hub_url: str | None = None
+        new_gen: int | None = None
+        queued_tasks: list[dict] = []
+        try:
+            use_vault = vault
+            if use_vault is None and db_file is not None:
+                try:
+                    use_vault = get_vault(db_file)
+                except Exception:
+                    use_vault = None
 
-            with connect(db_file) as connection:
-                connection.execute("PRAGMA secure_delete = ON")
-                connection.execute("BEGIN IMMEDIATE")
-                state = read_setup_state(connection)
-                if prepare_state is not None:
-                    prepare_state(connection, state)
+            if db_file is not None and db_file.is_file():
+                from spend_app.db import connect
+                from spend_app.setup_wizard import read_setup_state, write_setup_state
 
-                orig_spoke = dict(state.get("spokeConfig") or {})
-                orig_account = dict(state.get("account") or {})
-                machine_id = str(orig_account.get("machineId") or "").strip() or None
-                hub_url = str(orig_spoke.get("hubUrl") or "").strip() or None
+                with connect(db_file) as connection:
+                    connection.execute("PRAGMA secure_delete = ON")
+                    connection.execute("BEGIN IMMEDIATE")
+                    state = read_setup_state(connection)
+                    if prepare_state is not None:
+                        prepare_state(connection, state)
 
+                    orig_spoke = dict(state.get("spokeConfig") or {})
+                    orig_account = dict(state.get("account") or {})
+                    machine_id = str(orig_account.get("machineId") or "").strip() or None
+                    stored_hub_url = str(orig_spoke.get("hubUrl") or "").strip() or None
+                    effective_hub = str(hub_url or stored_hub_url or "").strip() or None
+
+                    if clear_owner_session:
+                        v_owner = read_vault_secret(db_file, OWNER_SESSION_VAULT_REF, vault=use_vault)
+                        s_owner = str(orig_spoke.get("ownerSession") or "").strip() or None
+                        removed_owner = list(
+                            dict.fromkeys(t for t in (v_owner, s_owner, *clean_extra_owner) if t)
+                        )
+                    if clear_machine_token:
+                        v_machine = read_vault_secret(db_file, MACHINE_TOKEN_VAULT_REF, vault=use_vault)
+                        s_machine = str(orig_spoke.get("token") or "").strip() or None
+                        removed_machine = list(
+                            dict.fromkeys(t for t in (v_machine, s_machine, *clean_extra_machine) if t)
+                        )
+
+                    tasks_to_queue = _build_clear_revoke_tasks(
+                        queue_revokes_mode,
+                        removed_owner,
+                        removed_machine,
+                        machine_id,
+                        effective_hub,
+                    )
+                    if tasks_to_queue:
+                        if use_vault is None:
+                            connection.rollback()
+                            raise CodedError("APP-903", status_code=503)
+                        existing = _parse_pending_revokes(
+                            read_vault_secret(db_file, PENDING_REVOKE_VAULT_REF, vault=use_vault)
+                        )
+                        merged, queued_tasks = _merge_pending_revokes_with_ids(existing, tasks_to_queue)
+                        if len(merged) > MAX_PENDING_REVOKES:
+                            connection.rollback()
+                            return False, None, effective_hub, use_vault
+                        _write_pending_revokes(use_vault, merged, database_path=db_file)
+
+                    if use_vault is not None:
+                        if clear_owner_session:
+                            try:
+                                use_vault.delete(OWNER_SESSION_VAULT_REF)
+                            except Exception:
+                                pass
+                        if clear_machine_token:
+                            try:
+                                use_vault.delete(MACHINE_TOKEN_VAULT_REF)
+                            except Exception:
+                                pass
+
+                    spoke = dict(state.get("spokeConfig") or {})
+                    prev_gen = int(spoke.get("credentialGeneration") or 0)
+                    if clear_owner_session:
+                        spoke.pop("ownerSession", None)
+                        spoke.pop("ownerSessionExpiresAt", None)
+                        spoke.pop("ownerSessionRotationRequired", None)
+                    if clear_machine_token:
+                        spoke.pop("token", None)
+                        spoke.pop("tokenExpiresAt", None)
+                        spoke.pop("rotationRequired", None)
+                    if mark_signed_out:
+                        spoke["signedOut"] = True
+                    state["spokeConfig"] = spoke
+                    if apply_state is not None:
+                        apply_state(connection, state)
+                    spoke = dict(state.get("spokeConfig") or {})
+                    if mark_signed_out:
+                        spoke["signedOut"] = True
+                    new_gen = max(prev_gen, int(spoke.get("credentialGeneration") or 0)) + 1
+                    spoke["credentialGeneration"] = new_gen
+                    state["spokeConfig"] = spoke
+                    write_setup_state(connection, state)
+                    connection.commit()
+            else:
+                effective_hub = str(hub_url or "").strip() or None
                 if clear_owner_session:
-                    v_owner = read_vault_secret(db_file, OWNER_SESSION_VAULT_REF, vault=use_vault)
-                    s_owner = str(orig_spoke.get("ownerSession") or "").strip() or None
-                    removed_owner = list(dict.fromkeys(t for t in (v_owner, s_owner) if t))
+                    v_owner = (
+                        read_vault_secret(None, OWNER_SESSION_VAULT_REF, vault=use_vault)
+                        if use_vault is not None
+                        else None
+                    )
+                    removed_owner = list(
+                        dict.fromkeys(t for t in (v_owner, *clean_extra_owner) if t)
+                    )
                 if clear_machine_token:
-                    v_machine = read_vault_secret(db_file, MACHINE_TOKEN_VAULT_REF, vault=use_vault)
-                    s_machine = str(orig_spoke.get("token") or "").strip() or None
-                    removed_machine = list(dict.fromkeys(t for t in (v_machine, s_machine) if t))
+                    v_machine = (
+                        read_vault_secret(None, MACHINE_TOKEN_VAULT_REF, vault=use_vault)
+                        if use_vault is not None
+                        else None
+                    )
+                    removed_machine = list(
+                        dict.fromkeys(t for t in (v_machine, *clean_extra_machine) if t)
+                    )
+                tasks_to_queue = _build_clear_revoke_tasks(
+                    queue_revokes_mode,
+                    removed_owner,
+                    removed_machine,
+                    None,
+                    effective_hub,
+                )
+                if tasks_to_queue:
+                    if use_vault is None:
+                        raise CodedError("APP-903", status_code=503)
+                    existing = _parse_pending_revokes(
+                        read_vault_secret(None, PENDING_REVOKE_VAULT_REF, vault=use_vault)
+                    )
+                    merged, queued_tasks = _merge_pending_revokes_with_ids(existing, tasks_to_queue)
+                    if len(merged) > MAX_PENDING_REVOKES:
+                        return False, None, effective_hub, use_vault
+                    _write_pending_revokes(use_vault, merged, database_path=None)
 
                 if use_vault is not None:
                     if clear_owner_session:
@@ -1186,56 +1513,36 @@ def clear_spoke_credentials(
                         except Exception:
                             pass
 
-                spoke = dict(state.get("spokeConfig") or {})
-                prev_gen = int(spoke.get("credentialGeneration") or 0)
-                if clear_owner_session:
-                    spoke.pop("ownerSession", None)
-                    spoke.pop("ownerSessionExpiresAt", None)
-                    spoke.pop("ownerSessionRotationRequired", None)
-                if clear_machine_token:
-                    spoke.pop("token", None)
-                    spoke.pop("tokenExpiresAt", None)
-                    spoke.pop("rotationRequired", None)
-                if mark_signed_out:
-                    spoke["signedOut"] = True
-                state["spokeConfig"] = spoke
-                if apply_state is not None:
-                    apply_state(connection, state)
-                spoke = dict(state.get("spokeConfig") or {})
-                if mark_signed_out:
-                    spoke["signedOut"] = True
-                new_gen = max(prev_gen, int(spoke.get("credentialGeneration") or 0)) + 1
-                spoke["credentialGeneration"] = new_gen
-                state["spokeConfig"] = spoke
-                write_setup_state(connection, state)
-                connection.commit()
-        elif use_vault is not None:
-            if clear_owner_session:
-                v_owner = read_vault_secret(None, OWNER_SESSION_VAULT_REF, vault=use_vault)
-                if v_owner:
-                    removed_owner = [v_owner]
-                try:
-                    use_vault.delete(OWNER_SESSION_VAULT_REF)
-                except Exception:
-                    pass
-            if clear_machine_token:
-                v_machine = read_vault_secret(None, MACHINE_TOKEN_VAULT_REF, vault=use_vault)
-                if v_machine:
-                    removed_machine = [v_machine]
-                try:
-                    use_vault.delete(MACHINE_TOKEN_VAULT_REF)
-                except Exception:
-                    pass
-    finally:
-        if lock_cm is not None:
-            lock_cm.release()
-    return {
-        "ownerTokens": removed_owner,
-        "machineTokens": removed_machine,
-        "machineId": machine_id,
-        "hubUrl": hub_url,
-        "credentialGeneration": new_gen,
-    }
+            return True, {
+                "ownerTokens": removed_owner,
+                "machineTokens": removed_machine,
+                "machineId": machine_id,
+                "hubUrl": stored_hub_url,
+                "credentialGeneration": new_gen,
+                "queuedTasks": queued_tasks,
+            }, None, use_vault
+        finally:
+            if lock_cm is not None:
+                lock_cm.release()
+
+    ok, result, overflow_hub, used_vault = _try_clear_once()
+    if ok and result is not None:
+        return result
+    if allow_flush_on_overflow and overflow_hub:
+        try:
+            flush_pending_revokes(
+                db_file,
+                overflow_hub,
+                vault=used_vault,
+                client=client,
+                ignore_backoff=True,
+            )
+        except Exception:
+            pass
+        ok2, result2, _, _ = _try_clear_once()
+        if ok2 and result2 is not None:
+            return result2
+    raise CodedError("APP-903", status_code=503)
 
 
 def test_provider(source, key):

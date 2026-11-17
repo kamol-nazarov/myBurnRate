@@ -1583,6 +1583,7 @@ def ensure_fresh_owner_session(
         publish_spoke_credentials,
         read_vault_secret,
         response_is_terminal_revoke,
+        revoke_or_queue_owner_session,
     )
     from spend_app.error_codes import CodedError, HUB_PROTOCOL_VERSION, map_transport_error
     from spend_app.setup_wizard import read_setup_state
@@ -1726,7 +1727,16 @@ def ensure_fresh_owner_session(
                     client=client,
                 )
             raise CodedError("AUTH-107", status_code=401) from None
-        except CodedError:
+        except CodedError as exc:
+            revoke_or_queue_owner_session(
+                db_file,
+                hub_url,
+                new_token,
+                vault=vault,
+                client=client,
+                suppress_queue_error=(exc.code == "APP-903"),
+            )
+
             def _fence_clear_on_err(_conn, current_state) -> None:
                 sp = current_state.get("spokeConfig") or {}
                 cur_gen = int(sp.get("credentialGeneration") or 0)
@@ -1745,8 +1755,18 @@ def ensure_fresh_owner_session(
                     prepare_state=_fence_clear_on_err,
                 )
                 clear_hub_proxy_cache()
-            except _StaleOwnerLifecycle:
+            except (_StaleOwnerLifecycle, CodedError):
                 pass
+            raise
+        except Exception:
+            revoke_or_queue_owner_session(
+                db_file,
+                hub_url,
+                new_token,
+                vault=vault,
+                client=client,
+                suppress_queue_error=True,
+            )
             raise
         clear_hub_proxy_cache()
         return new_token
