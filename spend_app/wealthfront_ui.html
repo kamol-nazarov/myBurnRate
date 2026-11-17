@@ -2305,10 +2305,75 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
 
 
 /* H9 analytics */
+.hero[hidden],
+.section-stack[hidden],
+.h9-more-btn[hidden] {
+  display: none !important;
+}
+.section-stack {
+  grid-template-columns: minmax(0, 1fr);
+}
+.hero-inner {
+  min-width: 0;
+}
+.h9-period-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 2px;
+  min-width: 0;
+  width: 100%;
+}
+.h9-period-row .period-bar {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-top: 0;
+}
+.period-bar.is-more-active .period-indicator {
+  opacity: 0;
+}
+.h9-more-btn {
+  appearance: none;
+  flex-shrink: 0;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 7.5px;
+  border: 1px solid var(--border);
+  background: var(--seg-bg);
+  color: var(--ink-secondary);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 560;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.h9-more-btn:hover {
+  color: var(--ink);
+  border-color: var(--border-input);
+}
+.h9-more-btn.active {
+  background: var(--seg-thumb);
+  color: var(--ink);
+  font-weight: 660;
+  border-color: var(--seg-border);
+  box-shadow: var(--seg-shadow);
+}
+.h9-range-popover {
+  width: 184px;
+  max-height: min(340px, 72vh);
+  overflow-y: auto;
+}
 .h9-controls {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 5px;
-  margin-top: 6px;
+  margin-top: 5px;
+  min-width: 0;
 }
 .h9-range-bar,
 .h9-tool-bar {
@@ -2316,6 +2381,8 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
   flex-wrap: wrap;
   align-items: center;
   gap: 3px;
+  min-width: 0;
+  max-width: 100%;
 }
 .h9-range-pill,
 .h9-tool-pill,
@@ -2369,7 +2436,10 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
 }
 .h9-analytics-section {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 7px;
+  min-width: 0;
+  max-width: 100%;
 }
 .h9-analytics-section[hidden],
 .h9-detail-view[hidden],
@@ -2386,7 +2456,13 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
   border: 1px solid var(--h9-banner-quiet-border);
   background: var(--h9-banner-quiet-bg);
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 3px;
+  min-width: 0;
+}
+.h9-banner-note,
+.h9-banner-meta {
+  overflow-wrap: anywhere;
 }
 .h9-banner[data-state="exact"] {
   background: var(--h9-banner-exact-bg);
@@ -2430,6 +2506,7 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
   padding: 8px 10px;
   box-shadow: var(--shadow-card);
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 3px;
   min-width: 0;
 }
@@ -2494,8 +2571,10 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
   box-shadow: var(--shadow-card);
   padding: 10px 12px;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   min-width: 0;
+  max-width: 100%;
 }
 .h9-card-head {
   display: flex;
@@ -2690,8 +2769,9 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
 }
 .h9-legend-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(126px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(135px, 1fr));
   gap: 6px;
+  min-width: 0;
 }
 .h9-legend-card {
   appearance: none;
@@ -3123,9 +3203,11 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
 .h9-detail-view {
   padding: 8px 10px 14px;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   max-width: 540px;
   width: 100%;
+  min-width: 0;
   margin: 0 auto;
 }
 .h9-detail-topbar {
@@ -3364,17 +3446,22 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
         </div>
 
         <!-- Wealthfront Time-Range Pills -->
-        <div class="period-bar" id="periodBar">
-          <div class="period-indicator" id="periodIndicator"></div>
-          <button class="period-pill active" data-period="today" type="button">Today</button>
-          <button class="period-pill" data-period="week" type="button">7 days</button>
-          <button class="period-pill" data-period="month" type="button" title="This calendar month">Month</button>
-          <button class="period-pill" data-period="all" type="button">All</button>
+        <div class="h9-period-row">
+          <div class="period-bar" id="periodBar">
+            <div class="period-indicator" id="periodIndicator"></div>
+            <button class="period-pill active" data-period="today" type="button">Today</button>
+            <button class="period-pill" data-period="week" type="button">7 days</button>
+            <button class="period-pill" data-period="month" type="button" title="This calendar month">Month</button>
+            <button class="period-pill" data-period="all" type="button">All</button>
+          </div>
+          <button class="h9-more-btn" id="h9MoreRangeBtn" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="h9RangePopover" aria-label="More time ranges" hidden>
+            <span id="h9MoreRangeLabel">More</span>
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+          </button>
         </div>
 
         <!-- H9 analytics -->
         <div class="h9-controls" id="h9Controls" hidden>
-          <div class="h9-range-bar" id="h9RangeBar" role="radiogroup" aria-label="Analytics time range"></div>
           <div class="h9-tool-bar" id="h9ToolBar" role="radiogroup" aria-label="Tool filter" hidden></div>
         </div>
 
@@ -3575,7 +3662,10 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
     <section class="h9-detail-view" id="h9DetailView" aria-label="Entity analytics detail" hidden>
       <div class="h9-detail-topbar">
         <button type="button" class="h9-back-btn" id="h9DetailBack">&#8592; Overview</button>
-        <div class="h9-range-bar" id="h9DetailRanges" role="radiogroup" aria-label="Detail time range"></div>
+        <button type="button" class="h9-more-btn active" id="h9DetailRangeBtn" aria-haspopup="menu" aria-expanded="false" aria-controls="h9RangePopover" aria-label="Detail time range">
+          <span id="h9DetailRangeLabel">1d</span>
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
       </div>
 
       <article class="h9-card">
@@ -3662,6 +3752,10 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
 <!-- Scope Selector Popover -->
 <div class="popover-backdrop" id="scopeBackdrop"></div>
 <div class="scope-popover" id="scopePopover" role="menu" aria-label="Computer scope" inert></div>
+
+<!-- H9 Analytics Range Popover -->
+<div class="popover-backdrop" id="h9RangeBackdrop"></div>
+<div class="scope-popover h9-range-popover" id="h9RangePopover" role="menu" aria-label="More time ranges" inert></div>
 
 <!-- Slide-over Settings Sheet -->
 <aside class="settings-sheet" id="settingsSheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle" inert>
@@ -3809,6 +3903,9 @@ const state = {
   h9DetailPinned: null,
   h9Request: 0,
   h9DetailReturnFocus: null,
+  h9SavedScrollTop: 0,
+  h9RangeAnchorId: null,
+  h9RangeIncludeMain: false,
   period: "today",
   machine: "all",
   topmost: false,
@@ -3846,7 +3943,8 @@ const state = {
 function syncUiBusy() {
   if (!apiAvailable() || !window.pywebview.api.set_ui_busy) return;
   const scopeOpen = document.getElementById("scopePopover")?.classList.contains("open");
-  window.pywebview.api.set_ui_busy(!!(state.settingsOpen || scopeOpen));
+  const rangeOpen = document.getElementById("h9RangePopover")?.classList.contains("open");
+  window.pywebview.api.set_ui_busy(!!(state.settingsOpen || scopeOpen || rangeOpen));
 }
 
 function updatePeriodIndicator() {
@@ -3903,7 +4001,7 @@ function animateHeroNumber(targetVal, hasEvents, unavailable) {
   const t0 = performance.now();
   const dur = 320;
   function step(now) {
-    const p = Math.min(1, (now - t0) / dur);
+    const p = Math.min(1, Math.max(0, (now - t0) / dur));
     const eased = 1 - Math.pow(1 - p, 3);
     const cur = start + (end - start) * eased;
     state.displayedUsd = cur;
@@ -6383,6 +6481,7 @@ document.getElementById("sheetBody").addEventListener("keydown", (e) => {
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (closeScopePopover(true)) { e.preventDefault(); return; }
+  if (typeof closeH9RangePopover === "function" && closeH9RangePopover(true)) { e.preventDefault(); return; }
   if (state.settingsOpen) {
     e.preventDefault();
     if (state.editingSource) {
@@ -6469,6 +6568,7 @@ document.querySelectorAll(".rz").forEach(el => {
 window.addEventListener("resize", () => {
   if (state.report) renderChart(false);
   if (document.getElementById("scopePopover").classList.contains("open")) positionScopePopover();
+  if (document.getElementById("h9RangePopover")?.classList.contains("open") && typeof positionH9RangePopover === "function") positionH9RangePopover();
 });
 
 bindChartScrub();
@@ -6610,7 +6710,9 @@ function h9SyncHeroFromFilter() {
   const summary = state.h9Summary;
   const totals = summary && summary.totals ? summary.totals : null;
   if (totals) {
+    if (heroAnimId) { cancelAnimationFrame(heroAnimId); heroAnimId = 0; }
     const val = h9Finite(totals.trackedValue) ?? h9Finite(totals.knownValue);
+    if (val != null) state.displayedUsd = val;
     const valEl = document.getElementById("heroValue");
     if (valEl) valEl.textContent = val == null ? "—" : h9Usd(val);
     const tokEl = document.getElementById("heroTokens");
@@ -6623,15 +6725,103 @@ function h9SyncHeroFromFilter() {
   }
 }
 
+const H9_MAIN_WINDOWS = new Set(["1d", "1w", "mtd", "all"]);
+const H9_MORE_WINDOWS = [
+  { key: "15m", label: "15m", note: "Last 15 minutes" },
+  { key: "30m", label: "30m", note: "Last 30 minutes" },
+  { key: "1h", label: "1h", note: "Last hour" },
+  { key: "3h", label: "3h", note: "Last 3 hours" },
+  { key: "6h", label: "6h", note: "Last 6 hours" },
+  { key: "12h", label: "12h", note: "Last 12 hours" },
+  { key: "1w", label: "1w", note: "Last 7 days" },
+  { key: "1mo", label: "1mo", note: "Rolling 30 days" },
+  { key: "mtd", label: "MTD", note: "Month to date" },
+  { key: "ytd", label: "YTD", note: "Year to date" }
+];
+const H9_DETAIL_POPOVER_WINDOWS = [
+  { key: "1d", label: "Today (1d)", note: "Last 24 hours" },
+  ...H9_MORE_WINDOWS,
+  { key: "all", label: "All", note: "All recorded usage" }
+];
+
 function renderH9Ranges() {
-  const roots = [document.getElementById("h9RangeBar"), document.getElementById("h9DetailRanges")];
-  roots.forEach(root => {
-    if (!root) return;
-    root.innerHTML = H9_WINDOWS.map(w => {
-      const on = w.key === state.analyticsWindow;
-      return `<button type="button" class="h9-range-pill ${on ? "active" : ""}" role="radio" aria-checked="${on}" data-h9-window="${esc(w.key)}">${esc(w.label)}</button>`;
-    }).join("");
-  });
+  const hasAnalytics = apiHas("fetch_analytics_summary");
+  const moreBtn = document.getElementById("h9MoreRangeBtn");
+  const moreLbl = document.getElementById("h9MoreRangeLabel");
+  const periodBar = document.getElementById("periodBar");
+  const isMain = H9_MAIN_WINDOWS.has(state.analyticsWindow);
+  if (periodBar) {
+    periodBar.classList.toggle("is-more-active", hasAnalytics && !isMain);
+    periodBar.querySelectorAll(".period-pill").forEach(b => {
+      b.classList.toggle("active", (!hasAnalytics || isMain) && b.dataset.period === state.period);
+    });
+  }
+  if (moreBtn) {
+    moreBtn.hidden = !hasAnalytics;
+    moreBtn.classList.toggle("active", !isMain);
+    if (moreLbl) moreLbl.textContent = isMain ? "More" : h9WindowLabel(state.analyticsWindow);
+  }
+  const dLbl = document.getElementById("h9DetailRangeLabel");
+  if (dLbl) dLbl.textContent = h9WindowLabel(state.analyticsWindow);
+}
+
+function positionH9RangePopover() {
+  const pop = document.getElementById("h9RangePopover");
+  const anchor = document.getElementById(state.h9RangeAnchorId || "h9MoreRangeBtn");
+  if (!pop || !anchor) return;
+  const r = anchor.getBoundingClientRect();
+  const margin = 8;
+  const viewW = document.documentElement.clientWidth || window.innerWidth;
+  const width = Math.min(196, viewW - margin * 2);
+  const preferred = r.right - width;
+  const left = Math.max(margin, Math.min(Math.round(preferred), viewW - width - margin));
+  pop.style.width = `${width}px`;
+  pop.style.top = `${Math.round(r.bottom + 5)}px`;
+  pop.style.left = `${left}px`;
+  pop.style.right = "auto";
+  pop.style.transformOrigin = "top right";
+}
+
+function closeH9RangePopover(returnFocus = true) {
+  const pop = document.getElementById("h9RangePopover");
+  if (!pop || !pop.classList.contains("open")) return false;
+  pop.classList.remove("open");
+  document.getElementById("h9RangeBackdrop")?.classList.remove("open");
+  pop.inert = true;
+  const anchor = document.getElementById(state.h9RangeAnchorId || "h9MoreRangeBtn");
+  if (anchor) anchor.setAttribute("aria-expanded", "false");
+  syncUiBusy();
+  if (returnFocus && anchor && anchor.isConnected) anchor.focus();
+  return true;
+}
+
+function openH9RangePopover(anchorId, includeMain = false) {
+  closeScopePopover(false);
+  const pop = document.getElementById("h9RangePopover");
+  const back = document.getElementById("h9RangeBackdrop");
+  const anchor = document.getElementById(anchorId);
+  if (!pop || !anchor) return;
+  if (pop.classList.contains("open") && state.h9RangeAnchorId === anchorId) {
+    closeH9RangePopover(true);
+    return;
+  }
+  state.h9RangeAnchorId = anchorId;
+  state.h9RangeIncludeMain = includeMain;
+  positionH9RangePopover();
+  const items = includeMain ? H9_DETAIL_POPOVER_WINDOWS : H9_MORE_WINDOWS;
+  pop.innerHTML = items.map(item => {
+    const on = item.key === state.analyticsWindow;
+    return `<button type="button" class="scope-opt ${on ? "selected" : ""}" role="menuitemradio" aria-checked="${on}" data-h9-window="${esc(item.key)}">
+      <span>${esc(item.label)}</span>
+      ${on ? '<span aria-hidden="true">&#10003;</span>' : ""}
+    </button>`;
+  }).join("");
+  pop.inert = false;
+  pop.classList.add("open");
+  back?.classList.add("open");
+  anchor.setAttribute("aria-expanded", "true");
+  syncUiBusy();
+  (pop.querySelector(".scope-opt.selected") || pop.querySelector(".scope-opt"))?.focus();
 }
 
 function renderH9ToolBar(data) {
@@ -7356,8 +7546,21 @@ async function loadH9Analytics(showErrors = false) {
   }
 }
 
+function h9JumpScroll(el, top) {
+  if (!el) return;
+  const prev = el.style.scrollBehavior;
+  el.style.scrollBehavior = "auto";
+  el.scrollTop = top;
+  el.style.scrollBehavior = prev;
+}
+
 async function openH9Detail(kind, key, opts = {}) {
   if (!apiHas("fetch_entity_detail")) return;
+  closeH9RangePopover(false);
+  const scrollEl = document.getElementById("scrollBody");
+  if (state.h9View !== "detail" && scrollEl) {
+    state.h9SavedScrollTop = scrollEl.scrollTop || 0;
+  }
   state.h9Entity = { kind, key };
   state.h9View = "detail";
   state.h9DetailHover = null;
@@ -7367,9 +7570,9 @@ async function openH9Detail(kind, key, opts = {}) {
   document.querySelector(".section-stack").hidden = true;
   const dv = document.getElementById("h9DetailView");
   dv.hidden = false;
-  document.getElementById("scrollBody").scrollTop = 0;
+  h9JumpScroll(scrollEl, 0);
   renderH9Ranges();
-  if (!opts.preserveFocus) document.getElementById("h9DetailBack")?.focus();
+  if (!opts.preserveFocus) document.getElementById("h9DetailBack")?.focus({ preventScroll: true });
   const reqId = ++state.h9Request;
   try {
     const res = await window.pywebview.api.fetch_entity_detail(kind, key, state.analyticsWindow, state.machine || "all");
@@ -7386,6 +7589,7 @@ async function openH9Detail(kind, key, opts = {}) {
 
 function closeH9Detail(returnFocus = true) {
   if (state.h9View !== "detail") return false;
+  closeH9RangePopover(false);
   state.h9View = "overview";
   state.h9Entity = null;
   state.h9DetailHover = null;
@@ -7393,9 +7597,17 @@ function closeH9Detail(returnFocus = true) {
   document.getElementById("h9DetailView").hidden = true;
   document.getElementById("heroSection").hidden = false;
   document.querySelector(".section-stack").hidden = false;
+  const scrollEl = document.getElementById("scrollBody");
+  const savedScroll = state.h9SavedScrollTop || 0;
+  h9JumpScroll(scrollEl, savedScroll);
   if (returnFocus && state.h9DetailReturnFocus && state.h9DetailReturnFocus.isConnected) {
-    state.h9DetailReturnFocus.focus();
+    try {
+      state.h9DetailReturnFocus.focus({ preventScroll: true });
+    } catch {
+      state.h9DetailReturnFocus.focus();
+    }
   }
+  h9JumpScroll(scrollEl, savedScroll);
   state.h9DetailReturnFocus = null;
   loadH9Analytics(false);
   return true;
@@ -7409,7 +7621,6 @@ function setH9Window(winKey) {
   state.h9Pinned = null;
   state.h9DetailHover = null;
   state.h9DetailPinned = null;
-  document.querySelectorAll(".period-pill").forEach(b => b.classList.toggle("active", b.dataset.period === state.period));
   updatePeriodIndicator();
   renderH9Ranges();
   if (apiHas("save_analytics_window")) {
@@ -7436,15 +7647,33 @@ function setH9Tool(toolKey) {
 }
 
 function bindH9Events() {
-  const bindRangeGroup = (el) => {
-    if (!el) return;
-    el.addEventListener("click", (e) => {
+  document.getElementById("h9MoreRangeBtn")?.addEventListener("click", () => openH9RangePopover("h9MoreRangeBtn", false));
+  document.getElementById("h9DetailRangeBtn")?.addEventListener("click", () => openH9RangePopover("h9DetailRangeBtn", true));
+  document.getElementById("h9RangeBackdrop")?.addEventListener("click", () => closeH9RangePopover(true));
+  const rPop = document.getElementById("h9RangePopover");
+  if (rPop) {
+    rPop.addEventListener("click", (e) => {
       const btn = e.target.closest("[data-h9-window]");
-      if (btn) setH9Window(btn.dataset.h9Window);
+      if (!btn) return;
+      const win = btn.dataset.h9Window;
+      closeH9RangePopover(true);
+      setH9Window(win);
     });
-  };
-  bindRangeGroup(document.getElementById("h9RangeBar"));
-  bindRangeGroup(document.getElementById("h9DetailRanges"));
+    rPop.addEventListener("keydown", (e) => {
+      const opts = Array.from(rPop.querySelectorAll(".scope-opt"));
+      const at = opts.indexOf(document.activeElement);
+      let next = -1;
+      if (e.key === "ArrowDown") next = (at + 1) % opts.length;
+      else if (e.key === "ArrowUp") next = (at - 1 + opts.length) % opts.length;
+      else if (e.key === "Home") next = 0;
+      else if (e.key === "End") next = opts.length - 1;
+      else if (e.key === "Tab") { e.preventDefault(); closeH9RangePopover(true); return; }
+      if (next >= 0) {
+        e.preventDefault();
+        opts[next].focus();
+      }
+    });
+  }
 
   const toolBar = document.getElementById("h9ToolBar");
   if (toolBar) {

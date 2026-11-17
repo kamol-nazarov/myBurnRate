@@ -474,25 +474,60 @@ def _exact_coverage_fixture() -> dict:
 
 
 RANGE_AND_TOOL_PROBE = """
-await until(() => !document.getElementById('h9AnalyticsSection').hidden && document.querySelectorAll('#h9RangeBar [data-h9-window]').length === 12);
+await until(() => !document.getElementById('h9AnalyticsSection').hidden && !document.getElementById('h9MoreRangeBtn').hidden);
 const out = {};
-out.ranges = [...document.querySelectorAll('#h9RangeBar [data-h9-window]')].map(b => b.dataset.h9Window);
-out.initialActive = document.querySelector('#h9RangeBar .h9-range-pill.active')?.dataset.h9Window;
+const periodBar = document.getElementById('periodBar');
+const moreBtn = document.getElementById('h9MoreRangeBtn');
+const moreLabel = document.getElementById('h9MoreRangeLabel');
+const pop = document.getElementById('h9RangePopover');
 
-// Click 6h range pill -> persists via save_analytics_window, syncs #periodBar, refreshes summary
-document.querySelector('#h9RangeBar [data-h9-window="6h"]').click();
+out.removedLegacy = {
+  h9RangeBar: document.getElementById('h9RangeBar'),
+  h9DetailRanges: document.getElementById('h9DetailRanges'),
+};
+out.initial = {
+  mainPills: [...periodBar.querySelectorAll('.period-pill')].map(b => b.dataset.period),
+  activePills: [...periodBar.querySelectorAll('.period-pill.active')].map(b => b.dataset.period),
+  isMoreActiveClass: periodBar.classList.contains('is-more-active'),
+  moreHidden: moreBtn.hidden,
+  moreActive: moreBtn.classList.contains('active'),
+  moreLabel: moreLabel.textContent,
+};
+
+// Open #h9RangePopover via #h9MoreRangeBtn and inspect the 10 extra windows
+moreBtn.click();
+await until(() => pop.classList.contains('open'));
+out.morePopover = {
+  open: pop.classList.contains('open'),
+  options: [...pop.querySelectorAll('.scope-opt[data-h9-window]')].map(b => b.dataset.h9Window),
+};
+
+// Select 6h from popover -> active More state, no active period-pill, saves 6h, refreshes summary
+pop.querySelector('[data-h9-window="6h"]').click();
 await until(() => state.h9Summary?.window?.key === '6h');
 out.after6h = {
-  activeWindow: document.querySelector('#h9RangeBar .h9-range-pill.active')?.dataset.h9Window,
-  activePeriod: document.querySelector('#periodBar .period-pill.active')?.dataset.period,
+  popOpen: pop.classList.contains('open'),
+  moreActive: moreBtn.classList.contains('active'),
+  moreLabel: moreLabel.textContent,
+  isMoreActiveClass: periodBar.classList.contains('is-more-active'),
+  activePills: [...periodBar.querySelectorAll('.period-pill.active')].map(b => b.dataset.period),
   summaryWin: state.h9Summary?.window?.key,
   saveCalls: window.__calls.filter(c => c[0] === 'save_analytics_window'),
 };
 
-// Click 1w range pill -> syncs #periodBar to 'week'
-document.querySelector('#h9RangeBar [data-h9-window="1w"]').click();
+// Click main period pill 'week' (7 days) -> clears More active, restores 'More' label, loads 1w
+periodBar.querySelector('[data-period="week"]').click();
 await until(() => state.h9Summary?.window?.key === '1w');
-out.after1wPeriod = document.querySelector('#periodBar .period-pill.active')?.dataset.period;
+out.afterWeekPill = {
+  moreActive: moreBtn.classList.contains('active'),
+  moreLabel: moreLabel.textContent,
+  isMoreActiveClass: periodBar.classList.contains('is-more-active'),
+  activePills: [...periodBar.querySelectorAll('.period-pill.active')].map(b => b.dataset.period),
+  summaryWin: state.h9Summary?.window?.key,
+};
+
+// Wait for hero number tween to settle before capturing baseline hero value
+await until(() => document.getElementById('heroValue').textContent === '$127.34');
 
 // Filter to claude-code
 const heroAllVal = document.getElementById('heroValue').textContent;
@@ -534,13 +569,44 @@ def test_h9_ui_range_and_tool_filter(tmp_path):
         extra_css=FAST,
     )
     r = probe(html, 960, tmp_path, height=900)
-    assert r["ranges"] == list(ANALYTICS_WINDOWS)
-    assert r["initialActive"] == "1d"
-    assert r["after6h"]["activeWindow"] == "6h"
-    assert r["after6h"]["activePeriod"] == "today"
-    assert r["after6h"]["summaryWin"] == "6h"
-    assert r["after6h"]["saveCalls"] == [["save_analytics_window", "6h"]]
-    assert r["after1wPeriod"] == "week"
+    assert r["removedLegacy"] == {"h9RangeBar": None, "h9DetailRanges": None}
+    assert r["initial"] == {
+        "mainPills": ["today", "week", "month", "all"],
+        "activePills": ["today"],
+        "isMoreActiveClass": False,
+        "moreHidden": False,
+        "moreActive": False,
+        "moreLabel": "More",
+    }
+    assert r["morePopover"]["open"] is True
+    assert r["morePopover"]["options"] == [
+        "15m",
+        "30m",
+        "1h",
+        "3h",
+        "6h",
+        "12h",
+        "1w",
+        "1mo",
+        "mtd",
+        "ytd",
+    ]
+    assert r["after6h"] == {
+        "popOpen": False,
+        "moreActive": True,
+        "moreLabel": "6h",
+        "isMoreActiveClass": True,
+        "activePills": [],
+        "summaryWin": "6h",
+        "saveCalls": [["save_analytics_window", "6h"]],
+    }
+    assert r["afterWeekPill"] == {
+        "moreActive": False,
+        "moreLabel": "More",
+        "isMoreActiveClass": False,
+        "activePills": ["week"],
+        "summaryWin": "1w",
+    }
 
     assert r["filtered"]["activeTool"] == "claude-code"
     assert r["filtered"]["drillVisible"] is True
@@ -797,21 +863,19 @@ out.shortGridDim = document.getElementById('h9Heatmap').classList.contains('dim'
 out.share = document.getElementById('h9HeatShare').textContent;
 out.span = document.getElementById('h9HeatSpan').textContent;
 
-// Switch to 1w -> short warning hides
-document.querySelector('#h9RangeBar [data-h9-window="1w"]').click();
+// Switch to 1w via merged #periodBar -> short warning hides
+document.querySelector('#periodBar [data-period="week"]').click();
 await until(() => state.h9Summary?.window?.key === '1w');
 out.weekWarningHidden = document.getElementById('h9HeatWarning').hidden;
 out.weekGridDim = document.getElementById('h9Heatmap').classList.contains('dim');
 
-// Roving tabIndex moves via ArrowRight and ArrowDown (start from cell 0 so both moves stay in bounds)
+// Roving tabIndex moves via ArrowRight and ArrowDown
 const grid = document.getElementById('h9Heatmap');
 const cells = [...grid.querySelectorAll('.h9-heat-cell')];
 out.initialZeroTabCount = cells.filter(c => c.tabIndex === 0).length;
-// Move focus via arrow keys from an existing tabIndex=0 cell, or normalize to cell 0 first via ArrowLeft/Up test
 const startCell = cells.find(c => c.tabIndex === 0);
 const startIdx = Number(startCell.dataset.h9HeatIdx);
 startCell.focus();
-// If startIdx is at column 23 or row 6, step back one first so ArrowRight & ArrowDown are guaranteed in-bounds
 if (startIdx % 24 === 23) {
   document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
 }
@@ -873,12 +937,21 @@ def test_h9_ui_heatmap_and_roving_keyboard(tmp_path):
 DETAIL_DRILLDOWN_PROBE = """
 await until(() => !document.getElementById('h9AnalyticsSection').hidden && document.querySelectorAll('#h9ModelBody .h9-model-row').length > 0);
 const out = {};
+const scrollBody = document.getElementById('scrollBody');
+const hero = document.getElementById('heroSection');
+const stack = document.querySelector('.section-stack');
+const detailView = document.getElementById('h9DetailView');
+const rangePop = document.getElementById('h9RangePopover');
 
 function snapDetail() {
   return {
-    detailHidden: document.getElementById('h9DetailView').hidden,
-    heroHidden: document.getElementById('heroSection').hidden,
-    stackHidden: document.querySelector('.section-stack').hidden,
+    detailHidden: detailView.hidden,
+    heroHidden: hero.hidden,
+    stackHidden: stack.hidden,
+    heroDisplay: getComputedStyle(hero).display,
+    stackDisplay: getComputedStyle(stack).display,
+    detailScrollTop: scrollBody.scrollTop,
+    detailRangeLabel: document.getElementById('h9DetailRangeLabel').textContent,
     kind: document.getElementById('h9DetailKind').textContent,
     name: document.getElementById('h9DetailName').textContent,
     shareWidth: document.getElementById('h9DetailShareBar').style.width,
@@ -893,34 +966,71 @@ function snapDetail() {
   };
 }
 
-// 1. Open from model row, verify detail, return via #h9DetailBack
+// 1. Scroll overview to ~360px, open from model row, test #h9DetailRangeBtn 12-option popover, return via #h9DetailBack
+scrollBody.scrollTo({ top: 360, behavior: 'instant' });
+out.scrollBeforeModel = scrollBody.scrollTop;
 document.querySelector('#h9ModelBody .h9-model-row[data-h9-entity-key="claude-opus-4-6"]').click();
-await until(() => !document.getElementById('h9DetailView').hidden && state.h9EntityData?.key === 'claude-opus-4-6');
+await until(() => !detailView.hidden && state.h9EntityData?.key === 'claude-opus-4-6');
 out.fromModel = snapDetail();
-document.getElementById('h9DetailBack').click();
-await until(() => document.getElementById('h9DetailView').hidden && !document.getElementById('heroSection').hidden);
-out.afterBackBtn = {
-  detailHidden: document.getElementById('h9DetailView').hidden,
-  heroHidden: document.getElementById('heroSection').hidden,
-  stackHidden: document.querySelector('.section-stack').hidden,
+
+// Open detail range popover -> verify all 12 windows, pick 1w, then open again & close via Escape without closing detail
+document.getElementById('h9DetailRangeBtn').click();
+await until(() => rangePop.classList.contains('open'));
+out.detailPopover = {
+  open: rangePop.classList.contains('open'),
+  options: [...rangePop.querySelectorAll('.scope-opt[data-h9-window]')].map(b => b.dataset.h9Window),
+};
+rangePop.querySelector('[data-h9-window="1w"]').click();
+await until(() => state.h9EntityData?.window?.key === '1w');
+out.detailAfter1w = {
+  popOpen: rangePop.classList.contains('open'),
+  rangeLabel: document.getElementById('h9DetailRangeLabel').textContent,
+  entityWin: state.h9EntityData?.window?.key,
+};
+document.getElementById('h9DetailRangeBtn').click();
+await until(() => rangePop.classList.contains('open'));
+document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+await until(() => !rangePop.classList.contains('open'));
+out.detailAfterPopEsc = {
+  popOpen: rangePop.classList.contains('open'),
+  detailHidden: detailView.hidden,
 };
 
-// 2. Open from legend card, close via Escape
+document.getElementById('h9DetailBack').click();
+await until(() => detailView.hidden && !hero.hidden);
+await until(() => scrollBody.scrollTop >= 350, 30);
+out.afterBackBtn = {
+  detailHidden: detailView.hidden,
+  heroHidden: hero.hidden,
+  stackHidden: stack.hidden,
+  heroDisplay: getComputedStyle(hero).display,
+  stackDisplay: getComputedStyle(stack).display,
+  restoredScrollTop: scrollBody.scrollTop,
+};
+
+// 2. Scroll overview to ~360px, open from legend card, close via Escape & verify scroll restoration
+scrollBody.scrollTo({ top: 360, behavior: 'instant' });
+out.scrollBeforeLegend = scrollBody.scrollTop;
 document.querySelector('#h9LegendCards [data-h9-entity-key="codex"]').click();
-await until(() => !document.getElementById('h9DetailView').hidden && state.h9EntityData?.key === 'codex');
+await until(() => !detailView.hidden && state.h9EntityData?.key === 'codex');
 out.fromLegend = snapDetail();
 document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-await until(() => document.getElementById('h9DetailView').hidden);
+await until(() => detailView.hidden);
+await until(() => scrollBody.scrollTop >= 350, 30);
 out.afterEsc = {
-  detailHidden: document.getElementById('h9DetailView').hidden,
-  heroHidden: document.getElementById('heroSection').hidden,
+  detailHidden: detailView.hidden,
+  heroHidden: hero.hidden,
+  stackHidden: stack.hidden,
+  heroDisplay: getComputedStyle(hero).display,
+  stackDisplay: getComputedStyle(stack).display,
+  restoredScrollTop: scrollBody.scrollTop,
 };
 
 // 3. Filter to claude-code and open via "Detail →" button
 document.querySelector('#h9ToolBar [data-h9-tool="claude-code"]').click();
 await until(() => !!document.querySelector('#h9ToolBar [data-h9-drill-tool="claude-code"]'));
 document.querySelector('#h9ToolBar [data-h9-drill-tool="claude-code"]').click();
-await until(() => !document.getElementById('h9DetailView').hidden && state.h9EntityData?.key === 'claude-code' && state.h9EntityData?.kind === 'tool');
+await until(() => !detailView.hidden && state.h9EntityData?.key === 'claude-code' && state.h9EntityData?.kind === 'tool');
 out.fromDrillBtn = snapDetail();
 
 report(out);
@@ -938,10 +1048,15 @@ def test_h9_ui_entity_detail_drilldown_and_navigation(tmp_path):
     )
     r = probe(html, 960, tmp_path, height=900)
 
+    assert r["scrollBeforeModel"] >= 350
     m = r["fromModel"]
     assert m["detailHidden"] is False
     assert m["heroHidden"] is True
     assert m["stackHidden"] is True
+    assert m["heroDisplay"] == "none"
+    assert m["stackDisplay"] == "none"
+    assert m["detailScrollTop"] == 0
+    assert m["detailRangeLabel"] == "1d"
     assert m["kind"] == "Model detail"
     assert m["name"] == "Claude Opus 4.6"
     assert m["shareWidth"] not in ("", "0%")
@@ -954,22 +1069,59 @@ def test_h9_ui_entity_detail_drilldown_and_navigation(tmp_path):
     assert m["sessions"] == 3
     assert "runs" in m["sessionsFoot"]
 
-    assert r["afterBackBtn"] == {
-        "detailHidden": True,
-        "heroHidden": False,
-        "stackHidden": False,
+    assert r["detailPopover"]["open"] is True
+    assert r["detailPopover"]["options"] == [
+        "1d",
+        "15m",
+        "30m",
+        "1h",
+        "3h",
+        "6h",
+        "12h",
+        "1w",
+        "1mo",
+        "mtd",
+        "ytd",
+        "all",
+    ]
+    assert r["detailAfter1w"] == {
+        "popOpen": False,
+        "rangeLabel": "1w",
+        "entityWin": "1w",
     }
+    assert r["detailAfterPopEsc"] == {"popOpen": False, "detailHidden": False}
 
+    ab = r["afterBackBtn"]
+    assert ab["detailHidden"] is True
+    assert ab["heroHidden"] is False
+    assert ab["stackHidden"] is False
+    assert ab["heroDisplay"] != "none"
+    assert ab["stackDisplay"] != "none"
+    assert abs(ab["restoredScrollTop"] - r["scrollBeforeModel"]) <= 4
+
+    assert r["scrollBeforeLegend"] >= 350
     lg = r["fromLegend"]
     assert lg["detailHidden"] is False
+    assert lg["heroDisplay"] == "none"
+    assert lg["stackDisplay"] == "none"
+    assert lg["detailScrollTop"] == 0
     assert lg["kind"] == "Tool detail"
     assert lg["name"] == "Codex"
     assert lg["kpis"] == 4
     assert lg["sessions"] == 3
-    assert r["afterEsc"] == {"detailHidden": True, "heroHidden": False}
+
+    ae = r["afterEsc"]
+    assert ae["detailHidden"] is True
+    assert ae["heroHidden"] is False
+    assert ae["stackHidden"] is False
+    assert ae["heroDisplay"] != "none"
+    assert ae["stackDisplay"] != "none"
+    assert abs(ae["restoredScrollTop"] - r["scrollBeforeLegend"]) <= 4
 
     dr = r["fromDrillBtn"]
     assert dr["detailHidden"] is False
+    assert dr["heroDisplay"] == "none"
+    assert dr["stackDisplay"] == "none"
     assert dr["kind"] == "Tool detail"
     assert dr["name"] == "Claude Code"
     assert dr["limitRows"] >= 1
@@ -1026,3 +1178,71 @@ def test_h9_ui_responsive_fit_and_font_floor_in_light_and_dark(
         r["detail"],
     )
     assert r["detail"]["smallText"] == [], (pref, width, r["detail"]["smallText"])
+
+
+NARROW_OVERFLOW_PROBE = """
+await until(() =>
+  !document.getElementById('h9AnalyticsSection').hidden &&
+  !document.getElementById('h9MoreRangeBtn').hidden &&
+  document.querySelectorAll('#h9ModelBody .h9-model-card').length > 0 &&
+  document.querySelectorAll('#h9Heatmap .h9-heat-cell').length === 168
+);
+const scrollBody = document.getElementById('scrollBody');
+const snapFit = () => ({
+  docScroll: document.documentElement.scrollWidth,
+  docClient: document.documentElement.clientWidth,
+  bodyScroll: scrollBody.scrollWidth,
+  bodyClient: scrollBody.clientWidth,
+});
+
+const out = {};
+out.overview = snapFit();
+
+// Open #h9RangePopover from #h9MoreRangeBtn and check overflow + popover bounds
+const pop = document.getElementById('h9RangePopover');
+document.getElementById('h9MoreRangeBtn').click();
+await until(() => pop.classList.contains('open'));
+const popRect = pop.getBoundingClientRect();
+out.overviewPopover = {
+  ...snapFit(),
+  popOpen: pop.classList.contains('open'),
+  popLeft: popRect.left,
+  popRight: popRect.right,
+  innerWidth: window.innerWidth,
+};
+document.getElementById('h9RangeBackdrop').click();
+await until(() => !pop.classList.contains('open'));
+
+// Open Detail view via mobile model card and check overflow
+document.querySelector('#h9ModelBody .h9-model-card[data-h9-entity-key="claude-opus-4-6"]').click();
+await until(() =>
+  !document.getElementById('h9DetailView').hidden &&
+  state.h9EntityData?.key === 'claude-opus-4-6' &&
+  document.querySelectorAll('#h9SessionsBody .h9-session-card').length > 0
+);
+out.detail = snapFit();
+report(out);
+"""
+
+
+@needs_chrome
+@browser
+@pytest.mark.parametrize("width", [304, 336, 380])
+def test_h9_ui_no_horizontal_overflow_at_narrow_widths(tmp_path, width):
+    html = build_page(
+        pref="light",
+        api_js=_h9_api_js(),
+        probe=NARROW_OVERFLOW_PROBE,
+        extra_css=FAST,
+    )
+    r = probe(html, width, tmp_path, height=900)
+
+    for state_name in ("overview", "overviewPopover", "detail"):
+        fit = r[state_name]
+        assert fit["docScroll"] <= fit["docClient"], (width, state_name, fit)
+        assert fit["bodyScroll"] <= fit["bodyClient"], (width, state_name, fit)
+
+    pop = r["overviewPopover"]
+    assert pop["popOpen"] is True
+    assert pop["popLeft"] >= 0
+    assert pop["popRight"] <= pop["innerWidth"]
