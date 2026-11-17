@@ -496,3 +496,39 @@ def test_the_page_no_longer_carries_the_mini_bar_or_monograms():
         assert gone not in text, gone
     assert "set_hud_mini" not in text
     assert "show_tab" in text
+
+
+REAL_DATA_PROBE = """
+await until(() => document.querySelectorAll('#providerList .provider-item').length >= 8);
+const g = [...document.querySelectorAll('#providerList .provider-item')];
+report({
+  keys: g.map(x => x.dataset.key),
+  titles: g.map(x => x.querySelector('.provider-name').textContent),
+  tags: g.map(x => (x.querySelector('.tag') || {}).textContent || null),
+  claudeLane: g[0].querySelector('.lane .lane-note').textContent,
+  laneCount: document.querySelectorAll('#providerList .lane').length,
+  noteGlitches: [...document.querySelectorAll('#providerList .lane-note')].filter(n => /pace|→|undefined|NaN/.test(n.textContent)).length,
+  balance: [...document.querySelectorAll('#providerList .balrow')].map(b => b.textContent.trim().replace(/\s+/g, ' ')),
+});
+"""
+
+
+@needs_chrome
+@browser
+@pytest.mark.parametrize("pref", ["light", "dark"])
+def test_real_demo_data_orders_like_the_tab_and_renders_cleanly(tmp_path, pref):
+    """The demo snapshot as the real ``merge_provider_entries`` sends it, not a hand-made fixture."""
+    from spend_app.tab_window import tab_providers
+    from tests_spend.test_wealthfront_ui import demo_report
+
+    report = demo_report()
+    html = build_page(pref=pref, color_scheme=pref, report=report, probe=REAL_DATA_PROBE, extra_css=FAST)
+    r = probe(html, 440, tmp_path, height=640)
+    # one rule for both surfaces: the tab's order, profiles of a provider kept together
+    assert r["keys"] == [p["key"] for p in tab_providers(report["providers"])]
+    assert r["keys"][:5] == ["claude-code", "claude-code-work", "codex", "opencode-go", "opencode-go-2"]
+    assert r["titles"][:2] == ["Claude Code · Primary", "Claude Code · Work"]
+    assert r["tags"][:2] == ["About to run out", None] and r["tags"][2:4] == ["Dry before refill", "Dry before refill"]
+    assert r["claudeLane"] == "Dry in ~1h · refills in 2h"
+    assert r["noteGlitches"] == 0
+    assert any(line.startswith("$23.40 balance left · runway ~42d") for line in r["balance"])
