@@ -275,8 +275,12 @@ def test_tab_bridge_state_and_actions():
 def test_tab_bridge_expand_reports_the_growth_direction(monkeypatch):
     bridge, _, tab, surfaces, *_ = make()
     tab_bridge = TabBridge(bridge, bridge._tab_model, surfaces)
-    monkeypatch.setattr(tab, "expand", lambda w, h: {"up": True})
-    assert tab_bridge.expand(316, 330) == {"ok": True, "up": True}
+    seen = []
+    monkeypatch.setattr(tab, "expand", lambda w, h, card=None: seen.append((w, h, card)) or {"up": True})
+    assert tab_bridge.expand(316, 330, 8, 300, 250) == {"ok": True, "up": True}
+    assert seen == [(316, 330, (8.0, 300.0, 250.0))]
+    tab_bridge.expand(316, 330)
+    assert seen[-1][2] is None  # no card rectangle: the whole window shows
     assert TabBridge(bridge, bridge._tab_model).expand(1, 2) == {"ok": False}
 
 

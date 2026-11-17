@@ -4502,6 +4502,8 @@ def run_webview(
         easy_drag=False,
         on_top=True,
         hidden=True,
+        # No DWM frame: the tab cuts its own rounded shape with a window region.
+        shadow=False,
         background_color=TAB_DARK_BACKGROUND
         if resolve_dark(bridge.theme)
         else TAB_LIGHT_BACKGROUND,

@@ -66,7 +66,7 @@ def demo_payload():
 def test_demo_tab_keeps_each_provider_s_profiles_together():
     data = demo_payload()
     keys = [s["key"] for s in data["segments"]]
-    assert keys == ["claude-code", "claude-code-work", "codex", "opencode-go", "opencode-go-2", "grok"]
+    assert keys == ["claude-code", "claude-code-work", "codex", "opencode-go", "opencode-go-2"]
     by_key = {s["key"]: s for s in data["segments"]}
     assert (by_key["claude-code"]["big"], by_key["claude-code"]["unit"]) == ("54%", "Primary · 5-hour")
     assert by_key["claude-code"]["level"] == "soon" and by_key["claude-code"]["status"] == "dry in ~1h"
@@ -75,7 +75,8 @@ def test_demo_tab_keeps_each_provider_s_profiles_together():
     assert (by_key["opencode-go"]["level"], by_key["opencode-go"]["status"]) == ("warn", "dry in ~32h")
     assert data["urgentCount"] == 1
     assert data["state"] == "ready"
-    assert data["fine"]["count"] == 4
+    assert data["fine"]["count"] == 5
+    assert data["layout"]["width"] <= 910  # five segments and the pill, about 900 px
 
 
 def test_profiles_stay_adjacent_even_when_their_levels_differ():
@@ -182,16 +183,17 @@ def many(n_ok, n_warn=0):
     return cards
 
 
-def test_up_to_six_providers_never_fold():
-    data = payload(*many(6))
-    assert len(data["segments"]) == 6 and data["fine"] is None
+def test_up_to_five_providers_never_fold():
+    data = payload(*many(5))
+    assert len(data["segments"]) == 5 and data["fine"] is None
+    assert payload(*many(6))["fine"]["count"] == 1
 
 
 def test_overflow_folds_only_ok_balance_and_idle():
     data = payload(*many(5, n_warn=3))
     assert [s["level"] for s in data["segments"]].count("warn") == 3
-    assert len(data["segments"]) == 6
-    assert data["fine"]["count"] == 2
+    assert len(data["segments"]) == 5
+    assert data["fine"]["count"] == 3
     assert all(s["level"] in ("warn", "ok") for s in data["segments"])
     assert {item["level"] for item in data["fine"]["items"]} == {"ok"}
 
@@ -205,8 +207,8 @@ def test_urgent_segments_are_never_folded_even_past_the_cap():
 def test_split_overflow_keeps_order():
     segs = [{"level": lv, "key": str(i)} for i, lv in enumerate(["soon", "ok", "ok", "ok", "ok", "ok", "balance", "idle"])]
     shown, fine = split_overflow(segs)
-    assert [s["key"] for s in shown] == ["0", "1", "2", "3", "4", "5"]
-    assert [s["key"] for s in fine] == ["6", "7"]
+    assert [s["key"] for s in shown] == ["0", "1", "2", "3", "4"]
+    assert [s["key"] for s in fine] == ["5", "6", "7"]
 
 
 # ---- hover card ---------------------------------------------------------
@@ -474,3 +476,77 @@ def test_a_refresh_that_widens_the_tab_widens_an_open_card_window_too(host):
     assert host.applied[-1][2:] == (900, 330)
     host.collapse()
     assert host.applied[-1][2:] == (900, 60)
+
+
+# ---- the window region: only the strip and the card are visible --------------
+
+def test_collapsed_tab_is_one_rounded_rectangle():
+    assert tab_window.shape_rects((900, 60), 1.0) == [(0, 0, 900, 60, 14)]
+    assert tab_window.shape_rects((1350, 90), 1.5) == [(0, 0, 1350, 90, 21)]
+
+
+def test_expanded_tab_shows_the_strip_and_the_card_only():
+    rects = tab_window.shape_rects((900, 330), 1.0, card=(60, 300, 250))
+    assert rects == [(0, 0, 900, 60, 14), (60, 66, 360, 316, 12)]
+    # Everything right of the card and below the strip is outside the region.
+    assert all(r[2] <= 900 and r[3] <= 330 for r in rects)
+    assert rects[1][2] < 900
+
+
+def test_expanded_tab_growing_upward_puts_the_strip_at_the_bottom():
+    strip, card = tab_window.shape_rects((900, 330), 1.0, card=(60, 300, 250), up=True)
+    assert strip == (0, 270, 900, 330, 14)
+    assert card == (60, 0, 360, 250, 12)
+
+
+def test_region_scales_with_dpi_and_never_leaves_the_window():
+    strip, card = tab_window.shape_rects((1350, 495), 1.5, card=(60, 300, 250))
+    assert strip == (0, 0, 1350, 90, 21)
+    assert card == (90, 99, 540, 474, 18)
+    wide = tab_window.shape_rects((400, 330), 1.0, card=(300, 300, 250))
+    assert wide[1][2] == 400  # clipped to the window
+
+
+def test_hover_sets_the_region_and_collapse_restores_the_strip(host, monkeypatch):
+    regions = []
+    monkeypatch.setattr(host, "_set_region", lambda rects: regions.append(rects))
+    host.set_base(900)
+    assert regions[-1] == [(0, 0, 900, 60, 14)]
+    host.expand(900, 330, (60, 300, 250))
+    assert regions[-1] == [(0, 0, 900, 60, 14), (60, 66, 360, 316, 12)]
+    host.collapse()
+    assert regions[-1] == [(0, 0, 900, 60, 14)]
+
+
+def test_region_follows_the_growth_direction(host, monkeypatch):
+    regions = []
+    monkeypatch.setattr(host, "_set_region", lambda rects: regions.append(rects))
+    monkeypatch.setattr(native_geometry, "window_rect", lambda hwnd: Rect(100, 960, 1000, 1020))
+    host.set_base(900)
+    host.expand(900, 330, (60, 300, 250))
+    assert regions[-1][0] == (0, 270, 900, 330, 14)
+    assert regions[-1][1][1] == 0
+
+
+def test_hiding_drops_the_card_shape(host, monkeypatch):
+    regions = []
+    monkeypatch.setattr(host, "_set_region", lambda rects: regions.append(rects))
+    host.set_base(900)
+    host.expand(900, 330, (60, 300, 250))
+    host.hide()
+    host.show()
+    assert regions[-1] == [(0, 0, 900, 60, 14)]
+
+
+def test_an_error_keeps_exactly_the_last_known_segments_dimmed():
+    healthy = demo_payload()
+    report = DemoClient().snapshot("today", "all")
+    model = TabModel()
+    model.publish_report({"providers": merge_provider_entries(
+        report, hud=demo_hud(), hud_usage=demo_hud_usage(), today_report=report, week_report=report)})
+    model.publish_error("Can't reach your hub. Check that this computer is on your network.", "NET-001")
+    failed = model.payload(dark=True)
+    assert [s["key"] for s in failed["segments"]] == [s["key"] for s in healthy["segments"]]
+    assert [s["big"] for s in failed["segments"]] == [s["big"] for s in healthy["segments"]]
+    assert failed["fine"] == healthy["fine"]
+    assert failed["stale"] is True and failed["error"]["code"] == "NET-001"

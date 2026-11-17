@@ -84,31 +84,32 @@ body { display: flex; flex-direction: column; }
 body.up { flex-direction: column-reverse; }
 
 /* ---- the bar -------------------------------------------------------- */
-.tab { height: 60px; flex: none; display: flex; align-items: center; padding: 0 4px 0 10px; }
-.home { position: relative; display: flex; align-items: center; width: 40px; flex: none; height: 48px; cursor: grab; }
+.tab { height: 60px; flex: none; display: flex; align-items: center; padding: 0 4px 0 8px; border-radius: 14px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); }
+.home { position: relative; display: flex; align-items: center; width: 34px; flex: none; height: 48px; cursor: grab; }
 .brand { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 7px; background: var(--brand); color: #fff; flex: none; }
 .badge {
-  position: absolute; top: 5px; left: 17px; min-width: 14px; height: 14px; padding: 0 3px;
+  position: absolute; top: 5px; left: 15px; min-width: 14px; height: 14px; padding: 0 3px;
   border-radius: 8px; background: var(--soon); color: var(--badge-ink);
   font-size: 9px; font-weight: 800; display: grid; place-items: center; border: 2px solid var(--surface); box-sizing: content-box;
 }
 .segs { list-style: none; display: flex; flex: none; }
 .segs li { flex: none; }
-.seg { display: flex; align-items: center; gap: 8px; width: 100%; height: 48px; padding: 0 10px; border-radius: 10px; }
+.seg { display: flex; align-items: center; gap: 7px; width: 100%; height: 48px; padding: 0 8px; border-radius: 10px; }
 .segs li + li .seg { box-shadow: inset 1px 0 0 var(--line); border-radius: 0 10px 10px 0; }
 .seg:hover, .seg.on { background: var(--hover); }
 .logo {
-  width: 24px; height: 24px; border-radius: 7px; flex: none;
+  width: 22px; height: 22px; border-radius: 7px; flex: none;
   display: inline-flex; align-items: center; justify-content: center; position: relative;
 }
-.logo svg { width: 13px; height: 13px; display: block; }
+.logo svg { width: 12px; height: 12px; display: block; }
 .brand-chip { background: var(--bl-bg); color: var(--bl-fg); border: var(--bl-ring); }
 html[data-theme="dark"] .brand-chip { background: var(--bd-bg); color: var(--bd-fg); border: var(--bd-ring); }
 .txt { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
 .top { display: flex; align-items: baseline; gap: 5px; min-width: 0; white-space: nowrap; }
 .top b { font-size: 15px; font-weight: 800; letter-spacing: -0.02em; }
-.top span { font-size: 10px; color: var(--muted); font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
-.fuel { display: block; width: 100%; max-width: 100px; height: 4px; border-radius: 9px; background: var(--track); overflow: hidden; }
+.top span { font-size: 10px; color: var(--muted); font-weight: 600; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.top b { flex: none; }
+.fuel { display: block; width: 100%; max-width: 72px; height: 4px; border-radius: 9px; background: var(--track); overflow: hidden; }
 .fuel i { display: block; height: 100%; border-radius: 9px; background: var(--ok); }
 .st { font-size: 10px; font-weight: 700; white-space: nowrap; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
 .l-out .fuel i, .l-soon .fuel i { background: var(--soon); }
@@ -121,28 +122,28 @@ html[data-theme="dark"] .brand-chip { background: var(--bd-bg); color: var(--bd-
 .l-idle .top b { font-size: 12px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; }
 .l-idle .st { font-weight: 600; }
 
-.fine { flex: none; width: 68px; height: 48px; display: flex; align-items: center; justify-content: center; border-radius: 10px; }
-.fine span { font-size: 11px; font-weight: 800; padding: 5px 9px; border-radius: 99px; background: var(--hover); color: var(--muted); white-space: nowrap; }
+.fine { flex: none; width: 60px; height: 48px; display: flex; align-items: center; justify-content: center; border-radius: 10px; }
+.fine span { font-size: 10.5px; font-weight: 800; padding: 5px 8px; border-radius: 99px; background: var(--hover); color: var(--muted); white-space: nowrap; }
 .fine:hover span, .fine.on span { color: var(--ink); }
 
 .status { flex: none; height: 48px; display: flex; align-items: center; padding: 0 12px; border-radius: 10px; font-size: 12px; font-weight: 700; color: var(--muted); white-space: nowrap; }
 button.status:hover { background: var(--hover); color: var(--ink); }
 .status b { color: var(--ink); font-weight: 800; margin-right: 6px; }
 .chip {
-  flex: none; width: 232px; margin: 0 4px 0 6px; padding: 6px 10px; border-radius: 10px;
+  flex: none; width: 212px; margin: 0 2px 0 4px; padding: 6px 9px; border-radius: 10px;
   background: var(--chip-bg); color: var(--chip-ink); font-size: 10.5px; font-weight: 700; line-height: 1.3;
   display: flex; align-items: center; gap: 7px;
 }
 .chip svg { flex: none; }
 .stale .segs, .stale .fine { opacity: 0.5; }
 .spacer { flex: 1; }
-.open { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; color: var(--muted); flex: none; margin-left: 4px; }
+.open { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; color: var(--muted); flex: none; margin-left: 2px; }
 .open:hover { background: var(--hover); color: var(--ink); }
 
 /* ---- the hover card --------------------------------------------------- */
-.card-wrap { flex: none; padding: 0 8px 8px; }
-body.up .card-wrap { padding: 8px 8px 0; }
-.card { width: 300px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+.card-wrap { flex: none; padding: 6px 0 0; }
+body.up .card-wrap { padding: 0 0 6px; }
+.card { width: 300px; box-shadow: 0 6px 22px rgba(24, 23, 43, 0.18); background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
 .ph { display: flex; align-items: center; gap: 9px; }
 .ph b { display: block; font-size: 13px; }
 .ph small { display: block; font-size: 11px; color: var(--muted); }
@@ -218,7 +219,7 @@ body.up .card-wrap { padding: 8px 8px 0; }
       : '<div class="top"><b>' + esc(s.big) + "</b><span>" + esc(s.unit) + "</span></div>" +
         '<span class="fuel"><i style="width:' + Number(s.fuel || 0) + '%"></i></span>';
     return '<li class="' + cls + '" style="width:' + Number(s.width || 156) + 'px"><button class="seg" type="button" data-i="' + i + '" aria-label="' + esc(s.aria) +
-      '" title="' + esc(s.detail || s.status) + '">' + logo(s.key) + '<div class="txt">' + top +
+      '" title="' + esc(s.aria) + '">' + logo(s.key) + '<div class="txt">' + top +
       '<span class="st">' + esc(s.status) + "</span></div></button></li>";
   }
 
@@ -254,7 +255,7 @@ body.up .card-wrap { padding: 8px 8px 0; }
     if (emptyBtn) emptyBtn.addEventListener("click", function () { call("open_full"); });
     if (openKey !== null) {
       var still = cardFor(openKey);
-      if (still) fillCard(still, true); else hideCard();
+      if (still) fillCard(still); else hideCard();
     }
   }
 
@@ -295,23 +296,22 @@ body.up .card-wrap { padding: 8px 8px 0; }
     return '<div class="ph">' + logo(seg.key) + "<div><b>" + esc(seg.title) + "</b><small>" + esc(seg.plan) + "</small></div></div>" +
       body + '<button class="po" type="button" data-open>Open BURNRATE</button>';
   }
-  function fillCard(seg, keepPlace) {
+  function fillCard(seg) {
     var card = $("card");
     card.innerHTML = cardHtml(seg);
     $("cardWrap").hidden = false;
     var layout = (state && state.layout) || {};
-    var need = (layout.cardWidth || 300) + 16;
-    var width = Math.max(layout.width || 0, need);
-    var height = (layout.height || 60) + $("cardWrap").offsetHeight;
-    var left = 8;
+    var cardW = layout.cardWidth || 300;
     var seat = openKey === "__fine__" ? $("fine") : document.querySelector('.seg[data-i="' + segIndex(openKey) + '"]');
-    if (seat) left = Math.max(8, Math.min(seat.getBoundingClientRect().left, width - (layout.cardWidth || 300) - 8));
-    card.style.marginLeft = left - 8 + "px";
-    if (!keepPlace) {
-      call("expand", width, height).then(function (res) {
-        document.body.classList.toggle("up", !!(res && res.up));
-      });
-    }
+    var left = 0;
+    if (seat) left = Math.max(0, Math.min(seat.getBoundingClientRect().left, (layout.width || cardW) - cardW));
+    card.style.marginLeft = left + "px";
+    var cardH = card.offsetHeight;
+    var width = Math.max(layout.width || 0, left + cardW);
+    var height = (layout.height || 60) + (layout.cardGap || 6) + cardH;
+    call("expand", width, height, left, cardW, cardH).then(function (res) {
+      document.body.classList.toggle("up", !!(res && res.up));
+    });
   }
   function segIndex(key) {
     var list = (state && state.segments) || [];
@@ -324,7 +324,7 @@ body.up .card-wrap { padding: 8px 8px 0; }
     openKey = key;
     document.querySelectorAll(".seg.on, .fine.on").forEach(function (el) { el.classList.remove("on"); });
     if (seat) seat.classList.add("on");
-    fillCard(seg, false);
+    fillCard(seg);
   }
   function hideCard() {
     clearTimeout(showTimer);

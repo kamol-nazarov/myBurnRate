@@ -41,19 +41,23 @@ SURFACE_KEY = "surface"
 # Layout, in logical pixels. The page uses the same numbers (they ride along
 # in every payload), so the window is exactly as wide as its content.
 TAB_HEIGHT = 60
-MAX_SEGMENTS = 6
-HOME_WIDTH = 50
-SEGMENT_WIDTH = 156
+MAX_SEGMENTS = 5
+HOME_WIDTH = 42
+SEGMENT_WIDTH = 124
 #: A segment that names its profile ("Primary · 5-hour") needs a longer label line.
-PROFILE_EXTRA = 34
-FINE_WIDTH = 68
-OPEN_WIDTH = 38
-CHIP_WIDTH = 244
+PROFILE_EXTRA = 36
+FINE_WIDTH = 60
+OPEN_WIDTH = 36
+CHIP_WIDTH = 212
+#: Gap between the strip and its hover card, and the two corner radii.
+CARD_GAP = 6
+TAB_RADIUS = 14
+CARD_RADIUS = 12
 #: Longer idle reasons show as "Awaiting reading" (the full reason is the tooltip).
 IDLE_STATUS_LIMIT = 22
 LOADING_WIDTH = 150
 EMPTY_WIDTH = 340
-CARD_WIDTH = 316
+CARD_WIDTH = 300
 FOLDABLE_LEVELS = ("ok", "balance", "idle")
 URGENT_LEVELS = ("out", "soon")
 
@@ -357,6 +361,7 @@ class TabModel:
                 "width": width,
                 "segmentWidth": SEGMENT_WIDTH,
                 "cardWidth": CARD_WIDTH,
+                "cardGap": CARD_GAP,
             },
         }
 
@@ -447,10 +452,26 @@ class TabBridge:
         if self._controller is not None:
             self._controller.tab.begin_drag()
 
-    def expand(self, width: float, height: float) -> dict:
+    def expand(
+        self,
+        width: float,
+        height: float,
+        card_x: float | None = None,
+        card_width: float | None = None,
+        card_height: float | None = None,
+    ) -> dict:
+        """Grow for a hover card; ``card_*`` is the card's rectangle in CSS pixels
+        so only the strip and the card stay visible."""
         if self._controller is None:
             return {"ok": False}
-        return {"ok": True, **self._controller.tab.expand(width, height)}
+        card = None
+        if None not in (card_x, card_width, card_height):
+            card = (
+                clamp_number(card_x, 0, 2400),
+                clamp_number(card_width, 1, 2400),
+                clamp_number(card_height, 1, 1200),
+            )
+        return {"ok": True, **self._controller.tab.expand(width, height, card)}
 
     def collapse(self) -> dict:
         if self._controller is not None:
@@ -463,6 +484,39 @@ class TabBridge:
 
 def _scaled(value: float, dpi: int) -> int:
     return int(round(float(value) * max(dpi, 1) / 96))
+
+
+def shape_rects(
+    size: tuple[int, int],
+    scale: float,
+    card: tuple[float, float, float] | None = None,
+    up: bool = False,
+) -> list[tuple[int, int, int, int, int]]:
+    """The visible parts of the tab window as ``(left, top, right, bottom, radius)``
+    in physical pixels: the strip, plus the hover card while one is open.
+
+    ``card`` is ``(x, width, height)`` in logical pixels. Everything outside
+    these rectangles is cut away by the window region, so it is invisible and
+    clicks go through to whatever is underneath.
+    """
+    width, height = size
+    tab_h = min(height, int(round(TAB_HEIGHT * scale)))
+    tab_radius = int(round(TAB_RADIUS * scale))
+    if card is None:
+        return [(0, 0, width, height, tab_radius)]
+    card_x, card_w, card_h = card
+    tab_top = height - tab_h if up else 0
+    card_top = 0 if up else tab_h + int(round(CARD_GAP * scale))
+    return [
+        (0, tab_top, width, tab_top + tab_h, tab_radius),
+        (
+            int(round(card_x * scale)),
+            card_top,
+            min(width, int(round((card_x + card_w) * scale))),
+            min(height, card_top + int(round(card_h * scale))),
+            int(round(CARD_RADIUS * scale)),
+        ),
+    ]
 
 
 def clamp_number(value, low: float, high: float) -> float:
@@ -494,6 +548,8 @@ class TabHost:
             self.tracker.disable()
         self._base = (LOADING_WIDTH + HOME_WIDTH + OPEN_WIDTH, TAB_HEIGHT)  # logical (w, h)
         self._expanded: tuple[float, float] | None = None
+        self._card: tuple[float, float, float] | None = None
+        self._up = False
         self._origin_before_expand: tuple[int, int] | None = None
         self.visible = False
         self.quitting = False
@@ -526,6 +582,32 @@ class TabHost:
             x = y = 0
         ctypes.windll.user32.SetWindowPos(self.hwnd, 0, x, y, width, height, flags)
 
+    def _set_region(self, rects: list[tuple[int, int, int, int, int]]) -> None:
+        """Cut the window down to ``rects`` (rounded), invisible outside them."""
+        if sys.platform != "win32" or not self.hwnd or not rects:
+            return
+        import ctypes
+
+        gdi32, user32 = ctypes.windll.gdi32, ctypes.windll.user32
+        gdi32.CreateRoundRectRgn.restype = ctypes.c_void_p
+        gdi32.CombineRgn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
+        gdi32.DeleteObject.argtypes = [ctypes.c_void_p]
+        user32.SetWindowRgn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
+        region = None
+        for left, top, right, bottom, radius in rects:
+            part = gdi32.CreateRoundRectRgn(left, top, right + 1, bottom + 1, radius * 2, radius * 2)
+            if region is None:
+                region = part
+            else:
+                gdi32.CombineRgn(region, region, part, 2)  # RGN_OR
+                gdi32.DeleteObject(part)
+        if not user32.SetWindowRgn(self.hwnd, region, True):
+            gdi32.DeleteObject(region)  # the window only owns a region it accepted
+
+    def _apply_shape(self) -> None:
+        width, height = self._target_size()
+        self._set_region(shape_rects((width, height), self._dpi() / 96, self._card, self._up))
+
     def _target_size(self) -> tuple[int, int]:
         dpi = self._dpi()
         width, height = self._expanded or self._base
@@ -540,6 +622,7 @@ class TabHost:
         rect = self._current()
         if rect is None:
             self._apply(None, None, width, height)
+            self._apply_shape()
             return
         x, y = rect.left, rect.top
         if keep_visible:
@@ -547,6 +630,7 @@ class TabHost:
                 (x, y, width, height), native_geometry.enum_monitors()
             )
         self._apply(x, y, width, height)
+        self._apply_shape()
 
     def set_base(self, width: float, height: float = TAB_HEIGHT) -> None:
         """The window's content width changed (a refresh added or dropped a segment)."""
@@ -557,17 +641,29 @@ class TabHost:
                 self._expanded = (max(width, self._expanded[0]), self._expanded[1])
             self.fit()
 
-    def expand(self, width: float, height: float) -> dict:
-        """Grow downward (or upward near the bottom edge) to hold a hover card."""
+    def expand(
+        self,
+        width: float,
+        height: float,
+        card: tuple[float, float, float] | None = None,
+    ) -> dict:
+        """Grow downward (or upward near the bottom edge) to hold a hover card.
+
+        ``card`` is the card's ``(x, width, height)`` in logical pixels; the
+        window region then shows only the strip and the card.
+        """
         width = clamp_number(width, self._base[0], 2400)
         height = clamp_number(height, self._base[1], 1200)
         with self._lock:
             rect = self._current()
             self._expanded = (width, height)
+            self._card = card
             dpi = self._dpi()
             new_w, new_h = _scaled(width, dpi), _scaled(height, dpi)
             if rect is None:
+                self._up = False
                 self._apply(None, None, new_w, new_h)
+                self._apply_shape()
                 return {"up": False}
             self._origin_before_expand = (rect.left, rect.top)
             x, y, up = native_geometry.place_expanded(
@@ -575,7 +671,9 @@ class TabHost:
                 (new_w, new_h),
                 native_geometry.enum_monitors(),
             )
+            self._up = up
             self._apply(x, y, new_w, new_h)
+            self._apply_shape()
             return {"up": up}
 
     def collapse(self) -> None:
@@ -583,6 +681,8 @@ class TabHost:
             if self._expanded is None:
                 return
             self._expanded = None
+            self._card = None
+            self._up = False
             origin = self._origin_before_expand
             self._origin_before_expand = None
             width, height = self._target_size()
@@ -590,6 +690,26 @@ class TabHost:
                 self._apply(None, None, width, height)
             else:
                 self._apply(origin[0], origin[1], width, height)
+            self._apply_shape()
+
+    def drop_dwm_frame(self) -> None:
+        """No DWM border or corner rounding: the window region draws the shape.
+
+        Otherwise Windows outlines the whole (stretched) window rectangle.
+        """
+        if sys.platform != "win32" or not self.hwnd:
+            return
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            setter = ctypes.windll.dwmapi.DwmSetWindowAttribute
+            setter.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
+            for attribute, value in ((33, 1), (34, 0xFFFFFFFE)):  # DONOTROUND, no border
+                number = ctypes.c_uint(value)
+                setter(self.hwnd, attribute, ctypes.byref(number), ctypes.sizeof(number))
+        except (OSError, AttributeError):
+            LOGGER.debug("Could not drop the tab's DWM frame", exc_info=True)
 
     def hide_taskbar_button(self) -> None:
         """Make the tab a tool window (no taskbar button, no Alt+Tab entry).
@@ -658,6 +778,8 @@ class TabHost:
         with self._lock:
             self.visible = False
             self._expanded = None
+            self._card = None
+            self._up = False
             self._origin_before_expand = None
         try:
             self.window.hide()
@@ -699,6 +821,7 @@ class TabHost:
             return
         self.hide_taskbar_button()
         _apply_win11_chrome(self.window, self._icon_path, dark)
+        self.drop_dwm_frame()
 
         def on_closing(_sender, args) -> None:
             if self.quitting:
