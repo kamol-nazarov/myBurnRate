@@ -496,10 +496,6 @@ button, input {
   transform: scale(0.92);
 }
 
-.icon-btn.pin-btn.active {
-  background: var(--accent-soft);
-  color: var(--accent);
-}
 
 .icon-btn.close-btn:hover {
   background: var(--danger-bg);
@@ -3676,7 +3672,6 @@ html.is-comfortable .quick-plan-banner { padding: 11px 12px; }
 }
 .h9-model-card:hover {
   background: var(--row-hover);
-  border-color: var(--border-input);
 }
 .h9-model-card-top {
   display: flex;
@@ -3985,7 +3980,6 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
   height: 28px;
   border-radius: 8px;
 }
-.scope-trigger > svg:first-child { display: none; }
 .scope-trigger {
   height: 28px;
   padding: 0 9px;
@@ -4119,12 +4113,54 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
 .plans-section { display: none; }
 .plans-section.has-rows,
 .plans-section:has(> .quick-plan-banner:not([hidden])) { display: flex; }
-.plans { list-style: none; display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; }
+.plans { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; }
 .plans li { display: flex; justify-content: space-between; gap: 8px; }
 .plans li b { color: var(--ink-secondary); font-weight: 600; text-align: right; }
 .foot { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; padding: 2px 0 0; }
 .ops-pill .update-dot { position: static; flex-shrink: 0; }
 .ops-pill.has-update .update-dot { display: inline-block; }
+
+/* Cost by model: a compact list with the real tool logos */
+.logo-mini { width: 20px; height: 20px; border-radius: 6px; margin: 0; }
+.logo-mini svg { width: 11px; height: 11px; }
+.h9-model-card {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 9px;
+  background: none;
+  border: none;
+  border-radius: 8px;
+  padding: 5px 0;
+}
+.h9-model-main { display: grid; gap: 1px; min-width: 0; }
+.h9-model-main strong { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.h9-model-main small { font-size: 10.5px; color: var(--ink-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.h9-model-val { font-size: 12.5px; font-weight: 700; font-variant-numeric: tabular-nums lining-nums; }
+
+/* Loading skeleton and the empty limits card */
+.limits-skel { display: flex; flex-direction: column; gap: 9px; padding: 6px 0 4px; }
+.skel { display: block; background: var(--track); border-radius: 6px; animation: skeletonPulse 1.2s ease-in-out infinite; }
+.skel-group { display: flex; align-items: center; gap: 8px; padding-top: 6px; }
+.skel-logo { width: 24px; height: 24px; border-radius: 7px; flex-shrink: 0; }
+.skel-line { height: 10px; }
+.skel-bar { height: 8px; flex: 1; border-radius: 4px; }
+.skel-lane { display: flex; align-items: center; gap: 8px; }
+.skel-w40 { width: 40%; }
+.skel-w15 { width: var(--lane-name); flex-shrink: 0; }
+.limits-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border-radius: 11px;
+  background: var(--surface-subtle);
+  border: 1px dashed var(--border-input);
+}
+.limits-empty b { font-size: 13px; }
+.limits-empty span { font-size: 11.5px; color: var(--ink-secondary); }
+.limits-empty button { margin-top: 6px; }
 
 /* Error banner: plain message plus its code; the values underneath stay, marked stale */
 .err-banner {
@@ -4214,9 +4250,6 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
     </button>
 
     <div class="top-actions">
-      <button class="icon-btn pin-btn" id="pinBtn" type="button" aria-label="Pin window above other apps" aria-pressed="false" title="Pin window above other apps">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6l-1 5 3 3v2H7v-2l3-3-1-5ZM12 13v8"/></svg>
-      </button>
       <button class="icon-btn" id="refreshBtn" type="button" title="Refresh usage &amp; live limits" aria-label="Refresh usage and live limits">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
           <path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/>
@@ -4244,11 +4277,18 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
           <span class="sec-sub" id="providersSub">left now · when each refills</span>
         </div>
         <p class="sec-hint" id="providersHint" title="Focus a row and press Alt+Up or Alt+Down to move it">most urgent first · drag to sort · click for tokens</p>
-        <div class="ticks" id="limitTicks" aria-hidden="true"></div>
+        <div class="ticks" id="limitTicks" aria-hidden="true" hidden></div>
         <div class="provider-list" id="providerList">
-          <div class="empty-state">Loading your AI providers…</div>
+          <div class="limits-skel" role="status">
+            <span class="sr-only">Loading your AI providers…</span>
+            <div class="skel-group" aria-hidden="true"><i class="skel skel-logo"></i><i class="skel skel-line skel-w40"></i></div>
+            <div class="skel-lane" aria-hidden="true"><i class="skel skel-line skel-w15"></i><i class="skel skel-bar"></i></div>
+            <div class="skel-lane" aria-hidden="true"><i class="skel skel-line skel-w15"></i><i class="skel skel-bar"></i></div>
+            <div class="skel-group" aria-hidden="true"><i class="skel skel-logo"></i><i class="skel skel-line skel-w40"></i></div>
+            <div class="skel-lane" aria-hidden="true"><i class="skel skel-line skel-w15"></i><i class="skel skel-bar"></i></div>
+          </div>
         </div>
-        <p class="leg" id="limitLegend"><span><i class="u"></i>usable at this pace</span><span><i class="d"></i>dry before refill</span><span><i class="r"></i>refill</span></p>
+        <p class="leg" id="limitLegend" hidden><span><i class="u"></i>usable at this pace</span><span><i class="d"></i>dry before refill</span><span><i class="r"></i>refill</span></p>
       </section>
 
       <!-- Today: value, tokens, chart, range -->
@@ -4432,7 +4472,7 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
         <div class="h9-two-col">
           <article class="h9-card" id="h9MixCard">
             <button type="button" class="h9-mix-toggle" id="h9MixToggle" aria-expanded="true" aria-controls="h9MixDetails">
-              <span class="h9-card-title">What you pay for</span>
+              <span class="h9-card-title">Token mix</span>
               <span class="h9-card-sub"><span id="h9MixSummary">—</span> <span id="h9MixCaret" aria-hidden="true">▲</span></span>
             </button>
             <div class="h9-mix-bar" id="h9MixBar"></div>
@@ -4453,7 +4493,7 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
 
         <article class="h9-card" id="h9ModelsCard">
           <div class="h9-card-head">
-            <span class="h9-card-title">Unit economics</span>
+            <span class="h9-card-title">Cost by model</span>
             <span class="h9-card-sub">Click a model for drilldown</span>
           </div>
           <div class="h9-table-head" id="h9ModelHead"></div>
@@ -4496,6 +4536,10 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
           <span>Diagnostics</span>
         </button>
         <button class="ops-pill" id="shareWeekBtn" type="button" aria-label="Copy weekly share card">Share week</button>
+        <button class="ops-pill pin-btn" id="pinBtn" type="button" aria-label="Pin window above other apps" aria-pressed="false" title="Pin window above other apps">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6l-1 5 3 3v2H7v-2l3-3-1-5ZM12 13v8"/></svg>
+          <span>Keep on top</span>
+        </button>
         <button class="ops-pill" id="densityBtn" type="button" aria-pressed="false" aria-label="Spacing density">Density: Compact</button>
         <button class="ops-pill" id="settingsBtn" type="button" title="Settings &amp; Sources" aria-label="Settings and sources" aria-haspopup="dialog">
           <span class="update-dot" id="updateDot" aria-hidden="true"></span>
@@ -5569,6 +5613,30 @@ function renderLimitGroup(prov, idx, horizon, doStagger) {
     </div>`;
 }
 
+/* A failed refresh: the plain message and its code, with the last values kept and marked stale. */
+function loadErrorParts(res, fallback) {
+  const parts = h5NormalizeErr(res, fallback);
+  if (!parts.code) {
+    const m = parts.message.match(/\s*Error\s+([A-Z]{2,5}-\d{3})\s*$/);
+    if (m) return { code: m[1], message: parts.message.slice(0, m.index).trim() };
+  }
+  return parts;
+}
+
+function showLoadError(res, fallback) {
+  const { code, message } = loadErrorParts(res, fallback);
+  const stale = !!state.report;
+  const banner = document.getElementById("errorBanner");
+  banner.innerHTML = `<span>${esc(message)}</span>${code ? `<code>${esc(code)}</code>` : ""}${stale ? `<small>Showing the last known values.</small>` : ""}`;
+  banner.hidden = false;
+  document.getElementById("sectionStack").classList.toggle("is-stale", stale);
+}
+
+function clearLoadError() {
+  document.getElementById("errorBanner").hidden = true;
+  document.getElementById("sectionStack").classList.remove("is-stale");
+}
+
 function renderLimits(providers) {
   const list = document.getElementById("providerList");
   const doStagger = state.firstRender;
@@ -5584,7 +5652,14 @@ function renderLimits(providers) {
   document.getElementById("limitLegend").hidden = !hasLanes;
   document.getElementById("providersHint").textContent =
     `${byUrgency ? "most urgent first" : "your order"} · drag to sort · click for tokens`;
-  list.innerHTML = ordered.map((prov, idx) => renderLimitGroup(prov, idx, horizon, doStagger)).join("");
+  const noLimits = ordered.every(p => !(p.windows || []).length);
+  const emptyCard = noLimits ? `
+    <div class="limits-empty">
+      <b>No limits yet</b>
+      <span>Add a source to see what is left and when it refills.</span>
+      <button class="btn-secondary" type="button" onclick="openSettings('sources')">Add a source</button>
+    </div>` : "";
+  list.innerHTML = emptyCard + ordered.map((prov, idx) => renderLimitGroup(prov, idx, horizon, doStagger)).join("");
   if (focusedKey) {
     const again = Array.from(list.querySelectorAll(".provider-row")).find(el => el.dataset.rowKey === focusedKey);
     if (again) again.focus();
@@ -5710,6 +5785,7 @@ function renderPlans(data, providers) {
 
 function renderReport(data, animateChart = false) {
   state.report = data;
+  clearLoadError();
   paintHeroText(data, true);
   renderChart(animateChart);
 
@@ -6355,6 +6431,7 @@ async function loadUsage(restart = false, animateChart = false) {
         }
       } else {
         showToast((res && res.error) || "Could not refresh usage");
+        showLoadError(res, "Could not refresh usage");
         document.getElementById("liveBadge").classList.remove("pending");
         document.getElementById("liveBadge").classList.add("warn");
         document.getElementById("liveText").textContent = "Unavailable";
@@ -6363,6 +6440,7 @@ async function loadUsage(restart = false, animateChart = false) {
     }
   } catch (err) {
     showToast("Refresh failed");
+    showLoadError(null, "Could not refresh usage");
     showFirstLoadFailure();
   } finally {
     btn.classList.remove("spinning");
@@ -9389,7 +9467,7 @@ function renderH9Models(data) {
     const runsStr = h9Num(m.runs);
     const label = `${m.name || m.key} (${toolName}): ${valStr}, ${tokStr} tokens, ${cacheStr} cache`;
     return `<div class="h9-model-row" tabindex="0" role="button" data-h9-entity-kind="model" data-h9-entity-key="${esc(m.key)}" aria-label="${esc(label)}">
-        <strong><i class="h9-swatch-dot" style="background:${h9ColorFor(m.toolKey)}"></i>${esc(m.name || m.key)}</strong>
+        <strong>${logoHtml(m.toolKey, "logo-badge logo-mini")}${esc(m.name || m.key)}</strong>
         <span class="h9-card-sub">${esc(toolName)}</span>
         <span class="h9-num">${esc(valStr)}</span>
         <span class="h9-num">${esc(tokStr)}</span>
@@ -9397,15 +9475,12 @@ function renderH9Models(data) {
         <span class="h9-num">${esc(runsStr)}</span>
       </div>
       <button type="button" class="h9-model-card" data-h9-entity-kind="model" data-h9-entity-key="${esc(m.key)}">
-        <div class="h9-model-card-top">
-          <strong><i class="h9-swatch-dot" style="background:${h9ColorFor(m.toolKey)}"></i>${esc(m.name || m.key)}</strong>
-          <span>${esc(toolName)}</span>
-        </div>
-        <div class="h9-model-figures">
-          <span>Value<b>${esc(valStr)}</b></span>
-          <span>Tokens<b>${esc(tokStr)}</b></span>
-          <span>Cache<b>${esc(cacheStr)}</b></span>
-        </div>
+        ${logoHtml(m.toolKey, "logo-badge logo-mini")}
+        <span class="h9-model-main">
+          <strong>${esc(m.name || m.key)}</strong>
+          <small>${esc([toolName, `${tokStr} tokens`, `${cacheStr} cache`, `${runsStr} runs`].filter(Boolean).join(" · "))}</small>
+        </span>
+        <b class="h9-model-val">${esc(valStr)}</b>
       </button>`;
   }).join("");
 }
