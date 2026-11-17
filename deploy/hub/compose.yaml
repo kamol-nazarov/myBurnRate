@@ -1,10 +1,17 @@
-# BURNRATE hub with automatic HTTPS (see docs/self-hosting.md).
+# Tailnet-only BURNRATE hub with Caddy reverse proxy (see docs/self-hosting.md).
 #
-#   BURNRATE_DOMAIN=burnrate.example.com docker compose up -d
+# A hub MUST be reachable on your tailnet (or private network) ONLY — never expose
+# it on the public Internet:
+#   1. First-account registration is open with no setup token until the first
+#      owner account is created.
+#   2. Release builds embed the hub address, so the hub URL itself is public.
 #
-# The domain's DNS must point at this server, and ports 80 and 443 must be
-# reachable, for Caddy to obtain a certificate. Data lives in the hub-data
-# volume.
+# Create the owner account immediately after starting the hub.
+#
+#   BURNRATE_TAILNET_IP=100.x.y.z \
+#   BURNRATE_DOMAIN=burnrate.tailnet.ts.net \
+#   BURNRATE_ACCESS_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')" \
+#   docker compose up -d
 
 services:
   hub:
@@ -19,21 +26,19 @@ services:
       BURNRATE_DATA_ROOT: /data
       # Required: the hub refuses anonymous API access. Generate a long random value.
       BURNRATE_ACCESS_TOKEN: ${BURNRATE_ACCESS_TOKEN:?Set BURNRATE_ACCESS_TOKEN to a long random value}
-      # Required to create the first account; remove it (or leave it set) afterwards.
-      BURNRATE_SETUP_TOKEN: ${BURNRATE_SETUP_TOKEN:-}
-      # The public hostname Caddy forwards, so the Host guard accepts it.
-      BURNRATE_ALLOWED_HOSTS: ${BURNRATE_DOMAIN:?Set BURNRATE_DOMAIN to the hub's public name}
+      # The tailnet hostname Caddy forwards, so the Host guard accepts it.
+      BURNRATE_ALLOWED_HOSTS: ${BURNRATE_DOMAIN:?Set BURNRATE_DOMAIN to the hub's tailnet name}
       BURNRATE_ALLOWED_ORIGINS: https://${BURNRATE_DOMAIN}
-      # Set to 1 only while adding a second account to this hub.
-      BURNRATE_ALLOW_REGISTRATION: ${BURNRATE_ALLOW_REGISTRATION:-0}
+      # Trust X-Forwarded-For / X-Forwarded-Proto only from Caddy on loopback so
+      # login and registration throttling uses the real client IP behind Caddy.
+      BURNRATE_TRUSTED_PROXIES: ${BURNRATE_TRUSTED_PROXIES:-127.0.0.1,::1}
     volumes:
       - hub-data:/data
-    # Caddy shares this container's network, so the hub keeps listening on
-    # 127.0.0.1 and only Caddy's ports are published.
+    # Caddy shares this container's network, so the hub stays bound to 127.0.0.1
+    # and Caddy's ports are published ONLY on the machine's Tailscale IP.
     ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
+      - "${BURNRATE_TAILNET_IP:?Set BURNRATE_TAILNET_IP to this machine's Tailscale IP (e.g. 100.x.y.z)}:443:443"
+      - "${BURNRATE_TAILNET_IP:?Set BURNRATE_TAILNET_IP to this machine's Tailscale IP (e.g. 100.x.y.z)}:443:443/udp"
 
   caddy:
     image: caddy:2.11.9@sha256:4e2425f6009577e7c651010f16679c28f7d12df3e7b1914f941a7a3370746b3c
@@ -42,7 +47,7 @@ services:
     depends_on:
       - hub
     environment:
-      BURNRATE_DOMAIN: ${BURNRATE_DOMAIN:?Set BURNRATE_DOMAIN to the hub's public name}
+      BURNRATE_DOMAIN: ${BURNRATE_DOMAIN:?Set BURNRATE_DOMAIN to the hub's tailnet name}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data

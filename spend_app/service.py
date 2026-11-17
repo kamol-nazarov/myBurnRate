@@ -17,6 +17,8 @@ import os
 import sys
 from pathlib import Path
 
+from spend_app.exposure import is_loopback_bind_host, trusted_proxies, validate_bind_host
+
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 17331
 DEFAULT_APP = "spend_app.api:app"
@@ -69,7 +71,7 @@ def ensure_directories() -> None:
 
 
 def is_loopback(host: str) -> bool:
-    return host.strip().lower() in _LOOPBACK_HOSTS
+    return is_loopback_bind_host(host)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -209,16 +211,20 @@ def serve(
     port: int = DEFAULT_PORT,
     app: str = DEFAULT_APP,
 ) -> int:
-    if not is_loopback(host):
-        raise SystemExit(f"BURNRATE binds 127.0.0.1 only; refusing host {host!r}")
+    from spend_app.config import load_user_env
+
+    load_user_env()
+    try:
+        host = validate_bind_host(host)
+        proxies = trusted_proxies()
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
     if port <= 0 or port > 65535:
         raise SystemExit(f"invalid port {port}")
 
     ensure_directories()
-    from spend_app.config import load_user_env
-
-    load_user_env()
     log_path = configure_logging()
+    validate_bind_host(host)
     if (
         os.getenv("BURNRATE_CENTRAL_SERVER", "").strip().lower() in {"1", "true", "yes"}
         and not os.getenv("BURNRATE_ACCESS_TOKEN", "").strip()
@@ -271,6 +277,8 @@ def serve(
         port=port,
         log_config=_log_config(log_path),
         access_log=False,
+        proxy_headers=bool(proxies),
+        forwarded_allow_ips=list(proxies) if proxies else None,
     )
     return 0
 

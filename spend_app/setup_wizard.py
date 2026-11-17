@@ -283,9 +283,19 @@ def _account_iterations(record: dict) -> int:
 
 
 def _client_key(request: Request, username: str, database_path: Path | None = None) -> str:
-    host = getattr(getattr(request, "client", None), "host", "") or "local"
+    from spend_app.exposure import resolve_client_ip
+
+    host = resolve_client_ip(request)
     scope = str(database_path) if database_path is not None else ""
     return f"{scope}|{username.strip().lower()}|{host}"
+
+
+def _register_ip_key(request: Request, database_path: Path | None = None) -> str:
+    from spend_app.exposure import resolve_client_ip
+
+    host = resolve_client_ip(request)
+    scope = str(database_path) if database_path is not None else ""
+    return f"{scope}|register_ip|{host}"
 
 
 _GLOBAL_THROTTLE = auth_throttle.Throttle(window=5 * 60, max_failures=30, lockout=5 * 60)
@@ -1305,8 +1315,12 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 return error_response("AUTH-105", status_code=422)
 
             key = _client_key(request, username, settings.database_path)
+            reg_ip_key = _register_ip_key(request, settings.database_path)
             global_key = _global_key(settings.database_path)
             retry = _GLOBAL_THROTTLE.retry_after(global_key)
+            if retry:
+                return _throttled(retry)
+            retry = auth_throttle.retry_after(reg_ip_key)
             if retry:
                 return _throttled(retry)
             retry = auth_throttle.retry_after(key)
@@ -1324,9 +1338,19 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     connection.execute("BEGIN IMMEDIATE")
                     local_setup = read_setup_state(connection)
                     if local_setup.get("role") == "spoke" and local_setup["spokeConfig"].get("enabled"):
+                        global_retry = _GLOBAL_THROTTLE.fail(global_key)
+                        reg_retry = auth_throttle.fail(reg_ip_key)
+                        retry_after = auth_throttle.fail(key)
+                        if global_retry or reg_retry or retry_after:
+                            return None, _throttled(max(global_retry, reg_retry, retry_after))
                         return None, error_response("AUTH-103", status_code=403)
                     accounts = _read_accounts(connection)
                     if accounts["users"]:
+                        global_retry = _GLOBAL_THROTTLE.fail(global_key)
+                        reg_retry = auth_throttle.fail(reg_ip_key)
+                        retry_after = auth_throttle.fail(key)
+                        if global_retry or reg_retry or retry_after:
+                            return None, _throttled(max(global_retry, reg_retry, retry_after))
                         return None, error_response("AUTH-103", status_code=403)
                     if not central_server_for_accounts():
                         protected = bool(
@@ -1337,9 +1361,10 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                         )
                         if protected and not existing_principal.permits("credentials.manage"):
                             global_retry = _GLOBAL_THROTTLE.fail(global_key)
+                            reg_retry = auth_throttle.fail(reg_ip_key)
                             retry_after = auth_throttle.fail(key)
-                            if global_retry or retry_after:
-                                return None, _throttled(max(global_retry, retry_after))
+                            if global_retry or reg_retry or retry_after:
+                                return None, _throttled(max(global_retry, reg_retry, retry_after))
                             return None, error_response("AUTH-103", status_code=403)
                     salt_hex, hash_hex = _hash_password(password)
                     account_id = secrets.token_hex(16)
@@ -1355,6 +1380,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     }
                     _write_accounts(connection, accounts)
                     auth_throttle.succeed(key)
+                    auth_throttle.succeed(reg_ip_key)
                     added_plans = _apply_subscription_presets_and_custom(
                         connection,
                         settings.timezone,
