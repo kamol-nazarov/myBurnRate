@@ -182,10 +182,6 @@ def test_hud_recorded_usage_keeps_collection_active_without_building_dashboard(t
     for key in ("todayUsd", "todayTokens", "burnRatePerDay", "tokensAvgPerDay", "todayComplete"):
         assert payload["navigation"][key] == expected["navigation"][key]
     assert payload["totals"]["cacheReusePct"] == expected["totals"]["cacheReusePct"]
-    # An existing native HUD keeps its old script across a backend restart.
-    legacy = TestClient(app).get("/api/spend/summary", headers={"Referer": "http://127.0.0.1:17331/hud"})
-    assert legacy.status_code == 200
-    assert legacy.json()["navigation"]["todayTokens"] == payload["navigation"]["todayTokens"]
     assert app.state.history_demand.active()
 
 
@@ -258,7 +254,7 @@ def test_hud_only_collects_new_usage_across_midnight_and_renews_demand(tmp_path,
 
         clock[0] = 271
         assert not demand.active()
-        assert client.get("/api/spend/summary", headers={"Referer": "http://localhost/hud"}).status_code == 200
+        assert client.get("/api/spend/hud/usage").status_code == 200
         assert demand.active()
     finally:
         freshness.reset_state()

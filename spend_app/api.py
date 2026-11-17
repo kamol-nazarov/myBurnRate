@@ -7,7 +7,7 @@ import os
 from contextlib import ExitStack, asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exception_handlers import http_exception_handler
@@ -399,11 +399,6 @@ def create_app(
         machine: str = Query(default="all"),
     ) -> dict:
         resolved = _window_or_400(window)
-        # An already-open HUD may still run the previous embedded script
-        # after a backend upgrade. Keep its collection and lightweight reads.
-        referrer = urlsplit(request.headers.get("referer", ""))
-        if referrer.path == "/hud" or parse_qs(referrer.query).get("hud") == ["1"]:
-            return {**_spend_hud_usage_sync(machine), **_spend_hud_live_sync(machine)}
         request_history(request)
         record_summary_request(resolved, tool)
         from spend_app.sync import fetch_from_configured_hub

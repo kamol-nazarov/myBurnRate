@@ -5,7 +5,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from spend_app import __version__
-from spend_app.api import create_app
+from spend_app.api import GZIP_MINIMUM_SIZE, create_app
 import spend_app.api as api_module
 from spend_app.config import Settings
 from spend_app.db import UsageEvent, connect, initialize, upsert_usage_event
@@ -101,6 +101,57 @@ def test_api_contracts_and_generated_at(tmp_path: Path) -> None:
     assert health.status_code == 200
     assert "pricingGaps" in health.json()
     assert "quotas" in health.json()
+
+
+def test_api_summary_json_over_threshold_is_gzip_compressed(tmp_path: Path) -> None:
+    database = tmp_path / "spend.db"
+    add_fixture_event(database)
+    frozen = datetime.now(UTC)
+    client = TestClient(create_app(make_settings(database), enable_scheduler=False, now=frozen))
+
+    raw = client.get("/api/spend/summary?window=1d&tool=all", headers={"Accept-Encoding": "identity"})
+    assert raw.status_code == 200
+    assert raw.headers.get("content-encoding") is None
+    assert len(raw.content) >= GZIP_MINIMUM_SIZE
+
+    compressed = client.get("/api/spend/summary?window=1d&tool=all", headers={"Accept-Encoding": "gzip"})
+    assert compressed.status_code == 200
+    assert compressed.headers.get("content-encoding") == "gzip"
+    assert compressed.content == raw.content
+    assert compressed.json() == raw.json()
+    assert compressed.num_bytes_downloaded < len(raw.content)
+
+
+def test_summary_ignores_removed_hud_referer_compat(tmp_path: Path) -> None:
+    database = tmp_path / "spend.db"
+    add_fixture_event(database)
+    client = TestClient(create_app(make_settings(database), enable_scheduler=False))
+    for referer in ("http://127.0.0.1:17331/hud", "http://127.0.0.1:17331/?hud=1"):
+        res = client.get("/api/spend/summary", headers={"Referer": referer})
+        assert res.status_code == 200
+        body = res.json()
+        assert body["window"]["key"] == "1d"
+        assert "series" in body and "totals" in body
+
+
+def test_subscriptions_value_and_attention_api_roundtrip(tmp_path: Path) -> None:
+    database = tmp_path / "spend.db"
+    add_fixture_event(database)
+    client = TestClient(create_app(make_settings(database), enable_scheduler=False))
+
+    value_res = client.get("/api/subscriptions/value", params={"period": "this_month"})
+    assert value_res.status_code == 200
+    assert value_res.headers.get("cache-control") == "no-store"
+    value_body = value_res.json()
+    assert value_body["period"] == "this_month"
+    assert "groups" in value_body and "unassigned" in value_body
+
+    bad_period = client.get("/api/subscriptions/value", params={"period": "bad"})
+    assert bad_period.status_code == 422
+
+    attention_res = client.get("/api/attention")
+    assert attention_res.status_code == 200
+    assert "current" in attention_res.json()
 
 
 def test_api_rejects_unknown_window(tmp_path: Path) -> None:
