@@ -55,6 +55,7 @@ EXPECTED_CODES = {
     "HUB-502",
     "APP-901",
     "APP-902",
+    "APP-903",
 }
 
 
@@ -259,9 +260,12 @@ def _patch_httpx_for_fake_responses(monkeypatch, handler):
 # ---------------------------------------------------------------------------
 
 
-def test_error_catalog_has_all_19_codes() -> None:
+def test_error_catalog_has_all_20_codes() -> None:
     assert set(ERROR_CATALOG) == EXPECTED_CODES
-    assert len(ERROR_CATALOG) == 19
+    assert len(ERROR_CATALOG) == 20
+    msg = error_message("APP-903")
+    assert "keychain" in msg.lower()
+    assert format_error("APP-903") == f"{msg} Error APP-903"
 
 
 def test_req_404_catalog_and_error_response() -> None:

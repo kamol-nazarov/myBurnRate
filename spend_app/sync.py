@@ -1322,6 +1322,106 @@ def register_hub_test_client(hub_url: str, client: object) -> None:
     _HUB_TEST_CLIENTS[hub_url.strip().rstrip("/")] = client
 
 
+def _vault_get_secret(database_path: Path, ref: str) -> str | None:
+    try:
+        from spend_app.connection_secrets import get_vault
+
+        vault = get_vault(database_path)
+        if vault is None:
+            return None
+        val = vault.get(ref)
+        return str(val).strip() if isinstance(val, str) and val.strip() else None
+    except Exception:
+        return None
+
+
+def _vault_put_secret(database_path: Path, ref: str, value: str) -> bool:
+    try:
+        from spend_app.connection_secrets import get_vault, verified_vault_put
+
+        vault = get_vault(database_path)
+        verified_vault_put(vault, value, ref)
+        return True
+    except Exception:
+        return False
+
+
+def migrate_legacy_spoke_secrets(database_path: Path, *, vault=None) -> dict[str, bool]:
+    """Move legacy SQLite ``spokeConfig.token`` / ``ownerSession`` into the vault.
+
+    Writes each secret to the vault, reads it back to verify it matches, and
+    only then removes the DB copy. When the vault is unavailable or rejects a
+    write, the DB copy is left untouched so syncing continues.
+    """
+    outcome = {"token": False, "ownerSession": False}
+    if database_path is None:
+        return outcome
+    db_file = Path(database_path)
+    if not db_file.is_file():
+        return outcome
+
+    from spend_app.connection_secrets import get_vault, verified_vault_put
+    from spend_app.setup_wizard import read_setup_state, write_setup_state
+
+    try:
+        use_vault = vault if vault is not None else get_vault(db_file)
+    except Exception:
+        return outcome
+    if use_vault is None:
+        return outcome
+
+    try:
+        with connect(db_file) as connection:
+            state = read_setup_state(connection)
+    except Exception:
+        return outcome
+
+    spoke = state.get("spokeConfig") or {}
+    legacy_token = str(spoke.get("token") or "").strip()
+    legacy_session = str(spoke.get("ownerSession") or "").strip()
+    if not legacy_token and not legacy_session:
+        return outcome
+
+    if legacy_token:
+        try:
+            verified_vault_put(use_vault, legacy_token, "burnrate-machine-token")
+            outcome["token"] = True
+        except Exception:
+            outcome["token"] = False
+
+    if legacy_session:
+        try:
+            verified_vault_put(use_vault, legacy_session, "burnrate-owner-session")
+            outcome["ownerSession"] = True
+        except Exception:
+            outcome["ownerSession"] = False
+
+    if not outcome["token"] and not outcome["ownerSession"]:
+        return outcome
+
+    try:
+        with connect(db_file) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            latest = read_setup_state(connection)
+            latest_spoke = dict(latest.get("spokeConfig") or {})
+            changed = False
+            if outcome["token"] and str(latest_spoke.get("token") or "").strip() == legacy_token:
+                latest_spoke.pop("token", None)
+                changed = True
+            if (
+                outcome["ownerSession"]
+                and str(latest_spoke.get("ownerSession") or "").strip() == legacy_session
+            ):
+                latest_spoke.pop("ownerSession", None)
+                changed = True
+            if changed:
+                latest["spokeConfig"] = latest_spoke
+                write_setup_state(connection, latest)
+    except Exception:
+        pass
+    return outcome
+
+
 def clear_hub_proxy_cache() -> None:
     """Forget every Hub copy, e.g. after hub connection changes."""
     with _HUB_PROXY_LOCK:
@@ -1389,9 +1489,13 @@ def post_to_configured_hub(
         if strict:
             raise HubMutationError(str(exc), 422) from exc
         return None
-    token = str(spoke.get("ownerSession") or "").strip()
+    token = str(spoke.get("ownerSession") or "").strip() or (
+        _vault_get_secret(settings.database_path, "burnrate-owner-session") or ""
+    )
     if path == "/api/machines" and not token:
-        token = str(spoke.get("token") or "").strip()
+        token = str(spoke.get("token") or "").strip() or (
+            _vault_get_secret(settings.database_path, "burnrate-machine-token") or ""
+        )
     if not hub_url or not token:
         if strict:
             raise HubMutationError("Reconnect this computer to its hub before saving plans.")
@@ -1740,7 +1844,9 @@ def fetch_from_configured_hub(
     except ValueError:
         return None
     from spend_app.auth_model import digest, moment, parse
-    token = str(spoke.get("ownerSession") or "").strip()
+    token = str(spoke.get("ownerSession") or "").strip() or (
+        _vault_get_secret(settings.database_path, "burnrate-owner-session") or ""
+    )
     expiry = parse(spoke.get("ownerSessionExpiresAt"))
     if expiry is not None and expiry <= moment():
         return None

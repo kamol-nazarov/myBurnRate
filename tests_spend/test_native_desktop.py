@@ -665,7 +665,7 @@ def test_wealthfront_bridge_hub_account_sign_in_and_spoke_sync(tmp_path, monkeyp
     from spend_app.wealthfront_window import DesktopBridge, load_ui_html
 
     html = load_ui_html()
-    assert "Central Hub account" in html
+    assert "Hub account" in html
     assert "submitHubAccount" in html
 
     demo_bridge = DesktopBridge(DemoClient(), demo=True)

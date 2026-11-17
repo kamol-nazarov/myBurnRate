@@ -1050,7 +1050,8 @@ def test_h2_maybe_run_configured_spoke_sync_auto_rotates_near_expiry_and_on_flag
         assert "tokenRotated" not in res_no_rot
         with connect(ss.database_path) as conn:
             st = setup_wizard.read_setup_state(conn)
-            assert st["spokeConfig"]["token"] == token_0
+            active_tok = sync._vault_get_secret(ss.database_path, "burnrate-machine-token") or st["spokeConfig"]["token"]
+            assert active_tok == token_0
             assert st["spokeConfig"]["tokenExpiresAt"] == far_exp
             assert st["spokeConfig"]["rotationRequired"] is False
 
@@ -1067,8 +1068,8 @@ def test_h2_maybe_run_configured_spoke_sync_auto_rotates_near_expiry_and_on_flag
         assert res_near.get("rotationRequired") is False
         with connect(ss.database_path) as conn:
             st1 = setup_wizard.read_setup_state(conn)
-            token_1 = st1["spokeConfig"]["token"]
-            assert token_1 != token_0
+            token_1 = sync._vault_get_secret(ss.database_path, "burnrate-machine-token") or st1["spokeConfig"]["token"]
+            assert token_1 and token_1 != token_0
             assert auth_model.parse(st1["spokeConfig"]["tokenExpiresAt"]) > auth_model.moment() + timedelta(days=80)
             assert st1["spokeConfig"]["rotationRequired"] is False
             cursor1 = sync.read_sync_cursor(ss.database_path, HUB_URL)
@@ -1093,7 +1094,7 @@ def test_h2_maybe_run_configured_spoke_sync_auto_rotates_near_expiry_and_on_flag
         assert res_req.get("rotationRequired") is False
         with connect(ss.database_path) as conn:
             st2 = setup_wizard.read_setup_state(conn)
-            token_2 = st2["spokeConfig"]["token"]
+            token_2 = sync._vault_get_secret(ss.database_path, "burnrate-machine-token") or st2["spokeConfig"]["token"]
             assert token_2 != token_1
             assert st2["spokeConfig"]["rotationRequired"] is False
             cursor2 = sync.read_sync_cursor(ss.database_path, HUB_URL)
