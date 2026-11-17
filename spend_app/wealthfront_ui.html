@@ -110,6 +110,35 @@
   --spring: cubic-bezier(0.22, 1, 0.36, 1);
   --font: "Manrope", -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", system-ui, sans-serif;
   --display: "Manrope", -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display", system-ui, sans-serif;
+  --h9-t-codex: #18172b;
+  --h9-t-claude: #d97757;
+  --h9-t-cursor: #3a3759;
+  --h9-t-opencode: #13795b;
+  --h9-t-zcode: #2563eb;
+  --h9-t-grok: #4c4b63;
+  --h9-t-openrouter: #4840bb;
+  --h9-t-antigravity: #2563eb;
+  --h9-t-muse: #0064e0;
+  --h9-t-other: #68677d;
+  --h9-mix-cached: #13795b;
+  --h9-mix-fresh: #4840bb;
+  --h9-mix-output: #d97706;
+  --h9-mix-write: #2563eb;
+  --h9-heat-cell: #ececf5;
+  --h9-heat-fill: #4840bb;
+  --h9-heat-border: rgba(24, 23, 43, 0.08);
+  --h9-heat-peak: #18172b;
+  --h9-banner-exact-bg: #e7f6f0;
+  --h9-banner-exact-border: rgba(19, 121, 91, 0.22);
+  --h9-banner-partial-bg: #fdf3e7;
+  --h9-banner-partial-border: #f4d8bc;
+  --h9-banner-quiet-bg: #f7f7fb;
+  --h9-banner-quiet-border: rgba(24, 23, 43, 0.10);
+  --h9-cum-area-top: rgba(72, 64, 187, 0.22);
+  --h9-cum-area-bottom: rgba(72, 64, 187, 0.02);
+  --h9-tip-bg: #18172b;
+  --h9-tip-border: rgba(255, 255, 255, 0.14);
+  --h9-tip-fg: #ffffff;
 }
 
 /* Obsidian dark: deep blue-black canvas, raised slate surfaces, soft lavender accent. */
@@ -178,6 +207,35 @@ html[data-theme="dark"] {
   --shadow-brand: 0 1px 3px rgba(0, 0, 0, 0.4);
   --shadow-indicator: none;
   --shadow-preview: 0 10px 28px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.3);
+  --h9-t-codex: #b6b8d0;
+  --h9-t-claude: #e58b6d;
+  --h9-t-cursor: #9c98c9;
+  --h9-t-opencode: #5ccba3;
+  --h9-t-zcode: #7fa8ff;
+  --h9-t-grok: #a2a5ba;
+  --h9-t-openrouter: #8f88f5;
+  --h9-t-antigravity: #7fa8ff;
+  --h9-t-muse: #6fb0ff;
+  --h9-t-other: #8589a0;
+  --h9-mix-cached: #5ccba3;
+  --h9-mix-fresh: #8f88f5;
+  --h9-mix-output: #e2a75b;
+  --h9-mix-write: #7fa8ff;
+  --h9-heat-cell: #232631;
+  --h9-heat-fill: #8f88f5;
+  --h9-heat-border: rgba(255, 255, 255, 0.08);
+  --h9-heat-peak: #e7e8f1;
+  --h9-banner-exact-bg: #16302a;
+  --h9-banner-exact-border: rgba(92, 203, 163, 0.28);
+  --h9-banner-partial-bg: #2b2318;
+  --h9-banner-partial-border: #473822;
+  --h9-banner-quiet-bg: #1e2029;
+  --h9-banner-quiet-border: rgba(255, 255, 255, 0.10);
+  --h9-cum-area-top: rgba(143, 136, 245, 0.28);
+  --h9-cum-area-bottom: rgba(143, 136, 245, 0.02);
+  --h9-tip-bg: #242733;
+  --h9-tip-border: rgba(255, 255, 255, 0.14);
+  --h9-tip-fg: #e7e8f1;
 }
 
 * {
@@ -2935,6 +2993,1029 @@ html.is-comfortable .quick-plan-banner { padding: 11px 12px; }
   .diag-ingest-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
+/* H9 analytics */
+.hero[hidden],
+.section-stack[hidden],
+.h9-more-btn[hidden] {
+  display: none !important;
+}
+html.is-mini #h9AnalyticsSection,
+html.is-mini #h9DetailView {
+  display: none !important;
+}
+.section-stack {
+  grid-template-columns: minmax(0, 1fr);
+}
+.hero-inner {
+  min-width: 0;
+}
+.h9-period-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 2px;
+  min-width: 0;
+  width: 100%;
+}
+.h9-period-row .period-bar {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-top: 0;
+}
+.period-bar.is-more-active .period-indicator {
+  opacity: 0;
+}
+.h9-more-btn {
+  appearance: none;
+  flex-shrink: 0;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 7.5px;
+  border: 1px solid var(--border);
+  background: var(--seg-bg);
+  color: var(--ink-secondary);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 560;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.h9-more-btn:hover {
+  color: var(--ink);
+  border-color: var(--border-input);
+}
+.h9-more-btn.active {
+  background: var(--seg-thumb);
+  color: var(--ink);
+  font-weight: 660;
+  border-color: var(--seg-border);
+  box-shadow: var(--seg-shadow);
+}
+.h9-range-popover {
+  width: 184px;
+  max-height: min(340px, 72vh);
+  overflow-y: auto;
+}
+.h9-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 5px;
+  margin-top: 5px;
+  min-width: 0;
+}
+.h9-range-bar,
+.h9-tool-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  max-width: 100%;
+}
+.h9-range-pill,
+.h9-tool-pill,
+.h9-mode-btn,
+.h9-back-btn,
+.h9-drill-btn {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--surface-subtle);
+  color: var(--ink-secondary);
+  font-family: inherit;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.15;
+  padding: 3.5px 7px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.h9-range-pill:hover,
+.h9-tool-pill:hover,
+.h9-mode-btn:hover,
+.h9-back-btn:hover,
+.h9-drill-btn:hover {
+  color: var(--ink);
+  background: var(--surface);
+  border-color: var(--border-input);
+}
+.h9-range-pill.active,
+.h9-tool-pill.active,
+.h9-mode-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: var(--accent-border);
+}
+.h9-drill-btn {
+  color: var(--accent);
+  border-color: var(--accent-border);
+  background: var(--surface);
+}
+.h9-tool-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: currentColor;
+}
+.h9-analytics-section {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 7px;
+  min-width: 0;
+  max-width: 100%;
+}
+.h9-analytics-section[hidden],
+.h9-detail-view[hidden],
+.h9-controls[hidden],
+.h9-tool-bar[hidden],
+.h9-heat-warning[hidden],
+.h9-mix-details[hidden],
+.h9-chart-tooltip[hidden] {
+  display: none !important;
+}
+.h9-banner {
+  border-radius: 11px;
+  padding: 8px 11px;
+  border: 1px solid var(--h9-banner-quiet-border);
+  background: var(--h9-banner-quiet-bg);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 3px;
+  min-width: 0;
+}
+.h9-banner-note,
+.h9-banner-meta {
+  overflow-wrap: anywhere;
+}
+.h9-banner[data-state="exact"] {
+  background: var(--h9-banner-exact-bg);
+  border-color: var(--h9-banner-exact-border);
+}
+.h9-banner[data-state="partial"] {
+  background: var(--h9-banner-partial-bg);
+  border-color: var(--h9-banner-partial-border);
+}
+.h9-banner-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 10px;
+}
+.h9-banner-head strong {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.h9-banner-meta {
+  font-size: 10.5px;
+  color: var(--ink-secondary);
+}
+.h9-banner-note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--ink-secondary);
+}
+.h9-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+.h9-kpi-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  padding: 8px 10px;
+  box-shadow: var(--shadow-card);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 3px;
+  min-width: 0;
+}
+.h9-kpi-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  min-width: 0;
+}
+.h9-kpi-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--ink-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.h9-chip {
+  font-size: 10.5px;
+  font-weight: 650;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--ink-secondary);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+.h9-chip.good {
+  background: var(--mint-bg);
+  color: var(--mint);
+  border-color: transparent;
+}
+.h9-chip.warn {
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-color: var(--warn-border);
+}
+.h9-kpi-val {
+  font-family: var(--display);
+  font-size: 17px;
+  font-weight: 750;
+  line-height: 1.15;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums lining-nums;
+  display: flex;
+  align-items: baseline;
+  gap: 1px;
+  min-width: 0;
+}
+.h9-kpi-note {
+  margin: 0;
+  font-size: 10.5px;
+  line-height: 1.3;
+  color: var(--ink-tertiary);
+  overflow-wrap: anywhere;
+}
+.h9-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  box-shadow: var(--shadow-card);
+  padding: 10px 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+.h9-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.h9-card-title {
+  font-family: var(--display);
+  font-size: 12.5px;
+  font-weight: 680;
+  color: var(--ink);
+}
+.h9-card-sub {
+  font-size: 10.5px;
+  color: var(--ink-secondary);
+}
+.h9-hover-readout {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--ink-secondary);
+}
+.h9-hover-readout strong {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums lining-nums;
+}
+.h9-mode-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  background: var(--seg-bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+.h9-chart-shell {
+  position: relative;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 4px;
+  align-items: stretch;
+  min-width: 0;
+}
+.h9-gutter {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  height: 128px;
+  font-size: 10.5px;
+  color: var(--ink-tertiary);
+  text-align: right;
+  padding: 2px 2px 2px 0;
+  font-variant-numeric: tabular-nums lining-nums;
+}
+.h9-plot-stage {
+  position: relative;
+  height: 128px;
+  border-bottom: 1px solid var(--divider);
+  min-width: 0;
+}
+.h9-grid-lines {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+.h9-grid-lines span {
+  border-top: 1px dashed var(--chart-grid);
+  width: 100%;
+  height: 0;
+}
+.h9-bars-plot {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  padding: 8px 2px 0;
+}
+.h9-col {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 1px;
+  transition: opacity 0.15s ease;
+}
+.h9-col.dim {
+  opacity: 0.35;
+}
+.h9-seg {
+  width: 100%;
+  border-radius: 2px 2px 0 0;
+  min-height: 1px;
+}
+.h9-cum-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.h9-hits {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: stretch;
+}
+.h9-hit {
+  flex: 1 1 0;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: crosshair;
+  position: relative;
+}
+.h9-hit.active::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  background: var(--accent);
+  opacity: 0.65;
+}
+.h9-axis {
+  grid-column: 2;
+  display: flex;
+  justify-content: space-between;
+  font-size: 10.5px;
+  color: var(--ink-tertiary);
+  padding-top: 2px;
+}
+.h9-chart-tooltip {
+  position: absolute;
+  top: 4px;
+  z-index: 20;
+  min-width: 148px;
+  max-width: 216px;
+  background: var(--h9-tip-bg);
+  color: var(--h9-tip-fg);
+  border: 1px solid var(--h9-tip-border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 10.5px;
+  box-shadow: var(--shadow-pop);
+  pointer-events: none;
+}
+.h9-tip-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-weight: 700;
+  padding-bottom: 4px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--h9-tip-border);
+}
+.h9-tip-rows {
+  display: grid;
+  gap: 2px;
+}
+.h9-tip-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.h9-tip-row span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.h9-tip-hint {
+  margin-top: 4px;
+  font-size: 10.5px;
+  opacity: 0.78;
+}
+.h9-legend-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(135px, 1fr));
+  gap: 6px;
+  min-width: 0;
+}
+.h9-legend-card {
+  appearance: none;
+  text-align: left;
+  border: 1px solid var(--border);
+  background: var(--surface-subtle);
+  color: var(--ink);
+  border-radius: 9px;
+  padding: 7px 9px;
+  cursor: pointer;
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.h9-legend-card:hover {
+  background: var(--row-hover);
+  border-color: var(--border-input);
+}
+.h9-legend-top {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--ink);
+}
+.h9-legend-card strong {
+  font-size: 13px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums lining-nums;
+}
+.h9-legend-card em {
+  font-style: normal;
+  font-size: 10.5px;
+  color: var(--ink-secondary);
+}
+.h9-legend-bar {
+  height: 3px;
+  border-radius: 999px;
+  background: var(--track);
+  overflow: hidden;
+  margin-top: 2px;
+}
+.h9-legend-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+}
+.h9-two-col {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 7px;
+}
+.h9-list {
+  display: grid;
+  gap: 6px;
+}
+.h9-waste-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+}
+.h9-waste-item strong {
+  display: block;
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--ink);
+}
+.h9-waste-item small {
+  display: block;
+  font-size: 10.5px;
+  color: var(--ink-secondary);
+  margin-top: 1px;
+}
+.h9-fix-chip {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft);
+  padding: 1.5px 6px;
+  border-radius: 5px;
+}
+.h9-leak-val {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--warn);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums lining-nums;
+}
+.h9-subfoot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 4px;
+  border-top: 1px solid var(--divider);
+  font-size: 11px;
+  color: var(--ink-secondary);
+}
+.h9-subfoot strong {
+  color: var(--mint);
+  font-variant-numeric: tabular-nums lining-nums;
+}
+.h9-pace-track {
+  height: 7px;
+  border-radius: 999px;
+  background: var(--track);
+  overflow: hidden;
+}
+.h9-pace-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+}
+.h9-pace-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10.5px;
+  color: var(--ink-secondary);
+  font-variant-numeric: tabular-nums lining-nums;
+}
+.h9-mix-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: var(--ink);
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.h9-mix-bar {
+  display: flex;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--track);
+  gap: 1px;
+}
+.h9-mix-bar > i {
+  display: block;
+  height: 100%;
+}
+.h9-mix-rows {
+  display: grid;
+  gap: 5px;
+}
+.h9-mix-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+.h9-mix-row span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink);
+  min-width: 0;
+}
+.h9-swatch-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.h9-mix-row em {
+  font-style: normal;
+  color: var(--ink-secondary);
+  font-variant-numeric: tabular-nums lining-nums;
+}
+.h9-mix-row strong {
+  font-weight: 700;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums lining-nums;
+}
+.h9-price-lead {
+  display: grid;
+  gap: 2px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+}
+.h9-price-kicker {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--ink-secondary);
+}
+.h9-price-fig {
+  font-family: var(--display);
+  font-size: 16px;
+  font-weight: 750;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums lining-nums;
+}
+.h9-price-meta {
+  font-size: 10.5px;
+  color: var(--ink-secondary);
+}
+.h9-price-ladder {
+  display: grid;
+  gap: 6px;
+}
+.h9-price-rung {
+  display: grid;
+  gap: 3px;
+}
+.h9-price-rung-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11px;
+}
+.h9-price-who {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+.h9-price-who b {
+  font-weight: 650;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.h9-price-who small {
+  color: var(--ink-tertiary);
+  font-size: 10.5px;
+}
+.h9-price-bar {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--track);
+  overflow: hidden;
+}
+.h9-price-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+}
+.h9-table-head {
+  display: none;
+  grid-template-columns: minmax(120px, 1.5fr) minmax(80px, 1fr) 74px 70px 60px 54px;
+  gap: 6px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--divider);
+}
+.h9-sort-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 2px 0;
+  font-family: inherit;
+  font-size: 10.5px;
+  font-weight: 650;
+  color: var(--ink-secondary);
+  text-align: left;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.h9-sort-btn.numeric {
+  justify-content: flex-end;
+  text-align: right;
+}
+.h9-sort-btn.active {
+  color: var(--accent);
+}
+.h9-model-row {
+  display: none;
+  grid-template-columns: minmax(120px, 1.5fr) minmax(80px, 1fr) 74px 70px 60px 54px;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 6px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 11px;
+  position: relative;
+  border-bottom: 1px solid var(--hair-faint);
+}
+.h9-model-row:hover {
+  background: var(--row-hover);
+}
+.h9-model-row strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+}
+.h9-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums lining-nums;
+}
+.h9-model-card,
+.h9-session-card {
+  width: 100%;
+  text-align: left;
+  appearance: none;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 8px 9px;
+  display: grid;
+  gap: 5px;
+  color: var(--ink);
+  font-family: inherit;
+  cursor: pointer;
+}
+.h9-model-card:hover {
+  background: var(--row-hover);
+  border-color: var(--border-input);
+}
+.h9-model-card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11.5px;
+}
+.h9-model-card-top strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+.h9-model-card-top span {
+  font-size: 10.5px;
+  color: var(--ink-secondary);
+}
+.h9-model-figures {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  font-size: 10.5px;
+  color: var(--ink-secondary);
+}
+.h9-model-figures b {
+  display: block;
+  font-size: 11.5px;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums lining-nums;
+}
+.h9-heat-warning {
+  padding: 5px 8px;
+  border-radius: 7px;
+  font-size: 10.5px;
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  color: var(--warn);
+}
+.h9-heat-summary {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 4px 10px;
+  font-size: 10.5px;
+  color: var(--ink-secondary);
+}
+.h9-heat-grid {
+  display: grid;
+  gap: 2px;
+}
+.h9-heat-grid.dim {
+  opacity: 0.72;
+}
+.h9-heat-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+  gap: 4px;
+}
+.h9-heat-day {
+  font-size: 10.5px;
+  color: var(--ink-tertiary);
+}
+.h9-heat-cells {
+  display: grid;
+  grid-template-columns: repeat(24, minmax(0, 1fr));
+  gap: 1.5px;
+}
+.h9-heat-cell {
+  position: relative;
+  height: 13px;
+  padding: 0;
+  border: 1px solid var(--h9-heat-border);
+  border-radius: 2px;
+  background: var(--h9-heat-cell);
+  cursor: pointer;
+  overflow: hidden;
+}
+.h9-heat-fill {
+  position: absolute;
+  inset: 0;
+  background: var(--h9-heat-fill);
+  pointer-events: none;
+}
+.h9-heat-cell.is-peak {
+  outline: 1.5px solid var(--h9-heat-peak);
+  outline-offset: -1px;
+}
+.h9-heat-cell:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+  z-index: 2;
+}
+.h9-detail-view {
+  padding: 8px 10px 14px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  max-width: 540px;
+  width: 100%;
+  min-width: 0;
+  margin: 0 auto;
+}
+.h9-detail-topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.h9-detail-share-track {
+  height: 7px;
+  border-radius: 999px;
+  background: var(--track);
+  overflow: hidden;
+}
+.h9-detail-share-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+}
+.h9-opp-card {
+  border-left: 3px solid var(--mint);
+}
+.h9-opp-card.warn {
+  border-left-color: var(--warn);
+}
+.h9-session-head {
+  display: none;
+  grid-template-columns: 76px minmax(100px, 1fr) 54px 66px 54px 68px;
+  gap: 6px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--divider);
+  font-size: 10.5px;
+  font-weight: 650;
+  color: var(--ink-secondary);
+}
+.h9-session-row {
+  display: none;
+  grid-template-columns: 76px minmax(100px, 1fr) 54px 66px 54px 68px;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border-bottom: 1px solid var(--hair-faint);
+  font-size: 11px;
+}
+.h9-sid {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  color: var(--ink-secondary);
+}
+.h9-empty {
+  margin: 0;
+  font-size: 11px;
+  color: var(--ink-tertiary);
+}
+.h9-detail-bars {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  padding: 8px 2px 0;
+}
+.h9-detail-bar-col {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  transition: opacity 0.15s ease;
+}
+.h9-detail-bar-col.dim {
+  opacity: 0.35;
+}
+.h9-detail-bar-col > i {
+  display: block;
+  width: 100%;
+  border-radius: 3px 3px 0 0;
+}
+@media (min-width: 540px) {
+  .h9-table-head,
+  .h9-model-row,
+  .h9-session-head,
+  .h9-session-row {
+    display: grid;
+  }
+  .h9-model-card,
+  .h9-session-card {
+    display: none;
+  }
+}
+@media (min-width: 720px) {
+  .hero-inner,
+  .section-stack,
+  .h9-detail-view {
+    max-width: 940px;
+  }
+  .h9-kpi-grid {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+  .h9-two-col {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.h9-detail-kpis {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+@media (min-width: 720px) {
+  .h9-detail-kpis {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
 /* Reduced motion: no loops, no slides or springs; hero and chart snap */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
@@ -3072,12 +4153,23 @@ html.is-comfortable .quick-plan-banner { padding: 11px 12px; }
         </div>
 
         <!-- Wealthfront Time-Range Pills -->
-        <div class="period-bar" id="periodBar">
-          <div class="period-indicator" id="periodIndicator"></div>
-          <button class="period-pill active" data-period="today" type="button">Today</button>
-          <button class="period-pill" data-period="week" type="button">7 days</button>
-          <button class="period-pill" data-period="month" type="button" title="This calendar month">Month</button>
-          <button class="period-pill" data-period="all" type="button">All</button>
+        <div class="h9-period-row">
+          <div class="period-bar" id="periodBar">
+            <div class="period-indicator" id="periodIndicator"></div>
+            <button class="period-pill active" data-period="today" type="button">Today</button>
+            <button class="period-pill" data-period="week" type="button">7 days</button>
+            <button class="period-pill" data-period="month" type="button" title="This calendar month">Month</button>
+            <button class="period-pill" data-period="all" type="button">All</button>
+          </div>
+          <button class="h9-more-btn" id="h9MoreRangeBtn" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="h9RangePopover" aria-label="More time ranges" hidden>
+            <span id="h9MoreRangeLabel">More</span>
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+          </button>
+        </div>
+
+        <!-- H9 analytics -->
+        <div class="h9-controls" id="h9Controls" hidden>
+          <div class="h9-tool-bar" id="h9ToolBar" role="radiogroup" aria-label="Tool filter" hidden></div>
         </div>
 
         <!-- Rate, cache and plan summary -->
@@ -3146,8 +4238,249 @@ html.is-comfortable .quick-plan-banner { padding: 11px 12px; }
         </div>
       </div>
 
+      <!-- H9 analytics -->
+      <section class="h9-analytics-section" id="h9AnalyticsSection" aria-label="Detailed spend analytics" hidden>
+        <div class="h9-banner" id="h9CoverageBanner" data-state="quiet">
+          <div class="h9-banner-head">
+            <strong id="h9CoverageTitle">Pricing coverage</strong>
+            <span class="h9-banner-meta" id="h9CoverageExact">exact: —</span>
+          </div>
+          <p class="h9-banner-note" id="h9CoverageNote"></p>
+          <p class="h9-banner-meta" id="h9CoverageUnpriced" hidden></p>
+        </div>
+
+        <div class="h9-kpi-grid" id="h9KpiGrid">
+          <article class="h9-kpi-card" id="h9KpiTrackedCard">
+            <div class="h9-kpi-top"><span class="h9-kpi-label">Tracked value</span><span class="h9-chip" id="h9KpiTrackedChip">—</span></div>
+            <div class="h9-kpi-val"><span id="h9KpiTrackedMarker"></span><span id="h9KpiTrackedVal">—</span></div>
+            <p class="h9-kpi-note" id="h9KpiTrackedNote">—</p>
+          </article>
+          <article class="h9-kpi-card">
+            <div class="h9-kpi-top"><span class="h9-kpi-label">Measured tokens</span><span class="h9-chip good">exact</span></div>
+            <div class="h9-kpi-val"><span id="h9KpiTokensVal">—</span></div>
+            <p class="h9-kpi-note" id="h9KpiTokensNote">—</p>
+          </article>
+          <article class="h9-kpi-card">
+            <div class="h9-kpi-top"><span class="h9-kpi-label">API cost / 1M</span><span class="h9-chip" id="h9KpiRateChip">—</span></div>
+            <div class="h9-kpi-val"><span id="h9KpiRateMarker"></span><span id="h9KpiRateVal">—</span></div>
+            <p class="h9-kpi-note" id="h9KpiRateNote">—</p>
+          </article>
+          <article class="h9-kpi-card">
+            <div class="h9-kpi-top"><span class="h9-kpi-label">Cache reuse</span><span class="h9-chip good">prompt</span></div>
+            <div class="h9-kpi-val"><span id="h9KpiCacheVal">—</span></div>
+            <p class="h9-kpi-note" id="h9KpiCacheNote">—</p>
+          </article>
+          <article class="h9-kpi-card">
+            <div class="h9-kpi-top"><span class="h9-kpi-label">Sessions</span><span class="h9-chip">runs</span></div>
+            <div class="h9-kpi-val"><span id="h9KpiSessionsVal">—</span></div>
+            <p class="h9-kpi-note" id="h9KpiSessionsNote">—</p>
+          </article>
+        </div>
+
+        <article class="h9-card" id="h9ChartCard">
+          <div class="h9-card-head">
+            <div>
+              <span class="h9-card-title">Token activity</span>
+              <div class="h9-hover-readout"><span id="h9HoverLabel">Window total</span><strong id="h9HoverValue">—</strong></div>
+            </div>
+            <div class="h9-mode-switch" id="h9ChartMode" role="radiogroup" aria-label="Chart display mode">
+              <button type="button" class="h9-mode-btn active" role="radio" aria-checked="true" data-mode="stacked">Stacked</button>
+              <button type="button" class="h9-mode-btn" role="radio" aria-checked="false" data-mode="cumulative">Cumulative</button>
+            </div>
+          </div>
+          <div class="h9-chart-shell">
+            <div class="h9-gutter" id="h9ValueGutter" aria-hidden="true"></div>
+            <div class="h9-plot-stage" id="h9PlotStage">
+              <div class="h9-grid-lines" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+              <div class="h9-bars-plot" id="h9StackedPlot"></div>
+              <svg class="h9-cum-svg" id="h9CumulativePlot" viewBox="0 0 600 222" preserveAspectRatio="none" hidden aria-hidden="true">
+                <defs>
+                  <linearGradient id="h9CumGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.28"/>
+                    <stop offset="100%" stop-color="var(--accent)" stop-opacity="0.02"/>
+                  </linearGradient>
+                </defs>
+                <path id="h9CumArea" fill="url(#h9CumGrad)"/>
+                <path id="h9CumLine" fill="none" stroke="var(--accent)" stroke-width="2.5" vector-effect="non-scaling-stroke"/>
+                <circle id="h9CumEnd" r="4" fill="var(--accent)"/>
+              </svg>
+              <div class="h9-hits" id="h9ChartHits"></div>
+              <div class="h9-chart-tooltip" id="h9ChartTooltip" hidden></div>
+            </div>
+            <div class="h9-axis" id="h9ChartAxis" aria-hidden="true"></div>
+          </div>
+          <div class="sr-only" id="h9ChartLive" aria-live="polite"></div>
+          <div class="h9-legend-grid" id="h9LegendCards"></div>
+          <table class="sr-only" aria-label="Token activity data">
+            <thead><tr><th>Interval</th><th>Total tokens</th><th>By tool</th></tr></thead>
+            <tbody id="h9ChartTableBody"></tbody>
+          </table>
+        </article>
+
+        <div class="h9-two-col">
+          <article class="h9-card" id="h9WasteCard">
+            <div class="h9-card-head">
+              <span class="h9-card-title">Where money leaks</span>
+              <span class="h9-card-sub" id="h9WasteMonthNote">—</span>
+            </div>
+            <div class="h9-kpi-val"><span id="h9WasteMarker"></span><span id="h9WasteDay">—</span></div>
+            <div class="h9-list" id="h9WasteItems"></div>
+            <div class="h9-subfoot"><span>Cache savings in window</span><strong id="h9CacheSavings">—</strong></div>
+          </article>
+
+          <article class="h9-card" id="h9ForecastCard">
+            <div class="h9-card-head">
+              <span class="h9-card-title">Plans against value</span>
+              <span class="h9-card-sub" id="h9ForecastDelta">—</span>
+            </div>
+            <div class="h9-kpi-val"><span id="h9ForecastMarker"></span><span id="h9ForecastVal">—</span></div>
+            <div class="h9-pace-track"><span class="h9-pace-fill" id="h9PaceBar" style="width:0%"></span></div>
+            <div class="h9-pace-meta"><span id="h9PaceLabel">—</span><span id="h9RunRate">—</span></div>
+            <p class="h9-kpi-note" id="h9ForecastNote"></p>
+          </article>
+        </div>
+
+        <div class="h9-two-col">
+          <article class="h9-card" id="h9MixCard">
+            <button type="button" class="h9-mix-toggle" id="h9MixToggle" aria-expanded="true" aria-controls="h9MixDetails">
+              <span class="h9-card-title">What you pay for</span>
+              <span class="h9-card-sub"><span id="h9MixSummary">—</span> <span id="h9MixCaret" aria-hidden="true">▲</span></span>
+            </button>
+            <div class="h9-mix-bar" id="h9MixBar"></div>
+            <div class="h9-mix-details" id="h9MixDetails">
+              <div class="h9-mix-rows" id="h9MixRows"></div>
+              <p class="h9-kpi-note" id="h9MixNote" style="margin-top:6px"></p>
+            </div>
+          </article>
+
+          <article class="h9-card" id="h9PriceCard">
+            <div class="h9-card-head">
+              <span class="h9-card-title">What a million costs</span>
+              <span class="h9-card-sub">Blended effective $/1M</span>
+            </div>
+            <div id="h9PriceBoard" class="h9-list"></div>
+          </article>
+        </div>
+
+        <article class="h9-card" id="h9ModelsCard">
+          <div class="h9-card-head">
+            <span class="h9-card-title">Unit economics</span>
+            <span class="h9-card-sub">Click a model for drilldown</span>
+          </div>
+          <div class="h9-table-head" id="h9ModelHead"></div>
+          <div id="h9ModelBody" class="h9-list"></div>
+        </article>
+
+        <article class="h9-card" id="h9HeatCard">
+          <div class="h9-card-head">
+            <span class="h9-card-title">Activity heatmap</span>
+            <span class="h9-card-sub">Peak hour share: <strong id="h9HeatShare">—</strong></span>
+          </div>
+          <div class="h9-heat-warning" id="h9HeatWarning" hidden>Showing trailing 7-day pattern (selected window is under 24 hours).</div>
+          <div class="h9-heat-summary">
+            <span id="h9HeatSpan">—</span>
+            <span><strong id="h9HeatLabel">Peak window</strong>: <strong id="h9HeatValue">—</strong></span>
+          </div>
+          <div class="h9-heat-grid" id="h9Heatmap" role="grid" aria-label="Weekday by hour reference usage heatmap"></div>
+          <div class="h9-card-sub" id="h9HeatUnit">reference usage (USD at documented rates)</div>
+          <table class="sr-only" aria-label="Activity heatmap data">
+            <thead><tr><th>Day</th><th>Hour</th><th>Reference usage</th></tr></thead>
+            <tbody id="h9HeatTableBody"></tbody>
+          </table>
+        </article>
+      </section>
+
       <div class="footer-note" id="footerStatus">Hover a provider for token burn · click for full limits</div>
     </div>
+
+    <!-- H9 analytics detail view -->
+    <section class="h9-detail-view" id="h9DetailView" aria-label="Entity analytics detail" hidden>
+      <div class="h9-detail-topbar">
+        <button type="button" class="h9-back-btn" id="h9DetailBack">&#8592; Overview</button>
+        <button type="button" class="h9-more-btn active" id="h9DetailRangeBtn" aria-haspopup="menu" aria-expanded="false" aria-controls="h9RangePopover" aria-label="Detail time range">
+          <span id="h9DetailRangeLabel">1d</span>
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
+      </div>
+
+      <article class="h9-card">
+        <div class="h9-card-head">
+          <div>
+            <span class="h9-card-sub" id="h9DetailKind">Detail</span>
+            <div style="display:flex;align-items:center;gap:6px;margin-top:2px">
+              <span id="h9DetailLogo"></span>
+              <strong class="h9-card-title" id="h9DetailName" style="font-size:15px">—</strong>
+              <span class="h9-chip" id="h9DetailPlan">—</span>
+            </div>
+          </div>
+          <span class="h9-chip" id="h9DetailCov">—</span>
+        </div>
+        <p class="h9-banner-note" id="h9DetailSub"></p>
+        <div class="h9-detail-share-track"><span class="h9-detail-share-fill" id="h9DetailShareBar" style="width:0%"></span></div>
+        <span class="h9-card-sub" id="h9DetailShareLabel">—</span>
+      </article>
+
+      <div class="h9-detail-kpis" id="h9DetailKpis"></div>
+
+      <div class="h9-two-col">
+        <article class="h9-card">
+          <div class="h9-card-head">
+            <span class="h9-card-title">Token trend</span>
+            <div class="h9-hover-readout"><span id="h9DetailHoverLabel">Window total</span><strong id="h9DetailHoverVal">—</strong></div>
+          </div>
+          <div class="h9-chart-shell">
+            <div class="h9-gutter" id="h9DetailGutter" aria-hidden="true"></div>
+            <div class="h9-plot-stage">
+              <div class="h9-grid-lines" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+              <div class="h9-detail-bars" id="h9DetailBars"></div>
+              <div class="h9-hits" id="h9DetailHits"></div>
+            </div>
+            <div class="h9-axis" id="h9DetailAxis" aria-hidden="true"></div>
+          </div>
+        </article>
+
+        <article class="h9-card">
+          <div class="h9-card-head">
+            <span class="h9-card-title">Token mix</span>
+            <span class="h9-card-sub">Input vs cached vs output</span>
+          </div>
+          <div class="h9-mix-bar" id="h9DetailMixBar"></div>
+          <div class="h9-mix-rows" id="h9DetailMixCards"></div>
+        </article>
+      </div>
+
+      <div class="h9-two-col">
+        <article class="h9-card h9-opp-card" id="h9OpportunityPanel">
+          <div class="h9-card-head">
+            <span class="h9-card-title" id="h9OppTitle">Opportunity</span>
+            <span class="h9-card-sub" id="h9OppUnit">in this window</span>
+          </div>
+          <div class="h9-kpi-val"><span id="h9OppMarker"></span><span id="h9OppVal">—</span></div>
+          <p class="h9-banner-note" id="h9OppDetail"></p>
+          <div><span class="h9-fix-chip" id="h9OppFix">—</span></div>
+          <div class="h9-subfoot"><span>Already saved by cache</span><strong id="h9OppSaved">—</strong></div>
+        </article>
+
+        <article class="h9-card">
+          <div class="h9-card-head">
+            <span class="h9-card-title" id="h9EntityLimitTitle">Provider limits</span>
+            <span class="h9-chip" id="h9EntityLimitPlan">—</span>
+          </div>
+          <div class="limits-stack" id="h9EntityLimits"></div>
+        </article>
+      </div>
+
+      <article class="h9-card">
+        <div class="h9-card-head">
+          <span class="h9-card-title">Most expensive sessions</span>
+          <span class="h9-card-sub" id="h9SessionsFoot">—</span>
+        </div>
+        <div class="h9-session-head">
+          <span>Session</span><span>Project</span><span class="h9-num">Duration</span><span class="h9-num">Tokens</span><span class="h9-num">Cache</span><span class="h9-num">Value</span>
+        </div>
+        <div id="h9SessionsBody" class="h9-list"></div>
+      </article>
+    </section>
   </div>
 
   <!-- H10 ops/hud -->
@@ -3194,6 +4527,10 @@ html.is-comfortable .quick-plan-banner { padding: 11px 12px; }
 <!-- Scope Selector Popover -->
 <div class="popover-backdrop" id="scopeBackdrop"></div>
 <div class="scope-popover" id="scopePopover" role="menu" aria-label="Computer scope" inert></div>
+
+<!-- H9 Analytics Range Popover -->
+<div class="popover-backdrop" id="h9RangeBackdrop"></div>
+<div class="scope-popover h9-range-popover" id="h9RangePopover" role="menu" aria-label="More time ranges" inert></div>
 
 <!-- Slide-over Settings Sheet -->
 <aside class="settings-sheet" id="settingsSheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle" inert>
@@ -3320,6 +4657,30 @@ function esc(s) {
 }
 
 const state = {
+  analyticsWindow: "1d",
+  tool: "all",
+  h9KnownTools: [],
+  h9Mode: "stacked",
+  h9Hover: null,
+  h9Pinned: null,
+  h9View: "overview",
+  h9Entity: null,
+  h9Summary: null,
+  h9EntityData: null,
+  h9Health: null,
+  h9SortKey: "value",
+  h9SortDir: -1,
+  h9MixOpen: true,
+  h9HeatFocus: 0,
+  h9HeatCell: null,
+  h9HeatShort: false,
+  h9DetailHover: null,
+  h9DetailPinned: null,
+  h9Request: 0,
+  h9DetailReturnFocus: null,
+  h9SavedScrollTop: 0,
+  h9RangeAnchorId: null,
+  h9RangeIncludeMain: false,
   period: "today",
   machine: "all",
   topmost: false,
@@ -3367,7 +4728,8 @@ const state = {
 function syncUiBusy() {
   if (!apiAvailable() || !window.pywebview.api.set_ui_busy) return;
   const scopeOpen = document.getElementById("scopePopover")?.classList.contains("open");
-  window.pywebview.api.set_ui_busy(!!(state.settingsOpen || scopeOpen));
+  const rangeOpen = document.getElementById("h9RangePopover")?.classList.contains("open");
+  window.pywebview.api.set_ui_busy(!!(state.settingsOpen || scopeOpen || rangeOpen));
 }
 
 function updatePeriodIndicator() {
@@ -3424,7 +4786,7 @@ function animateHeroNumber(targetVal, hasEvents, unavailable) {
   const t0 = performance.now();
   const dur = 320;
   function step(now) {
-    const p = Math.min(1, (now - t0) / dur);
+    const p = Math.min(1, Math.max(0, (now - t0) / dur));
     const eased = 1 - Math.pow(1 - p, 3);
     const cur = start + (end - start) * eased;
     state.displayedUsd = cur;
@@ -4060,6 +5422,7 @@ function renderReport(data, animateChart = false) {
     const again = Array.from(list.querySelectorAll(".provider-row")).find(el => el.dataset.rowKey === focusedKey);
     if (again) again.focus();
   }
+  if (typeof h9SyncHeroFromFilter === "function" && state.tool && state.tool !== "all") h9SyncHeroFromFilter();
 }
 
 /* ---------- Guided first run: shown instead of the provider list when nothing is connected ---------- */
@@ -4656,6 +6019,13 @@ async function loadUsage(restart = false, animateChart = false) {
         renderReport(res.report, animateChart);
         if (typeof checkSuggestedPlan === "function") checkSuggestedPlan();
         if (state.diagnosticsOpen && typeof loadDiagnostics === "function") loadDiagnostics(true);
+        if (typeof loadH9Analytics === "function") {
+          if (state.h9View === "detail" && state.h9Entity && !restart) {
+            if (!state.diagnosticsOpen) openH9Detail(state.h9Entity.kind, state.h9Entity.key, { preserveFocus: true });
+          } else {
+            loadH9Analytics(false);
+          }
+        }
       } else {
         showToast((res && res.error) || "Could not refresh usage");
         document.getElementById("liveBadge").classList.remove("pending");
@@ -4706,6 +6076,7 @@ function positionScopePopover() {
 }
 
 function toggleScopePopover() {
+  if (typeof closeH9RangePopover === "function") closeH9RangePopover(false);
   const pop = document.getElementById("scopePopover");
   const back = document.getElementById("scopeBackdrop");
   if (pop.classList.contains("open")) {
@@ -4757,6 +6128,7 @@ window.selectScope = function(machineId) {
 /* Settings Sheet */
 window.openSettings = async function(tab = "sources") {
   closeScopePopover(false);
+  if (typeof closeH9RangePopover === "function") closeH9RangePopover(false);
   const sheet = document.getElementById("settingsSheet");
   const wasOpen = state.settingsOpen;
   state.settingsOpen = true;
@@ -6519,6 +7891,7 @@ document.getElementById("sheetBody").addEventListener("keydown", (e) => {
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (closeScopePopover(true)) { e.preventDefault(); return; }
+  if (typeof closeH9RangePopover === "function" && closeH9RangePopover(true)) { e.preventDefault(); return; }
   if (state.diagnosticsOpen && !state.settingsOpen) { e.preventDefault(); closeDiagnostics(true); return; }
   if (state.settingsOpen) {
     e.preventDefault();
@@ -6552,6 +7925,23 @@ document.addEventListener("keydown", (e) => {
     ob.draft = { source: "", value: "" };
     rebuildOnboarding();
     focusOnboardingToggle(src);
+    return;
+  }
+  if (!state.diagnosticsOpen && state.h9Pinned != null && state.h9View !== "detail") {
+    e.preventDefault();
+    state.h9Pinned = null;
+    if (state.h9Summary) renderH9ChartHover(state.h9Summary);
+    return;
+  }
+  if (!state.diagnosticsOpen && state.h9DetailPinned != null && state.h9View === "detail") {
+    e.preventDefault();
+    state.h9DetailPinned = null;
+    if (state.h9EntityData) renderH9DetailHover(state.h9EntityData);
+    return;
+  }
+  if (!state.diagnosticsOpen && state.h9View === "detail") {
+    e.preventDefault();
+    closeH9Detail(true);
   }
 });
 document.querySelectorAll(".period-pill").forEach(btn => {
@@ -6560,6 +7950,9 @@ document.querySelectorAll(".period-pill").forEach(btn => {
     document.querySelectorAll(".period-pill").forEach(b => b.classList.toggle("active", b === btn));
     updatePeriodIndicator();
     if (apiAvailable()) window.pywebview.api.save_period(state.period);
+    state.analyticsWindow = h9WindowForPeriod(state.period);
+    if (apiHas("save_analytics_window")) window.pywebview.api.save_analytics_window(state.analyticsWindow);
+    renderH9Ranges();
     loadUsage(false, true);
   });
 });
@@ -6581,11 +7974,1270 @@ document.querySelectorAll(".rz").forEach(el => {
 window.addEventListener("resize", () => {
   if (state.report) renderChart(false);
   if (document.getElementById("scopePopover").classList.contains("open")) positionScopePopover();
+  if (document.getElementById("h9RangePopover")?.classList.contains("open") && typeof positionH9RangePopover === "function") positionH9RangePopover();
 });
 
 bindChartScrub();
 bindProviderInteractions();
 bindOnboarding();
+
+/* H9 analytics */
+const H9_WINDOWS = [
+  { key: "15m", label: "15m" }, { key: "30m", label: "30m" }, { key: "1h", label: "1h" },
+  { key: "3h", label: "3h" }, { key: "6h", label: "6h" }, { key: "12h", label: "12h" },
+  { key: "1d", label: "1d" }, { key: "1w", label: "1w" }, { key: "1mo", label: "1mo" },
+  { key: "mtd", label: "MTD" }, { key: "ytd", label: "YTD" }, { key: "all", label: "All" }
+];
+const H9_WINDOW_KEYS = new Set(H9_WINDOWS.map(w => w.key));
+const H9_SHORT_WINDOWS = new Set(["15m", "30m", "1h", "3h", "6h", "12h", "1d"]);
+const H9_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const H9_TOOL_VARS = {
+  codex: "var(--h9-t-codex)",
+  claude: "var(--h9-t-claude)",
+  "claude-code": "var(--h9-t-claude)",
+  cursor: "var(--h9-t-cursor)",
+  opencode: "var(--h9-t-opencode)",
+  "opencode-go": "var(--h9-t-opencode)",
+  zai: "var(--h9-t-zcode)",
+  zcode: "var(--h9-t-zcode)",
+  grok: "var(--h9-t-grok)",
+  "grok-build": "var(--h9-t-grok)",
+  supergrok: "var(--h9-t-grok)",
+  xai: "var(--h9-t-grok)",
+  openrouter: "var(--h9-t-openrouter)",
+  antigravity: "var(--h9-t-antigravity)",
+  muse: "var(--h9-t-muse)"
+};
+const H9_MIX_VARS = {
+  cached_input: "var(--h9-mix-cached)",
+  fresh_input: "var(--h9-mix-fresh)",
+  output: "var(--h9-mix-output)",
+  cache_write: "var(--h9-mix-write)"
+};
+const H9_MIX_LABELS = {
+  cached_input: "Cached input",
+  fresh_input: "Fresh input",
+  output: "Output",
+  cache_write: "Cache writes"
+};
+
+function h9PeriodForWindow(win) {
+  if (win === "1w") return "week";
+  if (win === "1mo" || win === "mtd") return "month";
+  if (win === "ytd" || win === "all") return "all";
+  return "today";
+}
+
+function h9WindowForPeriod(period) {
+  if (period === "week") return "1w";
+  if (period === "month") return "mtd";
+  if (period === "all") return "all";
+  return "1d";
+}
+
+function h9ColorFor(key) {
+  const k = String(key || "").toLowerCase();
+  if (H9_TOOL_VARS[k]) return H9_TOOL_VARS[k];
+  if (k.startsWith("claude-code")) return H9_TOOL_VARS.claude;
+  if (k.startsWith("opencode")) return H9_TOOL_VARS.opencode;
+  return "var(--h9-t-other)";
+}
+
+function h9Finite(v) {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function h9Usd(v) {
+  const n = h9Finite(v);
+  if (n == null) return "—";
+  if (n > 0 && n < 0.005) return "<$0.01";
+  return n >= 1000
+    ? "$" + Math.round(n).toLocaleString("en-US")
+    : "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function h9MarkedUsd(v, exact) {
+  const s = h9Usd(v);
+  if (s === "—") return "—";
+  return exact === false ? "\u2248" + s : s;
+}
+
+function h9Pct(v) {
+  const n = h9Finite(v);
+  return n == null ? "—" : n.toFixed(1) + "%";
+}
+
+function h9Num(v) {
+  const n = h9Finite(v);
+  return n == null ? "—" : Math.round(n).toLocaleString("en-US");
+}
+
+function h9NiceMax(v) {
+  const val = Math.max(v || 0, 0.01);
+  const mag = Math.pow(10, Math.floor(Math.log10(val / 4)));
+  const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(c => c * 4 >= val) || (10 * mag);
+  return step * 4;
+}
+
+function h9Tick(v) {
+  return fmtTokens(v).replace(/\.0([KMB])$/, "$1");
+}
+
+function h9WindowLabel(win) {
+  return H9_WINDOWS.find(w => w.key === win)?.label || String(win || "1d");
+}
+
+function h9MatchToolKey(providerKey, toolKey) {
+  const pk = String(providerKey || "").toLowerCase();
+  const tk = String(toolKey || "").toLowerCase();
+  if (!tk || tk === "all") return true;
+  if (pk === tk) return true;
+  if (tk === "claude-code" && pk.startsWith("claude")) return true;
+  if (tk === "opencode" && pk.startsWith("opencode")) return true;
+  if (tk === "codex" && pk.startsWith("codex")) return true;
+  return pk.startsWith(tk + "-");
+}
+
+function h9SyncHeroFromFilter() {
+  const report = state.report;
+  const list = document.getElementById("providerList");
+  if (!report || !list) return;
+  const activeTool = state.tool && state.tool !== "all" ? state.tool : null;
+  list.querySelectorAll(".provider-item").forEach(item => {
+    item.hidden = !!(activeTool && !h9MatchToolKey(item.dataset.key, activeTool));
+  });
+  if (!activeTool) {
+    paintHeroText(report, false);
+    paintSummary(report);
+    return;
+  }
+  const summary = state.h9Summary;
+  const totals = summary && summary.totals ? summary.totals : null;
+  if (totals) {
+    if (heroAnimId) { cancelAnimationFrame(heroAnimId); heroAnimId = 0; }
+    const val = h9Finite(totals.trackedValue) ?? h9Finite(totals.knownValue);
+    if (val != null) state.displayedUsd = val;
+    const valEl = document.getElementById("heroValue");
+    if (valEl) valEl.textContent = val == null ? "—" : h9Usd(val);
+    const tokEl = document.getElementById("heroTokens");
+    const ctxEl = document.getElementById("heroTokensContext");
+    const toolObj = (summary.tools || []).find(t => t.key === activeTool);
+    if (tokEl) tokEl.textContent = `${fmtTokens(totals.tokens || 0)} tokens`;
+    if (ctxEl) ctxEl.textContent = `filtered to ${toolObj?.name || activeTool}`;
+    const cacheEl = document.getElementById("metricCache");
+    if (cacheEl) cacheEl.textContent = totals.cacheReusePct == null ? "—" : `${Math.round(Number(totals.cacheReusePct))}%`;
+  }
+}
+
+const H9_MAIN_WINDOWS = new Set(["1d", "1w", "mtd", "all"]);
+const H9_MORE_WINDOWS = [
+  { key: "15m", label: "15m", note: "Last 15 minutes" },
+  { key: "30m", label: "30m", note: "Last 30 minutes" },
+  { key: "1h", label: "1h", note: "Last hour" },
+  { key: "3h", label: "3h", note: "Last 3 hours" },
+  { key: "6h", label: "6h", note: "Last 6 hours" },
+  { key: "12h", label: "12h", note: "Last 12 hours" },
+  { key: "1w", label: "1w", note: "Last 7 days" },
+  { key: "1mo", label: "1mo", note: "Rolling 30 days" },
+  { key: "mtd", label: "MTD", note: "Month to date" },
+  { key: "ytd", label: "YTD", note: "Year to date" }
+];
+const H9_DETAIL_POPOVER_WINDOWS = [
+  { key: "1d", label: "Today (1d)", note: "Last 24 hours" },
+  ...H9_MORE_WINDOWS,
+  { key: "all", label: "All", note: "All recorded usage" }
+];
+
+function renderH9Ranges() {
+  const hasAnalytics = apiHas("fetch_analytics_summary");
+  const moreBtn = document.getElementById("h9MoreRangeBtn");
+  const moreLbl = document.getElementById("h9MoreRangeLabel");
+  const periodBar = document.getElementById("periodBar");
+  const isMain = H9_MAIN_WINDOWS.has(state.analyticsWindow);
+  if (periodBar) {
+    periodBar.classList.toggle("is-more-active", hasAnalytics && !isMain);
+    periodBar.querySelectorAll(".period-pill").forEach(b => {
+      b.classList.toggle("active", (!hasAnalytics || isMain) && b.dataset.period === state.period);
+    });
+  }
+  if (moreBtn) {
+    moreBtn.hidden = !hasAnalytics;
+    moreBtn.classList.toggle("active", !isMain);
+    if (moreLbl) moreLbl.textContent = isMain ? "More" : h9WindowLabel(state.analyticsWindow);
+  }
+  const dLbl = document.getElementById("h9DetailRangeLabel");
+  if (dLbl) dLbl.textContent = h9WindowLabel(state.analyticsWindow);
+}
+
+function positionH9RangePopover() {
+  const pop = document.getElementById("h9RangePopover");
+  const anchor = document.getElementById(state.h9RangeAnchorId || "h9MoreRangeBtn");
+  if (!pop || !anchor) return;
+  const r = anchor.getBoundingClientRect();
+  const margin = 8;
+  const viewW = document.documentElement.clientWidth || window.innerWidth;
+  const width = Math.min(196, viewW - margin * 2);
+  const preferred = r.right - width;
+  const left = Math.max(margin, Math.min(Math.round(preferred), viewW - width - margin));
+  pop.style.width = `${width}px`;
+  pop.style.top = `${Math.round(r.bottom + 5)}px`;
+  pop.style.left = `${left}px`;
+  pop.style.right = "auto";
+  pop.style.transformOrigin = "top right";
+}
+
+function closeH9RangePopover(returnFocus = true) {
+  const pop = document.getElementById("h9RangePopover");
+  if (!pop || !pop.classList.contains("open")) return false;
+  pop.classList.remove("open");
+  document.getElementById("h9RangeBackdrop")?.classList.remove("open");
+  pop.inert = true;
+  const anchor = document.getElementById(state.h9RangeAnchorId || "h9MoreRangeBtn");
+  if (anchor) anchor.setAttribute("aria-expanded", "false");
+  syncUiBusy();
+  if (returnFocus && anchor && anchor.isConnected) anchor.focus();
+  return true;
+}
+
+function openH9RangePopover(anchorId, includeMain = false) {
+  closeScopePopover(false);
+  const pop = document.getElementById("h9RangePopover");
+  const back = document.getElementById("h9RangeBackdrop");
+  const anchor = document.getElementById(anchorId);
+  if (!pop || !anchor) return;
+  if (pop.classList.contains("open") && state.h9RangeAnchorId === anchorId) {
+    closeH9RangePopover(true);
+    return;
+  }
+  state.h9RangeAnchorId = anchorId;
+  state.h9RangeIncludeMain = includeMain;
+  positionH9RangePopover();
+  const items = includeMain ? H9_DETAIL_POPOVER_WINDOWS : H9_MORE_WINDOWS;
+  pop.innerHTML = items.map(item => {
+    const on = item.key === state.analyticsWindow;
+    return `<button type="button" class="scope-opt ${on ? "selected" : ""}" role="menuitemradio" aria-checked="${on}" data-h9-window="${esc(item.key)}">
+      <span>${esc(item.label)}</span>
+      ${on ? '<span aria-hidden="true">&#10003;</span>' : ""}
+    </button>`;
+  }).join("");
+  pop.inert = false;
+  pop.classList.add("open");
+  back?.classList.add("open");
+  anchor.setAttribute("aria-expanded", "true");
+  syncUiBusy();
+  (pop.querySelector(".scope-opt.selected") || pop.querySelector(".scope-opt"))?.focus();
+}
+
+function renderH9ToolBar(data) {
+  const bar = document.getElementById("h9ToolBar");
+  if (!bar) return;
+  if ((!state.tool || state.tool === "all") && Array.isArray(data?.tools) && data.tools.length) {
+    state.h9KnownTools = data.tools.map(t => ({ key: t.key, name: t.name || t.key }));
+  }
+  const byKey = new Map();
+  (state.h9KnownTools || []).forEach(t => { if (t.key) byKey.set(t.key, t.name || t.key); });
+  (data?.tools || []).forEach(t => { if (t.key) byKey.set(t.key, t.name || t.key); });
+  if (state.report?.tools) {
+    state.report.tools.forEach(t => {
+      if (t.key && !t.organization && !byKey.has(t.key)) byKey.set(t.key, t.name || t.key);
+    });
+  }
+  if (byKey.size <= 1 && (!state.tool || state.tool === "all")) {
+    bar.hidden = true;
+    bar.innerHTML = "";
+    return;
+  }
+  bar.hidden = false;
+  const items = [{ key: "all", name: "All tools" }, ...Array.from(byKey.entries()).map(([key, name]) => ({ key, name }))];
+  let html = items.map(item => {
+    const on = item.key === (state.tool || "all");
+    const dot = item.key === "all" ? "" : `<span class="h9-tool-dot" style="color:${h9ColorFor(item.key)}" aria-hidden="true"></span>`;
+    return `<button type="button" class="h9-tool-pill ${on ? "active" : ""}" role="radio" aria-checked="${on}" data-h9-tool="${esc(item.key)}">${dot}<span>${esc(item.name)}</span></button>`;
+  }).join("");
+  if (state.tool && state.tool !== "all") {
+    html += `<button type="button" class="h9-drill-btn" data-h9-drill-tool="${esc(state.tool)}">Detail &#8594;</button>`;
+  }
+  bar.innerHTML = html;
+}
+
+
+function h9MixItem(rows, key) {
+  return (rows || []).find(item => item.key === key);
+}
+
+function renderH9Coverage(data) {
+  const cov = data.coverage || {};
+  const exact = cov.exactProviders || [];
+  const derived = cov.derivedProviders || [];
+  const unpricedModels = (data.totals?.unpricedModels || []).filter(Boolean);
+  const hasUnpriced = unpricedModels.length > 0 || (data.models || []).some(m => m.value == null) || (state.h9Health?.pricingGaps || []).length > 0;
+  const banner = document.getElementById("h9CoverageBanner");
+  if (!banner) return;
+  const titleEl = document.getElementById("h9CoverageTitle");
+  const exactEl = document.getElementById("h9CoverageExact");
+  const noteEl = document.getElementById("h9CoverageNote");
+  const unpricedEl = document.getElementById("h9CoverageUnpriced");
+
+  const st = derived.length || hasUnpriced ? "partial" : exact.length ? "exact" : "quiet";
+  banner.dataset.state = st;
+  if (hasUnpriced && !exact.length && !derived.length) {
+    titleEl.textContent = "Pricing coverage";
+  } else if (derived.length || hasUnpriced) {
+    titleEl.textContent = "Partial pricing coverage";
+  } else if (exact.length) {
+    titleEl.textContent = "Exact pricing coverage";
+  } else {
+    titleEl.textContent = "Pricing coverage";
+  }
+  exactEl.textContent = exact.length ? "exact: " + exact.join(", ") : "exact: —";
+  if (cov.note) {
+    noteEl.innerHTML = esc(cov.note).replace(/\u2248/g, "<b>\u2248</b>");
+  } else {
+    const total = exact.length + derived.length;
+    const prefix = total > 0 ? `${exact.length} of ${total} providers publish exact per-token rates. ` : "";
+    noteEl.innerHTML = `${prefix}Every figure derived from published rates instead of a billed amount is marked <b>\u2248</b>. Unpriced usage is counted in tokens and never estimated in dollars.`;
+  }
+  if (unpricedModels.length) {
+    const names = unpricedModels.map(m => m.name || m.modelKey || m).filter(Boolean).join(", ");
+    unpricedEl.hidden = false;
+    unpricedEl.textContent = `Unpriced models in window: ${names}`;
+  } else {
+    unpricedEl.hidden = true;
+    unpricedEl.textContent = "";
+  }
+}
+
+function renderH9Kpis(data) {
+  const t = data.totals || {};
+  const mix = data.mix || [];
+  const known = h9Finite(t.knownValue);
+  const unpriced = Array.isArray(t.unpricedModels) ? t.unpricedModels : [];
+  const partial = h9Finite(t.trackedValue) == null && known != null && unpriced.length > 0;
+  const tracked = partial ? known : h9Finite(t.trackedValue);
+  const priced = h9Finite(t.priced);
+  const published = h9Finite(t.publishedRate);
+  const mixed = (data.coverage?.derivedProviders || []).length > 0 || (published || 0) > 0;
+  const marker = partial ? "\u2248" : (t.trackedValueMarker ?? (tracked == null ? "" : mixed ? "\u2248" : ""));
+
+  document.getElementById("h9KpiTrackedMarker").textContent = marker;
+  document.getElementById("h9KpiTrackedVal").textContent = h9Usd(tracked);
+  const tChip = document.getElementById("h9KpiTrackedChip");
+  const tState = partial ? "partial" : mixed ? "mixed" : tracked == null ? "unknown" : "exact";
+  tChip.textContent = tState;
+  tChip.className = "h9-chip " + (tState === "exact" ? "good" : (tState === "partial" || tState === "mixed") ? "warn" : "");
+
+  const unpricedRows = unpriced.reduce((s, x) => s + (h9Finite(x.records) || 0), 0);
+  const unpricedNames = unpriced.map(x => x.modelKey || x.name).filter(Boolean).join(", ");
+  document.getElementById("h9KpiTrackedNote").textContent = partial
+    ? `${h9Usd(priced)} priced + ${h9Usd(published)} published-rate · ${h9Num(unpricedRows)} rows unpriced: ${unpricedNames}`
+    : tracked == null
+      ? "Tracked value unavailable: no priced or published-rate rows"
+      : `${h9Usd(priced)} priced + ${h9Usd(published)} published-rate`;
+
+  document.getElementById("h9KpiTokensVal").textContent = fmtTokens(t.tokens);
+  const outputTok = h9Finite(t.outputTokens) ?? h9Finite(h9MixItem(mix, "output")?.tokens);
+  document.getElementById("h9KpiTokensNote").textContent = `${h9Num(t.records)} records · ${fmtTokens(outputTok)} output`;
+
+  const fullRate = h9Finite(t.effectiveCostPerMillionTokens);
+  const knownRate = h9Finite(t.knownEffectiveCostPerMillionTokens);
+  const rateComplete = t.effectiveCostComplete === true;
+  const ratePartial = !rateComplete && fullRate == null && knownRate != null;
+  const effRate = ratePartial ? knownRate : fullRate;
+  document.getElementById("h9KpiRateMarker").textContent = effRate == null ? "" : "\u2248";
+  document.getElementById("h9KpiRateVal").textContent = h9Usd(effRate);
+  const rChip = document.getElementById("h9KpiRateChip");
+  rChip.textContent = ratePartial ? "partial" : effRate == null ? "unavailable" : "API rates";
+  rChip.className = "h9-chip " + (effRate != null && !ratePartial ? "good" : ratePartial ? "warn" : "");
+  document.getElementById("h9KpiRateNote").textContent = effRate == null
+    ? "No reliably priced tokens in this window"
+    : ratePartial
+      ? `Blended across ${fmtTokens(t.effectiveCostPricedTokens)} priced tokens · ${h9Pct(t.effectiveCostCoveragePct)} coverage`
+      : "Blended from measured input, output and cache mix";
+
+  document.getElementById("h9KpiCacheVal").textContent = h9Pct(t.cacheReusePct);
+  const cachedTok = h9Finite(t.cachedInputTokens) ?? h9Finite(h9MixItem(mix, "cached_input")?.tokens);
+  const freshTok = h9Finite(t.freshInputTokens) ?? h9Finite(h9MixItem(mix, "fresh_input")?.tokens);
+  document.getElementById("h9KpiCacheNote").textContent = (cachedTok == null || freshTok == null)
+    ? "Cache reuse unavailable for this mix"
+    : `${fmtTokens(cachedTok)} cached of ${fmtTokens(cachedTok + freshTok)} input`;
+
+  document.getElementById("h9KpiSessionsVal").textContent = h9Num(t.sessions);
+  const meanSess = h9Finite(t.meanSessionValue);
+  document.getElementById("h9KpiSessionsNote").textContent = meanSess == null
+    ? "Mean session value unknown"
+    : `\u2248${h9Usd(meanSess)} average tracked value`;
+}
+
+function renderH9Gutter(el, scale) {
+  if (!el) return;
+  const ticks = [1, 0.75, 0.5, 0.25, 0].map(f => `<span>${esc(h9Tick(scale * f))}</span>`);
+  el.innerHTML = ticks.join("");
+}
+
+function renderH9Axis(el, series) {
+  if (!el) return;
+  if (!series.length) { el.innerHTML = ""; return; }
+  const first = series[0]?.label || "";
+  const mid = series[Math.floor(series.length / 2)]?.label || "";
+  const last = series[series.length - 1]?.label || "";
+  el.innerHTML = series.length > 2
+    ? `<span>${esc(first)}</span><span>${esc(mid)}</span><span>${esc(last)}</span>`
+    : `<span>${esc(first)}</span><span>${esc(last)}</span>`;
+}
+
+function renderH9ChartHover(data) {
+  const series = data.series || [];
+  const tools = data.tools || [];
+  const idx = state.h9Pinned ?? state.h9Hover;
+  const bucket = idx == null ? null : series[idx];
+  const plot = document.getElementById("h9StackedPlot");
+  const hits = document.getElementById("h9ChartHits");
+  const tip = document.getElementById("h9ChartTooltip");
+  if (plot) plot.querySelectorAll(".h9-col").forEach((col, i) => col.classList.toggle("dim", idx != null && idx !== i));
+  if (hits) hits.querySelectorAll(".h9-hit").forEach((btn, i) => btn.classList.toggle("active", state.h9Pinned === i || (state.h9Hover === i && state.h9Pinned == null)));
+  const hoverLabel = document.getElementById("h9HoverLabel");
+  const hoverVal = document.getElementById("h9HoverValue");
+  if (!bucket) {
+    if (tip) tip.hidden = true;
+    const tot = data.totals?.tokens;
+    if (hoverLabel) hoverLabel.textContent = `${h9WindowLabel(data.window?.key || state.analyticsWindow)} total`;
+    if (hoverVal) hoverVal.textContent = fmtTokens(tot);
+    return;
+  }
+  if (hoverLabel) hoverLabel.textContent = bucket.label || "";
+  if (hoverVal) hoverVal.textContent = fmtTokens(bucket.total) + " tokens";
+  const live = document.getElementById("h9ChartLive");
+  if (live) live.textContent = `${bucket.label}, ${fmtTokens(bucket.total)} tokens`;
+  if (!tip) return;
+  tip.hidden = false;
+  const pctLeft = ((idx + 0.5) / Math.max(1, series.length)) * 100;
+  tip.style.left = `${pctLeft}%`;
+  tip.style.transform = idx < series.length * 0.2 ? "translateX(-10%)" : idx > series.length * 0.8 ? "translateX(-90%)" : "translateX(-50%)";
+  const rowsHtml = tools.map(t => {
+    const v = h9Finite(bucket.byTool?.[t.key]);
+    if (v == null || v <= 0) return "";
+    return `<div class="h9-tip-row"><span><i class="h9-swatch-dot" style="background:${h9ColorFor(t.key)}"></i>${esc(t.name || t.key)}</span><strong>${esc(fmtTokens(v))}</strong></div>`;
+  }).join("");
+  tip.innerHTML = `<div class="h9-tip-head"><span>${esc(bucket.label)}</span><strong>${esc(fmtTokens(bucket.total))}</strong></div><div class="h9-tip-rows">${rowsHtml}</div><div class="h9-tip-hint">${state.h9Pinned != null ? "Pinned · click or Esc to release" : "Click to pin"}</div>`;
+}
+
+function renderH9Chart(data) {
+  const series = data.series || [];
+  const tools = data.tools || [];
+  const plot = document.getElementById("h9StackedPlot");
+  const svg = document.getElementById("h9CumulativePlot");
+  const hits = document.getElementById("h9ChartHits");
+  const axis = document.getElementById("h9ChartAxis");
+  const gutter = document.getElementById("h9ValueGutter");
+  const legend = document.getElementById("h9LegendCards");
+  const tbody = document.getElementById("h9ChartTableBody");
+
+  document.querySelectorAll("#h9ChartMode .h9-mode-btn").forEach(btn => {
+    const on = btn.dataset.mode === state.h9Mode;
+    btn.classList.toggle("active", on);
+    btn.setAttribute("aria-checked", String(on));
+  });
+
+  if (!series.length) {
+    if (gutter) gutter.innerHTML = "";
+    if (plot) plot.innerHTML = "";
+    if (hits) hits.innerHTML = "";
+    if (axis) axis.innerHTML = "";
+    if (legend) legend.innerHTML = `<p class="h9-empty">No token activity in this window.</p>`;
+    if (tbody) tbody.innerHTML = "";
+    if (svg) svg.hidden = true;
+    renderH9ChartHover(data);
+    return;
+  }
+
+  let maxRaw = 0.01;
+  series.forEach(b => {
+    const tot = h9Finite(b.total);
+    if (tot != null && tot > maxRaw) maxRaw = tot;
+  });
+  let cum = 0;
+  const cumVals = series.map(b => {
+    cum += (h9Finite(b.total) || 0);
+    return cum;
+  });
+  const scale = state.h9Mode === "cumulative" ? h9NiceMax(Math.max(0.01, cumVals[cumVals.length - 1] || 1)) : h9NiceMax(maxRaw);
+  renderH9Gutter(gutter, scale);
+
+  if (plot) {
+    plot.hidden = state.h9Mode !== "stacked";
+    plot.innerHTML = series.map((bucket) => {
+      const segs = tools.map(t => {
+        const val = h9Finite(bucket.byTool?.[t.key]);
+        if (!val || val <= 0) return "";
+        const hPct = Math.max(2, (val / scale) * 94);
+        return `<div class="h9-seg" style="height:${hPct.toFixed(2)}%;background:${h9ColorFor(t.key)}"></div>`;
+      }).join("");
+      return `<div class="h9-col">${segs}</div>`;
+    }).join("");
+  }
+
+  if (svg) {
+    svg.hidden = state.h9Mode !== "cumulative";
+    const cumMax = Math.max(1, scale);
+    const pts = cumVals.map((val, i) => {
+      const x = series.length === 1 ? 600 : (i / (series.length - 1)) * 600;
+      const y = 16 + (1 - Math.min(1, val / cumMax)) * 198;
+      return [x, y];
+    });
+    const d = pts.map((p, i) => `${i === 0 ? "M" : "L"}${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(" ");
+    const lineEl = document.getElementById("h9CumLine");
+    const areaEl = document.getElementById("h9CumArea");
+    const endEl = document.getElementById("h9CumEnd");
+    if (lineEl) lineEl.setAttribute("d", d);
+    if (areaEl) areaEl.setAttribute("d", `${d} L600 222 L0 222 Z`);
+    const last = pts[pts.length - 1];
+    if (endEl && last) {
+      endEl.setAttribute("cx", last[0].toFixed(1));
+      endEl.setAttribute("cy", last[1].toFixed(1));
+    }
+  }
+
+  if (hits) {
+    hits.innerHTML = series.map((b, i) => {
+      const lbl = `${b.label || "Interval"}: ${fmtTokens(b.total)} tokens`;
+      return `<button type="button" class="h9-hit" data-h9-hit="${i}" aria-label="${esc(lbl)}"></button>`;
+    }).join("");
+  }
+  renderH9Axis(axis, series);
+
+  if (legend) {
+    if (!tools.length) {
+      legend.innerHTML = `<p class="h9-empty">No tools in this window.</p>`;
+    } else {
+      const totalTok = tools.reduce((s, t) => s + (h9Finite(t.tokens) || 0), 0);
+      legend.innerHTML = tools.map(t => {
+        const share = totalTok > 0 ? Math.max(6, Math.round(((h9Finite(t.tokens) || 0) / totalTok) * 100)) : 0;
+        const valText = h9MarkedUsd(t.value, t.isExact);
+        return `<button type="button" class="h9-legend-card" data-h9-entity-kind="tool" data-h9-entity-key="${esc(t.key)}" aria-label="${esc(t.name || t.key)} details: ${esc(fmtTokens(t.tokens))} tokens, ${esc(valText)}">
+          <div class="h9-legend-top"><span class="h9-swatch-dot" style="background:${h9ColorFor(t.key)}"></span><span>${esc(t.name || t.key)}</span></div>
+          <strong>${esc(fmtTokens(t.tokens))}</strong>
+          <em>${esc(h9Pct(t.cachePct))} cache · ${esc(valText)}</em>
+          <span class="h9-legend-bar"><i style="width:${share}%;background:${h9ColorFor(t.key)}"></i></span>
+        </button>`;
+      }).join("");
+    }
+  }
+
+  if (tbody) {
+    tbody.innerHTML = series.map(b => `<tr><td>${esc(b.label)}</td><td>${esc(fmtTokens(b.total))}</td><td>${esc(JSON.stringify(b.byTool || {}))}</td></tr>`).join("");
+  }
+  renderH9ChartHover(data);
+}
+
+function renderH9WasteAndForecast(data) {
+  const waste = data.waste || {};
+  const perDay = h9Finite(waste.perDay);
+  const perMonth = h9Finite(waste.perMonth);
+  document.getElementById("h9WasteMarker").textContent = perDay == null ? "" : "\u2248";
+  document.getElementById("h9WasteDay").textContent = perDay == null ? "—" : h9Usd(perDay) + "/day";
+  document.getElementById("h9WasteMonthNote").textContent = perMonth == null ? "unavailable" : `${h9Usd(perMonth)}/mo`;
+  const wRoot = document.getElementById("h9WasteItems");
+  const items = waste.items || [];
+  wRoot.innerHTML = items.length
+    ? items.map(item => `<div class="h9-waste-item"><div><strong>${esc(item.title || "")}</strong><small>${esc(item.detail || "")}</small>${item.fix ? `<span class="h9-fix-chip">${esc(item.fix)}</span>` : ""}</div><span class="h9-leak-val">${item.perDay == null ? "—" : "\u2248" + esc(h9Usd(item.perDay)) + "/day"}</span></div>`).join("")
+    : `<p class="h9-empty">No recoverable leaks in this window.</p>`;
+  const saved = h9Finite(data.cacheSavings);
+  document.getElementById("h9CacheSavings").textContent = saved == null ? "—" : "\u2248" + h9Usd(saved);
+
+  const proj = data.projected || {};
+  const val = h9Finite(proj.value);
+  const plan = h9Finite(proj.planCost);
+  const mult = h9Finite(proj.multiple);
+  const basis = proj.multipleBasis || (mult == null ? "unavailable" : "ratio");
+  document.getElementById("h9ForecastMarker").textContent = val == null ? "" : (basis === "lower_bound" ? "\u2265" : "\u2248");
+  document.getElementById("h9ForecastVal").textContent = h9Usd(val);
+  document.getElementById("h9ForecastDelta").textContent = mult == null
+    ? ""
+    : `${mult.toFixed(2)}\u00d7 accrued${basis === "lower_bound" ? " · lower bound" : ""}`;
+  const denom = (val || 0) + (plan || 0);
+  document.getElementById("h9PaceBar").style.width = denom > 0 ? `${Math.min(100, ((val || 0) / denom) * 100).toFixed(1)}%` : "0%";
+  document.getElementById("h9PaceLabel").textContent = `${basis === "lower_bound" ? "usage \u2265 " : "usage "}${h9Usd(val)}`;
+  document.getElementById("h9RunRate").textContent = `plans ${h9Usd(plan)}`;
+  const unpriced = (data.totals?.unpricedModels || []).map(m => m.name || m.modelKey).filter(Boolean);
+  let note = proj.method || "Month-to-date reference usage versus configured accrual over the same elapsed days.";
+  if (basis === "lower_bound" && unpriced.length) {
+    note += ` ${unpriced.slice(0, 3).join(", ")} unpriced, so this is a lower bound.`;
+  }
+  document.getElementById("h9ForecastNote").textContent = note;
+}
+
+function renderH9MixAndPrices(data) {
+  const rows = data.mix || [];
+  const cached = h9MixItem(rows, "cached_input");
+  const output = h9MixItem(rows, "output");
+  document.getElementById("h9MixSummary").textContent = rows.length ? `${h9Pct(cached?.share)} cached` : "—";
+  document.getElementById("h9MixCaret").textContent = state.h9MixOpen ? "\u25b2" : "\u25bc";
+  document.getElementById("h9MixToggle").setAttribute("aria-expanded", String(state.h9MixOpen));
+  document.getElementById("h9MixDetails").hidden = !state.h9MixOpen;
+  document.getElementById("h9MixBar").innerHTML = rows.map(item => {
+    const share = Math.max(0, h9Finite(item.share) || 0);
+    return `<i style="width:${share.toFixed(1)}%;background:${H9_MIX_VARS[item.key] || "var(--h9-t-other)"}" title="${esc(item.label || item.key)}: ${esc(h9Pct(item.share))}"></i>`;
+  }).join("");
+  document.getElementById("h9MixRows").innerHTML = rows.map(item => `
+    <div class="h9-mix-row">
+      <span><i class="h9-swatch-dot" style="background:${H9_MIX_VARS[item.key] || "var(--h9-t-other)"}"></i>${esc(item.label || H9_MIX_LABELS[item.key] || item.key)}</span>
+      <em>${esc(fmtTokens(item.tokens))}</em>
+      <strong>${esc(h9Pct(item.share))}</strong>
+    </div>
+  `).join("");
+  document.getElementById("h9MixNote").textContent = output
+    ? `Output is ${h9Pct(output.share)} of measured volume and the highest-rate class. Cached input carries ${h9Pct(cached?.share)} at a fraction of fresh input.`
+    : "Token structure unavailable until component shares are present.";
+
+  const board = document.getElementById("h9PriceBoard");
+  const tools = new Map((data.tools || []).map(t => [t.key, t]));
+  const priced = (data.models || []).flatMap(m => {
+    const val = h9Finite(m.value);
+    const tok = h9Finite(m.tokens);
+    if (val == null || !tok) return [];
+    return [{
+      key: m.key,
+      name: m.name || m.key,
+      tool: tools.get(m.toolKey)?.name || m.toolKey || "",
+      toolKey: m.toolKey,
+      rate: (val / tok) * 1e6,
+      tokens: tok,
+      exact: m.isExact !== false && m.valueMarker !== "\u2248"
+    }];
+  }).sort((a, b) => b.rate - a.rate);
+  const solid = priced.filter(r => r.tokens >= 10e6);
+  const ranked = solid.length >= 2 ? solid : priced;
+  if (!ranked.length) {
+    board.innerHTML = `<p class="h9-empty">No priced tokens in this window.</p>`;
+    return;
+  }
+  const leader = ranked[0];
+  const floor = ranked[ranked.length - 1];
+  const mult = floor.rate > 0 && ranked.length > 1 ? leader.rate / floor.rate : null;
+  const fmtRate = r => r >= 100 ? "$" + r.toFixed(0) : r >= 10 ? "$" + r.toFixed(2) : "$" + r.toFixed(3);
+  const omitted = ranked.length !== priced.length ? `<span class="h9-price-meta">Models under 10M tokens omitted.</span>` : "";
+  const compare = mult && mult > 1.05 ? `<span class="h9-price-meta">${mult.toFixed(1)}\u00d7 ${esc(floor.name)}</span>` : "";
+  const ladderHtml = ranked.map(r => {
+    const share = Math.max(4, Math.round((r.rate / Math.max(leader.rate, 0.001)) * 100));
+    return `<div class="h9-price-rung">
+      <div class="h9-price-rung-top">
+        <span class="h9-price-who"><i class="h9-swatch-dot" style="background:${h9ColorFor(r.toolKey)}"></i><b>${esc(r.name)}</b><small>${esc(r.tool)}</small></span>
+        <strong>${r.exact ? "" : "\u2248"}${esc(fmtRate(r.rate))}</strong>
+      </div>
+      <div class="h9-price-bar"><i style="width:${share}%;background:${h9ColorFor(r.toolKey)}"></i></div>
+    </div>`;
+  }).join("");
+  board.innerHTML = `<div class="h9-price-lead">
+    <span class="h9-price-kicker">Steepest model</span>
+    <strong class="h9-price-fig">${leader.exact ? "" : "\u2248"}${esc(fmtRate(leader.rate))}</strong>
+    <span class="h9-price-meta">${esc(leader.name)} · per 1M tokens · ${esc(fmtTokens(leader.tokens))}</span>
+    ${compare}${omitted}
+  </div><div class="h9-price-ladder">${ladderHtml}</div>`;
+}
+
+function renderH9Models(data) {
+  const cols = [
+    { key: "name", label: "Model", numeric: false },
+    { key: "toolKey", label: "Tool", numeric: false },
+    { key: "value", label: "Value", numeric: true },
+    { key: "tokens", label: "Tokens", numeric: true },
+    { key: "cachePct", label: "Cache", numeric: true },
+    { key: "runs", label: "Runs", numeric: true }
+  ];
+  const head = document.getElementById("h9ModelHead");
+  head.innerHTML = cols.map(c => {
+    const on = state.h9SortKey === c.key;
+    const arrow = on ? (state.h9SortDir < 0 ? "\u25bc" : "\u25b2") : "";
+    return `<button type="button" class="h9-sort-btn ${c.numeric ? "numeric" : ""} ${on ? "active" : ""}" data-h9-sort="${c.key}">${esc(c.label)}<span>${arrow}</span></button>`;
+  }).join("");
+
+  const tools = new Map((data.tools || []).map(t => [t.key, t]));
+  const rows = [...(data.models || [])].sort((a, b) => {
+    const isStr = state.h9SortKey === "name" || state.h9SortKey === "toolKey";
+    const av = isStr ? String(a[state.h9SortKey] || "").toLowerCase() : (h9Finite(a[state.h9SortKey]) ?? -Infinity);
+    const bv = isStr ? String(b[state.h9SortKey] || "").toLowerCase() : (h9Finite(b[state.h9SortKey]) ?? -Infinity);
+    return av > bv ? state.h9SortDir : av < bv ? -state.h9SortDir : 0;
+  });
+  const body = document.getElementById("h9ModelBody");
+  if (!rows.length) {
+    body.innerHTML = `<p class="h9-empty">No models in this window.</p>`;
+    return;
+  }
+  body.innerHTML = rows.map(m => {
+    const toolName = tools.get(m.toolKey)?.name || m.toolKey || "";
+    const valStr = m.value == null ? "—" : h9MarkedUsd(m.value, m.isExact);
+    const tokStr = fmtTokens(m.tokens);
+    const cacheStr = h9Pct(m.cachePct);
+    const runsStr = h9Num(m.runs);
+    const label = `${m.name || m.key} (${toolName}): ${valStr}, ${tokStr} tokens, ${cacheStr} cache`;
+    return `<div class="h9-model-row" tabindex="0" role="button" data-h9-entity-kind="model" data-h9-entity-key="${esc(m.key)}" aria-label="${esc(label)}">
+        <strong><i class="h9-swatch-dot" style="background:${h9ColorFor(m.toolKey)}"></i>${esc(m.name || m.key)}</strong>
+        <span class="h9-card-sub">${esc(toolName)}</span>
+        <span class="h9-num">${esc(valStr)}</span>
+        <span class="h9-num">${esc(tokStr)}</span>
+        <span class="h9-num">${esc(cacheStr)}</span>
+        <span class="h9-num">${esc(runsStr)}</span>
+      </div>
+      <button type="button" class="h9-model-card" data-h9-entity-kind="model" data-h9-entity-key="${esc(m.key)}">
+        <div class="h9-model-card-top">
+          <strong><i class="h9-swatch-dot" style="background:${h9ColorFor(m.toolKey)}"></i>${esc(m.name || m.key)}</strong>
+          <span>${esc(toolName)}</span>
+        </div>
+        <div class="h9-model-figures">
+          <span>Value<b>${esc(valStr)}</b></span>
+          <span>Tokens<b>${esc(tokStr)}</b></span>
+          <span>Cache<b>${esc(cacheStr)}</b></span>
+        </div>
+      </button>`;
+  }).join("");
+}
+
+function h9ApplyHeatCell(btn) {
+  if (!btn) return;
+  state.h9HeatCell = btn;
+  document.getElementById("h9HeatLabel").textContent = btn.dataset.label || "Peak window";
+  document.getElementById("h9HeatValue").textContent = btn.dataset.value ? h9Usd(btn.dataset.value) : "—";
+}
+
+function renderH9Heat(data) {
+  const cells = data.heatmap || [];
+  const win = data.window?.key || state.analyticsWindow;
+  const short = Boolean(data.heatmapFallback || (H9_SHORT_WINDOWS.has(win) && cells.length));
+  state.h9HeatShort = short;
+  document.getElementById("h9HeatWarning").hidden = !short;
+  const grid = document.getElementById("h9Heatmap");
+  grid.classList.toggle("dim", short);
+
+  const map = new Map();
+  let max = 0.01;
+  cells.forEach(c => {
+    const day = typeof c.weekday === "string"
+      ? Math.max(0, H9_DAYS.findIndex(d => d.toLowerCase() === c.weekday.slice(0, 3).toLowerCase()))
+      : ((Number(c.weekday) % 7) + 7) % 7;
+    const hr = Number(c.hour);
+    map.set(`${day}:${hr}`, c);
+    const val = h9Finite(c.value);
+    if (val != null && val > max) max = val;
+  });
+
+  const byHour = Array.from({ length: 24 }, () => 0);
+  let total = 0;
+  map.forEach(c => {
+    const v = h9Finite(c.value);
+    const h = Number(c.hour);
+    if (v != null && h >= 0 && h < 24) {
+      total += v;
+      byHour[h] += v;
+    }
+  });
+  let peakHour = 0;
+  byHour.forEach((v, h) => { if (v > byHour[peakHour]) peakHour = h; });
+  const peakShare = total > 0 ? (byHour[peakHour] / total) * 100 : null;
+  const clock = h => String(h).padStart(2, "0") + ":00";
+  let band = null;
+  if (total > 0) {
+    const target = total * 0.5;
+    for (let s = 0; s < 24; s++) {
+      let run = 0;
+      for (let len = 1; len <= 24; len++) {
+        run += byHour[(s + len - 1) % 24];
+        if (run + 1e-9 >= target) {
+          if (!band || len < band.len) band = { s, len };
+          break;
+        }
+      }
+    }
+  }
+  document.getElementById("h9HeatShare").textContent = h9Pct(peakShare);
+  const spanEl = document.getElementById("h9HeatSpan");
+  if (peakShare == null || !band) spanEl.textContent = "No reference usage in this pattern.";
+  else if (band.len >= 24) spanEl.textContent = `Spread across the day. ${clock(peakHour)} is the peak hour.`;
+  else if (band.len <= 1) spanEl.textContent = `Half of this pattern sits at ${clock(band.s)}. Peak hour ${clock(peakHour)}.`;
+  else spanEl.textContent = `Half of this pattern sits in ${clock(band.s)}\u2013${clock((band.s + band.len - 1) % 24)}. Peak hour ${clock(peakHour)}.`;
+
+  let peakIdx = 0;
+  let peakVal = -1;
+  grid.innerHTML = H9_DAYS.map((dayLabel, d) => {
+    const cols = Array.from({ length: 24 }, (_, h) => {
+      const idx = d * 24 + h;
+      const cell = map.get(`${d}:${h}`);
+      const val = cell ? h9Finite(cell.value) : null;
+      if (val != null && val > peakVal) { peakVal = val; peakIdx = idx; }
+      const alpha = val == null || val <= 0 ? "0" : (0.14 + Math.sqrt(Math.max(0, val) / max) * 0.86).toFixed(3);
+      const cellLabel = `${dayLabel} ${clock(h)}`;
+      const aria = `${cellLabel} ${val == null ? "—" : h9Usd(val) + " reference usage"}`;
+      const isPeak = total > 0 && h === peakHour;
+      return `<button type="button" class="h9-heat-cell ${isPeak ? "is-peak" : ""}" tabindex="-1" data-h9-heat-idx="${idx}" data-label="${esc(cellLabel)}" data-value="${val == null ? "" : val}" aria-label="${esc(aria)}" title="${esc(aria)}"><span class="h9-heat-fill" style="opacity:${alpha}"></span></button>`;
+    }).join("");
+    return `<div class="h9-heat-row"><span class="h9-heat-day">${esc(dayLabel)}</span><div class="h9-heat-cells">${cols}</div></div>`;
+  }).join("");
+
+  const buttons = Array.from(grid.querySelectorAll(".h9-heat-cell"));
+  if (state.h9HeatFocus >= buttons.length || state.h9HeatFocus < 0) state.h9HeatFocus = peakIdx;
+  const focusIdx = buttons[state.h9HeatFocus] ? state.h9HeatFocus : peakIdx;
+  state.h9HeatFocus = focusIdx;
+  if (buttons[focusIdx]) buttons[focusIdx].tabIndex = 0;
+  h9ApplyHeatCell(buttons[peakVal >= 0 ? peakIdx : focusIdx]);
+  document.getElementById("h9HeatUnit").textContent = data.heatmapUnit || "reference usage (USD at documented rates)";
+  document.getElementById("h9HeatTableBody").innerHTML = cells.map(c => `<tr><td>${esc(c.weekday)}</td><td>${esc(c.hour)}</td><td>${c.value == null ? "—" : esc(h9Usd(c.value))}</td></tr>`).join("");
+}
+
+
+function renderH9DetailHover(data) {
+  const series = data.series || [];
+  const idx = state.h9DetailPinned ?? state.h9DetailHover;
+  const bucket = idx == null ? null : series[idx];
+  document.querySelectorAll("#h9DetailBars .h9-detail-bar-col").forEach((col, i) => col.classList.toggle("dim", idx != null && idx !== i));
+  document.querySelectorAll("#h9DetailHits .h9-hit").forEach((btn, i) => btn.classList.toggle("active", idx === i));
+  document.getElementById("h9DetailHoverLabel").textContent = bucket ? bucket.label : `${h9WindowLabel(state.analyticsWindow)} total`;
+  document.getElementById("h9DetailHoverVal").textContent = bucket ? fmtTokens(bucket.tokens) : fmtTokens(data.tokens);
+}
+
+function renderH9Detail(data) {
+  state.h9EntityData = data;
+  renderH9Ranges();
+  const exact = data.isExact !== false;
+  const color = h9ColorFor(data.providerKey || data.key);
+  document.getElementById("h9DetailKind").textContent = data.kind === "model" ? "Model detail" : "Tool detail";
+  document.getElementById("h9DetailLogo").innerHTML = logoHtml(data.providerKey || data.key, "logo-badge", false);
+  document.getElementById("h9DetailName").textContent = data.name || "—";
+  document.getElementById("h9DetailPlan").textContent = data.plan || "—";
+  const cov = document.getElementById("h9DetailCov");
+  cov.textContent = exact ? "exact rates" : "published rates";
+  cov.className = "h9-chip " + (exact ? "good" : "warn");
+  document.getElementById("h9DetailSub").textContent = data.kind === "model"
+    ? `Priced from ${data.providerName || "provider"} telemetry. ${h9Pct(data.shareOfTrackedValue)} of tracked value in this window.${exact ? "" : " Value is published-rate equivalent, not a billed amount."}`
+    : `All models routed through ${data.name}, including any amortised plan cost.${exact ? "" : " Value is published-rate equivalent."}`;
+  const share = Math.max(0, Math.min(100, h9Finite(data.shareOfTrackedValue) || 0));
+  const sBar = document.getElementById("h9DetailShareBar");
+  sBar.style.width = `${share}%`;
+  sBar.style.background = color;
+  document.getElementById("h9DetailShareLabel").textContent = `${h9MarkedUsd(data.value, data.isExact)} of tracked value · ${h9Pct(data.shareOfTrackedValue)}`;
+
+  const opp = data.opportunity || {};
+  const cacheIssue = opp.kind === "cache_gap" || opp.kind === "low_cache";
+  const kpis = [
+    { label: "Tracked value", value: h9Usd(data.value), marker: exact || data.value == null ? "" : "\u2248", chip: exact ? "exact" : "derived", good: exact, note: `${h9Pct(data.shareOfTrackedValue)} of tracked value` },
+    { label: "Tokens", value: fmtTokens(data.tokens), marker: "", chip: "exact", good: true, note: `${fmtTokens(data.outputTokens)} output · ${h9Pct(data.shareOfTokens)} of volume` },
+    { label: "Cache reuse", value: h9Pct(data.cachePct), marker: "", chip: cacheIssue ? "below target" : data.cachePct == null ? "unknown" : "exact", good: !cacheIssue && data.cachePct != null, note: data.cachePct == null ? "Reuse unknown" : `${fmtTokens(data.cachedInputTokens ?? h9MixItem(data.mix, "cached_input")?.tokens)} of input reused` },
+    { label: "Value per run", value: h9Usd(data.valuePerRun), marker: exact || data.valuePerRun == null ? "" : "\u2248", chip: `${h9Num(data.runs)} runs`, good: false, note: `${fmtTokens(data.tokensPerRun)} tokens per run` }
+  ];
+  document.getElementById("h9DetailKpis").innerHTML = kpis.map(k => `<article class="h9-kpi-card">
+    <div class="h9-kpi-top"><span class="h9-kpi-label">${esc(k.label)}</span><span class="h9-chip ${k.good ? "good" : ""}">${esc(k.chip)}</span></div>
+    <div class="h9-kpi-val"><span>${esc(k.marker)}</span><span>${esc(k.value)}</span></div>
+    <p class="h9-kpi-note">${esc(k.note)}</p>
+  </article>`).join("");
+
+  const series = data.series || [];
+  let maxRaw = 0.01;
+  series.forEach(b => { const v = h9Finite(b.tokens); if (v != null && v > maxRaw) maxRaw = v; });
+  const scale = h9NiceMax(maxRaw);
+  renderH9Gutter(document.getElementById("h9DetailGutter"), scale);
+  document.getElementById("h9DetailBars").innerHTML = series.map(b => {
+    const v = h9Finite(b.tokens) || 0;
+    const h = v > 0 ? Math.max(2, (v / scale) * 94) : 0;
+    return `<div class="h9-detail-bar-col"><i style="height:${h.toFixed(2)}%;background:${color}"></i></div>`;
+  }).join("");
+  document.getElementById("h9DetailHits").innerHTML = series.map((b, i) => `<button type="button" class="h9-hit" data-h9-detail-hit="${i}" aria-label="${esc((b.label || "Interval") + ": " + fmtTokens(b.tokens) + " tokens")}"></button>`).join("");
+  renderH9Axis(document.getElementById("h9DetailAxis"), series);
+  renderH9DetailHover(data);
+
+  const mix = data.mix || [];
+  document.getElementById("h9DetailMixBar").innerHTML = mix.map(item => `<i style="width:${Math.max(0, h9Finite(item.share) || 0).toFixed(1)}%;background:${H9_MIX_VARS[item.key] || "var(--h9-t-other)"}"></i>`).join("");
+  document.getElementById("h9DetailMixCards").innerHTML = mix.map(item => `<div class="h9-mix-row">
+    <span><i class="h9-swatch-dot" style="background:${H9_MIX_VARS[item.key] || "var(--h9-t-other)"}"></i>${esc(item.label || H9_MIX_LABELS[item.key] || item.key)}</span>
+    <em>${esc(fmtTokens(item.tokens))}</em>
+    <strong>${esc(h9Pct(item.share))}</strong>
+  </div>`).join("");
+
+  const oppPanel = document.getElementById("h9OpportunityPanel");
+  oppPanel.className = "h9-card h9-opp-card" + (cacheIssue ? " warn" : "");
+  document.getElementById("h9OppTitle").textContent = opp.title || (opp.kind === "cache_gap" ? "Close the cache gap" : opp.kind === "healthy" ? "Cache reuse is healthy" : opp.kind || "Opportunity");
+  document.getElementById("h9OppMarker").textContent = opp.amount == null ? "" : "\u2248";
+  document.getElementById("h9OppVal").textContent = h9Usd(opp.amount);
+  document.getElementById("h9OppDetail").textContent = opp.amount == null ? "Opportunity withheld until priced token components cover this entity." : (opp.detail || "");
+  document.getElementById("h9OppFix").textContent = opp.fix || "—";
+  document.getElementById("h9OppSaved").textContent = opp.alreadySaved == null ? "—" : "\u2248" + h9Usd(opp.alreadySaved);
+
+  document.getElementById("h9EntityLimitTitle").textContent = (data.providerName || "Provider") + " limits";
+  document.getElementById("h9EntityLimitPlan").textContent = data.plan || "—";
+  const limEl = document.getElementById("h9EntityLimits");
+  const limits = data.providerLimits || [];
+  if (limits.length) {
+    limEl.innerHTML = limits.map(w => renderWindowItem({
+      label: w.label || w.limitKey || "Limit",
+      shortLabel: w.limitKey || "Limit",
+      unit: w.unit || "pct",
+      remainingPct: w.unit === "usd" ? null : (w.pct != null ? Math.max(0, 100 - Number(w.pct)) : null),
+      usedPct: w.pct,
+      remainingUsd: w.unit === "usd" ? w.remainingUsd : null,
+      resetsAt: w.resetsAt || null,
+      reason: w.reason || "",
+      unavailable: w.pct == null && w.remainingUsd == null
+    })).join("");
+  } else {
+    limEl.innerHTML = `<p class="h9-empty">No live quota rows for this provider.</p>`;
+  }
+
+  const sessions = data.sessions || {};
+  const sRows = sessions.rows || [];
+  const runs = h9Finite(data.runs) || sRows.length;
+  document.getElementById("h9SessionsFoot").textContent = sRows.length
+    ? `${sRows.length === runs ? "All " + h9Num(runs) + " runs" : "Top " + sRows.length + " of " + h9Num(runs) + " runs"} · ${h9Usd(sessions.shownTotal)} of ${h9Usd(data.value)} · ${h9WindowLabel(state.analyticsWindow)}`
+    : "No sessions in this window";
+  const sBody = document.getElementById("h9SessionsBody");
+  if (!sRows.length) {
+    sBody.innerHTML = `<p class="h9-empty">No distinct sessions to attribute.</p>`;
+  } else {
+    sBody.innerHTML = sRows.map(r => {
+      const sid = String(r.id || "").slice(0, 10);
+      const dur = r.durationMin == null ? "—" : `${r.durationMin}m`;
+      const valStr = h9MarkedUsd(r.value, r.isExact !== false && data.isExact !== false);
+      return `<div class="h9-session-row">
+          <span class="h9-sid">${esc(sid)}</span>
+          <strong>${esc(r.project || "Unassigned")}</strong>
+          <span class="h9-num">${esc(dur)}</span>
+          <span class="h9-num">${esc(fmtTokens(r.tokens))}</span>
+          <span class="h9-num">${esc(h9Pct(r.cachePct))}</span>
+          <span class="h9-num">${esc(valStr)}</span>
+        </div>
+        <article class="h9-session-card">
+          <div class="h9-model-card-top"><strong>${esc(r.project || "Unassigned")}</strong><span class="h9-sid">${esc(sid)}</span></div>
+          <div class="h9-model-figures">
+            <span>Duration<b>${esc(dur)}</b></span>
+            <span>Tokens<b>${esc(fmtTokens(r.tokens))}</b></span>
+            <span>Value<b>${esc(valStr)}</b></span>
+          </div>
+        </article>`;
+    }).join("");
+  }
+}
+
+function renderH9Summary(data) {
+  if (!data) return;
+  state.h9Summary = data;
+  const sec = document.getElementById("h9AnalyticsSection");
+  if (sec) sec.hidden = false;
+  renderH9Ranges();
+  renderH9ToolBar(data);
+  renderH9Coverage(data);
+  renderH9Kpis(data);
+  renderH9Chart(data);
+  renderH9WasteAndForecast(data);
+  renderH9MixAndPrices(data);
+  renderH9Models(data);
+  renderH9Heat(data);
+  h9SyncHeroFromFilter();
+}
+
+async function loadH9Analytics(showErrors = false) {
+  if (!apiHas("fetch_analytics_summary")) return;
+  const ctrls = document.getElementById("h9Controls");
+  if (ctrls) ctrls.hidden = false;
+  renderH9Ranges();
+  const reqId = ++state.h9Request;
+  try {
+    const res = await window.pywebview.api.fetch_analytics_summary(state.analyticsWindow, state.tool || "all", state.machine || "all");
+    if (reqId !== state.h9Request) return;
+    if (res && res.ok && res.summary) {
+      if (res.health) state.h9Health = res.health;
+      renderH9Summary(res.summary);
+    } else if (showErrors && res && res.error) {
+      showToast(res.error);
+    }
+  } catch (err) {
+    if (showErrors) showToast("Analytics could not be loaded");
+  }
+}
+
+function h9JumpScroll(el, top) {
+  if (!el) return;
+  const prev = el.style.scrollBehavior;
+  el.style.scrollBehavior = "auto";
+  el.scrollTop = top;
+  el.style.scrollBehavior = prev;
+}
+
+async function openH9Detail(kind, key, opts = {}) {
+  if (!apiHas("fetch_entity_detail")) return;
+  closeScopePopover(false);
+  closeH9RangePopover(false);
+  if (!opts.preserveFocus) {
+    if (state.diagnosticsOpen && typeof closeDiagnostics === "function") closeDiagnostics(false);
+    if (state.hudMini && typeof applyHudMode === "function") applyHudMode(false, state.hudDensity, true);
+  }
+  const scrollEl = document.getElementById("scrollBody");
+  if (state.h9View !== "detail" && scrollEl) {
+    state.h9SavedScrollTop = scrollEl.scrollTop || 0;
+  }
+  state.h9Entity = { kind, key };
+  state.h9View = "detail";
+  state.h9DetailHover = null;
+  state.h9DetailPinned = null;
+  if (opts.triggerEl) state.h9DetailReturnFocus = opts.triggerEl;
+  document.getElementById("heroSection").hidden = true;
+  document.querySelector(".section-stack").hidden = true;
+  const dv = document.getElementById("h9DetailView");
+  dv.hidden = false;
+  h9JumpScroll(scrollEl, 0);
+  renderH9Ranges();
+  if (!opts.preserveFocus) document.getElementById("h9DetailBack")?.focus({ preventScroll: true });
+  const reqId = ++state.h9Request;
+  try {
+    const res = await window.pywebview.api.fetch_entity_detail(kind, key, state.analyticsWindow, state.machine || "all");
+    if (reqId !== state.h9Request) return;
+    if (res && res.ok && res.entity) {
+      renderH9Detail(res.entity);
+    } else if (res && res.error) {
+      showToast(res.error);
+    }
+  } catch (err) {
+    showToast("Detail view could not be loaded");
+  }
+}
+
+function closeH9Detail(returnFocus = true) {
+  if (state.h9View !== "detail") return false;
+  closeH9RangePopover(false);
+  state.h9View = "overview";
+  state.h9Entity = null;
+  state.h9DetailHover = null;
+  state.h9DetailPinned = null;
+  document.getElementById("h9DetailView").hidden = true;
+  document.getElementById("heroSection").hidden = false;
+  document.querySelector(".section-stack").hidden = false;
+  const scrollEl = document.getElementById("scrollBody");
+  const savedScroll = state.h9SavedScrollTop || 0;
+  h9JumpScroll(scrollEl, savedScroll);
+  if (returnFocus && state.h9DetailReturnFocus && state.h9DetailReturnFocus.isConnected) {
+    try {
+      state.h9DetailReturnFocus.focus({ preventScroll: true });
+    } catch {
+      state.h9DetailReturnFocus.focus();
+    }
+  }
+  h9JumpScroll(scrollEl, savedScroll);
+  state.h9DetailReturnFocus = null;
+  loadH9Analytics(false);
+  return true;
+}
+
+function setH9Window(winKey) {
+  if (!H9_WINDOW_KEYS.has(winKey) || winKey === state.analyticsWindow) return;
+  state.analyticsWindow = winKey;
+  state.period = h9PeriodForWindow(winKey);
+  state.h9Hover = null;
+  state.h9Pinned = null;
+  state.h9DetailHover = null;
+  state.h9DetailPinned = null;
+  updatePeriodIndicator();
+  renderH9Ranges();
+  if (apiHas("save_analytics_window")) {
+    window.pywebview.api.save_analytics_window(winKey);
+  } else if (apiHas("save_period")) {
+    window.pywebview.api.save_period(state.period);
+  }
+  if (state.h9View === "detail" && state.h9Entity) {
+    openH9Detail(state.h9Entity.kind, state.h9Entity.key, { preserveFocus: true });
+  } else {
+    loadUsage(false, false);
+  }
+}
+
+function setH9Tool(toolKey) {
+  const next = String(toolKey || "all").trim() || "all";
+  if (next === state.tool) return;
+  state.tool = next;
+  state.h9Hover = null;
+  state.h9Pinned = null;
+  renderH9ToolBar(state.h9Summary);
+  h9SyncHeroFromFilter();
+  loadH9Analytics(false);
+}
+
+function bindH9Events() {
+  document.getElementById("h9MoreRangeBtn")?.addEventListener("click", () => openH9RangePopover("h9MoreRangeBtn", false));
+  document.getElementById("h9DetailRangeBtn")?.addEventListener("click", () => openH9RangePopover("h9DetailRangeBtn", true));
+  document.getElementById("h9RangeBackdrop")?.addEventListener("click", () => closeH9RangePopover(true));
+  const rPop = document.getElementById("h9RangePopover");
+  if (rPop) {
+    rPop.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-h9-window]");
+      if (!btn) return;
+      const win = btn.dataset.h9Window;
+      closeH9RangePopover(true);
+      setH9Window(win);
+    });
+    rPop.addEventListener("keydown", (e) => {
+      const opts = Array.from(rPop.querySelectorAll(".scope-opt"));
+      const at = opts.indexOf(document.activeElement);
+      let next = -1;
+      if (e.key === "ArrowDown") next = (at + 1) % opts.length;
+      else if (e.key === "ArrowUp") next = (at - 1 + opts.length) % opts.length;
+      else if (e.key === "Home") next = 0;
+      else if (e.key === "End") next = opts.length - 1;
+      else if (e.key === "Tab") { e.preventDefault(); closeH9RangePopover(true); return; }
+      if (next >= 0) {
+        e.preventDefault();
+        opts[next].focus();
+      }
+    });
+  }
+
+  const toolBar = document.getElementById("h9ToolBar");
+  if (toolBar) {
+    toolBar.addEventListener("click", (e) => {
+      const drill = e.target.closest("[data-h9-drill-tool]");
+      if (drill) {
+        openH9Detail("tool", drill.dataset.h9DrillTool, { triggerEl: drill });
+        return;
+      }
+      const btn = e.target.closest("[data-h9-tool]");
+      if (btn) setH9Tool(btn.dataset.h9Tool);
+    });
+  }
+
+  document.getElementById("h9ChartMode")?.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-mode]");
+    if (!btn || btn.dataset.mode === state.h9Mode) return;
+    state.h9Mode = btn.dataset.mode;
+    if (state.h9Summary) renderH9Chart(state.h9Summary);
+  });
+
+  const hits = document.getElementById("h9ChartHits");
+  if (hits) {
+    hits.addEventListener("pointermove", (e) => {
+      const btn = e.target.closest("[data-h9-hit]");
+      if (!btn || state.h9Pinned != null) return;
+      const idx = Number(btn.dataset.h9Hit);
+      if (state.h9Hover !== idx) {
+        state.h9Hover = idx;
+        if (state.h9Summary) renderH9ChartHover(state.h9Summary);
+      }
+    });
+    hits.addEventListener("pointerleave", () => {
+      if (state.h9Hover != null) {
+        state.h9Hover = null;
+        if (state.h9Summary) renderH9ChartHover(state.h9Summary);
+      }
+    });
+    hits.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-h9-hit]");
+      if (!btn) return;
+      const idx = Number(btn.dataset.h9Hit);
+      state.h9Pinned = state.h9Pinned === idx ? null : idx;
+      if (state.h9Summary) renderH9ChartHover(state.h9Summary);
+    });
+    hits.addEventListener("keydown", (e) => {
+      const btn = e.target.closest("[data-h9-hit]");
+      if (!btn) return;
+      const all = Array.from(hits.querySelectorAll("[data-h9-hit]"));
+      const cur = all.indexOf(btn);
+      if (e.key === "ArrowLeft" && cur > 0) {
+        e.preventDefault();
+        all[cur - 1].focus();
+        state.h9Hover = cur - 1;
+        if (state.h9Summary) renderH9ChartHover(state.h9Summary);
+      } else if (e.key === "ArrowRight" && cur < all.length - 1) {
+        e.preventDefault();
+        all[cur + 1].focus();
+        state.h9Hover = cur + 1;
+        if (state.h9Summary) renderH9ChartHover(state.h9Summary);
+      }
+    });
+  }
+
+  document.getElementById("h9MixToggle")?.addEventListener("click", () => {
+    state.h9MixOpen = !state.h9MixOpen;
+    if (state.h9Summary) renderH9MixAndPrices(state.h9Summary);
+  });
+
+  document.getElementById("h9ModelHead")?.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-h9-sort]");
+    if (!btn) return;
+    const key = btn.dataset.h9Sort;
+    state.h9SortDir = state.h9SortKey === key ? -state.h9SortDir : -1;
+    state.h9SortKey = key;
+    if (state.h9Summary) renderH9Models(state.h9Summary);
+  });
+
+  const handleEntityTrigger = (e) => {
+    const el = e.target.closest("[data-h9-entity-kind]");
+    if (!el) return;
+    openH9Detail(el.dataset.h9EntityKind, el.dataset.h9EntityKey, { triggerEl: el });
+  };
+  document.getElementById("h9LegendCards")?.addEventListener("click", handleEntityTrigger);
+  document.getElementById("h9ModelBody")?.addEventListener("click", handleEntityTrigger);
+  document.getElementById("h9ModelBody")?.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    const el = e.target.closest("[data-h9-entity-kind]");
+    if (!el) return;
+    e.preventDefault();
+    openH9Detail(el.dataset.h9EntityKind, el.dataset.h9EntityKey, { triggerEl: el });
+  });
+
+  const heat = document.getElementById("h9Heatmap");
+  if (heat) {
+    heat.addEventListener("pointerenter", (e) => {
+      const btn = e.target.closest(".h9-heat-cell");
+      if (btn) h9ApplyHeatCell(btn);
+    }, true);
+    heat.addEventListener("click", (e) => {
+      const btn = e.target.closest(".h9-heat-cell");
+      if (btn) h9ApplyHeatCell(btn);
+    });
+    heat.addEventListener("keydown", (e) => {
+      const btn = e.target.closest(".h9-heat-cell");
+      if (!btn) return;
+      const step = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -24, ArrowDown: 24 }[e.key];
+      if (!step) return;
+      e.preventDefault();
+      const cells = Array.from(heat.querySelectorAll(".h9-heat-cell"));
+      const cur = Number(btn.dataset.h9HeatIdx || 0);
+      let day = Math.floor(cur / 24);
+      let hr = cur % 24;
+      if (step === -1 || step === 1) hr = Math.max(0, Math.min(23, hr + step));
+      else day = Math.max(0, Math.min(6, day + step / 24));
+      const next = Math.max(0, Math.min(cells.length - 1, day * 24 + hr));
+      cells.forEach(c => { c.tabIndex = -1; });
+      if (cells[next]) {
+        state.h9HeatFocus = next;
+        cells[next].tabIndex = 0;
+        cells[next].focus();
+        h9ApplyHeatCell(cells[next]);
+      }
+    });
+  }
+
+  document.getElementById("h9DetailBack")?.addEventListener("click", () => closeH9Detail(true));
+
+  const dHits = document.getElementById("h9DetailHits");
+  if (dHits) {
+    dHits.addEventListener("pointermove", (e) => {
+      const btn = e.target.closest("[data-h9-detail-hit]");
+      if (!btn || state.h9DetailPinned != null) return;
+      state.h9DetailHover = Number(btn.dataset.h9DetailHit);
+      if (state.h9EntityData) renderH9DetailHover(state.h9EntityData);
+    });
+    dHits.addEventListener("pointerleave", () => {
+      if (state.h9DetailHover != null) {
+        state.h9DetailHover = null;
+        if (state.h9EntityData) renderH9DetailHover(state.h9EntityData);
+      }
+    });
+    dHits.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-h9-detail-hit]");
+      if (!btn) return;
+      const idx = Number(btn.dataset.h9DetailHit);
+      state.h9DetailPinned = state.h9DetailPinned === idx ? null : idx;
+      if (state.h9EntityData) renderH9DetailHover(state.h9EntityData);
+    });
+  }
+}
+
+bindH9Events();
 
 /* Theme: the head script resolved it before first paint; tell the host whenever the resolved value changes. */
 function reportEffectiveTheme() {
@@ -6613,6 +9265,7 @@ async function boot() {
   const init = await window.pywebview.api.get_initial_state();
   if (init) {
     state.period = init.period || "today";
+    state.analyticsWindow = (init.analyticsWindow && H9_WINDOW_KEYS.has(init.analyticsWindow)) ? init.analyticsWindow : h9WindowForPeriod(state.period);
     state.topmost = !!init.topmost;
     updatePinButton();
     state.autoFade = init.autoFade !== undefined ? !!init.autoFade : true;
@@ -6756,6 +9409,10 @@ function renderHudOps(data) {
 
 function applyHudMode(mini, density, persist = true) {
   state.hudMini = !!mini;
+  if (state.hudMini) {
+    if (typeof closeH9RangePopover === "function") closeH9RangePopover(false);
+    if (state.h9View === "detail" && typeof closeH9Detail === "function") closeH9Detail(false);
+  }
   state.hudDensity = density === "comfortable" ? "comfortable" : "compact";
   document.documentElement.classList.toggle("is-mini", state.hudMini);
   document.documentElement.classList.toggle("is-comfortable", state.hudDensity === "comfortable");
@@ -7080,6 +9737,7 @@ window.openDiagnostics = async function() {
     state.savedOverviewScrollTop = scrollBody.scrollTop;
   }
   closeScopePopover(false);
+  if (typeof closeH9RangePopover === "function") closeH9RangePopover(false);
   state.diagnosticsOpen = true;
   document.documentElement.classList.add("is-diagnostics");
   document.getElementById("opsBar").hidden = true;
@@ -7102,11 +9760,14 @@ window.closeDiagnostics = function(returnFocus = true) {
   if (scrollBody) {
     scrollBody.hidden = false;
     const targetTop = Number(state.savedOverviewScrollTop) || 0;
+    const expectedView = state.h9View;
     const prevBehavior = scrollBody.style.scrollBehavior;
     scrollBody.style.scrollBehavior = "auto";
     scrollBody.scrollTop = targetTop;
     requestAnimationFrame(() => {
-      scrollBody.scrollTop = targetTop;
+      if (!state.diagnosticsOpen && state.h9View === expectedView && !state.settingsOpen) {
+        scrollBody.scrollTop = targetTop;
+      }
       scrollBody.style.scrollBehavior = prevBehavior;
     });
   }
