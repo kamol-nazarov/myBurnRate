@@ -96,23 +96,3 @@ def test_process_discovery_starts_no_program(monkeypatch) -> None:
     lines = platform_paths.process_command_lines(own_image)
     assert any(str(os.getpid()) in line or own_image.lower() in line.lower() for line in lines)
 
-
-@pytest.mark.parametrize("call", ["status", "serve"])
-def test_tailscale_runs_without_a_window(monkeypatch, call: str) -> None:
-    from spend_app import setup_wizard
-    from spend_app.platform_paths import NO_WINDOW
-
-    seen = []
-
-    class Done:
-        returncode = 1
-        stdout = ""
-
-    monkeypatch.setattr(setup_wizard.shutil, "which", lambda name: "tailscale")
-    monkeypatch.setattr(setup_wizard.subprocess, "run", lambda *a, **k: seen.append(k) or Done())
-    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
-    if call == "status":
-        setup_wizard.detect_network_addresses(17331)
-    else:
-        setup_wizard.ensure_tailscale_hub_proxy(17331)
-    assert seen and all(kwargs.get("creationflags") == NO_WINDOW for kwargs in seen)

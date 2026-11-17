@@ -1,4 +1,4 @@
-"""Synthetic paired-spoke authorization regressions; no network or real data."""
+﻿"""Synthetic paired-spoke authorization regressions; no network or real data."""
 from datetime import datetime, timedelta, timezone
 import secrets
 from pathlib import Path
@@ -53,19 +53,30 @@ def pair(tmp_path, monkeypatch):
             "setupToken": SETUP_TOKEN, "sessionOnly": True})
         assert registered.status_code == 200, registered.text
         hub.cookies.clear()
-        invitation = hub.post("/api/setup/pair-hub", headers=ADMIN,
-                              json={"name": "Laptop", "hubUrl": HUB})
-        assert invitation.status_code == 200, invitation.text
         seed(hs.database_path, "hub-event", 11000)
+        monkeypatch.setenv("BURNRATE_HUB_URL", HUB)
         monkeypatch.setitem(sync._HUB_TEST_CLIENTS, HUB, hub)
         monkeypatch.delenv("BURNRATE_CENTRAL_SERVER", raising=False)
         monkeypatch.delenv("BURNRATE_ACCESS_TOKEN", raising=False)
         ss = settings(tmp_path / "spoke.db")
         with TestClient(create_app(ss, enable_scheduler=False), base_url="http://testserver") as spoke:
             seed(ss.database_path, "spoke-event", 7000)
-            joined = spoke.post("/api/setup/connect-spoke", headers=UI,
-                                json={"pairingCode": invitation.json()["pairingCode"], "testSync": True})
+            joined = spoke.post("/api/setup/account", headers=UI, json={
+                "mode": "login",
+                "username": "owner@example.com",
+                "password": PASSWORD,
+                "computerName": "Laptop",
+                "testSync": True,
+            })
             assert joined.status_code == 200, joined.text
+            # Leave sync connected without an active owner session so tests can verify sign-in/fallback.
+            with connect(ss.database_path) as conn:
+                current = setup_wizard.read_setup_state(conn)
+                current["spokeConfig"].pop("ownerSession", None)
+                current["spokeConfig"].pop("ownerSessionExpiresAt", None)
+                setup_wizard.write_setup_state(conn, current)
+            spoke.cookies.clear()
+            sync.clear_hub_proxy_cache()
             yield hs, hub, ss, spoke
     sync.clear_hub_proxy_cache()
     aggregate.reset_memo()
@@ -320,26 +331,6 @@ def test_hud_fallback_excludes_old_hub_imports_and_shows_signin(pair):
     assert 'href="/auth"' in html.text
 
 
-def test_revoke_invalidates_pending_repair_grant_but_new_grant_works(pair):
-    hs, hub, ss, _ = pair
-    with connect(ss.database_path) as conn:
-        machine_id = setup_wizard.read_setup_state(conn)["account"]["machineId"]
-    def grant():
-        response = hub.post("/api/setup/pair-hub", headers=ADMIN,
-                            json={"name": "Laptop", "hubUrl": HUB, "machineId": machine_id})
-        assert response.status_code == 200, response.text
-        return response.json()["pairingCode"]
-    pending = grant()
-    revoked = hub.post("/api/machines", headers=ADMIN, json={"action": "revoke", "id": machine_id})
-    assert revoked.status_code == 200, revoked.text
-    denied = hub.post("/api/pairing/redeem", headers=HUB_UI, json={"pairingCode": pending})
-    assert denied.status_code == 403, denied.text
-    fresh = grant()
-    redeemed = hub.post("/api/pairing/redeem", headers=HUB_UI, json={"pairingCode": fresh})
-    assert redeemed.status_code == 200, redeemed.text
-    assert redeemed.json()["machine"]["id"] == machine_id
-
-
 def test_local_token_protected_first_registration_requires_owner(tmp_path, monkeypatch):
     monkeypatch.delenv("BURNRATE_CENTRAL_SERVER", raising=False)
     recovery = secrets.token_urlsafe(32)
@@ -467,23 +458,26 @@ def test_paired_spoke_blocks_local_owner_creation_but_hub_signin_works(pair):
     assert summary(spoke)["totals"]["tokens"] == 18000
 
 
-def test_repair_to_new_identity_resends_local_usage_and_keeps_owner_session(pair):
+def test_new_identity_reconnect_resends_local_usage_and_keeps_owner_session(pair):
     hs, hub, ss, spoke = pair
     sign_in(spoke)
-    # The real pairing exchange uses a new HTTP client, without the login cookie.
     hub.cookies.clear()
-    prior_session = state(ss)["ownerSession"]
-    with connect(ss.database_path) as conn:
-        old_id = setup_wizard.read_setup_state(conn)["account"]["machineId"]
     assert summary(spoke)["totals"]["tokens"] == 18000
-    grant = hub.post("/api/setup/pair-hub", headers=ADMIN,
-                     json={"name": "Replacement laptop", "hubUrl": HUB})
-    assert grant.status_code == 200, grant.text
-    repaired = spoke.post("/api/setup/connect-spoke", headers=UI,
-                          json={"pairingCode": grant.json()["pairingCode"],
-                                "computerName": "Replacement laptop", "testSync": True})
+    with connect(ss.database_path) as conn:
+        current = setup_wizard.read_setup_state(conn)
+        old_id = current["account"]["machineId"]
+        current["spokeConfig"]["enabled"] = False
+        setup_wizard.write_setup_state(conn, current)
+        conn.execute("DELETE FROM app_meta WHERE key='device_id.v1'")
+    repaired = spoke.post("/api/setup/account", headers=UI, json={
+        "mode": "login",
+        "username": "owner@example.com",
+        "password": PASSWORD,
+        "computerName": "Replacement laptop",
+        "testSync": True,
+    })
     assert repaired.status_code == 200, repaired.text
-    assert state(ss)["ownerSession"] == prior_session
+    assert state(ss)["ownerSession"] and state(ss)["ownerSession"].startswith("br_s_")
     with connect(ss.database_path) as conn:
         new_id = setup_wizard.read_setup_state(conn)["account"]["machineId"]
     assert new_id and new_id != old_id
@@ -494,10 +488,7 @@ def test_repair_to_new_identity_resends_local_usage_and_keeps_owner_session(pair
     assert repaired.json()["syncResult"]["ok"]
 
 
-
-
-
-def test_old_inflight_sync_cannot_overwrite_new_pairing(pair, monkeypatch):
+def test_old_inflight_sync_cannot_overwrite_new_hub_connection(pair, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
 
@@ -513,7 +504,7 @@ def test_old_inflight_sync_cannot_overwrite_new_pairing(pair, monkeypatch):
     def paused_write(path, url, cursor, **kwargs):
         if kwargs.get("expected_generation") == old_generation:
             entered.set()
-            assert resume.wait(10), "Timed out waiting for replacement pairing"
+            assert resume.wait(10), "Timed out waiting for replacement hub connection"
             try:
                 return original_write(path, url, cursor, **kwargs)
             except RuntimeError as exc:
@@ -527,11 +518,18 @@ def test_old_inflight_sync_cannot_overwrite_new_pairing(pair, monkeypatch):
         old_job = pool.submit(setup_wizard.maybe_run_configured_spoke_sync, ss, pricing, client=hub)
         try:
             assert entered.wait(10), "Old sync did not reach its cursor write"
-            grant = hub.post("/api/setup/pair-hub", headers=ADMIN,
-                             json={"name": "Race replacement", "hubUrl": HUB})
-            assert grant.status_code == 200, grant.text
-            repaired = spoke.post("/api/setup/connect-spoke", headers=UI,
-                json={"pairingCode": grant.json()["pairingCode"], "testSync": True})
+            with connect(ss.database_path) as conn:
+                current = setup_wizard.read_setup_state(conn)
+                current["spokeConfig"]["enabled"] = False
+                setup_wizard.write_setup_state(conn, current)
+                conn.execute("DELETE FROM app_meta WHERE key='device_id.v1'")
+            repaired = spoke.post("/api/setup/account", headers=UI, json={
+                "mode": "login",
+                "username": "owner@example.com",
+                "password": PASSWORD,
+                "computerName": "Race replacement",
+                "testSync": True,
+            })
             assert repaired.status_code == 200, repaired.text
             replacement_cursor = sync.read_sync_cursor(ss.database_path, HUB)
             assert replacement_cursor["generation"] != old_generation
@@ -540,7 +538,7 @@ def test_old_inflight_sync_cannot_overwrite_new_pairing(pair, monkeypatch):
         finally:
             resume.set()
         result = old_job.result(timeout=10)
-    assert not result["ok"] and rejected and "Pairing changed" in rejected[0]
+    assert not result["ok"] and rejected and "Hub connection changed" in rejected[0]
     assert sync.read_sync_cursor(ss.database_path, HUB) == replacement_cursor
     with connect(ss.database_path) as conn:
         assert setup_wizard.read_setup_state(conn)["account"]["machineId"] == new_id
@@ -551,46 +549,20 @@ def test_old_inflight_sync_cannot_overwrite_new_pairing(pair, monkeypatch):
     assert row is not None and row["input_tokens"] == 7000
 
 
-def test_bad_pasted_token_restores_bound_cursor_and_working_spoke(pair, monkeypatch):
-    hs, hub, ss, spoke = pair
-    sign_in(spoke)
-    before = state(ss).copy()
-    cursor = sync.read_sync_cursor(ss.database_path, HUB)
-    writes = []
-    original_write = sync.write_sync_cursor
-
-    def record_write(path, url, value, **kwargs):
-        writes.append((value.copy(), kwargs.copy()))
-        return original_write(path, url, value, **kwargs)
-
-    monkeypatch.setattr(sync, "write_sync_cursor", record_write)
-    response = spoke.post("/api/setup/connect-spoke", headers=UI,
-        json={"hubUrl": HUB, "token": "br_m_invalid_synthetic", "testSync": True})
-    assert response.status_code == 422, response.text
-    assert state(ss) == before
-    assert sync.read_sync_cursor(ss.database_path, HUB) == cursor
-    assert len(writes) == 1 and writes[0][0] == cursor
-    assert writes[0][1]["expected_generation"] != cursor["generation"]
-    seed(ss.database_path, "after-invalid-pair", 1300)
-    result = setup_wizard.maybe_run_configured_spoke_sync(ss, PricingEngine.load(ss.pricing_path), client=hub)
-    assert result["ok"], result
-    assert summary(spoke)["totals"]["tokens"] == 19300
-
-
-def test_redeemed_pairing_survives_failed_initial_sync_and_retries(pair, monkeypatch):
+def test_account_reconnect_survives_failed_initial_sync_and_retries(pair, monkeypatch):
     import httpx
 
     hs, hub, ss, spoke = pair
     sign_in(spoke)
-    hub.cookies.clear()  # Pairing uses a separate client without the login cookie.
+    hub.cookies.clear()
     before = state(ss).copy()
     old_cursor = sync.read_sync_cursor(ss.database_path, HUB)
     with connect(ss.database_path) as conn:
-        machine_id = setup_wizard.read_setup_state(conn)["account"]["machineId"]
+        current = setup_wizard.read_setup_state(conn)
+        machine_id = current["account"]["machineId"]
+        current["spokeConfig"]["enabled"] = False
+        setup_wizard.write_setup_state(conn, current)
     seed(ss.database_path, "retry-snapshot", 2100)
-    grant = hub.post("/api/setup/pair-hub", headers=ADMIN,
-                     json={"name": "Laptop", "hubUrl": HUB, "machineId": machine_id})
-    assert grant.status_code == 200, grant.text
     original_post = hub.post
 
     def fail_push(url, *args, **kwargs):
@@ -600,11 +572,16 @@ def test_redeemed_pairing_survives_failed_initial_sync_and_retries(pair, monkeyp
 
     with monkeypatch.context() as patch:
         patch.setattr(hub, "post", fail_push)
-        response = spoke.post("/api/setup/connect-spoke", headers=UI,
-            json={"pairingCode": grant.json()["pairingCode"], "testSync": True})
+        response = spoke.post("/api/setup/account", headers=UI, json={
+            "mode": "login",
+            "username": "owner@example.com",
+            "password": PASSWORD,
+            "computerName": "Laptop",
+            "testSync": True,
+        })
     assert response.status_code == 200, response.text
     saved = state(ss)
-    assert saved["token"] != before["token"] and saved["ownerSession"] == before["ownerSession"]
+    assert saved["token"] != before["token"] and saved["ownerSession"]
     assert saved["token"] not in response.text
     assert saved["lastSyncError"] and not response.json()["syncResult"]["ok"]
     cursor = sync.read_sync_cursor(ss.database_path, HUB)

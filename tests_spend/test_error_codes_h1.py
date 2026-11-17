@@ -1174,14 +1174,6 @@ def test_never_leak_raw_local_tracker_503_text(tmp_path: Path, monkeypatch) -> N
         assert res_settings["ok"] is False
         assert SENTINEL not in json.dumps(res_settings)
 
-        res_pair = bridge.create_pairing_code("OtherComputer")
-        assert res_pair["ok"] is False
-        assert SENTINEL not in json.dumps(res_pair)
-
-        res_join = bridge.join_with_code("brpair_synthetic_code")
-        assert res_join["ok"] is False
-        assert SENTINEL not in json.dumps(res_join)
-
 
 # ---------------------------------------------------------------------------
 # 3. UI error formatting sanity & /api/hub/info unauthenticated contract

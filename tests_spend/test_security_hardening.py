@@ -245,10 +245,10 @@ def test_cli_reads_the_token_from_a_file_or_environment(tmp_path, monkeypatch) -
     monkeypatch.delenv("BURNRATE_SYNC_TOKEN", raising=False)
     token_file = tmp_path / "token.txt"
     token_file.write_text(" br_m_from_file \n", encoding="utf-8")
-    assert _resolve_sync_token(None, str(token_file)) == "br_m_from_file"
+    assert _resolve_sync_token(str(token_file)) == "br_m_from_file"
     monkeypatch.setenv("BURNRATE_SYNC_TOKEN", "br_m_from_env")
-    assert _resolve_sync_token(None, None) == "br_m_from_env"
-    assert _resolve_sync_token("br_m_explicit", None) == "br_m_explicit"
+    assert _resolve_sync_token(None) == "br_m_from_env"
+    assert _resolve_sync_token(str(token_file)) == "br_m_from_env"
 
 
 def test_desktop_shell_and_supply_chain_inputs_are_pinned() -> None:
