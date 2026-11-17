@@ -200,6 +200,26 @@ def d2_report(variant: str = "default") -> dict:
             for win in prov["windows"]:
                 win.pop("pace", None)
         report["providers"][0]["windows"][0]["forecast"] = "Runs dry in about 1h at this pace"
+    elif variant in ("no-limits", "summary-only"):
+        for prov in report["providers"]:
+            prov["windows"] = []
+            if variant == "no-limits":
+                prov["urgency"] = {"level": "idle", "limitKey": None, "text": "Waiting for fresh reading"}
+                prov["fundsRemainingUsd"] = None
+                prov["fundsRunwayInfo"] = None
+                prov["isPayg"] = False
+                prov["remaining"] = {
+                    "kind": "idle",
+                    "headline": "Idle",
+                    "sub": prov["plan"],
+                    "barPct": 0.0,
+                    "tone": "muted",
+                    "resetsAt": None,
+                    "summary": "Waiting for fresh reading",
+                }
+            else:
+                for key in ("urgency", "profile", "fundsRunwayInfo"):
+                    prov.pop(key, None)
     elif variant == "unavailable":
         report["providers"][1]["windows"][0].update(
             {"unavailable": True, "remainingPct": None, "usedPct": None, "reason": "Sign in to Codex to read limits", "pace": None}

@@ -538,39 +538,15 @@ button, input {
   border-bottom: 1px solid var(--border);
 }
 
-.hero-inner {
-  max-width: 520px;
-  margin: 0 auto;
-}
 
-.hero-top-split {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 134px;
-  gap: 10px;
-  align-items: end;
-  margin-bottom: 6px;
-}
 
-.hero-main {
-  min-width: 0;
-}
 
-.eyebrow {
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--ink-secondary);
-  margin-bottom: 1px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
 
-.balance-row {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  flex-wrap: wrap;
-}
+
+
+
+
+
 
 .balance-value {
   font-family: var(--display);
@@ -806,11 +782,7 @@ button, input {
   padding: 8px 12px 4px;
 }
 
-.card-title-wrap {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-}
+
 
 .card-title {
   font-family: var(--display);
@@ -820,11 +792,7 @@ button, input {
   color: var(--ink);
 }
 
-.card-hint {
-  font-size: 10.5px;
-  font-weight: 500;
-  color: var(--ink-tertiary);
-}
+
 
 .card-subtitle {
   font-size: 10.5px;
@@ -2144,20 +2112,13 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
   flex: 1 1 150px;
   min-width: 0;
 }
-#h11SourcesScanCard .toggle-title,
-#h11SourcesScanCard .toggle-sub,
+
 #h11SourcesScanCard .source-name,
 #h11SourcesScanCard .source-meta,
-#h11NotificationsCard .toggle-title,
-#h11NotificationsCard .toggle-sub,
 #h11NotificationsCard .source-name,
 #h11NotificationsCard .source-meta,
-#h11DiagnosticsCard .toggle-title,
-#h11DiagnosticsCard .toggle-sub,
 #h11DiagnosticsCard .source-name,
 #h11DiagnosticsCard .source-meta,
-#h11SyncCard .toggle-title,
-#h11SyncCard .toggle-sub,
 #h11SyncCard .source-name,
 #h11SyncCard .source-meta {
   min-width: 0;
@@ -2405,14 +2366,7 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
   gap: 8px;
   min-width: 0;
 }
-.h11-inline-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  flex-wrap: wrap;
-  min-width: 0;
-}
+
 .h11-diag-text {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 11px;
@@ -2599,23 +2553,13 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
 /* Narrow window (min width is 336px; 304px is the floor we still fit): shrink the mini chart
    and stack into a single column at or below 350px so no provider subtitle ever clips. */
 @media (max-width: 350px) {
-  .card-hint { display: none; }
-  .hero-top-split {
-    grid-template-columns: minmax(0, 1fr) 114px;
-    gap: 8px;
-  }
+
+
   .balance-value { font-size: 24px; }
   .provider-list {
     grid-template-columns: minmax(0, 1fr);
   }
 }
-@media (max-width: 320px) {
-  .hero-top-split {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 5px;
-  }
-}
-
 /* H10 ops/hud */
 .scroll-body[hidden],
 html.is-diagnostics #opsBar,
@@ -2884,9 +2828,7 @@ html.is-comfortable .quick-plan-banner { padding: 11px 12px; }
 .section-stack {
   grid-template-columns: minmax(0, 1fr);
 }
-.hero-inner {
-  min-width: 0;
-}
+
 .h9-period-row {
   display: flex;
   align-items: center;
@@ -2946,7 +2888,7 @@ html.is-comfortable .quick-plan-banner { padding: 11px 12px; }
   margin-top: 5px;
   min-width: 0;
 }
-.h9-range-bar,
+
 .h9-tool-bar {
   display: flex;
   flex-wrap: wrap;
@@ -2955,7 +2897,7 @@ html.is-comfortable .quick-plan-banner { padding: 11px 12px; }
   min-width: 0;
   max-width: 100%;
 }
-.h9-range-pill,
+
 .h9-tool-pill,
 .h9-mode-btn,
 .h9-back-btn,
@@ -2977,7 +2919,7 @@ html.is-comfortable .quick-plan-banner { padding: 11px 12px; }
   white-space: nowrap;
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
-.h9-range-pill:hover,
+
 .h9-tool-pill:hover,
 .h9-mode-btn:hover,
 .h9-back-btn:hover,
@@ -2986,7 +2928,7 @@ html.is-comfortable .quick-plan-banner { padding: 11px 12px; }
   background: var(--surface);
   border-color: var(--border-input);
 }
-.h9-range-pill.active,
+
 .h9-tool-pill.active,
 .h9-mode-btn.active {
   background: var(--accent-soft);
@@ -3870,7 +3812,7 @@ html.is-comfortable .quick-plan-banner { padding: 11px 12px; }
   }
 }
 @media (min-width: 720px) {
-  .hero-inner,
+  
   .section-stack,
   .h9-detail-view {
     max-width: 940px;
@@ -5460,6 +5402,26 @@ function renderBalanceRow(prov, w) {
     </div>`;
 }
 
+/* An idle or unavailable provider: a muted lane that says why. */
+function renderIdleRow(prov) {
+  const rem = prov.remaining || {};
+  const why = String(rem.summary || rem.headline || "").trim() || "Awaiting reading";
+  return `
+    <div class="lane is-muted">
+      <span class="lane-name">${esc(rem.headline || "Idle")}</span>
+      <div class="lane-track" role="img" aria-label="${esc(why)}"><i class="lane-base"></i></div>
+      <b class="lane-pct">—</b>
+      <span class="lane-note">${esc(why)}</span>
+    </div>`;
+}
+
+/* Anything to read a limit or a balance from: a measured window, funds, or an older service's headline. */
+function hasReading(prov) {
+  const measured = (prov.windows || []).some(w => !w.unavailable && (finiteOrNull(w.remainingPct) !== null || (w.unit === "usd" && finiteOrNull(w.remainingUsd) !== null)));
+  const kind = prov.remaining && prov.remaining.kind;
+  return measured || finiteOrNull(prov.fundsRemainingUsd) !== null || kind === "quota" || kind === "balance";
+}
+
 function renderUsageRow(prov) {
   const rem = prov.remaining || {};
   const cd = fmtCountdown(rem.resetsAt);
@@ -5475,26 +5437,66 @@ function renderUsageRow(prov) {
     </div>`;
 }
 
-function limitFocusKey(prov) {
-  /* Order inside one urgency level: soonest to run dry first, then least left. */
-  let hours = Infinity;
-  let left = Infinity;
-  for (const w of (prov.windows || [])) {
-    const pace = paceOf(w);
-    if (pace) hours = Math.min(hours, Number(pace.hoursToDry));
-    if (w.remainingPct !== null && w.remainingPct !== undefined && Number.isFinite(Number(w.remainingPct))) left = Math.min(left, Number(w.remainingPct));
+/* Providers that can have several profiles; a profile's key is the family key plus "-<name>" (claude-code-work). */
+const PROFILE_FAMILIES = ["claude-code", "opencode-go", "zcode", "codex", "antigravity", "grok", "muse"];
+
+function profileFamily(key) {
+  const text = String(key || "");
+  for (const family of PROFILE_FAMILIES) {
+    if (text === family || text.startsWith(family + "-")) return family;
   }
-  return [hours, left];
+  return text;
 }
 
-/* Most urgent first, unless the owner has dragged the list into an order of their own. */
+const finiteOrNull = (v) => (v !== null && v !== undefined && v !== "" && Number.isFinite(Number(v))) ? Number(v) : null;
+
+/* The window a provider is graded on: the one that runs dry soonest, else the one with the least left. */
+function focusWindow(prov) {
+  const measured = (prov.windows || []).filter(w => !w.unavailable && finiteOrNull(w.remainingPct) !== null);
+  if (!measured.length) return null;
+  const drying = measured.filter(w => paceOf(w));
+  if (drying.length) return drying.reduce((best, w) => Number(w.pace.hoursToDry) < Number(best.pace.hoursToDry) ? w : best);
+  return measured.reduce((best, w) => Number(w.remainingPct) < Number(best.remainingPct) ? w : best);
+}
+
+/* Order inside one urgency level: soonest to run dry, least left, smallest balance. */
+function limitSortKey(prov) {
+  const level = prov.urgency && prov.urgency.level;
+  const w = focusWindow(prov);
+  const isBalance = prov.isPayg || (prov.remaining && prov.remaining.kind === "balance");
+  const balance = isBalance ? finiteOrNull(prov.fundsRemainingUsd) : null;
+  return [
+    level in LEVEL_RANK ? LEVEL_RANK[level] : LEVEL_RANK.idle,
+    w && paceOf(w) ? Number(w.pace.hoursToDry) : Infinity,
+    w ? Number(w.remainingPct) : Infinity,
+    balance === null ? Infinity : balance
+  ];
+}
+
+/* Most urgent first, the profiles of one provider together at the spot of the most urgent one,
+   unless the owner has dragged the list into an order of their own. */
 function orderProviders(providers) {
   const urgent = !state.providerOrder.length && providers.some(p => p.urgency && p.urgency.level in LEVEL_RANK);
   if (!urgent) return { list: providers, byUrgency: false };
-  const rank = (p) => (p.urgency && p.urgency.level in LEVEL_RANK) ? LEVEL_RANK[p.urgency.level] : LEVEL_RANK.idle;
-  const list = providers.map((p, i) => ({ p, i, k: limitFocusKey(p) })).sort((a, b) =>
-    rank(a.p) - rank(b.p) || a.k[0] - b.k[0] || a.k[1] - b.k[1] || a.i - b.i
-  ).map(x => x.p);
+  const cmp = (a, b) => {
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
+    return 0;
+  };
+  const sorted = providers.map((p, i) => ({ p, i, k: limitSortKey(p) })).sort((a, b) => cmp(a.k, b.k) || a.i - b.i).map(x => x.p);
+  const families = new Map();
+  for (const p of sorted) {
+    const fam = profileFamily(p.key);
+    if (!families.has(fam)) families.set(fam, []);
+    families.get(fam).push(p);
+  }
+  const list = [];
+  for (const p of sorted) {
+    const fam = profileFamily(p.key);
+    if (families.has(fam)) {
+      list.push(...families.get(fam));
+      families.delete(fam);
+    }
+  }
   return { list, byUrgency: true };
 }
 
@@ -5537,7 +5539,7 @@ function renderLimitGroup(prov, idx, horizon, doStagger) {
     if (w.unit === "usd" && w.remainingUsd !== null && w.remainingUsd !== undefined) lanes.push(renderBalanceRow(prov, w));
     else lanes.push(renderLane(w, horizon));
   }
-  if (!windows.length) lanes.push(renderUsageRow(prov));
+  if (!windows.length) lanes.push((prov.remaining && prov.remaining.kind === "idle") ? renderIdleRow(prov) : renderUsageRow(prov));
 
   const enterStyle = doStagger ? `style="animation-delay:${Math.min(idx * 26, 220)}ms"` : "";
   return `
@@ -5659,8 +5661,7 @@ function renderLimits(providers) {
   document.getElementById("limitLegend").hidden = !hasLanes;
   document.getElementById("providersHint").textContent =
     `${byUrgency ? "most urgent first" : "your order"} · drag to sort · click for tokens`;
-  const noLimits = ordered.every(p => !(p.windows || []).length);
-  const emptyCard = noLimits ? `
+  const emptyCard = !ordered.some(hasReading) ? `
     <div class="limits-empty">
       <b>No limits yet</b>
       <span>Add a source to see what is left and when it refills.</span>
@@ -5768,22 +5769,38 @@ function paintSummary(data) {
   }
 }
 
-/* Plans: what each subscription is, with what they have cost so far. Prices per plan are not in the report. */
+/* Plans: the configured subscriptions with their price when the analytics summary has them,
+   else the plan each provider reports. */
+const PLAN_CADENCE = { monthly: "/mo", annual: "/yr", yearly: "/yr", quarterly: "/qtr", weekly: "/wk" };
+
+function planPrice(sub) {
+  const amount = finiteOrNull(sub.amountUsd);
+  if (amount === null) return sub.planState ? String(sub.planState) : "no paid plan";
+  const text = "$" + amount.toLocaleString(undefined, { minimumFractionDigits: amount % 1 === 0 ? 0 : 2, maximumFractionDigits: 2 });
+  return text + (PLAN_CADENCE[sub.cadence] || (sub.cadence ? "/" + sub.cadence : ""));
+}
+
 function renderPlans(data, providers) {
   const card = document.getElementById("plansCard");
   const listEl = document.getElementById("plansList");
-  const seen = new Set();
+  const subs = state.h9Summary && Array.isArray(state.h9Summary.subscriptions)
+    ? state.h9Summary.subscriptions.filter(s => s && s.name) : [];
   const rows = [];
-  for (const p of providers) {
-    if (p.isPayg || !p.plan) continue;
-    const label = p.profile ? `${p.name} · ${p.profile}` : p.name;
-    const id = `${label}|${p.plan}`;
-    if (seen.has(id)) continue;
-    seen.add(id);
-    rows.push([label, p.plan]);
+  if (subs.length) {
+    for (const s of subs) rows.push([String(s.name), planPrice(s)]);
+  } else {
+    const seen = new Set();
+    for (const p of providers) {
+      if (p.isPayg || !p.plan) continue;
+      const label = p.profile ? `${p.name} · ${p.profile}` : p.name;
+      const id = `${label}|${p.plan}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      rows.push([label, p.plan]);
+    }
   }
-  listEl.innerHTML = rows.map(([label, plan]) => `<li><span>${esc(label)}</span><b>${esc(plan)}</b></li>`).join("");
-  const plans = data.plans || null;
+  listEl.innerHTML = rows.map(([label, price]) => `<li><span>${esc(label)}</span><b>${esc(price)}</b></li>`).join("");
+  const plans = data && data.plans || null;
   const accrued = plans && plans.accruedUsd !== null && plans.accruedUsd !== undefined ? Number(plans.accruedUsd) : NaN;
   document.getElementById("plansSub").textContent = Number.isFinite(accrued) && accrued > 0
     ? `${fmtMoney(accrued, true, true)} accrued this period` : "";
@@ -9718,6 +9735,7 @@ function renderH9Summary(data) {
   state.h9Summary = data;
   const sec = document.getElementById("h9AnalyticsSection");
   if (sec) sec.hidden = false;
+  if (state.report) renderPlans(state.report, getNormalizedProviders(state.report).filter(p => !p.organization));
   renderH9Ranges();
   renderH9ToolBar(data);
   renderH9Coverage(data);

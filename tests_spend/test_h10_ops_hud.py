@@ -15,6 +15,7 @@ from spend_app import wealthfront_window as host_module
 from spend_app.native_desktop import DemoClient, DesktopError
 from spend_app.wealthfront_window import DesktopBridge, _paeth_predictor, _png_to_cf_dib
 from tests_spend.browser_runtime import CHROME
+from tests_spend.d2_fixtures import d2_report
 from tests_spend.test_wealthfront_ui import (
     FAST,
     build_page,
@@ -1088,9 +1089,7 @@ def test_browser_hud_density_and_initial_state(tmp_path):
 @needs_chrome
 @browser
 def test_browser_hud_boots_saved_comfortable_ignores_stale_mini_and_shows_empty_limits(tmp_path):
-    report = demo_report()
-    for p in report["providers"]:
-        p["windows"] = []
+    report = d2_report("no-limits")
     probe_js = """
     await until(() => document.querySelector('.provider-row'));
     const empty = document.querySelector('#providerList .limits-empty');
@@ -1116,7 +1115,7 @@ def test_browser_hud_boots_saved_comfortable_ignores_stale_mini_and_shows_empty_
         "isComfy": True,
         "emptyTitle": "No limits yet",
         "addSource": "Add a source",
-        "lanes": 0,
+        "lanes": 5,  # one muted lane per idle provider, each with its reason
         "ticksHidden": True,
     }
 

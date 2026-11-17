@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from tests_spend.d2_fixtures import d2_report
+from tests_spend.test_h9_desktop_analytics import _h9_api_js
 from tests_spend.test_wealthfront_ui import (
     FAST,
     build_page,
@@ -130,6 +131,7 @@ report({
   titles: g.map(x => x.querySelector('.provider-name').textContent),
   keys: g.map(x => x.dataset.key),
   badges: g.map(x => (x.querySelector('.acct-tag') || {}).textContent || null),
+  hint: document.getElementById('providersHint').textContent,
   logos: g.filter(x => x.dataset.key.startsWith('claude-code')).map(x => x.querySelector('.brand-chip use').getAttribute('href')),
 });
 """
@@ -141,7 +143,9 @@ def test_two_profiles_of_one_provider_get_one_group_each(tmp_path):
     html = build_page(pref="dark", color_scheme="dark", report=d2_report("profiles"), probe=PROFILES_PROBE, extra_css=FAST)
     r = probe(html, 440, tmp_path, height=640)
     assert "Claude Code · Personal" in r["titles"] and "Claude Code · Work" in r["titles"]
-    assert r["keys"].count("claude-code") == 1 and r["keys"].count("claude-code-work") == 1
+    # most urgent first, but the Work profile sits right after the Personal one (the tab's rule), not by its own urgency
+    assert r["keys"] == ["claude-code", "claude-code-work", "codex", "opencode-go", "grok", "openrouter"]
+    assert r["hint"].startswith("most urgent first")
     assert r["badges"].count(None) == len(r["badges"])
     assert r["logos"] == ["#claude", "#claude"]
 
@@ -182,10 +186,14 @@ EMPTY_PROBE = """
 await until(() => document.querySelector('#providerList .limits-empty'));
 const card = document.querySelector('#providerList .limits-empty');
 const btn = card.querySelector('button');
+const rows = [...document.querySelectorAll('#providerList .provider-item')];
 const out = {
   title: card.querySelector('b').textContent,
   button: btn.textContent,
-  lanes: document.querySelectorAll('#providerList .lane').length,
+  groups: rows.length,
+  mutedLanes: document.querySelectorAll('#providerList .lane.is-muted').length,
+  reasons: [...new Set([...document.querySelectorAll('#providerList .lane.is-muted .lane-note')].map(n => n.textContent))],
+  headlines: document.querySelectorAll('#providerList .balrow').length,
   ticksHidden: document.getElementById('limitTicks').hidden,
   legendHidden: document.getElementById('limitLegend').hidden,
 };
@@ -199,22 +207,75 @@ report(out);
 
 @needs_chrome
 @browser
-def test_no_limits_yet_offers_add_a_source_that_opens_settings_sources(tmp_path):
-    report = d2_report()
-    for p in report["providers"]:
-        p["windows"] = []
-        p.pop("urgency", None)
-    html = build_page(pref="light", report=report, probe=EMPTY_PROBE, extra_css=FAST)
+def test_no_limits_yet_offers_add_a_source_only_when_nothing_can_be_read(tmp_path):
+    html = build_page(pref="light", report=d2_report("no-limits"), probe=EMPTY_PROBE, extra_css=FAST)
     r = probe(html, 440, tmp_path, height=640)
     assert r == {
         "title": "No limits yet",
         "button": "Add a source",
-        "lanes": 0,
+        "groups": 5,
+        "mutedLanes": 5,
+        "reasons": ["Waiting for fresh reading"],
+        "headlines": 0,
         "ticksHidden": True,
         "legendHidden": True,
         "settingsOpen": True,
         "settingsTab": "sources",
     }
+
+
+SUMMARY_ONLY_PROBE = """
+await until(() => document.querySelectorAll('#providerList .provider-item').length >= 5);
+const rows = [...document.querySelectorAll('#providerList .provider-item .balrow')];
+report({
+  empty: !!document.querySelector('#providerList .limits-empty'),
+  rows: rows.length,
+  first: rows[0].querySelector('strong').textContent,
+  lanes: document.querySelectorAll('#providerList .lane').length,
+});
+"""
+
+
+@needs_chrome
+@browser
+def test_an_older_service_headline_without_windows_is_a_summary_row_not_an_empty_card(tmp_path):
+    html = build_page(pref="light", report=d2_report("summary-only"), probe=SUMMARY_ONLY_PROBE, extra_css=FAST)
+    r = probe(html, 440, tmp_path, height=640)
+    assert r == {"empty": False, "rows": 5, "first": "54% left", "lanes": 0}
+
+
+PLANS_PROBE = """
+await until(() => !document.getElementById('h9AnalyticsSection').hidden);
+const rows = () => [...document.querySelectorAll('#plansList li')].map(li => li.children[0].textContent + ' | ' + li.children[1].textContent);
+report({ rows: rows(), sub: document.getElementById('plansSub').textContent, shown: getComputedStyle(document.getElementById('plansCard')).display });
+"""
+
+
+@needs_chrome
+@browser
+def test_plans_show_their_price_from_the_analytics_summary(tmp_path):
+    api_js = _h9_api_js() + """
+    var __sum = api.fetch_analytics_summary;
+    api.fetch_analytics_summary = async function () {
+      var res = await __sum.apply(null, arguments);
+      res.summary.subscriptions = [
+        { name: "Claude Max 20x", toolKey: "claude-code", amountUsd: 200, cadence: "monthly", planState: "paid" },
+        { name: "ChatGPT Pro", toolKey: "codex", amountUsd: 200, cadence: "monthly", planState: "paid" },
+        { name: "Cursor annual", toolKey: "cursor", amountUsd: 192.5, cadence: "annual", planState: "paid" },
+        { name: "Grok free", toolKey: "grok", amountUsd: null, cadence: "monthly", planState: "no paid plan" },
+      ];
+      return res;
+    };
+    """
+    html = build_page(pref="light", report=d2_report(), api_js=api_js, probe=PLANS_PROBE, extra_css=FAST)
+    r = probe(html, 440, tmp_path, height=640)
+    assert r["rows"] == [
+        "Claude Max 20x | $200/mo",
+        "ChatGPT Pro | $200/mo",
+        "Cursor annual | $192.50/yr",
+        "Grok free | no paid plan",
+    ]
+    assert r["sub"].endswith("accrued this period") and r["shown"] != "none"
 
 
 LOADING_PROBE = """
