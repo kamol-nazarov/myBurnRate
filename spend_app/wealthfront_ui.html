@@ -905,8 +905,9 @@ button, input {
   padding: 2px 0;
   border-radius: 8px;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 4px 8px;
   min-width: 0;
   text-align: left;
   cursor: pointer;
@@ -919,8 +920,8 @@ body:not(.dragging-active) .provider-row:hover {
 }
 
 .tile-ident {
-  flex: 1;
-  min-width: 0;
+  flex: 1 1 7em;
+  min-width: 7em;
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
@@ -932,6 +933,7 @@ body:not(.dragging-active) .provider-row:hover {
   align-items: center;
   gap: 2px;
   flex-shrink: 0;
+  margin-left: auto;
   padding: 1px 2px;
   border-radius: 6px;
 }
@@ -2616,6 +2618,7 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
 
 /* H10 ops/hud */
 .scroll-body[hidden],
+html.is-diagnostics #opsBar,
 html.is-diagnostics #scrollBody { display: none !important; }
 .ops-pill {
   position: relative;
@@ -4054,7 +4057,7 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
   align-items: center;
   min-width: 0;
 }
-.lane-name { font-size: 11.5px; font-weight: 600; color: var(--ink-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lane-name { font-size: 11.5px; font-weight: 600; line-height: 1.2; color: var(--ink-secondary); overflow-wrap: anywhere; }
 .lane-track { position: relative; height: 16px; min-width: 0; }
 .lane-base { position: absolute; left: 0; right: 0; top: 5px; height: 6px; border-radius: 3px; background: var(--track); }
 .lane-grid { position: absolute; top: 0; bottom: 0; width: 1px; margin-left: -0.5px; background: var(--divider); }
@@ -10487,7 +10490,7 @@ window.closeDiagnostics = function(returnFocus = true) {
     });
   }
   if (state.report) renderChart(false);
-  if (returnFocus) document.getElementById("diagBtn")?.focus();
+  if (returnFocus) document.getElementById("diagBtn")?.focus({ preventScroll: true });
 };
 
 function drawWeekCard(week) {

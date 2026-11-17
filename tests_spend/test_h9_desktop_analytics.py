@@ -946,9 +946,9 @@ const rangePop = document.getElementById('h9RangePopover');
 function snapDetail() {
   return {
     detailHidden: detailView.hidden,
-    heroHidden: hero.hidden,
+    heroHidden: hero.offsetParent === null,
     stackHidden: stack.hidden,
-    heroDisplay: getComputedStyle(hero).display,
+    heroDisplay: hero.offsetParent === null ? 'none' : getComputedStyle(hero).display,
     stackDisplay: getComputedStyle(stack).display,
     detailScrollTop: scrollBody.scrollTop,
     detailRangeLabel: document.getElementById('h9DetailRangeLabel').textContent,
@@ -1001,9 +1001,9 @@ await until(() => detailView.hidden && !hero.hidden);
 await until(() => scrollBody.scrollTop >= 350, 30);
 out.afterBackBtn = {
   detailHidden: detailView.hidden,
-  heroHidden: hero.hidden,
+  heroHidden: hero.offsetParent === null,
   stackHidden: stack.hidden,
-  heroDisplay: getComputedStyle(hero).display,
+  heroDisplay: hero.offsetParent === null ? 'none' : getComputedStyle(hero).display,
   stackDisplay: getComputedStyle(stack).display,
   restoredScrollTop: scrollBody.scrollTop,
 };
@@ -1019,9 +1019,9 @@ await until(() => detailView.hidden);
 await until(() => scrollBody.scrollTop >= 350, 30);
 out.afterEsc = {
   detailHidden: detailView.hidden,
-  heroHidden: hero.hidden,
+  heroHidden: hero.offsetParent === null,
   stackHidden: stack.hidden,
-  heroDisplay: getComputedStyle(hero).display,
+  heroDisplay: hero.offsetParent === null ? 'none' : getComputedStyle(hero).display,
   stackDisplay: getComputedStyle(stack).display,
   restoredScrollTop: scrollBody.scrollTop,
 };
@@ -1248,99 +1248,6 @@ def test_h9_ui_no_horizontal_overflow_at_narrow_widths(tmp_path, width):
     assert pop["popRight"] <= pop["innerWidth"]
 
 
-H9_H10_MINI_MODE_PROBE = """
-await until(() => !document.getElementById('h9AnalyticsSection').hidden && document.querySelectorAll('#h9ModelBody .h9-model-row').length > 0);
-const sec = document.getElementById('h9AnalyticsSection');
-const detail = document.getElementById('h9DetailView');
-const stack = document.querySelector('.section-stack');
-const miniBar = document.getElementById('hudMiniBar');
-const out = {};
-
-out.initialFull = {
-  isMini: document.documentElement.classList.contains('is-mini'),
-  secDisplay: getComputedStyle(sec).display,
-  miniDisplay: getComputedStyle(miniBar).display,
-};
-
-document.getElementById('miniModeBtn').click();
-await until(() => document.documentElement.classList.contains('is-mini'));
-out.afterMini = {
-  isMini: document.documentElement.classList.contains('is-mini'),
-  secDisplay: getComputedStyle(sec).display,
-  heroDisplay: getComputedStyle(document.getElementById('heroSection')).display,
-  miniDisplay: getComputedStyle(miniBar).display,
-};
-
-document.getElementById('fullModeBtn').click();
-await until(() => !document.documentElement.classList.contains('is-mini'));
-out.backToFull = {
-  isMini: document.documentElement.classList.contains('is-mini'),
-  secDisplay: getComputedStyle(sec).display,
-};
-
-// Open H9 detail, then switch to Mini: detail must close cleanly so mini bar shows
-document.querySelector('#h9ModelBody .h9-model-row[data-h9-entity-key="claude-opus-4-6"]').click();
-await until(() => !detail.hidden && state.h9EntityData?.key === 'claude-opus-4-6');
-document.getElementById('miniModeBtn').click();
-await until(() => document.documentElement.classList.contains('is-mini') && detail.hidden);
-out.miniFromDetail = {
-  h9View: state.h9View,
-  detailHidden: detail.hidden,
-  detailDisplay: getComputedStyle(detail).display,
-  stackHidden: stack.hidden,
-  miniDisplay: getComputedStyle(miniBar).display,
-  secDisplay: getComputedStyle(sec).display,
-};
-
-miniBar.click();
-await until(() => !document.documentElement.classList.contains('is-mini'));
-out.expandedFromMiniBar = {
-  isMini: document.documentElement.classList.contains('is-mini'),
-  secDisplay: getComputedStyle(sec).display,
-  detailHidden: detail.hidden,
-};
-report(out);
-"""
-
-
-@needs_chrome
-@browser
-def test_h9_ui_mini_mode_hides_analytics_and_closes_detail(tmp_path):
-    api_js = _h9_api_js() + """
-    api.set_hud_mini = async function (v) { window.__calls.push(["set_hud_mini", v]); return { ok: true, hudMini: !!v }; };
-    api.set_hud_density = async function (v) { window.__calls.push(["set_hud_density", v]); return { ok: true, hudDensity: v }; };
-    """
-    html = build_page(
-        pref="light",
-        api_js=api_js,
-        probe=H9_H10_MINI_MODE_PROBE,
-        extra_css=FAST,
-    )
-    r = probe(html, 960, tmp_path, height=900)
-    assert r["initialFull"]["isMini"] is False
-    assert r["initialFull"]["secDisplay"] != "none"
-    assert r["initialFull"]["miniDisplay"] == "none"
-
-    assert r["afterMini"]["isMini"] is True
-    assert r["afterMini"]["secDisplay"] == "none"
-    assert r["afterMini"]["heroDisplay"] == "none"
-    assert r["afterMini"]["miniDisplay"] != "none"
-
-    assert r["backToFull"]["isMini"] is False
-    assert r["backToFull"]["secDisplay"] != "none"
-
-    assert r["miniFromDetail"]["h9View"] == "overview"
-    assert r["miniFromDetail"]["detailHidden"] is True
-    assert r["miniFromDetail"]["detailDisplay"] == "none"
-    assert r["miniFromDetail"]["stackHidden"] is False
-    assert r["miniFromDetail"]["miniDisplay"] != "none"
-    assert r["miniFromDetail"]["secDisplay"] == "none"
-
-    assert r["expandedFromMiniBar"]["isMini"] is False
-    assert r["expandedFromMiniBar"]["secDisplay"] != "none"
-    assert r["expandedFromMiniBar"]["detailHidden"] is True
-
-
 H9_H10_DIAGNOSTICS_ESCAPE_PROBE = """
 await until(() => !document.getElementById('h9AnalyticsSection').hidden && document.querySelectorAll('#h9ModelBody .h9-model-row').length > 0);
 const scrollBody = document.getElementById('scrollBody');
@@ -1392,7 +1299,7 @@ await until(() => detail.hidden);
 await wait(50);
 out.afterSecondEsc = {
   detailHidden: detail.hidden,
-  heroHidden: document.getElementById('heroSection').hidden,
+  heroHidden: document.getElementById('heroSection').offsetParent === null,
   stackHidden: document.querySelector('.section-stack').hidden,
   overviewScrollRestored: scrollBody.scrollTop,
 };

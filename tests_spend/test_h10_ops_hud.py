@@ -648,7 +648,7 @@ def _iso_ahead(minutes: int) -> str:
 
 @needs_chrome
 @browser
-def test_browser_running_now_overview_mini_and_xss(tmp_path):
+def test_browser_running_now_overview_and_xss(tmp_path):
     report = demo_report()
     report["activity"] = [
         {
@@ -723,8 +723,6 @@ def test_browser_running_now_overview_mini_and_xss(tmp_path):
       countText: document.getElementById('runningNowCount').textContent,
       hintOverview: document.getElementById('runningNowHint').textContent,
       overviewRows: rows.length,
-      miniLiveText: document.getElementById('hudMiniLive').textContent,
-      miniLiveHidden: document.getElementById('hudMiniLive').hidden,
       fills,
       ages,
       excludedStopped: !list.textContent.includes('Stopped task') && !list.textContent.includes('Idle task'),
@@ -733,12 +731,6 @@ def test_browser_running_now_overview_mini_and_xss(tmp_path):
       escapedTitlePresent: firstTitle.includes('<img') && firstTitle.includes('Refactor bridge'),
       escapedMetaPresent: firstMeta.includes('<b>claude-opus-4-1</b>') && firstMeta.includes('DeskPC'),
     };
-    document.getElementById('miniModeBtn').click();
-    await wait(30);
-    out.miniRows = document.querySelectorAll('#runningNowList .running-row').length;
-    out.hintMini = document.getElementById('runningNowHint').textContent;
-    out.countMini = document.getElementById('runningNowCount').textContent;
-
     // Also verify <script> payload in name is safely escaped
     renderRunningNow({
       ...state.report,
@@ -750,18 +742,15 @@ def test_browser_running_now_overview_mini_and_xss(tmp_path):
     // Empty/stopped-only activity hides the card
     renderRunningNow({ ...state.report, activity: [{ state: 'stopped', name: 'done' }] });
     out.hiddenWhenNone = document.getElementById('runningNowCard').hidden;
-    out.miniLiveHiddenWhenNone = document.getElementById('hudMiniLive').hidden;
     report(out);
     """
-    api_js = "api.set_hud_mini = async function(v) { return { ok: true, hudMini: v }; };"
-    html = build_page(pref="light", report=report, api_js=api_js, probe=probe_js, extra_css=FAST)
+    html = build_page(pref="light", report=report, probe=probe_js, extra_css=FAST)
     r = probe(html, 380, tmp_path, height=900)
 
     assert r["cardHidden"] is False
     assert r["countText"] == "5 live"
     assert r["hintOverview"] == ""
     assert r["overviewRows"] == 5
-    assert r["miniLiveText"] == "5 live" and r["miniLiveHidden"] is False
     assert r["fills"][0] == "100%"
     assert r["fills"][1] in ("50%", "48%", "52%")
     assert r["fills"][2] in ("25%", "23%", "27%")
@@ -772,12 +761,8 @@ def test_browser_running_now_overview_mini_and_xss(tmp_path):
     assert r["injectedTags"] == 0
     assert r["escapedTitlePresent"] is True
     assert r["escapedMetaPresent"] is True
-    assert r["miniRows"] == 3
-    assert r["hintMini"] == "top 3 of 5"
-    assert r["countMini"] == "5 live"
     assert r["scriptTagInjected"] is False and r["scriptTextEscaped"] is True
     assert r["hiddenWhenNone"] is True
-    assert r["miniLiveHiddenWhenNone"] is True
 
 
 @needs_chrome
@@ -1038,54 +1023,12 @@ def test_browser_diagnostics_view_sections_navigation_and_xss(tmp_path):
 
 @needs_chrome
 @browser
-def test_browser_hud_mini_bar_density_and_initial_state(tmp_path):
+def test_browser_hud_density_and_initial_state(tmp_path):
     report = demo_report("week")
-    report["todayTotal"] = {"valueUsd": 42.5, "tokens": 50000, "events": 5, "complete": False}
     report["activity"] = [
         {"id": "a1", "name": "Run A", "state": "LIVE", "modelKey": "claude-opus-4-1", "startedAt": _iso_ago(4)},
         {"id": "a2", "name": "Run B", "state": "running", "modelKey": "gpt-5-codex", "startedAt": _iso_ago(2)},
     ]
-    report["providers"] = [
-        {
-            "key": "claude-code",
-            "name": "Claude Code",
-            "badge": "Work",
-            "plan": "Max",
-            "inUse": True,
-            "isPayg": False,
-            "fundsRemainingUsd": None,
-            "organization": False,
-            "remaining": {"kind": "quota", "headline": "15% left", "sub": "5h", "barPct": 15.0, "tone": "warn", "resetsAt": _iso_ahead(125), "summary": "Max"},
-            "burn": {"dayTokens": 1000, "sessionTokens": 500, "hasSession": True, "weekTokens": 4000, "weekBasis": "window"},
-            "windows": [
-                {"limitKey": "5h", "shortLabel": "5h", "label": "5h", "usedPct": 85.0, "remainingPct": 15.0, "unavailable": False, "resetsAt": _iso_ahead(125)}
-            ],
-            "tokens": 4000,
-            "valueUsd": 25.0,
-            "complete": True,
-            "models": [],
-        },
-        {
-            "key": "codex",
-            "name": "Codex",
-            "badge": "",
-            "plan": "Pro",
-            "inUse": False,
-            "isPayg": False,
-            "fundsRemainingUsd": None,
-            "organization": False,
-            "remaining": {"kind": "quota", "headline": "82% left", "sub": "7d", "barPct": 82.0, "tone": "accent", "resetsAt": _iso_ahead(500), "summary": "Pro"},
-            "burn": {"dayTokens": 200, "sessionTokens": None, "hasSession": False, "weekTokens": 1000, "weekBasis": "window"},
-            "windows": [
-                {"limitKey": "weekly", "shortLabel": "7d", "label": "7d", "usedPct": 18.0, "remainingPct": 82.0, "unavailable": False, "resetsAt": _iso_ahead(500)}
-            ],
-            "tokens": 1000,
-            "valueUsd": 5.0,
-            "complete": True,
-            "models": [],
-        },
-    ]
-
     api_js = """
     api.set_hud_mini = async function(v) { window.__calls.push(['set_hud_mini', v]); return { ok: true, hudMini: v }; };
     api.set_hud_density = async function(v) { window.__calls.push(['set_hud_density', v]); return { ok: true, hudDensity: v }; };
@@ -1093,60 +1036,16 @@ def test_browser_hud_mini_bar_density_and_initial_state(tmp_path):
     probe_js = """
     await until(() => document.querySelector('.provider-row'));
     const root = document.documentElement;
-    const fullBtn = document.getElementById('fullModeBtn');
-    const miniBtn = document.getElementById('miniModeBtn');
     const densBtn = document.getElementById('densityBtn');
-    const miniBar = document.getElementById('hudMiniBar');
     const out = {
+      removed: ['hudMiniBar', 'fullModeBtn', 'miniModeBtn', 'viewModeGroup', 'hudMiniLive'].filter(id => document.getElementById(id)),
       bootMini: root.classList.contains('is-mini'),
       bootComfy: root.classList.contains('is-comfortable'),
-      bootFullPressed: fullBtn.getAttribute('aria-pressed'),
-      bootMiniPressed: miniBtn.getAttribute('aria-pressed'),
-      bootFullLabel: fullBtn.textContent,
-      bootMiniLabel: miniBtn.textContent,
       bootDensityLabel: densBtn.textContent,
       bootCalls: window.__calls.filter(c => c[0] === 'set_hud_mini' || c[0] === 'set_hud_density'),
-      miniDisplayBefore: getComputedStyle(miniBar).display,
+      footerOrder: [...document.querySelectorAll('#opsBar .ops-pill')].map(b => b.id),
+      runningCount: document.getElementById('runningNowCount').textContent,
     };
-
-    miniBtn.click();
-    await wait(20);
-    out.afterMiniClick = {
-      isMini: root.classList.contains('is-mini'),
-      fullPressed: fullBtn.getAttribute('aria-pressed'),
-      miniPressed: miniBtn.getAttribute('aria-pressed'),
-      fullLabel: fullBtn.textContent,
-      miniLabel: miniBtn.textContent,
-      miniDisplay: getComputedStyle(miniBar).display,
-      heroDisplay: getComputedStyle(document.getElementById('heroSection')).display,
-      todayText: document.getElementById('hudMiniToday').textContent,
-      liveText: document.getElementById('hudMiniLive').textContent,
-      leadText: document.getElementById('hudMiniLead').textContent,
-      pctText: document.getElementById('hudMiniPct').textContent,
-      pctClass: document.getElementById('hudMiniPct').className,
-    };
-
-    // Clicking mini bar expands back to overview
-    miniBar.click();
-    await wait(20);
-    out.afterMiniBarExpand = {
-      isMini: root.classList.contains('is-mini'),
-      fullPressed: fullBtn.getAttribute('aria-pressed'),
-      miniPressed: miniBtn.getAttribute('aria-pressed'),
-    };
-
-    // Clicking Full button also works explicitly
-    miniBtn.click();
-    await wait(20);
-    fullBtn.click();
-    await wait(20);
-    out.afterFullBtn = {
-      isMini: root.classList.contains('is-mini'),
-      fullPressed: fullBtn.getAttribute('aria-pressed'),
-      miniPressed: miniBtn.getAttribute('aria-pressed'),
-    };
-
-    // Density toggle
     densBtn.click();
     await wait(20);
     out.afterComfy = {
@@ -1175,57 +1074,33 @@ def test_browser_hud_mini_bar_density_and_initial_state(tmp_path):
     )
     r = probe(html, 380, tmp_path, height=850)
 
+    assert r["removed"] == []
     assert r["bootMini"] is False and r["bootComfy"] is False
-    assert r["bootFullPressed"] == "true" and r["bootMiniPressed"] == "false"
-    assert r["bootFullLabel"] == "Full" and r["bootMiniLabel"] == "Mini"
     assert r["bootDensityLabel"] == "Density: Compact"
     assert r["bootCalls"] == []
-    assert r["miniDisplayBefore"] == "none"
-
-    m = r["afterMiniClick"]
-    assert m["isMini"] is True and m["fullPressed"] == "false" and m["miniPressed"] == "true"
-    assert m["fullLabel"] == "Full" and m["miniLabel"] == "Mini"
-    assert m["miniDisplay"] == "grid" and m["heroDisplay"] == "none"
-    assert m["todayText"] == "≥$42.50"
-    assert m["liveText"] == "2 live"
-    assert m["leadText"].startswith("Claude Code · Work · 5h (")
-    assert m["pctText"] == "15% left"
-    assert "tone-warn" in m["pctClass"]
-
-    assert r["afterMiniBarExpand"] == {"isMini": False, "fullPressed": "true", "miniPressed": "false"}
-    assert r["afterFullBtn"] == {"isMini": False, "fullPressed": "true", "miniPressed": "false"}
+    assert r["footerOrder"] == ["diagBtn", "shareWeekBtn", "pinBtn", "densityBtn", "settingsBtn"]
+    assert r["runningCount"] == "2 live"
     assert r["afterComfy"] == {"isComfy": True, "pressed": "true", "label": "Density: Comfortable"}
     assert r["afterCompact"] == {"isComfy": False, "pressed": "false", "label": "Density: Compact"}
-    assert r["calls"] == [
-        ["set_hud_mini", True],
-        ["set_hud_density", "compact"],
-        ["set_hud_mini", False],
-        ["set_hud_density", "compact"],
-        ["set_hud_mini", True],
-        ["set_hud_density", "compact"],
-        ["set_hud_mini", False],
-        ["set_hud_density", "compact"],
-        ["set_hud_mini", False],
-        ["set_hud_density", "comfortable"],
-        ["set_hud_mini", False],
-        ["set_hud_density", "compact"],
-    ]
+    assert r["calls"] == [["set_hud_density", "comfortable"], ["set_hud_density", "compact"]]
 
 
 @needs_chrome
 @browser
-def test_browser_hud_boots_saved_mini_and_comfortable_and_healthy_fallback(tmp_path):
+def test_browser_hud_boots_saved_comfortable_ignores_stale_mini_and_shows_empty_limits(tmp_path):
     report = demo_report()
     for p in report["providers"]:
         p["windows"] = []
     probe_js = """
     await until(() => document.querySelector('.provider-row'));
+    const empty = document.querySelector('#providerList .limits-empty');
     report({
       isMini: document.documentElement.classList.contains('is-mini'),
       isComfy: document.documentElement.classList.contains('is-comfortable'),
-      lead: document.getElementById('hudMiniLead').textContent,
-      pct: document.getElementById('hudMiniPct').textContent,
-      pctTone: document.getElementById('hudMiniPct').classList.contains('tone-accent'),
+      emptyTitle: empty ? empty.querySelector('b').textContent : null,
+      addSource: empty ? empty.querySelector('button').textContent : null,
+      lanes: document.querySelectorAll('#providerList .lane').length,
+      ticksHidden: document.getElementById('limitTicks').hidden,
     });
     """
     html = build_page(
@@ -1237,11 +1112,12 @@ def test_browser_hud_boots_saved_mini_and_comfortable_and_healthy_fallback(tmp_p
     )
     r = probe(html, 380, tmp_path, height=700)
     assert r == {
-        "isMini": True,
+        "isMini": False,
         "isComfy": True,
-        "lead": "All subscription limits healthy",
-        "pct": "—",
-        "pctTone": True,
+        "emptyTitle": "No limits yet",
+        "addSource": "Add a source",
+        "lanes": 0,
+        "ticksHidden": True,
     }
 
 
@@ -1458,7 +1334,6 @@ def test_browser_responsive_no_horizontal_overflow_at_304_and_480(tmp_path):
         },
     ]
     api_js = """
-    api.set_hud_mini = async function(v) { return { ok: true, hudMini: v }; };
     api.get_setup_check = async function() {
       return {
         ok: true,
@@ -1524,10 +1399,6 @@ def test_browser_responsive_no_horizontal_overflow_at_304_and_480(tmp_path):
     const checks = [];
     // 304px overview
     checks.push(measure('overview-304'));
-    // 304px mini
-    document.getElementById('miniModeBtn').click();
-    await wait(30);
-    checks.push(measure('mini-304'));
     // 304px diagnostics
     document.getElementById('diagBtn').click();
     await until(() => document.querySelectorAll('#diagIngestGrid .diag-ingest-card').length === 2);
@@ -1539,9 +1410,6 @@ def test_browser_responsive_no_horizontal_overflow_at_304_and_480(tmp_path):
     checks.push(measure('diag-480'));
     document.getElementById('diagnosticsBackBtn').click();
     await wait(30);
-    checks.push(measure('mini-480'));
-    document.getElementById('fullModeBtn').click();
-    await wait(30);
     checks.push(measure('overview-480'));
 
     report({ checks });
@@ -1549,7 +1417,7 @@ def test_browser_responsive_no_horizontal_overflow_at_304_and_480(tmp_path):
     html = build_page(pref="light", api_js=api_js, report=report, probe=probe_js, extra_css=FAST)
     r = probe(html, 304, tmp_path, height=850)
 
-    assert len(r["checks"]) == 6
+    assert len(r["checks"]) == 4
     for entry in r["checks"]:
         assert entry["docOverflow"] <= 1, entry
         assert entry["opsOverflow"] <= 1, entry
@@ -1652,7 +1520,7 @@ def test_browser_diagnostics_and_header_no_overflow_at_304_336_380(tmp_path):
           }
         }
       }
-      const actionBtns = ['pinBtn', 'refreshBtn', 'settingsBtn', 'minBtn', 'closeBtn'].map(id => {
+      const actionBtns = ['refreshBtn', 'tabBtn', 'closeBtn'].map(id => {
         const r = document.getElementById(id).getBoundingClientRect();
         return { id, left: r.left, right: r.right, width: r.width };
       });
