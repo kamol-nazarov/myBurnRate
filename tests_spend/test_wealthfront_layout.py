@@ -61,24 +61,29 @@ document.querySelector('#native').addEventListener('load', async () => {
   const doc = frame.contentDocument;
   await doc.fonts.ready;
   const cases = [];
-  for (const width of [304, 320, 336, 364, 380, 480]) {
+  for (const width of [304, 320, 336, 360, 364, 380, 440, 480]) {
     frame.style.width = width + 'px';
+    const card = doc.getElementById('providersCard');
+    const bounds = card.getBoundingClientRect();
     const box = doc.querySelector('.drawer-box');
-    const bounds = box.getBoundingClientRect();
-    const clipped = [...box.querySelectorAll('.limit-head,.limit-title,.limit-val,.limit-meta,.limit-reset,.limit-used')]
+    const clipped = [...card.querySelectorAll('.lane-name,.lane-pct,.lane-note,.provider-name')]
       .filter(el => {
         const rect = el.getBoundingClientRect();
         return el.scrollWidth > el.clientWidth + 1 || rect.right > bounds.right + 1 || rect.left < bounds.left - 1;
       }).map(el => el.className);
-    const overlap = [...box.querySelectorAll('.limit-head')].some(el =>
-      el.querySelector('.limit-title').getBoundingClientRect().right >
-      el.querySelector('.limit-val').getBoundingClientRect().left + 1);
+    const overlap = [...card.querySelectorAll('.lane')].some(lane => {
+      const name = lane.querySelector('.lane-name').getBoundingClientRect();
+      const track = lane.querySelector('.lane-track').getBoundingClientRect();
+      const pct = lane.querySelector('.lane-pct').getBoundingClientRect();
+      return name.right > track.left + 1 || track.right > pct.left + 1;
+    });
     cases.push({width, actualWidth:frame.contentWindow.innerWidth, clipped, overlap,
-      drawerFits:bounds.right <= frame.contentWindow.innerWidth});
+      drawerFits:box.getBoundingClientRect().right <= frame.contentWindow.innerWidth,
+      hscroll:doc.documentElement.scrollWidth > frame.contentWindow.innerWidth});
   }
   const result = {fontLoaded:doc.fonts.check('600 11px "Manrope"'), cases,
-    titles:[...doc.querySelectorAll('.limit-title')].map(el => el.textContent.trim()),
-    values:[...doc.querySelectorAll('.limit-val')].map(el => el.textContent.trim())};
+    titles:[...doc.querySelectorAll('.lane-name')].map(el => el.textContent.trim()),
+    values:[...doc.querySelectorAll('.lane-pct')].map(el => el.textContent.trim())};
   document.title = 'PROBE:' + JSON.stringify(result);
 });
 </script></body></html>"""
@@ -105,12 +110,13 @@ document.querySelector('#native').addEventListener('load', async () => {
             "Gemini · Five-hour", "Gemini · Weekly",
             "Claude / GPT · Five-hour", "Claude / GPT · Weekly",
         ]
-        assert report["values"] == ["93% left", "44% left", "100% left", "55% left"]
+        assert report["values"] == ["93%", "44%", "100%", "55%"]
         for case in report["cases"]:
             assert case["actualWidth"] == case["width"], case
             assert case["clipped"] == [], case
             assert case["overlap"] is False, case
             assert case["drawerFits"] is True, case
+            assert case["hscroll"] is False, case
     finally:
         server.shutdown()
         server.server_close()
@@ -122,7 +128,7 @@ document.querySelector('.provider-row').click();            // keep one drawer o
 await wait(40);
 const out = [];
 const clipped = (el) => el.scrollWidth > el.clientWidth + 1;
-for (const width of [304, 320, 336, 364, 380, 480]) {
+for (const width of [304, 320, 336, 360, 364, 380, 440, 480]) {
   await setWidth(width);
   const issues = [];
   const scroller = document.getElementById('scrollBody');
@@ -130,7 +136,7 @@ for (const width of [304, 320, 336, 364, 380, 480]) {
   if (document.documentElement.scrollWidth > window.innerWidth) issues.push('document-hscroll');
   const card = document.getElementById('providersCard').getBoundingClientRect();
 
-  // provider tiles
+  // provider groups
   document.querySelectorAll('.provider-row').forEach((row) => {
     const key = row.dataset.rowKey;
     const rect = row.getBoundingClientRect();
@@ -142,13 +148,20 @@ for (const width of [304, 320, 336, 364, 380, 480]) {
       if (ar.right > rect.right + 1) issues.push('afford-overflow:' + key);
     }
     if (rect.right > card.right + 1) issues.push('row-overflow:' + key);
-    for (const sel of ['.provider-rem', '.provider-rem-sub', '.provider-name', '.provider-sub']) {
+    for (const sel of ['.provider-name', '.provider-sub']) {
       const el = row.querySelector(sel);
       if (el && clipped(el)) issues.push('clipped:' + sel + ':' + key);
     }
-    row.querySelectorAll('.tile-name-wrap > *').forEach((el) => {
+    row.querySelectorAll('.tile-ident > *').forEach((el) => {
       if (el.getBoundingClientRect().right > ident.right + 1) issues.push('name-line:' + key);
     });
+    const tagEl = row.querySelector('.tag');
+    if (tagEl) {
+      const tr = tagEl.getBoundingClientRect();
+      if (tr.right > rect.right + 1 || tagEl.scrollWidth > tagEl.clientWidth + 1) issues.push('tag-overflow:' + key);
+      const sameLineAsIdent = tr.top < ident.bottom - 2 && tr.bottom > ident.top + 2;
+      if (sameLineAsIdent && ident.right > tr.left + 1) issues.push('tag-overlap:' + key);
+    }
     const nameBox = row.querySelector('.provider-name').getBoundingClientRect();
     const tagBox = row.querySelector('.acct-tag');
     if (tagBox) {
@@ -158,12 +171,23 @@ for (const width of [304, 320, 336, 364, 380, 480]) {
     }
   });
 
+  // limit lanes: name | timeline | percent never overlap, notes stay inside the card
+  document.querySelectorAll('.lane').forEach((lane, i) => {
+    const n = lane.querySelector('.lane-name').getBoundingClientRect();
+    const tr = lane.querySelector('.lane-track').getBoundingClientRect();
+    const p = lane.querySelector('.lane-pct').getBoundingClientRect();
+    if (n.right > tr.left + 1) issues.push('lane-name-overlap:' + i);
+    if (tr.right > p.left + 1) issues.push('lane-track-overlap:' + i);
+    if (p.right > card.right + 1) issues.push('lane-overflow:' + i);
+    const note = lane.querySelector('.lane-note');
+    if (note && (clipped(note) || note.getBoundingClientRect().right > card.right + 1)) issues.push('lane-note:' + i);
+  });
+  const ticks = document.getElementById('limitTicks');
+  if (ticks.scrollWidth > ticks.clientWidth + 12) issues.push('ticks-overflow');
+
   // hero
-  const hero = document.querySelector('.hero-inner').getBoundingClientRect();
-  const heroMain = document.querySelector('.hero-main').getBoundingClientRect();
+  const hero = document.getElementById('heroSection').getBoundingClientRect();
   const miniChart = document.querySelector('.hero-mini-chart').getBoundingClientRect();
-  const splitSameRow = miniChart.top < heroMain.bottom - 2 && miniChart.bottom > heroMain.top + 2;
-  if (splitSameRow && heroMain.right > miniChart.left + 1) issues.push('hero-split-overlap');
   if (miniChart.right > hero.right + 1) issues.push('hero-chart-overflow');
   for (const sel of ['.balance-value', '#heroTokens', '#heroTokensContext', '#heroMeta', '#subtotalPill']) {
     const el = document.querySelector(sel);
@@ -175,8 +199,13 @@ for (const width of [304, 320, 336, 364, 380, 480]) {
   if (period.some(clipped)) issues.push('period-clipped');
   const brand = document.querySelector('.brand-group').getBoundingClientRect();
   const actions = document.querySelector('.top-actions').getBoundingClientRect();
+  const scope = document.getElementById('scopeBtn').getBoundingClientRect();
   const sameRow = brand.top < actions.bottom && brand.bottom > actions.top;
   if ((sameRow && brand.right > actions.left + 1) || actions.right > window.innerWidth + 1) issues.push('topbar');
+  if (clipped(document.getElementById('scopeLabel'))) issues.push('scope-label-clipped');
+  if (scope.right > window.innerWidth + 1) issues.push('scope-overflow');
+  const footer = document.getElementById('opsBar');
+  if (footer.scrollWidth > footer.clientWidth + 1) issues.push('footer-overflow');
 
   // summary strip
   const cells = [...document.querySelectorAll('.summary-cell')];

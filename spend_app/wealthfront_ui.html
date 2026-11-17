@@ -67,6 +67,10 @@
   --danger-bg: #feecef;
   --danger-border: rgba(217, 56, 72, 0.22);
   --danger-quiet-bg: #fff5f6;
+  --danger-ink: #b4232f;
+  --lane-name: 62px;
+  --lane-pct: 40px;
+  --lane-gap: 8px;
   --border: rgba(24, 23, 43, 0.075);
   --border-input: rgba(24, 23, 43, 0.15);
   --divider: #f0f0f6;
@@ -168,6 +172,7 @@ html[data-theme="dark"] {
   --danger-bg: #331b22;
   --danger-border: rgba(240, 122, 134, 0.32);
   --danger-quiet-bg: #2a1a20;
+  --danger-ink: #f6a1aa;
   --border: rgba(255, 255, 255, 0.075);
   --border-input: rgba(255, 255, 255, 0.15);
   --divider: #232530;
@@ -491,10 +496,6 @@ button, input {
   transform: scale(0.92);
 }
 
-.icon-btn.pin-btn.active {
-  background: var(--accent-soft);
-  color: var(--accent);
-}
 
 .icon-btn.close-btn:hover {
   background: var(--danger-bg);
@@ -537,39 +538,15 @@ button, input {
   border-bottom: 1px solid var(--border);
 }
 
-.hero-inner {
-  max-width: 520px;
-  margin: 0 auto;
-}
 
-.hero-top-split {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 134px;
-  gap: 10px;
-  align-items: end;
-  margin-bottom: 6px;
-}
 
-.hero-main {
-  min-width: 0;
-}
 
-.eyebrow {
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--ink-secondary);
-  margin-bottom: 1px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
 
-.balance-row {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  flex-wrap: wrap;
-}
+
+
+
+
+
 
 .balance-value {
   font-family: var(--display);
@@ -805,11 +782,7 @@ button, input {
   padding: 8px 12px 4px;
 }
 
-.card-title-wrap {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-}
+
 
 .card-title {
   font-family: var(--display);
@@ -819,11 +792,7 @@ button, input {
   color: var(--ink);
 }
 
-.card-hint {
-  font-size: 10.5px;
-  font-weight: 500;
-  color: var(--ink-tertiary);
-}
+
 
 .card-subtitle {
   font-size: 10.5px;
@@ -833,78 +802,50 @@ button, input {
   color: var(--ink-tertiary);
 }
 
-/* Two-Column Reorderable Provider Tile Grid */
-.providers-section {
-  display: grid;
-  gap: 5px;
-  min-width: 0;
-}
-
-.providers-section > .card-header {
-  padding: 0 2px;
-}
-
+/* Limits: one group per provider or profile, stacked inside the Limits card */
 .providers-section.is-onboarding {
-  display: block;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 13px;
-  box-shadow: var(--shadow-card);
-  overflow: hidden;
+  padding: 0;
+  gap: 0;
 }
 
-.providers-section.is-onboarding > .card-header {
-  padding: 8px 12px 4px;
+.providers-section.is-onboarding > .sh {
+  padding: 12px 14px 4px;
 }
 
 .provider-list {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  grid-auto-flow: row dense;
-  gap: 6px;
+  display: flex;
+  flex-direction: column;
   position: relative;
+  min-width: 0;
+}
+
+.provider-list > .empty-state {
+  padding: 14px 4px;
 }
 
 .providers-section.is-onboarding .provider-list {
   display: block;
 }
 
-.provider-list > .empty-state {
-  grid-column: 1 / -1;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 13px;
-  box-shadow: var(--shadow-card);
-}
-
 .providers-section.is-onboarding .provider-list > .empty-state {
-  background: transparent;
-  border: none;
-  border-radius: 0;
-  box-shadow: none;
+  padding: 18px 14px;
 }
 
 .provider-item {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 11px;
-  box-shadow: var(--shadow-card);
   position: relative;
   will-change: transform;
   display: flex;
   flex-direction: column;
+  gap: 6px;
   min-width: 0;
-  overflow: hidden;
-  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+  padding: 9px 0 10px;
+  border-top: 1px solid var(--divider);
+  background: var(--surface);
 }
 
-body:not(.dragging-active) .provider-item:hover {
-  border-color: var(--accent-border);
-}
-
-.provider-item.open {
-  grid-column: 1 / -1;
-  border-color: var(--accent-border);
+.provider-item:first-child {
+  border-top: none;
+  padding-top: 2px;
 }
 
 .provider-item.enter-anim {
@@ -919,7 +860,7 @@ body:not(.dragging-active) .provider-item:hover {
 .provider-item.dragging {
   z-index: 45;
   border-radius: 11px;
-  border-color: var(--accent-border);
+  padding: 9px 10px 10px;
   box-shadow: var(--shadow-drag);
   background: var(--surface-raised);
 }
@@ -927,73 +868,42 @@ body:not(.dragging-active) .provider-item:hover {
 .provider-row {
   position: relative;
   width: 100%;
-  flex: 1;
   border: none;
   background: transparent;
-  padding: 8px 9px;
-  display: grid;
-  grid-template-rows: 1fr auto auto auto;
-  gap: 5px;
+  padding: 2px 0;
+  border-radius: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
   text-align: left;
   cursor: pointer;
   transition: background 0.18s ease;
   touch-action: none;
 }
 
-.provider-item.open > .provider-row {
-  padding: 9px 11px 7px;
-}
-
 body:not(.dragging-active) .provider-row:hover {
   background: var(--row-hover);
 }
 
-.tile-top {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  min-width: 0;
-}
-
 .tile-ident {
-  flex: 1;
-  min-width: 0;
+  flex: 1 1 7em;
+  min-width: 7em;
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  gap: 2px 4px;
+  align-items: baseline;
+  gap: 0 7px;
 }
 
 .tile-affordance {
-  position: absolute;
-  top: 6px;
-  right: 6px;
   display: inline-flex;
   align-items: center;
   gap: 2px;
+  flex-shrink: 0;
+  margin-left: auto;
   padding: 1px 2px;
   border-radius: 6px;
-  background: var(--surface);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.16s ease, background 0.18s ease;
-}
-
-body:not(.dragging-active) .provider-row:hover .tile-affordance {
-  background: var(--row-hover);
-  opacity: 0.92;
-}
-
-.provider-row:focus-visible .tile-affordance,
-.provider-item.dragging .tile-affordance {
-  opacity: 0.95;
-}
-
-.provider-item.open .tile-affordance {
-  position: static;
-  margin-left: auto;
-  flex-shrink: 0;
-  opacity: 0.95;
 }
 
 .drag-grip {
@@ -1011,6 +921,7 @@ body:not(.dragging-active) .provider-row:hover .tile-affordance {
 }
 
 body:not(.dragging-active) .provider-row:hover .drag-grip,
+.provider-row:focus-visible .drag-grip,
 .provider-item.dragging .drag-grip {
   opacity: 0.65;
   transform: translateX(0);
@@ -1029,12 +940,6 @@ body:not(.dragging-active) .provider-row:hover .drag-grip,
   transition: transform 0.22s var(--spring);
 }
 
-.provider-item.open .logo-badge {
-  width: 26px;
-  height: 26px;
-  margin-top: 0;
-}
-
 body:not(.dragging-active) .provider-row:hover .logo-badge {
   transform: scale(1.05);
 }
@@ -1043,11 +948,6 @@ body:not(.dragging-active) .provider-row:hover .logo-badge {
   width: 11.5px;
   height: 11.5px;
   display: block;
-}
-
-.provider-item.open .logo-badge svg {
-  width: 13.5px;
-  height: 13.5px;
 }
 
 .live-pip {
@@ -1073,10 +973,6 @@ body:not(.dragging-active) .provider-row:hover .logo-badge {
   max-width: 100%;
 }
 
-.provider-item.open .provider-name {
-  font-size: 12.5px;
-}
-
 .acct-tag {
   font-size: 10.5px;
   font-weight: 650;
@@ -1094,98 +990,13 @@ body:not(.dragging-active) .provider-row:hover .logo-badge {
   border: 1px solid var(--border);
 }
 
-.tile-figures {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 4px;
-  min-width: 0;
-}
-
-/* Smooth Dual-Layer Sub-Slot: Default summary <-> Burned Tokens (hover/focus) */
-.provider-sub-slot {
-  position: relative;
-  height: 15px;
-  overflow: hidden;
-  min-width: 0;
-}
-
-.sub-default,
-.sub-hover {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  transition: opacity 0.2s var(--spring), transform 0.22s var(--spring);
-}
-
-.sub-default {
-  opacity: 1;
-  transform: translateY(0);
-}
-
-.sub-hover {
-  opacity: 0;
-  transform: translateY(6px);
-  pointer-events: none;
-}
-
-body:not(.dragging-active) .provider-row:hover .sub-default {
-  opacity: 0;
-  transform: translateY(-6px);
-}
-
-body:not(.dragging-active) .provider-row:hover .sub-hover {
-  opacity: 1;
-  transform: translateY(0);
-}
-
-.rem-track {
-  height: 3.5px;
-  width: 100%;
-  background: var(--track);
-  border-radius: 999px;
-  overflow: hidden;
-  flex-shrink: 0;
-}
-
-.rem-track.rem-track-idle {
-  background: transparent;
-}
-
-.rem-fill {
-  display: block;
-  height: 100%;
-  border-radius: 999px;
-  background: var(--accent);
-  transition: width 0.42s var(--spring), background-color 0.25s ease;
-}
-.rem-fill.tone-mint { background: var(--mint); }
-.rem-fill.tone-warn { background: var(--amber); }
-.rem-fill.tone-danger { background: var(--danger); }
-.rem-fill.tone-muted { background: var(--track-muted); }
-
 .provider-sub {
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--ink-secondary);
-  font-variant-numeric: tabular-nums lining-nums;
-  font-feature-settings: "tnum" 1, "lnum" 1;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.burn-summary {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--ink-secondary);
-  font-size: 10.5px;
-  font-variant-numeric: tabular-nums lining-nums;
-  font-feature-settings: "tnum" 1, "lnum" 1;
 }
 
 .provider-rem {
@@ -1199,19 +1010,8 @@ body:not(.dragging-active) .provider-row:hover .sub-hover {
 }
 .provider-rem.tone-mint { color: var(--mint); }
 .provider-rem.tone-warn { color: var(--warn); }
-.provider-rem.tone-danger { color: var(--danger); }
+.provider-rem.tone-danger { color: var(--danger-ink); }
 .provider-rem.tone-muted { color: var(--ink-secondary); font-weight: 620; }
-
-.provider-rem-sub {
-  font-size: 10.5px;
-  color: var(--ink-tertiary);
-  font-variant-numeric: tabular-nums lining-nums;
-  font-feature-settings: "tnum" 1, "lnum" 1;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
-}
 
 .chevron {
   color: var(--ink-tertiary);
@@ -2077,14 +1877,6 @@ input:focus-visible { outline-offset: 1px; }
   opacity: 0.65;
   transform: translateX(0);
 }
-.provider-row:focus-visible .sub-default {
-  opacity: 0;
-  transform: translateY(-6px);
-}
-.provider-row:focus-visible .sub-hover {
-  opacity: 1;
-  transform: translateY(0);
-}
 
 .update-dot {
   position: absolute;
@@ -2320,20 +2112,13 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
   flex: 1 1 150px;
   min-width: 0;
 }
-#h11SourcesScanCard .toggle-title,
-#h11SourcesScanCard .toggle-sub,
+
 #h11SourcesScanCard .source-name,
 #h11SourcesScanCard .source-meta,
-#h11NotificationsCard .toggle-title,
-#h11NotificationsCard .toggle-sub,
 #h11NotificationsCard .source-name,
 #h11NotificationsCard .source-meta,
-#h11DiagnosticsCard .toggle-title,
-#h11DiagnosticsCard .toggle-sub,
 #h11DiagnosticsCard .source-name,
 #h11DiagnosticsCard .source-meta,
-#h11SyncCard .toggle-title,
-#h11SyncCard .toggle-sub,
 #h11SyncCard .source-name,
 #h11SyncCard .source-meta {
   min-width: 0;
@@ -2581,14 +2366,7 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
   gap: 8px;
   min-width: 0;
 }
-.h11-inline-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  flex-wrap: wrap;
-  min-width: 0;
-}
+
 .h11-diag-text {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 11px;
@@ -2775,81 +2553,29 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
 /* Narrow window (min width is 336px; 304px is the floor we still fit): shrink the mini chart
    and stack into a single column at or below 350px so no provider subtitle ever clips. */
 @media (max-width: 350px) {
-  .card-hint { display: none; }
-  .hero-top-split {
-    grid-template-columns: minmax(0, 1fr) 114px;
-    gap: 8px;
-  }
+
+
   .balance-value { font-size: 24px; }
   .provider-list {
     grid-template-columns: minmax(0, 1fr);
   }
 }
-@media (max-width: 320px) {
-  .hero-top-split {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 5px;
-  }
-}
-
 /* H10 ops/hud */
-.ops-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 12px 6px;
-  background: var(--bg-hero);
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-.ops-bar[hidden],
 .scroll-body[hidden],
 html.is-diagnostics #opsBar,
 html.is-diagnostics #scrollBody { display: none !important; }
-.ops-seg {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  min-height: 24px;
-  padding: 2px;
-  border-radius: 999px;
-  background: var(--seg-bg);
-  border: 1px solid var(--border);
-}
-.ops-seg-btn {
-  border: none;
-  background: transparent;
-  color: var(--ink-secondary);
-  font-size: 10.5px;
-  font-weight: 600;
-  line-height: 1.2;
-  min-height: 18px;
-  padding: 1.5px 7.5px;
-  border-radius: 999px;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
-}
-.ops-seg-btn:hover { color: var(--ink); }
-.ops-seg-btn.active {
-  background: var(--seg-thumb);
-  color: var(--ink);
-  font-weight: 680;
-  box-shadow: var(--seg-shadow);
-}
 .ops-pill {
   position: relative;
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  min-height: 24px;
-  padding: 2px 8px;
-  border-radius: 999px;
+  min-height: 28px;
+  padding: 2px 12px;
+  border-radius: 9px;
   border: 1px solid var(--border);
-  background: var(--surface-subtle);
-  color: var(--ink-secondary);
-  font-size: 10.5px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 12px;
   font-weight: 600;
   line-height: 1.2;
   cursor: pointer;
@@ -2878,77 +2604,8 @@ html.is-diagnostics #scrollBody { display: none !important; }
 .ops-pill.has-warn .ops-dot { display: inline-block; background: var(--warn); }
 .ops-pill.has-alarm .ops-dot { display: inline-block; background: var(--danger); }
 
-.hud-mini-bar {
-  display: none;
-  gap: 6px;
-  padding: 10px 12px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 13px;
-  box-shadow: var(--shadow-card);
-  cursor: pointer;
-  text-align: left;
-  width: 100%;
-  color: inherit;
-}
-.hud-mini-bar:hover { border-color: var(--accent-border); background: var(--row-hover); }
-.hud-mini-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; }
-.hud-mini-spend-wrap { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
-.hud-mini-today {
-  font-family: var(--display);
-  font-size: 20px;
-  font-weight: 750;
-  letter-spacing: -0.025em;
-  line-height: 1.05;
-  color: var(--ink);
-  font-variant-numeric: tabular-nums lining-nums;
-}
-.hud-mini-today-lbl { font-size: 11px; font-weight: 500; color: var(--ink-secondary); }
-.hud-mini-live {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 7px;
-  border-radius: 999px;
-  background: var(--mint-bg);
-  color: var(--mint);
-  font-size: 10.5px;
-  font-weight: 650;
-  white-space: nowrap;
-}
-.hud-mini-lead-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  min-width: 0;
-  padding-top: 4px;
-  border-top: 1px solid var(--divider);
-}
-.hud-mini-lead {
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--ink-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-}
-.hud-mini-pct { font-size: 11.5px; font-weight: 700; white-space: nowrap; flex-shrink: 0; }
-.hud-mini-pct.tone-mint { color: var(--mint); }
-.hud-mini-pct.tone-warn { color: var(--warn); }
-.hud-mini-pct.tone-danger { color: var(--danger); }
-.hud-mini-pct.tone-accent { color: var(--accent); }
-
-html.is-mini #heroSection,
-html.is-mini #providersCard,
-html.is-mini #noticeBanner,
-html.is-mini #footerStatus { display: none !important; }
-html.is-mini .hud-mini-bar { display: grid; }
-
 .running-section { display: grid; gap: 5px; min-width: 0; }
 .running-section[hidden] { display: none !important; }
-.running-section > .card-header { padding: 0 2px; }
 .running-list {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -3038,14 +2695,9 @@ html.is-mini .hud-mini-bar { display: grid; }
 }
 .ops-dismiss-btn:hover { color: var(--ink); background: var(--surface-raised); }
 
-html.is-comfortable .ops-bar { padding: 6px 14px 8px; gap: 6px; }
-html.is-comfortable .ops-pill { min-height: 28px; padding: 3px 10px; font-size: 11px; }
-html.is-comfortable .ops-seg { min-height: 28px; }
-html.is-comfortable .ops-seg-btn { min-height: 22px; padding: 2.5px 9px; font-size: 11px; }
-html.is-comfortable .section-stack { gap: 12px; padding: 12px 14px 18px; }
-html.is-comfortable .provider-row { padding: 11px 12px; gap: 7px; }
+html.is-comfortable .ops-pill { min-height: 32px; }
+html.is-comfortable .provider-item { padding: 12px 0 13px; }
 html.is-comfortable .running-row { padding: 11px 12px; gap: 10px; }
-html.is-comfortable .hud-mini-bar { padding: 13px 14px; gap: 9px; }
 html.is-comfortable .quick-plan-banner { padding: 11px 12px; }
 
 .diagnostics-view {
@@ -3173,16 +2825,10 @@ html.is-comfortable .quick-plan-banner { padding: 11px 12px; }
 .h9-more-btn[hidden] {
   display: none !important;
 }
-html.is-mini #h9AnalyticsSection,
-html.is-mini #h9DetailView {
-  display: none !important;
-}
 .section-stack {
   grid-template-columns: minmax(0, 1fr);
 }
-.hero-inner {
-  min-width: 0;
-}
+
 .h9-period-row {
   display: flex;
   align-items: center;
@@ -3242,7 +2888,7 @@ html.is-mini #h9DetailView {
   margin-top: 5px;
   min-width: 0;
 }
-.h9-range-bar,
+
 .h9-tool-bar {
   display: flex;
   flex-wrap: wrap;
@@ -3251,7 +2897,7 @@ html.is-mini #h9DetailView {
   min-width: 0;
   max-width: 100%;
 }
-.h9-range-pill,
+
 .h9-tool-pill,
 .h9-mode-btn,
 .h9-back-btn,
@@ -3273,7 +2919,7 @@ html.is-mini #h9DetailView {
   white-space: nowrap;
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
-.h9-range-pill:hover,
+
 .h9-tool-pill:hover,
 .h9-mode-btn:hover,
 .h9-back-btn:hover,
@@ -3282,7 +2928,7 @@ html.is-mini #h9DetailView {
   background: var(--surface);
   border-color: var(--border-input);
 }
-.h9-range-pill.active,
+
 .h9-tool-pill.active,
 .h9-mode-btn.active {
   background: var(--accent-soft);
@@ -3971,7 +3617,6 @@ html.is-mini #h9DetailView {
 }
 .h9-model-card:hover {
   background: var(--row-hover);
-  border-color: var(--border-input);
 }
 .h9-model-card-top {
   display: flex;
@@ -4167,7 +3812,7 @@ html.is-mini #h9DetailView {
   }
 }
 @media (min-width: 720px) {
-  .hero-inner,
+  
   .section-stack,
   .h9-detail-view {
     max-width: 940px;
@@ -4189,6 +3834,322 @@ html.is-mini #h9DetailView {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
+
+/* D2 full window: 440 x 640, limits first */
+.scroll-body { background: var(--bg-canvas); }
+.section-stack {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: 12px;
+  padding: 12px;
+  max-width: 640px;
+}
+html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
+.section-stack > * { min-width: 0; }
+
+/* Cards read top to bottom in this order; the H9 analytics section dissolves into the stack so its cards can interleave */
+.h9-analytics-section,
+.h9-two-col { display: contents; }
+.h9-analytics-section[hidden] { display: none !important; }
+#noticeBanner { order: 0; }
+#errorBanner { order: 1; }
+#providersCard { order: 10; }
+#heroSection { order: 20; }
+#runningNowCard { order: 30; }
+#h9ModelsCard { order: 40; }
+#h9WasteCard { order: 50; }
+#h9ForecastCard { order: 51; }
+#h9MixCard { order: 60; }
+#h9PriceCard { order: 61; }
+#h9HeatCard { order: 70; }
+#plansCard { order: 80; }
+#h9CoverageBanner { order: 90; }
+#h9KpiGrid { order: 91; }
+#h9ChartCard { order: 92; }
+#opsBar { order: 100; }
+#footerStatus { order: 101; }
+
+.sec,
+.h9-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  box-shadow: var(--shadow-card);
+  min-width: 0;
+  max-width: 100%;
+}
+.sh {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+.sec-title {
+  margin: 0;
+  font-family: var(--display);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+.sec-sub {
+  font-size: 11px;
+  color: var(--ink-secondary);
+  text-align: right;
+  min-width: 0;
+}
+.sec-hint {
+  margin: -4px 0 0;
+  font-size: 10.5px;
+  color: var(--ink-tertiary);
+}
+.sec-hint[hidden] { display: none; }
+.h9-card-title { font-size: 14px; font-weight: 700; }
+.h9-card-sub { font-size: 11px; }
+
+/* Title bar */
+.topbar {
+  padding: 0 8px 0 14px;
+  min-height: 46px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.topbar .icon-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+}
+.scope-trigger {
+  height: 28px;
+  padding: 0 9px;
+  border-radius: 8px;
+  background: var(--surface);
+  font-size: 11.5px;
+}
+.brand-title { font-size: 13px; }
+
+/* Today */
+.sec.hero {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 12px 14px;
+}
+.hv {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+  min-width: 0;
+}
+.hv .balance-value { font-size: 34px; font-weight: 800; letter-spacing: -0.03em; line-height: 1; }
+.hv .hero-stats { margin-top: 0; min-width: 0; }
+.hv .stat-primary { font-size: 12px; font-weight: 500; color: var(--ink-secondary); }
+.sec.hero .chart-wrap { height: 64px; }
+.sec.hero .hero-mini-chart { gap: 3px; }
+.sec.hero .summary-grid.hero-summary { margin-top: 2px; padding: 9px 0 0; gap: 8px; }
+.sec.hero .summary-val { font-size: 18px; font-weight: 800; }
+.sec.hero .summary-label,
+.sec.hero .summary-note { font-size: 11px; color: var(--ink-secondary); }
+
+/* Limits */
+.providers-section { gap: 6px; }
+.ticks {
+  position: relative;
+  height: 14px;
+  margin: 4px calc(var(--lane-pct) + var(--lane-gap)) 0 calc(var(--lane-name) + var(--lane-gap));
+  font-size: 10.5px;
+  color: var(--ink-tertiary);
+}
+.ticks[hidden] { display: none; }
+.ticks span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.ticks span.is-first { transform: none; }
+.ticks span.is-last { transform: translateX(-100%); }
+@media (max-width: 420px) {
+  /* on a narrow track the 6h label would sit on top of "now" */
+  .ticks span:nth-child(2) { display: none; }
+}
+
+.logo-badge {
+  width: 24px;
+  height: 24px;
+  margin-top: 0;
+  border-radius: 7px;
+}
+.logo-badge svg { width: 13px; height: 13px; }
+.provider-name {
+  font-size: 13px;
+  font-weight: 700;
+  /* "Claude Code · Primary" wraps on a narrow window instead of being cut off */
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+}
+.tag {
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 999px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.tag.soon { color: var(--danger-ink); background: var(--danger-bg); }
+.tag.warn { color: var(--warn); background: var(--warn-bg); }
+
+.lanes { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.lane {
+  display: grid;
+  grid-template-columns: var(--lane-name) minmax(0, 1fr) var(--lane-pct);
+  column-gap: var(--lane-gap);
+  row-gap: 1px;
+  align-items: center;
+  min-width: 0;
+}
+.lane-name { font-size: 11.5px; font-weight: 600; line-height: 1.2; color: var(--ink-secondary); overflow-wrap: anywhere; }
+.lane-track { position: relative; height: 16px; min-width: 0; }
+.lane-base { position: absolute; left: 0; right: 0; top: 5px; height: 6px; border-radius: 3px; background: var(--track); }
+.lane-grid { position: absolute; top: 0; bottom: 0; width: 1px; margin-left: -0.5px; background: var(--divider); }
+.lane-use { position: absolute; left: 0; top: 4px; height: 8px; border-radius: 4px; background: var(--accent); }
+.lane-dry {
+  position: absolute;
+  top: 4px;
+  height: 8px;
+  border-radius: 4px;
+  border: 1px dashed var(--amber);
+  background: var(--surface);
+}
+.lane-dot { position: absolute; top: 4px; width: 8px; height: 8px; margin-left: -4px; border-radius: 50%; background: var(--amber); }
+.lane-refill { position: absolute; top: 0; width: 3px; height: 16px; margin-left: -1.5px; border-radius: 2px; background: var(--mint); }
+.lane.is-soon .lane-dry { border-color: var(--danger); }
+.lane.is-soon .lane-dot { background: var(--danger); }
+.lane-pct { font-size: 13px; font-weight: 800; text-align: right; color: var(--ink); }
+.lane.is-soon .lane-pct { color: var(--danger-ink); }
+.lane-note { grid-column: 2 / 4; font-size: 10.5px; color: var(--ink-secondary); }
+.lane.is-warn .lane-note { color: var(--warn); font-weight: 700; }
+.lane.is-soon .lane-note { color: var(--danger-ink); font-weight: 700; }
+.lane.is-muted .lane-name,
+.lane.is-muted .lane-pct,
+.lane.is-muted .lane-note { color: var(--ink-tertiary); }
+.lane.is-muted .lane-base { background: transparent; border: 1px dashed var(--track-muted); height: 6px; }
+.lane-track.is-plain .lane-use { background: var(--accent); }
+
+.balrow { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; }
+.balrow strong.provider-rem { font-size: 20px; font-weight: 800; }
+.balrow span { font-size: 11px; color: var(--ink-secondary); min-width: 0; }
+
+.leg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--divider);
+  font-size: 10.5px;
+  color: var(--ink-secondary);
+}
+.leg[hidden] { display: none; }
+.leg i { display: inline-block; width: 12px; height: 6px; margin-right: 4px; border-radius: 3px; vertical-align: 1px; }
+.leg .u { background: var(--accent); }
+.leg .d { border: 1px dashed var(--amber); background: var(--surface); }
+.leg .r { width: 3px; background: var(--mint); }
+
+.provider-item .drawer-collapse { margin-top: -2px; }
+.drawer-box { transform: none; }
+.burn-section-label.burn-first { border-top: none; padding-top: 0; }
+
+/* Running now, plans and the footer */
+.sec > .running-list { background: none; border: none; box-shadow: none; border-radius: 0; gap: 8px; }
+.running-row { padding: 0; }
+.running-row + .running-row { border-top: none; }
+.plans-section { display: none; }
+.plans-section.has-rows,
+.plans-section:has(> .quick-plan-banner:not([hidden])) { display: flex; }
+.plans { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; }
+.plans li { display: flex; justify-content: space-between; gap: 8px; }
+.plans li b { color: var(--ink-secondary); font-weight: 600; text-align: right; }
+.foot { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; padding: 2px 0 0; }
+.ops-pill .update-dot { position: static; flex-shrink: 0; }
+.ops-pill.has-update .update-dot { display: inline-block; }
+
+/* Cost by model: a compact list with the real tool logos */
+.logo-mini { width: 20px; height: 20px; border-radius: 6px; margin: 0; }
+.logo-mini svg { width: 11px; height: 11px; }
+.h9-model-card {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 9px;
+  background: none;
+  border: none;
+  border-radius: 8px;
+  padding: 5px 0;
+}
+.h9-model-main { display: grid; gap: 1px; min-width: 0; }
+.h9-model-main strong { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.h9-model-main small { font-size: 10.5px; color: var(--ink-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.h9-model-val { font-size: 12.5px; font-weight: 700; font-variant-numeric: tabular-nums lining-nums; }
+
+/* Loading skeleton and the empty limits card */
+.limits-skel { display: flex; flex-direction: column; gap: 9px; padding: 6px 0 4px; }
+.skel { display: block; background: var(--track); border-radius: 6px; animation: skeletonPulse 1.2s ease-in-out infinite; }
+.skel-group { display: flex; align-items: center; gap: 8px; padding-top: 6px; }
+.skel-logo { width: 24px; height: 24px; border-radius: 7px; flex-shrink: 0; }
+.skel-line { height: 10px; }
+.skel-bar { height: 8px; flex: 1; border-radius: 4px; }
+.skel-lane { display: flex; align-items: center; gap: 8px; }
+.skel-w40 { width: 40%; }
+.skel-w15 { width: var(--lane-name); flex-shrink: 0; }
+.limits-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border-radius: 11px;
+  background: var(--surface-subtle);
+  border: 1px dashed var(--border-input);
+}
+.limits-empty b { font-size: 13px; }
+.limits-empty span { font-size: 11.5px; color: var(--ink-secondary); }
+.limits-empty-link {
+  margin-top: 2px;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* Error banner: plain message plus its code; the values underneath stay, marked stale */
+.err-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  padding: 9px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--danger-ink);
+  font-size: 12px;
+  font-weight: 600;
+}
+.err-banner[hidden] { display: none; }
+.err-banner code { font-family: ui-monospace, "Cascadia Mono", monospace; font-size: 11px; font-weight: 700; }
+.err-banner small { flex-basis: 100%; font-size: 10.5px; font-weight: 500; }
+.is-stale .providers-section .provider-list,
+.is-stale .hero .hv,
+.is-stale .hero .hero-mini-chart { opacity: 0.6; }
 
 /* Reduced motion: no loops, no slides or springs; hero and chart snap */
 @media (prefers-reduced-motion: reduce) {
@@ -4235,7 +4196,7 @@ html.is-mini #h9DetailView {
 <div class="rz rz-se" data-edge="bottomright"></div>
 
 <div class="app-shell" id="appShell">
-  <!-- Frameless Header Bar -->
+  <!-- Frameless title bar -->
   <header class="topbar pywebview-drag-region" id="dragHeader">
     <div class="brand-group">
       <div class="brand-mark">
@@ -4257,21 +4218,12 @@ html.is-mini #h9DetailView {
     </button>
 
     <div class="top-actions">
-      <button class="icon-btn pin-btn" id="pinBtn" type="button" aria-label="Pin window above other apps" aria-pressed="false" title="Pin window above other apps">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6l-1 5 3 3v2H7v-2l3-3-1-5ZM12 13v8"/></svg>
-      </button>
       <button class="icon-btn" id="refreshBtn" type="button" title="Refresh usage &amp; live limits" aria-label="Refresh usage and live limits">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
           <path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/>
         </svg>
       </button>
-      <button class="icon-btn" id="settingsBtn" type="button" title="Settings &amp; Sources" aria-label="Settings and sources" aria-haspopup="dialog">
-        <span class="update-dot" id="updateDot" aria-hidden="true"></span>
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.08a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.08a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.08a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-        </svg>
-      </button>
-      <button class="icon-btn" id="minBtn" type="button" title="Minimize" aria-label="Minimize window">
+      <button class="icon-btn" id="tabBtn" type="button" title="Shrink to tab" aria-label="Shrink to tab">
         <svg width="12.5" height="12.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M5 12h14"/></svg>
       </button>
       <button class="icon-btn close-btn" id="closeBtn" type="button" title="Close" aria-label="Close window">
@@ -4280,53 +4232,61 @@ html.is-mini #h9DetailView {
     </div>
   </header>
 
-  <!-- H10 ops/hud -->
-  <div class="ops-bar" id="opsBar" role="toolbar" aria-label="HUD controls">
-    <button class="ops-pill" id="diagBtn" type="button" aria-label="Open diagnostics">
-      <span class="ops-dot" aria-hidden="true"></span>
-      <span>Diagnostics</span>
-    </button>
-    <button class="ops-pill" id="shareWeekBtn" type="button" aria-label="Copy weekly share card">Share week</button>
-    <div class="ops-seg" id="viewModeGroup" role="group" aria-label="Window view">
-      <button class="ops-seg-btn active" id="fullModeBtn" type="button" aria-pressed="true">Full</button>
-      <button class="ops-seg-btn" id="miniModeBtn" type="button" aria-pressed="false">Mini</button>
-    </div>
-    <button class="ops-pill" id="densityBtn" type="button" aria-pressed="false" aria-label="Spacing density">Density: Compact</button>
-  </div>
-
   <!-- Main scrollable feed -->
   <div class="scroll-body" id="scrollBody">
-    <section class="hero is-loading" id="heroSection" aria-busy="true">
-      <div class="hero-inner">
-        <div class="hero-top-split">
-          <div class="hero-main">
-            <div class="eyebrow">
-              <span id="heroEyebrow">API-equivalent value</span>
-            </div>
-            <div class="balance-row">
-              <div class="balance-value" id="heroValue">—</div>
-              <span class="subtotal-pill" id="subtotalPill" style="display:none" title="Some recorded events used models without a configured rate card">Subtotal</span>
-            </div>
-            <div class="hero-stats">
-              <div class="stat-primary">
-                <span id="heroTokens">Loading usage…</span>
-                <span class="muted" id="heroTokensContext"></span>
-              </div>
-              <div class="stat-secondary" id="heroMeta">Starting local tracker…</div>
-            </div>
-          </div>
+    <div class="section-stack" id="sectionStack">
+      <div class="notice-banner" id="noticeBanner"></div>
+      <div class="err-banner" id="errorBanner" role="alert" hidden></div>
 
-          <!-- Spend per interval (bars) and running total (line) -->
-          <div class="hero-mini-chart">
-            <div class="chart-wrap" id="chartWrap" tabindex="0" role="group" aria-label="Usage timeline. Use the left and right arrow keys to inspect each interval.">
-              <svg class="chart-svg" id="chartSvg" aria-hidden="true"></svg>
-              <div class="chart-empty" id="chartEmpty">No timeline</div>
+      <!-- Limits: one group per provider or profile, most urgent first -->
+      <section class="sec providers-section" id="providersCard" aria-label="Limits">
+        <div class="sh">
+          <h2 class="sec-title" id="providersTitle">Limits</h2>
+          <span class="sec-sub" id="providersSub">left now · when each refills</span>
+        </div>
+        <p class="sec-hint" id="providersHint" title="Focus a row and press Alt+Up or Alt+Down to move it">most urgent first · drag to sort · click for tokens</p>
+        <div class="ticks" id="limitTicks" aria-hidden="true" hidden></div>
+        <div class="provider-list" id="providerList">
+          <div class="limits-skel" role="status">
+            <span class="sr-only">Loading your AI providers…</span>
+            <div class="skel-group" aria-hidden="true"><i class="skel skel-logo"></i><i class="skel skel-line skel-w40"></i></div>
+            <div class="skel-lane" aria-hidden="true"><i class="skel skel-line skel-w15"></i><i class="skel skel-bar"></i></div>
+            <div class="skel-lane" aria-hidden="true"><i class="skel skel-line skel-w15"></i><i class="skel skel-bar"></i></div>
+            <div class="skel-group" aria-hidden="true"><i class="skel skel-logo"></i><i class="skel skel-line skel-w40"></i></div>
+            <div class="skel-lane" aria-hidden="true"><i class="skel skel-line skel-w15"></i><i class="skel skel-bar"></i></div>
+          </div>
+        </div>
+        <p class="leg" id="limitLegend" hidden><span><i class="u"></i>usable at this pace</span><span><i class="d"></i>dry before refill</span><span><i class="r"></i>refill</span></p>
+      </section>
+
+      <!-- Today: value, tokens, chart, range -->
+      <section class="sec hero is-loading" id="heroSection" aria-busy="true" aria-label="Spend">
+        <div class="sh">
+          <h2 class="sec-title" id="heroTitle">Today</h2>
+          <span class="sec-sub" id="heroEyebrow">API-equivalent value</span>
+        </div>
+        <div class="hv">
+          <div class="balance-value" id="heroValue">—</div>
+          <span class="subtotal-pill" id="subtotalPill" style="display:none" title="Some recorded events used models without a configured rate card">Subtotal</span>
+          <div class="hero-stats">
+            <div class="stat-primary">
+              <span id="heroTokens">Loading usage…</span>
+              <span class="muted" id="heroTokensContext"></span>
             </div>
-            <div class="chart-axis" aria-hidden="true"><span id="chartAxisStart"></span><span id="chartAxisEnd"></span></div>
+            <div class="stat-secondary" id="heroMeta">Starting local tracker…</div>
           </div>
         </div>
 
-        <!-- Wealthfront Time-Range Pills -->
+        <!-- Spend per interval (bars) and running total (line) -->
+        <div class="hero-mini-chart">
+          <div class="chart-wrap" id="chartWrap" tabindex="0" role="group" aria-label="Usage timeline. Use the left and right arrow keys to inspect each interval.">
+            <svg class="chart-svg" id="chartSvg" aria-hidden="true"></svg>
+            <div class="chart-empty" id="chartEmpty">No timeline</div>
+          </div>
+          <div class="chart-axis" aria-hidden="true"><span id="chartAxisStart"></span><span id="chartAxisEnd"></span></div>
+        </div>
+
+        <!-- Time-range pills -->
         <div class="h9-period-row">
           <div class="period-bar" id="periodBar">
             <div class="period-indicator" id="periodIndicator"></div>
@@ -4364,54 +4324,17 @@ html.is-mini #h9DetailView {
             <span class="summary-note" id="metricPlansNote">of plan cost</span>
           </div>
         </div>
-      </div>
-    </section>
-
-    <div class="section-stack">
-      <!-- H10 ops/hud -->
-      <button class="hud-mini-bar" id="hudMiniBar" type="button" aria-label="Compact summary. Click to expand full overview">
-        <div class="hud-mini-top">
-          <div class="hud-mini-spend-wrap">
-            <strong class="hud-mini-today" id="hudMiniToday">—</strong>
-            <span class="hud-mini-today-lbl">today</span>
-          </div>
-          <span class="hud-mini-live" id="hudMiniLive" hidden></span>
-        </div>
-        <div class="hud-mini-lead-row">
-          <span class="hud-mini-lead" id="hudMiniLead">All subscription limits healthy</span>
-          <span class="hud-mini-pct tone-accent" id="hudMiniPct">—</span>
-        </div>
-      </button>
-
-      <div class="quick-plan-banner" id="hudQuickPlan" role="region" aria-label="Suggested subscription plan" hidden></div>
-
-      <section class="running-section" id="runningNowCard" aria-label="Running now" hidden>
-        <div class="card-header">
-          <div class="card-title-wrap">
-            <span class="card-title">Running now</span>
-            <span class="card-hint" id="runningNowHint"></span>
-          </div>
-          <span class="card-subtitle" id="runningNowCount">0 live</span>
-        </div>
-        <div class="running-list" id="runningNowList"></div>
       </section>
 
-      <div class="notice-banner" id="noticeBanner"></div>
-
-      <!-- Providers Holdings Grid -->
-      <div class="providers-section" id="providersCard">
-        <div class="card-header">
-          <div class="card-title-wrap">
-            <span class="card-title" id="providersTitle">Providers</span>
-            <span class="card-hint" id="providersHint" title="Focus a row and press Alt+Up or Alt+Down to move it">drag to sort · click for limits</span>
-          </div>
-          <span class="card-subtitle" id="providersSub">Remaining</span>
+      <!-- H10 ops/hud -->
+      <section class="sec running-section" id="runningNowCard" aria-label="Running now" hidden>
+        <div class="sh">
+          <h2 class="sec-title">Running now</h2>
+          <span class="sec-sub" id="runningNowCount">0 live</span>
         </div>
-        <div class="provider-list" id="providerList">
-          <div class="empty-state">Loading your AI providers…</div>
-        </div>
-      </div>
-
+        <p class="sec-hint" id="runningNowHint" hidden></p>
+        <div class="running-list" id="runningNowList"></div>
+      </section>
       <!-- H9 analytics -->
       <section class="h9-analytics-section" id="h9AnalyticsSection" aria-label="Detailed spend analytics" hidden>
         <div class="h9-banner" id="h9CoverageBanner" data-state="quiet">
@@ -4517,7 +4440,7 @@ html.is-mini #h9DetailView {
         <div class="h9-two-col">
           <article class="h9-card" id="h9MixCard">
             <button type="button" class="h9-mix-toggle" id="h9MixToggle" aria-expanded="true" aria-controls="h9MixDetails">
-              <span class="h9-card-title">What you pay for</span>
+              <span class="h9-card-title">Token mix</span>
               <span class="h9-card-sub"><span id="h9MixSummary">—</span> <span id="h9MixCaret" aria-hidden="true">▲</span></span>
             </button>
             <div class="h9-mix-bar" id="h9MixBar"></div>
@@ -4538,7 +4461,7 @@ html.is-mini #h9DetailView {
 
         <article class="h9-card" id="h9ModelsCard">
           <div class="h9-card-head">
-            <span class="h9-card-title">Unit economics</span>
+            <span class="h9-card-title">Cost by model</span>
             <span class="h9-card-sub">Click a model for drilldown</span>
           </div>
           <div class="h9-table-head" id="h9ModelHead"></div>
@@ -4564,7 +4487,35 @@ html.is-mini #h9DetailView {
         </article>
       </section>
 
-      <div class="footer-note" id="footerStatus">Hover a provider for token burn · click for full limits</div>
+      <!-- Plans, with the quick plan suggestion when one is waiting -->
+      <section class="sec plans-section" id="plansCard" aria-label="Plans">
+        <div class="sh">
+          <h2 class="sec-title">Plans</h2>
+          <span class="sec-sub" id="plansSub"></span>
+        </div>
+        <div class="quick-plan-banner" id="hudQuickPlan" role="region" aria-label="Suggested subscription plan" hidden></div>
+        <ul class="plans" id="plansList"></ul>
+      </section>
+
+      <!-- H10 ops/hud -->
+      <div class="foot" id="opsBar" role="toolbar" aria-label="Window actions">
+        <button class="ops-pill" id="diagBtn" type="button" aria-label="Open diagnostics">
+          <span class="ops-dot" aria-hidden="true"></span>
+          <span>Diagnostics</span>
+        </button>
+        <button class="ops-pill" id="shareWeekBtn" type="button" aria-label="Copy weekly share card">Share week</button>
+        <button class="ops-pill pin-btn" id="pinBtn" type="button" aria-label="Pin window above other apps" aria-pressed="false" title="Pin window above other apps">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6l-1 5 3 3v2H7v-2l3-3-1-5ZM12 13v8"/></svg>
+          <span>Keep on top</span>
+        </button>
+        <button class="ops-pill" id="densityBtn" type="button" aria-pressed="false" aria-label="Spacing density">Density: Compact</button>
+        <button class="ops-pill" id="settingsBtn" type="button" title="Settings &amp; Sources" aria-label="Settings and sources" aria-haspopup="dialog">
+          <span class="update-dot" id="updateDot" aria-hidden="true"></span>
+          <span>Settings</span>
+        </button>
+      </div>
+
+      <div class="footer-note" id="footerStatus">Click a provider for its tokens and models</div>
     </div>
 
     <!-- H9 analytics detail view -->
@@ -4876,7 +4827,6 @@ const state = {
   version: "",
   update: null,
   /* H10 ops/hud */
-  hudMini: false,
   hudDensity: "compact",
   diagnosticsOpen: false,
   diagnostics: null,
@@ -5312,7 +5262,9 @@ function paintHeroText(data, animate = true) {
   const syncText = `${machineCount} ${machineCount === 1 ? "computer" : "computers"}${offline ? ` (${offline} offline)` : ""}`;
   document.getElementById("heroMeta").textContent = `${syncText} · ${freshness}`;
   document.getElementById("footerStatus").textContent =
-    `Hover a provider for token burn · click for full limits${data.timezone ? " · " + data.timezone : ""}`;
+    `Click a provider for its tokens and models${data.timezone ? " · " + data.timezone : ""}`;
+  document.getElementById("heroTitle").textContent =
+    ({ today: "Today", week: "Last 7 days", month: "This month", all: "All time" })[state.period] || "Spend";
 
   const warn = data.scope === "unavailable" || data.scope === "local-fallback";
   const badge = document.getElementById("liveBadge");
@@ -5322,6 +5274,423 @@ function paintHeroText(data, animate = true) {
     state.demo ? "Sample" :
     data.scope === "unavailable" ? "Offline" :
     data.scope === "local-fallback" ? "Local copy" : "Live";
+}
+
+/* ---------- Limits: one group per provider or profile, lanes with refill timelines ---------- */
+const LIMIT_NAMES = { "5h": "5-hour", weekly: "Weekly", monthly: "Monthly", balance: "Balance" };
+const LIMIT_TAGS = { out: "Out of quota", soon: "About to run out", warn: "Dry before refill" };
+const LEVEL_RANK = { out: 0, soon: 1, warn: 2, ok: 3, balance: 4, idle: 5 };
+const LIMIT_TICKS = [[6, "6h"], [24, "1d"], [72, "3d"]];
+const LIMIT_MIN_HORIZON_H = 96;
+
+function limitName(w) {
+  const k = String(w.limitKey || "");
+  if (LIMIT_NAMES[k]) return LIMIT_NAMES[k];
+  return String(w.label || w.shortLabel || "Limit").replace(/\s+window$/i, "");
+}
+
+function hoursUntil(iso) {
+  const ms = Date.parse(iso || "");
+  return Number.isFinite(ms) ? (ms - Date.now()) / 3600000 : null;
+}
+
+/* Coarse spans for lane notes: 40m, 2h, 32h, 5d */
+function fmtSpan(hours) {
+  if (hours < 1 && Math.round(hours * 60) < 60) return `${Math.max(1, Math.round(hours * 60))}m`;
+  if (hours < 1) return "1h";
+  if (hours < 48) return `${Math.round(hours)}h`;
+  return `${Math.round(hours / 24)}d`;
+}
+
+/* Piecewise time scale: the first day takes 45% of the track, days 1 to 3 take 10%, the rest share 45%. */
+function limitX(hours, horizon) {
+  if (!(hours > 0)) return 0;
+  if (hours <= 24) return 0.45 * hours / 24;
+  if (hours <= 72) return 0.45 + 0.10 * (hours - 24) / 48;
+  return Math.min(1, 0.55 + 0.45 * (hours - 72) / Math.max(1, horizon - 72));
+}
+
+function limitHorizon(providers) {
+  let max = LIMIT_MIN_HORIZON_H;
+  for (const p of providers) {
+    for (const w of (p.windows || [])) {
+      const h = hoursUntil(w.resetsAt);
+      if (h !== null && h > max) max = h;
+    }
+  }
+  return max;
+}
+
+const pctStyle = (frac) => `${(Math.max(0, Math.min(1, frac)) * 100).toFixed(2)}%`;
+
+function renderLimitTicks(horizon) {
+  const marks = [[0, "now"], ...LIMIT_TICKS, [horizon, fmtSpan(horizon)]];
+  return marks.map(([h, label], i) =>
+    `<span class="${i === 0 ? "is-first" : i === marks.length - 1 ? "is-last" : ""}" style="left:${pctStyle(limitX(h, horizon))}">${esc(label)}</span>`
+  ).join("");
+}
+
+function laneGridHtml(horizon) {
+  return [...LIMIT_TICKS.map(t => t[0]), horizon]
+    .map(h => `<i class="lane-grid" style="left:${pctStyle(limitX(h, horizon))}"></i>`).join("");
+}
+
+function paceOf(w) {
+  const pace = w && w.pace && typeof w.pace === "object" ? w.pace : null;
+  if (!pace || (pace.state !== "tight" && pace.state !== "dry")) return null;
+  return Number.isFinite(Number(pace.hoursToDry)) ? pace : null;
+}
+
+function renderLane(w, horizon) {
+  const name = limitName(w);
+  const hasPct = !w.unavailable && w.remainingPct !== null && w.remainingPct !== undefined && Number.isFinite(Number(w.remainingPct));
+  if (!hasPct) {
+    const why = String(w.reason || "").trim() || "Awaiting reading";
+    return `
+      <div class="lane is-muted" data-limit="${esc(w.limitKey || "")}">
+        <span class="lane-name">${esc(name)}</span>
+        <div class="lane-track" role="img" aria-label="${esc(name)}: ${esc(why)}"><i class="lane-base"></i></div>
+        <b class="lane-pct">—</b>
+        <span class="lane-note">${esc(why)}</span>
+      </div>`;
+  }
+  const rem = Math.max(0, Math.min(100, Number(w.remainingPct)));
+  const resetH = hoursUntil(w.resetsAt);
+  const pace = paceOf(w);
+  const hasClock = resetH !== null && resetH > 0;
+  const refillFrac = hasClock ? limitX(resetH, horizon) : null;
+  const notes = [];
+  let tone = rem <= 10 ? "is-soon" : "";
+  let track;
+
+  if (w.unit === "credits" && w.remainingCredits !== null && w.remainingCredits !== undefined) {
+    notes.push(`${fmtCredits(w.remainingCredits)} cr left`);
+  }
+  if (!hasClock) {
+    /* No reset time to place on the clock: show the plain share left. */
+    track = `<i class="lane-base"></i><i class="lane-use" style="width:${rem.toFixed(1)}%"></i>`;
+    if (!pace && (w.runway || w.forecast)) notes.push(w.runway || w.forecast);
+  } else if (pace) {
+    const hd = Number(pace.hoursToDry);
+    const dryAt = Math.min(hd, resetH);
+    const dryFrac = limitX(dryAt, horizon);
+    tone = (hd <= 2 || rem <= 10) ? "is-soon" : "is-warn";
+    notes.push(`Dry in ~${fmtSpan(hd)}`, `refills in ${fmtSpan(resetH)}`);
+    track = `<i class="lane-base"></i>
+      <i class="lane-use" style="width:${pctStyle(Math.max(dryFrac, 0.012))}"></i>
+      <i class="lane-dry" style="left:${pctStyle(dryFrac)};width:${pctStyle(Math.max(0, refillFrac - dryFrac))}"></i>
+      <i class="lane-dot" style="left:${pctStyle(dryFrac)}"></i>
+      <i class="lane-refill" style="left:${pctStyle(refillFrac)}"></i>`;
+  } else {
+    notes.push(rem <= 0 ? `Out · refills in ${fmtSpan(resetH)}` : `Refills in ${fmtSpan(resetH)}`);
+    /* An older service sends only its text forecast: show it as is, derive nothing. */
+    if (w.runway || w.forecast) notes.push(w.runway || w.forecast);
+    track = `<i class="lane-base"></i>
+      <i class="lane-use" style="width:${pctStyle(Math.max(refillFrac, 0.012))}"></i>
+      <i class="lane-refill" style="left:${pctStyle(refillFrac)}"></i>`;
+  }
+  const note = notes.join(" · ");
+  const label = `${name}: ${Math.round(rem)}% left${note ? ". " + note : ""}`;
+  return `
+    <div class="lane ${tone}" data-limit="${esc(w.limitKey || "")}">
+      <span class="lane-name">${esc(name)}</span>
+      <div class="lane-track${hasClock ? "" : " is-plain"}" role="img" aria-label="${esc(label)}">${hasClock ? laneGridHtml(horizon) : ""}${track}</div>
+      <b class="lane-pct">${Math.round(rem)}%</b>
+      ${note ? `<span class="lane-note">${esc(note)}</span>` : ""}
+    </div>`;
+}
+
+function fundsRunwayText(prov, w) {
+  const f = prov.fundsRunwayInfo;
+  if (f && typeof f === "object") {
+    if (f.state === "estimate" && Number.isFinite(Number(f.days))) return `runway ~${fmtSpan(Number(f.days) * 24)} at recent pace`;
+    if (f.state === "learning") return "runway after a day of readings";
+    if (f.state === "idle") return "no recent spend";
+  }
+  return (w && (w.runway || w.forecast)) || (prov.remaining && prov.remaining.summary) || "";
+}
+
+function renderBalanceRow(prov, w) {
+  const bal = Number(w.remainingUsd);
+  const tone = bal < 1 ? "danger" : bal < 5 ? "warn" : "mint";
+  const runway = fundsRunwayText(prov, w);
+  return `
+    <div class="balrow" data-limit="${esc(w.limitKey || "balance")}">
+      <strong class="provider-rem tone-${tone}">${esc(fmtMoney(bal, true, true))}</strong>
+      <span>balance left${runway ? ` · ${esc(runway)}` : ""}</span>
+    </div>`;
+}
+
+/* An idle or unavailable provider: a muted lane that says why. */
+function renderIdleRow(prov) {
+  const rem = prov.remaining || {};
+  const why = String(rem.summary || rem.headline || "").trim() || "Awaiting reading";
+  return `
+    <div class="lane is-muted">
+      <span class="lane-name">${esc(rem.headline || "Idle")}</span>
+      <div class="lane-track" role="img" aria-label="${esc(why)}"><i class="lane-base"></i></div>
+      <b class="lane-pct">—</b>
+      <span class="lane-note">${esc(why)}</span>
+    </div>`;
+}
+
+/* Anything to read a limit or a balance from: a measured window, funds, or an older service's headline. */
+function hasReading(prov) {
+  const measured = (prov.windows || []).some(w => !w.unavailable && (finiteOrNull(w.remainingPct) !== null || (w.unit === "usd" && finiteOrNull(w.remainingUsd) !== null)));
+  const kind = prov.remaining && prov.remaining.kind;
+  return measured || finiteOrNull(prov.fundsRemainingUsd) !== null || kind === "quota" || kind === "balance";
+}
+
+function renderUsageRow(prov) {
+  const rem = prov.remaining || {};
+  const cd = fmtCountdown(rem.resetsAt);
+  const sub = cd ? `${rem.sub || ""} · ${cd}` : (rem.sub || "");
+  const tone = rem.tone || "accent";
+  const text = String(prov.key || "").startsWith("opencode-provider:")
+    ? "Usage recorded by OpenCode. No provider allowance is connected."
+    : (rem.summary || "Pay-as-you-go telemetry feed — no fixed subscription cap.");
+  return `
+    <div class="balrow">
+      <strong class="provider-rem tone-${esc(tone)}">${esc(rem.headline || "—")}</strong>
+      <span>${esc([sub, text].filter(Boolean).join(" · "))}</span>
+    </div>`;
+}
+
+/* Providers that can have several profiles; a profile's key is the family key plus "-<name>" (claude-code-work). */
+const PROFILE_FAMILIES = ["claude-code", "opencode-go", "zcode", "codex", "antigravity", "grok", "muse"];
+
+function profileFamily(key) {
+  const text = String(key || "");
+  for (const family of PROFILE_FAMILIES) {
+    if (text === family || text.startsWith(family + "-")) return family;
+  }
+  return text;
+}
+
+const finiteOrNull = (v) => (v !== null && v !== undefined && v !== "" && Number.isFinite(Number(v))) ? Number(v) : null;
+
+/* The window a provider is graded on: the one that runs dry soonest, else the one with the least left. */
+function focusWindow(prov) {
+  const measured = (prov.windows || []).filter(w => !w.unavailable && finiteOrNull(w.remainingPct) !== null);
+  if (!measured.length) return null;
+  const drying = measured.filter(w => paceOf(w));
+  if (drying.length) return drying.reduce((best, w) => Number(w.pace.hoursToDry) < Number(best.pace.hoursToDry) ? w : best);
+  return measured.reduce((best, w) => Number(w.remainingPct) < Number(best.remainingPct) ? w : best);
+}
+
+/* Order inside one urgency level: soonest to run dry, least left, smallest balance. */
+function limitSortKey(prov) {
+  const level = prov.urgency && prov.urgency.level;
+  const w = focusWindow(prov);
+  const isBalance = prov.isPayg || (prov.remaining && prov.remaining.kind === "balance");
+  const balance = isBalance ? finiteOrNull(prov.fundsRemainingUsd) : null;
+  return [
+    level in LEVEL_RANK ? LEVEL_RANK[level] : LEVEL_RANK.idle,
+    w && paceOf(w) ? Number(w.pace.hoursToDry) : Infinity,
+    w ? Number(w.remainingPct) : Infinity,
+    balance === null ? Infinity : balance
+  ];
+}
+
+/* Most urgent first, the profiles of one provider together at the spot of the most urgent one,
+   unless the owner has dragged the list into an order of their own. */
+function orderProviders(providers) {
+  const urgent = !state.providerOrder.length && providers.some(p => p.urgency && p.urgency.level in LEVEL_RANK);
+  if (!urgent) return { list: providers, byUrgency: false };
+  const cmp = (a, b) => {
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
+    return 0;
+  };
+  const sorted = providers.map((p, i) => ({ p, i, k: limitSortKey(p) })).sort((a, b) => cmp(a.k, b.k) || a.i - b.i).map(x => x.p);
+  const families = new Map();
+  for (const p of sorted) {
+    const fam = profileFamily(p.key);
+    if (!families.has(fam)) families.set(fam, []);
+    families.get(fam).push(p);
+  }
+  const list = [];
+  for (const p of sorted) {
+    const fam = profileFamily(p.key);
+    if (families.has(fam)) {
+      list.push(...families.get(fam));
+      families.delete(fam);
+    }
+  }
+  return { list, byUrgency: true };
+}
+
+function renderLimitGroup(prov, idx, horizon, doStagger) {
+  const key = String(prov.key || "");
+  const isOpen = state.expandedTools.has(key);
+  const burn = prov.burn || {};
+  const level = prov.urgency && prov.urgency.level ? String(prov.urgency.level) : "";
+  const windows = Array.isArray(prov.windows) ? prov.windows : [];
+  const models = Array.isArray(prov.models) ? prov.models : [];
+  const profile = prov.profile ? String(prov.profile) : "";
+  const title = profile ? `${prov.name || "Unknown provider"} · ${profile}` : (prov.name || "Unknown provider");
+  /* An older service names the profile only through the badge; keep showing it as a tag. */
+  const badge = prov.badge && prov.badge !== profile ? String(prov.badge) : "";
+  const badgeCls = (badge === "Primary" || badge === "Org API") ? "acct-tag neutral" : "acct-tag";
+  const plan = prov.plan === "PAYG" ? "Pay as you go" : String(prov.plan || "");
+  const tag = LIMIT_TAGS[level] ? `<span class="tag ${level === "warn" ? "warn" : "soon"}">${LIMIT_TAGS[level]}</span>` : "";
+
+  const dayValue = burn.dayTokens;
+  const hoverSummary = dayValue === null || dayValue === undefined
+    ? "No token data for today"
+    : Number(dayValue) === 0 ? "No tokens recorded today" : `Today: ${fmtTokens(dayValue)} tokens`;
+  const burnCells = [
+    ["Today", burn.dayTokens],
+    ...(burn.hasSession ? [["5-hour", burn.sessionTokens, "5-hour window"]] : []),
+    [burn.weekBasis === "window" ? "Weekly" : "7 days", burn.weekTokens, burn.weekBasis === "window" ? "Weekly window" : "Last 7 days"]
+  ];
+  const missingBurn = burnCells.some(([, value]) => value === null || value === undefined);
+  const periodLabel = ({today: "Today", week: "Last 7 days", month: "This month", all: "All time"})[state.period] || "Selected period";
+  const hasApiValue = prov.valueUsd !== null && prov.valueUsd !== undefined && Number(prov.valueUsd) > 0;
+  const chips = [];
+  if (Number(prov.tokens || 0) > 0) {
+    chips.push(["Fresh input", prov.input], ["Cached input", prov.cached], ["Output", prov.output]);
+    if (Number(prov.writes || 0) > 0) chips.push(["Cache writes", prov.writes]);
+    if (prov.reasoning !== null && prov.reasoning !== undefined) chips.push(["Reasoning", prov.reasoning, "Reasoning tokens (included in output)"]);
+  }
+
+  const lanes = [];
+  for (const w of windows) {
+    if (w.unit === "usd" && w.remainingUsd !== null && w.remainingUsd !== undefined) lanes.push(renderBalanceRow(prov, w));
+    else lanes.push(renderLane(w, horizon));
+  }
+  if (!windows.length) lanes.push((prov.remaining && prov.remaining.kind === "idle") ? renderIdleRow(prov) : renderUsageRow(prov));
+
+  const enterStyle = doStagger ? `style="animation-delay:${Math.min(idx * 26, 220)}ms"` : "";
+  return `
+    <div class="provider-item ${isOpen ? "open" : ""} ${doStagger ? "enter-anim" : ""}" data-key="${esc(key)}" data-level="${esc(level)}" ${enterStyle}>
+      <button class="provider-row" type="button" data-row-key="${esc(key)}" aria-expanded="${isOpen}" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" title="${esc(hoverSummary)}">
+        ${logoHtml(key, "logo-badge", !!prov.inUse)}
+        <span class="tile-ident">
+          <span class="provider-name">${esc(title)}</span>
+          ${prov.inUse ? '<span class="sr-only">Active now</span>' : ""}
+          ${plan ? `<span class="provider-sub">${esc(plan)}</span>` : ""}
+          ${badge ? `<span class="${badgeCls}">${esc(badge)}</span>` : ""}
+        </span>
+        ${tag}
+        <span class="tile-affordance" aria-hidden="true">
+          <span class="drag-grip" title="Drag to reorder">
+            <svg width="8" height="12" viewBox="0 0 10 16" fill="currentColor">
+              <circle cx="3" cy="3" r="1.25"/><circle cx="7" cy="3" r="1.25"/>
+              <circle cx="3" cy="8" r="1.25"/><circle cx="7" cy="8" r="1.25"/>
+              <circle cx="3" cy="13" r="1.25"/><circle cx="7" cy="13" r="1.25"/>
+            </svg>
+          </span>
+          <span class="chevron">
+            <svg width="11.5" height="11.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+          </span>
+        </span>
+      </button>
+      <div class="lanes">${lanes.join("")}</div>
+      <div class="drawer-collapse">
+        <div class="drawer-inner">
+          <div class="model-drawer">
+            <div class="drawer-box">
+              <div class="burn-section-label burn-first">Tokens recorded</div>
+              <div class="drawer-burn-strip">
+                ${burnCells.map(([lbl, val, full]) => `
+                  <div class="burn-stat" title="${esc(full || lbl)}">
+                    <span class="burn-stat-lbl">${esc(lbl)}</span>
+                    <span class="burn-stat-val">${esc(fmtTokens(val))}</span>
+                  </div>
+                `).join("")}
+              </div>
+              ${missingBurn ? `<div class="burn-note">&#8212; No reading available for this period</div>` : ""}
+              ${(chips.length || hasApiValue) ? `
+                <div class="burn-section-label">${esc(periodLabel)} breakdown</div>
+                <div class="breakdown-box">
+                  ${chips.length ? `
+                    <div class="breakdown-grid">
+                      ${chips.map(([lbl, v, tip]) => `
+                        <div class="breakdown-cell"${tip ? ` title="${esc(tip)}"` : ""}>
+                          <span class="breakdown-lbl">${esc(lbl)}</span>
+                          <strong class="breakdown-val">${fmtTokens(v || 0)}</strong>
+                        </div>
+                      `).join("")}
+                    </div>
+                  ` : ""}
+                  ${hasApiValue ? `
+                    <div class="api-equivalent${chips.length ? " has-sep" : ""}">
+                      <span>API equivalent (${esc(periodLabel)})</span>
+                      <strong>${esc(fmtMoney(prov.valueUsd, prov.complete !== false, true))}</strong>
+                    </div>
+                  ` : ""}
+                </div>
+              ` : ""}
+              ${models.length ? `
+                <div class="model-rows">
+                  ${models.map(m => `
+                    <div class="model-row">
+                      <span class="model-name">${esc(m.name || m.key || "Model")}</span>
+                      <span class="model-metrics">
+                        <span class="model-tok">${fmtTokens(m.tokens || 0)}</span>
+                        <span class="model-val">${esc(fmtMoney(m.valueUsd, m.complete !== false, true))}</span>
+                      </span>
+                    </div>
+                  `).join("")}
+                </div>
+              ` : ""}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+
+/* A failed refresh: the plain message and its code, with the last values kept and marked stale. */
+function loadErrorParts(res, fallback) {
+  const parts = h5NormalizeErr(res, fallback);
+  if (!parts.code) {
+    const m = parts.message.match(/\s*Error\s+([A-Z]{2,5}-\d{3})\s*$/);
+    if (m) return { code: m[1], message: parts.message.slice(0, m.index).trim() };
+  }
+  return parts;
+}
+
+function showLoadError(res, fallback) {
+  const { code, message } = loadErrorParts(res, fallback);
+  const stale = !!state.report;
+  const banner = document.getElementById("errorBanner");
+  banner.innerHTML = `<span>${esc(message)}</span>${code ? `<code>${esc(code)}</code>` : ""}${stale ? `<small>Showing the last known values.</small>` : ""}`;
+  banner.hidden = false;
+  document.getElementById("sectionStack").classList.toggle("is-stale", stale);
+}
+
+function clearLoadError() {
+  document.getElementById("errorBanner").hidden = true;
+  document.getElementById("sectionStack").classList.remove("is-stale");
+}
+
+function renderLimits(providers) {
+  const list = document.getElementById("providerList");
+  const doStagger = state.firstRender;
+  state.firstRender = false;
+  const focusedKey = list.contains(document.activeElement) ? document.activeElement.dataset.rowKey : null;
+  const { list: ordered, byUrgency } = orderProviders(providers);
+  const horizon = limitHorizon(ordered);
+  const isBalance = (w) => w.unit === "usd" && w.remainingUsd !== null && w.remainingUsd !== undefined;
+  const hasLanes = ordered.some(p => (p.windows || []).some(w => !isBalance(w)));
+  const ticks = document.getElementById("limitTicks");
+  ticks.innerHTML = hasLanes ? renderLimitTicks(horizon) : "";
+  ticks.hidden = !hasLanes;
+  document.getElementById("limitLegend").hidden = !hasLanes;
+  document.getElementById("providersHint").textContent =
+    `${byUrgency ? "most urgent first" : "your order"} · drag to sort · click for tokens`;
+  const emptyCard = !ordered.some(hasReading) ? `
+    <div class="limits-empty">
+      <b>Waiting for the first readings</b>
+      <span>Limits show here as each source reports.</span>
+      <button class="limits-empty-link" type="button" onclick="openSettings('sources')">Add a source</button>
+    </div>` : "";
+  list.innerHTML = emptyCard + ordered.map((prov, idx) => renderLimitGroup(prov, idx, horizon, doStagger)).join("");
+  if (focusedKey) {
+    const again = Array.from(list.querySelectorAll(".provider-row")).find(el => el.dataset.rowKey === focusedKey);
+    if (again) again.focus();
+  }
 }
 
 function renderWindowItem(w) {
@@ -5419,8 +5788,47 @@ function paintSummary(data) {
   }
 }
 
+/* Plans: the configured subscriptions with their price when the analytics summary has them,
+   else the plan each provider reports. */
+const PLAN_CADENCE = { monthly: "/mo", annual: "/yr", yearly: "/yr", quarterly: "/qtr", weekly: "/wk" };
+
+function planPrice(sub) {
+  const amount = finiteOrNull(sub.amountUsd);
+  if (amount === null) return sub.planState ? String(sub.planState) : "no paid plan";
+  const text = "$" + amount.toLocaleString(undefined, { minimumFractionDigits: amount % 1 === 0 ? 0 : 2, maximumFractionDigits: 2 });
+  return text + (PLAN_CADENCE[sub.cadence] || (sub.cadence ? "/" + sub.cadence : ""));
+}
+
+function renderPlans(data, providers) {
+  const card = document.getElementById("plansCard");
+  const listEl = document.getElementById("plansList");
+  const subs = state.h9Summary && Array.isArray(state.h9Summary.subscriptions)
+    ? state.h9Summary.subscriptions.filter(s => s && s.name) : [];
+  const rows = [];
+  if (subs.length) {
+    for (const s of subs) rows.push([String(s.name), planPrice(s)]);
+  } else {
+    const seen = new Set();
+    for (const p of providers) {
+      if (p.isPayg || !p.plan) continue;
+      const label = p.profile ? `${p.name} · ${p.profile}` : p.name;
+      const id = `${label}|${p.plan}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      rows.push([label, p.plan]);
+    }
+  }
+  listEl.innerHTML = rows.map(([label, price]) => `<li><span>${esc(label)}</span><b>${esc(price)}</b></li>`).join("");
+  const plans = data && data.plans || null;
+  const accrued = plans && plans.accruedUsd !== null && plans.accruedUsd !== undefined ? Number(plans.accruedUsd) : NaN;
+  document.getElementById("plansSub").textContent = Number.isFinite(accrued) && accrued > 0
+    ? `${fmtMoney(accrued, true, true)} accrued this period` : "";
+  card.classList.toggle("has-rows", rows.length > 0);
+}
+
 function renderReport(data, animateChart = false) {
   state.report = data;
+  clearLoadError();
   paintHeroText(data, true);
   renderChart(animateChart);
 
@@ -5450,161 +5858,14 @@ function renderReport(data, animateChart = false) {
   // Skip rebuilding DOM while actively dragging so pointer capture stays intact
   if (dragState.active) return;
 
-  const list = document.getElementById("providerList");
   setOnboardingChrome(!providers.length);
+  renderPlans(data, ordinary);
   if (!providers.length) {
     renderOnboarding();
     return;
   }
 
-  const doStagger = state.firstRender;
-  state.firstRender = false;
-  const focusedKey = list.contains(document.activeElement) ? document.activeElement.dataset.rowKey : null;
-
-  list.innerHTML = providers.map((prov, idx) => {
-    const key = String(prov.key || "");
-    const isOpen = state.expandedTools.has(key);
-    const rem = prov.remaining || {};
-    const burn = prov.burn || {};
-    const tone = rem.tone || "accent";
-    const cd = fmtCountdown(rem.resetsAt);
-    const rightSub = cd ? `${rem.sub || ""} · ${cd}` : (rem.sub || "");
-    const barPct = Math.max(0, Math.min(100, Number(rem.barPct ?? 0)));
-
-    const dayValue = burn.dayTokens;
-    const hoverSummary = dayValue === null || dayValue === undefined
-      ? "No token data for today"
-      : Number(dayValue) === 0
-        ? "No tokens recorded today"
-        : `Today: ${fmtTokens(dayValue)} tokens`;
-
-    const badgeCls = (prov.badge === "Primary" || prov.badge === "Org API") ? "acct-tag neutral" : "acct-tag";
-    const windows = Array.isArray(prov.windows) ? prov.windows : [];
-    const models = Array.isArray(prov.models) ? prov.models : [];
-
-    // Burned token stats inside expanded drawer
-    const burnCells = [
-      ["Today", burn.dayTokens],
-      ...(burn.hasSession ? [["5-hour", burn.sessionTokens, "5-hour window"]] : []),
-      [burn.weekBasis === "window" ? "Weekly" : "7 days", burn.weekTokens, burn.weekBasis === "window" ? "Weekly window" : "Last 7 days"]
-    ];
-    const missingBurn = burnCells.some(([, value]) => value === null || value === undefined);
-    const periodLabel = ({today: "Today", week: "Last 7 days", month: "This month", all: "All time"})[state.period] || "Selected period";
-    const hasApiValue = prov.valueUsd !== null && prov.valueUsd !== undefined && Number(prov.valueUsd) > 0;
-
-    const chips = [];
-    if (Number(prov.tokens || 0) > 0) {
-      chips.push(["Fresh input", prov.input], ["Cached input", prov.cached], ["Output", prov.output]);
-      if (Number(prov.writes || 0) > 0) chips.push(["Cache writes", prov.writes]);
-      if (prov.reasoning !== null && prov.reasoning !== undefined) chips.push(["Reasoning", prov.reasoning, "Reasoning tokens (included in output)"]);
-    }
-
-    const enterStyle = doStagger ? `style="animation-delay:${Math.min(idx * 26, 220)}ms"` : "";
-
-    return `
-      <div class="provider-item ${isOpen ? "open" : ""} ${doStagger ? "enter-anim" : ""}" data-key="${esc(key)}" ${enterStyle}>
-        <button class="provider-row" type="button" data-row-key="${esc(key)}" aria-expanded="${isOpen}" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown">
-          <div class="tile-top">
-            ${logoHtml(key, "logo-badge", !!prov.inUse)}
-            <div class="tile-ident">
-              <span class="provider-name">${esc(prov.name || "Unknown provider")}</span>
-              ${prov.inUse ? '<span class="sr-only">Active now</span>' : ""}
-              ${prov.badge ? `<span class="${badgeCls}">${esc(prov.badge)}</span>` : ""}
-            </div>
-            <span class="tile-affordance" aria-hidden="true">
-              <span class="drag-grip" title="Drag to reorder">
-                <svg width="8" height="12" viewBox="0 0 10 16" fill="currentColor">
-                  <circle cx="3" cy="3" r="1.25"/><circle cx="7" cy="3" r="1.25"/>
-                  <circle cx="3" cy="8" r="1.25"/><circle cx="7" cy="8" r="1.25"/>
-                  <circle cx="3" cy="13" r="1.25"/><circle cx="7" cy="13" r="1.25"/>
-                </svg>
-              </span>
-              <span class="chevron">
-                <svg width="11.5" height="11.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
-              </span>
-            </span>
-          </div>
-          <div class="tile-figures">
-            <span class="provider-rem tone-${esc(tone)}">${esc(rem.headline || "—")}</span>
-            <span class="provider-rem-sub">${esc(rightSub)}</span>
-          </div>
-          ${rem.kind !== "idle" ? `<div class="rem-track"><span class="rem-fill tone-${esc(tone)}" style="width:${barPct.toFixed(1)}%"></span></div>` : `<div class="rem-track rem-track-idle" aria-hidden="true"></div>`}
-          <div class="provider-sub-slot">
-            <div class="sub-default">
-              <span class="provider-sub">${esc(rem.summary || prov.plan || "")}</span>
-            </div>
-            <div class="sub-hover">
-              <div class="burn-summary">${esc(hoverSummary)}</div>
-            </div>
-          </div>
-        </button>
-        <div class="drawer-collapse">
-          <div class="drawer-inner">
-            <div class="model-drawer">
-              <div class="drawer-box">
-                ${windows.length ? `
-                  <div class="limits-stack">
-                    ${windows.map(renderWindowItem).join("")}
-                  </div>
-                ` : `
-                  <div class="limit-note">${key.startsWith("opencode-provider:") ? "Usage recorded by OpenCode. No provider allowance is connected." : "Pay-as-you-go telemetry feed — no fixed subscription cap."}</div>
-                `}
-                <div class="burn-section-label">Tokens recorded</div>
-                <div class="drawer-burn-strip">
-                  ${burnCells.map(([lbl, val, full]) => `
-                    <div class="burn-stat" title="${esc(full || lbl)}">
-                      <span class="burn-stat-lbl">${esc(lbl)}</span>
-                      <span class="burn-stat-val">${esc(fmtTokens(val))}</span>
-                    </div>
-                  `).join("")}
-                </div>
-                ${missingBurn ? `<div class="burn-note">&#8212; No reading available for this period</div>` : ""}
-                ${(chips.length || hasApiValue) ? `
-                  <div class="burn-section-label">${esc(periodLabel)} breakdown</div>
-                  <div class="breakdown-box">
-                    ${chips.length ? `
-                      <div class="breakdown-grid">
-                        ${chips.map(([lbl, v, tip]) => `
-                          <div class="breakdown-cell"${tip ? ` title="${esc(tip)}"` : ""}>
-                            <span class="breakdown-lbl">${esc(lbl)}</span>
-                            <strong class="breakdown-val">${fmtTokens(v || 0)}</strong>
-                          </div>
-                        `).join("")}
-                      </div>
-                    ` : ""}
-                    ${hasApiValue ? `
-                      <div class="api-equivalent${chips.length ? " has-sep" : ""}">
-                        <span>API equivalent (${esc(periodLabel)})</span>
-                        <strong>${esc(fmtMoney(prov.valueUsd, prov.complete !== false, true))}</strong>
-                      </div>
-                    ` : ""}
-                  </div>
-                ` : ""}
-                ${models.length ? `
-                  <div class="model-rows">
-                    ${models.map(m => `
-                      <div class="model-row">
-                        <span class="model-name">${esc(m.name || m.key || "Model")}</span>
-                        <span class="model-metrics">
-                          <span class="model-tok">${fmtTokens(m.tokens || 0)}</span>
-                          <span class="model-val">${esc(fmtMoney(m.valueUsd, m.complete !== false, true))}</span>
-                        </span>
-                      </div>
-                    `).join("")}
-                  </div>
-                ` : ""}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    `;
-  }).join("");
-
-  if (focusedKey) {
-    const again = Array.from(list.querySelectorAll(".provider-row")).find(el => el.dataset.rowKey === focusedKey);
-    if (again) again.focus();
-  }
+  renderLimits(providers);
   if (typeof h9SyncHeroFromFilter === "function" && state.tool && state.tool !== "all") h9SyncHeroFromFilter();
 }
 
@@ -5615,10 +5876,14 @@ state.onboarding = { status: "idle", data: null, fetching: false, fetchedAt: 0, 
 
 function setOnboardingChrome(on) {
   document.getElementById("providersCard").classList.toggle("is-onboarding", on);
-  document.getElementById("providersTitle").textContent = on ? "Get started" : "Providers";
+  document.getElementById("providersTitle").textContent = on ? "Get started" : "Limits";
   document.getElementById("providersHint").hidden = on;
   document.getElementById("providersSub").hidden = on;
   document.getElementById("footerStatus").hidden = on;
+  if (on) {
+    document.getElementById("limitTicks").hidden = true;
+    document.getElementById("limitLegend").hidden = true;
+  }
 }
 
 async function loadOnboarding() {
@@ -6209,6 +6474,7 @@ async function loadUsage(restart = false, animateChart = false) {
         }
       } else {
         showToast((res && res.error) || "Could not refresh usage");
+        showLoadError(res, "Could not refresh usage");
         document.getElementById("liveBadge").classList.remove("pending");
         document.getElementById("liveBadge").classList.add("warn");
         document.getElementById("liveText").textContent = "Unavailable";
@@ -6217,6 +6483,7 @@ async function loadUsage(restart = false, animateChart = false) {
     }
   } catch (err) {
     showToast("Refresh failed");
+    showLoadError(null, "Could not refresh usage");
     showFirstLoadFailure();
   } finally {
     btn.classList.remove("spinning");
@@ -8525,8 +8792,9 @@ document.querySelectorAll(".period-pill").forEach(btn => {
     loadUsage(false, true);
   });
 });
-document.getElementById("minBtn").addEventListener("click", () => {
-  if (apiAvailable()) window.pywebview.api.minimize_window();
+document.getElementById("tabBtn").addEventListener("click", () => {
+  if (apiHas("show_tab")) window.pywebview.api.show_tab();
+  else if (apiHas("minimize_window")) window.pywebview.api.minimize_window();
 });
 document.getElementById("closeBtn").addEventListener("click", () => {
   if (apiAvailable()) window.pywebview.api.close_window();
@@ -9242,7 +9510,7 @@ function renderH9Models(data) {
     const runsStr = h9Num(m.runs);
     const label = `${m.name || m.key} (${toolName}): ${valStr}, ${tokStr} tokens, ${cacheStr} cache`;
     return `<div class="h9-model-row" tabindex="0" role="button" data-h9-entity-kind="model" data-h9-entity-key="${esc(m.key)}" aria-label="${esc(label)}">
-        <strong><i class="h9-swatch-dot" style="background:${h9ColorFor(m.toolKey)}"></i>${esc(m.name || m.key)}</strong>
+        <strong>${logoHtml(m.toolKey, "logo-badge logo-mini")}${esc(m.name || m.key)}</strong>
         <span class="h9-card-sub">${esc(toolName)}</span>
         <span class="h9-num">${esc(valStr)}</span>
         <span class="h9-num">${esc(tokStr)}</span>
@@ -9250,15 +9518,12 @@ function renderH9Models(data) {
         <span class="h9-num">${esc(runsStr)}</span>
       </div>
       <button type="button" class="h9-model-card" data-h9-entity-kind="model" data-h9-entity-key="${esc(m.key)}">
-        <div class="h9-model-card-top">
-          <strong><i class="h9-swatch-dot" style="background:${h9ColorFor(m.toolKey)}"></i>${esc(m.name || m.key)}</strong>
-          <span>${esc(toolName)}</span>
-        </div>
-        <div class="h9-model-figures">
-          <span>Value<b>${esc(valStr)}</b></span>
-          <span>Tokens<b>${esc(tokStr)}</b></span>
-          <span>Cache<b>${esc(cacheStr)}</b></span>
-        </div>
+        ${logoHtml(m.toolKey, "logo-badge logo-mini")}
+        <span class="h9-model-main">
+          <strong>${esc(m.name || m.key)}</strong>
+          <small>${esc([toolName, `${tokStr} tokens`, `${cacheStr} cache`, `${runsStr} runs`].filter(Boolean).join(" · "))}</small>
+        </span>
+        <b class="h9-model-val">${esc(valStr)}</b>
       </button>`;
   }).join("");
 }
@@ -9489,6 +9754,7 @@ function renderH9Summary(data) {
   state.h9Summary = data;
   const sec = document.getElementById("h9AnalyticsSection");
   if (sec) sec.hidden = false;
+  if (state.report) renderPlans(state.report, getNormalizedProviders(state.report).filter(p => !p.organization));
   renderH9Ranges();
   renderH9ToolBar(data);
   renderH9Coverage(data);
@@ -9535,7 +9801,6 @@ async function openH9Detail(kind, key, opts = {}) {
   closeH9RangePopover(false);
   if (!opts.preserveFocus) {
     if (state.diagnosticsOpen && typeof closeDiagnostics === "function") closeDiagnostics(false);
-    if (state.hudMini && typeof applyHudMode === "function") applyHudMode(false, state.hudDensity, true);
   }
   const scrollEl = document.getElementById("scrollBody");
   if (state.h9View !== "detail" && scrollEl) {
@@ -9546,8 +9811,7 @@ async function openH9Detail(kind, key, opts = {}) {
   state.h9DetailHover = null;
   state.h9DetailPinned = null;
   if (opts.triggerEl) state.h9DetailReturnFocus = opts.triggerEl;
-  document.getElementById("heroSection").hidden = true;
-  document.querySelector(".section-stack").hidden = true;
+  document.getElementById("sectionStack").hidden = true;
   const dv = document.getElementById("h9DetailView");
   dv.hidden = false;
   h9JumpScroll(scrollEl, 0);
@@ -9575,8 +9839,7 @@ function closeH9Detail(returnFocus = true) {
   state.h9DetailHover = null;
   state.h9DetailPinned = null;
   document.getElementById("h9DetailView").hidden = true;
-  document.getElementById("heroSection").hidden = false;
-  document.querySelector(".section-stack").hidden = false;
+  document.getElementById("sectionStack").hidden = false;
   const scrollEl = document.getElementById("scrollBody");
   const savedScroll = state.h9SavedScrollTop || 0;
   h9JumpScroll(scrollEl, savedScroll);
@@ -9852,7 +10115,7 @@ async function boot() {
     state.update = init.update && typeof init.update === "object" ? init.update : null;
     document.querySelectorAll(".period-pill").forEach(b => b.classList.toggle("active", b.dataset.period === state.period));
     updatePeriodIndicator();
-    if (typeof applyHudMode === "function") applyHudMode(!!init.hudMini, init.hudDensity || "compact", false);
+    if (typeof applyHudDensity === "function") applyHudDensity(init.hudDensity || "compact", false);
   }
   reportEffectiveTheme();
   await loadUsage(false, true);
@@ -9879,14 +10142,7 @@ function renderRunningNow(data) {
   const card = document.getElementById("runningNowCard");
   const list = document.getElementById("runningNowList");
   const countEl = document.getElementById("runningNowCount");
-  const hintEl = document.getElementById("runningNowHint");
-  const miniLive = document.getElementById("hudMiniLive");
   if (!card || !list) return;
-
-  if (miniLive) {
-    miniLive.hidden = !rows.length;
-    miniLive.textContent = rows.length ? `${rows.length} live` : "";
-  }
 
   if (!rows.length) {
     card.hidden = true;
@@ -9894,7 +10150,6 @@ function renderRunningNow(data) {
     return;
   }
 
-  const visible = state.hudMini ? rows.slice(0, 3) : rows;
   const minsAll = rows.map(r => {
     const t = Date.parse(r.startedAt || "");
     return Number.isFinite(t) ? Math.max(0, Math.round((Date.now() - t) / 60000)) : null;
@@ -9903,9 +10158,8 @@ function renderRunningNow(data) {
 
   card.hidden = false;
   if (countEl) countEl.textContent = `${rows.length} live`;
-  if (hintEl) hintEl.textContent = state.hudMini && rows.length > 3 ? `top 3 of ${rows.length}` : "";
 
-  list.innerHTML = visible.map((row, idx) => {
+  list.innerHTML = rows.map((row, idx) => {
     const rawName = String(row.name || "Active session").replace(/\s+/g, " ").replace(/^[\x23*>-]+\s*/, "").trim() || "Active session";
     const shortName = rawName.length > 56 ? rawName.slice(0, 55).trimEnd() + "…" : rawName;
     const model = String(row.modelKey || "live");
@@ -9928,74 +10182,14 @@ function renderRunningNow(data) {
   }).join("");
 }
 
-function renderMiniBar(data) {
-  const todayEl = document.getElementById("hudMiniToday");
-  const leadEl = document.getElementById("hudMiniLead");
-  const pctEl = document.getElementById("hudMiniPct");
-  if (!todayEl || !leadEl || !pctEl) return;
-
-  const t = data?.todayTotal || (state.period === "today" ? data?.total : null);
-  if (t && t.valueUsd !== null && t.valueUsd !== undefined) {
-    const prefix = t.complete === false ? "≥" : "";
-    todayEl.textContent = prefix + fmtMoney(t.valueUsd, true, true);
-  } else {
-    todayEl.textContent = "—";
-  }
-
-  const providers = getNormalizedProviders(data || {});
-  let best = null;
-  for (const prov of providers) {
-    for (const w of (prov.windows || [])) {
-      if (w.unavailable || w.usedPct === null || w.usedPct === undefined) continue;
-      const used = Number(w.usedPct);
-      if (!Number.isFinite(used)) continue;
-      if (!best || used > best.used) {
-        best = { prov, w, used };
-      }
-    }
-  }
-
-  pctEl.classList.remove("tone-mint", "tone-warn", "tone-danger", "tone-accent");
-  if (best) {
-    const rem = Math.max(0, Math.round(best.w.remainingPct ?? (100 - best.used)));
-    const cd = fmtCountdown(best.w.resetsAt);
-    const label = best.w.shortLabel || best.w.label || "Quota";
-    const provLabel = best.prov.badge ? `${best.prov.name} · ${best.prov.badge}` : best.prov.name;
-    leadEl.textContent = `${provLabel} · ${label}${cd ? ` (${cd})` : ""}`;
-    pctEl.textContent = `${rem}% left`;
-    pctEl.classList.add(rem <= 8 ? "tone-danger" : rem <= 20 ? "tone-warn" : "tone-mint");
-  } else {
-    leadEl.textContent = "All subscription limits healthy";
-    pctEl.textContent = "—";
-    pctEl.classList.add("tone-accent");
-  }
-}
-
 function renderHudOps(data) {
   renderRunningNow(data);
-  renderMiniBar(data);
 }
 
-function applyHudMode(mini, density, persist = true) {
-  state.hudMini = !!mini;
-  if (state.hudMini) {
-    if (typeof closeH9RangePopover === "function") closeH9RangePopover(false);
-    if (state.h9View === "detail" && typeof closeH9Detail === "function") closeH9Detail(false);
-  }
+/* Spacing density: compact or comfortable. Persisted by the host. */
+function applyHudDensity(density, persist = true) {
   state.hudDensity = density === "comfortable" ? "comfortable" : "compact";
-  document.documentElement.classList.toggle("is-mini", state.hudMini);
   document.documentElement.classList.toggle("is-comfortable", state.hudDensity === "comfortable");
-
-  const fullBtn = document.getElementById("fullModeBtn");
-  if (fullBtn) {
-    fullBtn.classList.toggle("active", !state.hudMini);
-    fullBtn.setAttribute("aria-pressed", String(!state.hudMini));
-  }
-  const miniBtn = document.getElementById("miniModeBtn");
-  if (miniBtn) {
-    miniBtn.classList.toggle("active", state.hudMini);
-    miniBtn.setAttribute("aria-pressed", String(state.hudMini));
-  }
   const densBtn = document.getElementById("densityBtn");
   if (densBtn) {
     const comfy = state.hudDensity === "comfortable";
@@ -10004,12 +10198,8 @@ function applyHudMode(mini, density, persist = true) {
     densBtn.textContent = comfy ? "Density: Comfortable" : "Density: Compact";
     densBtn.title = comfy ? "Switch to compact spacing density" : "Switch to comfortable spacing density";
   }
-  if (state.report) {
-    renderHudOps(state.report);
-  }
-  if (persist && apiAvailable()) {
-    if (window.pywebview.api.set_hud_mini) window.pywebview.api.set_hud_mini(state.hudMini);
-    if (window.pywebview.api.set_hud_density) window.pywebview.api.set_hud_density(state.hudDensity);
+  if (persist && apiAvailable() && window.pywebview.api.set_hud_density) {
+    window.pywebview.api.set_hud_density(state.hudDensity);
   }
 }
 
@@ -10341,7 +10531,7 @@ window.closeDiagnostics = function(returnFocus = true) {
     });
   }
   if (state.report) renderChart(false);
-  if (returnFocus) document.getElementById("diagBtn")?.focus();
+  if (returnFocus) document.getElementById("diagBtn")?.focus({ preventScroll: true });
 };
 
 function drawWeekCard(week) {
@@ -10579,10 +10769,7 @@ document.getElementById("diagBtn")?.addEventListener("click", () => openDiagnost
 document.getElementById("diagnosticsBackBtn")?.addEventListener("click", () => closeDiagnostics(true));
 document.getElementById("diagRefreshBtn")?.addEventListener("click", () => loadDiagnostics(false));
 document.getElementById("shareWeekBtn")?.addEventListener("click", () => shareWeek());
-document.getElementById("fullModeBtn")?.addEventListener("click", () => applyHudMode(false, state.hudDensity, true));
-document.getElementById("miniModeBtn")?.addEventListener("click", () => applyHudMode(true, state.hudDensity, true));
-document.getElementById("densityBtn")?.addEventListener("click", () => applyHudMode(state.hudMini, state.hudDensity === "comfortable" ? "compact" : "comfortable", true));
-document.getElementById("hudMiniBar")?.addEventListener("click", () => applyHudMode(false, state.hudDensity, true));
+document.getElementById("densityBtn")?.addEventListener("click", () => applyHudDensity(state.hudDensity === "comfortable" ? "compact" : "comfortable", true));
 document.getElementById("scopePopover")?.addEventListener("click", (e) => {
   const opt = e.target.closest("[data-scope-id]");
   if (opt && typeof window.selectScope === "function") window.selectScope(opt.dataset.scopeId);

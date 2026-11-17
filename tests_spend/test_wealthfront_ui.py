@@ -1521,27 +1521,26 @@ items()[0].querySelector('.provider-row').click();
 await wait(40);
 await setWidth(320);
 await wait(40);
-const n0 = items()[0].getBoundingClientRect();
-const n1 = items()[1].getBoundingClientRect();
 report({
-  twoCol: Math.abs(r0.top - r1.top) <= 1 && r1.left > r0.right,
-  pairedHeight: Math.abs(r0.height - r1.height) <= 1,
-  summaryInHero: sumRect.top > heroRect.top && sumRect.bottom <= heroRect.bottom && sumRect.bottom < provRect.top,
-  openSpansFull: wasOpen && openRect.width > r0.width * 1.8,
-  narrowStacks: n1.top > n0.bottom && document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+  oneColumn: r1.top >= r0.bottom - 1 && Math.abs(r1.left - r0.left) <= 1 && Math.abs(r1.width - r0.width) <= 1,
+  fullWidth: r0.width >= provRect.width - 32,
+  summaryInHero: sumRect.top > heroRect.top && sumRect.bottom <= heroRect.bottom,
+  heroBelowLimits: heroRect.top >= provRect.bottom - 1,
+  openGrowsInPlace: wasOpen && openRect.height > r0.height + 20 && Math.abs(openRect.width - r0.width) <= 1,
+  narrowNoScroll: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
 });
 """
 
 
 @needs_chrome
 @browser
-def test_two_column_grid_expands_full_width_and_stacks_narrow(tmp_path):
+def test_limit_groups_stack_in_one_full_width_column_and_open_in_place(tmp_path):
     r = probe(build_page(pref="light", probe=GRID_PROBE, extra_css=FAST), 380, tmp_path, height=800)
     assert r == {
-        "twoCol": True,
-        "pairedHeight": True,
+        "oneColumn": True,
+        "fullWidth": True,
         "summaryInHero": True,
-        "openSpansFull": True,
-        "narrowStacks": True,
+        "heroBelowLimits": True,
+        "openGrowsInPlace": True,
+        "narrowNoScroll": True,
     }
-
