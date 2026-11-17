@@ -23,8 +23,10 @@ from fastapi.testclient import TestClient
 from spend_app import aggregate, auth_model, auth_throttle, pairing, setup_wizard, sync
 from spend_app.api import create_app
 from spend_app.config import Settings
+from spend_app.connection_paths import LocationError
 from spend_app.db import UsageEvent, connect, initialize, upsert_usage_event
 from spend_app.native_desktop import DesktopError, NativeClient
+from spend_app.wealthfront_window import DesktopBridge
 
 ROOT = Path(__file__).resolve().parents[1]
 HUB_URL = "https://hub.test"
@@ -32,6 +34,23 @@ ACCESS_TOKEN = "synthetic-break-glass-token-00"
 SETUP_TOKEN = "synthetic-setup-token-32-chars-00"
 PASSWORD = "synthetic-long-password-123"
 HUB_UI = {"Origin": HUB_URL, "X-BURNRATE-Request": "1"}
+
+
+class _MemoryVault:
+    def __init__(self) -> None:
+        self._items: dict[str, str] = {}
+
+    def put(self, secret: str, ref: str = "") -> str:
+        self._items[ref] = secret
+        return ref
+
+    def get(self, ref: str) -> str:
+        if ref not in self._items:
+            raise LocationError(f"missing ref: {ref}")
+        return self._items[ref]
+
+    def delete(self, ref: str) -> None:
+        self._items.pop(ref, None)
 
 
 def _settings(tmp_path: Path, name: str = "spend.db") -> Settings:
@@ -659,27 +678,40 @@ def test_l7_spoke_join_register_login_owner_session_and_rotate_end_to_end(
         assert hub_summary.status_code == 200
         assert hub_summary.json()["totals"]["tokens"] == 10000
 
-        # 3) Spoke 1 refreshes owner session via /api/setup/owner-session
-        sign_in = spoke1.post(
-            "/api/setup/owner-session",
-            headers=local_ui,
-            json={"username": "owner@example.com", "password": PASSWORD},
+        # 3) Spoke 1 signs in owner via DesktopBridge (never exposing br_s_ to caller)
+        vault = _MemoryVault()
+        bridge = DesktopBridge(NativeClient(spoke1_settings, port=17331), vault=vault)
+        sign_in = bridge.sign_in_owner(
+            "owner@example.com", PASSWORD, device_label="Spoke One Desktop"
         )
-        assert sign_in.status_code == 200, sign_in.text
-        assert auth_model.LOCAL_COOKIE in spoke1.cookies
+        assert sign_in["ok"] is True, sign_in
+        assert sign_in["sessionId"]
+        assert sign_in["expiresAt"]
+        assert "sessionToken" not in sign_in
+        assert "br_s_" not in str(sign_in)
         with connect(spoke1_settings.database_path) as conn:
             session_before = setup_wizard.read_setup_state(conn)["spokeConfig"]["ownerSession"]
         assert session_before.startswith("br_s_")
         assert session_before != sc1["ownerSession"]
+        assert vault.get(DesktopBridge.OWNER_SESSION_VAULT_REF) == session_before
 
-        # 4) Spoke 1 rotates hub session via /api/auth/session/rotate relay
-        rot = spoke1.post("/api/auth/session/rotate", headers=local_ui, json={})
-        assert rot.status_code == 200, rot.text
-        assert "sessionToken" not in rot.json()
+        listed = bridge.list_owner_sessions()
+        assert listed["ok"] is True, listed
+        assert listed["currentSessionId"] == sign_in["sessionId"]
+        assert len(listed["sessions"]) >= 2
+        assert "br_s_" not in str(listed)
+
+        # 4) Spoke 1 rotates hub session via DesktopBridge
+        rot = bridge.rotate_owner_session()
+        assert rot["ok"] is True, rot
+        assert "sessionToken" not in rot
+        assert "br_s_" not in str(rot)
+        assert rot["sessionId"] != sign_in["sessionId"]
         with connect(spoke1_settings.database_path) as conn:
             session_after = setup_wizard.read_setup_state(conn)["spokeConfig"]["ownerSession"]
         assert session_after.startswith("br_s_")
         assert session_after != session_before
+        assert vault.get(DesktopBridge.OWNER_SESSION_VAULT_REF) == session_after
 
         # Old hub session is revoked; new hub session is valid on hub
         hub_client.cookies.clear()
@@ -695,6 +727,23 @@ def test_l7_spoke_join_register_login_owner_session_and_rotate_end_to_end(
             ).status_code
             == 200
         )
+
+        # 5) Spoke 1 revokes another active owner session via DesktopBridge
+        listed_after_rot = bridge.list_owner_sessions()
+        assert listed_after_rot["ok"] is True, listed_after_rot
+        other_sids = [
+            s["id"]
+            for s in listed_after_rot["sessions"]
+            if s["id"] != rot["sessionId"] and not s.get("revoked_at")
+        ]
+        assert other_sids
+        target_sid = other_sids[0]
+        rev = bridge.revoke_owner_session(target_sid)
+        assert rev == {"ok": True}
+        listed_after_rev = bridge.list_owner_sessions()
+        assert listed_after_rev["ok"] is True
+        revoked_row = next(s for s in listed_after_rev["sessions"] if s["id"] == target_sid)
+        assert revoked_row.get("revoked_at") is not None
 
 
 def test_l7_native_client_extracts_cookie_from_set_cookie_header_and_cookies_jar(
@@ -1135,11 +1184,9 @@ def test_l15_saved_plain_http_config_blocked_at_egress_without_sending_tokens(
             "ownerSession": "br_s_saved_owner_session",
         }
         setup_wizard.write_setup_state(conn, state)
-        local_sid = auth_model.create_local_session(conn, device_label="Spoke browser")
 
     with spoke_client:
         httpx_calls, test_client_calls = _install_recording_hub_transport(monkeypatch, "http://hub.example")
-        spoke_client.cookies.set(auth_model.LOCAL_COOKIE, local_sid["localToken"])
         local_headers = {"Origin": "http://127.0.0.1:17331", "X-BURNRATE-Request": "1"}
 
         # 1) Direct post_to_configured_hub strict/non-strict
@@ -1164,18 +1211,29 @@ def test_l15_saved_plain_http_config_blocked_at_egress_without_sending_tokens(
         assert sub_res.status_code == 422
         assert "HTTPS" in sub_res.json()["error"]
 
-        # 3) Auth relay routes (GET and POST)
+        # 3) Spoke HTTP auth routes are closed locally (401 AUTH-107) and DesktopBridge fails closed with NET-003
         sessions_res = spoke_client.get("/api/auth/sessions")
-        assert sessions_res.status_code == 422
-        assert sessions_res.json()["error"] == {"code": "NET-003"}
+        assert sessions_res.status_code == 401
+        assert sessions_res.json()["error"] == {"code": "AUTH-107"}
 
         rotate_res = spoke_client.post("/api/auth/session/rotate", headers=local_headers, json={})
-        assert rotate_res.status_code == 422
-        assert rotate_res.json()["error"] == {"code": "NET-003"}
+        assert rotate_res.status_code == 401
+        assert rotate_res.json()["error"] == {"code": "AUTH-107"}
 
         logout_res = spoke_client.post("/api/auth/logout", headers=local_headers, json={})
-        assert logout_res.status_code == 422
-        assert logout_res.json()["error"] == {"code": "NET-003"}
+        assert logout_res.status_code == 401
+        assert logout_res.json()["error"] == {"code": "AUTH-107"}
+
+        bridge = DesktopBridge(NativeClient(spoke_settings, port=17331), vault=_MemoryVault())
+        for res in (
+            bridge.sign_in_owner("owner@example.com", PASSWORD),
+            bridge.list_owner_sessions(),
+            bridge.rotate_owner_session(),
+            bridge.sign_out_owner(),
+            bridge.get_owner_audit(),
+        ):
+            assert res["ok"] is False
+            assert res["code"] == "NET-003"
 
         # 4) Direct fetch_from_configured_hub
         assert sync.fetch_from_configured_hub(spoke_settings, "/api/spend/hud", ttl_seconds=0) is None

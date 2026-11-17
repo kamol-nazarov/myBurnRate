@@ -17,7 +17,13 @@ from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 
 from spend_app import __version__, native_geometry
-from spend_app.error_codes import format_error
+from spend_app.error_codes import (
+    HUB_PROTOCOL_VERSION,
+    CodedError,
+    format_error,
+    map_http_error,
+    map_transport_error,
+)
 from spend_app.native_alerts import QuotaWatcher
 from spend_app.native_autoupdate import UpdateChecker
 from spend_app.native_desktop import (
@@ -1002,6 +1008,8 @@ class WindowOpacityController:
 class DesktopBridge:
     """In-process Python bridge exposed to the local WebView2 UI."""
 
+    OWNER_SESSION_VAULT_REF = "burnrate-owner-session"
+
     def __init__(
         self,
         client: NativeClient | DemoClient,
@@ -1009,10 +1017,15 @@ class DesktopBridge:
         preferences: Path | None = None,
         demo: bool = False,
         smoke_test: bool = False,
+        vault=None,
     ) -> None:
         self._client = client
         self._preferences = preferences
         self._smoke_test = smoke_test
+        self._vault = vault
+        self._owner_session_lock = threading.RLock()
+        self._owner_session: str | None = None
+        self._owner_session_expires_at: str | None = None
         # (checked_at, owned); None = never checked. A 0.0 timestamp would
         # read as fresh on a machine that booted within the recheck window.
         self._service_alerts: tuple[float, bool] | None = None
@@ -1845,6 +1858,7 @@ class DesktopBridge:
                 self._client.request("/api/setup/defer", {})
             except DesktopError:
                 pass
+            self._sync_owner_session_from_db()
             out = {
                 "ok": True,
                 "account": res.get("account") or {},
@@ -1950,6 +1964,477 @@ class DesktopBridge:
             return {"ok": False, "code": "HUB-501", "error": format_error("HUB-501")}
         except (OSError, RuntimeError, ValueError, KeyError, TypeError):
             return {"ok": False, "code": "HUB-501", "error": format_error("HUB-501")}
+
+    def _db_path(self) -> Path | None:
+        settings = getattr(self._client, "settings", None)
+        path = getattr(settings, "database_path", None)
+        return Path(path) if path is not None else None
+
+    def _resolve_vault(self):
+        if self._demo:
+            return None
+        if self._vault is not None:
+            return self._vault
+        db_path = self._db_path()
+        if db_path is None:
+            return None
+        from spend_app.connection_secrets import Vault
+
+        return Vault(db_path)
+
+    def _sync_owner_session_from_db(self) -> None:
+        db_path = self._db_path()
+        if db_path is None or not db_path.is_file():
+            return
+        from spend_app.db import connect
+        from spend_app.setup_wizard import read_setup_state
+
+        try:
+            with connect(db_path) as conn:
+                state = read_setup_state(conn)
+        except Exception:
+            return
+        spoke = state.get("spokeConfig") or {}
+        token = str(spoke.get("ownerSession") or "").strip() or None
+        expires_at = spoke.get("ownerSessionExpiresAt")
+        with self._owner_session_lock:
+            self._owner_session = token
+            self._owner_session_expires_at = expires_at if token else None
+        if token and (self._vault is not None or not os.getenv("PYTEST_CURRENT_TEST")):
+            vault = self._resolve_vault()
+            if vault is not None:
+                try:
+                    vault.put(token, self.OWNER_SESSION_VAULT_REF)
+                except Exception:
+                    pass
+
+    def _get_owner_session_info(self) -> tuple[str | None, str | None]:
+        db_path = self._db_path()
+        db_token: str | None = None
+        db_expires_at: str | None = None
+        if db_path is not None and db_path.is_file():
+            try:
+                from spend_app.db import connect
+                from spend_app.setup_wizard import read_setup_state
+
+                with connect(db_path) as conn:
+                    state = read_setup_state(conn)
+                spoke = state.get("spokeConfig") or {}
+                db_token = str(spoke.get("ownerSession") or "").strip() or None
+                db_expires_at = spoke.get("ownerSessionExpiresAt")
+            except Exception:
+                db_token = None
+                db_expires_at = None
+
+        with self._owner_session_lock:
+            if self._owner_session:
+                return self._owner_session, self._owner_session_expires_at or db_expires_at
+
+            vault = self._resolve_vault()
+            if vault is not None:
+                try:
+                    vault_token = vault.get(self.OWNER_SESSION_VAULT_REF)
+                    if isinstance(vault_token, str) and vault_token.strip():
+                        self._owner_session = vault_token.strip()
+                        self._owner_session_expires_at = db_expires_at
+                        return self._owner_session, self._owner_session_expires_at
+                except Exception:
+                    pass
+
+            if db_token:
+                self._owner_session = db_token
+                self._owner_session_expires_at = db_expires_at
+                return db_token, db_expires_at
+
+        return None, None
+
+    def _get_owner_session_token(self) -> str | None:
+        token, _ = self._get_owner_session_info()
+        return token
+
+    def _save_owner_session(self, token: str, expires_at: str | None = None) -> None:
+        clean_token = str(token or "").strip()
+        if not clean_token:
+            self._clear_owner_session()
+            return
+        with self._owner_session_lock:
+            self._owner_session = clean_token
+            self._owner_session_expires_at = expires_at
+            vault = self._resolve_vault()
+            if vault is not None:
+                try:
+                    vault.put(clean_token, self.OWNER_SESSION_VAULT_REF)
+                except Exception:
+                    pass
+            db_path = self._db_path()
+            if db_path is not None and db_path.is_file():
+                try:
+                    from spend_app.db import connect
+                    from spend_app.setup_wizard import read_setup_state, write_setup_state
+                    from spend_app.sync import clear_hub_proxy_cache
+
+                    with connect(db_path) as conn:
+                        conn.execute("BEGIN IMMEDIATE")
+                        state = read_setup_state(conn)
+                        spoke = state.get("spokeConfig") or {}
+                        if (
+                            state.get("role") == "spoke"
+                            or spoke.get("enabled")
+                            or spoke.get("hubUrl")
+                        ):
+                            spoke["ownerSession"] = clean_token
+                            spoke["ownerSessionExpiresAt"] = expires_at
+                            state["spokeConfig"] = spoke
+                            write_setup_state(conn, state)
+                    clear_hub_proxy_cache()
+                except Exception:
+                    pass
+
+    def _clear_owner_session(self) -> None:
+        with self._owner_session_lock:
+            self._owner_session = None
+            self._owner_session_expires_at = None
+            vault = self._resolve_vault()
+            if vault is not None:
+                try:
+                    vault.delete(self.OWNER_SESSION_VAULT_REF)
+                except Exception:
+                    pass
+            db_path = self._db_path()
+            if db_path is not None and db_path.is_file():
+                try:
+                    from spend_app.db import connect
+                    from spend_app.setup_wizard import read_setup_state, write_setup_state
+                    from spend_app.sync import clear_hub_proxy_cache
+
+                    with connect(db_path) as conn:
+                        conn.execute("BEGIN IMMEDIATE")
+                        state = read_setup_state(conn)
+                        spoke = state.get("spokeConfig") or {}
+                        if (
+                            "ownerSession" in spoke
+                            or "ownerSessionExpiresAt" in spoke
+                        ):
+                            spoke.pop("ownerSession", None)
+                            spoke.pop("ownerSessionExpiresAt", None)
+                            state["spokeConfig"] = spoke
+                            write_setup_state(conn, state)
+                    clear_hub_proxy_cache()
+                except Exception:
+                    pass
+
+    def _resolve_hub_origin(self) -> tuple[str | None, dict | None]:
+        from spend_app.config import resolve_hub_url
+        from spend_app.db import connect
+        from spend_app.pairing import hub_origin
+        from spend_app.setup_wizard import read_setup_state
+
+        raw_hub_url = ""
+        try:
+            raw_hub_url = resolve_hub_url()
+        except ValueError as exc:
+            code = "NET-003" if "HTTPS" in str(exc) else "NET-001"
+            return None, {"ok": False, "code": code, "error": format_error(code)}
+
+        if not raw_hub_url:
+            db_path = self._db_path()
+            if db_path is not None and db_path.is_file():
+                try:
+                    with connect(db_path) as conn:
+                        state = read_setup_state(conn)
+                    raw_hub_url = str((state.get("spokeConfig") or {}).get("hubUrl") or "").strip()
+                except Exception:
+                    raw_hub_url = ""
+
+        if not raw_hub_url:
+            return None, {"ok": False, "code": "NET-001", "error": format_error("NET-001")}
+
+        try:
+            return hub_origin(raw_hub_url), None
+        except ValueError as exc:
+            code = "NET-003" if "HTTPS" in str(exc) else "NET-001"
+            return None, {"ok": False, "code": code, "error": format_error(code)}
+
+    def _call_hub(
+        self,
+        hub_url: str,
+        method: str,
+        path: str,
+        *,
+        json_body: dict | None = None,
+        token: str | None = None,
+        handshake: bool = False,
+    ) -> tuple[dict | None, object | None, dict | None]:
+        import httpx
+        from spend_app.setup_wizard import _hub_protocol_handshake
+        from spend_app.sync import _HUB_TEST_CLIENTS
+
+        test_client = _HUB_TEST_CLIENTS.get(hub_url)
+        headers = {
+            "X-BURNRATE-Request": "1",
+            "X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION),
+        }
+        if json_body is not None:
+            headers["Content-Type"] = "application/json"
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
+        try:
+            if handshake:
+                _hub_protocol_handshake(hub_url, test_client)
+            if test_client is not None:
+                cookies = getattr(test_client, "cookies", None)
+                saved_jar = (
+                    list(cookies.jar)
+                    if cookies is not None and hasattr(cookies, "jar")
+                    else None
+                )
+                if cookies is not None:
+                    cookies.clear()
+                try:
+                    if method == "GET":
+                        res = test_client.get(path, headers=headers)
+                    else:
+                        res = test_client.post(path, json=json_body, headers=headers)
+                finally:
+                    if cookies is not None and saved_jar is not None:
+                        cookies.clear()
+                        for cookie in saved_jar:
+                            cookies.jar.set_cookie(cookie)
+            else:
+                with httpx.Client(timeout=10.0, trust_env=False, follow_redirects=False) as http:
+                    url = f"{hub_url}{path}"
+                    if method == "GET":
+                        res = http.get(url, headers=headers)
+                    else:
+                        res = http.post(url, json=json_body, headers=headers)
+        except CodedError as exc:
+            return None, None, {"ok": False, "code": exc.code, "error": str(exc)}
+        except Exception as exc:
+            code, _ = map_transport_error(exc)
+            return None, None, {"ok": False, "code": code, "error": format_error(code)}
+
+        try:
+            data = res.json() if getattr(res, "content", b"") else {}
+        except ValueError:
+            data = None
+
+        if res.status_code >= 400:
+            mapped = map_http_error(
+                res.status_code,
+                data,
+                headers=getattr(res, "headers", None),
+                endpoint_path=path,
+            )
+            if token and (res.status_code == 401 or mapped.code == "AUTH-107"):
+                self._clear_owner_session()
+            if (
+                res.status_code == 404
+                and isinstance(data, dict)
+                and isinstance(data.get("error"), str)
+            ):
+                return None, res, {"ok": False, "code": mapped.code, "error": data["error"]}
+            return None, res, {"ok": False, "code": mapped.code, "error": str(mapped)}
+
+        if not isinstance(data, dict):
+            return None, res, {"ok": False, "code": "HUB-501", "error": format_error("HUB-501")}
+
+        return data, res, None
+
+    def owner_session_status(self) -> dict:
+        if self._demo:
+            return {"ok": True, "hasOwnerSession": False, "expiresAt": None}
+        token, expires_at = self._get_owner_session_info()
+        if not token:
+            return {"ok": True, "hasOwnerSession": False, "expiresAt": None}
+        if expires_at:
+            from spend_app.auth_model import moment, parse
+
+            parsed = parse(expires_at)
+            if parsed is not None and parsed <= moment():
+                self._clear_owner_session()
+                return {"ok": True, "hasOwnerSession": False, "expiresAt": None}
+        return {"ok": True, "hasOwnerSession": True, "expiresAt": expires_at}
+
+    def sign_in_owner(
+        self,
+        username: str,
+        password: str,
+        device_label: str = "",
+    ) -> dict:
+        if self._demo:
+            return {"ok": False, "error": "Hub sign-in is disabled in demo mode."}
+        clean_user = (username or "").strip()
+        if not clean_user:
+            return {"ok": False, "code": "AUTH-106", "error": format_error("AUTH-106")}
+        if not password:
+            return {"ok": False, "code": "AUTH-101", "error": format_error("AUTH-101")}
+
+        hub_url, err = self._resolve_hub_origin()
+        if err is not None:
+            return err
+
+        label = (device_label or "").strip()
+        if not label:
+            db_path = self._db_path()
+            if db_path is not None and db_path.is_file():
+                try:
+                    from spend_app.db import connect
+                    from spend_app.setup_wizard import read_setup_state
+
+                    with connect(db_path) as conn:
+                        label = str(read_setup_state(conn).get("computerName") or "").strip()
+                except Exception:
+                    label = ""
+        if not label:
+            label = "Desktop app"
+
+        data, res, call_err = self._call_hub(
+            hub_url,
+            "POST",
+            "/api/account/login",
+            json_body={
+                "username": clean_user,
+                "password": password,
+                "sessionOnly": True,
+                "deviceLabel": label,
+            },
+            handshake=True,
+        )
+        if call_err is not None:
+            return call_err
+
+        from spend_app.auth_model import extract_cookie
+
+        token = extract_cookie(res)
+        if not token:
+            return {"ok": False, "code": "HUB-501", "error": format_error("HUB-501")}
+
+        expires_at = data.get("expiresAt")
+        self._save_owner_session(token, expires_at)
+        return {
+            "ok": True,
+            "sessionId": data.get("sessionId"),
+            "expiresAt": expires_at,
+        }
+
+    def list_owner_sessions(self) -> dict:
+        if self._demo:
+            return {"ok": False, "error": "Owner sessions are disabled in demo mode."}
+        hub_url, err = self._resolve_hub_origin()
+        if err is not None:
+            return err
+        token = self._get_owner_session_token()
+        if not token:
+            return {"ok": False, "code": "AUTH-107", "error": format_error("AUTH-107")}
+        data, _, call_err = self._call_hub(
+            hub_url,
+            "GET",
+            "/api/auth/sessions",
+            token=token,
+        )
+        if call_err is not None:
+            return call_err
+        return {
+            "ok": True,
+            "sessions": data.get("sessions") or [],
+            "currentSessionId": data.get("currentSessionId"),
+        }
+
+    def revoke_owner_session(self, session_id: str) -> dict:
+        if self._demo:
+            return {"ok": False, "error": "Owner sessions are disabled in demo mode."}
+        hub_url, err = self._resolve_hub_origin()
+        if err is not None:
+            return err
+        token = self._get_owner_session_token()
+        if not token:
+            return {"ok": False, "code": "AUTH-107", "error": format_error("AUTH-107")}
+        clean_sid = str(session_id or "").strip()
+        if not clean_sid:
+            return {"ok": False, "code": "HUB-501", "error": "Choose a session to revoke."}
+        _, _, call_err = self._call_hub(
+            hub_url,
+            "POST",
+            "/api/auth/sessions/revoke",
+            json_body={"id": clean_sid},
+            token=token,
+        )
+        if call_err is not None:
+            return call_err
+        return {"ok": True}
+
+    def rotate_owner_session(self) -> dict:
+        if self._demo:
+            return {"ok": False, "error": "Owner sessions are disabled in demo mode."}
+        hub_url, err = self._resolve_hub_origin()
+        if err is not None:
+            return err
+        token = self._get_owner_session_token()
+        if not token:
+            return {"ok": False, "code": "AUTH-107", "error": format_error("AUTH-107")}
+        data, res, call_err = self._call_hub(
+            hub_url,
+            "POST",
+            "/api/auth/session/rotate",
+            json_body={},
+            token=token,
+        )
+        if call_err is not None:
+            return call_err
+
+        from spend_app.auth_model import extract_cookie
+
+        new_token = extract_cookie(res)
+        if not new_token:
+            return {"ok": False, "code": "HUB-501", "error": format_error("HUB-501")}
+
+        expires_at = data.get("expiresAt")
+        self._save_owner_session(new_token, expires_at)
+        return {
+            "ok": True,
+            "sessionId": data.get("sessionId"),
+            "expiresAt": expires_at,
+        }
+
+    def sign_out_owner(self) -> dict:
+        if self._demo:
+            return {"ok": False, "error": "Owner sessions are disabled in demo mode."}
+        hub_url, err = self._resolve_hub_origin()
+        if err is not None:
+            return err
+        token = self._get_owner_session_token()
+        if token:
+            _, res, call_err = self._call_hub(
+                hub_url,
+                "POST",
+                "/api/auth/logout",
+                json_body={},
+                token=token,
+            )
+            if call_err is not None and (res is None or res.status_code != 401):
+                return call_err
+        self._clear_owner_session()
+        return {"ok": True}
+
+    def get_owner_audit(self) -> dict:
+        if self._demo:
+            return {"ok": False, "error": "Owner sessions are disabled in demo mode."}
+        hub_url, err = self._resolve_hub_origin()
+        if err is not None:
+            return err
+        token = self._get_owner_session_token()
+        if not token:
+            return {"ok": False, "code": "AUTH-107", "error": format_error("AUTH-107")}
+        data, _, call_err = self._call_hub(
+            hub_url,
+            "GET",
+            "/api/auth/audit",
+            token=token,
+        )
+        if call_err is not None:
+            return call_err
+        return {"ok": True, "actions": data.get("actions") or []}
 
     def minimize_window(self) -> None:
         if self._window is not None:

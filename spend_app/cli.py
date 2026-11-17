@@ -49,7 +49,7 @@ _RUNTIME_IMPORTS = (
     "tzdata",
     "starlette",
 )
-_WEB_ASSETS = ("index.html", "spend.css", "spend.js", "request-state.js", "product.js", "dialogs.js", "favicon.svg")
+_DESKTOP_ASSETS = ("wealthfront_ui.html",)
 
 
 def _decimal_or_none(value: object):
@@ -187,15 +187,15 @@ def _check_pricing(pricing_path: Path) -> dict[str, str]:
     }
 
 
-def _check_web_assets() -> dict[str, str]:
+def _check_desktop_assets() -> dict[str, str]:
     try:
-        root = files("spend_web")
+        root = files("spend_app")
     except (ModuleNotFoundError, FileNotFoundError) as exc:
-        return {"id": "web_assets", "status": "fail", "detail": f"spend_web is not importable: {exc}"}
-    missing = [name for name in _WEB_ASSETS if not root.joinpath(name).is_file()]
+        return {"id": "desktop_assets", "status": "fail", "detail": f"spend_app is not importable: {exc}"}
+    missing = [name for name in _DESKTOP_ASSETS if not root.joinpath(name).is_file()]
     if missing:
-        return {"id": "web_assets", "status": "fail", "detail": "missing " + ", ".join(missing)}
-    return {"id": "web_assets", "status": "ok", "detail": ", ".join(_WEB_ASSETS)}
+        return {"id": "desktop_assets", "status": "fail", "detail": "missing " + ", ".join(missing)}
+    return {"id": "desktop_assets", "status": "ok", "detail": ", ".join(_DESKTOP_ASSETS)}
 
 
 def _check_bind() -> dict[str, str]:
@@ -217,7 +217,7 @@ def _cmd_doctor(settings: Settings) -> int:
         _check_tzdata(settings.timezone),
         _check_database(settings.database_path),
         _check_pricing(settings.pricing_path),
-        _check_web_assets(),
+        _check_desktop_assets(),
         _check_bind(),
     ]
     payload = {
@@ -284,7 +284,7 @@ def _main() -> int:
     subparsers.add_parser("init", aliases=["init-db"], help="Create the local database")
     subparsers.add_parser(
         "doctor",
-        help="Check Python, timezone data, existing database, pricing, web assets, and localhost bind",
+        help="Check Python, timezone data, existing database, pricing, desktop assets, and localhost bind",
     )
     serve = subparsers.add_parser("serve", help="Run the dashboard on 127.0.0.1")
     serve.add_argument("--host", default=os.environ.get("BURNRATE_HOST") or DEFAULT_SERVE_HOST)

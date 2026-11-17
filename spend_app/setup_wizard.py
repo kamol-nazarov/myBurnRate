@@ -1839,11 +1839,11 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 state["spokeConfig"]["ownerSession"] = owner_session
                 state["spokeConfig"]["ownerSessionExpiresAt"] = remote["expiresAt"]
                 write_setup_state(connection, state)
-                from spend_app.auth_model import create_local_session, set_local_cookie
-                local = create_local_session(connection, device_label="Spoke browser")
             clear_hub_proxy_cache()
-            response = JSONResponse({"ok": True, "expiresAt": remote["expiresAt"]})
-            return set_local_cookie(response, request, local)
+            return JSONResponse(
+                {"ok": True, "expiresAt": remote["expiresAt"]},
+                headers={"Cache-Control": "no-store"},
+            )
         except CodedError as exc:
             return error_response(exc.code, status_code=exc.status_code, retry_after=exc.retry_after)
         except ValueError:
