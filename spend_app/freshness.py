@@ -363,6 +363,8 @@ def report(settings, now: datetime | None = None, *, background: bool = True,
             issues.append({"kind": "version", "key": "hub", "name": "Hub version", "short": "Hub version", "state": "mismatch", "severity": "info",
                            "ageSeconds": None, "detail": f"Hub runs {remote_build or remote + ' (an older build)'}; this computer runs {local_build}. "
                                                          "Update it with: burnrate hub update"})
+    from spend_app.connection_secrets import pending_revoke_count
+
     severities = {item["severity"] for item in issues}
     severity = "alarm" if "alarm" in severities else "warn" if "warn" in severities else "ok"
     return {
@@ -374,4 +376,5 @@ def report(settings, now: datetime | None = None, *, background: bool = True,
         "sync": sync,
         "hub": hub,
         "machines": machines,
+        "pendingRevokeCount": pending_revoke_count(settings.database_path),
     }

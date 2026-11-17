@@ -274,6 +274,174 @@ def _compensate_publish_failure(
         pass
 
 
+MAX_PENDING_REVOKES = 64
+MAX_FLUSH_BATCH = 8
+PENDING_REVOKE_CALL_TIMEOUT = 3.0
+PENDING_REVOKE_BASE_BACKOFF_SECONDS = 5
+_PENDING_REVOKE_KINDS = frozenset({"owner_logout", "machine_revoke_owner", "machine_self_revoke", "owner"})
+
+
+def _token_sha256(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _parse_pending_iso(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _format_pending_iso(moment: datetime) -> str:
+    return moment.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _normalize_pending_kind(raw_kind: object, *, has_machine_id: bool = False) -> str:
+    k = str(raw_kind or "").strip()
+    if k in {"owner_logout", "machine_revoke_owner", "machine_self_revoke"}:
+        return k
+    if k == "owner":
+        return "owner" if has_machine_id else "owner_logout"
+    return "owner_logout"
+
+
+def _deterministic_pending_id(kind: str, token_hash: str, hub_url: str, machine_id: str) -> str:
+    payload = f"{kind}|{token_hash}|{hub_url}|{machine_id}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+
+
+def _normalize_pending_entry(
+    item: dict,
+    *,
+    now_iso: str,
+    generate_id: bool = False,
+) -> dict | None:
+    if not isinstance(item, dict):
+        return None
+    tok = str(item.get("token") or "").strip()
+    if not tok:
+        return None
+    mid = str(item.get("machineId") or "").strip()
+    hub_url = str(item.get("hubUrl") or "").strip()
+    kind = _normalize_pending_kind(item.get("kind"), has_machine_id=bool(mid))
+    token_hash = _token_sha256(tok)
+    entry_id = str(item.get("id") or "").strip()
+    if not entry_id:
+        entry_id = uuid.uuid4().hex if generate_id else _deterministic_pending_id(kind, token_hash, hub_url, mid)
+    created_at = str(item.get("createdAt") or "").strip() or now_iso
+    raw_attempts = item.get("attempts")
+    try:
+        attempts = max(0, int(raw_attempts)) if raw_attempts is not None else 0
+    except (TypeError, ValueError):
+        attempts = 0
+    next_attempt = str(item.get("nextAttemptAt") or "").strip() or None
+    last_error = str(item.get("lastError") or "").strip() or None
+    entry: dict = {
+        "id": entry_id,
+        "kind": kind,
+        "tokenHash": token_hash,
+        "token": tok,
+        "createdAt": created_at,
+        "attempts": attempts,
+    }
+    if mid:
+        entry["machineId"] = mid
+    if hub_url:
+        entry["hubUrl"] = hub_url
+    if next_attempt:
+        entry["nextAttemptAt"] = next_attempt
+    if last_error:
+        entry["lastError"] = last_error
+    return entry
+
+
+def _pending_dedupe_key(entry: dict) -> tuple[str, str, str, str]:
+    return (
+        str(entry.get("kind") or "owner_logout"),
+        str(entry.get("tokenHash") or ""),
+        str(entry.get("hubUrl") or ""),
+        str(entry.get("machineId") or ""),
+    )
+
+
+def _backoff_next_attempt(moment: datetime, attempts: int, *, retry_after: int | None = None) -> str:
+    delay = PENDING_REVOKE_BASE_BACKOFF_SECONDS * (2 ** max(0, min(attempts - 1, 8)))
+    if isinstance(retry_after, int) and retry_after > 0:
+        delay = max(delay, min(retry_after, 3600))
+    else:
+        delay = min(delay, 1800)
+    return _format_pending_iso(moment + timedelta(seconds=delay))
+
+
+def is_terminal_revoke_response(
+    kind: str,
+    status_code: int,
+    data: object = None,
+    *,
+    headers=None,
+    err_code: str | None = None,
+) -> bool:
+    """Return True only when the hub proved success or that the target/credential is already invalid."""
+    if 200 <= status_code < 300:
+        return True
+    if 300 <= status_code < 400:
+        return False
+    resolved_code = err_code
+    if resolved_code is None:
+        from spend_app.error_codes import extract_error_code
+
+        resolved_code, _ = extract_error_code(data, headers=headers)
+    norm_kind = "owner_logout" if kind == "owner" else kind
+    if norm_kind == "owner_logout":
+        if status_code == 401:
+            return True
+        if status_code == 403:
+            return False
+        return resolved_code == "AUTH-107" and status_code not in {400, 429} and status_code < 500
+    if norm_kind == "machine_revoke_owner":
+        if status_code in (401, 403):
+            return False
+        if status_code in (404, 410):
+            return True
+        return resolved_code in {"DEV-301", "DEV-302"} and status_code == 422
+    if norm_kind == "machine_self_revoke":
+        if status_code == 403:
+            return False
+        if status_code in (401, 404, 410):
+            return True
+        return resolved_code in {"DEV-301", "DEV-302"} and status_code == 422
+    return False
+
+
+def response_is_terminal_revoke(kind: str, res, call_err: dict | None = None) -> bool:
+    """Classify an HTTP/TestClient response + optional _call_hub error dict for S9."""
+    if res is None:
+        return False
+    status_code = getattr(res, "status_code", 0)
+    try:
+        status_code = int(status_code)
+    except (TypeError, ValueError):
+        return False
+    data = None
+    try:
+        data = res.json() if getattr(res, "content", b"") else None
+    except Exception:
+        data = None
+    err_code = (call_err or {}).get("code") if status_code != 403 else None
+    return is_terminal_revoke_response(
+        kind,
+        status_code,
+        data,
+        headers=getattr(res, "headers", None),
+        err_code=err_code,
+    )
+
+
 def _parse_pending_revokes(raw: str | None) -> list[dict]:
     import json
 
@@ -285,74 +453,73 @@ def _parse_pending_revokes(raw: str | None) -> list[dict]:
         return []
     if not isinstance(parsed, list):
         return []
+    now_iso = _format_pending_iso(datetime.now(UTC))
     out: list[dict] = []
+    seen_keys: set[tuple[str, str, str, str]] = set()
     for item in parsed:
-        if not isinstance(item, dict):
+        norm = _normalize_pending_entry(item, now_iso=now_iso, generate_id=False)
+        if norm is None:
             continue
-        tok = str(item.get("token") or "").strip()
-        if not tok:
+        k = _pending_dedupe_key(norm)
+        if k in seen_keys:
             continue
-        entry: dict[str, str] = {
-            "kind": str(item.get("kind") or "owner").strip() or "owner",
-            "token": tok,
-        }
-        mid = str(item.get("machineId") or "").strip()
-        if mid:
-            entry["machineId"] = mid
-        hub_url = str(item.get("hubUrl") or "").strip()
-        if hub_url:
-            entry["hubUrl"] = hub_url
-        out.append(entry)
+        seen_keys.add(k)
+        out.append(norm)
     return out
 
 
 def _merge_pending_revokes(existing: list[dict], new_entries: list[dict]) -> list[dict]:
-    merged: dict[tuple[str, str], dict] = {}
-    order: list[tuple[str, str]] = []
-    for item in [*existing, *new_entries]:
-        if not isinstance(item, dict):
+    now_iso = _format_pending_iso(datetime.now(UTC))
+    merged: dict[tuple[str, str, str, str], dict] = {}
+    order: list[tuple[str, str, str, str]] = []
+    for item in existing:
+        norm = _normalize_pending_entry(item, now_iso=now_iso, generate_id=False)
+        if norm is None:
             continue
-        tok = str(item.get("token") or "").strip()
-        if not tok:
+        k = _pending_dedupe_key(norm)
+        if k not in merged:
+            merged[k] = norm
+            order.append(k)
+    for item in new_entries:
+        norm = _normalize_pending_entry(item, now_iso=now_iso, generate_id=True)
+        if norm is None:
             continue
-        hub_url = str(item.get("hubUrl") or "").strip()
-        mid = str(item.get("machineId") or "").strip()
-        key = (tok, hub_url)
-        if key not in merged:
-            entry: dict[str, str] = {
-                "kind": str(item.get("kind") or "owner").strip() or "owner",
-                "token": tok,
-            }
-            if mid:
-                entry["machineId"] = mid
-            if hub_url:
-                entry["hubUrl"] = hub_url
-            merged[key] = entry
-            order.append(key)
-        elif mid and not merged[key].get("machineId"):
-            merged[key]["machineId"] = mid
+        k = _pending_dedupe_key(norm)
+        if k not in merged:
+            merged[k] = norm
+            order.append(k)
+        else:
+            cur = merged[k]
+            if norm.get("machineId") and not cur.get("machineId"):
+                cur["machineId"] = norm["machineId"]
+            if norm.get("hubUrl") and not cur.get("hubUrl"):
+                cur["hubUrl"] = norm["hubUrl"]
     return [merged[k] for k in order]
 
 
-def _write_pending_revokes(use_vault, entries: list[dict]) -> None:
+def _write_pending_revokes(use_vault, entries: list[dict], *, database_path: Path | str | None = None) -> None:
     import json
+    from spend_app.error_codes import CodedError
 
-    if use_vault is None:
-        return
     if entries:
+        if use_vault is None:
+            raise CodedError("APP-903", status_code=503)
         try:
             verified_vault_put(
                 use_vault,
                 json.dumps(entries, separators=(",", ":"), sort_keys=True),
                 PENDING_REVOKE_VAULT_REF,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            raise CodedError("APP-903", status_code=503) from exc
     else:
+        if use_vault is None:
+            return
         try:
             use_vault.delete(PENDING_REVOKE_VAULT_REF)
-        except Exception:
-            pass
+        except Exception as exc:
+            if read_vault_secret(database_path, PENDING_REVOKE_VAULT_REF, vault=use_vault) is not None:
+                raise CodedError("APP-903", status_code=503) from exc
 
 
 def read_pending_revokes(database_path: Path | str | None, *, vault=None) -> list[dict]:
@@ -361,37 +528,99 @@ def read_pending_revokes(database_path: Path | str | None, *, vault=None) -> lis
     return _parse_pending_revokes(raw)
 
 
+def pending_revoke_count(database_path: Path | str | None, *, vault=None) -> int:
+    """Return the count of vault-stored pending revokes (never exposes tokens or URLs)."""
+    return len(read_pending_revokes(database_path, vault=vault))
+
+
+def _resolve_vault_for_pending(db_file: Path | None, vault):
+    if vault is not None:
+        return vault
+    if db_file is None:
+        return None
+    try:
+        return get_vault(db_file)
+    except Exception:
+        return None
+
+
 def enqueue_pending_revokes(
     database_path: Path | str | None,
     entries: list[dict],
     *,
     vault=None,
+    hub_url: str | None = None,
+    client=None,
+    allow_flush_on_overflow: bool = True,
 ) -> None:
-    """Persist unrevoked tokens in vault-only ``burnrate-pending-revoke``."""
+    """Atomically persist unrevoked tokens in vault-only ``burnrate-pending-revoke``.
+
+    Uses both ``db_secret_lock`` and SQLite ``BEGIN IMMEDIATE`` (when ``database_path``
+    is provided) so concurrent desktop and background processes never lose entries.
+    Raises ``CodedError("APP-903", status_code=503)`` if the vault write fails or
+    capacity (``MAX_PENDING_REVOKES``) remains exceeded after coalescing/flushing.
+    """
+    from spend_app.error_codes import CodedError
+
     clean_entries = [e for e in (entries or []) if isinstance(e, dict) and str(e.get("token") or "").strip()]
     if not clean_entries:
         return
     db_file = Path(database_path) if database_path is not None else None
     lock_cm = db_secret_lock(db_file) if db_file is not None else None
-    if lock_cm is not None:
-        lock_cm.acquire()
-    try:
-        use_vault = vault
-        if use_vault is None and db_file is not None:
-            try:
-                use_vault = get_vault(db_file)
-            except Exception:
-                use_vault = None
-        if use_vault is None:
-            return
-        existing = _parse_pending_revokes(
-            read_vault_secret(db_file, PENDING_REVOKE_VAULT_REF, vault=use_vault)
-        )
-        merged = _merge_pending_revokes(existing, clean_entries)
-        _write_pending_revokes(use_vault, merged)
-    finally:
+
+    def _try_enqueue_locked() -> tuple[bool, object]:
         if lock_cm is not None:
-            lock_cm.release()
+            lock_cm.acquire()
+        try:
+            use_vault = _resolve_vault_for_pending(db_file, vault)
+            if use_vault is None:
+                raise CodedError("APP-903", status_code=503)
+            if db_file is not None:
+                from spend_app.db import connect, initialize
+
+                initialize(db_file)
+                with connect(db_file) as conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                    existing = _parse_pending_revokes(
+                        read_vault_secret(db_file, PENDING_REVOKE_VAULT_REF, vault=use_vault)
+                    )
+                    merged = _merge_pending_revokes(existing, clean_entries)
+                    if len(merged) > MAX_PENDING_REVOKES:
+                        conn.rollback()
+                        return False, use_vault
+                    _write_pending_revokes(use_vault, merged, database_path=db_file)
+                    conn.commit()
+                    return True, use_vault
+            existing = _parse_pending_revokes(
+                read_vault_secret(None, PENDING_REVOKE_VAULT_REF, vault=use_vault)
+            )
+            merged = _merge_pending_revokes(existing, clean_entries)
+            if len(merged) > MAX_PENDING_REVOKES:
+                return False, use_vault
+            _write_pending_revokes(use_vault, merged, database_path=None)
+            return True, use_vault
+        finally:
+            if lock_cm is not None:
+                lock_cm.release()
+
+    ok, used_vault = _try_enqueue_locked()
+    if ok:
+        return
+    if allow_flush_on_overflow:
+        try:
+            flush_pending_revokes(
+                db_file,
+                hub_url,
+                vault=used_vault,
+                client=client,
+                ignore_backoff=True,
+            )
+        except Exception:
+            pass
+        ok2, _ = _try_enqueue_locked()
+        if ok2:
+            return
+    raise CodedError("APP-903", status_code=503)
 
 
 def flush_pending_revokes(
@@ -400,38 +629,69 @@ def flush_pending_revokes(
     *,
     vault=None,
     client=None,
+    now: datetime | None = None,
+    ignore_backoff: bool = False,
 ) -> bool:
-    """Retry any vault-stored pending revokes against the hub.
+    """Retry up to ``MAX_FLUSH_BATCH`` due pending revokes against the hub.
 
-    Returns True when no pending revokes remain (or all retried cleanly),
-    False if any revoke failed due to network/hub error.
+    Snapshot and final reconciliation run under ``db_secret_lock`` + SQLite
+    ``BEGIN IMMEDIATE`` while all HTTP calls execute strictly outside locks.
+    Returns True only when no pending revokes remain in the queue.
     """
-    from spend_app.error_codes import HUB_PROTOCOL_VERSION
+    from spend_app.error_codes import (
+        HUB_PROTOCOL_VERSION,
+        extract_error_code,
+        map_http_error,
+        map_transport_error,
+    )
     from spend_app.hub_origin import hub_origin
     from spend_app.sync import _hub_post_with_cookie_isolation
 
+    moment = (now or datetime.now(UTC)).astimezone(UTC)
     db_file = Path(database_path) if database_path is not None else None
     lock_cm = db_secret_lock(db_file) if db_file is not None else None
+
+    use_vault = None
+    pending: list[dict] = []
     if lock_cm is not None:
         lock_cm.acquire()
     try:
-        use_vault = vault
-        if use_vault is None and db_file is not None:
-            try:
-                use_vault = get_vault(db_file)
-            except Exception:
-                use_vault = None
+        use_vault = _resolve_vault_for_pending(db_file, vault)
         if use_vault is None:
             return True
-        pending = _parse_pending_revokes(
-            read_vault_secret(db_file, PENDING_REVOKE_VAULT_REF, vault=use_vault)
-        )
+        if db_file is not None:
+            from spend_app.db import connect, initialize
+
+            initialize(db_file)
+            with connect(db_file) as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                pending = _parse_pending_revokes(
+                    read_vault_secret(db_file, PENDING_REVOKE_VAULT_REF, vault=use_vault)
+                )
+                conn.commit()
+        else:
+            pending = _parse_pending_revokes(
+                read_vault_secret(None, PENDING_REVOKE_VAULT_REF, vault=use_vault)
+            )
     finally:
         if lock_cm is not None:
             lock_cm.release()
 
     if not pending:
         return True
+
+    due: list[dict] = []
+    for item in pending:
+        if ignore_backoff:
+            due.append(item)
+            continue
+        due_at = _parse_pending_iso(item.get("nextAttemptAt"))
+        if due_at is None or due_at <= moment:
+            due.append(item)
+    due.sort(key=lambda e: (int(e.get("attempts") or 0), str(e.get("createdAt") or "")))
+    batch = due[:MAX_FLUSH_BATCH]
+    if not batch:
+        return False
 
     fallback_origin = None
     if hub_url:
@@ -440,21 +700,62 @@ def flush_pending_revokes(
         except ValueError:
             fallback_origin = None
 
-    done_keys: set[tuple[str, str]] = set()
-    cleared_machine_keys: set[tuple[str, str]] = set()
+    done_ids: set[str] = set()
+    converted_to_owner_logout: set[str] = set()
+    retry_updates: dict[str, tuple[str, int | None]] = {}
     any_failed = False
 
-    for item in pending:
+    def _call_revoke(target_origin: str, endpoint: str, headers: dict, json_body: dict, kind: str, use_client):
+        try:
+            res = _hub_post_with_cookie_isolation(
+                target_origin,
+                endpoint,
+                headers,
+                json_body=json_body,
+                client=use_client,
+                timeout=PENDING_REVOKE_CALL_TIMEOUT,
+            )
+        except Exception as exc:
+            code, _ = map_transport_error(exc)
+            return False, code, None
+        try:
+            res_data = res.json() if getattr(res, "content", b"") else None
+        except Exception:
+            res_data = None
+        if is_terminal_revoke_response(
+            kind,
+            res.status_code,
+            res_data,
+            headers=getattr(res, "headers", None),
+        ):
+            return True, None, None
+        if 300 <= res.status_code < 400:
+            return False, "HUB-501", None
+        mapped = map_http_error(
+            res.status_code,
+            res_data,
+            headers=getattr(res, "headers", None),
+            endpoint_path=endpoint,
+            has_machine_token=(kind == "machine_self_revoke"),
+        )
+        _, retry_after = extract_error_code(res_data, headers=getattr(res, "headers", None))
+        return False, mapped.code, mapped.retry_after or retry_after
+
+    for item in batch:
+        item_id = str(item["id"])
+        kind = str(item.get("kind") or "owner_logout")
         tok = str(item.get("token") or "").strip()
         raw_item_hub = str(item.get("hubUrl") or "").strip()
-        key = (tok, raw_item_hub)
         target_raw = raw_item_hub or fallback_origin or ""
         if not target_raw:
+            retry_updates[item_id] = ("NET-001", None)
             any_failed = True
             continue
         try:
             target_origin = hub_origin(target_raw)
         except ValueError:
+            err_c = "NET-003" if target_raw.lower().startswith("http://") else "NET-001"
+            retry_updates[item_id] = (err_c, None)
             any_failed = True
             continue
         use_client = client if (client is not None and fallback_origin == target_origin) else None
@@ -465,59 +766,126 @@ def flush_pending_revokes(
             "X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION),
         }
         mid = str(item.get("machineId") or "").strip()
-        if mid:
-            try:
-                rev_res = _hub_post_with_cookie_isolation(
-                    target_origin,
-                    "/api/machines",
-                    headers,
-                    json_body={"action": "revoke", "id": mid},
-                    client=use_client,
-                    timeout=6.0,
-                )
-            except Exception:
+
+        if kind == "machine_revoke_owner":
+            if not mid:
+                done_ids.add(item_id)
+                continue
+            ok_rev, err_c, retry_after = _call_revoke(
+                target_origin,
+                "/api/machines",
+                headers,
+                {"action": "revoke", "id": mid},
+                "machine_revoke_owner",
+                use_client,
+            )
+            if ok_rev:
+                done_ids.add(item_id)
+            else:
+                retry_updates[item_id] = (err_c or "HUB-501", retry_after)
+                any_failed = True
+        elif kind == "machine_self_revoke":
+            ok_rev, err_c, retry_after = _call_revoke(
+                target_origin,
+                "/api/machines/self/revoke",
+                headers,
+                {},
+                "machine_self_revoke",
+                use_client,
+            )
+            if ok_rev:
+                done_ids.add(item_id)
+            else:
+                retry_updates[item_id] = (err_c or "HUB-501", retry_after)
+                any_failed = True
+        elif kind == "owner" and mid:
+            ok_m, err_m, ra_m = _call_revoke(
+                target_origin,
+                "/api/machines",
+                headers,
+                {"action": "revoke", "id": mid},
+                "machine_revoke_owner",
+                use_client,
+            )
+            if not ok_m:
+                retry_updates[item_id] = (err_m or "HUB-501", ra_m)
                 any_failed = True
                 continue
-            if rev_res.status_code >= 500:
-                any_failed = True
-                continue
-            cleared_machine_keys.add(key)
-        try:
-            res = _hub_post_with_cookie_isolation(
+            ok_o, err_o, ra_o = _call_revoke(
                 target_origin,
                 "/api/auth/logout",
                 headers,
-                client=use_client,
-                timeout=6.0,
+                {},
+                "owner_logout",
+                use_client,
             )
-        except Exception:
-            any_failed = True
-            continue
-        if res.status_code >= 500:
-            any_failed = True
-            continue
-        done_keys.add(key)
+            if ok_o:
+                done_ids.add(item_id)
+            else:
+                converted_to_owner_logout.add(item_id)
+                retry_updates[item_id] = (err_o or "HUB-501", ra_o)
+                any_failed = True
+        else:
+            ok_o, err_o, ra_o = _call_revoke(
+                target_origin,
+                "/api/auth/logout",
+                headers,
+                {},
+                "owner_logout",
+                use_client,
+            )
+            if ok_o:
+                done_ids.add(item_id)
+            else:
+                retry_updates[item_id] = (err_o or "HUB-501", ra_o)
+                any_failed = True
+
+    def _reconcile(latest: list[dict]) -> list[dict]:
+        updated: list[dict] = []
+        for cur in latest:
+            cid = str(cur["id"])
+            if cid in done_ids:
+                continue
+            item_copy = dict(cur)
+            if cid in converted_to_owner_logout:
+                item_copy["kind"] = "owner_logout"
+                item_copy.pop("machineId", None)
+            if cid in retry_updates:
+                err_code, retry_after = retry_updates[cid]
+                new_attempts = int(item_copy.get("attempts") or 0) + 1
+                item_copy["attempts"] = new_attempts
+                item_copy["lastError"] = err_code
+                item_copy["nextAttemptAt"] = _backoff_next_attempt(
+                    moment, new_attempts, retry_after=retry_after
+                )
+            updated.append(item_copy)
+        return updated
 
     if lock_cm is not None:
         lock_cm.acquire()
     try:
-        latest = _parse_pending_revokes(
-            read_vault_secret(db_file, PENDING_REVOKE_VAULT_REF, vault=use_vault)
-        )
-        updated: list[dict] = []
-        for item in latest:
-            k = (str(item.get("token") or "").strip(), str(item.get("hubUrl") or "").strip())
-            if k in done_keys:
-                continue
-            if k in cleared_machine_keys and "machineId" in item:
-                item = {ik: iv for ik, iv in item.items() if ik != "machineId"}
-            updated.append(item)
-        _write_pending_revokes(use_vault, updated)
+        if db_file is not None:
+            from spend_app.db import connect
+
+            with connect(db_file) as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                latest = _parse_pending_revokes(
+                    read_vault_secret(db_file, PENDING_REVOKE_VAULT_REF, vault=use_vault)
+                )
+                updated = _reconcile(latest)
+                _write_pending_revokes(use_vault, updated, database_path=db_file)
+                conn.commit()
+        else:
+            latest = _parse_pending_revokes(
+                read_vault_secret(None, PENDING_REVOKE_VAULT_REF, vault=use_vault)
+            )
+            updated = _reconcile(latest)
+            _write_pending_revokes(use_vault, updated, database_path=None)
     finally:
         if lock_cm is not None:
             lock_cm.release()
 
-    return not any_failed
+    return not any_failed and len(updated) == 0
 
 
 CLEANUP_PENDING_META_KEY = "secrets.cleanup_pending.v1"

@@ -78,6 +78,7 @@ def build_report(settings, *, now: datetime | None = None, log_dir: Path | None 
         f"Build: {build_id()} (version {__version__})",
         f"Python {sys.version.split()[0]} on {platform.platform()}",
         f"Role: {setup.get('role') or 'standalone'}" + (" (setup finished)" if setup.get("completed") else " (setup not finished)"),
+        f"Pending revocations: {int(fresh.get('pendingRevokeCount') or 0)}",
     ]
     if sync:
         out.append(f"Hub: {hub.get('build') or hub.get('version') or 'unknown'}"

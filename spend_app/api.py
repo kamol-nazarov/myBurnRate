@@ -308,6 +308,8 @@ def create_app(
                     action = "setup.change"
                 elif path == "/api/machines":
                     action = getattr(request.state, "audit_action", "machine.change")
+                elif path == "/api/machines/self/revoke":
+                    action = getattr(request.state, "audit_action", "machine.revoke")
                 elif path == "/api/auth/machine/rotate":
                     action = "machine.rotate"
                 elif path in {"/api/auth/logout", "/api/auth/sessions/revoke"}:
