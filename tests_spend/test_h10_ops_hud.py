@@ -824,7 +824,7 @@ def test_browser_diagnostics_view_sections_navigation_and_xss(tmp_path):
             { source: "openrouter<img src=x>", status: "error", eventsLast24h: 0, error: "<script>window.__dxss=4<\/script>401 Unauthorized" }
           ],
           quotas: [
-            { providerKey: "claude-code", status: "ok", lastPoll: "12:00Z" },
+            { providerKey: "claude-code", status: "ok", lastPoll: new Date(Date.now() - 12000).toISOString() },
             { providerKey: "codex", status: "error", reason: "Token expired" },
             { providerKey: "openrouter<b>", status: "stale", reason: "Cached <img src=x>" }
           ],
@@ -900,8 +900,11 @@ def test_browser_diagnostics_view_sections_navigation_and_xss(tmp_path):
       freshnessCount: document.querySelectorAll('#diagFreshnessList .diag-item').length,
       freshnessTones: [...document.querySelectorAll('#diagFreshnessList .diag-tag')].map(e => e.className),
       ingestCount: document.querySelectorAll('#diagIngestGrid .diag-ingest-card').length,
+      ingestNames: [...document.querySelectorAll('#diagIngestGrid .diag-ingest-source')].map(e => e.textContent),
       ingestTones: [...document.querySelectorAll('#diagIngestGrid .diag-ingest-status')].map(e => e.className),
       quotasCount: document.querySelectorAll('#diagQuotasList .diag-item').length,
+      quotaNames: [...document.querySelectorAll('#diagQuotasList .diag-item strong')].map(e => e.textContent),
+      quotaSubs: [...document.querySelectorAll('#diagQuotasList .diag-item small')].map(e => e.textContent),
       quotaTones: [...document.querySelectorAll('#diagQuotasList .diag-tag')].map(e => e.className),
       pricingCount: pricingItems.length,
       pricingDetailsOk:
@@ -987,12 +990,15 @@ def test_browser_diagnostics_view_sections_navigation_and_xss(tmp_path):
     assert "tone-warn" in r["freshnessTones"][2]
 
     assert r["ingestCount"] == 4
+    assert r["ingestNames"][:3] == ["Claude Code", "Codex", "OpenCode Go"]
     assert "tone-mint" in r["ingestTones"][0]
     assert "tone-mint" in r["ingestTones"][1]
     assert "tone-warn" in r["ingestTones"][2]
     assert "tone-danger" in r["ingestTones"][3]
 
     assert r["quotasCount"] == 3
+    assert r["quotaNames"][:2] == ["Claude Code", "Codex"]
+    assert r["quotaSubs"][0].startswith("polled ") and "ago" in r["quotaSubs"][0] and "T" not in r["quotaSubs"][0]
     assert "tone-mint" in r["quotaTones"][0]
     assert "tone-danger" in r["quotaTones"][1]
     assert "tone-warn" in r["quotaTones"][2]
@@ -1549,3 +1555,149 @@ def test_browser_responsive_no_horizontal_overflow_at_304_and_480(tmp_path):
         assert entry["opsOverflow"] <= 1, entry
         assert entry["scrollOverflow"] <= 1, entry
         assert entry["diagOverflow"] <= 1, entry
+
+
+@needs_chrome
+@browser
+def test_browser_diagnostics_and_header_no_overflow_at_304_336_380(tmp_path):
+    report = demo_report()
+    api_js = """
+    api.get_diagnostics_data = async function() {
+      const now = Date.now();
+      return {
+        ok: true,
+        freshness: {
+          status: "warn",
+          version: "0.5.9",
+          hub: { version: "0.6.0", matches: false },
+          ingest: { lastPassSeconds: 2.1, lastPassAgeSeconds: 14 },
+          sync: { failing: false, ageSeconds: 95 },
+          issues: [
+            {
+              short: "claude_local",
+              state: "stale",
+              severity: "warn",
+              ageSeconds: 420,
+              detail: "https://hub.example.invalid/long/diagnostic/endpoint/path/for/wrapping"
+            }
+          ],
+          machines: [
+            { key: "Desktop", state: "online", ageSeconds: 12, lastSeenAt: new Date(now - 35000).toISOString() },
+            { key: "Laptop", state: "offline", ageSeconds: 7200, lastSeenAt: new Date(now - 7200000).toISOString() }
+          ]
+        },
+        health: {
+          ingest: [
+            { source: "claude_local", status: "success", eventsLast24h: 412, lastSuccess: new Date(now - 15000).toISOString() },
+            { source: "codex_local", status: "success", eventsLast24h: 288, lastSuccess: new Date(now - 22000).toISOString() },
+            { source: "opencode_local", status: "partial", eventsLast24h: 64, lastSuccess: new Date(now - 45000).toISOString() },
+            { source: "antigravity_local", status: "success", eventsLast24h: 19, lastSuccess: new Date(now - 60000).toISOString() },
+            { source: "grok_local", status: "skipped", eventsLast24h: 0, error: "Not configured" },
+            { source: "openrouter", status: "success", eventsLast24h: 11, lastSuccess: new Date(now - 120000).toISOString() }
+          ],
+          quotas: [
+            { providerKey: "claude-code", status: "ok", lastPoll: new Date(now - 12000).toISOString() },
+            { providerKey: "codex", status: "ok", lastPoll: new Date(now - 18000).toISOString() },
+            { providerKey: "opencode-go", status: "ok", lastPoll: new Date(now - 30000).toISOString() },
+            { providerKey: "antigravity", status: "stale", lastPoll: new Date(now - 1800000).toISOString() },
+            { providerKey: "grok", status: "error", reason: "Token expired" }
+          ],
+          sources: [
+            {
+              source: "claude_local",
+              pricingCoverage: {
+                models: [
+                  { model: "claude-custom-unpriced-snapshot-20261116", records: 12, reasons: [{ code: "missing_current_rate" }] }
+                ]
+              }
+            }
+          ],
+          pricingGaps: ["legacy-unpriced-model-name-0001"],
+          providerVsComputedVariancePct: 1.8
+        }
+      };
+    };
+    """
+    probe_js = """
+    await until(() => document.querySelector('.provider-row'));
+    document.getElementById('diagBtn').click();
+    await until(() => document.querySelectorAll('#diagIngestGrid .diag-ingest-card').length === 6);
+    await wait(40);
+
+    async function inspectAt(w) {
+      await setWidth(w);
+      await wait(40);
+      const de = document.documentElement;
+      const clientW = de.clientWidth;
+      const header = document.getElementById('dragHeader');
+      const dv = document.getElementById('diagnosticsView');
+      const grid = document.getElementById('diagIngestGrid');
+      const cardRects = [...grid.querySelectorAll('.diag-ingest-card')].map(c => c.getBoundingClientRect());
+      const offenders = [];
+      for (const container of [header, dv]) {
+        for (const el of [container, ...container.querySelectorAll('*')]) {
+          const cs = getComputedStyle(el);
+          if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+          const r = el.getBoundingClientRect();
+          if (r.width === 0 && r.height === 0) continue;
+          if (r.right > clientW + 0.5 || r.left < -0.5) {
+            offenders.push({
+              tag: el.tagName,
+              id: el.id,
+              cls: String(el.className || ''),
+              left: r.left,
+              right: r.right,
+              clientW
+            });
+          }
+        }
+      }
+      const actionBtns = ['pinBtn', 'refreshBtn', 'settingsBtn', 'minBtn', 'closeBtn'].map(id => {
+        const r = document.getElementById(id).getBoundingClientRect();
+        return { id, left: r.left, right: r.right, width: r.width };
+      });
+      const backR = document.getElementById('diagnosticsBackBtn').getBoundingClientRect();
+      const titleR = document.querySelector('.diag-view-title').getBoundingClientRect();
+      const refR = document.getElementById('diagRefreshBtn').getBoundingClientRect();
+      return {
+        w,
+        clientW,
+        scrollW: de.scrollWidth,
+        ingestCols: cardRects.length >= 2 && Math.abs(cardRects[0].left - cardRects[1].left) < 1 ? 1 : 2,
+        offenders,
+        actionBtns,
+        titleCenterOffset: Math.abs((titleR.left + titleR.right) / 2 - clientW / 2),
+        topbarNoOverlap: backR.right <= titleR.left + 1 && titleR.right <= refR.left + 1,
+      };
+    }
+
+    const checks = [];
+    for (const w of [304, 336, 380, 480]) {
+      checks.push(await inspectAt(w));
+    }
+    report({
+      checks,
+      ingestNames: [...document.querySelectorAll('#diagIngestGrid .diag-ingest-source')].map(e => e.textContent),
+      quotaNames: [...document.querySelectorAll('#diagQuotasList .diag-item strong')].map(e => e.textContent),
+      quotaSubs: [...document.querySelectorAll('#diagQuotasList .diag-item small')].map(e => e.textContent),
+    });
+    """
+    html = build_page(pref="light", report=report, api_js=api_js, probe=probe_js, extra_css=FAST)
+    r = probe(html, 380, tmp_path, height=900)
+
+    for entry in r["checks"]:
+        assert entry["scrollW"] <= entry["clientW"], entry
+        assert entry["offenders"] == [], entry
+        assert all(b["width"] > 0 and b["right"] <= entry["clientW"] + 0.5 for b in entry["actionBtns"]), entry
+        assert entry["topbarNoOverlap"] is True, entry
+        assert entry["titleCenterOffset"] <= 12.0, entry
+        if entry["w"] in (304, 336, 380):
+            assert entry["ingestCols"] == 1, entry
+        else:
+            assert entry["ingestCols"] == 2, entry
+
+    assert r["ingestNames"] == ["Claude Code", "Codex", "OpenCode Go", "Antigravity", "Grok Build", "OpenRouter"]
+    assert r["quotaNames"] == ["Claude Code", "Codex", "OpenCode Go", "Antigravity", "Grok Build"]
+    for sub in r["quotaSubs"][:4]:
+        assert sub.startswith("polled ") and "T" not in sub, sub
+        assert "ago" in sub, sub

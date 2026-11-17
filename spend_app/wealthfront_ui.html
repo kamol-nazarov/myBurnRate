@@ -2511,8 +2511,25 @@ html.is-comfortable .quick-plan-banner { padding: 11px 12px; }
   align-content: start;
 }
 .diagnostics-view[hidden] { display: none !important; }
-.diag-topbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+@media (max-width: 340px) {
+  .topbar { padding: 8px 8px 5px 10px; gap: 4px; }
+  .brand-group { gap: 4px; }
+  .brand-title { font-size: 11px; }
+  .status-pill { padding: 1.5px 5px; }
+}
+.topbar .brand-group { overflow: hidden; }
+.topbar .status-pill { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.diagnostics-view { min-width: 0; width: 100%; }
+.diag-topbar {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
 .diag-back-btn {
+  justify-self: start;
+  white-space: nowrap;
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -2527,7 +2544,8 @@ html.is-comfortable .quick-plan-banner { padding: 11px 12px; }
   cursor: pointer;
 }
 .diag-back-btn:hover { border-color: var(--accent-border); background: var(--row-hover); }
-.diag-view-title { font-family: var(--display); font-size: 13px; font-weight: 700; color: var(--ink); }
+.diag-view-title { font-family: var(--display); font-size: 13px; font-weight: 700; color: var(--ink); text-align: center; white-space: nowrap; }
+#diagRefreshBtn { justify-self: end; }
 .diag-card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -2598,7 +2616,7 @@ html.is-comfortable .quick-plan-banner { padding: 11px 12px; }
 .diag-ingest-status.tone-warn { color: var(--warn); }
 .diag-ingest-status.tone-danger { color: var(--danger); }
 .diag-ingest-meta { font-size: 10.5px; color: var(--ink-secondary); line-height: 1.35; overflow-wrap: anywhere; }
-@media (max-width: 350px) {
+@media (max-width: 420px) {
   .diag-ingest-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
@@ -5845,6 +5863,95 @@ function diagAgoText(seconds) {
   return `${Math.round(n / 86400)}d`;
 }
 
+function fmtDiagTimestamp(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return "";
+  const ms = Date.parse(text);
+  if (!Number.isFinite(ms)) return text;
+  const d = new Date(ms);
+  const ageSec = (Date.now() - ms) / 1000;
+  if (ageSec >= -5 && ageSec < 3600) {
+    const rel = diagAgoText(Math.max(0, ageSec));
+    return rel && rel !== "—" ? `${rel} ago` : d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  }
+  const now = new Date();
+  if (d.toDateString() === now.toDateString()) {
+    return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  }
+  return d.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+const DIAG_SOURCE_DISPLAY_NAMES = {
+  claude_local: "Claude Code",
+  "claude-code": "Claude Code",
+  claude: "Claude Code",
+  anthropic_admin: "Anthropic",
+  anthropic: "Anthropic",
+  codex_local: "Codex",
+  codex: "Codex",
+  openai_admin: "OpenAI",
+  openai: "OpenAI",
+  opencode_local: "OpenCode Go",
+  "opencode-go": "OpenCode Go",
+  opencode: "OpenCode",
+  zcode_local: "Z.AI Coding Plan",
+  zcode: "Z.AI Coding Plan",
+  zai: "Z.AI",
+  grok_local: "Grok Build",
+  grok: "Grok Build",
+  xai: "xAI",
+  antigravity_local: "Antigravity",
+  antigravity: "Antigravity",
+  muse_local: "Muse Code",
+  muse: "Muse Code",
+  cursor_local: "Cursor",
+  cursor_usage_service: "Cursor",
+  cursor_csv: "Cursor",
+  cursor_admin: "Cursor",
+  cursor: "Cursor",
+  traycer_local: "Traycer",
+  traycer: "Traycer",
+  openrouter: "OpenRouter",
+  deepseek: "DeepSeek",
+  gemini: "Gemini",
+  sync: "Hub sync"
+};
+
+function diagDisplayName(rawKey) {
+  const key = String(rawKey || "").trim();
+  if (!key) return "";
+  const lower = key.toLowerCase();
+
+  const providers = Array.isArray(state.report?.providers) ? state.report.providers : [];
+  const exactProv = providers.find(p => String(p.key || "").toLowerCase() === lower);
+  if (exactProv && exactProv.name) {
+    const showBadge = exactProv.badge && !["primary", "default"].includes(String(exactProv.badge).trim().toLowerCase());
+    return showBadge ? `${exactProv.name} · ${exactProv.badge}` : exactProv.name;
+  }
+
+  const storeMatch = typeof findStoreProfileName === "function" ? findStoreProfileName(key) : null;
+  if (storeMatch && storeMatch.providerName) {
+    return storeMatch.profileName && storeMatch.profileName !== "Default"
+      ? `${storeMatch.providerName} · ${storeMatch.profileName}`
+      : storeMatch.providerName;
+  }
+
+  const conns = Array.isArray(state.settingsData?.connections) ? state.settingsData.connections : [];
+  const connMatch = conns.find(c => String(c.source || "").toLowerCase() === lower);
+  if (connMatch && connMatch.name) return connMatch.name;
+
+  if (DIAG_SOURCE_DISPLAY_NAMES[lower]) return DIAG_SOURCE_DISPLAY_NAMES[lower];
+  if (lower.startsWith("claude-code-")) return "Claude Code";
+  if (lower.startsWith("opencode-go-")) return "OpenCode Go";
+  if (lower.startsWith("zcode-")) return "Z.AI Coding Plan";
+  if (lower.startsWith("codex-")) return "Codex";
+  if (lower.startsWith("antigravity-")) return "Antigravity";
+  if (lower.startsWith("grok-")) return "Grok Build";
+  if (lower.startsWith("muse-")) return "Muse Code";
+  if (lower.startsWith("opencode-provider:")) return key.slice("opencode-provider:".length) || "OpenCode";
+  return key;
+}
+
 function pricingGuidanceRows(data) {
   const labels = {
     unknown_model_identity: "Model identity unavailable",
@@ -5908,10 +6015,10 @@ function renderDiagnosticsView() {
       state: item.state || "online",
       severity: item.state === "online" ? "info" : "warn",
       ageSeconds: item.ageSeconds,
-      detail: item.lastSeenAt ? `Last synced ${new Date(item.lastSeenAt).toLocaleString()}` : "Never synced"
+      detail: item.lastSeenAt ? `Last synced ${fmtDiagTimestamp(item.lastSeenAt)}` : "Never synced"
     }));
     const issueRows = (fresh?.issues || []).map(item => ({
-      short: item.short || item.name || item.key,
+      short: diagDisplayName(item.short || item.name || item.key),
       state: item.state || "issue",
       severity: item.severity || "warn",
       ageSeconds: item.ageSeconds,
@@ -5947,13 +6054,14 @@ function renderDiagnosticsView() {
         const st = String(item.status || "unknown");
         const tone = (st === "success" || st === "partial") ? "tone-mint" : (st === "skipped" || st === "unavailable") ? "tone-warn" : "tone-danger";
         const srcKey = String(item.source || "").split(/[_:]/)[0];
-        const detail = item.lastSuccess ? `Last success ${new Date(item.lastSuccess).toLocaleString()}` : (item.error || "No successful run");
+        const srcName = diagDisplayName(item.source);
+        const detail = item.lastSuccess ? `Last success ${fmtDiagTimestamp(item.lastSuccess)}` : (item.error || "No successful run");
         const count = item.eventsLast24h !== null && item.eventsLast24h !== undefined ? Number(item.eventsLast24h).toLocaleString() : "0";
         return `
           <div class="diag-ingest-card">
             <div class="diag-ingest-head">
               ${srcKey !== "sync" ? logoHtml(srcKey, "logo-badge", false) : ""}
-              <span class="diag-ingest-source">${esc(item.source)}</span>
+              <span class="diag-ingest-source" title="${esc(item.source)}">${esc(srcName)}</span>
             </div>
             <span class="diag-ingest-status ${tone}">${esc(st)}</span>
             <span class="diag-ingest-meta">${esc(count)} events in 24h</span>
@@ -5973,11 +6081,12 @@ function renderDiagnosticsView() {
       quotasEl.innerHTML = quotas.map(item => {
         const st = String(item.status || "unknown");
         const tone = st === "ok" || st === "live" ? "tone-mint" : st === "error" || st === "failed" ? "tone-danger" : "tone-warn";
-        const sub = item.reason || (item.lastPoll ? `polled ${item.lastPoll}` : "no poll");
+        const provName = diagDisplayName(item.providerKey);
+        const sub = item.reason || (item.lastPoll ? `polled ${fmtDiagTimestamp(item.lastPoll)}` : "no poll");
         return `
           <div class="diag-item">
             <div class="diag-item-main">
-              <strong>${esc(item.providerKey)}</strong>
+              <strong title="${esc(item.providerKey)}">${esc(provName)}</strong>
               <small>${esc(sub)}</small>
             </div>
             <span class="diag-tag ${tone}">${esc(st)}</span>
