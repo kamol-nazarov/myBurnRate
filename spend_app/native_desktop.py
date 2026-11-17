@@ -24,7 +24,7 @@ import httpx
 
 from spend_app import native_theme as theme
 from spend_app.config import Settings, load_settings, load_user_env
-from spend_app.error_codes import format_error, map_http_error
+from spend_app.error_codes import HUB_PROTOCOL_VERSION, format_error, map_http_error
 from spend_app.native_frame import NativeFrame
 from spend_app.platform_paths import NO_WINDOW
 from spend_app.timeutil import parse_utc
@@ -236,6 +236,19 @@ class NativeClient:
                     ):
                         raise DesktopError(
                             "Another service is using BURNRATE's local port."
+                        )
+                    protocol = data.get("protocolVersion")
+                    if type(protocol) is not int or protocol != HUB_PROTOCOL_VERSION:
+                        if type(protocol) is int and protocol > HUB_PROTOCOL_VERSION:
+                            raise DesktopError(
+                                format_error("APP-902"),
+                                426,
+                                code="APP-902",
+                            )
+                        raise DesktopError(
+                            "An older BURNRATE background service is still running. "
+                            "Quit the old app and stop the old service, then reopen BURNRATE.",
+                            code="APP-901",
                         )
                     return True
             except (httpx.ConnectError, httpx.ConnectTimeout):

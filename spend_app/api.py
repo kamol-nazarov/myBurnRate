@@ -705,6 +705,7 @@ def create_app(
         from spend_app.freshness import heartbeat
 
         return {"status": "ok", "application": "burnrate", "pid": os.getpid(),
+                "protocolVersion": HUB_PROTOCOL_VERSION,
                 "collectorEnabled": scheduler is not None,
                 "ingest": heartbeat(current_now()) if scheduler is not None else None}
 

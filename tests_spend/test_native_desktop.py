@@ -4,6 +4,7 @@ from typing import ClassVar
 
 import pytest
 
+from spend_app.error_codes import HUB_PROTOCOL_VERSION
 from spend_app.native_desktop import (
     DemoClient,
     DesktopError,
@@ -250,6 +251,9 @@ def test_service_health_accepts_real_burnrate_supervisor_response(
         lambda *args, **kwargs: pytest.fail("healthy BURNRATE service must be reused"),
     )
     try:
+        probe = application.get("/healthz?supervisor=1")
+        assert probe.status_code == 200
+        assert probe.json()["protocolVersion"] == HUB_PROTOCOL_VERSION
         _client(tmp_path).ensure_service()
     finally:
         application.close()
@@ -984,7 +988,12 @@ def test_native_service_spawn_enables_quota_and_balance_polling_by_default(
                 raise httpx.ConnectError("not running yet")
             return Response(
                 status=200,
-                payload={"application": "burnrate", "status": "ok", "pid": 4321},
+                payload={
+                    "application": "burnrate",
+                    "status": "ok",
+                    "pid": 4321,
+                    "protocolVersion": HUB_PROTOCOL_VERSION,
+                },
             )
 
     class DummyProc:
@@ -1001,3 +1010,82 @@ def test_native_service_spawn_enables_quota_and_balance_polling_by_default(
     _client(tmp_path).ensure_service()
     assert len(spawned_envs) == 1
     assert "BURNRATE_USAGE_ONLY" not in spawned_envs[0]
+
+
+@pytest.mark.parametrize(
+    "probe_payload",
+    [
+        {"application": "burnrate", "status": "ok", "pid": 4321},
+        {"application": "burnrate", "status": "ok", "pid": 4321, "protocolVersion": 1},
+    ],
+)
+def test_service_health_refuses_missing_or_older_protocol_version_without_spawning(
+    tmp_path, monkeypatch, probe_payload
+):
+    import spend_app.native_desktop as desktop
+
+    FakeHttpClient.instances.clear()
+    FakeHttpClient.response = Response(status=200, payload=probe_payload)
+    monkeypatch.setattr(desktop.httpx, "Client", FakeHttpClient)
+    monkeypatch.setattr(
+        desktop.subprocess,
+        "Popen",
+        lambda *args, **kwargs: pytest.fail("must not spawn over an older listener"),
+    )
+
+    with pytest.raises(DesktopError) as exc_info:
+        _client(tmp_path).ensure_service()
+    assert exc_info.value.code == "APP-901"
+
+
+def test_service_health_refuses_newer_protocol_version_without_spawning(
+    tmp_path, monkeypatch
+):
+    import spend_app.native_desktop as desktop
+
+    FakeHttpClient.instances.clear()
+    FakeHttpClient.response = Response(
+        status=200,
+        payload={
+            "application": "burnrate",
+            "status": "ok",
+            "pid": 4321,
+            "protocolVersion": HUB_PROTOCOL_VERSION + 1,
+        },
+    )
+    monkeypatch.setattr(desktop.httpx, "Client", FakeHttpClient)
+    monkeypatch.setattr(
+        desktop.subprocess,
+        "Popen",
+        lambda *args, **kwargs: pytest.fail("must not spawn over a newer listener"),
+    )
+
+    with pytest.raises(DesktopError) as exc_info:
+        _client(tmp_path).ensure_service()
+    assert exc_info.value.code == "APP-902"
+    assert exc_info.value.status_code == 426
+
+
+def test_service_health_accepts_matching_protocol_version_mock_without_spawning(
+    tmp_path, monkeypatch
+):
+    import spend_app.native_desktop as desktop
+
+    FakeHttpClient.instances.clear()
+    FakeHttpClient.response = Response(
+        status=200,
+        payload={
+            "application": "burnrate",
+            "status": "ok",
+            "pid": 4321,
+            "protocolVersion": HUB_PROTOCOL_VERSION,
+        },
+    )
+    monkeypatch.setattr(desktop.httpx, "Client", FakeHttpClient)
+    monkeypatch.setattr(
+        desktop.subprocess,
+        "Popen",
+        lambda *args, **kwargs: pytest.fail("matching service must be reused"),
+    )
+
+    _client(tmp_path).ensure_service()

@@ -14,9 +14,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     BURNRATE_DATA_ROOT=/data
 
 WORKDIR /app
-COPY pyproject.toml README.md LICENSE NOTICE requirements-build.txt ./
+COPY pyproject.toml README.md LICENSE NOTICE requirements-build.txt hatch_build.py ./
+COPY packaging/build_config.py ./packaging/build_config.py
 COPY spend_app ./spend_app
-COPY spend_web ./spend_web
 COPY pricing ./pricing
 COPY assets/icons ./assets/icons
 RUN pip install --require-hashes -r requirements-build.txt \

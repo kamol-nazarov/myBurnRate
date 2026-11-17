@@ -29,9 +29,15 @@ maintainer's computer, so every download traces back to a tagged commit.
    - `spend_app/__init__.py`;
    - the current-release line and release-notes link in the README.
 3. Write `docs/releases/RELEASE-<version>.md` (it becomes the release notes)
-   and move the changelog's `[Unreleased]` entries under the new version.
-4. Commit on `release/<version>`, push it, and wait for CI and the Native
-   desktop workflow to pass.
+   and move the changelog's `[Unreleased]` entries under `## [<version>] - Unreleased`.
+4. Commit on `release/<version>`, push it, and wait for CI and the Hub image
+   workflow to pass. Once the workflow publishes the hub image, replace the
+   tag-only pin in `deploy/hub/compose.yaml` with `0.5.9@sha256:<digest>`
+   (or `<version>@sha256:<digest>`, verified via
+   `docker buildx imagetools inspect ghcr.io/kamol-nazarov/myburnrate-hub:<version>`)
+   and commit that digest pin **before** tagging or dating `CHANGELOG.md` (the
+   security tests allow a tag-only pin only while the changelog heading is still
+   `- Unreleased`).
 5. Tag the release branch and push the tag:
    `git tag -a v<version> -m "BURNRATE v<version>"` then
    `git push origin v<version>`.
@@ -53,9 +59,9 @@ maintainer's computer, so every download traces back to a tagged commit.
    (a fast-forward; it fails rather than rewrite history).
    Once the tag's Hub image build has passed, verify its digest with
    `docker buildx imagetools inspect ghcr.io/kamol-nazarov/myburnrate-hub:<version>`
-   and pin that `tag@sha256:...` in `deploy/hub/compose.yaml`. Commit this release metadata
+   and confirm `deploy/hub/compose.yaml` pins that `tag@sha256:...`. Commit any release metadata
    on `release/<version>` and fast-forward `prod` to it; keep the published tag unchanged. The image's
-   digest is available only after its tag build, so do not guess it before tagging.
+   digest is available only after its image build, so do not guess it before the workflow publishes it.
 
 ## Built-in hub address
 
