@@ -30,7 +30,7 @@ code or responses are ever stored.
 - **Value, not just tokens.** Recorded tokens are priced at published API rates for the exact day
   they were used, so you can see what a month of agent work would have cost on the API.
 - **Plan headroom at a glance.** Every 5-hour, weekly and monthly window shows what is left and when
-  it resets; the optional dashboard adds a run-dry forecast from your recent pace.
+  it resets, with pace and run-dry indicators.
 - **Answers you can defend.** Missing data stays missing: exact, derived, partial and unavailable
   are separate states, and a gap never renders as `$0.00`.
 - **Yours alone.** Local SQLite, operating-system keychain, loopback-only listener, no telemetry.
@@ -116,15 +116,6 @@ no font or asset requests to a CDN.
   before it resets, when a meter has gone stale for over an hour, or when hub sync keeps failing.
   Quiet hours (22:00–07:00 by default) hold them back unless a run-out is under two hours away. Each
   kind can be switched off, and `BURNRATE_DESKTOP_NOTIFICATIONS=0` turns them all off.
-
-### The optional dashboard
-
-Served at `/` when you set `BURNRATE_ENABLE_DASHBOARD=1`; otherwise `/` opens the HUD. It adds
-run-dry forecasting per plan window, a **Plans & Value** comparison of subscription spend against
-API-equivalent value, an **Action Center** for thresholds and source issues with snooze and
-acknowledge workflows, and token economics by tool, model, project and session. The always-on-top
-sidecar HUD at `/hud` keeps the same information in a narrow floating window, including cost per
-repository and a weekly share card.
 
 ## Supported tools
 
@@ -212,10 +203,10 @@ The wheel installs one command, `burnrate`:
 
 ```text
 burnrate desktop [--demo] [--port PORT]     native usage window
-burnrate serve [--host H] [--port P]        local service and optional dashboard
-burnrate demo [--no-browser]                sample data in a temporary folder
+burnrate serve [--host H] [--port P]        local API service
+burnrate demo                               sample API data in a temporary folder
 burnrate init                               create the database
-burnrate doctor                             check Python, data, pricing, assets, loopback bind
+burnrate doctor                             check Python, data, pricing, desktop assets, loopback bind
 burnrate sync --token-file PATH             push this computer's usage to the configured hub
 burnrate machines list|revoke               manage connected computers on a hub
 burnrate subscription add|list|apply        effective-dated plans
@@ -227,13 +218,12 @@ burnrate hub update --ssh HOST              update a self-hosted hub over SSH
 Try the interface without collecting anything:
 
 ```powershell
-burnrate demo                 # HUD with a month of synthetic usage
-burnrate desktop --demo       # native window with synthetic usage
+burnrate desktop --demo       # native window with a month of synthetic usage
+burnrate demo                 # API service only with synthetic usage
 ```
 
 Configuration is environment-driven. [Configuration](docs/configuration.md) lists every variable,
-including `BURNRATE_ENABLE_DASHBOARD`, `SPEND_DATABASE_PATH`, `SPEND_TIMEZONE` and
-`BURNRATE_NO_UPDATE_CHECK`.
+including `SPEND_DATABASE_PATH`, `SPEND_TIMEZONE` and `BURNRATE_NO_UPDATE_CHECK`.
 
 ## Upgrade and uninstall
 
@@ -266,8 +256,7 @@ python packaging/build_native.py                    # portable zip; installer on
 python packaging/build_native.py --require-installer  # fail instead of skipping the installer
 ```
 
-The [development guide](docs/development.md) covers the Windows service scripts, the demo dataset,
-screenshot regeneration and the front-end build. [Native app](docs/native-app.md) covers the
+The [development guide](docs/development.md) covers the Windows service scripts and the demo dataset. [Native app](docs/native-app.md) covers the
 installer, update feed and signing. Contributions are welcome; start with
 [CONTRIBUTING.md](CONTRIBUTING.md).
 

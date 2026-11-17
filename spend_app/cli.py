@@ -284,7 +284,7 @@ def _main() -> int:
         "doctor",
         help="Check Python, timezone data, existing database, pricing, desktop assets, and localhost bind",
     )
-    serve = subparsers.add_parser("serve", help="Run the dashboard on 127.0.0.1")
+    serve = subparsers.add_parser("serve", help="Run the local API service on 127.0.0.1")
     serve.add_argument("--host", default=os.environ.get("BURNRATE_HOST") or DEFAULT_SERVE_HOST)
     serve.add_argument("--port", default=DEFAULT_SERVE_PORT, type=int)
     backfill = subparsers.add_parser(
@@ -365,11 +365,11 @@ def _main() -> int:
     desktop_parser.add_argument("--smoke-test", action="store_true", help=argparse.SUPPRESS)
     demo_parser = subparsers.add_parser(
         "demo",
-        help="Serve a demo with made-up usage on 127.0.0.1; nothing on this computer is read",
+        help="Serve the demo API with made-up usage on 127.0.0.1 (use 'burnrate desktop --demo' for the desktop app)",
     )
     demo_parser.add_argument("--port", type=int, default=17377)
     demo_parser.add_argument("--data-root", help="Folder for the demo database (default: a new temporary folder)")
-    demo_parser.add_argument("--no-browser", action="store_true", help="Do not open the HUD in a browser")
+    demo_parser.add_argument("--no-browser", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     if args.command == "serve":

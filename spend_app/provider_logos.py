@@ -1,4 +1,4 @@
-"""Pre-rendered anti-aliased RGBA provider brand badges from spend_web/logos.svg.
+"""Pre-rendered anti-aliased RGBA provider brand badges.
 
 Provider marks originate from @lobehub/icons-static-svg (MIT) and published marks;
 brand names and logos belong to their respective owners.

@@ -1,8 +1,8 @@
 # Architecture
 
-BURNRATE is one Windows process: a FastAPI app, a SQLite WAL database, an in-process scheduler, and the Sidecar HUD. The full static dashboard is optional and off by default (`BURNRATE_ENABLE_DASHBOARD=1` turns it on). It is not an inference proxy, not a hosted service, and not a Grafana stack.
+BURNRATE is a local-first architecture: a FastAPI API service (`127.0.0.1:17331`), a SQLite WAL database, an in-process scheduler, and the native desktop window (`spend_app/wealthfront_window.py` loading `spend_app/wealthfront_ui.html`). It is not an inference proxy, not a hosted service, and not a Grafana stack.
 
-Internal Python packages in this tree remain `spend_app` (application) and `spend_web` (static assets). The public command is `burnrate`.
+The internal Python package in this tree is `spend_app`. The public command is `burnrate`.
 
 ## Runtime
 
@@ -24,11 +24,10 @@ Internal Python packages in this tree remain `spend_app` (application) and `spen
         │    local ingest 15s · admin ingest 15m · subscriptions 15m
         │    quota tick 15s (per-lane cadence) · activity 4s
         ▼
-  FastAPI  127.0.0.1:17331
+  FastAPI  127.0.0.1:17331  (/api/*, /healthz)
         │
         ▼
-  Sidecar HUD  /hud (browser)
-  Optional dashboard  spend_web/{index.html, spend.css, spend.js, favicon.svg}
+  Native desktop window  (wealthfront_window.py + wealthfront_ui.html)
 ```
 
 `burnrate serve` launches only this process. It does not start OpenTelemetry Collector, Prometheus, Grafana, a Traycer Prometheus exporter, or any legacy token UI.
@@ -48,12 +47,9 @@ Override `SPEND_DATABASE_PATH` and `SPEND_PRICING_PATH` in `.env` if needed. `ba
 
 | Path | Role |
 | --- | --- |
-| `GET /` | Opens the HUD (in the desktop app it hides the main window). Serves the dashboard HTML only with `BURNRATE_ENABLE_DASHBOARD=1`; shows the setup wizard on `/?app=1` until setup is complete or set up later |
-| `GET /hud` | Sidecar HUD HTML |
-| `GET /api/spend/hud` | HUD live meters and activity, without loading usage history |
-| `GET /api/spend/hud/usage` | HUD spend statistics from recorded usage; each read keeps usage collection active |
+| `GET /api/spend/hud` | Live meters and activity, without loading usage history |
+| `GET /api/spend/hud/usage` | Spend statistics from recorded usage; each read keeps usage collection active |
 | `GET /api/spend/freshness` | This computer's collection, quota and sync freshness (never proxied to a hub) |
-| `GET /spend.css`, `/spend.js`, `/favicon.svg` | Static assets (content-hash cache busting) |
 | `GET /healthz` | Liveness `{"status": "ok"}` |
 | `GET /api/spend/summary` | Windowed aggregation (what the UI polls; navbar burn/today come from this payload) |
 | `GET /api/spend/nav` | Navbar burn rate / today. Present for compatibility; the dashboard does not fetch it |
@@ -61,15 +57,9 @@ Override `SPEND_DATABASE_PATH` and `SPEND_PRICING_PATH` in `.env` if needed. `ba
 | `GET /api/spend/health` | Ingest/quota health from SQLite |
 | `GET /api/spend/limits` | **Live compatibility probe.** Not used by the dashboard. Can reach authenticated quota collectors, including experimental ones. Do not expose it on a public surface. |
 
-Responses never include credentials or raw provider documents. API JSON is `Cache-Control: no-store`. Security headers include `X-Content-Type-Options`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, and a Content-Security-Policy.
+Non-API paths return `404` JSON (`REQ-404`); no HTML pages are served over HTTP. Responses never include credentials or raw provider documents. API JSON is `Cache-Control: no-store`. Security headers include `X-Content-Type-Options`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, and `Content-Security-Policy: default-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'`.
 
-The HUD reads `/api/spend/hud` every 5 seconds and `/api/spend/hud/usage` every 20 seconds, each with a 12-second abort. A meter whose newest poll returns no value keeps its last reading (dimmed) until that window resets, a plan missing from one response stays for up to 15 minutes, and spend figures hold until the local date changes. Both payloads carry `lastIngestAt`, `lastIngestAgeSeconds` and `stale`; the HUD footer shows the data's age and alarms when the data is older than 10 minutes or either poll misses its cadence. On a paired spoke both reads serve the last hub copy at once and renew it in the background (`HUD_HUB_STALE_SECONDS`, 300 s), so a slow or unreachable hub never stalls a refresh.
-
-The HUD browser entry is a packaged JavaScript resource embedded by `hud.py`.
-The request timeout includes reading the response body. A failed request can
-retain a visibly stale reading; a successful response explicitly reporting an
-unavailable amount or cache percentage clears that figure. Machine changes
-invalidate the previous machine's display immediately.
+The desktop window polls `/api/spend/hud` and `/api/spend/hud/usage` via the local client. A meter whose newest poll returns no value keeps its last reading (dimmed) until that window resets, a plan missing from one response stays for up to 15 minutes, and spend figures hold until the local date changes. Both payloads carry `lastIngestAt`, `lastIngestAgeSeconds` and `stale`; on a paired spoke both reads serve the last hub copy at once and renew it in the background (`HUD_HUB_STALE_SECONDS`, 300 s), so a slow or unreachable hub never stalls a refresh.
 
 Windows: `15m`, `30m`, `1h`, `3h`, `6h`, `12h`, `1d`, `1w`, `1mo`, `mtd`, `ytd`, `all` (plus legacy aliases `7d`, `30d`, `MTD`, `YTD`, `All`).
 
@@ -101,7 +91,7 @@ repairing the local row creates a new change to synchronize.
 
 Upgrade both spoke and hub to replicate corrections and deletions. Older hubs
 still accept ordinary upserts, but cannot acknowledge the new journal; pending
-repairs stay queued and the HUD/setup status requests a hub update. Existing rows
+repairs stay queued and the desktop app requests a hub update. Existing rows
 seed the journal during migration. Events deleted before the journal existed
 cannot be reconstructed from the remaining local database.
 

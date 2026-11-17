@@ -11,6 +11,13 @@ This project is licensed under Apache-2.0.
 
 ### Removed
 
+- **Browser HTML pages and asset pipeline removed.** Removed `/`, `/hud`, `/setup`, `/auth`,
+  `/connections`, `spend_app/auth_page.py`, `spend_app/hud.py`, `spend_web/` (including
+  `starting.html`), `frontend_src/`, and browser asset-build/preview scripts. All non-API paths
+  now return `404` JSON (`REQ-404`), while `/api/*`, `/healthz`, and the native desktop window
+  (`spend_app/wealthfront_ui.html`) remain intact; spoke owner sessions are held by the desktop
+  bridge instead of the removed `burnrate_local` cookie, and `burnrate doctor` checks packaged
+  `desktop_assets`.
 - **Pairing codes and pairing routes removed.** Computers now join the hub solely by signing in
   to your hub account. Removed `spend_app/pairing.py` (keeping `hub_origin` in
   `spend_app/hub_origin.py`), `/api/pairing/redeem`, `/api/setup/pair-hub`,

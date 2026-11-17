@@ -10,7 +10,7 @@
 ## Test plan
 
 - [ ] `python -m pytest` (hermetic suite; no `SPEND_REAL_DB_COPY`, no provider env keys)
-- [ ] Relevant frontend checks (`node --check spend_web/spend.js` when Node is available)
+- [ ] Desktop UI checks (`pytest tests_spend/test_wealthfront_ui.py tests_spend/test_wealthfront_layout.py`)
 
 ## Notes
 

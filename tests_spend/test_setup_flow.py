@@ -1,4 +1,4 @@
-"""The setup wizard: role first, honest per-card checks, plans and balances, then a live check."""
+"""The setup wizard API: role first, honest per-card checks, plans and balances, then a live check."""
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ from spend_app.api import create_app
 from spend_app.config import Settings
 from spend_app.connections import suppresses_default_profile
 from spend_app.db import connect, initialize, upsert_quota
-from spend_app.hud import render_hud
 from spend_app.pricing import PricingEngine
 from spend_app.setup_wizard import setup_router
 
@@ -42,17 +41,6 @@ def client(settings: Settings) -> TestClient:
     return TestClient(create_app(settings, enable_scheduler=False))
 
 
-def test_the_wizard_has_four_steps_and_no_dead_end(client: TestClient) -> None:
-    page = client.get("/setup").text
-    for step in range(1, 5):
-        assert f'id="wiz-step-{step}"' in page
-    assert "Just this computer" in page and "Join my hub" in page and "Make this the hub" in page
-    assert "Set up later" in page and "Skip to" not in page
-    # No fake password: the field is empty until the user types.
-    assert 'placeholder="••••••••"' not in page
-    assert '"X-BURNRATE-Request"' in page
-
-
 def test_setup_changes_need_the_burnrate_header(client: TestClient) -> None:
     for path in ("/api/setup/complete", "/api/setup/defer", "/api/setup/consent", "/api/setup/scan",
                  "/api/setup/account"):
@@ -61,13 +49,14 @@ def test_setup_changes_need_the_burnrate_header(client: TestClient) -> None:
         assert "setup page" in response.json()["error"]
 
 
-def test_set_up_later_stops_the_wizard_opening_on_every_launch(client: TestClient) -> None:
-    assert 'id="wizard-stepper"' in client.get("/?app=1").text
+def test_set_up_later_updates_setup_state_and_complete_clears_defer(client: TestClient) -> None:
+    initial = client.get("/api/setup/state").json()["setup"]
+    assert initial["completed"] is False
+    assert initial.get("deferredAt") is None
     response = client.post("/api/setup/defer", json={}, headers=SETUP)
     assert response.status_code == 200 and response.json()["setup"]["deferredAt"]
-    assert 'id="wizard-stepper"' not in client.get("/?app=1").text
-    # Still reachable on purpose.
-    assert 'id="wizard-stepper"' in client.get("/setup").text
+    assert client.get("/api/setup/state").json()["setup"]["deferredAt"]
+    assert client.get("/setup").status_code == 404
     finished = client.post("/api/setup/complete", json={"role": "standalone"}, headers=SETUP).json()
     assert finished["setup"]["completed"] is True and finished["setup"]["role"] == "standalone"
     assert finished["setup"]["deferredAt"] is None
@@ -168,9 +157,10 @@ def test_scan_returns_at_once_and_asks_the_scheduler_to_collect(settings: Settin
     assert calls == [1]
 
 
-def test_connections_page_opens_the_balances_step(client: TestClient) -> None:
+def test_connections_page_is_removed_and_api_connections_remain_available(client: TestClient) -> None:
     response = client.get("/connections", follow_redirects=False)
-    assert response.status_code == 307 and response.headers["location"] == "/setup?step=3"
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "REQ-404"
     connections = client.get("/api/setup/state").json()["apiConnections"]["connections"]
     sources = {row["source"] for row in connections}
     assert {"openrouter", "deepseek"} <= sources
@@ -186,12 +176,6 @@ def test_connecting_the_default_location_keeps_activity_and_meters() -> None:
     assert suppresses_default_profile("codex_local", {"enabled": True, "location": "D:/elsewhere/sessions"}) is True
     assert suppresses_default_profile("codex_local", {"enabled": False, "location": default}) is True
     assert suppresses_default_profile("codex_local", None) is False
-
-
-def test_the_hud_opens_setup_even_without_the_dashboard() -> None:
-    html = render_hud(dashboard=False)
-    assert 'id="hud-setup-btn"' in html
-    assert 'invoke("open_setup_wizard")' in html
 
 
 def _add_plan(settings: Settings, name: str, tool_key: str, amount: str) -> None:

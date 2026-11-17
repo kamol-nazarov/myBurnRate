@@ -1,8 +1,7 @@
 # Configured subscriptions
 
-The plan dialogs below are part of the full dashboard, which is off by default
-(`BURNRATE_ENABLE_DASHBOARD=1` turns it on). Without it, pick plans in the setup
-wizard (`/setup`) or use `burnrate subscription add`.
+Configure and inspect plans via `burnrate subscription add`, `burnrate subscription list`,
+`burnrate subscription apply`, or the quick plan suggestion in the desktop app.
 
 Open **/mo plans** in the navbar or **Manage** beside Fixed costs. The Fixed
 costs panel stays expanded. The dialog opens to a list of every plan, with an

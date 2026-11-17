@@ -87,7 +87,7 @@ itself that is not to a provider or a hub you set up:
 
 - Default listener: `127.0.0.1:17331`. Not `0.0.0.0`.
 - No third-party analytics, no Google Fonts CDN, no browser calls to provider APIs.
-- CSP and the usual security headers are on. The HUD reads `/api/spend/hud`, `/api/spend/hud/usage`, `/api/spend/freshness`, and `/api/machines`; the dashboard, when enabled with `BURNRATE_ENABLE_DASHBOARD=1`, reads `/api/spend/summary`, `/api/spend/health`, and `/api/spend/entity` (on drill-in). These are persisted SQLite (or, on a paired spoke, the hub's copy), not live provider probes; only the HUD's **Poll** button asks the quota collectors to poll now. `/api/spend/nav` exists but is unused by the UI.
+- CSP (`default-src 'none'`) and the usual security headers are on; no HTML pages are served over HTTP. The desktop app reads `/api/spend/usage`, `/api/spend/summary`, `/api/spend/entity`, `/api/spend/hud`, `/api/spend/hud/usage`, `/api/spend/freshness`, and `/api/machines`. These read persisted SQLite (or, on a paired spoke, the hub's copy), not live provider probes; only explicit refresh actions ask the quota collectors to poll now. `/api/spend/nav` exists for compatibility.
 
 Optional Tailscale Serve is an operator choice and is never enabled by BURNRATE. Funnel is not a product feature. See [tailscale.md](tailscale.md).
 

@@ -1,7 +1,6 @@
 # Connect harness
 
-Open **Connect harness** from the dashboard. The dashboard is off by default;
-set `BURNRATE_ENABLE_DASHBOARD=1` and restart BURNRATE to use it. Setup is
+Configure local sources and provider keys in the native desktop app (**Settings → Sources**) or via `/api/connections`. Setup is
 optional and can be closed and reopened. **Manage subscriptions** remains a separate screen.
 
 1. Choose **Auto-detect (recommended)** or **Choose manually**.

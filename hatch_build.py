@@ -29,17 +29,6 @@ class CustomBuildHook(BuildHookInterface):
             generated, _ = write_build_config(Path(temp_dir) / "_build_config.py")
             force_include = build_data.setdefault("force_include", {})
             force_include[str(generated)] = "spend_app/_build_config.py"
-            web_dir = Path(self.root) / "spend_web"
-            if web_dir.is_dir():
-                for path in sorted(web_dir.rglob("*")):
-                    if (
-                        path.is_file()
-                        and "__pycache__" not in path.parts
-                        and path.suffix != ".pyc"
-                    ):
-                        force_include[str(path)] = (
-                            f"spend_web/{path.relative_to(web_dir).as_posix()}"
-                        )
 
     def finalize(
         self, version: str, build_data: dict[str, Any], artifact_path: str

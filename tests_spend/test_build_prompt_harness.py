@@ -7,7 +7,6 @@ fixture and clock helper — product assertions live in the sibling gate files.
 from __future__ import annotations
 
 import json
-import re
 from datetime import UTC, datetime
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
@@ -37,7 +36,6 @@ NOW = datetime(2026, 8, 30, 23, tzinfo=UTC)
 TZ = "America/New_York"
 CENTS = Decimal("0.01")
 EXACT_TOOLS = set(CONTRACT["exactTools"])
-HTML_PATH = ROOT / "spend_web" / "index.html"
 
 
 class FrozenDateTime(datetime):
@@ -48,17 +46,6 @@ class FrozenDateTime(datetime):
         if tz is None:
             return NOW.replace(tzinfo=None)
         return NOW.astimezone(tz)
-
-
-def sources() -> tuple[str, str, str]:
-    html = (ROOT / "frontend_src" / "index.html").read_text(encoding="utf-8")
-    css = (ROOT / "frontend_src" / "spend.css").read_text(encoding="utf-8")
-    js = (ROOT / "frontend_src" / "spend.js").read_text(encoding="utf-8")
-    return html, css, js
-
-
-def visual_html() -> str:
-    return HTML_PATH.read_text(encoding="utf-8")
 
 
 def iso(value: datetime) -> str:
@@ -451,43 +438,8 @@ def require_keys(payload: dict, keys: list[str], *, where: str) -> None:
     assert not missing, f"{where} missing keys {missing}; have {sorted(payload)}"
 
 
-def media_blocks(css: str) -> dict[str, str]:
-    blocks: dict[str, str] = {}
-    for match in re.finditer(r"@media\s*(\([^)]+\))\s*\{", css):
-        query = match.group(1)
-        start = match.end()
-        depth = 1
-        index = start
-        while index < len(css) and depth:
-            if css[index] == "{":
-                depth += 1
-            elif css[index] == "}":
-                depth -= 1
-            index += 1
-        # All blocks for a breakpoint participate in the CSS cascade.
-        blocks[query] = blocks.get(query, "") + css[start : index - 1]
-    return blocks
-
-
-def keyframes(css: str) -> dict[str, str]:
-    found: dict[str, str] = {}
-    for match in re.finditer(r"@keyframes\s+([A-Za-z0-9_-]+)\s*\{", css):
-        name = match.group(1)
-        start = match.end()
-        depth = 1
-        index = start
-        while index < len(css) and depth:
-            if css[index] == "{":
-                depth += 1
-            elif css[index] == "}":
-                depth -= 1
-            index += 1
-        found[name] = css[start : index - 1]
-    return found
-
-
 def usd_js(value: float) -> str:
-    """Mirror the attached file's money format: two decimals below 1000, whole dollars at/above."""
+    """Mirror the money format: two decimals below 1000, whole dollars at/above."""
     if value >= 1000:
         return "$" + f"{round(value):,}"
     return f"${value:.2f}"
@@ -501,17 +453,3 @@ def test_build_prompt_contract_lists_the_twelve_windows() -> None:
     assert by_key["1d"] == 24
     assert by_key["1w"] == 28
     assert by_key["ytd"] == 32
-
-
-def test_build_prompt_visual_html_is_readable() -> None:
-    text = visual_html()
-    html, css, js = sources()
-    assert HTML_PATH.is_file()
-    assert "Downloads" not in str(HTML_PATH)
-    assert "BURNRATE" in text
-    assert 'src="/spend.js' in text
-    assert "function renderOverview" in js
-    packaged = (html + css + js).replace(" ", "").lower()
-    assert "animation-fill-mode:both" not in packaged
-    assert "animation-fill-mode: both" not in text
-    assert "animation-fill-mode:both" not in text.replace(" ", "")

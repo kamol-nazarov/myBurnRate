@@ -14,13 +14,15 @@ from fastapi.testclient import TestClient
 
 from spend_app import aggregate
 from spend_app.aggregate import (
+    aggregate_health,
+    aggregate_health_cached,
     aggregate_summary,
     aggregate_summary_cached,
     data_clock,
     recently_requested_summaries,
     record_summary_request,
 )
-from spend_app.api import create_app
+from spend_app.api import GZIP_MINIMUM_SIZE, create_app
 from spend_app.config import Settings
 from spend_app.db import connect, initialize, upsert_quota
 from spend_app.scheduler import create_scheduler
@@ -183,3 +185,82 @@ def test_ingest_cycle_prewarms_only_recently_requested_windows(tmp_path: Path, m
     job.func()
     assert warmed == [("15m", "all"), ("1w", "codex")]
     aggregate.reset_memo()
+
+
+def test_health_is_reused_per_clock_and_invalidated_by_its_inputs(tmp_path: Path) -> None:
+    aggregate.reset_memo()
+    database, pricing = fixture_database(tmp_path)
+    first = aggregate_health_cached(database_path=database, now=NOW, timezone=TZ)
+    assert aggregate_health_cached(database_path=database, now=NOW, timezone=TZ) is first
+    assert first == aggregate_health(database_path=database, now=NOW, timezone=TZ)
+    assert aggregate_health_cached(database_path=database, now=NOW + timedelta(seconds=15), timezone=TZ) is not first
+
+    with connect(database) as connection:
+        connection.execute(
+            "INSERT INTO ingest_runs(source,started_at,finished_at,status,events_written,error) VALUES(?,?,?,?,?,?)",
+            ("codex_local", "2026-08-30T22:59:00Z", "2026-08-30T22:59:01Z", "failed", 0, "boom"),
+        )
+    after_run = aggregate_health_cached(database_path=database, now=NOW, timezone=TZ)
+    assert after_run is not first
+    assert {row["source"]: row["status"] for row in after_run["ingest"]}["codex_local"] == "failed"
+
+    with connect(database) as connection:
+        upsert_quota(
+            connection,
+            provider_key="grok",
+            limit_key="weekly",
+            label="Weekly",
+            unit="percent",
+            source="traycer_local",
+            polled_at="2026-08-30T22:45:00Z",
+            pct=40.0,
+        )
+    after_quota = aggregate_health_cached(database_path=database, now=NOW, timezone=TZ)
+    assert after_quota is not after_run
+    assert next(q for q in after_quota["quotas"] if q["providerKey"] == "grok")["lastPoll"] == "2026-08-30T22:45:00Z"
+
+    add_event(
+        database,
+        pricing,
+        raw_id="codex-health",
+        tool="codex",
+        model="gpt-5.6-sol",
+        session="session-h",
+        occurred=NOW - timedelta(hours=1),
+        input_tokens=1_000,
+        cached=100,
+        writes=0,
+        output=10,
+    )
+    after_event = aggregate_health_cached(database_path=database, now=NOW, timezone=TZ)
+    assert after_event is not after_quota
+    aggregate.reset_memo()
+
+
+def test_json_endpoints_are_gzip_compressed_and_no_store(tmp_path: Path) -> None:
+    database = tmp_path / "spend.db"
+    add_fixture_event(database)
+    client = TestClient(create_app(_settings(tmp_path, database), enable_scheduler=False, now=datetime.now(UTC)))
+
+    summary_gz = client.get("/api/spend/summary?window=1d&tool=all", headers={"Accept-Encoding": "gzip"})
+    assert summary_gz.status_code == 200
+    expected = "gzip" if len(summary_gz.content) >= GZIP_MINIMUM_SIZE else None
+    assert summary_gz.headers.get("content-encoding") == expected
+
+    summary_raw = client.get("/api/spend/summary?window=1d&tool=all", headers={"Accept-Encoding": "identity"})
+    assert summary_raw.status_code == 200
+    assert summary_raw.headers.get("content-encoding") is None
+    assert summary_gz.content == summary_raw.content
+
+    health = client.get("/api/spend/health")
+    assert health.status_code == 200
+    assert health.headers["cache-control"] == "no-store"
+
+
+def test_bench_script_and_baseline_agree_and_stay_read_only() -> None:
+    script = (ROOT / "scripts" / "Bench-Burnrate.ps1").read_text(encoding="utf-8")
+    assert "/api/spend/limits" not in script
+    assert "/api/spend/summary" in script and "/api/spend/health" in script
+    assert "127.0.0.1:17331" in script
+    assert "Select-Object -Skip 1" in script, "the cold first request is excluded from p50/p95"
+    assert "PERF REGRESSION" in script and "exit 1" in script

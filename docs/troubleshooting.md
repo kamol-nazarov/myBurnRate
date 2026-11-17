@@ -2,11 +2,8 @@
 
 ## Connect a harness
 
-These dialogs belong to the full dashboard, which is off by default; set
-`BURNRATE_ENABLE_DASHBOARD=1` and restart to use them. Without it, the setup
-wizard (`/setup`, or the gear button on the HUD) shows every tool's state and
-fix, and its **Plans & balances** step (`/connections`) connects provider API
-keys.
+In the desktop app, **Settings → Sources** and the first-run scan show every tool's state and
+fix, and let you connect provider API keys (OpenRouter, DeepSeek) and consent switches.
 
 Open the harness count in the navbar, **Connect harness** in Capacity, or the
 same button in Setup help. The dialog shows source states, home-relative known
@@ -48,7 +45,7 @@ Typical checks:
 | tzdata | IANA timezone data loads for `SPEND_TIMEZONE` |
 | Database | `spend.db` already exists and `PRAGMA integrity_check` is `ok` (opened read-only) |
 | Pricing | Packaged `pricing/*.yaml` cards load |
-| Web assets | Packaged `spend_web` HTML/CSS/JS/SVG are present |
+| Desktop assets | Packaged desktop UI (`wealthfront_ui.html` and bundled fonts) is present |
 | Bind | Default listener is `127.0.0.1:17331` (not a public interface). Doctor does not probe whether the port is free |
 
 Treat doctor output as support data. Redact any remaining absolute paths before pasting it into a public issue.
@@ -97,7 +94,7 @@ Confirm liveness with:
 Invoke-RestMethod http://127.0.0.1:17331/healthz
 ```
 
-You should see `status: ok`. The HUD is [http://127.0.0.1:17331/hud](http://127.0.0.1:17331/hud) (`/` opens it too; with `BURNRATE_ENABLE_DASHBOARD=1`, `/` is the full dashboard).
+You should see `status: ok` (all non-API paths return `404` JSON with `REQ-404`; use the desktop app for the UI).
 
 ## A HUD meter is dimmed, or the HUD seems slow
 
@@ -131,7 +128,7 @@ Direct xAI and Requesty are not connected. There is nothing to repair there.
 
 ## `/api/spend/limits` looks different from the HUD
 
-The HUD reads SQLite via `/api/spend/hud` and `/api/spend/hud/usage`; the dashboard, when enabled, via `/api/spend/summary` and `/api/spend/health`. `/api/spend/limits` is a live probe of quota collectors. Do not call it casually; it can hit experimental endpoints.
+The desktop app reads SQLite via `/api/spend/usage`, `/api/spend/summary`, `/api/spend/entity`, `/api/spend/hud`, `/api/spend/hud/usage`, and `/api/spend/health`. `/api/spend/limits` is a live probe of quota collectors. Do not call it casually; it can hit experimental endpoints.
 
 ## Backup and restore
 

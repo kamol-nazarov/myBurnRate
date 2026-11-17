@@ -1,7 +1,7 @@
 # Security Policy
 
-myBurnRate reads AI coding tools' local telemetry, stores usage metadata in SQLite, and serves a UI
-on `127.0.0.1`. That boundary is the product, so reports about it are taken seriously. Thank you for
+myBurnRate reads AI coding tools' local telemetry, stores usage metadata in SQLite, and runs a local API
+on `127.0.0.1` for the native desktop window. That boundary is the product, so reports about it are taken seriously. Thank you for
 helping keep users safe.
 
 ## Supported versions
@@ -128,21 +128,18 @@ These are invariants, not aspirations. A change that breaks one is a security bu
   New tokens expire after **90 days**, record creation/last use/expiry, and store only SHA-256 hashes
   on the hub. Refresh requires the current unexpired token, succeeds once and invalidates it.
   Expired/revoked/unknown credentials get 401; authenticated scope violations get 403.
-- **Expiring owner sessions.** Normal browser access uses independent **30-day** sessions, generated
+- **Expiring owner sessions.** Owner access uses independent **30-day** sessions, generated
   from 32 random bytes, hashed on the hub, with device label, creation/last-use/expiry and revocation.
-  The `burnrate_access` cookie contains the session, never the static bearer; it is HttpOnly,
-  SameSite=Lax, Secure on HTTPS. Cookie mutations require the same origin.
-  `/auth` provides sign-in, session listing/revocation, logout and credential rotation.
-- **Spoke session management.** A connected computer's loopback API is anonymous for local data, but
-  hub session listing, revocation, rotation and sign-out require a separate local sign-in cookie
-  (`burnrate_local`, HttpOnly, SameSite=Lax, scoped to `/api`). Break-glass rotation is refused on a
-  spoke and must happen on the hub. A local caller without that cookie gets 401.
+  `/api/account/*` and `/api/auth/*` provide sign-in, session listing/revocation, logout and credential rotation.
+- **Spoke session management.** A connected computer's loopback API is anonymous for local data, and
+  spoke `/api/auth/*` routes return 401 (`AUTH-107`); hub owner session management runs through the
+  native desktop bridge (`DesktopBridge`), which holds the spoke's owner session. Break-glass rotation
+  is refused on a spoke and must happen on the hub.
 - **Break-glass deprecation.** `BURNRATE_ACCESS_TOKEN` is for recovery/bootstrap and explicitly
   configured automation, not normal UI authentication. By default it is accepted only on
   `/api/auth/bootstrap` and `/api/auth/rotate`; set `BURNRATE_ALLOW_ADMIN_BEARER=1` to restore legacy
   bearer automation. `/api/auth/rotate` replaces it with a hash persisted in SQLite; the old
-  environment value cannot regain access on restart. The replacement is returned once. The old
-  `?token=` entry point is deprecated and exchanges it for an expiring session, never a static cookie.
+  environment value cannot regain access on restart. The replacement is returned once.
   A connected computer never relays break-glass rotation; do it on the hub.
 - **Machine credentials.** Each connected computer registers with its persistent device ID for a
   90-day machine token (auto-rotated in the background before expiry). Revoking a computer

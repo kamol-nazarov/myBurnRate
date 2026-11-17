@@ -9,10 +9,9 @@ from spend_app.quotas import (
     is_live_run,
     openrouter_quota_samples,
     order_capacity_rows,
-    poll_activity,
     pressure_color,
 )
-from tests_spend.test_build_prompt_harness import CONTRACT, client_for, complete_world, sources
+from tests_spend.test_build_prompt_harness import CONTRACT, client_for, complete_world
 
 
 REQUIRED = CONTRACT["requiredLimits"]
@@ -71,9 +70,6 @@ def test_openrouter_payg_displays_remaining_funds(
     card = next(item for item in body["capacity"] if item["providerKey"] == "openrouter")
     row = card["rows"][0]
     assert row["resetsAt"] is None
-    _html, css, js = sources()
-    assert "fundsRemainingUsd" in js
-    assert ".track.payg" in css
     samples = openrouter_quota_samples(
         collector=lambda: {
             "status": "exact",
@@ -85,28 +81,9 @@ def test_openrouter_payg_displays_remaining_funds(
     assert samples[0].used == 42.5
 
 
-def test_supporting_capacity_notes_are_derived_from_the_same_row_percentage() -> None:
-    _html, _css, js = sources()
-    note = js.split("function capacityNote(row)", 1)[1].split("function sortQuotaRows", 1)[0]
-    assert "Number(row.allowance) * Number(row.pct) / 100" in note.replace(" ", "") or (
-        "allowance" in note and "pct" in note
-    )
-    assert "formatUnit(row.used" in note
-    assert "literal" not in note
-
-
 def test_pressure_colors_follow_the_instrument_meter_scale() -> None:
     import inspect
 
-    _html, _css, js = sources()
-    color_fn = js.split("function quotaColor(value)", 1)[1].split("function formatUnit", 1)[0]
-    # Meters stay neutral below 60%, turn ember from 60%, and red from 85%;
-    # an unknown reading stays dim. Colors resolve per theme in spend.css.
-    assert 'if (n == null) return "var(--dim)"' in color_fn
-    assert 'if (n >= 85) return "var(--danger)"' in color_fn
-    assert 'if (n >= 60) return "var(--accent)"' in color_fn
-    assert 'return "var(--meter)"' in color_fn
-    assert "#" not in color_fn
     source = inspect.getsource(pressure_color)
     assert "85" in source and "60" in source and "30" in source, (
         "Quota pressure colors are <30 green, <60 blue, <85 amber, else red. "
@@ -114,7 +91,7 @@ def test_pressure_colors_follow_the_instrument_meter_scale() -> None:
     )
 
 
-def test_activity_live_pill_is_derived_from_rows_and_nodata_does_not_animate(
+def test_activity_states_match_backend_rows(
     tmp_path: Path, monkeypatch
 ) -> None:
     database, _pricing = complete_world(tmp_path)
@@ -123,23 +100,10 @@ def test_activity_live_pill_is_derived_from_rows_and_nodata_does_not_animate(
     states = {row["id"]: row["state"] for row in body["activity"]}
     assert states["run-live"].upper() in {"LIVE", "RUNNING"}
     assert states["run-idle"].upper().replace("_", " ") in {"NO DATA", "NODATA"}
-    html, css, js = sources()
-    assert 'id="live-count"' in html
-    render = js.split("function renderActivity(data)", 1)[1].split("\nfunction ", 1)[0]
-    compact_render = render.replace(" ", "").replace("\n", "")
-    assert "rows.filter(isLiveRow)" in compact_render
-    assert "${liveRows.length} live" in render
-    assert 'toggle("idle",liveRows.length===0)' in compact_render
-    assert ".activity-row.nodata" in css
-    assert ".activity-row.nodata i.dot{background:var(--amber);animation:none}" in css.replace("\n", "") or (
-        "nodata" in css and "animation:none" in css
-    )
-    assert 'style.animationDelay = `${delay}ms`' in js
-    assert "index * 260" in js
 
 
 def test_poller_state_vocabulary_must_drive_the_same_live_count() -> None:
-    """Traycer poller writes running/no_data; the dashboard counts LIVE. They must meet."""
+    """Traycer poller writes running/no_data; helper aligns with LIVE/RUNNING."""
     records = agent_run_records(
         {
             "activeAgents": [
@@ -171,12 +135,6 @@ def test_poller_state_vocabulary_must_drive_the_same_live_count() -> None:
     assert is_live_run("LIVE") is True
     assert is_live_run("RUNNING") is True
     assert is_live_run("no_data") is False
-    _html, _css, js = sources()
-    live_fn = js.split("function isLiveRow(row)", 1)[1].split("\nfunction ", 1)[0]
-    compact_live = live_fn.replace(" ", "").replace("\n", "")
-    assert 'flag==="live"' in compact_live or "flag==='live'" in compact_live
-    assert 'flag==="running"' in compact_live or "flag==='running'" in compact_live
-    assert "||" in compact_live
 
 
 def test_order_capacity_rows_pins_openrouter_last() -> None:

@@ -1,7 +1,6 @@
 # Action Center v1
 
-The Action Center is part of the full dashboard, which is off by default; set
-`BURNRATE_ENABLE_DASHBOARD=1` and restart to use it.
+> **Note:** The browser dashboard UI was removed in `0.5.9`; `/api/attention` remains in the API.
 
 **Attention** opens a reopenable in-app panel. Current includes unresolved,
 acknowledged, snoozed, below-threshold quota windows, and awaiting-evidence items.

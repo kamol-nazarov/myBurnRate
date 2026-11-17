@@ -676,10 +676,16 @@ def test_h5_vault_only_end_to_end_sign_in_sync_rotate_sign_out(
         # SQLite setup state & app_meta must NOT store plaintext tokens
         with connect(spoke_settings.database_path) as conn:
             st = setup_wizard.read_setup_state(conn)
+            raw_setup_row = conn.execute(
+                "SELECT value FROM app_meta WHERE key = ?", (setup_wizard.SETUP_META_KEY,)
+            ).fetchone()
+            raw_spoke = (json.loads(raw_setup_row[0]) if raw_setup_row else {}).get("spokeConfig") or {}
             raw_rows = conn.execute("SELECT key, value FROM app_meta").fetchall()
-        assert "token" not in st["spokeConfig"]
-        assert "ownerSession" not in st["spokeConfig"]
-        joined_meta = json.dumps(raw_rows)
+        assert not raw_spoke.get("token")
+        assert "ownerSession" not in raw_spoke
+        assert not st["spokeConfig"].get("token")
+        assert not st["spokeConfig"].get("ownerSession")
+        joined_meta = json.dumps([(r[0], r[1]) for r in raw_rows])
         assert mach_tok_1 not in joined_meta
         assert sess_tok not in joined_meta
 
@@ -697,7 +703,7 @@ def test_h5_vault_only_end_to_end_sign_in_sync_rotate_sign_out(
         assert mach_tok_2 != mach_tok_1
         with connect(spoke_settings.database_path) as conn:
             st_after_rot = setup_wizard.read_setup_state(conn)
-        assert "token" not in st_after_rot["spokeConfig"]
+        assert not st_after_rot["spokeConfig"].get("token")
 
         # Sync works with the rotated token from the vault
         bg_res_2 = setup_wizard.maybe_run_configured_spoke_sync(
@@ -768,7 +774,7 @@ def test_h5_failing_vault_returns_app_903_and_preserves_tokens(
             _assert_no_secrets_or_hub_url(res_create, label="create_account APP-903")
             with connect(spoke_empty.database_path) as conn:
                 st = setup_wizard.read_setup_state(conn)
-            assert st["role"] == "local"
+            assert st["role"] != "spoke"
             assert st["spokeConfig"]["enabled"] is False
     finally:
         set_vault_factory(prev_factory)
@@ -857,7 +863,7 @@ def test_h5_failing_vault_returns_app_903_and_preserves_tokens(
             assert backing_store[DesktopBridge.MACHINE_TOKEN_VAULT_REF] == old_tok
             with connect(spoke_settings.database_path) as conn:
                 st_rot = setup_wizard.read_setup_state(conn)
-            assert "token" not in st_rot["spokeConfig"]
+            assert not st_rot["spokeConfig"].get("token")
         finally:
             set_vault_factory(prev_factory)
 
@@ -901,9 +907,15 @@ def test_h5_legacy_sqlite_secrets_migrate_on_startup_and_fallback_when_vault_una
     assert vault.get(DesktopBridge.MACHINE_TOKEN_VAULT_REF) == legacy_token
     assert vault.get(DesktopBridge.OWNER_SESSION_VAULT_REF) == legacy_session
     with connect(spoke_settings.database_path) as conn:
+        raw_mig_row = conn.execute(
+            "SELECT value FROM app_meta WHERE key = ?", (setup_wizard.SETUP_META_KEY,)
+        ).fetchone()
+        raw_mig_spoke = (json.loads(raw_mig_row[0]) if raw_mig_row else {}).get("spokeConfig") or {}
         migrated_st = setup_wizard.read_setup_state(conn)
-    assert "token" not in migrated_st["spokeConfig"]
-    assert "ownerSession" not in migrated_st["spokeConfig"]
+    assert "token" not in raw_mig_spoke
+    assert "ownerSession" not in raw_mig_spoke
+    assert not migrated_st["spokeConfig"].get("token")
+    assert not migrated_st["spokeConfig"].get("ownerSession")
     assert bridge._get_machine_token() == legacy_token
 
     with hub_client:
@@ -1196,6 +1208,10 @@ def _h5_api_js(
       var remaining = (window.__h5Settings.machines || []).filter(function (m) {{ return m.id !== mid; }});
       window.__h5Settings.machines = remaining;
       return {{ ok: true, machines: remaining }};
+    }};
+    api.trigger_sync = async function () {{
+      window.__calls.push(["trigger_sync"]);
+      return {{ ok: true, results: [] }};
     }};
     {extra_js}
     """

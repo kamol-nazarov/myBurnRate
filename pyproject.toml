@@ -65,12 +65,8 @@ path = "hatch_build.py"
 [tool.hatch.build.targets.sdist]
 include = [
   "spend_app/**",
-  "spend_web/**",
-  "frontend_src/**",
   "hatch_build.py",
   "packaging/build_config.py",
-  "scripts/optimize-assets.cjs",
-  "scripts/asset-tools/package*.json",
   "pricing/**",
   "tests_spend/**",
   "README.md",

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 from dataclasses import replace
@@ -11,7 +10,7 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-from spend_app import hud, platform_paths
+from spend_app import platform_paths
 from spend_app.api import create_app
 from spend_app.config import Settings, load_settings
 from spend_app.connection_api import access_allowed
@@ -101,11 +100,9 @@ def test_spoke_hud_reads_require_owner_session_and_cookie_is_scoped(tmp_path: Pa
         assert denied.status_code == 403
 
         hud_res = client.get("/hud?token=hub-secret-token-123", follow_redirects=False)
-        assert hud_res.status_code == 303
-        assert hud_res.headers["location"] == "/hud"
-        set_cookie = hud_res.headers.get("set-cookie", "")
-        assert "burnrate_access=" in set_cookie
-        assert "HttpOnly" in set_cookie
+        assert hud_res.status_code == 404
+        assert hud_res.json()["error"]["code"] == "REQ-404"
+        assert "set-cookie" not in hud_res.headers
 
     fake_stream_req = SimpleNamespace(
         method="GET",
@@ -200,23 +197,3 @@ def test_importing_api_module_is_lazy() -> None:
         check=False,
     )
     assert proc.returncode == 0, proc.stderr
-
-
-def test_hud_markup_and_mtime_cache(tmp_path: Path, monkeypatch) -> None:
-    fake_js = tmp_path / "hud.js"
-    fake_js.write_text("console.log('v1');\n", encoding="utf-8")
-    monkeypatch.setattr(hud, "_HUD_JS_PATH", fake_js)
-    hud._HUD_CACHE = (None, "")
-
-    html_v1 = hud.render_hud(dashboard=True)
-    assert 'id="hud-more-btn"' in html_v1
-    assert 'id="hud-more-menu"' in html_v1
-    assert 'id="hud-quick-plan"' in html_v1
-    assert "console.log('v1');" in html_v1
-
-    fake_js.write_text("console.log('v2-updated');\n", encoding="utf-8")
-    stat = fake_js.stat()
-    os.utime(fake_js, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
-
-    html_v2 = hud.render_hud(dashboard=True)
-    assert "console.log('v2-updated');" in html_v2
