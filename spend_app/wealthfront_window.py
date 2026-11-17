@@ -701,6 +701,61 @@ def merge_provider_entries(
     return providers
 
 
+# H9 analytics
+ANALYTICS_WINDOW_ALIASES = {
+    "today": "1d",
+    "week": "1w",
+    "month": "mtd",
+    "7d": "1w",
+    "30d": "1mo",
+    "mtd": "mtd",
+    "MTD": "mtd",
+    "ytd": "ytd",
+    "YTD": "ytd",
+    "all": "all",
+    "All": "all",
+}
+ANALYTICS_WINDOWS = (
+    "15m",
+    "30m",
+    "1h",
+    "3h",
+    "6h",
+    "12h",
+    "1d",
+    "1w",
+    "1mo",
+    "mtd",
+    "ytd",
+    "all",
+)
+
+
+def normalize_analytics_window(value: object) -> str:
+    raw = str(value or "").strip()
+    if raw in ANALYTICS_WINDOWS:
+        return raw
+    if raw in ANALYTICS_WINDOW_ALIASES:
+        return ANALYTICS_WINDOW_ALIASES[raw]
+    low = raw.lower()
+    if low in ANALYTICS_WINDOWS:
+        return low
+    if low in ANALYTICS_WINDOW_ALIASES:
+        return ANALYTICS_WINDOW_ALIASES[low]
+    return "1d"
+
+
+def period_for_analytics_window(window_key: str) -> str:
+    win = normalize_analytics_window(window_key)
+    if win in {"15m", "30m", "1h", "3h", "6h", "12h", "1d"}:
+        return "today"
+    if win == "1w":
+        return "week"
+    if win in {"1mo", "mtd"}:
+        return "month"
+    return "all"
+
+
 THEME_CHOICES = ("system", "light", "dark")
 THEME_ATTRIBUTE = 'data-theme-pref="system"'
 SERVICE_ALERT_RECHECK_SECONDS = 300.0
@@ -1053,6 +1108,7 @@ class DesktopBridge:
         self._theme = normalize_theme(saved.get("theme"))
         self._close_to_tray = bool(saved.get("closeToTray", True))
         self._low_quota_alerts = bool(saved.get("lowQuotaAlerts", True))
+        self._analytics_window = normalize_analytics_window(saved.get("analyticsWindow") or self._period)
 
     def attach(self, window, hwnd_getter) -> None:
         self._window = window
@@ -1100,12 +1156,14 @@ class DesktopBridge:
                 "theme": self._theme,
                 "closeToTray": self._close_to_tray,
                 "lowQuotaAlerts": self._low_quota_alerts,
+                "analyticsWindow": self._analytics_window,
             }
         )
 
     def get_initial_state(self) -> dict:
         return {
             "period": self._period,
+            "analyticsWindow": self._analytics_window,
             "topmost": self._topmost,
             "autoFade": self._auto_fade,
             "idleOpacity": round(self._idle_opacity, 2),
@@ -1512,6 +1570,68 @@ class DesktopBridge:
             return {"ok": False, "error": str(exc)}
         except (OSError, RuntimeError, ValueError, KeyError, TypeError):
             return {"ok": False, "error": "Could not refresh usage. Retry shortly."}
+
+
+    # H9 analytics
+    def save_analytics_window(self, window: str) -> dict:
+        win = normalize_analytics_window(window)
+        self._analytics_window = win
+        mapped_period = period_for_analytics_window(win)
+        if mapped_period in PERIOD_LABELS:
+            self._period = mapped_period
+        self._write_preferences()
+        return {"ok": True, "analyticsWindow": self._analytics_window, "period": self._period}
+
+    def fetch_analytics_summary(
+        self, window: str = "1d", tool: str = "all", machine: str = "all"
+    ) -> dict:
+        use_window = normalize_analytics_window(window)
+        use_tool = str(tool or "all").strip() or "all"
+        use_machine = str(machine or "all").strip() or "all"
+        try:
+            with self._lock:
+                if not self._service_ready:
+                    self._client.ensure_service()
+                    self._service_ready = True
+                query = urlencode(
+                    {"window": use_window, "tool": use_tool, "machine": use_machine}
+                )
+                summary = self._client.request("/api/spend/summary?" + query)
+                health = self._safe_request("/api/spend/health")
+            return {"ok": True, "summary": summary, "health": health}
+        except DesktopError as exc:
+            return {"ok": False, "error": str(exc)}
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "error": "Could not load analytics summary."}
+
+    def fetch_entity_detail(
+        self, kind: str, key: str, window: str = "1d", machine: str = "all"
+    ) -> dict:
+        use_kind = str(kind or "").strip().lower()
+        use_key = str(key or "").strip()
+        if use_kind not in {"model", "tool"} or not use_key:
+            return {"ok": False, "error": "Invalid analytics entity."}
+        use_window = normalize_analytics_window(window)
+        use_machine = str(machine or "all").strip() or "all"
+        try:
+            with self._lock:
+                if not self._service_ready:
+                    self._client.ensure_service()
+                    self._service_ready = True
+                query = urlencode(
+                    {
+                        "kind": use_kind,
+                        "key": use_key,
+                        "window": use_window,
+                        "machine": use_machine,
+                    }
+                )
+                entity = self._client.request("/api/spend/entity?" + query)
+            return {"ok": True, "entity": entity}
+        except DesktopError as exc:
+            return {"ok": False, "error": str(exc)}
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "error": "Could not load detail view."}
 
     def get_settings_data(self) -> dict:
         try:

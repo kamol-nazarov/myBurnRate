@@ -641,6 +641,320 @@ def demo_hud_usage() -> dict:
     }
 
 
+# H9 analytics
+_DEMO_WINDOW_SCALE = {
+    "15m": (0.04, "15m", 15),
+    "30m": (0.07, "30m", 15),
+    "1h": (0.12, "1h", 20),
+    "3h": (0.28, "3h", 18),
+    "6h": (0.52, "6h", 24),
+    "12h": (0.76, "12h", 24),
+    "1d": (1.0, "1d", 24),
+    "1w": (4.2, "1w", 14),
+    "1mo": (12.4, "1mo", 15),
+    "mtd": (9.6, "MTD", 14),
+    "ytd": (28.0, "YTD", 16),
+    "all": (42.0, "All", 16),
+}
+
+_DEMO_TOOL_DEFS = (
+    ("claude-code", "Claude Code", "Claude Max", True, 2_900_000, 52.10, 62.0, 22),
+    ("codex", "Codex", "ChatGPT Pro", True, 3_100_000, 41.82, 54.0, 19),
+    ("opencode", "OpenCode", "Z.AI Coding Plan", False, 1_400_000, 18.60, 46.0, 11),
+    ("muse", "Muse Code", "Power Usage", False, 700_000, 9.72, 39.0, 7),
+    ("grok", "Grok Build", "SuperGrok", False, 100_000, 5.10, 28.0, 4),
+)
+
+_DEMO_MODEL_DEFS = (
+    ("claude-opus-4-6", "Claude Opus 4.6", "claude-code", True, 34.40, 1_650_000, 64.0, 12),
+    ("claude-sonnet-4-6", "Claude Sonnet 4.6", "claude-code", True, 17.70, 1_250_000, 59.0, 10),
+    ("gpt-5.3-codex", "GPT-5.3 Codex", "codex", True, 41.82, 3_100_000, 54.0, 19),
+    ("glm-4.7", "GLM-4.7", "opencode", False, 18.60, 1_400_000, 46.0, 11),
+    ("llama-4-maverick", "Llama 4 Maverick", "muse", False, 9.72, 700_000, 39.0, 7),
+    ("grok-4-fast", "Grok 4 Fast", "grok", False, 5.10, 100_000, 28.0, 4),
+)
+
+
+def demo_summary(window_key: str = "1d", tool: str = "all", machine: str = "all") -> dict:
+    from spend_app.aggregate import TOOL_COLORS
+
+    win = window_key if window_key in _DEMO_WINDOW_SCALE else "1d"
+    scale, win_label, bucket_count = _DEMO_WINDOW_SCALE[win]
+    use_tool = (tool or "all").strip() or "all"
+    now = datetime.now(UTC)
+
+    tool_rows = []
+    for key, name, plan, exact, tok, val, cache_pct, runs in _DEMO_TOOL_DEFS:
+        if use_tool != "all" and key != use_tool:
+            continue
+        t_tok = max(1, int(round(tok * scale)))
+        t_val = round(val * scale, 2)
+        tool_rows.append(
+            {
+                "key": key,
+                "name": name,
+                "plan": plan,
+                "color": TOOL_COLORS.get(key, "#4840bb"),
+                "tokens": t_tok,
+                "value": t_val,
+                "isExact": exact,
+                "valueMarker": "" if exact else "≈",
+                "cachePct": cache_pct,
+                "runs": max(1, int(round(runs * max(scale, 0.25)))),
+            }
+        )
+
+    model_rows = []
+    for key, name, t_key, exact, val, tok, cache_pct, runs in _DEMO_MODEL_DEFS:
+        if use_tool != "all" and t_key != use_tool:
+            continue
+        m_tok = max(1, int(round(tok * scale)))
+        m_val = round(val * scale, 2)
+        model_rows.append(
+            {
+                "key": key,
+                "name": name,
+                "toolKey": t_key,
+                "value": m_val,
+                "isExact": exact,
+                "valueMarker": "" if exact else "≈",
+                "tokens": m_tok,
+                "cachePct": cache_pct,
+                "runs": max(1, int(round(runs * max(scale, 0.25)))),
+            }
+        )
+
+    total_tokens = sum(r["tokens"] for r in tool_rows)
+    priced_val = round(sum(r["value"] for r in tool_rows if r["isExact"]), 2)
+    pub_val = round(sum(r["value"] for r in tool_rows if not r["isExact"]), 2)
+    tracked_val = round(priced_val + pub_val, 2)
+    cached_tok = int(round(total_tokens * 0.50))
+    fresh_tok = int(round(total_tokens * 0.36))
+    output_tok = max(0, total_tokens - cached_tok - fresh_tok)
+    write_tok = int(round(total_tokens * 0.04))
+    mix_denom = max(1, cached_tok + fresh_tok + output_tok + write_tok)
+    prompt_denom = max(1, cached_tok + fresh_tok + write_tok)
+    cache_reuse_pct = round(cached_tok / prompt_denom * 100.0, 1) if total_tokens else None
+    eff_rate = round(tracked_val / total_tokens * 1_000_000.0, 2) if total_tokens > 0 else None
+    sessions = max(1, sum(r["runs"] for r in tool_rows)) if tool_rows else 0
+    mean_session = round(tracked_val / sessions, 2) if sessions else None
+
+    series = []
+    weights = [((i * 5 + 3) % 11) + 2 for i in range(bucket_count)]
+    w_sum = max(1, sum(weights))
+    for i, w in enumerate(weights):
+        end = now - timedelta(hours=max(1, bucket_count - i - 1))
+        label = (
+            end.strftime("%I:%M %p").lstrip("0")
+            if win in {"15m", "30m", "1h", "3h", "6h", "12h", "1d"}
+            else end.strftime("%b %d").replace(" 0", " ")
+        )
+        by_tool = {}
+        b_total = 0
+        for row in tool_rows:
+            part = int(round(row["tokens"] * w / w_sum))
+            by_tool[row["key"]] = part
+            b_total += part
+        series.append(
+            {
+                "bucketStart": end.isoformat().replace("+00:00", "Z"),
+                "bucketKey": f"{win}-{i}",
+                "label": label,
+                "total": b_total,
+                "byTool": by_tool,
+            }
+        )
+
+    waste_items = [
+        {
+            "key": "cold-prompt",
+            "toolKey": "claude-code",
+            "title": "Claude Code — repeated uncached prefixes",
+            "detail": "Long system prompt turns missed cache warm window",
+            "fix": "Keep prefix instructions stable across turns",
+            "perDay": round(2.85 * max(0.5, min(scale, 2.0)), 2),
+        },
+        {
+            "key": "codex-context",
+            "toolKey": "codex",
+            "title": "Codex — wide repo reads without reuse",
+            "detail": "Fresh input spikes across multi-file patch runs",
+            "fix": "Narrow targeted file reads in long sessions",
+            "perDay": round(1.40 * max(0.5, min(scale, 2.0)), 2),
+        },
+    ]
+    if use_tool != "all":
+        waste_items = [item for item in waste_items if item["toolKey"] == use_tool]
+    waste_day = round(sum(item["perDay"] for item in waste_items), 2)
+
+    heatmap = []
+    for day in range(7):
+        for hour in range(24):
+            peak_boost = 1.8 if (day < 5 and 9 <= hour <= 18) else 0.45
+            wave = ((day * 7 + hour * 3) % 9) + 1
+            val = round(0.18 * peak_boost * wave * min(scale, 3.0), 2) if tool_rows else 0.0
+            heatmap.append({"weekday": day, "hour": hour, "value": val, "unit": "usd"})
+
+    exact_names = [r["name"] for r in tool_rows if r["isExact"]]
+    derived_names = [r["name"] for r in tool_rows if not r["isExact"]]
+    plan_cost = round(200.0 * 0.43, 2)
+    mtd_val = round(tracked_val * (1.0 if win == "mtd" else 2.1), 2)
+    return {
+        "window": {"key": win, "label": win_label, "from": (now - timedelta(days=7)).isoformat(), "to": now.isoformat()},
+        "generatedAt": now.isoformat().replace("+00:00", "Z"),
+        "displayTimezone": "UTC",
+        "cadenceSeconds": 60,
+        "status": "ok",
+        "failingSource": None,
+        "machines": demo_report()["machines"],
+        "selectedMachine": machine,
+        "coverage": {
+            "exactProviders": exact_names,
+            "derivedProviders": derived_names,
+            "note": f"{len(exact_names)} of {len(tool_rows)} providers publish exact per-token rates. Every figure derived from published rates instead of a billed amount is marked ≈. Unpriced usage is counted in tokens and never estimated in dollars.",
+        },
+        "totals": {
+            "trackedValue": tracked_val,
+            "trackedValueMarker": "≈" if derived_names else "",
+            "priced": priced_val,
+            "publishedRate": pub_val,
+            "subscriptionUsd": 200.0,
+            "knownValue": tracked_val,
+            "unpricedModels": [],
+            "effectiveCostPerMillionTokens": eff_rate,
+            "knownEffectiveCostPerMillionTokens": eff_rate,
+            "effectiveCostPricedTokens": total_tokens,
+            "effectiveCostCoveragePct": 100.0 if total_tokens else 0.0,
+            "effectiveCostComplete": True,
+            "tokens": total_tokens,
+            "cachedInputTokens": cached_tok,
+            "freshInputTokens": fresh_tok,
+            "outputTokens": output_tok,
+            "records": max(1, len(model_rows) * 8) if model_rows else 0,
+            "sessions": sessions,
+            "meanSessionValue": mean_session,
+            "cacheReusePct": cache_reuse_pct,
+        },
+        "waste": {"perDay": waste_day, "perMonth": round(waste_day * 30, 2), "items": waste_items},
+        "cacheSavings": round(tracked_val * 0.34, 2),
+        "projected": {
+            "value": mtd_val,
+            "planCost": plan_cost,
+            "fullMonthPlanCost": 200.0,
+            "multiple": round(mtd_val / plan_cost, 2) if plan_cost > 0 else None,
+            "multipleBasis": "ratio",
+            "method": "Month-to-date reference usage versus configured accrual over the same elapsed days. A comparison at published rates, not a bill.",
+        },
+        "mix": [
+            {"key": "cached_input", "label": "Cached input", "tokens": cached_tok, "share": round(cached_tok / mix_denom * 100, 1)},
+            {"key": "fresh_input", "label": "Fresh input", "tokens": fresh_tok, "share": round(fresh_tok / mix_denom * 100, 1)},
+            {"key": "output", "label": "Output", "tokens": output_tok, "share": round(output_tok / mix_denom * 100, 1)},
+            {"key": "cache_write", "label": "Cache writes", "tokens": write_tok, "share": round(write_tok / mix_denom * 100, 1)},
+        ],
+        "series": series,
+        "tools": tool_rows,
+        "models": model_rows,
+        "heatmap": heatmap,
+        "heatmapUnit": "reference usage (USD at documented rates)",
+        "heatmapFallback": win in {"15m", "30m", "1h", "3h", "6h", "12h", "1d"},
+    }
+
+
+def demo_entity(kind: str, key: str, window_key: str = "1d", machine: str = "all") -> dict:
+    summary = demo_summary(window_key, "all", machine)
+    totals = summary["totals"]
+    if kind == "model":
+        match = next((m for m in summary["models"] if m["key"] == key), summary["models"][0])
+        tool_key = match["toolKey"]
+        tool_row = next((t for t in summary["tools"] if t["key"] == tool_key), summary["tools"][0])
+        name = match["name"]
+        value = match["value"]
+        tokens_count = match["tokens"]
+        cache_pct = match["cachePct"]
+        runs = match["runs"]
+        is_exact = match["isExact"]
+    else:
+        match = next((t for t in summary["tools"] if t["key"] == key), summary["tools"][0])
+        tool_key = match["key"]
+        tool_row = match
+        name = match["name"]
+        value = match["value"]
+        tokens_count = match["tokens"]
+        cache_pct = match["cachePct"]
+        runs = match["runs"]
+        is_exact = match["isExact"]
+
+    share_val = round((value / totals["trackedValue"] * 100.0), 1) if totals["trackedValue"] else 0.0
+    share_tok = round((tokens_count / totals["tokens"] * 100.0), 1) if totals["tokens"] else 0.0
+    output_tok = int(round(tokens_count * 0.10))
+    cached_tok = int(round(tokens_count * 0.50))
+    fresh_tok = int(round(tokens_count * 0.36))
+    write_tok = max(0, tokens_count - cached_tok - fresh_tok - output_tok)
+    mix_denom = max(1, cached_tok + fresh_tok + output_tok + write_tok)
+    hud_match = next((c for c in demo_hud().get("capacity", []) if c.get("providerKey") == tool_key), None)
+    series = [
+        {
+            "bucketStart": b["bucketStart"],
+            "bucketKey": b["bucketKey"],
+            "label": b["label"],
+            "tokens": int(round(b["byTool"].get(tool_key, b["total"] * 0.3))),
+        }
+        for b in summary["series"]
+    ]
+    sess_rows = [
+        {
+            "id": f"{tool_key}-run-{i+1}",
+            "project": proj,
+            "durationMin": dur,
+            "tokens": int(round(tokens_count * frac)),
+            "cachePct": round(max(12.0, cache_pct - i * 4.5), 1),
+            "value": round(value * frac, 2),
+            "sharePct": round(frac * 100.0, 1),
+            "isExact": is_exact,
+        }
+        for i, (proj, dur, frac) in enumerate((("myburnrate-core", 28, 0.34), ("desktop-analytics", 19, 0.24), ("pricing-sync", 12, 0.16)))
+    ]
+    return {
+        "window": summary["window"],
+        "kind": kind,
+        "key": match["key"],
+        "name": name,
+        "providerKey": tool_key,
+        "providerName": tool_row["name"],
+        "plan": tool_row.get("plan", "Usage"),
+        "isExact": is_exact,
+        "valueMarker": "" if is_exact else "≈",
+        "color": tool_row.get("color", "#4840bb"),
+        "value": value,
+        "shareOfTrackedValue": share_val,
+        "tokens": tokens_count,
+        "shareOfTokens": share_tok,
+        "cachePct": cache_pct,
+        "cachedInputTokens": cached_tok,
+        "outputTokens": output_tok,
+        "runs": runs,
+        "valuePerRun": round(value / max(1, runs), 2),
+        "tokensPerRun": int(round(tokens_count / max(1, runs))),
+        "series": series,
+        "mix": [
+            {"key": "cached_input", "label": "Cached input", "tokens": cached_tok, "share": round(cached_tok / mix_denom * 100, 1)},
+            {"key": "fresh_input", "label": "Fresh input", "tokens": fresh_tok, "share": round(fresh_tok / mix_denom * 100, 1)},
+            {"key": "output", "label": "Output", "tokens": output_tok, "share": round(output_tok / mix_denom * 100, 1)},
+            {"key": "cache_write", "label": "Cache writes", "tokens": write_tok, "share": round(write_tok / mix_denom * 100, 1)},
+        ],
+        "opportunity": {
+            "kind": "cache_gap" if cache_pct < 65 else "healthy",
+            "amount": round(value * 0.18, 2),
+            "detail": "Keeping system prompts warm across turns would trim uncached reads.",
+            "fix": "Reuse conversation context instead of starting fresh threads",
+            "alreadySaved": round(value * 0.31, 2),
+        },
+        "providerLimits": (hud_match or {}).get("rows", []),
+        "sessions": {"rows": sess_rows, "shownTotal": round(sum(r["value"] for r in sess_rows), 2)},
+        "isPayg": bool((hud_match or {}).get("isPayg", False)),
+    }
+
+
 class DemoClient:
     def ensure_service(self):
         pass
@@ -651,6 +965,31 @@ class DemoClient:
     def request(self, path, body=None):
         if body is not None:
             raise DesktopError("Settings changes are disabled in the sample-data demo.")
+        if path.startswith("/api/spend/summary"):
+            from urllib.parse import parse_qs
+
+            qs = parse_qs(urlsplit(path).query)
+            return copy.deepcopy(
+                demo_summary(
+                    (qs.get("window") or ["1d"])[0],
+                    (qs.get("tool") or ["all"])[0],
+                    (qs.get("machine") or ["all"])[0],
+                )
+            )
+        if path.startswith("/api/spend/entity"):
+            from urllib.parse import parse_qs
+
+            qs = parse_qs(urlsplit(path).query)
+            return copy.deepcopy(
+                demo_entity(
+                    (qs.get("kind") or ["tool"])[0],
+                    (qs.get("key") or ["claude-code"])[0],
+                    (qs.get("window") or ["1d"])[0],
+                    (qs.get("machine") or ["all"])[0],
+                )
+            )
+        if path.startswith("/api/spend/health"):
+            return {"status": "ok", "pricingGaps": []}
         if path.startswith("/api/spend/hud/usage"):
             return copy.deepcopy(demo_hud_usage())
         if path.startswith("/api/spend/hud"):
