@@ -13,7 +13,15 @@ from fastapi import Request
 from fastapi.testclient import TestClient
 
 import spend_app
-from spend_app import auth_model, auth_throttle, cli, exposure, service, setup_wizard, sync
+from spend_app import (
+    auth_model,
+    auth_throttle,
+    cli,
+    exposure,
+    service,
+    setup_wizard,
+    sync,
+)
 from spend_app.api import create_app
 from spend_app.config import Settings
 from spend_app.connection_paths import LocationError
@@ -1252,9 +1260,10 @@ def validate_compose_image_pins(
     """Validate Caddy and Hub image pins in deploy/hub/compose.yaml.
 
     - ``caddy`` must always be pinned to an explicit version + ``@sha256:`` digest.
-    - ``myburnrate-hub`` must be ``:<ver>@sha256:<64-hex>``, EXCEPT a tag-only
-      ``:<ver>`` pin is permitted while ``<ver> == app_version`` AND
-      ``CHANGELOG.md`` still has ``## [<ver>] - Unreleased``.
+    - ``myburnrate-hub`` must be ``:<ver>@sha256:<64-hex>`` or
+      ``:<ver>-rc.<N>@sha256:<64-hex>``, EXCEPT a tag-only ``:<ver>`` pin is
+      permitted while ``<ver> == app_version`` AND ``CHANGELOG.md`` still has
+      ``## [<ver>] - Unreleased``.
     """
     assert re.search(r"caddy:\d+\.\d+\.\d+@sha256:[0-9a-f]{64}", compose_text), (
         "caddy image must be digest-pinned"
@@ -1266,7 +1275,7 @@ def validate_compose_image_pins(
         rf"^## \[{re.escape(app_version)}\] - Unreleased\s*$", re.MULTILINE
     )
     is_unreleased = bool(unreleased_re.search(changelog_text))
-    digest_re = re.compile(r"^\d+\.\d+\.\d+@sha256:[0-9a-f]{64}$")
+    digest_re = re.compile(r"^\d+\.\d+\.\d+(?:-rc\.\d+)?@sha256:[0-9a-f]{64}$")
     tag_only_re = re.compile(r"^(\d+\.\d+\.\d+)$")
 
     for ref in hub_refs:
@@ -1344,6 +1353,12 @@ def test_s5_conditional_image_pin_rule_negative_and_positive_cases() -> None:
         + ("a" * 64)
         + "}\n"
     )
+    rc_digest_compose = (
+        caddy_line
+        + "image: ${BURNRATE_HUB_IMAGE:-ghcr.io/kamol-nazarov/myburnrate-hub:0.5.9-rc.1@sha256:"
+        + ("a" * 64)
+        + "}\n"
+    )
 
     unreleased_changelog = "# Changelog\n\n## [0.5.9] - Unreleased\n\n### Added\n"
     dated_changelog = "# Changelog\n\n## [0.5.9] - 2026-11-17\n\n### Added\n"
@@ -1364,13 +1379,34 @@ def test_s5_conditional_image_pin_rule_negative_and_positive_cases() -> None:
                 bad_ver_compose, changelog_text=unreleased_changelog, app_version="0.5.9"
             )
 
-    # Positive: Digest-pinned passes regardless of dated vs unreleased changelog
-    validate_compose_image_pins(
-        digest_compose, changelog_text=unreleased_changelog, app_version="0.5.9"
-    )
-    validate_compose_image_pins(
-        digest_compose, changelog_text=dated_changelog, app_version="0.5.9"
-    )
+    # Negative 3: Tag-only rc pin (without @sha256:) must fail even when Unreleased
+    with pytest.raises(AssertionError):
+        validate_compose_image_pins(
+            caddy_line
+            + "image: ${BURNRATE_HUB_IMAGE:-ghcr.io/kamol-nazarov/myburnrate-hub:0.5.9-rc.1}\n",
+            changelog_text=unreleased_changelog,
+            app_version="0.5.9",
+        )
+
+    # Negative 4: Non-rc suffix with digest must fail
+    with pytest.raises(AssertionError):
+        validate_compose_image_pins(
+            caddy_line
+            + "image: ${BURNRATE_HUB_IMAGE:-ghcr.io/kamol-nazarov/myburnrate-hub:0.5.9-dirty@sha256:"
+            + ("a" * 64)
+            + "}\n",
+            changelog_text=unreleased_changelog,
+            app_version="0.5.9",
+        )
+
+    # Positive: Digest-pinned (final or rc candidate) passes regardless of dated vs unreleased changelog
+    for good_compose in (digest_compose, rc_digest_compose):
+        validate_compose_image_pins(
+            good_compose, changelog_text=unreleased_changelog, app_version="0.5.9"
+        )
+        validate_compose_image_pins(
+            good_compose, changelog_text=dated_changelog, app_version="0.5.9"
+        )
 
 
 def test_h8_self_hosting_and_releasing_docs_cover_publish_check_and_digest_pin() -> None:
@@ -1395,5 +1431,14 @@ def test_h8_self_hosting_and_releasing_docs_cover_publish_check_and_digest_pin()
 
     releasing = (ROOT / "docs" / "releasing.md").read_text(encoding="utf-8")
     assert "deploy/hub/compose.yaml" in releasing
-    assert "0.5.9@sha256:<digest>" in releasing
-    assert "before** tagging or dating `CHANGELOG.md`" in releasing
+    assert "hub-image.yml" in releasing
+    assert "<version>-rc.<run_number>@sha256:<digest>" in releasing
+    assert "0.5.9-rc.<run_number>@sha256:<digest>" in releasing
+    assert "forbid dating the changelog without a digest pin" in releasing
+    assert "git tag -a v<version>" in releasing
+
+    dispatch_idx = releasing.index("manually dispatch")
+    pin_idx = releasing.index("0.5.9-rc.<run_number>@sha256:<digest>")
+    date_idx = releasing.index("then date `CHANGELOG.md`")
+    tag_idx = releasing.index("git tag -a v<version>")
+    assert dispatch_idx < pin_idx < date_idx < tag_idx

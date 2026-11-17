@@ -25,9 +25,11 @@ services:
     command: ["sh", "-c", "exec python -m spend_app.exposure check-publish \"$BURNRATE_TAILNET_IP\""]
 
   hub:
-    # Unreleased builds reference the 0.5.9 tag; before tagging/dating the
-    # release, pin this to "0.5.9@sha256:..." once published. To upgrade later,
-    # set BURNRATE_HUB_IMAGE to the new "tag@sha256:..." published with the release.
+    # Unreleased builds reference the 0.5.9 tag; before dating CHANGELOG.md and
+    # tagging, dispatch the candidate hub-image build and pin this to
+    # "0.5.9-rc.<run_number>@sha256:..." (which the release tag re-tags as
+    # "0.5.9"). To upgrade later, set BURNRATE_HUB_IMAGE to the new
+    # "tag@sha256:..." published with the release.
     image: ${BURNRATE_HUB_IMAGE:-ghcr.io/kamol-nazarov/myburnrate-hub:0.5.9}
     restart: unless-stopped
     depends_on:
