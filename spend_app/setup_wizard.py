@@ -566,9 +566,11 @@ def rotate_spoke_machine_token(settings, *, client=None) -> dict | None:
         mark_cleanup_pending_in_tx,
         publish_spoke_credentials,
         read_vault_secret,
+        revoke_or_queue_machine_token,
     )
     from spend_app.sync import (
         _cursor_key,
+        _hub_post_with_cookie_isolation,
         read_sync_cursor,
         rotate_spoke_sync_credential,
     )
@@ -578,6 +580,7 @@ def rotate_spoke_machine_token(settings, *, client=None) -> dict | None:
     spoke = state.get("spokeConfig") or {}
     if state.get("role") != "spoke" or not spoke.get("enabled"):
         return None
+    prior_machine_id = str((state.get("account") or {}).get("machineId") or "").strip() or None
     token = str(spoke.get("token") or "").strip() or (
         read_vault_secret(settings.database_path, MACHINE_TOKEN_VAULT_REF) or ""
     )
@@ -595,26 +598,28 @@ def rotate_spoke_machine_token(settings, *, client=None) -> dict | None:
         "Content-Type": "application/json",
     }
     resolved_client = client or _HUB_TEST_CLIENTS.get(hub_url)
-    if resolved_client is not None:
-        response = resolved_client.post("/api/auth/machine/rotate", json={}, headers=headers)
-    else:
-        import httpx
-        with httpx.Client(timeout=8, trust_env=False) as http:
-            response = http.post(f"{hub_url}/api/auth/machine/rotate", json={}, headers=headers)
+    response = _hub_post_with_cookie_isolation(
+        hub_url, "/api/auth/machine/rotate", headers, json_body={}, client=resolved_client, timeout=8.0
+    )
     if response.status_code != 200:
         return {"ok": False, "status": response.status_code}
     replacement = response.json()
     if not isinstance(replacement, dict) or not str(replacement.get("token") or "").strip():
         return {"ok": False, "status": 502}
+    new_machine_token = str(replacement["token"]).strip()
+
     class _RotationConflict(Exception):
         pass
 
     def _prepare(connection, current):
+        cur_spoke = current.get("spokeConfig") or {}
+        if current.get("role") != "spoke" or not cur_spoke.get("enabled") or cur_spoke.get("signedOut"):
+            raise _RotationConflict()
         row = connection.execute(
             "SELECT value FROM app_meta WHERE key=?", (_cursor_key(hub_url),)
         ).fetchone()
         generation = json.loads(row[0]).get("generation") if row else None
-        current_tok = str((current.get("spokeConfig") or {}).get("token") or "").strip() or (
+        current_tok = str(cur_spoke.get("token") or "").strip() or (
             read_vault_secret(settings.database_path, MACHINE_TOKEN_VAULT_REF) or ""
         )
         if current_tok != token or generation != prior_generation:
@@ -625,20 +630,48 @@ def rotate_spoke_machine_token(settings, *, client=None) -> dict | None:
         sc["tokenExpiresAt"] = replacement.get("expiresAt")
         sc["rotationRequired"] = False
         current["spokeConfig"] = sc
-        rotate_spoke_sync_credential(connection, hub_url, replacement["token"])
+        rotate_spoke_sync_credential(connection, hub_url, new_machine_token)
         mark_cleanup_pending_in_tx(connection, token_invalidated=True, state=current)
 
     try:
         publish_spoke_credentials(
             settings.database_path,
-            machine_token=replacement["token"],
+            machine_token=new_machine_token,
             prepare_state=_prepare,
             apply_state=_apply,
         )
     except _RotationConflict:
+        try:
+            revoke_or_queue_machine_token(
+                settings.database_path,
+                hub_url,
+                new_machine_token,
+                machine_id=prior_machine_id,
+                client=resolved_client,
+            )
+        except CodedError as q_exc:
+            return {"ok": False, "code": q_exc.code, "message": error_message(q_exc.code)}
         return {"ok": False, "status": 409}
     except CodedError as exc:
+        revoke_or_queue_machine_token(
+            settings.database_path,
+            hub_url,
+            new_machine_token,
+            machine_id=prior_machine_id,
+            client=resolved_client,
+            suppress_queue_error=True,
+        )
         return {"ok": False, "code": exc.code, "message": error_message(exc.code)}
+    except Exception:
+        revoke_or_queue_machine_token(
+            settings.database_path,
+            hub_url,
+            new_machine_token,
+            machine_id=prior_machine_id,
+            client=resolved_client,
+            suppress_queue_error=True,
+        )
+        raise
     return {"ok": True, "expiresAt": replacement.get("expiresAt")}
 
 
@@ -1813,10 +1846,22 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 "username": str(body.get("username") or ""), "password": str(body.get("password") or ""),
                 "sessionOnly": True, "deviceLabel": state.get("computerName") or "Paired computer",
             })
-            from spend_app.connection_secrets import publish_spoke_credentials
+            from spend_app.connection_secrets import (
+                publish_spoke_credentials,
+                revoke_or_queue_owner_session,
+            )
+
+            prev_gen = int(spoke.get("credentialGeneration") or 0)
 
             def _prepare_owner_session(_connection, current):
-                if (current.get("spokeConfig") or {}).get("hubUrl") != spoke.get("hubUrl"):
+                cur_spoke = current.get("spokeConfig") or {}
+                if (
+                    current.get("role") != "spoke"
+                    or not cur_spoke.get("enabled")
+                    or cur_spoke.get("signedOut")
+                    or cur_spoke.get("hubUrl") != spoke.get("hubUrl")
+                    or int(cur_spoke.get("credentialGeneration") or 0) != prev_gen
+                ):
                     raise CodedError("AUTH-107", status_code=409)
 
             def _apply_owner_session(_connection, current):
@@ -1825,12 +1870,22 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 sc["ownerSessionRotationRequired"] = False
                 current["spokeConfig"] = sc
 
-            publish_spoke_credentials(
-                settings.database_path,
-                owner_session=owner_session,
-                prepare_state=_prepare_owner_session,
-                apply_state=_apply_owner_session,
-            )
+            try:
+                publish_spoke_credentials(
+                    settings.database_path,
+                    owner_session=owner_session,
+                    prepare_state=_prepare_owner_session,
+                    apply_state=_apply_owner_session,
+                )
+            except Exception as exc:
+                revoke_or_queue_owner_session(
+                    settings.database_path,
+                    validated_hub_url,
+                    owner_session,
+                    client=_HUB_TEST_CLIENTS.get(validated_hub_url),
+                    suppress_queue_error=(isinstance(exc, CodedError) and exc.code == "APP-903"),
+                )
+                raise
             clear_hub_proxy_cache()
             return JSONResponse(
                 {"ok": True, "expiresAt": remote["expiresAt"]},
@@ -1853,11 +1908,13 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             mark_cleanup_pending_in_tx,
             publish_spoke_credentials,
             read_vault_secret,
+            revoke_or_queue_machine_token,
         )
 
         spoke = state["spokeConfig"]
         if state.get("role") != "spoke" or not spoke.get("enabled"):
             return error_response("AUTH-107", status_code=409)
+        prior_machine_id = str((state.get("account") or {}).get("machineId") or "").strip() or None
         from spend_app.hub_origin import hub_origin
         from spend_app.config import resolve_hub_url
 
@@ -1880,16 +1937,13 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             "X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION),
             "Content-Type": "application/json",
         }
-        from spend_app.sync import read_sync_cursor
+        from spend_app.sync import _hub_post_with_cookie_isolation, read_sync_cursor
         prior_generation = read_sync_cursor(settings.database_path, hub_url).get("generation")
         client = _HUB_TEST_CLIENTS.get(hub_url)
         try:
-            if client is not None:
-                response = client.post("/api/auth/machine/rotate", json={}, headers=headers)
-            else:
-                import httpx
-                with httpx.Client(timeout=8, trust_env=False) as http:
-                    response = http.post(hub_url + "/api/auth/machine/rotate", json={}, headers=headers)
+            response = _hub_post_with_cookie_isolation(
+                hub_url, "/api/auth/machine/rotate", headers, json_body={}, client=client, timeout=8.0
+            )
             if response.status_code != 200:
                 try:
                     err_data = response.json() if getattr(response, "content", b"") else {}
@@ -1908,14 +1962,20 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     retry_after=mapped.retry_after,
                 )
             replacement = response.json()
+            new_machine_token = str((replacement or {}).get("token") or "").strip()
+            if not new_machine_token:
+                raise CodedError("HUB-501", status_code=502)
             from spend_app.sync import _cursor_key, rotate_spoke_sync_credential
 
             def _prepare_rotate_machine(connection, current):
+                cur_spoke = current.get("spokeConfig") or {}
+                if current.get("role") != "spoke" or not cur_spoke.get("enabled") or cur_spoke.get("signedOut"):
+                    raise CodedError("DEV-301", status_code=409)
                 row = connection.execute(
                     "SELECT value FROM app_meta WHERE key=?", (_cursor_key(hub_url),)
                 ).fetchone()
                 generation = json.loads(row[0]).get("generation") if row else None
-                live_tok = str((current.get("spokeConfig") or {}).get("token") or "").strip() or (
+                live_tok = str(cur_spoke.get("token") or "").strip() or (
                     read_vault_secret(settings.database_path, MACHINE_TOKEN_VAULT_REF) or ""
                 )
                 if live_tok != current_token or generation != prior_generation:
@@ -1926,15 +1986,26 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 sc["tokenExpiresAt"] = replacement["expiresAt"]
                 sc["rotationRequired"] = False
                 current["spokeConfig"] = sc
-                rotate_spoke_sync_credential(connection, hub_url, replacement["token"])
+                rotate_spoke_sync_credential(connection, hub_url, new_machine_token)
                 mark_cleanup_pending_in_tx(connection, token_invalidated=True, state=current)
 
-            publish_spoke_credentials(
-                settings.database_path,
-                machine_token=replacement["token"],
-                prepare_state=_prepare_rotate_machine,
-                apply_state=_apply_rotate_machine,
-            )
+            try:
+                publish_spoke_credentials(
+                    settings.database_path,
+                    machine_token=new_machine_token,
+                    prepare_state=_prepare_rotate_machine,
+                    apply_state=_apply_rotate_machine,
+                )
+            except Exception as exc:
+                revoke_or_queue_machine_token(
+                    settings.database_path,
+                    hub_url,
+                    new_machine_token,
+                    machine_id=prior_machine_id,
+                    client=client,
+                    suppress_queue_error=(isinstance(exc, CodedError) and exc.code == "APP-903"),
+                )
+                raise
             clear_hub_proxy_cache()
             return {"ok": True, "expiresAt": replacement["expiresAt"]}
         except CodedError as exc:
@@ -2024,11 +2095,15 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 MACHINE_TOKEN_VAULT_REF,
                 publish_spoke_credentials,
                 read_vault_secret,
+                revoke_or_queue_machine_token,
+                revoke_or_queue_owner_session,
             )
 
             with connect(settings.database_path) as connection:
                 previous = read_setup_state(connection)
             previous_spoke = previous["spokeConfig"]
+            prev_gen = int(previous_spoke.get("credentialGeneration") or 0)
+            prev_signed_out = bool(previous_spoke.get("signedOut"))
             previous_token = str(previous_spoke.get("token") or "").strip() or (
                 read_vault_secret(settings.database_path, MACHINE_TOKEN_VAULT_REF) or ""
             )
@@ -2047,159 +2122,200 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 remote_payload["sessionOnly"] = True
             working_url, remote_data, owner_session = _call_central_server_account(server_url, endpoint, remote_payload)
             working_url = hub_origin(working_url)
+            hub_client = _HUB_TEST_CLIENTS.get(working_url)
             if reuse_machine:
                 token = previous_token
                 machine = {"id": previous["account"].get("machineId")}
                 machines_list = []
             else:
-                reg_headers = {
-                    "Authorization": f"Bearer {owner_session}",
-                    "X-BURNRATE-Request": "1",
-                    "X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION),
-                    "Content-Type": "application/json",
-                }
-                from spend_app.sync import get_or_create_device_id
+                try:
+                    reg_headers = {
+                        "Authorization": f"Bearer {owner_session}",
+                        "X-BURNRATE-Request": "1",
+                        "X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION),
+                        "Content-Type": "application/json",
+                    }
+                    from spend_app.sync import get_or_create_device_id
 
-                reg_payload = {
-                    "action": "register",
-                    "name": computer_name,
-                    "os": sys.platform,
-                    "deviceId": get_or_create_device_id(settings.database_path),
-                }
-                reg_client = _HUB_TEST_CLIENTS.get(working_url)
-                try:
-                    if reg_client is not None:
-                        cookies = getattr(reg_client, "cookies", None)
-                        saved_jar = list(cookies.jar) if cookies is not None and hasattr(cookies, "jar") else None
-                        if cookies is not None:
-                            cookies.clear()
-                        try:
-                            reg_res = reg_client.post("/api/machines", json=reg_payload, headers=reg_headers)
-                        finally:
-                            if cookies is not None and saved_jar is not None:
+                    reg_payload = {
+                        "action": "register",
+                        "name": computer_name,
+                        "os": sys.platform,
+                        "deviceId": get_or_create_device_id(settings.database_path),
+                    }
+                    try:
+                        if hub_client is not None:
+                            cookies = getattr(hub_client, "cookies", None)
+                            saved_jar = list(cookies.jar) if cookies is not None and hasattr(cookies, "jar") else None
+                            if cookies is not None:
                                 cookies.clear()
-                                for cookie in saved_jar:
-                                    cookies.jar.set_cookie(cookie)
-                    else:
-                        import httpx
-                        with httpx.Client(timeout=8.0, trust_env=False) as http:
-                            reg_res = http.post(f"{working_url}/api/machines", json=reg_payload, headers=reg_headers)
-                except Exception as exc:
-                    err_code, err_status = map_transport_error(exc)
-                    raise CodedError(err_code, status_code=err_status) from exc
-                try:
-                    reg_data = reg_res.json() if getattr(reg_res, "content", b"") else {}
-                except ValueError:
-                    reg_data = None
-                if reg_res.status_code >= 400:
-                    raise map_http_error(
-                        reg_res.status_code,
-                        reg_data,
-                        headers=getattr(reg_res, "headers", None),
-                        endpoint_path="/api/machines",
+                            try:
+                                reg_res = hub_client.post("/api/machines", json=reg_payload, headers=reg_headers)
+                            finally:
+                                if cookies is not None and saved_jar is not None:
+                                    cookies.clear()
+                                    for cookie in saved_jar:
+                                        cookies.jar.set_cookie(cookie)
+                        else:
+                            import httpx
+                            with httpx.Client(timeout=8.0, trust_env=False) as http:
+                                reg_res = http.post(f"{working_url}/api/machines", json=reg_payload, headers=reg_headers)
+                    except Exception as exc:
+                        err_code, err_status = map_transport_error(exc)
+                        raise CodedError(err_code, status_code=err_status) from exc
+                    try:
+                        reg_data = reg_res.json() if getattr(reg_res, "content", b"") else {}
+                    except ValueError:
+                        reg_data = None
+                    if reg_res.status_code >= 400:
+                        raise map_http_error(
+                            reg_res.status_code,
+                            reg_data,
+                            headers=getattr(reg_res, "headers", None),
+                            endpoint_path="/api/machines",
+                        )
+                    if not isinstance(reg_data, dict) or not str(reg_data.get("token") or "").strip():
+                        raise CodedError("HUB-501", status_code=502)
+                except Exception:
+                    revoke_or_queue_owner_session(
+                        settings.database_path,
+                        working_url,
+                        owner_session,
+                        client=hub_client,
+                        suppress_queue_error=True,
                     )
-                if not isinstance(reg_data, dict) or not str(reg_data.get("token") or "").strip():
-                    raise CodedError("HUB-501", status_code=502)
+                    raise
                 token = str(reg_data["token"]).strip()
                 machine = reg_data.get("machine") or {}
                 machines_list = reg_data.get("machines") or []
             remote_subs = remote_data.get("subscriptions") if isinstance(remote_data.get("subscriptions"), list) else []
             account_info = remote_data.get("account") if isinstance(remote_data.get("account"), dict) else {"username": username}
 
-            account_generation = None
-            if not reuse_machine:
-                from spend_app.sync import prepare_spoke_sync
-                account_generation = prepare_spoke_sync(settings.database_path, working_url, token)
-            sync_result = None
-            if test_sync:
-                sync_client = _HUB_TEST_CLIENTS.get(working_url)
-                try:
-                    sync_result = sync_once(
-                        settings,
-                        pricing,
-                        hub_url=working_url,
-                        token=token,
-                        machine_name=computer_name,
-                        collect_local=False,
-                        client=sync_client,
-                    )
-                except Exception:
-                    # Owner credentials have already been verified. Keep the
-                    # session usable independently from a failed first push.
-                    sync_result = {
-                        "ok": False,
-                        "code": "SYNC-201",
-                        "error": format_error("SYNC-201"),
-                    }
-
             account_out = {}
             local_subs = []
 
-            def _prepare_account(connection, state):
-                cur_spoke = state.get("spokeConfig") or {}
-                cur_tok = str(cur_spoke.get("token") or "").strip() or (
-                    read_vault_secret(settings.database_path, MACHINE_TOKEN_VAULT_REF) or ""
-                )
-                if (
-                    cur_tok != previous_token
-                    or cur_spoke.get("hubUrl") != previous_spoke.get("hubUrl")
-                ):
-                    raise CodedError("AUTH-107", status_code=409)
-                if account_generation:
-                    from spend_app.sync import _cursor_key
-                    row = connection.execute("SELECT value FROM app_meta WHERE key=?", (_cursor_key(working_url),)).fetchone()
-                    if not row or json.loads(row[0]).get("generation") != account_generation:
+            try:
+                account_generation = None
+                if not reuse_machine:
+                    from spend_app.sync import prepare_spoke_sync
+                    account_generation = prepare_spoke_sync(settings.database_path, working_url, token)
+                sync_result = None
+                if test_sync:
+                    try:
+                        sync_result = sync_once(
+                            settings,
+                            pricing,
+                            hub_url=working_url,
+                            token=token,
+                            machine_name=computer_name,
+                            collect_local=False,
+                            client=hub_client,
+                        )
+                    except Exception:
+                        # Owner credentials have already been verified. Keep the
+                        # session usable independently from a failed first push.
+                        sync_result = {
+                            "ok": False,
+                            "code": "SYNC-201",
+                            "error": format_error("SYNC-201"),
+                        }
+
+                def _prepare_account(connection, state):
+                    cur_spoke = state.get("spokeConfig") or {}
+                    cur_gen = int(cur_spoke.get("credentialGeneration") or 0)
+                    cur_tok = str(cur_spoke.get("token") or "").strip() or (
+                        read_vault_secret(settings.database_path, MACHINE_TOKEN_VAULT_REF) or ""
+                    )
+                    if (
+                        cur_gen != prev_gen
+                        or (not prev_signed_out and cur_spoke.get("signedOut"))
+                        or cur_tok != previous_token
+                        or cur_spoke.get("hubUrl") != previous_spoke.get("hubUrl")
+                    ):
                         raise CodedError("AUTH-107", status_code=409)
+                    if account_generation:
+                        from spend_app.sync import _cursor_key
+                        row = connection.execute("SELECT value FROM app_meta WHERE key=?", (_cursor_key(working_url),)).fetchone()
+                        if not row or json.loads(row[0]).get("generation") != account_generation:
+                            raise CodedError("AUTH-107", status_code=409)
 
-            def _apply_account(connection, state):
-                nonlocal account_out, local_subs
-                _sync_plans_into_local_db(connection, settings.timezone, remote_subs)
-                state["role"] = "spoke"
-                state["computerName"] = computer_name
-                account_username = str(account_info.get("username") or username)
-                needs_email = bool(account_info.get("needsEmail", not is_valid_email(account_username)))
-                prev_dismissed = bool((state.get("account") or {}).get("emailPromptDismissed"))
-                account_out = {
-                    "username": account_username,
-                    "machineId": str(machine.get("id") or ""),
-                    "connectedAt": utc_now(),
-                    "needsEmail": needs_email,
-                    "emailPromptDismissed": prev_dismissed if needs_email else False,
-                }
-                state["account"] = account_out
-                token_expires_at = (
-                    (sync_result or {}).get("tokenExpiresAt")
-                    or machine.get("expiresAt")
-                    or (None if reuse_machine else reg_data.get("expiresAt"))
-                    or previous_spoke.get("tokenExpiresAt")
-                )
-                rotation_required = bool(
-                    (sync_result or {}).get("rotationRequired")
-                    if isinstance(sync_result, dict) and "rotationRequired" in sync_result
-                    else (previous_spoke.get("rotationRequired") if reuse_machine else machine.get("rotationRequired"))
-                )
-                state["spokeConfig"] = {
-                    "hubUrl": working_url,
-                    "hubConfigured": True,
-                    "ownerSessionExpiresAt": remote_data.get("expiresAt"),
-                    "ownerSessionRotationRequired": False,
-                    "tokenExpiresAt": token_expires_at,
-                    "rotationRequired": rotation_required,
-                    "enabled": True,
-                    "lastSyncAt": utc_now() if sync_result and sync_result.get("ok") else (state.get("spokeConfig") or {}).get("lastSyncAt"),
-                    "lastSyncError": normalize_spoke_sync_error(sync_result.get("error")) if sync_result and not sync_result.get("ok") else None,
-                    "usageChangesPending": bool((sync_result or {}).get("usageChangesPending")),
-                    "eventsPushed": int((sync_result or {}).get("eventsWritten") or 0),
-                }
-                local_subs = effective_terms(connection)
+                def _apply_account(connection, state):
+                    nonlocal account_out, local_subs
+                    _sync_plans_into_local_db(connection, settings.timezone, remote_subs)
+                    state["role"] = "spoke"
+                    state["computerName"] = computer_name
+                    account_username = str(account_info.get("username") or username)
+                    needs_email = bool(account_info.get("needsEmail", not is_valid_email(account_username)))
+                    prev_dismissed = bool((state.get("account") or {}).get("emailPromptDismissed"))
+                    account_out = {
+                        "username": account_username,
+                        "machineId": str(machine.get("id") or ""),
+                        "connectedAt": utc_now(),
+                        "needsEmail": needs_email,
+                        "emailPromptDismissed": prev_dismissed if needs_email else False,
+                    }
+                    state["account"] = account_out
+                    token_expires_at = (
+                        (sync_result or {}).get("tokenExpiresAt")
+                        or machine.get("expiresAt")
+                        or (None if reuse_machine else reg_data.get("expiresAt"))
+                        or previous_spoke.get("tokenExpiresAt")
+                    )
+                    rotation_required = bool(
+                        (sync_result or {}).get("rotationRequired")
+                        if isinstance(sync_result, dict) and "rotationRequired" in sync_result
+                        else (previous_spoke.get("rotationRequired") if reuse_machine else machine.get("rotationRequired"))
+                    )
+                    state["spokeConfig"] = {
+                        "hubUrl": working_url,
+                        "hubConfigured": True,
+                        "ownerSessionExpiresAt": remote_data.get("expiresAt"),
+                        "ownerSessionRotationRequired": False,
+                        "tokenExpiresAt": token_expires_at,
+                        "rotationRequired": rotation_required,
+                        "enabled": True,
+                        "lastSyncAt": utc_now() if sync_result and sync_result.get("ok") else (state.get("spokeConfig") or {}).get("lastSyncAt"),
+                        "lastSyncError": normalize_spoke_sync_error(sync_result.get("error")) if sync_result and not sync_result.get("ok") else None,
+                        "usageChangesPending": bool((sync_result or {}).get("usageChangesPending")),
+                        "eventsPushed": int((sync_result or {}).get("eventsWritten") or 0),
+                    }
+                    local_subs = effective_terms(connection)
 
-            saved = publish_spoke_credentials(
-                settings.database_path,
-                owner_session=owner_session,
-                machine_token=token,
-                prepare_state=_prepare_account,
-                apply_state=_apply_account,
-            )
+                saved = publish_spoke_credentials(
+                    settings.database_path,
+                    owner_session=owner_session,
+                    machine_token=token,
+                    prepare_state=_prepare_account,
+                    apply_state=_apply_account,
+                )
+            except Exception as exc:
+                suppress_q = isinstance(exc, CodedError) and exc.code == "APP-903"
+                q_err = None
+                if not reuse_machine:
+                    try:
+                        revoke_or_queue_machine_token(
+                            settings.database_path,
+                            working_url,
+                            token,
+                            machine_id=str(machine.get("id") or "") or None,
+                            client=hub_client,
+                            suppress_queue_error=suppress_q,
+                        )
+                    except CodedError as qe:
+                        q_err = qe
+                try:
+                    revoke_or_queue_owner_session(
+                        settings.database_path,
+                        working_url,
+                        owner_session,
+                        client=hub_client,
+                        suppress_queue_error=suppress_q,
+                    )
+                except CodedError as qe:
+                    q_err = q_err or qe
+                if q_err is not None:
+                    raise q_err from exc
+                raise
 
             rename_machine(settings.database_path, machine_id="local", name=computer_name)
             clear_hub_proxy_cache()
