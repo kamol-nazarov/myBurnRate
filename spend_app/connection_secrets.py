@@ -193,6 +193,62 @@ def _restore_vault_secret(vault, ref: str, previous: str | None) -> None:
             pass
 
 
+CLEANUP_PENDING_META_KEY = "secrets.cleanup_pending.v1"
+
+
+def mark_cleanup_pending_in_tx(
+    connection,
+    *,
+    token_migrated: bool = False,
+    owner_migrated: bool = False,
+    token_invalidated: bool = False,
+    owner_invalidated: bool = False,
+    state: dict | None = None,
+) -> None:
+    """Update or clear the durable cleanup-pending marker inside an active transaction."""
+    import json
+    from spend_app.db import utc_now
+
+    row = connection.execute(
+        "SELECT value FROM app_meta WHERE key=?",
+        (CLEANUP_PENDING_META_KEY,),
+    ).fetchone()
+    marker: dict[str, object] | None = None
+    if row and row[0]:
+        try:
+            parsed = json.loads(row[0])
+            marker = dict(parsed) if isinstance(parsed, dict) else {"token": True, "ownerSession": True}
+        except ValueError:
+            marker = {"token": True, "ownerSession": True}
+
+    if marker is None and not token_migrated and not owner_migrated:
+        return
+
+    cur = dict(marker or {})
+    if token_migrated:
+        cur["token"] = True
+    if owner_migrated:
+        cur["ownerSession"] = True
+    if token_invalidated:
+        cur["token"] = False
+    if owner_invalidated:
+        cur["ownerSession"] = False
+
+    spoke = (state or {}).get("spokeConfig") or {}
+    has_legacy_json = bool(str(spoke.get("token") or "").strip()) or bool(
+        str(spoke.get("ownerSession") or "").strip()
+    )
+    if cur.get("token") or cur.get("ownerSession"):
+        cur["at"] = utc_now()
+        connection.execute(
+            "INSERT INTO app_meta(key, value) VALUES(?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (CLEANUP_PENDING_META_KEY, json.dumps(cur, separators=(",", ":"), sort_keys=True)),
+        )
+    elif row is not None and not has_legacy_json:
+        connection.execute("DELETE FROM app_meta WHERE key=?", (CLEANUP_PENDING_META_KEY,))
+
+
 def publish_spoke_credentials(
     database_path: Path | str,
     *,
@@ -206,7 +262,7 @@ def publish_spoke_credentials(
 
     Serializes via per-DB lock and SQLite BEGIN IMMEDIATE so concurrent migration
     or rotation cannot overwrite newer credentials. Never falls back to SQLite
-    plaintext storage; raises CodedError(\"APP-903\") on vault failure.
+    plaintext storage; raises CodedError("APP-903") on vault failure.
     """
     from spend_app.db import connect, initialize
     from spend_app.error_codes import CodedError
@@ -225,50 +281,119 @@ def publish_spoke_credentials(
         if use_vault is None:
             raise CodedError("APP-903", status_code=503)
 
-        with connect(db_file) as connection:
-            connection.execute("PRAGMA secure_delete = ON")
-            connection.execute("BEGIN IMMEDIATE")
-            state = read_setup_state(connection)
-            if prepare_state is not None:
-                prepare_state(connection, state)
+        prev_machine = None
+        prev_owner = None
+        wrote_machine = False
+        wrote_owner = False
+        try:
+            with connect(db_file) as connection:
+                connection.execute("PRAGMA secure_delete = ON")
+                connection.execute("BEGIN IMMEDIATE")
+                state = read_setup_state(connection)
+                if prepare_state is not None:
+                    prepare_state(connection, state)
 
-            prev_machine = read_vault_secret(db_file, MACHINE_TOKEN_VAULT_REF, vault=use_vault) if clean_machine else None
-            prev_owner = read_vault_secret(db_file, OWNER_SESSION_VAULT_REF, vault=use_vault) if clean_owner else None
-            wrote_machine = False
-            wrote_owner = False
-            try:
-                if clean_machine:
-                    verified_vault_put(use_vault, clean_machine, MACHINE_TOKEN_VAULT_REF)
-                    wrote_machine = True
-                if clean_owner:
-                    verified_vault_put(use_vault, clean_owner, OWNER_SESSION_VAULT_REF)
-                    wrote_owner = True
-            except Exception as exc:
-                if wrote_owner:
-                    _restore_vault_secret(use_vault, OWNER_SESSION_VAULT_REF, prev_owner)
-                if wrote_machine:
-                    _restore_vault_secret(use_vault, MACHINE_TOKEN_VAULT_REF, prev_machine)
-                raise CodedError("APP-903", status_code=503) from exc
+                orig_spoke = dict(state.get("spokeConfig") or {})
+                prev_gen = int(orig_spoke.get("credentialGeneration") or 0)
+                legacy_machine = str(orig_spoke.get("token") or "").strip()
+                legacy_owner = str(orig_spoke.get("ownerSession") or "").strip()
 
-            try:
+                prev_machine = read_vault_secret(db_file, MACHINE_TOKEN_VAULT_REF, vault=use_vault)
+                prev_owner = read_vault_secret(db_file, OWNER_SESSION_VAULT_REF, vault=use_vault)
+
+                try:
+                    if clean_machine:
+                        verified_vault_put(use_vault, clean_machine, MACHINE_TOKEN_VAULT_REF)
+                        wrote_machine = True
+                    if clean_owner:
+                        verified_vault_put(use_vault, clean_owner, OWNER_SESSION_VAULT_REF)
+                        wrote_owner = True
+                except Exception as exc:
+                    if wrote_owner:
+                        _restore_vault_secret(use_vault, OWNER_SESSION_VAULT_REF, prev_owner)
+                        wrote_owner = False
+                    if wrote_machine:
+                        _restore_vault_secret(use_vault, MACHINE_TOKEN_VAULT_REF, prev_machine)
+                        wrote_machine = False
+                    raise CodedError("APP-903", status_code=503) from exc
+
+                # B3: migrate untouched legacy counterparts in the same transaction
+                # before removing them from SQLite; preserve them if migration fails.
+                migrated_legacy_machine = False
+                preserve_legacy_machine = False
+                if not clean_machine and legacy_machine:
+                    if prev_machine:
+                        migrated_legacy_machine = True
+                    else:
+                        try:
+                            verified_vault_put(use_vault, legacy_machine, MACHINE_TOKEN_VAULT_REF)
+                            wrote_machine = True
+                            migrated_legacy_machine = True
+                        except Exception:
+                            preserve_legacy_machine = True
+
+                migrated_legacy_owner = False
+                preserve_legacy_owner = False
+                if not clean_owner and legacy_owner:
+                    if prev_owner:
+                        migrated_legacy_owner = True
+                    else:
+                        try:
+                            verified_vault_put(use_vault, legacy_owner, OWNER_SESSION_VAULT_REF)
+                            wrote_owner = True
+                            migrated_legacy_owner = True
+                        except Exception:
+                            preserve_legacy_owner = True
+
                 spoke = dict(state.get("spokeConfig") or {})
-                spoke.pop("token", None)
-                spoke.pop("ownerSession", None)
+                if clean_machine or migrated_legacy_machine:
+                    spoke.pop("token", None)
+                    if migrated_legacy_machine and not clean_machine:
+                        spoke["rotationRequired"] = True
+                if clean_owner or migrated_legacy_owner:
+                    spoke.pop("ownerSession", None)
+                    if migrated_legacy_owner and not clean_owner:
+                        spoke["ownerSessionRotationRequired"] = True
                 state["spokeConfig"] = spoke
+
                 if apply_state is not None:
                     apply_state(connection, state)
+
                 spoke = dict(state.get("spokeConfig") or {})
-                spoke.pop("token", None)
-                spoke.pop("ownerSession", None)
+                if clean_machine or migrated_legacy_machine:
+                    spoke.pop("token", None)
+                    if migrated_legacy_machine and not clean_machine:
+                        spoke["rotationRequired"] = True
+                elif preserve_legacy_machine:
+                    spoke["token"] = legacy_machine
+
+                if clean_owner or migrated_legacy_owner:
+                    spoke.pop("ownerSession", None)
+                    if migrated_legacy_owner and not clean_owner:
+                        spoke["ownerSessionRotationRequired"] = True
+                elif preserve_legacy_owner:
+                    spoke["ownerSession"] = legacy_owner
+
+                spoke["credentialGeneration"] = max(prev_gen, int(spoke.get("credentialGeneration") or 0)) + 1
                 state["spokeConfig"] = spoke
+
+                if migrated_legacy_machine or migrated_legacy_owner or (clean_machine and legacy_machine) or (clean_owner and legacy_owner):
+                    mark_cleanup_pending_in_tx(
+                        connection,
+                        token_migrated=bool(legacy_machine),
+                        owner_migrated=bool(legacy_owner),
+                        state=state,
+                    )
+
                 saved = write_setup_state(connection, state)
-            except Exception:
-                if wrote_owner:
-                    _restore_vault_secret(use_vault, OWNER_SESSION_VAULT_REF, prev_owner)
-                if wrote_machine:
-                    _restore_vault_secret(use_vault, MACHINE_TOKEN_VAULT_REF, prev_machine)
-                raise
-            return saved
+                connection.commit()
+                return saved
+        except Exception:
+            if wrote_owner:
+                _restore_vault_secret(use_vault, OWNER_SESSION_VAULT_REF, prev_owner)
+            if wrote_machine:
+                _restore_vault_secret(use_vault, MACHINE_TOKEN_VAULT_REF, prev_machine)
+            raise
 
 
 def clear_spoke_credentials(
@@ -277,6 +402,7 @@ def clear_spoke_credentials(
     clear_owner_session: bool = False,
     clear_machine_token: bool = False,
     vault=None,
+    prepare_state=None,
     apply_state=None,
 ) -> None:
     """Clear vault credentials and SQLite spoke state under the shared DB lock."""
@@ -291,17 +417,7 @@ def clear_spoke_credentials(
                 use_vault = get_vault(db_file)
             except Exception:
                 use_vault = None
-        if use_vault is not None:
-            if clear_owner_session:
-                try:
-                    use_vault.delete(OWNER_SESSION_VAULT_REF)
-                except Exception:
-                    pass
-            if clear_machine_token:
-                try:
-                    use_vault.delete(MACHINE_TOKEN_VAULT_REF)
-                except Exception:
-                    pass
+
         if db_file is not None and db_file.is_file():
             from spend_app.db import connect
             from spend_app.setup_wizard import read_setup_state, write_setup_state
@@ -310,7 +426,23 @@ def clear_spoke_credentials(
                 connection.execute("PRAGMA secure_delete = ON")
                 connection.execute("BEGIN IMMEDIATE")
                 state = read_setup_state(connection)
+                if prepare_state is not None:
+                    prepare_state(connection, state)
+
+                if use_vault is not None:
+                    if clear_owner_session:
+                        try:
+                            use_vault.delete(OWNER_SESSION_VAULT_REF)
+                        except Exception:
+                            pass
+                    if clear_machine_token:
+                        try:
+                            use_vault.delete(MACHINE_TOKEN_VAULT_REF)
+                        except Exception:
+                            pass
+
                 spoke = dict(state.get("spokeConfig") or {})
+                prev_gen = int(spoke.get("credentialGeneration") or 0)
                 if clear_owner_session:
                     spoke.pop("ownerSession", None)
                     spoke.pop("ownerSessionExpiresAt", None)
@@ -322,7 +454,22 @@ def clear_spoke_credentials(
                 state["spokeConfig"] = spoke
                 if apply_state is not None:
                     apply_state(connection, state)
+                spoke = dict(state.get("spokeConfig") or {})
+                spoke["credentialGeneration"] = max(prev_gen, int(spoke.get("credentialGeneration") or 0)) + 1
+                state["spokeConfig"] = spoke
                 write_setup_state(connection, state)
+                connection.commit()
+        elif use_vault is not None:
+            if clear_owner_session:
+                try:
+                    use_vault.delete(OWNER_SESSION_VAULT_REF)
+                except Exception:
+                    pass
+            if clear_machine_token:
+                try:
+                    use_vault.delete(MACHINE_TOKEN_VAULT_REF)
+                except Exception:
+                    pass
     finally:
         if lock_cm is not None:
             lock_cm.release()

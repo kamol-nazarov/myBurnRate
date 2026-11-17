@@ -1066,6 +1066,13 @@ class WindowOpacityController:
                 self._stop.wait(0.055)
 
 
+_CREDENTIAL_UNSET = object()
+
+
+class _StaleOwnerLifecycle(Exception):
+    """Raised inside a credential transaction when a newer lifecycle took over."""
+
+
 class DesktopBridge:
     """In-process Python bridge exposed to the local WebView2 UI."""
 
@@ -1088,7 +1095,9 @@ class DesktopBridge:
         self._owner_session_lock = threading.RLock()
         self._owner_session: str | None = None
         self._owner_session_expires_at: str | None = None
+        self._owner_session_gen: int | None = None
         self._machine_token: str | None = None
+        self._machine_token_gen: int | None = None
         self._sync_status: str = "idle"
         self._sync_error_code: str | None = None
         self._sync_error_message: str | None = None
@@ -2006,7 +2015,9 @@ class DesktopBridge:
             with self._owner_session_lock:
                 self._owner_session = None
                 self._owner_session_expires_at = None
+                self._owner_session_gen = None
                 self._machine_token = None
+                self._machine_token_gen = None
             self._get_owner_session_info()
             self._get_machine_token()
             out = {
@@ -2110,10 +2121,11 @@ class DesktopBridge:
         except Exception:
             LOGGER.debug("Legacy spoke secret migration skipped", exc_info=True)
 
-    def _get_owner_session_info(self) -> tuple[str | None, str | None]:
+    def _capture_owner_session_with_gen(self) -> tuple[str | None, str | None, int | None]:
         db_path = self._db_path()
         db_token: str | None = None
         db_expires_at: str | None = None
+        db_gen: int | None = None
         if db_path is not None and db_path.is_file():
             try:
                 from spend_app.db import connect
@@ -2122,15 +2134,29 @@ class DesktopBridge:
                 with connect(db_path) as conn:
                     state = read_setup_state(conn)
                 spoke = state.get("spokeConfig") or {}
+                db_gen = int(spoke.get("credentialGeneration") or 0)
                 db_token = str(spoke.get("ownerSession") or "").strip() or None
                 db_expires_at = spoke.get("ownerSessionExpiresAt")
             except Exception:
                 db_token = None
                 db_expires_at = None
+                db_gen = None
 
         with self._owner_session_lock:
-            if self._owner_session:
-                return self._owner_session, self._owner_session_expires_at or db_expires_at
+            if (
+                db_gen is not None
+                and self._owner_session_gen is not None
+                and db_gen != self._owner_session_gen
+            ):
+                self._owner_session = None
+                self._owner_session_expires_at = None
+                self._owner_session_gen = None
+            if self._owner_session and (db_gen is None or self._owner_session_gen == db_gen):
+                return (
+                    self._owner_session,
+                    self._owner_session_expires_at or db_expires_at,
+                    self._owner_session_gen,
+                )
 
             vault = self._resolve_vault()
             if vault is not None:
@@ -2139,32 +2165,59 @@ class DesktopBridge:
                     if isinstance(vault_token, str) and vault_token.strip():
                         self._owner_session = vault_token.strip()
                         self._owner_session_expires_at = db_expires_at
-                        return self._owner_session, self._owner_session_expires_at
+                        self._owner_session_gen = db_gen
+                        return self._owner_session, self._owner_session_expires_at, self._owner_session_gen
                 except Exception:
                     pass
 
             if db_token:
                 self._owner_session = db_token
                 self._owner_session_expires_at = db_expires_at
-                return db_token, db_expires_at
+                self._owner_session_gen = db_gen
+                return db_token, db_expires_at, db_gen
 
-        return None, None
+            self._owner_session_gen = db_gen
+        return None, None, db_gen
+
+    def _get_owner_session_info(self) -> tuple[str | None, str | None]:
+        token, expires_at, _gen = self._capture_owner_session_with_gen()
+        return token, expires_at
 
     def _get_owner_session_token(self) -> str | None:
         token, _ = self._get_owner_session_info()
         return token
 
-    def _publish_owner_session(self, token: str, expires_at: str | None = None) -> None:
+    def _publish_owner_session(
+        self,
+        token: str,
+        expires_at: str | None = None,
+        *,
+        expected_token: object = _CREDENTIAL_UNSET,
+        expected_gen: int | None = None,
+    ) -> None:
         clean_token = str(token or "").strip()
         if not clean_token:
-            self._clear_owner_session()
+            self._clear_owner_session(expected_token=expected_token, expected_gen=expected_gen)
             return
         with self._owner_session_lock:
             vault = self._resolve_vault()
             db_path = self._db_path()
             if db_path is not None:
-                from spend_app.connection_secrets import publish_spoke_credentials
+                from spend_app.connection_secrets import publish_spoke_credentials, read_vault_secret
                 from spend_app.sync import clear_hub_proxy_cache
+
+                def _prepare(_conn, current_state):
+                    sp = current_state.get("spokeConfig") or {}
+                    cur_gen = int(sp.get("credentialGeneration") or 0)
+                    if expected_gen is not None and cur_gen != expected_gen:
+                        raise _StaleOwnerLifecycle()
+                    if expected_token is not _CREDENTIAL_UNSET:
+                        cur_tok = (
+                            read_vault_secret(db_path, self.OWNER_SESSION_VAULT_REF, vault=vault)
+                            or str(sp.get("ownerSession") or "").strip()
+                        )
+                        if cur_tok != str(expected_token or "").strip():
+                            raise _StaleOwnerLifecycle()
 
                 def _apply(_conn, state):
                     spoke = dict(state.get("spokeConfig") or {})
@@ -2172,45 +2225,96 @@ class DesktopBridge:
                     spoke["ownerSessionRotationRequired"] = False
                     state["spokeConfig"] = spoke
 
-                publish_spoke_credentials(
+                prepare_fn = (
+                    _prepare
+                    if (expected_token is not _CREDENTIAL_UNSET or expected_gen is not None)
+                    else None
+                )
+                saved = publish_spoke_credentials(
                     db_path,
                     owner_session=clean_token,
                     vault=vault,
+                    prepare_state=prepare_fn,
                     apply_state=_apply,
                 )
                 clear_hub_proxy_cache()
+                self._owner_session_gen = int(
+                    ((saved.get("spokeConfig") or {}).get("credentialGeneration")) or 0
+                )
             else:
                 from spend_app.connection_secrets import verified_vault_put
 
+                if expected_token is not _CREDENTIAL_UNSET and (self._owner_session or "") != str(
+                    expected_token or ""
+                ).strip():
+                    raise _StaleOwnerLifecycle()
                 verified_vault_put(vault, clean_token, self.OWNER_SESSION_VAULT_REF)
+                self._owner_session_gen = (self._owner_session_gen or 0) + 1
             self._owner_session = clean_token
             self._owner_session_expires_at = expires_at
 
-    def _clear_owner_session(self) -> None:
+    def _clear_owner_session(
+        self,
+        *,
+        expected_token: object = _CREDENTIAL_UNSET,
+        expected_gen: int | None = None,
+    ) -> None:
         with self._owner_session_lock:
-            self._owner_session = None
-            self._owner_session_expires_at = None
             vault = self._resolve_vault()
             db_path = self._db_path()
             if db_path is not None and db_path.is_file():
                 try:
-                    from spend_app.connection_secrets import clear_spoke_credentials
+                    from spend_app.connection_secrets import clear_spoke_credentials, read_vault_secret
                     from spend_app.sync import clear_hub_proxy_cache
 
+                    def _prepare(_conn, current_state):
+                        sp = current_state.get("spokeConfig") or {}
+                        cur_gen = int(sp.get("credentialGeneration") or 0)
+                        if expected_gen is not None and cur_gen != expected_gen:
+                            raise _StaleOwnerLifecycle()
+                        if expected_token is not _CREDENTIAL_UNSET:
+                            cur_tok = (
+                                read_vault_secret(db_path, self.OWNER_SESSION_VAULT_REF, vault=vault)
+                                or str(sp.get("ownerSession") or "").strip()
+                            )
+                            if cur_tok != str(expected_token or "").strip():
+                                raise _StaleOwnerLifecycle()
+
+                    prepare_fn = (
+                        _prepare
+                        if (expected_token is not _CREDENTIAL_UNSET or expected_gen is not None)
+                        else None
+                    )
                     clear_spoke_credentials(
                         db_path,
                         clear_owner_session=True,
                         vault=vault,
+                        prepare_state=prepare_fn,
                     )
                     clear_hub_proxy_cache()
+                    if expected_token is _CREDENTIAL_UNSET or (self._owner_session or "") == str(
+                        expected_token or ""
+                    ).strip():
+                        self._owner_session = None
+                        self._owner_session_expires_at = None
+                        self._owner_session_gen = None
+                    return
+                except _StaleOwnerLifecycle:
                     return
                 except Exception:
                     pass
+            if expected_token is not _CREDENTIAL_UNSET and (self._owner_session or "") != str(
+                expected_token or ""
+            ).strip():
+                return
             if vault is not None:
                 try:
                     vault.delete(self.OWNER_SESSION_VAULT_REF)
                 except Exception:
                     pass
+            self._owner_session = None
+            self._owner_session_expires_at = None
+            self._owner_session_gen = None
 
     def _resolve_hub_origin(self) -> tuple[str | None, dict | None]:
         from spend_app.config import resolve_hub_url
@@ -2253,6 +2357,7 @@ class DesktopBridge:
         json_body: dict | None = None,
         token: str | None = None,
         handshake: bool = False,
+        fresh_session: bool = False,
     ) -> tuple[dict | None, object | None, dict | None]:
         import httpx
         from spend_app.setup_wizard import _hub_protocol_handshake
@@ -2269,7 +2374,7 @@ class DesktopBridge:
         try:
             if handshake:
                 _hub_protocol_handshake(hub_url, test_client)
-            if token and path not in {"/api/auth/session/rotate", "/api/auth/logout"}:
+            if token and not fresh_session and path not in {"/api/auth/session/rotate", "/api/auth/logout"}:
                 db_path = self._db_path()
                 if db_path is not None and db_path.is_file():
                     from spend_app.sync import ensure_fresh_owner_session
@@ -2285,6 +2390,7 @@ class DesktopBridge:
                         with self._owner_session_lock:
                             if self._owner_session == token:
                                 self._owner_session = fresh_token
+                                self._owner_session_gen = None
                         token = fresh_token
             if token:
                 headers["Authorization"] = f"Bearer {token}"
@@ -2315,10 +2421,12 @@ class DesktopBridge:
                     else:
                         res = http.post(url, json=json_body, headers=headers)
         except CodedError as exc:
-            if token and exc.code == "AUTH-107":
+            if token and not fresh_session and exc.code == "AUTH-107":
                 with self._owner_session_lock:
-                    self._owner_session = None
-                    self._owner_session_expires_at = None
+                    if self._owner_session == token:
+                        self._owner_session = None
+                        self._owner_session_expires_at = None
+                        self._owner_session_gen = None
             msg = redact_hub_urls(error_message(exc.code, retry_after=exc.retry_after))
             return None, None, {
                 "ok": False,
@@ -2348,8 +2456,8 @@ class DesktopBridge:
                 headers=getattr(res, "headers", None),
                 endpoint_path=path,
             )
-            if token and mapped.code == "AUTH-107":
-                self._clear_owner_session()
+            if token and not fresh_session and mapped.code == "AUTH-107":
+                self._clear_owner_session(expected_token=token)
             return None, res, {
                 "ok": False,
                 "code": mapped.code,
@@ -2415,19 +2523,9 @@ class DesktopBridge:
         self._publish_owner_session(token, expires_at)
 
     def _get_machine_token(self) -> str | None:
-        with self._owner_session_lock:
-            if self._machine_token:
-                return self._machine_token
-            vault = self._resolve_vault()
-            if vault is not None:
-                try:
-                    token = vault.get(self.MACHINE_TOKEN_VAULT_REF)
-                    if isinstance(token, str) and token.strip():
-                        self._machine_token = token.strip()
-                        return self._machine_token
-                except Exception:
-                    pass
         db_path = self._db_path()
+        db_tok: str | None = None
+        db_gen: int | None = None
         if db_path is not None and db_path.is_file():
             try:
                 from spend_app.db import connect
@@ -2435,13 +2533,36 @@ class DesktopBridge:
 
                 with connect(db_path) as conn:
                     spoke = (read_setup_state(conn).get("spokeConfig") or {})
+                    db_gen = int(spoke.get("credentialGeneration") or 0)
                     db_tok = str(spoke.get("token") or "").strip() or None
-                if db_tok:
-                    with self._owner_session_lock:
-                        self._machine_token = db_tok
-                    return db_tok
             except Exception:
-                pass
+                db_tok = None
+                db_gen = None
+        with self._owner_session_lock:
+            if (
+                db_gen is not None
+                and self._machine_token_gen is not None
+                and db_gen != self._machine_token_gen
+            ):
+                self._machine_token = None
+                self._machine_token_gen = None
+            if self._machine_token and (db_gen is None or self._machine_token_gen == db_gen):
+                return self._machine_token
+            vault = self._resolve_vault()
+            if vault is not None:
+                try:
+                    token = vault.get(self.MACHINE_TOKEN_VAULT_REF)
+                    if isinstance(token, str) and token.strip():
+                        self._machine_token = token.strip()
+                        self._machine_token_gen = db_gen
+                        return self._machine_token
+                except Exception:
+                    pass
+            if db_tok:
+                self._machine_token = db_tok
+                self._machine_token_gen = db_gen
+                return db_tok
+            self._machine_token_gen = db_gen
         return None
 
     def _save_machine_token(self, token: str) -> None:
@@ -2456,21 +2577,26 @@ class DesktopBridge:
                 from spend_app.connection_secrets import publish_spoke_credentials
                 from spend_app.sync import clear_hub_proxy_cache
 
-                publish_spoke_credentials(
+                saved = publish_spoke_credentials(
                     db_path,
                     machine_token=clean_token,
                     vault=vault,
                 )
                 clear_hub_proxy_cache()
+                self._machine_token_gen = int(
+                    ((saved.get("spokeConfig") or {}).get("credentialGeneration")) or 0
+                )
             else:
                 from spend_app.connection_secrets import verified_vault_put
 
                 verified_vault_put(vault, clean_token, self.MACHINE_TOKEN_VAULT_REF)
+                self._machine_token_gen = (self._machine_token_gen or 0) + 1
             self._machine_token = clean_token
 
     def _clear_machine_token(self) -> None:
         with self._owner_session_lock:
             self._machine_token = None
+            self._machine_token_gen = None
             vault = self._resolve_vault()
             db_path = self._db_path()
             if db_path is not None and db_path.is_file():
@@ -2741,6 +2867,7 @@ class DesktopBridge:
             "/api/machines",
             json_body=reg_body,
             token=session_token,
+            fresh_session=True,
         )
         if reg_err is not None:
             return self._h5_err_from_call(reg_err)
@@ -2784,7 +2911,7 @@ class DesktopBridge:
                         state["spokeConfig"] = spoke
                         prepare_spoke_sync_tx(conn, hub_url, machine_token)
 
-                    publish_spoke_credentials(
+                    saved_auth = publish_spoke_credentials(
                         db_path,
                         owner_session=session_token,
                         machine_token=machine_token,
@@ -2792,6 +2919,9 @@ class DesktopBridge:
                         apply_state=_apply_auth_state,
                     )
                     clear_hub_proxy_cache()
+                    saved_gen = int(
+                        ((saved_auth.get("spokeConfig") or {}).get("credentialGeneration")) or 0
+                    )
                 else:
                     from spend_app.connection_secrets import _restore_vault_secret, verified_vault_put
 
@@ -2809,6 +2939,7 @@ class DesktopBridge:
                     except Exception:
                         _restore_vault_secret(vault, self.OWNER_SESSION_VAULT_REF, prev_owner)
                         raise
+                    saved_gen = (self._owner_session_gen or 0) + 1
             except CodedError as exc:
                 LOGGER.debug("Credential vault publication failed (%s)", exc.code, exc_info=True)
                 return self._h5_err(exc.code)
@@ -2818,7 +2949,9 @@ class DesktopBridge:
 
             self._owner_session = session_token
             self._owner_session_expires_at = expires_at
+            self._owner_session_gen = saved_gen
             self._machine_token = machine_token
+            self._machine_token_gen = saved_gen
 
         with self._owner_session_lock:
             self._sync_gen += 1
@@ -2884,8 +3017,9 @@ class DesktopBridge:
         if self._demo:
             return self._h5_err("HUB-501", message="Account actions are disabled in demo mode.")
 
-        token = self._get_owner_session_token()
+        token, _, captured_gen = self._capture_owner_session_with_gen()
         local_mid = self._local_machine_id()
+        logout_token = token
         if token:
             hub_url, err = self._resolve_hub_origin()
             if err is not None:
@@ -2904,13 +3038,17 @@ class DesktopBridge:
                         rev_res is None or rev_res.status_code not in {401, 404}
                     ):
                         return self._h5_err_from_call(rev_err)
-            logout_token = self._get_owner_session_token() or token
+            cur_tok, _, cur_gen = self._capture_owner_session_with_gen()
+            if cur_tok:
+                logout_token = cur_tok
+                captured_gen = cur_gen
             _, res, call_err = self._call_hub(
                 hub_url,
                 "POST",
                 "/api/auth/logout",
                 json_body={},
                 token=logout_token,
+                fresh_session=True,
             )
             if (
                 call_err is not None
@@ -2919,39 +3057,70 @@ class DesktopBridge:
             ):
                 return self._h5_err_from_call(call_err)
 
-        self._clear_owner_session()
-        self._clear_machine_token()
-
-        with self._owner_session_lock:
-            self._sync_gen += 1
-            self._sync_status = "idle"
-            self._sync_error_code = None
-            self._sync_error_message = None
-
         db_path = self._db_path()
         if db_path is not None and db_path.is_file():
             try:
-                from spend_app.db import connect
-                from spend_app.setup_wizard import read_setup_state, write_setup_state
+                from spend_app.connection_secrets import clear_spoke_credentials, read_vault_secret
                 from spend_app.sync import clear_hub_proxy_cache
 
-                with connect(db_path) as conn:
-                    conn.execute("BEGIN IMMEDIATE")
-                    state = read_setup_state(conn)
+                vault = self._resolve_vault()
+
+                def _prepare_signout(_conn, current_state):
+                    sp = current_state.get("spokeConfig") or {}
+                    cur_gen = int(sp.get("credentialGeneration") or 0)
+                    if captured_gen is not None and cur_gen != captured_gen:
+                        raise _StaleOwnerLifecycle()
+                    if logout_token:
+                        cur_tok = (
+                            read_vault_secret(db_path, self.OWNER_SESSION_VAULT_REF, vault=vault)
+                            or str(sp.get("ownerSession") or "").strip()
+                        )
+                        if cur_tok and cur_tok != logout_token:
+                            raise _StaleOwnerLifecycle()
+
+                def _apply_signout(_conn, state):
                     if state.get("role") == "spoke":
                         state["role"] = "local"
                     state["account"] = {}
                     spoke = dict(state.get("spokeConfig") or {})
-                    spoke.pop("token", None)
-                    spoke.pop("ownerSession", None)
-                    spoke.pop("ownerSessionExpiresAt", None)
                     spoke.pop("lastSyncError", None)
                     spoke["enabled"] = False
                     state["spokeConfig"] = spoke
-                    write_setup_state(conn, state)
-                clear_hub_proxy_cache()
+
+                with self._owner_session_lock:
+                    clear_spoke_credentials(
+                        db_path,
+                        clear_owner_session=True,
+                        clear_machine_token=True,
+                        vault=vault,
+                        prepare_state=_prepare_signout,
+                        apply_state=_apply_signout,
+                    )
+                    clear_hub_proxy_cache()
+                    self._owner_session = None
+                    self._owner_session_expires_at = None
+                    self._owner_session_gen = None
+                    self._machine_token = None
+                    self._machine_token_gen = None
+                    self._sync_gen += 1
+                    self._sync_status = "idle"
+                    self._sync_error_code = None
+                    self._sync_error_message = None
+            except _StaleOwnerLifecycle:
+                return {"ok": True}
             except Exception:
                 LOGGER.debug("Could not clear local spoke state", exc_info=True)
+        else:
+            self._clear_owner_session(
+                expected_token=logout_token or _CREDENTIAL_UNSET,
+                expected_gen=captured_gen,
+            )
+            self._clear_machine_token()
+            with self._owner_session_lock:
+                self._sync_gen += 1
+                self._sync_status = "idle"
+                self._sync_error_code = None
+                self._sync_error_message = None
 
         return {"ok": True}
 
@@ -3047,7 +3216,7 @@ class DesktopBridge:
     def owner_session_status(self) -> dict:
         if self._demo:
             return {"ok": True, "hasOwnerSession": False, "expiresAt": None}
-        token, expires_at = self._get_owner_session_info()
+        token, expires_at, captured_gen = self._capture_owner_session_with_gen()
         if not token:
             return {"ok": True, "hasOwnerSession": False, "expiresAt": None}
         if expires_at:
@@ -3055,7 +3224,7 @@ class DesktopBridge:
 
             parsed = parse(expires_at)
             if parsed is not None and parsed <= moment():
-                self._clear_owner_session()
+                self._clear_owner_session(expected_token=token, expected_gen=captured_gen)
                 return {"ok": True, "hasOwnerSession": False, "expiresAt": None}
         return {"ok": True, "hasOwnerSession": True, "expiresAt": expires_at}
 
@@ -3178,7 +3347,7 @@ class DesktopBridge:
         hub_url, err = self._resolve_hub_origin()
         if err is not None:
             return err
-        token = self._get_owner_session_token()
+        token, _, captured_gen = self._capture_owner_session_with_gen()
         if not token:
             return {"ok": False, "code": "AUTH-107", "error": format_error("AUTH-107")}
         data, res, call_err = self._call_hub(
@@ -3199,7 +3368,22 @@ class DesktopBridge:
 
         expires_at = data.get("expiresAt")
         try:
-            self._publish_owner_session(new_token, expires_at)
+            self._publish_owner_session(
+                new_token,
+                expires_at,
+                expected_token=token,
+                expected_gen=captured_gen,
+            )
+        except _StaleOwnerLifecycle:
+            self._call_hub(
+                hub_url,
+                "POST",
+                "/api/auth/logout",
+                json_body={},
+                token=new_token,
+                fresh_session=True,
+            )
+            return {"ok": False, "code": "AUTH-107", "error": format_error("AUTH-107")}
         except CodedError as exc:
             return {"ok": False, "code": exc.code, "message": error_message(exc.code), "error": format_error(exc.code)}
         except Exception:
@@ -3216,7 +3400,7 @@ class DesktopBridge:
         hub_url, err = self._resolve_hub_origin()
         if err is not None:
             return err
-        token = self._get_owner_session_token()
+        token, _, captured_gen = self._capture_owner_session_with_gen()
         if token:
             _, res, call_err = self._call_hub(
                 hub_url,
@@ -3224,10 +3408,15 @@ class DesktopBridge:
                 "/api/auth/logout",
                 json_body={},
                 token=token,
+                fresh_session=True,
             )
-            if call_err is not None and (res is None or res.status_code != 401):
+            if (
+                call_err is not None
+                and call_err.get("code") != "AUTH-107"
+                and (res is None or res.status_code != 401)
+            ):
                 return call_err
-        self._clear_owner_session()
+        self._clear_owner_session(expected_token=token, expected_gen=captured_gen)
         return {"ok": True}
 
     def get_owner_audit(self) -> dict:

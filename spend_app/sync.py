@@ -7,6 +7,7 @@ import copy
 import hashlib
 import hmac
 import json
+import logging
 import os
 import platform
 import re
@@ -53,6 +54,8 @@ from spend_app.db import (
 from spend_app.capacity_forecast import apply_balance_runway, record_balance_sample
 from spend_app.ingest import IngestRun
 from spend_app.pricing import PricingEngine, UnpricedModelError
+
+LOGGER = logging.getLogger(__name__)
 
 MACHINES_META_KEY = "machines.v1"
 DEVICE_ID_META_KEY = "device_id.v1"
@@ -1373,9 +1376,9 @@ def migrate_legacy_spoke_secrets(database_path: Path, *, vault=None) -> dict[str
     """Move legacy SQLite ``spokeConfig.token`` / ``ownerSession`` into the vault.
 
     Serializes with all credential publishers via ``db_secret_lock`` and
-    ``BEGIN IMMEDIATE``, marks migrated credentials for rotation, removes the
-    DB copies only after verified vault readback, and scrubs SQLite/WAL
-    remnants via ``PRAGMA secure_delete = ON``, ``VACUUM``, and WAL truncate.
+    ``BEGIN IMMEDIATE``, marks migrated credentials for rotation, persists a
+    durable cleanup-pending marker before sanitation, and scrubs SQLite/WAL
+    remnants via verified ``PRAGMA wal_checkpoint(TRUNCATE)`` + ``VACUUM``.
     """
     outcome = {"token": False, "ownerSession": False}
     if database_path is None:
@@ -1385,22 +1388,18 @@ def migrate_legacy_spoke_secrets(database_path: Path, *, vault=None) -> dict[str
         return outcome
 
     from spend_app.connection_secrets import (
+        CLEANUP_PENDING_META_KEY,
         MACHINE_TOKEN_VAULT_REF,
         OWNER_SESSION_VAULT_REF,
         db_secret_lock,
         get_vault,
+        mark_cleanup_pending_in_tx,
         verified_vault_put,
     )
+    from spend_app.redact import redact_hub_urls
     from spend_app.setup_wizard import read_setup_state, write_setup_state
 
     with db_secret_lock(db_file):
-        try:
-            use_vault = vault if vault is not None else get_vault(db_file)
-        except Exception:
-            return outcome
-        if use_vault is None:
-            return outcome
-
         try:
             with connect(db_file) as connection:
                 connection.execute("PRAGMA secure_delete = ON")
@@ -1409,16 +1408,36 @@ def migrate_legacy_spoke_secrets(database_path: Path, *, vault=None) -> dict[str
                 latest_spoke = dict(latest.get("spokeConfig") or {})
                 legacy_token = str(latest_spoke.get("token") or "").strip()
                 legacy_session = str(latest_spoke.get("ownerSession") or "").strip()
-                if not legacy_token and not legacy_session:
+                marker_row = connection.execute(
+                    "SELECT value FROM app_meta WHERE key=?",
+                    (CLEANUP_PENDING_META_KEY,),
+                ).fetchone()
+                has_marker = marker_row is not None
+
+                if not legacy_token and not legacy_session and not has_marker:
                     return outcome
 
+                use_vault = None
+                if legacy_token or legacy_session:
+                    try:
+                        use_vault = vault if vault is not None else get_vault(db_file)
+                    except Exception:
+                        use_vault = None
+                    if use_vault is None:
+                        return outcome
+
                 changed = False
+                token_migrated = False
+                owner_migrated = False
+                prev_gen = int(latest_spoke.get("credentialGeneration") or 0)
+
                 if legacy_token:
                     try:
                         verified_vault_put(use_vault, legacy_token, MACHINE_TOKEN_VAULT_REF)
                         outcome["token"] = True
                         latest_spoke.pop("token", None)
                         latest_spoke["rotationRequired"] = True
+                        token_migrated = True
                         changed = True
                     except Exception:
                         outcome["token"] = False
@@ -1429,23 +1448,78 @@ def migrate_legacy_spoke_secrets(database_path: Path, *, vault=None) -> dict[str
                         outcome["ownerSession"] = True
                         latest_spoke.pop("ownerSession", None)
                         latest_spoke["ownerSessionRotationRequired"] = True
+                        owner_migrated = True
                         changed = True
                     except Exception:
                         outcome["ownerSession"] = False
 
-                if not changed:
+                if changed:
+                    latest_spoke["credentialGeneration"] = prev_gen + 1
+                    latest["spokeConfig"] = latest_spoke
+                    write_setup_state(connection, latest)
+                    mark_cleanup_pending_in_tx(
+                        connection,
+                        token_migrated=token_migrated,
+                        owner_migrated=owner_migrated,
+                        state=latest,
+                    )
+                    connection.commit()
+                else:
+                    connection.rollback()
+
+                if not changed and not has_marker:
                     return outcome
 
-                latest["spokeConfig"] = latest_spoke
-                write_setup_state(connection, latest)
+                prev_timeout_row = connection.execute("PRAGMA busy_timeout").fetchone()
+                prev_timeout = int(prev_timeout_row[0]) if prev_timeout_row else 30000
+                try:
+                    connection.execute("PRAGMA busy_timeout = 100")
+                    cp1 = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                    if not cp1 or int(cp1[0]) != 0 or int(cp1[1]) != int(cp1[2]):
+                        raise RuntimeError(
+                            f"WAL checkpoint incomplete or busy: {tuple(cp1) if cp1 else None}"
+                        )
+                    connection.execute(f"PRAGMA busy_timeout = {prev_timeout}")
+                    connection.execute("VACUUM")
+                    connection.execute("PRAGMA busy_timeout = 100")
+                    cp2 = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                    if not cp2 or int(cp2[0]) != 0 or int(cp2[1]) != int(cp2[2]):
+                        raise RuntimeError(
+                            f"Post-VACUUM WAL checkpoint incomplete or busy: {tuple(cp2) if cp2 else None}"
+                        )
+                except Exception as exc:
+                    LOGGER.warning(
+                        "Legacy credential SQLite sanitation incomplete; keeping cleanup marker (%s)",
+                        type(exc).__name__,
+                    )
+                    return outcome
+                finally:
+                    try:
+                        connection.execute(f"PRAGMA busy_timeout = {prev_timeout}")
+                    except Exception:
+                        pass
+
+                connection.execute("BEGIN IMMEDIATE")
+                cur_state = read_setup_state(connection)
+                cur_spoke = cur_state.get("spokeConfig") or {}
+                if (
+                    not str(cur_spoke.get("token") or "").strip()
+                    and not str(cur_spoke.get("ownerSession") or "").strip()
+                ):
+                    connection.execute(
+                        "DELETE FROM app_meta WHERE key=?",
+                        (CLEANUP_PENDING_META_KEY,),
+                    )
                 connection.commit()
                 try:
                     connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                    connection.execute("VACUUM")
-                    connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
                 except Exception:
                     pass
-        except Exception:
+        except Exception as exc:
+            LOGGER.warning(
+                "Legacy credential migration failed (%s)",
+                type(exc).__name__,
+            )
             return outcome
     return outcome
 
@@ -1479,8 +1553,10 @@ def ensure_fresh_owner_session(
 ) -> str:
     """Rotate a migrated legacy owner session before the next hub call.
 
-    If rotation is rejected or cannot complete (invalid/missing response), best-effort
-    revokes and clears the local owner session and raises ``CodedError("AUTH-107")``.
+    Captures ``(token, credentialGeneration)`` before the network call and fences
+    both success publication and failure clearing inside ``BEGIN IMMEDIATE``.
+    Never substitutes an unrelated stored legacy session when a distinct fresh
+    session token is passed.
     """
     clean_token = str(token or "").strip()
     if not clean_token or database_path is None:
@@ -1493,6 +1569,7 @@ def ensure_fresh_owner_session(
     from spend_app.connection_secrets import (
         OWNER_SESSION_VAULT_REF,
         clear_spoke_credentials,
+        mark_cleanup_pending_in_tx,
         publish_spoke_credentials,
         read_vault_secret,
     )
@@ -1503,16 +1580,31 @@ def ensure_fresh_owner_session(
         spoke = (read_setup_state(connection).get("spokeConfig") or {})
     if not spoke.get("ownerSessionRotationRequired"):
         return clean_token
+    initial_stored = (
+        read_vault_secret(db_file, OWNER_SESSION_VAULT_REF, vault=vault)
+        or str(spoke.get("ownerSession") or "").strip()
+    )
+    if not initial_stored or clean_token != initial_stored:
+        return clean_token
 
     with _owner_rotation_lock(db_file):
         with connect(db_file) as connection:
             spoke = (read_setup_state(connection).get("spokeConfig") or {})
         vault_tok = read_vault_secret(db_file, OWNER_SESSION_VAULT_REF, vault=vault)
+        stored_tok = vault_tok or str(spoke.get("ownerSession") or "").strip()
+        captured_gen = int(spoke.get("credentialGeneration") or 0)
         if not spoke.get("ownerSessionRotationRequired"):
-            return vault_tok or clean_token
-        active_token = vault_tok or str(spoke.get("ownerSession") or "").strip() or clean_token
+            if stored_tok and stored_tok != clean_token:
+                return stored_tok
+            if not stored_tok:
+                raise CodedError("AUTH-107", status_code=401)
+            return clean_token
+        if not stored_tok or stored_tok != clean_token:
+            return clean_token
+
+        captured_token = stored_tok
         headers = {
-            "Authorization": f"Bearer {active_token}",
+            "Authorization": f"Bearer {captured_token}",
             "Content-Type": "application/json",
             "X-BURNRATE-Request": "1",
             "X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION),
@@ -1530,6 +1622,24 @@ def ensure_fresh_owner_session(
             data = response.json() if getattr(response, "content", b"") else {}
         except ValueError:
             data = None
+
+        class _StaleOwnerLifecycle(Exception):
+            pass
+
+        def _check_lifecycle_fence(_conn, current_state) -> None:
+            sp = current_state.get("spokeConfig") or {}
+            cur_gen = int(sp.get("credentialGeneration") or 0)
+            cur_tok = (
+                read_vault_secret(db_file, OWNER_SESSION_VAULT_REF, vault=vault)
+                or str(sp.get("ownerSession") or "").strip()
+            )
+            if (
+                cur_gen != captured_gen
+                or cur_tok != captured_token
+                or not sp.get("ownerSessionRotationRequired")
+            ):
+                raise _StaleOwnerLifecycle()
+
         if response.status_code != 200 or not new_token or not isinstance(data, dict):
             try:
                 _hub_post_with_cookie_isolation(
@@ -1537,26 +1647,73 @@ def ensure_fresh_owner_session(
                 )
             except Exception:
                 pass
-            clear_spoke_credentials(db_file, clear_owner_session=True, vault=vault)
-            clear_hub_proxy_cache()
+            try:
+                clear_spoke_credentials(
+                    db_file,
+                    clear_owner_session=True,
+                    vault=vault,
+                    prepare_state=_check_lifecycle_fence,
+                )
+                clear_hub_proxy_cache()
+            except _StaleOwnerLifecycle:
+                pass
             raise CodedError("AUTH-107", status_code=401)
 
         expires_at = data.get("expiresAt")
+
         def _apply(conn, st):
             sp = dict(st.get("spokeConfig") or {})
             sp["ownerSessionExpiresAt"] = expires_at
             sp["ownerSessionRotationRequired"] = False
             st["spokeConfig"] = sp
+            mark_cleanup_pending_in_tx(conn, owner_invalidated=True, state=st)
+
         try:
             publish_spoke_credentials(
                 db_file,
                 owner_session=new_token,
                 vault=vault,
+                prepare_state=_check_lifecycle_fence,
                 apply_state=_apply,
             )
+        except _StaleOwnerLifecycle:
+            try:
+                _hub_post_with_cookie_isolation(
+                    hub_url,
+                    "/api/auth/logout",
+                    {
+                        "Authorization": f"Bearer {new_token}",
+                        "Content-Type": "application/json",
+                        "X-BURNRATE-Request": "1",
+                        "X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION),
+                    },
+                    client=client,
+                    timeout=4.0,
+                )
+            except Exception:
+                pass
+            raise CodedError("AUTH-107", status_code=401) from None
         except CodedError:
-            clear_spoke_credentials(db_file, clear_owner_session=True, vault=vault)
-            clear_hub_proxy_cache()
+            def _fence_clear_on_err(_conn, current_state) -> None:
+                sp = current_state.get("spokeConfig") or {}
+                cur_gen = int(sp.get("credentialGeneration") or 0)
+                cur_tok = (
+                    read_vault_secret(db_file, OWNER_SESSION_VAULT_REF, vault=vault)
+                    or str(sp.get("ownerSession") or "").strip()
+                )
+                if cur_gen != captured_gen or cur_tok != captured_token:
+                    raise _StaleOwnerLifecycle()
+
+            try:
+                clear_spoke_credentials(
+                    db_file,
+                    clear_owner_session=True,
+                    vault=vault,
+                    prepare_state=_fence_clear_on_err,
+                )
+                clear_hub_proxy_cache()
+            except _StaleOwnerLifecycle:
+                pass
             raise
         clear_hub_proxy_cache()
         return new_token
