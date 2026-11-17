@@ -55,8 +55,15 @@ export BURNRATE_ACCESS_TOKEN="$(python3 -c 'import secrets; print(secrets.token_
 docker compose up -d
 ```
 
-[`deploy/hub/compose.yaml`](../deploy/hub/compose.yaml) starts two containers:
+[`deploy/hub/compose.yaml`](../deploy/hub/compose.yaml) runs a pre-start check
+before starting the two runtime containers:
 
+- **`publish-check`** runs `python -m spend_app.exposure check-publish "$BURNRATE_TAILNET_IP"`
+  and must exit cleanly before `hub` binds ports or `caddy` starts. It refuses
+  empty values, wildcards (`0.0.0.0`, `::`), public IPv4/IPv6 addresses, and
+  hostnames, accepting only loopback (`127.0.0.0/8`, `::1`), RFC 1918 private,
+  CGNAT (`100.64.0.0/10`), and Tailscale IPv6 (`fd7a:115c:a1e0::/48`)
+  addresses unless `BURNRATE_HUB_ALLOW_PUBLIC=1` is set.
 - **`hub`** runs the image `ghcr.io/kamol-nazarov/myburnrate-hub`, built from
   the repository's [`Dockerfile`](../Dockerfile) by the release workflow for
   x86-64 and ARM. It binds `127.0.0.1:17331`, keeps its database in `hub-data`,
@@ -85,9 +92,9 @@ HTTPS over your tailnet; do not put credentials in URLs or shell history.
    replacement hash in SQLite; updating the environment variable alone does not
    override it.
 
-- **Update:** the reference compose file pins both images by digest. Set
+- **Update:** release metadata pins Caddy and the hub image by digest. Set
   `BURNRATE_HUB_IMAGE` to the new `tag@sha256:...` from the release
-  (`docker buildx imagetools inspect ghcr.io/kamol-nazarov/myburnrate-hub:0.5.7`
+  (`docker buildx imagetools inspect ghcr.io/kamol-nazarov/myburnrate-hub:0.5.9`
   prints it), then `docker compose pull && docker compose up -d`.
 - **Back up:** copy `spend.db` out of the `hub-data` volume, for example with
   `docker compose cp hub:/data/spend.db ./spend-backup.db`.
@@ -154,8 +161,7 @@ On first start the additive auth tables and legacy metadata migration commit ato
 start does not change migrated metadata or add a second migration audit row. Existing machine
 hashes keep working for pushes until `created_at + 180 days`; old tokens are flagged for rotation.
 Expired older tokens must be re-connected from the desktop app. Existing account passwords still
-work and need no setup token; already-paired computers keep their machine tokens and keep syncing,
-and the unused `pairing_grants` table is dropped on upgrade.
+work and need no setup token.
 
 Run synthetic checks before rollout, then check anonymous reads return 401, own-machine reads
 work, aggregate machine reads return 403 and an owner session sees all expected computers.

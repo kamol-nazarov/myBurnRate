@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+import spend_app
 from spend_app import auth_throttle
 from spend_app.api import create_app
 from spend_app.config import Settings
@@ -26,6 +27,35 @@ from spend_app.setup_wizard import (
 from spend_app.sync import register_machine
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _assert_compose_images_pinned(
+    compose: str, *, changelog: str, app_version: str
+) -> None:
+    assert re.search(r"caddy:\d+\.\d+\.\d+@sha256:[0-9a-f]{64}", compose)
+    hub_refs = re.findall(r"myburnrate-hub:([^\s\"'}]+)", compose)
+    assert hub_refs, "deploy/hub/compose.yaml must reference myburnrate-hub"
+
+    unreleased = bool(
+        re.search(
+            rf"^## \[{re.escape(app_version)}\] - Unreleased\s*$",
+            changelog,
+            re.MULTILINE,
+        )
+    )
+    digest_re = re.compile(r"^\d+\.\d+\.\d+@sha256:[0-9a-f]{64}$")
+    tag_only_re = re.compile(r"^(\d+\.\d+\.\d+)$")
+    for ref in hub_refs:
+        if digest_re.fullmatch(ref):
+            continue
+        tag_match = tag_only_re.fullmatch(ref)
+        assert tag_match is not None, f"Invalid hub image pin: {ref!r}"
+        assert tag_match.group(1) == app_version, (
+            f"Tag-only pin {ref!r} does not match app_version {app_version!r}"
+        )
+        assert unreleased, (
+            f"Tag-only pin {ref!r} is forbidden once CHANGELOG.md has a release date"
+        )
 
 
 @pytest.fixture(autouse=True)
@@ -280,12 +310,60 @@ def test_desktop_shell_and_supply_chain_inputs_are_pinned() -> None:
     assert (ROOT / "uv.lock").is_file()
     assert (ROOT / "requirements-build.txt").is_file()
     compose = (ROOT / "deploy" / "hub" / "compose.yaml").read_text(encoding="utf-8")
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     assert "BURNRATE_ACCESS_TOKEN" in compose
     assert "BURNRATE_ALLOWED_HOSTS" in compose
-    assert re.search(r"myburnrate-hub:\d+\.\d+\.\d+@sha256:[0-9a-f]{64}", compose)
-    assert re.search(r"caddy:\d+\.\d+\.\d+@sha256:[0-9a-f]{64}", compose)
+    _assert_compose_images_pinned(
+        compose, changelog=changelog, app_version=spend_app.__version__
+    )
     prices = (ROOT / ".github" / "workflows" / "prices.yml").read_text(encoding="utf-8")
     assert "--require-hashes" in prices and "requirements-build.txt" in prices
+
+
+def test_compose_image_pin_rule_rejects_tag_only_on_dated_changelog_or_version_mismatch() -> None:
+    caddy_line = (
+        "image: caddy:2.11.9@sha256:4e2425f6009577e7c651010f16679c28f7d12df3e7b1914f941a7a3370746b3c\n"
+    )
+    tag_only_compose = (
+        caddy_line
+        + "image: ${BURNRATE_HUB_IMAGE:-ghcr.io/kamol-nazarov/myburnrate-hub:0.5.9}\n"
+    )
+    digest_compose = (
+        caddy_line
+        + "image: ${BURNRATE_HUB_IMAGE:-ghcr.io/kamol-nazarov/myburnrate-hub:0.5.9@sha256:"
+        + ("b" * 64)
+        + "}\n"
+    )
+    unreleased_changelog = "# Changelog\n\n## [0.5.9] - Unreleased\n"
+    dated_changelog = "# Changelog\n\n## [0.5.9] - 2026-11-17\n"
+
+    # Negative 1: dated changelog + tag-only pin must fail
+    with pytest.raises(AssertionError):
+        _assert_compose_images_pinned(
+            tag_only_compose, changelog=dated_changelog, app_version="0.5.9"
+        )
+
+    # Negative 2: mismatched version + tag-only pin must fail even with Unreleased
+    with pytest.raises(AssertionError):
+        _assert_compose_images_pinned(
+            caddy_line + "image: ghcr.io/kamol-nazarov/myburnrate-hub:0.5.8\n",
+            changelog=unreleased_changelog,
+            app_version="0.5.9",
+        )
+    with pytest.raises(AssertionError):
+        _assert_compose_images_pinned(
+            caddy_line + "image: ghcr.io/kamol-nazarov/myburnrate-hub:0.6.0\n",
+            changelog=unreleased_changelog,
+            app_version="0.5.9",
+        )
+
+    # Positive: digest-pinned passes regardless of changelog dating
+    _assert_compose_images_pinned(
+        digest_compose, changelog=unreleased_changelog, app_version="0.5.9"
+    )
+    _assert_compose_images_pinned(
+        digest_compose, changelog=dated_changelog, app_version="0.5.9"
+    )
 
 
 def test_installer_verifies_the_minisign_signature() -> None:

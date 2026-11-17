@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import argparse
 import ipaddress
 import logging
 import os
+import sys
 from typing import Iterable
 
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -78,6 +80,56 @@ def is_allowed_hub_bind_host(host: str) -> bool:
     if isinstance(ip, ipaddress.IPv4Address):
         return ip in _CGNAT_NETWORK or any(ip in net for net in _RFC1918_NETWORKS)
     return ip in _TAILSCALE_IPV6_NETWORK or ip in _ULA_IPV6_NETWORK
+
+
+def is_allowed_publish_host(host: str) -> bool:
+    """Return True only for loopback, RFC1918, CGNAT (100.64.0.0/10), or Tailscale IPv6."""
+    ip = _unwrap_ip(host)
+    if ip is None:
+        return False
+    if ip.is_unspecified or ip.is_multicast or ip.is_link_local:
+        return False
+    if ip.is_loopback:
+        return True
+    if isinstance(ip, ipaddress.IPv4Address):
+        return ip in _CGNAT_NETWORK or any(ip in net for net in _RFC1918_NETWORKS)
+    return ip in _TAILSCALE_IPV6_NETWORK
+
+
+def validate_publish_host(
+    host: str,
+    *,
+    allow_public: bool | None = None,
+) -> str:
+    """Validate an external publish IP address (e.g. Compose BURNRATE_TAILNET_IP)."""
+    cleaned = (host or "").strip()
+    if not cleaned:
+        raise ValueError(
+            "refusing to publish without an explicit address: set BURNRATE_TAILNET_IP to "
+            "loopback (127.0.0.1/::1), RFC1918 private, CGNAT (100.64.0.0/10), or "
+            "Tailscale IPv6 (fd7a:115c:a1e0::/48)."
+        )
+    ip = _unwrap_ip(cleaned)
+    if ip is None:
+        raise ValueError(
+            f"refusing to publish on {host!r}: expected an IP address (hostnames are not allowed)."
+        )
+    if is_allowed_publish_host(cleaned):
+        return cleaned
+    override = hub_allow_public() if allow_public is None else bool(allow_public)
+    if override:
+        _LOGGER.warning(
+            "BURNRATE_HUB_ALLOW_PUBLIC=1 is set: allowing publish address %r. "
+            "First-account registration requires no setup token and release builds may embed "
+            "the hub address; ensure access is restricted at the network layer.",
+            cleaned,
+        )
+        return cleaned
+    raise ValueError(
+        f"refusing to publish on {host!r}: publish only on loopback (127.0.0.1/::1), "
+        "RFC1918 private, CGNAT (100.64.0.0/10), or Tailscale IPv6 (fd7a:115c:a1e0::/48), "
+        "or set BURNRATE_HUB_ALLOW_PUBLIC=1 to override."
+    )
 
 
 def validate_bind_host(
@@ -362,3 +414,23 @@ class TrustedProxyHeadersMiddleware:
                             scope["client"] = (resolved, 0)
 
         await self.app(scope, receive, send)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="spend_app.exposure")
+    sub = parser.add_subparsers(dest="command", required=True)
+    pub = sub.add_parser("check-publish", help="Validate a hub publish IP address")
+    pub.add_argument("host", nargs="?", default="", help="Publish IP (e.g. BURNRATE_TAILNET_IP)")
+    args = parser.parse_args(argv)
+    if args.command == "check-publish":
+        try:
+            validate_publish_host(args.host)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        return 0
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
