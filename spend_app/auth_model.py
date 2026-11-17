@@ -19,9 +19,7 @@ LEGACY_MACHINE_DAYS = 180
 ROTATION_GRACE_DAYS = 14
 SESSION_DAYS = 30
 PAIRING_MINUTES = 15
-LOCAL_SESSION_DAYS = 30
 COOKIE = "burnrate_access"
-LOCAL_COOKIE = "burnrate_local"
 MARKER = "auth_model.v1"
 
 
@@ -81,12 +79,9 @@ def _stamp_missing_rotation_deadlines(data, *, deadline=None):
 
 def ensure_schema(path):
     with connect(path) as connection:
-        # Local (spoke) sessions and admin_audit/triggers must be ensured
-        # unconditionally so existing databases recover missing audit guards.
+        # admin_audit and append-only triggers must be ensured unconditionally so
+        # existing databases recover missing audit guards.
         for sql in (
-            "CREATE TABLE IF NOT EXISTS local_sessions (id TEXT PRIMARY KEY, token_hash TEXT NOT NULL, "
-            "created_at TEXT NOT NULL, last_used_at TEXT, expires_at TEXT NOT NULL, revoked_at TEXT, "
-            "device_label TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS admin_audit (id INTEGER PRIMARY KEY AUTOINCREMENT, "
             "actor_type TEXT NOT NULL, actor_id TEXT, action TEXT NOT NULL, target TEXT NOT NULL, "
             "outcome TEXT NOT NULL, timestamp TEXT NOT NULL)",
@@ -198,58 +193,6 @@ def authenticate_session(path, token, *, via="bearer", now=None):
         if last is None or (moment(now) - last) >= timedelta(seconds=60):
             connection.execute("UPDATE owner_sessions SET last_used_at=? WHERE id=?", (stamp(now), sid))
         return Principal("owner", row["owner_id"], row["role"], sid, via)
-
-
-def create_local_session(connection, *, device_label="Browser", now=None):
-    """A spoke-side credential for its own session-management endpoints.
-
-    It never leaves the spoke and grants no hub permission by itself; it only
-    proves that the local caller signed in on this computer.
-    """
-    sid = secrets.token_hex(16)
-    token = f"br_l_{sid}_{secrets.token_urlsafe(32)}"
-    expiry = stamp(moment(now) + timedelta(days=LOCAL_SESSION_DAYS))
-    connection.execute(
-        "INSERT INTO local_sessions VALUES(?,?,?,?,?,?,?)",
-        (sid, digest(token), stamp(now), None, expiry, None, str(device_label)[:80]),
-    )
-    audit(connection, Principal("local", sid), "local.session.create", sid, now=now)
-    return {"localToken": token, "localSessionId": sid, "localExpiresAt": expiry}
-
-
-def authenticate_local_session(path, token, *, now=None):
-    if not token or not token.startswith("br_l_"):
-        return None
-    sid = token[5:].split("_", 1)[0]
-    with connect(path) as connection:
-        row = connection.execute("SELECT * FROM local_sessions WHERE id=?", (sid,)).fetchone()
-        if (not row or not hmac.compare_digest(digest(token), row["token_hash"])
-                or row["revoked_at"] or not parse(row["expires_at"])
-                or parse(row["expires_at"]) <= moment(now)):
-            return None
-        last = parse(row["last_used_at"])
-        if last is None or (moment(now) - last) >= timedelta(seconds=60):
-            connection.execute("UPDATE local_sessions SET last_used_at=? WHERE id=?", (stamp(now), sid))
-        return sid
-
-
-def revoke_local_session(connection, sid, *, now=None):
-    result = connection.execute(
-        "UPDATE local_sessions SET revoked_at=? WHERE id=? AND revoked_at IS NULL",
-        (stamp(now), sid),
-    )
-    return bool(result.rowcount)
-
-
-def set_local_cookie(response, request, data):
-    response.set_cookie(LOCAL_COOKIE, data["localToken"], httponly=True, samesite="lax", path="/api",
-                        secure=request.url.scheme == "https", max_age=LOCAL_SESSION_DAYS * 86400)
-    return response
-
-
-def clear_local_cookie(response):
-    response.delete_cookie(LOCAL_COOKIE, path="/api")
-    return response
 
 
 def revoke_session(connection, actor, sid, *, now=None):
