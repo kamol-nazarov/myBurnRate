@@ -1825,3 +1825,183 @@ def test_h11_typography_min_font_size_light_and_dark(tmp_path: Path, theme: str)
         "generalSmall": [],
         "computersSmall": [],
     }
+
+
+OB_OVERFLOW_PROBE = """
+await until(() => document.querySelector('#providerList .ob .h11-scan-body'));
+await wait(40);
+const ob = document.querySelector('#providerList .ob');
+const obRect = ob.getBoundingClientRect();
+const overflowScroll = [];
+const overflowRight = [];
+for (const el of [ob, ...ob.querySelectorAll('*')]) {
+  const cs = getComputedStyle(el);
+  if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+  if (typeof el.scrollWidth === 'number' && typeof el.clientWidth === 'number' && el.clientWidth > 0) {
+    if (el.scrollWidth > el.clientWidth + 1) {
+      overflowScroll.push({
+        tag: el.tagName,
+        cls: typeof el.className === 'string' ? el.className : '',
+        scrollWidth: el.scrollWidth,
+        clientWidth: el.clientWidth,
+      });
+    }
+  }
+  const rect = el.getBoundingClientRect();
+  if (rect.width > 0 && rect.height > 0 && rect.right > obRect.right + 1) {
+    overflowRight.push({
+      tag: el.tagName,
+      cls: typeof el.className === 'string' ? el.className : '',
+      right: rect.right,
+      obRight: obRect.right,
+    });
+  }
+}
+const rowDiffs = [...ob.querySelectorAll('.h11-scan-row')].map(row => {
+  const rowRect = row.getBoundingClientRect();
+  const parentRect = row.parentElement.getBoundingClientRect();
+  return Math.abs(rowRect.width - parentRect.width);
+});
+report({
+  docOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+  overflowScroll,
+  overflowRight,
+  rowCount: rowDiffs.length,
+  maxRowDiff: rowDiffs.length ? Math.max(...rowDiffs) : -1,
+});
+"""
+
+
+@needs_chrome
+@browser
+@pytest.mark.parametrize("width", [304, 336, 380])
+def test_h11_onboarding_no_horizontal_overflow_at_narrow_widths(
+    tmp_path: Path, width: int
+):
+    html = build_page(
+        pref="light",
+        report=empty_report(),
+        init={"demo": False},
+        api_js=_h11_api_js(scan=_h11_scan_fixture()),
+        probe=OB_OVERFLOW_PROBE,
+        extra_css=FAST,
+    )
+    r = probe(html, width, tmp_path, height=960)
+    assert r["docOverflow"] is False
+    assert r["overflowScroll"] == []
+    assert r["overflowRight"] == []
+    assert r["rowCount"] > 0
+    assert r["maxRowDiff"] <= 2
+
+
+def test_h11_utf8_emdash_and_arrow_preserved_in_python_and_ui_html(tmp_path: Path):
+    from spend_app.wealthfront_window import load_ui_html
+
+    check = _sample_check_payload()
+    check["lanes"][1]["usage"]["text"] = "Found — no usage yet"
+    check["lanes"][1]["meter"]["fix"] = "→ Finish a Codex turn."
+    client = _FakeBridgeClient(
+        {
+            "/api/setup/check": check,
+            "/api/setup/progress": _sample_progress_payload(),
+            "/api/onboarding": _sample_onboarding_sources_payload(),
+        }
+    )
+    scan = build_setup_scan_data(client, demo=False)
+    assert scan["lanes"][1]["usage"]["text"] == "Found — no usage yet"
+    assert "Found ?" not in scan["lanes"][1]["usage"]["text"]
+    assert scan["lanes"][1]["meter"]["fix"] == "→ Finish a Codex turn."
+
+    bridge = _bridge(tmp_path, client)
+    bridge_scan = bridge.get_setup_scan()
+    assert bridge_scan["lanes"][1]["usage"]["text"] == "Found — no usage yet"
+    assert bridge_scan["lanes"][1]["meter"]["fix"] == "→ Finish a Codex turn."
+
+    demo_scan = demo_setup_scan_data()
+    assert demo_scan["lanes"][1]["usage"]["text"] == "Found — no usage yet"
+    assert "Found ?" not in demo_scan["lanes"][1]["usage"]["text"]
+
+    ui_html = load_ui_html()
+    assert "—" in ui_html
+    assert "Settings → Sources." in ui_html
+    assert "Found ?" not in ui_html
+
+
+UTF8_DOM_PROBE = """
+await until(() => document.querySelector('#providerList .ob .h11-scan-body'));
+await wait(40);
+const list = document.getElementById('providerList');
+
+// Defer onboarding to trigger literal "Setup paused. You can recheck anytime in Settings \u2192 Sources."
+list.querySelector('[data-ob-defer]').click();
+await until(() => window.__calls.some(c => c[0] === 'defer_onboarding'));
+await wait(40);
+const obText = list.textContent;
+
+// Open Settings -> Sources to verify scan card + deferred status carry literal \u2014 and \u2192
+await openSettings('sources');
+await until(() => document.querySelector('#h11SourcesScanCard .h11-scan-body'));
+await wait(40);
+const srcText = document.getElementById('h11SourcesScanCard').textContent;
+
+// Open Settings -> General to verify UTF-8 notification & diagnostics rendering
+await setSettingsTab('general');
+await until(() => document.getElementById('h11NotificationsCard'));
+await wait(40);
+const genText = document.getElementById('sheetBody').textContent;
+
+report({
+  obHasEmdash: obText.includes('Found \u2014 no usage yet'),
+  obHasFixArrow: obText.includes('\u2192 Finish a Codex turn.'),
+  obHasDeferredArrow: obText.includes('Settings \u2192 Sources.'),
+  obNoQuestionReplace: !obText.includes('Found ?'),
+  srcHasEmdash: srcText.includes('Found \u2014 no usage yet'),
+  srcHasFixArrow: srcText.includes('\u2192 Finish a Codex turn.'),
+  srcHasDeferredArrow: srcText.includes('Settings \u2192 Sources.'),
+  srcNoQuestionReplace: !srcText.includes('Found ?'),
+  genHasEmdash: genText.includes('\u2014'),
+  genHasArrow: genText.includes('\u2192'),
+  genNoQuestionReplace: !genText.includes('Found ?'),
+});
+"""
+
+
+@needs_chrome
+@browser
+def test_h11_utf8_emdash_and_arrow_survive_into_rendered_dom(tmp_path: Path):
+    demo_scan = demo_setup_scan_data()
+    html = build_page(
+        pref="light",
+        report=empty_report(),
+        init={"demo": False},
+        api_js=_h11_api_js(
+            scan=demo_scan,
+            notifications={
+                "ok": True,
+                "available": True,
+                "kinds": [
+                    {
+                        "key": "threshold",
+                        "label": "Plan — alert → threshold",
+                        "on": True,
+                    }
+                ],
+            },
+        ),
+        probe=UTF8_DOM_PROBE,
+        extra_css=FAST,
+    )
+    r = probe(html, 380, tmp_path, height=960)
+    assert r == {
+        "obHasEmdash": True,
+        "obHasFixArrow": True,
+        "obHasDeferredArrow": True,
+        "obNoQuestionReplace": True,
+        "srcHasEmdash": True,
+        "srcHasFixArrow": True,
+        "srcHasDeferredArrow": True,
+        "srcNoQuestionReplace": True,
+        "genHasEmdash": True,
+        "genHasArrow": True,
+        "genNoQuestionReplace": True,
+    }

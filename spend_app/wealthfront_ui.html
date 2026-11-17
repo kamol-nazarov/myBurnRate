@@ -2226,21 +2226,82 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
 .ob-row .source-meta { white-space: normal; overflow: visible; text-overflow: clip; }
 
 /* H11 settings */
+.ob {
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+.ob > * {
+  min-width: 0;
+}
+.ob-group {
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+.ob-hero,
+.ob-list,
+.ob-label {
+  min-width: 0;
+}
+.ob-lede {
+  max-width: min(290px, 100%);
+}
+.ob .h11-scan-body {
+  padding: 0;
+}
+#h11SourcesScanCard .toggle-row,
+#h11NotificationsCard .toggle-row,
+#h11DiagnosticsCard .toggle-row,
+#h11SyncCard .toggle-row {
+  min-width: 0;
+  flex-wrap: wrap;
+}
+#h11SourcesScanCard .toggle-row > div:first-child,
+#h11NotificationsCard .toggle-row > div:first-child,
+#h11DiagnosticsCard .toggle-row > div:first-child,
+#h11SyncCard .toggle-row > div:first-child {
+  flex: 1 1 150px;
+  min-width: 0;
+}
+#h11SourcesScanCard .toggle-title,
+#h11SourcesScanCard .toggle-sub,
+#h11SourcesScanCard .source-name,
+#h11SourcesScanCard .source-meta,
+#h11NotificationsCard .toggle-title,
+#h11NotificationsCard .toggle-sub,
+#h11NotificationsCard .source-name,
+#h11NotificationsCard .source-meta,
+#h11DiagnosticsCard .toggle-title,
+#h11DiagnosticsCard .toggle-sub,
+#h11DiagnosticsCard .source-name,
+#h11DiagnosticsCard .source-meta,
+#h11SyncCard .toggle-title,
+#h11SyncCard .toggle-sub,
+#h11SyncCard .source-name,
+#h11SyncCard .source-meta {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .h11-card-head-actions {
   display: flex;
   align-items: center;
   gap: 6px;
+  flex-shrink: 0;
 }
 .h11-scan-body {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
   padding: 2px 12px 10px;
+  min-width: 0;
 }
 .h11-scan-section {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 5px;
   padding-top: 6px;
   border-top: 1px solid var(--divider);
+  min-width: 0;
 }
 .h11-scan-section:first-child {
   padding-top: 0;
@@ -2252,6 +2313,8 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
   letter-spacing: 0.03em;
   text-transform: uppercase;
   color: var(--ink-tertiary);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .h11-scan-row {
   padding: 8px 10px;
@@ -2259,7 +2322,9 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
   border-radius: 10px;
   background: var(--surface-subtle);
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 5px;
+  min-width: 0;
 }
 .h11-scan-row.is-attention {
   border-color: var(--warn-border);
@@ -2270,12 +2335,28 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
   gap: 8px;
   min-width: 0;
 }
+.h11-scan-top .source-info {
+  flex: 1;
+  min-width: 0;
+}
+.h11-scan-top .source-name,
+.h11-scan-top .source-meta {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+}
+.h11-scan-top .state-badge {
+  flex-shrink: 0;
+}
 .h11-scan-facts {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 2px;
   font-size: 11px;
   color: var(--ink-secondary);
   line-height: 1.38;
+  min-width: 0;
 }
 .h11-fact-line {
   display: flex;
@@ -2293,6 +2374,7 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
 .h11-fact-val {
   color: var(--ink);
   min-width: 0;
+  flex: 1;
   overflow-wrap: anywhere;
 }
 .h11-fix-hint {
@@ -2303,6 +2385,8 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
   border-radius: 7px;
   padding: 4px 7px;
   line-height: 1.35;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .h11-consent-row {
   display: flex;
@@ -2312,6 +2396,10 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
   padding-top: 6px;
   margin-top: 2px;
   border-top: 1px solid var(--divider);
+  min-width: 0;
+}
+.h11-consent-row .switch {
+  flex-shrink: 0;
 }
 .h11-consent-row.standalone {
   padding: 8px 10px;
@@ -2324,17 +2412,22 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
   flex: 1;
   min-width: 0;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 1px;
 }
 .h11-consent-title {
   font-size: 11.5px;
   font-weight: 600;
   color: var(--ink);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .h11-consent-detail {
   font-size: 10.5px;
   color: var(--ink-secondary);
   line-height: 1.35;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .h11-source-health {
   padding: 7px 9px;
@@ -2342,27 +2435,39 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
   border-radius: 9px;
   background: var(--surface-subtle);
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 3px;
+  min-width: 0;
 }
 .h11-health-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 6px;
+  min-width: 0;
+}
+.h11-health-head .source-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.h11-health-head .state-badge {
+  flex-shrink: 0;
 }
 .h11-health-meta {
   font-size: 10.5px;
   color: var(--ink-secondary);
   line-height: 1.36;
+  min-width: 0;
   overflow-wrap: anywhere;
 }
 .h11-not-found {
   font-size: 10.8px;
   color: var(--ink-tertiary);
   line-height: 1.38;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .h11-ob-account {
-  margin-top: 10px;
   padding: 9px 10px;
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -2371,9 +2476,23 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.h11-ob-account .source-info {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+.h11-ob-account .source-meta {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+}
+.h11-ob-account button {
+  flex-shrink: 0;
 }
 .h11-ob-actions {
-  margin-top: 10px;
   padding-top: 9px;
   border-top: 1px solid var(--divider);
   display: flex;
@@ -2381,12 +2500,15 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
   justify-content: space-between;
   gap: 8px;
   flex-wrap: wrap;
+  min-width: 0;
 }
 .h11-status-line {
   font-size: 10.8px;
   color: var(--ink-secondary);
   line-height: 1.38;
   user-select: text;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .h11-status-line.ok {
   color: var(--mint);
@@ -2397,7 +2519,9 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
 .h11-card-block {
   padding: 10px 12px 12px;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
+  min-width: 0;
 }
 .h11-inline-actions {
   display: flex;
@@ -2405,6 +2529,7 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
   justify-content: space-between;
   gap: 8px;
   flex-wrap: wrap;
+  min-width: 0;
 }
 .h11-diag-text {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;

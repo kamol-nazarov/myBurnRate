@@ -286,7 +286,7 @@ def demo_setup_scan_data() -> dict:
                 "name": "Codex",
                 "plan": "ChatGPT Plus",
                 "tool": "codex",
-                "usage": {"state": "waiting", "text": "Found ? no usage yet"},
+                "usage": {"state": "waiting", "text": "Found — no usage yet"},
                 "meter": {
                     "state": "unavailable",
                     "text": "No current reading",
