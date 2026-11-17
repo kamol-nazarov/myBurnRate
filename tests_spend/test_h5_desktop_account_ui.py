@@ -30,7 +30,7 @@ import pytest
 
 from spend_app import aggregate, auth_throttle, setup_wizard, sync
 from spend_app.api import create_app
-from spend_app.db import connect, initialize
+from spend_app.db import connect
 from spend_app.error_codes import error_message
 from spend_app.native_desktop import NativeClient
 from spend_app.wealthfront_window import DesktopBridge
@@ -797,7 +797,7 @@ def test_h5_failing_vault_returns_app_903_and_preserves_tokens(
             assert res_signin["ok"] is False
             assert res_signin["code"] == "APP-903"
             assert "keychain" in res_signin["message"].lower()
-            assert b_sign.owner_session_status()["hasOwnerSession"] is False
+            assert b_sign._owner_session_status()["hasOwnerSession"] is False
             assert mismatch_store == {}
     finally:
         set_vault_factory(prev_factory)
@@ -832,7 +832,7 @@ def test_h5_failing_vault_returns_app_903_and_preserves_tokens(
         assert res_partial["ok"] is False
         assert res_partial["code"] == "APP-903"
         assert DesktopBridge.OWNER_SESSION_VAULT_REF not in partial_vault.items
-        assert b_partial.owner_session_status()["hasOwnerSession"] is False
+        assert b_partial._owner_session_status()["hasOwnerSession"] is False
 
     # 4. Failing vault on rotate_spoke_machine_token preserves old credential & cursor locally
     monkeypatch.setattr(sync, "sync_once", lambda *_a, **_kw: {"ok": True})

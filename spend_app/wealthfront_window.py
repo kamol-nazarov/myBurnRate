@@ -18,7 +18,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import urlencode
 
 from spend_app import __version__, native_geometry
 from spend_app.error_codes import (
@@ -2188,77 +2188,6 @@ class DesktopBridge:
         token, _ = self._get_owner_session_info()
         return token
 
-    def _publish_owner_session(
-        self,
-        token: str,
-        expires_at: str | None = None,
-        *,
-        expected_token: object = _CREDENTIAL_UNSET,
-        expected_gen: int | None = None,
-        allow_when_signed_out: bool = False,
-    ) -> None:
-        clean_token = str(token or "").strip()
-        if not clean_token:
-            self._clear_owner_session(expected_token=expected_token, expected_gen=expected_gen)
-            return
-        with self._owner_session_lock:
-            vault = self._resolve_vault()
-            db_path = self._db_path()
-            if db_path is not None:
-                from spend_app.connection_secrets import publish_spoke_credentials, read_vault_secret
-                from spend_app.sync import clear_hub_proxy_cache
-
-                def _prepare(_conn, current_state):
-                    sp = current_state.get("spokeConfig") or {}
-                    if sp.get("signedOut") and not allow_when_signed_out:
-                        raise _StaleOwnerLifecycle()
-                    cur_gen = int(sp.get("credentialGeneration") or 0)
-                    if expected_gen is not None and cur_gen != expected_gen:
-                        raise _StaleOwnerLifecycle()
-                    if expected_token is not _CREDENTIAL_UNSET:
-                        cur_tok = (
-                            read_vault_secret(db_path, self.OWNER_SESSION_VAULT_REF, vault=vault)
-                            or str(sp.get("ownerSession") or "").strip()
-                        )
-                        if cur_tok != str(expected_token or "").strip():
-                            raise _StaleOwnerLifecycle()
-
-                def _apply(_conn, state):
-                    spoke = dict(state.get("spokeConfig") or {})
-                    spoke["ownerSessionExpiresAt"] = expires_at
-                    spoke["ownerSessionRotationRequired"] = False
-                    state["spokeConfig"] = spoke
-
-                prepare_fn = (
-                    _prepare
-                    if (expected_token is not _CREDENTIAL_UNSET or expected_gen is not None)
-                    else None
-                )
-                saved = publish_spoke_credentials(
-                    db_path,
-                    owner_session=clean_token,
-                    vault=vault,
-                    prepare_state=prepare_fn,
-                    apply_state=_apply,
-                )
-                clear_hub_proxy_cache()
-                self._owner_session_gen = int(
-                    ((saved.get("spokeConfig") or {}).get("credentialGeneration")) or 0
-                )
-            else:
-                from spend_app.connection_secrets import verified_vault_put
-
-                if expected_gen is not None and self._owner_session_gen != expected_gen:
-                    raise _StaleOwnerLifecycle()
-                if expected_token is not _CREDENTIAL_UNSET and (self._owner_session or "") != str(
-                    expected_token or ""
-                ).strip():
-                    raise _StaleOwnerLifecycle()
-                verified_vault_put(vault, clean_token, self.OWNER_SESSION_VAULT_REF)
-                self._owner_session_gen = (self._owner_session_gen or 0) + 1
-            self._owner_session = clean_token
-            self._owner_session_expires_at = expires_at
-
     def _clear_owner_session(
         self,
         *,
@@ -2550,11 +2479,6 @@ class DesktopBridge:
             message=str(msg) if msg else None,
         )
 
-    def _save_owner_session_vault_only(
-        self, token: str, expires_at: str | None = None
-    ) -> None:
-        self._publish_owner_session(token, expires_at)
-
     def _get_machine_token(self) -> str | None:
         db_path = self._db_path()
         db_tok: str | None = None
@@ -2597,60 +2521,6 @@ class DesktopBridge:
                 return db_tok
             self._machine_token_gen = db_gen
         return None
-
-    def _save_machine_token(self, token: str) -> None:
-        clean_token = str(token or "").strip()
-        if not clean_token:
-            self._clear_machine_token()
-            return
-        with self._owner_session_lock:
-            vault = self._resolve_vault()
-            db_path = self._db_path()
-            if db_path is not None:
-                from spend_app.connection_secrets import publish_spoke_credentials
-                from spend_app.sync import clear_hub_proxy_cache
-
-                saved = publish_spoke_credentials(
-                    db_path,
-                    machine_token=clean_token,
-                    vault=vault,
-                )
-                clear_hub_proxy_cache()
-                self._machine_token_gen = int(
-                    ((saved.get("spokeConfig") or {}).get("credentialGeneration")) or 0
-                )
-            else:
-                from spend_app.connection_secrets import verified_vault_put
-
-                verified_vault_put(vault, clean_token, self.MACHINE_TOKEN_VAULT_REF)
-                self._machine_token_gen = (self._machine_token_gen or 0) + 1
-            self._machine_token = clean_token
-
-    def _clear_machine_token(self) -> None:
-        with self._owner_session_lock:
-            self._machine_token = None
-            self._machine_token_gen = None
-            vault = self._resolve_vault()
-            db_path = self._db_path()
-            if db_path is not None and db_path.is_file():
-                try:
-                    from spend_app.connection_secrets import clear_spoke_credentials
-                    from spend_app.sync import clear_hub_proxy_cache
-
-                    clear_spoke_credentials(
-                        db_path,
-                        clear_machine_token=True,
-                        vault=vault,
-                    )
-                    clear_hub_proxy_cache()
-                    return
-                except Exception:
-                    pass
-            if vault is not None:
-                try:
-                    vault.delete(self.MACHINE_TOKEN_VAULT_REF)
-                except Exception:
-                    pass
 
     def _local_machine_id(self) -> str:
         db_path = self._db_path()
@@ -2705,14 +2575,14 @@ class DesktopBridge:
             return payload
 
         current_mid = self._local_machine_id()
-        has_session = bool(self.owner_session_status().get("hasOwnerSession"))
+        has_session = bool(self._owner_session_status().get("hasOwnerSession"))
 
         if fetch_remote_machines and has_session:
             listed = self.list_computers()
             if listed.get("ok") and isinstance(listed.get("machines"), list):
                 payload["machines"] = listed["machines"]
             else:
-                has_session = bool(self.owner_session_status().get("hasOwnerSession"))
+                has_session = bool(self._owner_session_status().get("hasOwnerSession"))
 
         setup = dict(payload.get("setup") or {}) if isinstance(payload.get("setup"), dict) else {}
         account = dict(setup.get("account") or {}) if isinstance(setup.get("account"), dict) else {}
@@ -2869,7 +2739,8 @@ class DesktopBridge:
                     initial_gen = int(sp_init.get("credentialGeneration") or 0)
                     initial_signed_out = bool(sp_init.get("signedOut"))
                 except Exception:
-                    initial_gen = 0
+                    LOGGER.debug("Could not read setup state snapshot before sign-in", exc_info=True)
+                    return self._h5_err("APP-903")
             else:
                 initial_gen = 0
 
@@ -2929,28 +2800,32 @@ class DesktopBridge:
             fresh_session=True,
         )
         if reg_err is not None:
-            revoke_or_queue_owner_session(
-                db_path,
-                hub_url,
-                session_token,
-                vault=vault_for_cleanup,
-                client=hub_client,
-                suppress_queue_error=True,
-            )
+            try:
+                revoke_or_queue_owner_session(
+                    db_path,
+                    hub_url,
+                    session_token,
+                    vault=vault_for_cleanup,
+                    client=hub_client,
+                )
+            except CodedError as q_exc:
+                return self._h5_err(q_exc.code)
             return self._h5_err_from_call(reg_err)
 
         machine = reg_data.get("machine") if isinstance(reg_data.get("machine"), dict) else {}
         machine_id = str(machine.get("id") or "").strip()
         machine_token = str(reg_data.get("token") or "").strip()
         if not machine_token:
-            revoke_or_queue_owner_session(
-                db_path,
-                hub_url,
-                session_token,
-                vault=vault_for_cleanup,
-                client=hub_client,
-                suppress_queue_error=True,
-            )
+            try:
+                revoke_or_queue_owner_session(
+                    db_path,
+                    hub_url,
+                    session_token,
+                    vault=vault_for_cleanup,
+                    client=hub_client,
+                )
+            except CodedError as q_exc:
+                return self._h5_err(q_exc.code)
             return self._h5_err("HUB-501")
 
         expires_at = auth_data.get("expiresAt")
@@ -2963,7 +2838,7 @@ class DesktopBridge:
             "machineId": machine_id,
         }
 
-        def _cleanup_issued_pair(*, suppress_queue_error: bool) -> str | None:
+        def _cleanup_issued_pair() -> str | None:
             q_code: str | None = None
             try:
                 revoke_or_queue_machine_token(
@@ -2973,7 +2848,6 @@ class DesktopBridge:
                     machine_id=machine_id or None,
                     vault=vault_for_cleanup,
                     client=hub_client,
-                    suppress_queue_error=suppress_queue_error,
                 )
             except CodedError as qe:
                 q_code = qe.code
@@ -2984,7 +2858,6 @@ class DesktopBridge:
                     session_token,
                     vault=vault_for_cleanup,
                     client=hub_client,
-                    suppress_queue_error=suppress_queue_error,
                 )
             except CodedError as qe:
                 q_code = q_code or qe.code
@@ -3000,9 +2873,8 @@ class DesktopBridge:
                     def _prepare_auth_state(_conn, state):
                         sp = state.get("spokeConfig") or {}
                         cur_gen = int(sp.get("credentialGeneration") or 0)
-                        if initial_gen is not None and (
-                            cur_gen != initial_gen
-                            or (not initial_signed_out and sp.get("signedOut"))
+                        if initial_gen is None or cur_gen != initial_gen or (
+                            not initial_signed_out and sp.get("signedOut")
                         ):
                             raise _StaleOwnerLifecycle()
 
@@ -3055,16 +2927,16 @@ class DesktopBridge:
                         raise
                     saved_gen = (self._owner_session_gen or 0) + 1
             except _StaleOwnerLifecycle:
-                q_code = _cleanup_issued_pair(suppress_queue_error=False)
+                q_code = _cleanup_issued_pair()
                 return self._h5_err(q_code or "AUTH-107")
             except CodedError as exc:
                 LOGGER.debug("Credential vault publication failed (%s)", exc.code, exc_info=True)
-                _cleanup_issued_pair(suppress_queue_error=(exc.code == "APP-903"))
-                return self._h5_err(exc.code)
+                q_code = _cleanup_issued_pair()
+                return self._h5_err(q_code or exc.code)
             except Exception:
                 LOGGER.debug("Credential vault publication failed (APP-903)", exc_info=True)
-                _cleanup_issued_pair(suppress_queue_error=True)
-                return self._h5_err("APP-903")
+                q_code = _cleanup_issued_pair()
+                return self._h5_err(q_code or "APP-903")
 
             self._owner_session = session_token
             self._owner_session_expires_at = expires_at
@@ -3389,7 +3261,7 @@ class DesktopBridge:
             "machines": self._annotate_machines(data.get("machines") or [], local_mid),
         }
 
-    def owner_session_status(self) -> dict:
+    def _owner_session_status(self) -> dict:
         if self._demo:
             return {"ok": True, "hasOwnerSession": False, "expiresAt": None}
         token, expires_at, captured_gen = self._capture_owner_session_with_gen()
@@ -3403,403 +3275,6 @@ class DesktopBridge:
                 self._clear_owner_session(expected_token=token, expected_gen=captured_gen)
                 return {"ok": True, "hasOwnerSession": False, "expiresAt": None}
         return {"ok": True, "hasOwnerSession": True, "expiresAt": expires_at}
-
-    def sign_in_owner(
-        self,
-        username: str,
-        password: str,
-        device_label: str = "",
-    ) -> dict:
-        if self._demo:
-            return {"ok": False, "error": "Hub sign-in is disabled in demo mode."}
-        clean_user = (username or "").strip()
-        if not clean_user:
-            return {"ok": False, "code": "AUTH-106", "error": format_error("AUTH-106")}
-        if not password:
-            return {"ok": False, "code": "AUTH-101", "error": format_error("AUTH-101")}
-
-        hub_url, err = self._resolve_hub_origin()
-        if err is not None:
-            return err
-
-        db_path = self._db_path()
-        expected_gen: int | None = None
-        initial_signed_out = False
-        label = (device_label or "").strip()
-        if db_path is not None and db_path.is_file():
-            try:
-                from spend_app.db import connect
-                from spend_app.setup_wizard import read_setup_state
-
-                with connect(db_path) as conn:
-                    st_init = read_setup_state(conn)
-                if not label:
-                    label = str(st_init.get("computerName") or "").strip()
-                sp_init = st_init.get("spokeConfig") or {}
-                expected_gen = int(sp_init.get("credentialGeneration") or 0)
-                initial_signed_out = bool(sp_init.get("signedOut"))
-            except Exception:
-                if not label:
-                    label = ""
-                expected_gen = None
-                initial_signed_out = False
-        if not label:
-            label = "Desktop app"
-
-        data, res, call_err = self._call_hub(
-            hub_url,
-            "POST",
-            "/api/account/login",
-            json_body={
-                "username": clean_user,
-                "password": password,
-                "sessionOnly": True,
-                "deviceLabel": label,
-            },
-            handshake=True,
-        )
-        if call_err is not None:
-            return call_err
-
-        from spend_app.auth_model import extract_cookie
-        from spend_app.connection_secrets import revoke_or_queue_owner_session
-        from spend_app.sync import _HUB_TEST_CLIENTS
-
-        token = extract_cookie(res)
-        if not token:
-            return {"ok": False, "code": "HUB-501", "error": format_error("HUB-501")}
-
-        expires_at = data.get("expiresAt")
-        try:
-            self._publish_owner_session(
-                token,
-                expires_at,
-                expected_gen=expected_gen,
-                allow_when_signed_out=initial_signed_out,
-            )
-        except _StaleOwnerLifecycle:
-            try:
-                revoke_or_queue_owner_session(
-                    db_path,
-                    hub_url,
-                    token,
-                    vault=self._resolve_vault(),
-                    client=_HUB_TEST_CLIENTS.get(hub_url),
-                    suppress_queue_error=False,
-                )
-            except CodedError as exc:
-                return {"ok": False, "code": exc.code, "message": error_message(exc.code), "error": format_error(exc.code)}
-            return {"ok": False, "code": "AUTH-107", "error": format_error("AUTH-107")}
-        except CodedError as exc:
-            revoke_or_queue_owner_session(
-                db_path,
-                hub_url,
-                token,
-                vault=self._resolve_vault(),
-                client=_HUB_TEST_CLIENTS.get(hub_url),
-                suppress_queue_error=(exc.code == "APP-903"),
-            )
-            return {"ok": False, "code": exc.code, "message": error_message(exc.code), "error": format_error(exc.code)}
-        except Exception:
-            revoke_or_queue_owner_session(
-                db_path,
-                hub_url,
-                token,
-                vault=self._resolve_vault(),
-                client=_HUB_TEST_CLIENTS.get(hub_url),
-                suppress_queue_error=True,
-            )
-            return {"ok": False, "code": "APP-903", "message": error_message("APP-903"), "error": format_error("APP-903")}
-        return {
-            "ok": True,
-            "sessionId": data.get("sessionId"),
-            "expiresAt": expires_at,
-        }
-
-    def list_owner_sessions(self) -> dict:
-        if self._demo:
-            return {"ok": False, "error": "Owner sessions are disabled in demo mode."}
-        hub_url, err = self._resolve_hub_origin()
-        if err is not None:
-            return err
-        token = self._get_owner_session_token()
-        if not token:
-            return {"ok": False, "code": "AUTH-107", "error": format_error("AUTH-107")}
-        data, _, call_err = self._call_hub(
-            hub_url,
-            "GET",
-            "/api/auth/sessions",
-            token=token,
-        )
-        if call_err is not None:
-            return call_err
-        return {
-            "ok": True,
-            "sessions": data.get("sessions") or [],
-            "currentSessionId": data.get("currentSessionId"),
-        }
-
-    def revoke_owner_session(self, session_id: str) -> dict:
-        if self._demo:
-            return {"ok": False, "error": "Owner sessions are disabled in demo mode."}
-        hub_url, err = self._resolve_hub_origin()
-        if err is not None:
-            return err
-        token = self._get_owner_session_token()
-        if not token:
-            return {"ok": False, "code": "AUTH-107", "error": format_error("AUTH-107")}
-        clean_sid = str(session_id or "").strip()
-        if not clean_sid:
-            return {"ok": False, "code": "HUB-501", "error": "Choose a session to revoke."}
-        _, _, call_err = self._call_hub(
-            hub_url,
-            "POST",
-            "/api/auth/sessions/revoke",
-            json_body={"id": clean_sid},
-            token=token,
-        )
-        if call_err is not None:
-            return call_err
-        return {"ok": True}
-
-    def rotate_owner_session(self) -> dict:
-        if self._demo:
-            return {"ok": False, "error": "Owner sessions are disabled in demo mode."}
-        hub_url, err = self._resolve_hub_origin()
-        if err is not None:
-            return err
-        token, _, captured_gen = self._capture_owner_session_with_gen()
-        if not token:
-            return {"ok": False, "code": "AUTH-107", "error": format_error("AUTH-107")}
-        data, res, call_err = self._call_hub(
-            hub_url,
-            "POST",
-            "/api/auth/session/rotate",
-            json_body={},
-            token=token,
-        )
-        if call_err is not None:
-            return call_err
-
-        from spend_app.auth_model import extract_cookie
-
-        new_token = extract_cookie(res)
-        if not new_token:
-            return {"ok": False, "code": "HUB-501", "error": format_error("HUB-501")}
-
-        expires_at = data.get("expiresAt")
-        try:
-            self._publish_owner_session(
-                new_token,
-                expires_at,
-                expected_token=token,
-                expected_gen=captured_gen,
-            )
-        except _StaleOwnerLifecycle:
-            from spend_app.connection_secrets import enqueue_pending_revokes, response_is_terminal_revoke
-
-            _, res_stale, err_stale = self._call_hub(
-                hub_url,
-                "POST",
-                "/api/auth/logout",
-                json_body={},
-                token=new_token,
-                fresh_session=True,
-                flush_pending=False,
-            )
-            if not response_is_terminal_revoke("owner_logout", res_stale, err_stale):
-                try:
-                    enqueue_pending_revokes(
-                        self._db_path(),
-                        [{"kind": "owner_logout", "token": new_token, "hubUrl": hub_url}],
-                        vault=self._resolve_vault(),
-                        hub_url=hub_url,
-                    )
-                except CodedError as exc:
-                    return {
-                        "ok": False,
-                        "code": exc.code,
-                        "message": error_message(exc.code),
-                        "error": format_error(exc.code),
-                    }
-            return {"ok": False, "code": "AUTH-107", "error": format_error("AUTH-107")}
-        except CodedError as exc:
-            from spend_app.connection_secrets import revoke_or_queue_owner_session
-            from spend_app.sync import _HUB_TEST_CLIENTS
-
-            revoke_or_queue_owner_session(
-                self._db_path(),
-                hub_url,
-                new_token,
-                vault=self._resolve_vault(),
-                client=_HUB_TEST_CLIENTS.get(hub_url),
-                suppress_queue_error=(exc.code == "APP-903"),
-            )
-            return {"ok": False, "code": exc.code, "message": error_message(exc.code), "error": format_error(exc.code)}
-        except Exception:
-            from spend_app.connection_secrets import revoke_or_queue_owner_session
-            from spend_app.sync import _HUB_TEST_CLIENTS
-
-            revoke_or_queue_owner_session(
-                self._db_path(),
-                hub_url,
-                new_token,
-                vault=self._resolve_vault(),
-                client=_HUB_TEST_CLIENTS.get(hub_url),
-                suppress_queue_error=True,
-            )
-            return {"ok": False, "code": "APP-903", "message": error_message("APP-903"), "error": format_error("APP-903")}
-        return {
-            "ok": True,
-            "sessionId": data.get("sessionId"),
-            "expiresAt": expires_at,
-        }
-
-    def sign_out_owner(self) -> dict:
-        if self._demo:
-            return {"ok": False, "error": "Owner sessions are disabled in demo mode."}
-
-        from spend_app.connection_secrets import (
-            ack_pending_revokes,
-            clear_spoke_credentials,
-            flush_pending_revokes,
-            read_pending_revokes,
-            response_is_terminal_revoke,
-        )
-        from spend_app.sync import _HUB_TEST_CLIENTS, clear_hub_proxy_cache
-
-        db_path = self._db_path()
-        vault = self._resolve_vault()
-        with self._owner_session_lock:
-            mem_owner = self._owner_session
-            pre_hub, pre_err = self._resolve_hub_origin()
-            pre_hub_url = pre_hub if pre_err is None else None
-            pre_client = _HUB_TEST_CLIENTS.get(pre_hub_url) if pre_hub_url else None
-            try:
-                cleared = clear_spoke_credentials(
-                    db_path,
-                    clear_owner_session=True,
-                    mark_signed_out=True,
-                    vault=vault,
-                    queue_revokes_mode="owner_only",
-                    hub_url=pre_hub_url,
-                    extra_owner_tokens=[mem_owner] if mem_owner else None,
-                    client=pre_client,
-                    allow_flush_on_overflow=True,
-                )
-            except CodedError as exc:
-                return {
-                    "ok": False,
-                    "code": exc.code,
-                    "message": error_message(exc.code),
-                    "error": format_error(exc.code),
-                }
-            except Exception:
-                LOGGER.debug("Could not clear owner session in SQLite", exc_info=True)
-                return {
-                    "ok": False,
-                    "code": "APP-903",
-                    "message": error_message("APP-903"),
-                    "error": format_error("APP-903"),
-                }
-
-            if db_path is not None and db_path.is_file():
-                clear_hub_proxy_cache()
-            self._owner_session = None
-            self._owner_session_expires_at = None
-            self._owner_session_gen = None
-
-        queued_tasks = list(cleared.get("queuedTasks") or [])
-        existing_pending = read_pending_revokes(db_path, vault=vault)
-        if not queued_tasks and not existing_pending:
-            return {"ok": True}
-
-        hub_url, err = self._resolve_hub_origin()
-        if err is not None:
-            return err
-
-        test_client = _HUB_TEST_CLIENTS.get(hub_url)
-        acked_ids: list[str] = []
-        first_err: dict | None = None
-        for task in queued_tasks:
-            tok = str(task.get("token") or "")
-            _, res, call_err = self._call_hub(
-                hub_url,
-                "POST",
-                "/api/auth/logout",
-                json_body={},
-                token=tok,
-                fresh_session=True,
-                flush_pending=False,
-            )
-            if response_is_terminal_revoke("owner_logout", res, call_err):
-                if task.get("id"):
-                    acked_ids.append(str(task["id"]))
-            elif first_err is None:
-                first_err = call_err or {
-                    "ok": False,
-                    "code": "HUB-501",
-                    "message": error_message("HUB-501"),
-                    "error": format_error("HUB-501"),
-                }
-
-        if acked_ids:
-            try:
-                ack_pending_revokes(db_path, acked_ids, vault=vault)
-            except CodedError as exc:
-                return {
-                    "ok": False,
-                    "code": exc.code,
-                    "message": error_message(exc.code),
-                    "error": format_error(exc.code),
-                }
-
-        if first_err is not None:
-            return first_err  # type: ignore[return-value]
-
-        if read_pending_revokes(db_path, vault=vault):
-            try:
-                flushed = flush_pending_revokes(
-                    db_path,
-                    hub_url,
-                    vault=vault,
-                    client=test_client,
-                    ignore_backoff=True,
-                )
-            except CodedError as exc:
-                return {
-                    "ok": False,
-                    "code": exc.code,
-                    "message": error_message(exc.code),
-                    "error": format_error(exc.code),
-                }
-            if not flushed:
-                return {
-                    "ok": False,
-                    "code": "NET-001",
-                    "message": error_message("NET-001"),
-                    "error": format_error("NET-001"),
-                }
-        return {"ok": True}
-
-    def get_owner_audit(self) -> dict:
-        if self._demo:
-            return {"ok": False, "error": "Owner sessions are disabled in demo mode."}
-        hub_url, err = self._resolve_hub_origin()
-        if err is not None:
-            return err
-        token = self._get_owner_session_token()
-        if not token:
-            return {"ok": False, "code": "AUTH-107", "error": format_error("AUTH-107")}
-        data, _, call_err = self._call_hub(
-            hub_url,
-            "GET",
-            "/api/auth/audit",
-            token=token,
-        )
-        if call_err is not None:
-            return call_err
-        return {"ok": True, "actions": data.get("actions") or []}
 
     def minimize_window(self) -> None:
         if self._window is not None:
@@ -4119,12 +3594,17 @@ class DesktopBridge:
                 return {"ok": False, "error": "Diagnostics unavailable."}
             out = {"ok": True, "health": health, "freshness": freshness}
             db_path = self._db_path()
-            if db_path is not None or self._vault is not None:
-                from spend_app.connection_secrets import pending_revoke_count
+            from spend_app.connection_secrets import (
+                has_revoke_retention_warning,
+                pending_revoke_count,
+            )
 
+            if db_path is not None or self._vault is not None:
                 out["pendingRevokeCount"] = pending_revoke_count(
                     db_path, vault=self._resolve_vault()
                 )
+            if has_revoke_retention_warning():
+                out["pendingRevokeRetentionWarning"] = True
             return out
         except DesktopError as exc:
             return {"ok": False, "error": str(exc)}

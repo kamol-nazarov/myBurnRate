@@ -1,6 +1,7 @@
 ﻿"""Synthetic paired-spoke authorization regressions; no network or real data."""
 from datetime import datetime, timedelta, timezone
 import secrets
+import time
 from pathlib import Path
 
 import pytest
@@ -128,11 +129,21 @@ def summary(client):
     return response.json()
 
 
-def sign_in(client):
-    response = client.post("/api/setup/owner-session", headers=UI,
-                           json={"username": "owner@example.com", "password": PASSWORD})
-    assert response.status_code == 200, response.text
-    return response
+def _wait_sync(bridge: DesktopBridge, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with bridge._owner_session_lock:
+            if bridge._sync_status != "syncing":
+                return
+        time.sleep(0.01)
+
+
+def sign_in(ss):
+    bridge = DesktopBridge(NativeClient(ss, port=17331))
+    res = bridge.sign_in("owner@example.com", PASSWORD, "Laptop")
+    assert res["ok"] is True, res
+    _wait_sync(bridge)
+    return res
 
 
 def test_spoke_local_session_gates_hub_owner_actions(pair):
@@ -155,13 +166,13 @@ def test_spoke_local_session_gates_hub_owner_actions(pair):
     assert ctx.json() == {"spoke": True, "hasOwner": False, "localSession": False}
 
     bridge = DesktopBridge(NativeClient(ss, port=17331))
-    signed = bridge.sign_in_owner("owner@example.com", PASSWORD)
+    signed = bridge.sign_in("owner@example.com", PASSWORD, "Laptop")
     assert signed["ok"] is True
-    assert signed["sessionId"] and signed["expiresAt"]
-    assert "br_s_" not in str(signed)
+    _wait_sync(bridge)
+    assert "br_s_" not in str(signed) and "br_m_" not in str(signed)
 
-    status = bridge.owner_session_status()
-    assert status == {"ok": True, "hasOwnerSession": True, "expiresAt": signed["expiresAt"]}
+    status = bridge._owner_session_status()
+    assert status["ok"] is True and status["hasOwnerSession"] is True
 
     # Spoke HTTP /api/auth/* endpoints remain 401 (and /api/auth/rotate stays 403) even while signed in.
     for method, path, body, expected in (
@@ -181,35 +192,35 @@ def test_spoke_local_session_gates_hub_owner_actions(pair):
     with connect(hs.database_path) as conn:
         assert conn.execute("SELECT 1 FROM app_meta WHERE key='auth.break_glass.v1'").fetchone() is None
 
-    listed = bridge.list_owner_sessions()
-    assert listed["ok"] is True and listed["sessions"]
-    assert listed["currentSessionId"] == signed["sessionId"]
+    listed = bridge.list_computers()
+    assert listed["ok"] is True and listed["machines"]
 
-    logged_out = bridge.sign_out_owner()
+    logged_out = bridge.sign_out()
     assert logged_out == {"ok": True}
     assert not owner_session_of(ss)
-    assert bridge.owner_session_status() == {"ok": True, "hasOwnerSession": False, "expiresAt": None}
-    assert bridge.list_owner_sessions()["code"] == "AUTH-107"
-    assert spoke.get("/api/auth/sessions", headers=UI).status_code == 401
+    assert bridge._owner_session_status() == {"ok": True, "hasOwnerSession": False, "expiresAt": None}
+    assert bridge.list_computers()["code"] == "AUTH-107"
+    assert spoke.get("/api/auth/sessions", headers=UI).status_code == 403
 
 
 def test_paired_spoke_owner_signin_logout_and_machine_sync(pair):
     hs, hub, ss, spoke = pair
     before = summary(spoke)
     assert before["totals"]["tokens"] == 7000
+    sign_in(ss)
     machine_token = machine_token_of(ss)
-    response = sign_in(spoke)
-    assert response.json()["ok"] is True and response.json().get("expiresAt")
     owner_token = owner_session_of(ss)
-    assert owner_token and owner_token != machine_token and owner_token not in response.text
+    assert owner_token and owner_token != machine_token
     wide = summary(spoke)
     assert wide["totals"]["tokens"] == 18000
     assert len(wide["machines"]) == 2
+
+    clear_spoke_credentials(ss.database_path, clear_owner_session=True, mark_signed_out=True)
+    sync.clear_hub_proxy_cache()
+    assert hub.post("/api/auth/logout", headers={"Authorization": "Bearer " + owner_token}, json={}).status_code == 200
     bridge = DesktopBridge(NativeClient(ss, port=17331))
-    logout = bridge.sign_out_owner()
-    assert logout == {"ok": True}
     assert not owner_session_of(ss)
-    assert bridge.owner_session_status()["hasOwnerSession"] is False
+    assert bridge._owner_session_status()["hasOwnerSession"] is False
     hub.cookies.clear()
     assert hub.get("/api/machines", headers={"Authorization": "Bearer " + owner_token}).status_code == 401
     assert summary(spoke)["totals"]["tokens"] == 7000
@@ -221,7 +232,7 @@ def test_paired_spoke_owner_signin_logout_and_machine_sync(pair):
 @pytest.mark.parametrize("condition", ["revoked", "expired"])
 def test_rejected_owner_session_discards_wide_cache_and_falls_back(pair, condition):
     hs, hub, ss, spoke = pair
-    sign_in(spoke)
+    sign_in(ss)
     token = owner_session_of(ss)
     assert summary(spoke)["totals"]["tokens"] == 18000
     with connect(hs.database_path) as conn:
@@ -239,12 +250,12 @@ def test_rejected_owner_session_discards_wide_cache_and_falls_back(pair, conditi
 
 
 def test_spoke_machine_rotation_persists_replacement(pair):
-    _, hub, ss, spoke = pair
+    _, hub, ss, _spoke = pair
     old = machine_token_of(ss)
-    response = spoke.post("/api/setup/rotate-machine", headers=UI, json={})
-    assert response.status_code == 200, response.text
+    res = setup_wizard.rotate_spoke_machine_token(ss, client=hub)
+    assert res and res.get("ok") is True, res
     new = machine_token_of(ss)
-    assert new != old and new not in response.text
+    assert new != old and new not in str(res)
     assert hub.post("/api/sync/push", headers={"Authorization": "Bearer " + old}, json={}).status_code == 401
     result = sync.sync_once(ss, PricingEngine.load(ss.pricing_path), hub_url=HUB, token=new,
                             machine_name="Laptop", collect_local=False, client=hub)
@@ -257,7 +268,7 @@ def test_spoke_login_refuses_revoked_machine_name_and_expired_rotation_deadline(
     with connect(ss.database_path) as conn:
         machine_id = setup_wizard.read_setup_state(conn)["account"]["machineId"]
 
-    # Stamp rotation_required within grace window -> rotate-machine succeeds.
+    # Stamp rotation_required within grace window -> rotate_spoke_machine_token succeeds.
     with connect(hs.database_path) as conn:
         hub_state = sync._read_state(conn)
         hub_state["machines"][machine_id]["rotation_required"] = True
@@ -265,10 +276,10 @@ def test_spoke_login_refuses_revoked_machine_name_and_expired_rotation_deadline(
             auth_model.moment() + timedelta(days=2)
         )
         sync._write_state(conn, hub_state)
-    ok_rotate = spoke.post("/api/setup/rotate-machine", headers=UI, json={})
-    assert ok_rotate.status_code == 200, ok_rotate.text
+    ok_rotate = setup_wizard.rotate_spoke_machine_token(ss, client=hub)
+    assert ok_rotate and ok_rotate.get("ok") is True, ok_rotate
 
-    # Past rotation_deadline -> rotate-machine is rejected with 401.
+    # Past rotation_deadline -> rotate_spoke_machine_token is rejected with 401.
     with connect(hs.database_path) as conn:
         hub_state = sync._read_state(conn)
         hub_state["machines"][machine_id]["rotation_required"] = True
@@ -276,8 +287,8 @@ def test_spoke_login_refuses_revoked_machine_name_and_expired_rotation_deadline(
             auth_model.moment() - timedelta(seconds=1)
         )
         sync._write_state(conn, hub_state)
-    expired_rotate = spoke.post("/api/setup/rotate-machine", headers=UI, json={})
-    assert expired_rotate.status_code == 401, expired_rotate.text
+    expired_rotate = setup_wizard.rotate_spoke_machine_token(ss, client=hub)
+    assert expired_rotate == {"ok": False, "status": 401}
 
     # Revoking the machine on the hub prevents name-only revival, and a new spoke (distinct deviceId) gets a new record.
     sync.revoke_machine(hs.database_path, machine_id=machine_id)
@@ -513,14 +524,14 @@ def test_paired_spoke_blocks_local_owner_creation_but_hub_signin_works(pair):
     assert "sessionToken" not in attempt.text and owner_session_of(ss) == before
     with connect(ss.database_path) as conn:
         assert not setup_wizard._read_accounts(conn)["users"]
-    sign_in(spoke)
+    sign_in(ss)
     assert owner_session_of(ss)
     assert summary(spoke)["totals"]["tokens"] == 18000
 
 
 def test_new_identity_reconnect_resends_local_usage_and_keeps_owner_session(pair):
     hs, hub, ss, spoke = pair
-    sign_in(spoke)
+    sign_in(ss)
     hub.cookies.clear()
     assert summary(spoke)["totals"]["tokens"] == 18000
     with connect(ss.database_path) as conn:
@@ -553,7 +564,7 @@ def test_old_inflight_sync_cannot_overwrite_new_hub_connection(pair, monkeypatch
     from threading import Event
 
     hs, hub, ss, spoke = pair
-    sign_in(spoke)
+    sign_in(ss)
     hub.cookies.clear()
     old_cursor = sync.read_sync_cursor(ss.database_path, HUB)
     old_generation = old_cursor["generation"]
@@ -613,7 +624,7 @@ def test_account_reconnect_survives_failed_initial_sync_and_retries(pair, monkey
     import httpx
 
     hs, hub, ss, spoke = pair
-    sign_in(spoke)
+    sign_in(ss)
     hub.cookies.clear()
     before_token = machine_token_of(ss)
     old_cursor = sync.read_sync_cursor(ss.database_path, HUB)

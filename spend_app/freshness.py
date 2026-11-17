@@ -363,8 +363,20 @@ def report(settings, now: datetime | None = None, *, background: bool = True,
             issues.append({"kind": "version", "key": "hub", "name": "Hub version", "short": "Hub version", "state": "mismatch", "severity": "info",
                            "ageSeconds": None, "detail": f"Hub runs {remote_build or remote + ' (an older build)'}; this computer runs {local_build}. "
                                                          "Update it with: burnrate hub update"})
-    from spend_app.connection_secrets import pending_revoke_count
+    from spend_app.connection_secrets import has_revoke_retention_warning, pending_revoke_count
 
+    retention_warning = has_revoke_retention_warning()
+    if retention_warning:
+        issues.append({
+            "kind": "sync",
+            "key": "pending-revoke-retention",
+            "name": "Credential cleanup",
+            "short": "Credential cleanup",
+            "state": "warn",
+            "severity": "warn",
+            "ageSeconds": None,
+            "detail": "Revoked credential cleanup could not be saved to the keychain and remains queued in memory until the hub is reached (APP-903).",
+        })
     severities = {item["severity"] for item in issues}
     severity = "alarm" if "alarm" in severities else "warn" if "warn" in severities else "ok"
     return {
@@ -377,4 +389,5 @@ def report(settings, now: datetime | None = None, *, background: bool = True,
         "hub": hub,
         "machines": machines,
         "pendingRevokeCount": pending_revoke_count(settings.database_path),
+        "pendingRevokeRetentionWarning": retention_warning,
     }
