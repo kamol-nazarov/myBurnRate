@@ -1271,14 +1271,13 @@ class DesktopBridge:
         return owned
 
     def open_owner_access(self) -> dict:
-        """Open the fixed local credential UI without a token in its URL."""
+        """H5 stub: /auth web page was removed in H6; owner sessions move into Settings."""
         if self._demo:
             return {"ok": False, "error": "Owner access is disabled in demo mode."}
-        base = getattr(self._client, "base_url", "")
-        parsed = urlsplit(base)
-        if parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or parsed.path:
-            return {"ok": False, "error": "Local tracker address unavailable."}
-        return {"ok": open_in_browser(base + "/auth")}
+        return {
+            "ok": False,
+            "error": "Sign in from Settings -> Hub Account (session management moves here in H5).",
+        }
 
     def open_external(self, url: str) -> dict:
         """Open a pinned-repository https URL in the default browser."""

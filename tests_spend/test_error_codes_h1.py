@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import re
 import ssl
 
 import httpx
@@ -13,7 +12,6 @@ from fastapi.testclient import TestClient
 
 from spend_app import aggregate, auth_model, auth_throttle, setup_wizard, sync
 from spend_app.api import create_app
-from spend_app.auth_page import AUTH_HTML
 from spend_app.config import Settings
 from spend_app.connection_paths import LocationError
 from spend_app.db import connect, initialize
@@ -21,10 +19,12 @@ from spend_app.error_codes import (
     ERROR_CATALOG,
     HUB_PROTOCOL_VERSION,
     CodedError,
+    error_message,
+    error_response,
     format_error,
 )
 from spend_app.native_desktop import DesktopError, NativeClient
-from spend_app.setup_wizard import _call_central_server_account, render_setup_wizard
+from spend_app.setup_wizard import _call_central_server_account
 from spend_app.wealthfront_window import DesktopBridge
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,6 +49,7 @@ EXPECTED_CODES = {
     "DEV-301",
     "DEV-302",
     "REQ-401",
+    "REQ-404",
     "SYNC-201",
     "HUB-501",
     "HUB-502",
@@ -258,9 +259,26 @@ def _patch_httpx_for_fake_responses(monkeypatch, handler):
 # ---------------------------------------------------------------------------
 
 
-def test_error_catalog_has_all_18_codes() -> None:
+def test_error_catalog_has_all_19_codes() -> None:
     assert set(ERROR_CATALOG) == EXPECTED_CODES
-    assert len(ERROR_CATALOG) == 18
+    assert len(ERROR_CATALOG) == 19
+
+
+def test_req_404_catalog_and_error_response() -> None:
+    entry = ERROR_CATALOG["REQ-404"]
+    assert entry["status"] == 404
+    assert isinstance(entry["message"], str)
+    assert "desktop app" in entry["message"].lower()
+    assert error_message("REQ-404") == entry["message"]
+
+    resp = error_response("REQ-404", status_code=404, include_message=True)
+    assert resp.status_code == 404
+    assert json.loads(resp.body) == {
+        "error": {
+            "code": "REQ-404",
+            "message": entry["message"],
+        }
+    }
 
 
 def test_net_001_transport_and_invalid_url_paths(tmp_path: Path, monkeypatch) -> None:
@@ -1207,19 +1225,6 @@ def test_never_leak_raw_local_tracker_503_text(tmp_path: Path, monkeypatch) -> N
 
 
 def test_ui_error_formatting_includes_all_17_codes_and_warning_toast() -> None:
-    wizard_html = render_setup_wizard()
-    match = re.search(r"const ERROR_MESSAGES = (\{.*?\});", wizard_html)
-    assert match is not None
-    wizard_catalog = json.loads(match.group(1))
-    assert set(wizard_catalog) == set(ERROR_CATALOG)
-    assert "formatApiError" in wizard_html
-    assert 'mins === 1 ? " minute." : " minutes."' in wizard_html
-
-    for code in ERROR_CATALOG:
-        assert code in AUTH_HTML
-    assert "fmtErr" in AUTH_HTML
-    assert "mins===1?' minute.':' minutes.'" in AUTH_HTML
-
     wealthfront_html = (ROOT / "spend_app" / "wealthfront_ui.html").read_text(encoding="utf-8")
     assert "showToast(res.warning" in wealthfront_html
 

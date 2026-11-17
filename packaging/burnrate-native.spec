@@ -6,7 +6,7 @@ from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_sub
 ROOT = Path(SPECPATH).parent
 datas = [(str(ROOT / "pricing"), "pricing")]
 datas += [(str(ROOT / "assets" / "icons" / "32x32.png"), ".")]
-datas += collect_data_files("spend_app") + collect_data_files("spend_web") + collect_data_files("tzdata") + collect_data_files("certifi")
+datas += collect_data_files("spend_app") + collect_data_files("tzdata") + collect_data_files("certifi")
 datas += copy_metadata("APScheduler") + copy_metadata("keyring")
 stamp = ROOT / "packaging" / "build" / "BUILD_COMMIT"
 if stamp.is_file():
@@ -15,7 +15,6 @@ if stamp.is_file():
 binaries = []
 hiddenimports = (
     collect_submodules("spend_app")
-    + collect_submodules("spend_web")
     + collect_submodules("uvicorn")
     + collect_submodules("apscheduler")
     + collect_submodules("keyring.backends")

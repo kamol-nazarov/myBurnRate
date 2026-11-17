@@ -89,7 +89,6 @@ def test_saturated_reads_leave_health_responsive(tmp_path, monkeypatch):
         return {"synthetic": True}
 
     monkeypatch.setattr(hud, "live_snapshot", slow_snapshot)
-    monkeypatch.setattr(hud, "recorded_usage", lambda *a, **kw: {"usage": True})
     app = create_app(settings, enable_scheduler=False)
 
     async def exercise():
@@ -112,11 +111,6 @@ def test_saturated_reads_leave_health_responsive(tmp_path, monkeypatch):
             finally:
                 release.set()
                 assert (await pending).status_code == 200
-            legacy = await client.get(
-                "/api/spend/summary", headers={"referer": "http://test/hud"}
-            )
-            assert legacy.status_code == 200
-            assert legacy.json() == {"usage": True, "synthetic": True}
 
     asyncio.run(exercise())
 

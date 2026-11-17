@@ -6,7 +6,7 @@ If you already run Tailscale and want HTTPS access from other devices on **your*
 
 ## Serve to localhost
 
-Point Serve at the local BURNRATE listener only (its `/` opens the HUD, or the full dashboard with `BURNRATE_ENABLE_DASHBOARD=1`):
+Point Serve at the local BURNRATE listener only (for the hub `/api/*` endpoints):
 
 ```powershell
 tailscale serve --bg --https=443 http://127.0.0.1:17331

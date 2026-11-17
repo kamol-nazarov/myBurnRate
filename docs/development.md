@@ -47,18 +47,13 @@ Installed runs store SQLite and logs under `%LOCALAPPDATA%\BURNRATE` (`spend.db`
 
 You can run BURNRATE in three ways depending on your workflow:
 
-### Option A: Foreground Server + Browser
+### Option A: Foreground API Service
 
 ```powershell
 burnrate serve
 ```
 
-Then open:
-- **First-Run Setup Wizard:** [http://127.0.0.1:17331/setup](http://127.0.0.1:17331/setup)
-- **Sidecar HUD:** [http://127.0.0.1:17331/hud](http://127.0.0.1:17331/hud) (also [http://127.0.0.1:17331](http://127.0.0.1:17331))
-- **Full Dashboard (optional):** set `BURNRATE_ENABLE_DASHBOARD=1`, restart, and open [http://127.0.0.1:17331](http://127.0.0.1:17331)
-
-The HUD starts live quota and activity polling immediately. Its spend statistics load separately and keep usage collection running in the background, without building dashboard summaries. Local collection is unconditional: a pass runs whether or not a viewer is open, and adapters skip unchanged inputs cheaply. A HUD read only pulls the next pass forward. The HUD shows the data's age (`Updated 12s ago`) and alarms when the data or any of its polls goes quiet. On a paired spoke, the HUD shows the last hub copy at once and renews it in the background, so a slow or unreachable hub never stalls it.
+Starts the FastAPI service on `http://127.0.0.1:17331` serving `/api/*` and `/healthz` (non-API paths return `404` JSON with `REQ-404`). Local collection is unconditional: a pass runs whether or not the desktop window is open, and adapters skip unchanged inputs cheaply.
 
 ### Option B: Windowless Windows Background Service (Auto-Start at Sign-In)
 
@@ -102,32 +97,15 @@ burnrate demo
 ```
 
 `burnrate demo` fills a new database in a temporary folder with a month of made-up usage, plans and
-meters, and opens the HUD on [http://127.0.0.1:17377/hud](http://127.0.0.1:17377/hud). Collection,
-quota polling and HUD window control are off, so nothing is collected from your tools or accounts. Pass
-`--data-root DIR` to keep the demo between runs.
+meters and serves the demo API on `127.0.0.1:17377`. Use `burnrate desktop --demo` to open the native
+desktop window against that synthetic data. Collection and quota polling are off, so nothing is
+collected from your tools or accounts. Pass `--data-root DIR` to keep the demo between runs.
 
-The screenshots in the README come from it. To take them again, start `burnrate demo --no-browser`
-and run `node scripts/readme-screenshots.mjs` (Node 22 or later, with Edge or Chrome installed). It
-writes `hud.png`, `week-card.png` and `dashboard.png` to `docs/images/`.
+## Tests and desktop UI checks
 
-## Tests and front-end assets
-
-For frontend development, edit the readable files in `frontend_src/`. Run
-`npm ci --prefix scripts/asset-tools --ignore-scripts --no-audit --no-fund`, then
-`node scripts/optimize-assets.cjs` to regenerate the committed `spend_web/`
-assets and their checksums. Node is a development tool only; Python installs
-use the committed assets. Existing public IDs and CSS classes are preserved.
-
-The HUD browser entry lives in `spend_web/hud/hud.js`. `render_hud()` embeds this
-packaged resource into the page; edits do not require the dashboard optimizer.
-Keep HUD request helpers and handlers covered by flow tests, including sharing,
-unavailable data, and poll recovery.
-
-`python scripts/preview-hud.py` generates a self-contained interactive HUD at
-`validation/hud-ui-preview.html`. It uses the production markup and JavaScript
-with synthetic responses and isolated preferences; it never contacts providers
-or the running service. Regenerate it after HUD edits. Use `--theme light` or
-`--theme dark` for standalone theme inspection.
+Edit the desktop UI in `spend_app/wealthfront_ui.html` and `spend_app/wealthfront_window.py`,
+keeping existing public IDs and CSS classes covered by `tests_spend/test_wealthfront_ui.py` and
+`tests_spend/test_wealthfront_layout.py`.
 
 CI requires Python compilation and Ruff's `E9,F63,F7,F82` correctness rules across
 the whole tree. Selected product modules retain their broader lint and formatting

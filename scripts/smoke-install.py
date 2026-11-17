@@ -3,13 +3,13 @@
 import argparse
 import json
 import os
-import re
 import socket
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -125,35 +125,22 @@ def main():
                     time.sleep(0.1)
             else:
                 raise AssertionError("Smoke server did not become ready")
-            # The HUD is the product: "/" opens it unless the dashboard is enabled.
-            with urlopen(base) as response:
-                assert 'location.replace("/hud")' in response.read().decode()
-            with urlopen(base + "/hud") as response:
-                html = response.read().decode()
-            assert '"/api/spend/hud?machine="' in html
-            # Navigation links (including owner sign-in) are HTML pages, not
-            # static assets. Exercise them separately from scripts/styles/icons.
-            assets = re.findall(
-                r'<(?:script|link|img|source)\b[^>]*(?:src|href)="(/[^"#]+)', html
-            )
-            assert "/favicon.svg" in assets
-            for asset in assets:
-                with urlopen(base + asset) as response:
-                    assert response.status == 200
-                    expected = (
-                        "javascript"
-                        if ".js?" in asset
-                        else "text/css"
-                        if ".css?" in asset
-                        else "image/svg+xml"
-                    )
-                    assert expected in response.headers["Content-Type"], asset
-            if not args.private_source:
-                assert 'href="/auth"' in html
-                with urlopen(base + "/auth") as response:
-                    assert response.status == 200
-                    assert "text/html" in response.headers["Content-Type"]
-                    assert "/api/setup/owner-session" in response.read().decode()
+            # Web pages were removed: non-API paths return 404 JSON with REQ-404.
+            for removed_path in ("/", "/hud", "/setup", "/auth", "/connections"):
+                try:
+                    urlopen(base + removed_path)
+                    raise AssertionError(f"Expected 404 for {removed_path}")
+                except HTTPError as exc:
+                    assert exc.code == 404, (removed_path, exc.code)
+                    err_body = json.loads(exc.read().decode())
+                    assert err_body["error"]["code"] == "REQ-404"
+                    assert err_body["error"]["message"]
+            # Desktop UI HTML loads directly from the installed spend_app package.
+            desktop_html = run(
+                "-c",
+                "from spend_app.wealthfront_window import load_ui_html; print(len(load_ui_html()))",
+            ).stdout.strip()
+            assert int(desktop_html) > 10000
             for endpoint in (
                 "/api/spend",
                 "/api/spend/summary?window=1d",
@@ -173,7 +160,7 @@ def main():
                 if endpoint == "/api/onboarding":
                     assert payload["hasHistory"] is False
             print(
-                f"SMOKE PASS: {version}; init/readonly doctor; {len(assets)} assets; safe reads"
+                f"SMOKE PASS: {version}; init/readonly doctor; desktop HTML; 404 pages; safe reads"
             )
         finally:
             try:

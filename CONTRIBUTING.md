@@ -44,8 +44,8 @@ Optional keys in `.env` stay empty for normal development. The listener must sta
 Useful commands while working:
 
 ```powershell
-burnrate doctor                 # Python, timezone data, database, pricing, assets, loopback bind
-burnrate demo                   # HUD with a month of synthetic usage, no collection
+burnrate doctor                 # Python, timezone data, database, pricing, desktop assets, loopback bind
+burnrate demo                   # local API service with a month of synthetic usage, no collection
 burnrate desktop --demo         # native window with the same synthetic data
 burnrate desktop --check-only   # verify native widget support
 ```
@@ -57,10 +57,8 @@ Its dataset is what the README screenshots use.
 
 | Path | Contents |
 | --- | --- |
-| `spend_app/` | Python service, aggregation, pricing, adapters, setup wizard, HUD and the native desktop window |
+| `spend_app/` | Python API service, aggregation, pricing, adapters, and the native desktop window |
 | `spend_app/adapters/` | One local or API reader per source |
-| `spend_web/` | Packaged dashboard and HUD assets served by the app (dashboard assets are generated from `frontend_src/`) |
-| `frontend_src/` | Readable front-end sources for the dashboard |
 | `pricing/` | Effective-dated YAML rate cards |
 | `tests_spend/` | Hermetic pytest suite, fixtures and browser contracts |
 | `packaging/` | PyInstaller, NSIS and release-manifest tooling |
@@ -97,22 +95,9 @@ The native window has hard visual rules, checked by `test_wealthfront_ui.py` and
 - **WCAG AA contrast of at least 4.5:1** in both Light and Dark themes.
 - **No horizontal clipping or overlap** at widths `304, 320, 336, 364, 380` and `480`.
 
-Changes to `frontend_src/` (the dashboard) must regenerate the committed assets:
-
-```powershell
-npm ci --prefix scripts/asset-tools --ignore-scripts --no-audit --no-fund
-node scripts/optimize-assets.cjs
-```
-
-The HUD is edited directly in `spend_web/hud/` and does not need the optimizer. Regenerate its
-standalone preview after HUD changes:
-
-```powershell
-python scripts/preview-hud.py
-```
-
-Node is a development tool only; Python installs use the committed assets. Keep existing public IDs
-and CSS classes unless a change requires otherwise, and update the contract tests with them.
+Keep existing desktop UI element IDs and CSS classes in `spend_app/wealthfront_ui.html`
+unless a change requires otherwise, and update `tests_spend/test_wealthfront_ui.py` and
+`tests_spend/test_wealthfront_layout.py` alongside UI changes.
 
 ### Dependency locks
 

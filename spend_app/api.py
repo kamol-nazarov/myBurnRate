@@ -2,46 +2,37 @@ from __future__ import annotations
 
 import asyncio
 
-import hashlib
 import logging
 import os
-import time
 from contextlib import ExitStack, asynccontextmanager
 from datetime import UTC, datetime
-from importlib.resources import as_file, files
 from pathlib import Path
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.exception_handlers import http_exception_handler
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.gzip import GZipMiddleware
 
 from spend_app import __version__
 from spend_app.bounded_reads import BoundedReadExecutor, ReadCapacityExceeded
 from spend_app.build import build_id
-from spend_app.error_codes import HUB_PROTOCOL_VERSION, error_payload
+from spend_app.error_codes import HUB_PROTOCOL_VERSION, error_payload, error_response
 from spend_app.native_launch import evaluate as evaluate_native_binary
 from spend_app.native_launch import locked_binary
 
 
-ASSET_IMMUTABLE_CACHE = "public, max-age=31536000, immutable"
-
-
 from spend_app.db import UserFacingError  # re-exported
-ASSET_REVALIDATE_CACHE = "no-cache"
 GZIP_MINIMUM_SIZE = 1024
-ASSET_SETTLE_SECONDS = 5
 # How long a paired Spoke's HUD may show its last Hub copy while renewing it.
 HUD_HUB_STALE_SECONDS = 300
 # The usage aggregate on the Hub can take much longer than a live meter read.
 HUD_USAGE_HUB_READ_TIMEOUT = 60.0
 CONTENT_SECURITY_POLICY = (
-    "default-src 'self'; script-src 'self' 'unsafe-inline'; "
-    "style-src 'self' 'unsafe-inline'; "
-    "img-src 'self' data:; connect-src 'self'; "
-    "base-uri 'none'; object-src 'none'; frame-ancestors 'none'"
+    "default-src 'none'; base-uri 'none'; form-action 'none'; "
+    "object-src 'none'; frame-ancestors 'none'"
 )
-_ASSET_VERSIONS: dict[str, tuple[tuple[int, int], str]] = {}
 
 
 def _stamp_hub_age(payload: dict, *, now, stamp: str | None = None) -> dict:
@@ -88,40 +79,6 @@ def _stamp_hub_age(payload: dict, *, now, stamp: str | None = None) -> dict:
     return stamped
 
 
-def asset_version(path: Path) -> str:
-    """Content hash of a static asset, cached by file mtime and size.
-
-    The HTML references ``spend.js?v=<hash>`` so browsers may cache assets
-    immutably: any edit changes the hash, which changes the URL, so a stale
-    file can never be pinned by a cache.
-    """
-    stat = path.stat()
-    signature = (stat.st_mtime_ns, stat.st_size)
-    cached = _ASSET_VERSIONS.get(str(path))
-    # A file edited within the last few seconds is always re-hashed: two
-    # same-size writes inside one mtime tick would otherwise share a stale hash.
-    settled = time.time() - stat.st_mtime > ASSET_SETTLE_SECONDS
-    if cached and cached[0] == signature and settled:
-        return cached[1]
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()[:12]
-    if settled:
-        _ASSET_VERSIONS[str(path)] = (signature, digest)
-    return digest
-
-
-def render_index(web_root: Path) -> str:
-    html = (web_root / "index.html").read_text(encoding="utf-8")
-    for name, marker in (("spend.css", "43"), ("spend.js", "42"), ("request-state.js", "1"), ("product.js", "2"), ("dialogs.js", "1"), ("favicon.svg", "1"), ("logos.svg", "1")):
-        html = html.replace(f"/{name}?v={marker}", f"/{name}?v={asset_version(web_root / name)}")
-    return html
-
-
-def _asset_cache_header(request: Request, path: Path) -> str:
-    requested = request.query_params.get("v")
-    if requested and requested == asset_version(path):
-        return ASSET_IMMUTABLE_CACHE
-    return ASSET_REVALIDATE_CACHE
-
 from spend_app.aggregate import (
     WINDOW_SPECS,
     aggregate_entity,
@@ -133,7 +90,7 @@ from spend_app.aggregate import (
     data_clock,
     record_summary_request,
 )
-from spend_app.config import Settings, dashboard_enabled, demo_mode, load_settings
+from spend_app.config import Settings, demo_mode, load_settings
 from spend_app.db import initialize
 from spend_app.pricing import PricingEngine
 from spend_app.limits import snapshot_limits
@@ -144,35 +101,7 @@ SPEND_WINDOWS = set(WINDOW_SPECS) | {"7d", "30d", "MTD", "YTD", "All"}
 
 
 def _content_security_policy() -> str:
-    policy = CONTENT_SECURITY_POLICY
-    if os.getenv("BURNRATE_DEV", "").strip() != "1":
-        return policy
-    try:
-        import json
-        meta = json.loads((Path(__file__).resolve().parents[1] / ".variate" / "server.json").read_text(encoding="utf-8"))
-        origin = f"http://127.0.0.1:{int(meta['port'])}"
-    except (OSError, ValueError, TypeError, KeyError):
-        return policy
-    return (
-        policy.replace("script-src 'self' 'unsafe-inline'", f"script-src 'self' 'unsafe-inline' {origin}")
-        .replace("connect-src 'self'", f"connect-src 'self' {origin}")
-    )
-
-
-def _live_hud_html() -> str:
-    """Render the HUD page, refreshing automatically when hud.py or hud.js changes on disk."""
-    import spend_app.hud as hud
-
-    return hud.render_hud(dashboard=dashboard_enabled())
-
-
-# With the dashboard off, "/" redirects to the browser HUD.
-HUD_LAUNCHER_HTML = """<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>BURNRATE</title>
-<script>
-location.replace("/hud");
-</script></head><body></body></html>
-"""
+    return CONTENT_SECURITY_POLICY
 
 
 def create_app(
@@ -239,7 +168,6 @@ def create_app(
         with connect(settings.database_path) as connection:
             return source_reports(connection, current_now(), presence, settings=settings, pricing=pricing)
     resource_stack = ExitStack()
-    web_root = Path(resource_stack.enter_context(as_file(files("spend_web"))))
 
     def current_now() -> datetime:
         return (now or datetime.now(UTC)).astimezone(UTC)
@@ -291,8 +219,7 @@ def create_app(
     from spend_app.setup_wizard import setup_router
     app.include_router(setup_router(settings, pricing, collect_now=collect_now))
     app.state._resource_stack = resource_stack
-    # Compress HTML, CSS, JS and JSON for clients that accept it (143 KB of
-    # static assets otherwise travel uncompressed over the tailnet).
+    # Compress JSON payloads for clients that accept it.
     app.add_middleware(GZipMiddleware, minimum_size=GZIP_MINIMUM_SIZE)
 
     @app.middleware("http")
@@ -353,7 +280,7 @@ def create_app(
     async def access_boundary(request, call_next):
         from spend_app.auth_model import (
             COOKIE, Principal, authenticate_session, audit, break_glass_matches,
-            create_session, owner_id, scoped_machine_read, set_session_cookie,
+            scoped_machine_read,
         )
         from spend_app.connection_api import (
             _MACHINE_READ_PATHS, access_allowed, csrf_mutation_allowed, host_allowed, trusted,
@@ -425,13 +352,6 @@ def create_app(
         request.state.principal = principal
         request.state.machine_id = principal.id if principal.kind == "machine" else None
         request.state.auth_kind = "machine" if principal.kind == "machine" else principal.kind
-        if (_central and principal.kind == "unauthenticated" and request.method == "GET"
-                and request.url.path in {"/", "/hud", "/setup"}
-                and not request.query_params.get("token", "").strip()):
-            # The shells carry no data, but a hub should not hand them to an
-            # anonymous visitor. /auth is the public entry point; the ?token
-            # exchange still needs the page it lands on.
-            return await recorded(RedirectResponse("/auth", status_code=303))
         bearer_ok = principal.via in {"bearer", "break-glass"}
         if not csrf_mutation_allowed(request, bearer_ok=bearer_ok):
             return await recorded(boundary_error(403, "Request rejected: use the configured BURNRATE origin.", code="NET-002"))
@@ -451,24 +371,14 @@ def create_app(
         if principal.kind == "machine" and request.method in {"GET", "HEAD"} and request.url.path in _MACHINE_READ_PATHS:
             data = await asyncio.to_thread(scoped_machine_read, settings, pricing, principal, request)
             return JSONResponse(data, headers={"Cache-Control": "no-store"})
-        if request.method == "GET" and request.url.path in {"/", "/hud", "/setup"}:
-            candidate = request.query_params.get("token", "").strip()
-            if candidate:
-                remaining = [(k, v) for k, v in request.query_params.multi_items() if k != "token"]
-                clean_url = request.url.path + ("?" + urlencode(remaining) if remaining else "")
-                if principal.kind != "unauthenticated":
-                    return await recorded(RedirectResponse(clean_url, status_code=303))
-                if trusted(request, mutation=False) and await asyncio.to_thread(
-                        break_glass_matches, settings.database_path, candidate, _access_token):
-                    with connect(settings.database_path) as connection:
-                        actor = Principal("owner", "break-glass", "owner", via="break-glass")
-                        data = create_session(connection, actor, "Bootstrap browser", subject_id=owner_id(connection))
-                        audit(connection, actor, "login", "bootstrap")
-                    redirect = RedirectResponse(clean_url, status_code=303)
-                    set_session_cookie(redirect, request, data)
-                    return await recorded(redirect)
         response = await call_next(request)
         return await recorded(response)
+
+    @app.exception_handler(StarletteHTTPException)
+    async def http_not_found_handler(request: Request, exc: StarletteHTTPException):
+        if exc.status_code == 404 and not request.url.path.startswith("/api/"):
+            return error_response("REQ-404", status_code=404, include_message=True)
+        return await http_exception_handler(request, exc)
 
     @app.exception_handler(ValueError)
     async def value_error_handler(_request, exc: ValueError):
@@ -489,11 +399,6 @@ def create_app(
         machine: str = Query(default="all"),
     ) -> dict:
         resolved = _window_or_400(window)
-        # An already-open HUD may still run the previous embedded script
-        # after a backend upgrade. Keep its collection and lightweight reads.
-        referrer = urlsplit(request.headers.get("referer", ""))
-        if referrer.path == "/hud" or parse_qs(referrer.query).get("hud") == ["1"]:
-            return {**_spend_hud_usage_sync(machine), **_spend_hud_live_sync(machine)}
         request_history(request)
         record_summary_request(resolved, tool)
         from spend_app.sync import fetch_from_configured_hub
@@ -567,7 +472,7 @@ def create_app(
             return {**report, "machine": machine, "machines": machines,
                     "scope": "local-fallback" if own_selected else "unavailable",
                     "warning": (
-                        "Showing this computer's recorded usage only. Sign in at /auth for All computers; your hub may also be offline."
+                        "Showing this computer's recorded usage only. Sign in from Settings for All computers; your hub may also be offline."
                         if own_selected else "This computer's history is unavailable until the hub reconnects."
                     )}
         return usage_report(settings, pricing, now=slot_now(), period=period, machine=machine)
@@ -640,8 +545,7 @@ def create_app(
         own_selected = machine in {"", "all", "local", own}
         return ("local" if own_selected else "_unavailable"), {
             "scope": "local-fallback" if own_selected else "unavailable",
-            "warning": "Showing this computer only. Sign in for All computers, or reconnect your hub.",
-            "authUrl": "/auth",
+            "warning": "Showing this computer only. Sign in from Settings for All computers, or reconnect your hub.",
         }
 
     def _spend_hud_live_sync(machine: str = Query(default="all")) -> dict:
@@ -804,40 +708,6 @@ def create_app(
                 "collectorEnabled": scheduler is not None,
                 "ingest": heartbeat(current_now()) if scheduler is not None else None}
 
-    @app.get("/")
-    def spend_frontend(
-        hud: int = Query(default=0),
-        setup: int = Query(default=0),
-        app_launch: int = Query(default=0, alias="app"),
-    ):
-        if hud == 1:
-            return HTMLResponse(_live_hud_html(), headers={"Cache-Control": ASSET_REVALIDATE_CACHE})
-        if setup == 1:
-            from spend_app.setup_wizard import render_setup_wizard
-            return HTMLResponse(render_setup_wizard(), headers={"Cache-Control": ASSET_REVALIDATE_CACHE})
-        if app_launch == 1:
-            from spend_app.setup_wizard import read_setup_state, render_setup_wizard
-            try:
-                initialize(settings.database_path)
-                with connect(settings.database_path) as connection:
-                    state = read_setup_state(connection)
-                # "Set up later" counts: the wizard stays reachable from the HUD and tray.
-                completed = bool(state.get("completed") or state.get("deferredAt"))
-            except Exception:
-                completed = False
-            if not completed:
-                return HTMLResponse(render_setup_wizard(), headers={"Cache-Control": ASSET_REVALIDATE_CACHE})
-        if not dashboard_enabled():
-            return HTMLResponse(HUD_LAUNCHER_HTML, headers={"Cache-Control": "no-store"})
-        return HTMLResponse(
-            render_index(web_root),
-            headers={"Cache-Control": ASSET_REVALIDATE_CACHE},
-        )
-
-    @app.get("/hud")
-    def spend_hud():
-        return HTMLResponse(_live_hud_html(), headers={"Cache-Control": ASSET_REVALIDATE_CACHE})
-
     @app.post("/api/hud/native")
     async def launch_native_hud(request: Request) -> dict:
         import subprocess
@@ -885,80 +755,6 @@ def create_app(
             except Exception:
                 return {"ok": False, "reason": "launch_failed"}
         return {"ok": False, "reason": "not_found"}
-
-    @app.get("/spend.css")
-    def spend_css(request: Request):
-        path = web_root / "spend.css"
-        return FileResponse(
-            path,
-            media_type="text/css",
-            headers={"Cache-Control": _asset_cache_header(request, path)},
-        )
-
-    @app.get("/spend.js")
-    def spend_js(request: Request):
-        path = web_root / "spend.js"
-        return FileResponse(
-            path,
-            media_type="application/javascript",
-            headers={"Cache-Control": _asset_cache_header(request, path)},
-        )
-
-    @app.get("/request-state.js")
-    def request_state_js(request: Request):
-        path = web_root / "request-state.js"
-        return FileResponse(
-            path,
-            media_type="application/javascript",
-            headers={"Cache-Control": _asset_cache_header(request, path)},
-        )
-
-    @app.get("/dialogs.js")
-    def product_support_js(request: Request):
-        path = web_root / request.url.path.removeprefix("/")
-        return FileResponse(path, media_type="application/javascript",
-                            headers={"Cache-Control": _asset_cache_header(request, path)})
-
-    @app.get("/product.js")
-    def product_js(request: Request):
-        path = web_root / "product.js"
-        return FileResponse(path, media_type="application/javascript",
-                            headers={"Cache-Control": _asset_cache_header(request, path)})
-
-    @app.get("/favicon.svg")
-    def favicon(request: Request):
-        path = web_root / "favicon.svg"
-        return FileResponse(
-            path,
-            media_type="image/svg+xml",
-            headers={"Cache-Control": _asset_cache_header(request, path)},
-        )
-
-    @app.get("/logos.svg")
-    def provider_logos(request: Request):
-        # One sprite of provider marks; pages reference symbols with <use href>.
-        path = web_root / "logos.svg"
-        return FileResponse(
-            path,
-            media_type="image/svg+xml",
-            headers={"Cache-Control": _asset_cache_header(request, path)},
-        )
-
-    @app.get("/favicon.ico")
-    def favicon_ico(request: Request):
-        ico_path = Path(__file__).resolve().parents[1] / "assets" / "icons" / "icon.ico"
-        if ico_path.is_file():
-            return FileResponse(
-                ico_path,
-                media_type="image/x-icon",
-                headers={"Cache-Control": _asset_cache_header(request, ico_path)},
-            )
-        path = web_root / "favicon.svg"
-        return FileResponse(
-            path,
-            media_type="image/svg+xml",
-            headers={"Cache-Control": _asset_cache_header(request, path)},
-        )
 
     app.add_middleware(TrustedProxyHeadersMiddleware)
     return app

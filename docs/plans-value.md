@@ -1,7 +1,6 @@
 # Plans & Value
 
-Plans & Value is a read-only comparison report in the full dashboard, which is
-off by default (`BURNRATE_ENABLE_DASHBOARD=1` turns it on). It places
+Plans & Value is a read-only comparison report backed by `/api/spend/summary` and `/api/subscriptions` (its browser dashboard UI was removed in `0.5.9`). It places
 **configured plan expense** next to **API-equivalent reference usage** over the
 same calendar interval so you can see how measured consumption at published
 rates compares to the fixed prices you configured.

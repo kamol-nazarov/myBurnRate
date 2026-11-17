@@ -715,12 +715,9 @@ def test_spoke_sync_stores_and_returns_fixed_error_codes(
 
 
 def test_ui_templates_contain_spoke_sync_error_code_mappings() -> None:
-    wizard_html = setup_wizard.SETUP_WIZARD_HTML
     wealthfront_html = (ROOT / "spend_app" / "wealthfront_ui.html").read_text(encoding="utf-8")
     for code in ("hub_unreachable", "hub_rejected", "sync_failed"):
-        assert code in wizard_html, f"{code} missing from SETUP_WIZARD_HTML"
         assert code in wealthfront_html, f"{code} missing from wealthfront_ui.html"
-    assert 'SYNC_ERROR_TEXT[spoke.lastSyncError] || "sync failed"' in wizard_html
     assert 'syncErrMap[syncErrRaw] || "Sync failed"' in wealthfront_html
     assert "syncErrMap[syncErrRaw] || syncErrRaw" not in wealthfront_html
 

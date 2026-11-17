@@ -44,9 +44,9 @@ def test_hud_reads_live_meters_without_loading_history(tmp_path, monkeypatch):
     app = create_app(settings, enable_scheduler=False, now=NOW)
     client = TestClient(app)
     for route in ("/hud", "/?hud=1"):
-        html = client.get(route).text
-        assert 'hudFetch("/api/spend/hud?machine=' in html
-        assert "/api/spend/summary" not in html
+        res = client.get(route)
+        assert res.status_code == 404
+        assert res.json()["error"]["code"] == "REQ-404"
     payload = client.get("/api/spend/hud").json()
     grok = next(card for card in payload["capacity"] if card["providerKey"] == "grok")
     assert grok["primaryPct"] == 42
@@ -135,7 +135,7 @@ def test_startup_does_not_warm_history_and_dashboard_requests_activate_it(tmp_pa
     app = create_app(settings)
     with TestClient(app) as client:
         assert client.get("/healthz").status_code == 200
-        assert client.get("/hud").status_code == 200
+        assert client.get("/hud").status_code == 404
         assert client.get("/api/spend/hud").status_code == 200
         assert calls == ["start"] and not app.state.history_demand.active()
         assert client.get("/api/spend/summary").status_code == 200
@@ -182,10 +182,6 @@ def test_hud_recorded_usage_keeps_collection_active_without_building_dashboard(t
     for key in ("todayUsd", "todayTokens", "burnRatePerDay", "tokensAvgPerDay", "todayComplete"):
         assert payload["navigation"][key] == expected["navigation"][key]
     assert payload["totals"]["cacheReusePct"] == expected["totals"]["cacheReusePct"]
-    # An existing native HUD keeps its old script across a backend restart.
-    legacy = TestClient(app).get("/api/spend/summary", headers={"Referer": "http://127.0.0.1:17331/hud"})
-    assert legacy.status_code == 200
-    assert legacy.json()["navigation"]["todayTokens"] == payload["navigation"]["todayTokens"]
     assert app.state.history_demand.active()
 
 
@@ -258,7 +254,7 @@ def test_hud_only_collects_new_usage_across_midnight_and_renews_demand(tmp_path,
 
         clock[0] = 271
         assert not demand.active()
-        assert client.get("/api/spend/summary", headers={"Referer": "http://localhost/hud"}).status_code == 200
+        assert client.get("/api/spend/hud/usage").status_code == 200
         assert demand.active()
     finally:
         freshness.reset_state()

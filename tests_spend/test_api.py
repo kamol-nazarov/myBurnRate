@@ -1,12 +1,11 @@
 import json
 from datetime import UTC, datetime
-from importlib.resources import files
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from spend_app import __version__
-from spend_app.api import create_app
+from spend_app.api import GZIP_MINIMUM_SIZE, create_app
 import spend_app.api as api_module
 from spend_app.config import Settings
 from spend_app.db import UsageEvent, connect, initialize, upsert_usage_event
@@ -102,6 +101,57 @@ def test_api_contracts_and_generated_at(tmp_path: Path) -> None:
     assert health.status_code == 200
     assert "pricingGaps" in health.json()
     assert "quotas" in health.json()
+
+
+def test_api_summary_json_over_threshold_is_gzip_compressed(tmp_path: Path) -> None:
+    database = tmp_path / "spend.db"
+    add_fixture_event(database)
+    frozen = datetime.now(UTC)
+    client = TestClient(create_app(make_settings(database), enable_scheduler=False, now=frozen))
+
+    raw = client.get("/api/spend/summary?window=1d&tool=all", headers={"Accept-Encoding": "identity"})
+    assert raw.status_code == 200
+    assert raw.headers.get("content-encoding") is None
+    assert len(raw.content) >= GZIP_MINIMUM_SIZE
+
+    compressed = client.get("/api/spend/summary?window=1d&tool=all", headers={"Accept-Encoding": "gzip"})
+    assert compressed.status_code == 200
+    assert compressed.headers.get("content-encoding") == "gzip"
+    assert compressed.content == raw.content
+    assert compressed.json() == raw.json()
+    assert compressed.num_bytes_downloaded < len(raw.content)
+
+
+def test_summary_ignores_removed_hud_referer_compat(tmp_path: Path) -> None:
+    database = tmp_path / "spend.db"
+    add_fixture_event(database)
+    client = TestClient(create_app(make_settings(database), enable_scheduler=False))
+    for referer in ("http://127.0.0.1:17331/hud", "http://127.0.0.1:17331/?hud=1"):
+        res = client.get("/api/spend/summary", headers={"Referer": referer})
+        assert res.status_code == 200
+        body = res.json()
+        assert body["window"]["key"] == "1d"
+        assert "series" in body and "totals" in body
+
+
+def test_subscriptions_value_and_attention_api_roundtrip(tmp_path: Path) -> None:
+    database = tmp_path / "spend.db"
+    add_fixture_event(database)
+    client = TestClient(create_app(make_settings(database), enable_scheduler=False))
+
+    value_res = client.get("/api/subscriptions/value", params={"period": "this_month"})
+    assert value_res.status_code == 200
+    assert value_res.headers.get("cache-control") == "no-store"
+    value_body = value_res.json()
+    assert value_body["period"] == "this_month"
+    assert "groups" in value_body and "unassigned" in value_body
+
+    bad_period = client.get("/api/subscriptions/value", params={"period": "bad"})
+    assert bad_period.status_code == 422
+
+    attention_res = client.get("/api/attention")
+    assert attention_res.status_code == 200
+    assert "current" in attention_res.json()
 
 
 def test_api_rejects_unknown_window(tmp_path: Path) -> None:
@@ -279,6 +329,22 @@ def test_api_title_is_burnrate(tmp_path: Path) -> None:
     assert payload["version"] == __version__
 
 
+def _assert_api_only_csp(csp: str) -> None:
+    directives = {
+        part.strip().split()[0]: part.strip()
+        for part in csp.split(";")
+        if part.strip()
+    }
+    assert directives["default-src"] == "default-src 'none'"
+    assert directives["base-uri"] == "base-uri 'none'"
+    assert directives["form-action"] == "form-action 'none'"
+    assert directives["object-src"] == "object-src 'none'"
+    assert directives["frame-ancestors"] == "frame-ancestors 'none'"
+    assert "'unsafe-inline'" not in csp
+    assert "fonts.googleapis.com" not in csp
+    assert "fonts.gstatic.com" not in csp
+
+
 def test_api_security_headers_include_csp(tmp_path: Path) -> None:
     database = tmp_path / "spend.db"
     initialize(database)
@@ -287,14 +353,7 @@ def test_api_security_headers_include_csp(tmp_path: Path) -> None:
     assert response.headers["X-Content-Type-Options"] == "nosniff"
     assert response.headers["Referrer-Policy"] == "no-referrer"
     assert response.headers["X-Frame-Options"] == "DENY"
-    csp = response.headers["Content-Security-Policy"]
-    assert "default-src 'self'" in csp
-    assert "style-src 'self' 'unsafe-inline'" in csp
-    assert "base-uri 'none'" in csp
-    assert "object-src 'none'" in csp
-    assert "frame-ancestors 'none'" in csp
-    assert "fonts.googleapis.com" not in csp
-    assert "fonts.gstatic.com" not in csp
+    _assert_api_only_csp(response.headers["Content-Security-Policy"])
 
 
 def test_api_boundary_error_response_includes_hardened_csp(tmp_path: Path, monkeypatch) -> None:
@@ -310,10 +369,7 @@ def test_api_boundary_error_response_includes_hardened_csp(tmp_path: Path, monke
     assert response.headers["X-Content-Type-Options"] == "nosniff"
     assert response.headers["Referrer-Policy"] == "no-referrer"
     assert response.headers["X-Frame-Options"] == "DENY"
-    csp = response.headers["Content-Security-Policy"]
-    assert "base-uri 'none'" in csp
-    assert "object-src 'none'" in csp
-    assert "frame-ancestors 'none'" in csp
+    _assert_api_only_csp(response.headers["Content-Security-Policy"])
 
 
 def test_api_csp_variate_dev_gating(tmp_path: Path, monkeypatch) -> None:
@@ -328,38 +384,99 @@ def test_api_csp_variate_dev_gating(tmp_path: Path, monkeypatch) -> None:
     initialize(database)
     client = TestClient(create_app(make_settings(database), enable_scheduler=False))
 
-    monkeypatch.delenv("BURNRATE_DEV", raising=False)
-    csp_unset = client.get("/healthz").headers["Content-Security-Policy"]
-    assert "http://127.0.0.1:43210" not in csp_unset
-    assert "base-uri 'none'" in csp_unset
-    assert "object-src 'none'" in csp_unset
-
-    monkeypatch.setenv("BURNRATE_DEV", "0")
-    csp_zero = client.get("/healthz").headers["Content-Security-Policy"]
-    assert "http://127.0.0.1:43210" not in csp_zero
-
-    monkeypatch.setenv("BURNRATE_DEV", "1")
-    csp_dev = client.get("/healthz").headers["Content-Security-Policy"]
-    directives = {
-        part.strip().split()[0]: part.strip()
-        for part in csp_dev.split(";")
-        if part.strip()
-    }
-    assert "http://127.0.0.1:43210" in directives["script-src"]
-    assert "http://127.0.0.1:43210" in directives["connect-src"]
-    assert "http://127.0.0.1:43210" not in directives["default-src"]
-    assert "base-uri 'none'" in csp_dev
-    assert "object-src 'none'" in csp_dev
+    for dev_val in (None, "0", "1"):
+        if dev_val is None:
+            monkeypatch.delenv("BURNRATE_DEV", raising=False)
+        else:
+            monkeypatch.setenv("BURNRATE_DEV", dev_val)
+        csp = client.get("/healthz").headers["Content-Security-Policy"]
+        _assert_api_only_csp(csp)
+        assert "http://127.0.0.1:43210" not in csp
+        assert "script-src" not in csp
+        assert "connect-src" not in csp
 
 
-def test_frontend_served_from_packaged_spend_web(tmp_path: Path) -> None:
-    database = tmp_path / "spend.db"
-    initialize(database)
-    client = TestClient(create_app(make_settings(database), enable_scheduler=False))
-    html = client.get("/")
-    assert html.status_code == 200
-    assert "BURNRATE" in html.text
-    packaged_css = files("spend_web").joinpath("spend.css").read_bytes()
-    css = client.get("/spend.css")
-    assert css.status_code == 200
-    assert css.content == packaged_css
+def _iter_routes(routes, prefix: str = ""):
+    for route in routes:
+        if hasattr(route, "original_router"):
+            ctx_prefix = getattr(getattr(route, "include_context", None), "prefix", "") or ""
+            yield from _iter_routes(route.original_router.routes, prefix + ctx_prefix)
+        else:
+            yield prefix + (getattr(route, "path", "") or ""), route
+
+
+def test_no_html_routes_registered_in_local_or_hub_mode(tmp_path: Path, monkeypatch) -> None:
+    from fastapi.responses import HTMLResponse
+    from starlette.responses import HTMLResponse as StarletteHTMLResponse
+
+    for central in ("0", "1"):
+        monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", central)
+        if central == "1":
+            monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "synthetic-break-glass")
+        else:
+            monkeypatch.delenv("BURNRATE_ACCESS_TOKEN", raising=False)
+        database = tmp_path / f"routes_{central}.db"
+        initialize(database)
+        app = create_app(make_settings(database), enable_scheduler=False)
+        discovered = list(_iter_routes(app.routes))
+        assert discovered, "expected registered routes"
+        paths = [path for path, _ in discovered]
+        assert "/healthz" in paths
+        assert "/api/spend" in paths
+        for page in ("/", "/hud", "/setup", "/auth", "/connections", "/spend.css", "/spend.js"):
+            assert page not in paths, (central, page)
+        for path, route in discovered:
+            assert path == "/healthz" or path.startswith("/api/"), (central, path)
+            response_class = getattr(route, "response_class", None)
+            actual = getattr(response_class, "value", response_class)
+            assert actual not in (HTMLResponse, StarletteHTMLResponse), (central, path, actual)
+            assert getattr(actual, "media_type", None) != "text/html", (central, path, actual)
+            methods = set(getattr(route, "methods", None) or ())
+            if "GET" in methods:
+                assert path == "/healthz" or path.startswith("/api/"), (central, path)
+
+
+def test_removed_web_pages_return_req_404_json_in_local_and_hub_modes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    removed_paths = (
+        "/",
+        "/hud",
+        "/setup",
+        "/auth",
+        "/connections",
+        "/spend.css",
+        "/spend.js",
+        "/request-state.js",
+        "/dialogs.js",
+        "/product.js",
+        "/favicon.svg",
+        "/logos.svg",
+        "/favicon.ico",
+        "/nonexistent-page",
+    )
+    for central in ("0", "1"):
+        monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", central)
+        if central == "1":
+            monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "synthetic-break-glass")
+            base_url = "http://hub.test"
+        else:
+            monkeypatch.delenv("BURNRATE_ACCESS_TOKEN", raising=False)
+            base_url = "http://127.0.0.1:17331"
+        database = tmp_path / f"pages404_{central}.db"
+        initialize(database)
+        app = create_app(make_settings(database), enable_scheduler=False)
+        with TestClient(app, base_url=base_url) as client:
+            for path in removed_paths:
+                res = client.get(path, follow_redirects=False)
+                assert res.status_code == 404, (central, path, res.status_code)
+                assert res.headers["content-type"].startswith("application/json"), (central, path)
+                assert res.headers["X-Content-Type-Options"] == "nosniff"
+                assert res.headers["Referrer-Policy"] == "no-referrer"
+                assert res.headers["X-Frame-Options"] == "DENY"
+                _assert_api_only_csp(res.headers["Content-Security-Policy"])
+                body = res.json()
+                assert body["error"]["code"] == "REQ-404"
+                assert isinstance(body["error"].get("message"), str)
+                assert body["error"]["message"].strip()
+                assert "desktop app" in body["error"]["message"].lower()

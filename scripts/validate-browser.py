@@ -44,12 +44,19 @@ def main():
     if result.returncode:
         return result.returncode
     cases = ET.parse(report).findall(".//testcase")
-    races = [c for c in cases if "request_races" in c.get("classname", "")]
-    hud = [c for c in cases if "test_hud" in c.get("classname", "")]
-    if not hud or len(races) < 29 or any(c.find("skipped") is not None for c in cases):
+    desktop_ui = [c for c in cases if "test_wealthfront_ui" in c.get("classname", "")]
+    desktop_layout = [
+        c for c in cases if "test_wealthfront_layout" in c.get("classname", "")
+    ]
+    if (
+        not desktop_ui
+        or not desktop_layout
+        or len(cases) < 50
+        or any(c.find("skipped") is not None for c in cases)
+    ):
         raise SystemExit("Required browser coverage missing or skipped")
     print(
-        f"Required browser validation: {len(cases)} executed; {len(races)} request races; zero skipped"
+        f"Required browser validation: {len(cases)} executed ({len(desktop_ui)} desktop UI, {len(desktop_layout)} layout); zero skipped"
     )
     return 0
 

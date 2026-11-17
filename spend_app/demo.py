@@ -175,7 +175,6 @@ def run(*, port: int = DEMO_PORT, data_root: Path | None = None, open_browser: b
     # Point everything at the demo folder before the app is imported.
     os.environ["BURNRATE_DATA_ROOT"] = str(root)
     os.environ["SPEND_DATABASE_PATH"] = str(root / "spend.db")
-    os.environ.setdefault("BURNRATE_ENABLE_DASHBOARD", "1")
     os.environ["BURNRATE_DESKTOP_NOTIFICATIONS"] = "0"
     os.environ["BURNRATE_DEMO"] = "1"
     database = root / "spend.db"
@@ -202,12 +201,8 @@ def run(*, port: int = DEMO_PORT, data_root: Path | None = None, open_browser: b
     from spend_app.config import load_settings
 
     app = create_app(load_settings(), enable_scheduler=False)
-    url = f"http://127.0.0.1:{port}/hud"
-    print(f"BURNRATE demo with made-up data: {url}", flush=True)
-    print(f"Dashboard: http://127.0.0.1:{port}/   Demo data: {root}   Stop: Ctrl+C", flush=True)
-    if open_browser:
-        import webbrowser
-
-        threading.Timer(1.5, lambda: webbrowser.open(url)).start()
+    del open_browser
+    print(f"BURNRATE demo API listening on http://127.0.0.1:{port}/api/spend", flush=True)
+    print(f"Open the desktop app with: burnrate desktop --demo   Demo data: {root}   Stop: Ctrl+C", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
     return 0

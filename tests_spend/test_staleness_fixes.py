@@ -4,8 +4,6 @@ measured usage when the quota poller cannot answer."""
 
 from __future__ import annotations
 
-import json
-import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -17,7 +15,6 @@ from spend_app.api import create_app
 from spend_app.capacity_forecast import apply_forecasts, load_pace_samples, usage_forecast
 from spend_app.config import Settings
 from spend_app.db import UsageEvent, connect, initialize, upsert_quota, upsert_usage_event
-from spend_app.hud import render_hud
 from spend_app.hud_data import DATA_STALE_AFTER_SECONDS, lane_usage_pace, live_snapshot, recorded_usage
 from spend_app.pricing import PricingEngine
 from spend_app.scheduler import create_scheduler
@@ -164,17 +161,6 @@ def test_hud_api_surfaces_data_age(tmp_path: Path) -> None:
     assert {"lastIngestAt", "lastIngestAgeSeconds", "stale"} <= set(usage)
 
 
-def test_hud_polls_are_bounded_and_their_age_is_visible() -> None:
-    html = render_hud()
-    assert "AbortController" in html and "FETCH_TIMEOUT_MS" in html
-    assert "paintUpdated" in html and "Usage needs attention" in html
-    assert 'id="hud-updated-foot"' in html
-    # The indicator is driven by the server-reported data age, and a dead
-    # usage poll alarms even while the live-meter poll still answers.
-    assert "noteDataAge" in html and "lastIngestAgeSeconds" in html
-    assert "USAGE_LATE_MS" in html and "DATA_STALE_SECONDS" in html
-
-
 def test_old_hub_payloads_get_a_truthful_age_stamp() -> None:
     """A b17 Hub predates the data-age fields; the spoke must not hide it."""
     from spend_app.api import _stamp_hub_age
@@ -206,60 +192,6 @@ def test_old_hub_payloads_get_a_truthful_age_stamp() -> None:
 
     already = {"lastIngestAgeSeconds": 1, "stale": False}
     assert _stamp_hub_age(already, now=NOW) is already
-
-
-def test_hud_indicator_alarms_on_stale_data_not_only_on_a_live_poll() -> None:
-    html = render_hud()
-    block = (
-        "        const FEED_LATE_MS"
-        + html.split("        const FEED_LATE_MS", 1)[1].split("        // Stat tips", 1)[0]
-    )
-    harness = f"""
-const nodes = {{
-  "hud-updated-foot": {{textContent: "", classList: {{toggle(name, on) {{ this.stale = on; }}}}, stale: false}},
-  "hud-status-pill": {{dataset: {{}}}},
-  "hud-status-text": {{textContent: ""}},
-  "hud-mini-alert": {{hidden: true, dataset: {{}}, textContent: ""}},
-}};
-const $ = id => nodes[id];
-const ago = s => s < 60 ? Math.round(s) + "s" : Math.round(s / 60) + "m";
-{block}
-feedHealth.live = Date.now();
-feedHealth.usage = Date.now();
-noteDataAge({{lastIngestAgeSeconds: 5, generatedAt: new Date().toISOString()}});
-paintUpdated();
-const fresh = {{
-  text: nodes["hud-updated-foot"].textContent,
-  stale: nodes["hud-updated-foot"].classList.stale,
-  pill: nodes["hud-status-pill"].dataset.state || "",
-}};
-feedHealth.dataAt = Date.now() - 11 * 60 * 1000;
-paintUpdated();
-const staleData = {{
-  text: nodes["hud-updated-foot"].textContent,
-  stale: nodes["hud-updated-foot"].classList.stale,
-  pill: nodes["hud-status-pill"].dataset.state,
-  mini: nodes["hud-mini-alert"].textContent,
-}};
-feedHealth.dataAt = Date.now() - 2000;
-feedHealth.usage = Date.now() - 60000;
-paintUpdated();
-const deadUsage = {{stale: nodes["hud-updated-foot"].classList.stale, pill: nodes["hud-status-pill"].dataset.state}};
-console.log(JSON.stringify({{fresh, staleData, deadUsage}}));
-"""
-    result = subprocess.run(
-        ["node", "-e", harness], capture_output=True, text=True,
-        encoding="utf-8", check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    report = json.loads(result.stdout.strip())
-    assert report["fresh"] == {"text": "Updated 5s ago", "stale": False, "pill": ""}
-    assert report["staleData"]["stale"] is True
-    assert report["staleData"]["pill"] == "stale"
-    assert report["staleData"]["mini"] == "Usage needs attention"
-    assert "11m" in report["staleData"]["text"]
-    assert report["deadUsage"]["stale"] is True
-    assert report["deadUsage"]["pill"] == "stale"
 
 
 def test_usage_forecast_projects_from_measured_tokens() -> None:

@@ -827,16 +827,10 @@ function Install-BurnrateShortcuts {
     $targetPath = $desktopExe
     $arguments = ''
     if (-not $targetPath) {
-        $edgePaths = @(
-            (Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe'),
-            (Join-Path $env:ProgramFiles 'Microsoft\Edge\Application\msedge.exe')
-        )
-        foreach ($candidate in $edgePaths) {
-            if ($candidate -and (Test-Path -LiteralPath $candidate)) {
-                $targetPath = $candidate
-                $arguments = "--app=http://$($script:BurnrateHost):$($script:BurnratePort)/?app=1"
-                break
-            }
+        $launch = Get-BurnrateLaunchSpec -AllowMissingPython
+        if ($launch.FilePath -and (Test-Path -LiteralPath $launch.FilePath)) {
+            $targetPath = $launch.FilePath
+            $arguments = '-m spend_app.native_desktop'
         }
     }
     if (-not $targetPath) {
@@ -926,11 +920,8 @@ function Start-BurnrateDesktopWindow {
         [switch]$DryRun,
         [switch]$Dev
     )
-    $setupUri = "http://$($script:BurnrateHost):$($script:BurnratePort)/setup"
-    $appUri = if ($OpenSetup) { $setupUri } else { "http://$($script:BurnrateHost):$($script:BurnratePort)/?app=1" }
-
     if ($DryRun) {
-        Write-Host "DryRun: would launch BURNRATE desktop window at $appUri"
+        Write-Host "DryRun: would launch BURNRATE desktop window"
         return
     }
 
@@ -949,12 +940,23 @@ function Start-BurnrateDesktopWindow {
             $psi.EnvironmentVariables['BURNRATE_OPEN_SETUP'] = '1'
         }
         [void][System.Diagnostics.Process]::Start($psi)
-        Write-Host "Launched BURNRATE native desktop app ($appUri)"
+        Write-Host "Launched BURNRATE native desktop app"
         return
     }
 
-    Start-Process $appUri | Out-Null
-    Write-Host "Opened BURNRATE Setup Wizard ($appUri)"
+    $launch = Get-BurnrateLaunchSpec -AllowMissingPython
+    if ($launch.FilePath -and (Test-Path -LiteralPath $launch.FilePath)) {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $launch.FilePath
+        $psi.Arguments = "-m spend_app.native_desktop --port $($script:BurnratePort)"
+        $psi.WorkingDirectory = $launch.WorkingDirectory
+        $psi.UseShellExecute = $false
+        if ($OpenSetup) {
+            $psi.EnvironmentVariables['BURNRATE_OPEN_SETUP'] = '1'
+        }
+        [void][System.Diagnostics.Process]::Start($psi)
+        Write-Host "Launched BURNRATE desktop app via Python"
+    }
 }
 
 function Install-BurnrateDashboard {
