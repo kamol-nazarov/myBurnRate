@@ -431,7 +431,9 @@ def test_pyproject_wheel_packages_and_hatch_build_exclude_spend_web(
     assert wheel_cfg["packages"] == ["spend_app"]
     force_include_cfg = wheel_cfg.get("force-include", {})
     assert not any("spend_web" in str(k) or "spend_web" in str(v) for k, v in force_include_cfg.items())
-    assert not (ROOT / "spend_web").exists()
+    # Git-ignored leftovers (e.g. __pycache__) can outlive the deletion in old checkouts.
+    web_files = [p for p in (ROOT / "spend_web").rglob("*") if p.is_file()] if (ROOT / "spend_web").exists() else []
+    assert all("__pycache__" in p.parts for p in web_files), web_files
 
     hatch_build = _load_hatch_build_module(monkeypatch)
 
