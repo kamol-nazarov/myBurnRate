@@ -2208,9 +2208,12 @@ def main(
             # Edge WebView2 has no interactive desktop compositor; verify bundled
             # Wealthfront HTML, embedded Manrope WOFF2, and bridge APIs,
             # then run the native Tk window smoke path.
+            from spend_app.tab_window import load_tab_html
             from spend_app.wealthfront_window import DesktopBridge, load_ui_html
 
             bundled_html = load_ui_html()
+            if '<symbol id="claude"' not in load_tab_html():
+                return 1
             bridge = DesktopBridge(
                 DemoClient() if demo else NativeClient(settings, port), demo=demo
             )

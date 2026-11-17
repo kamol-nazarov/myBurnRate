@@ -143,6 +143,16 @@ def test_unavailable_provider_is_a_muted_segment():
     assert seg["status"]
 
 
+def test_a_long_idle_reason_shows_as_awaiting_reading_with_the_reason_as_tooltip():
+    cards = [{"providerKey": "claude-code", "title": "Claude Code", "plan": "Max",
+              "rows": [{"limitKey": "5h", "label": "5h window — Waiting for a fresh reading", "unavailable": True}]}]
+    seg = payload(*cards)["segments"][0]
+    assert seg["status"] == "Awaiting reading"
+    assert seg["detail"]
+    short = payload({"providerKey": "grok", "title": "Grok", "isPayg": True, "rows": []})["segments"][0]
+    assert short["status"] == "No key"
+
+
 def test_two_profiles_one_segment_each_with_the_profile_name():
     data = payload(
         card("claude-code", 46.0, dry(1.17, 1.06, "tight"), resets=2.2, limit="5h"),
@@ -438,3 +448,29 @@ def test_restore_position_uses_the_saved_spot(host):
 def test_destroy_stops_saving(host):
     host.destroy()
     assert host.quitting is True and host.window.calls[-1] == "destroy"
+
+
+def test_the_form_gets_its_true_default_size(monkeypatch):
+    import sys
+    import types
+
+    sizes = []
+    drawing = types.ModuleType("System.Drawing")
+    drawing.Size = lambda w, h: sizes.append((w, h)) or (w, h)
+    system = types.ModuleType("System")
+    system.Drawing = drawing
+    monkeypatch.setitem(sys.modules, "System", system)
+    monkeypatch.setitem(sys.modules, "System.Drawing", drawing)
+    monkeypatch.setattr(native_geometry, "window_dpi", lambda hwnd: 144)
+    native = types.SimpleNamespace(Handle=types.SimpleNamespace(ToInt64=lambda: 9))
+    native_geometry.apply_default_size(native)
+    assert sizes == [(660, 960)] and native.Size == (660, 960)
+
+
+def test_a_refresh_that_widens_the_tab_widens_an_open_card_window_too(host):
+    host.set_base(400)
+    host.expand(316, 330)
+    host.set_base(900)
+    assert host.applied[-1][2:] == (900, 330)
+    host.collapse()
+    assert host.applied[-1][2:] == (900, 60)

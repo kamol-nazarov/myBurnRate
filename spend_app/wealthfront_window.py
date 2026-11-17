@@ -4315,6 +4315,11 @@ class WindowHost:
                 self._plan = plan
             except Exception:
                 LOGGER.warning("Could not restore the window position", exc_info=True)
+        if self._plan is None:
+            try:
+                native_geometry.apply_default_size(native)
+            except Exception:
+                LOGGER.debug("Could not set the default window size", exc_info=True)
         if self._tray_enabled:
             self._create_tray(native)
         self._install_form_hooks(native)

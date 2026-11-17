@@ -379,6 +379,19 @@ def apply_before_show(native, plan: RestorePlan | None) -> None:
         _set_window_pos(int(native.Handle.ToInt64()), plan)
 
 
+def apply_default_size(native) -> None:
+    """Give the form its true default size when nothing was saved.
+
+    pywebview sizes the form while it still has a frame and then removes the
+    frame, which leaves it smaller than asked (364x517 for 380x556). Call on
+    the UI thread before ``Show``.
+    """
+    import System.Drawing  # type: ignore[import-not-found]
+
+    width, height = default_size_for(window_dpi(int(native.Handle.ToInt64())))
+    native.Size = System.Drawing.Size(width, height)
+
+
 def _set_window_pos(hwnd: int, plan: RestorePlan) -> None:
     if sys.platform != "win32" or plan.position is None:
         return

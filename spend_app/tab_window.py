@@ -44,9 +44,13 @@ TAB_HEIGHT = 60
 MAX_SEGMENTS = 6
 HOME_WIDTH = 50
 SEGMENT_WIDTH = 156
+#: A segment that names its profile ("Primary · 5-hour") needs a longer label line.
+PROFILE_EXTRA = 34
 FINE_WIDTH = 68
 OPEN_WIDTH = 38
 CHIP_WIDTH = 244
+#: Longer idle reasons show as "Awaiting reading" (the full reason is the tooltip).
+IDLE_STATUS_LIMIT = 22
 LOADING_WIDTH = 150
 EMPTY_WIDTH = 340
 CARD_WIDTH = 316
@@ -178,10 +182,12 @@ def build_segment(provider: dict, now: datetime) -> dict:
     unit_label = f"{profile} · {unit}" if profile and unit and unit != "balance" else unit
     if profile and unit == "balance":
         unit_label = f"{profile} · balance"
-    status = str(urgency.get("text") or "")
+    status = detail = str(urgency.get("text") or "")
     if level == "idle":
         big, unit_label, fuel = str(provider.get("name") or provider.get("key") or ""), profile or "", 0.0
         status = status or "Awaiting reading"
+        if len(status) > IDLE_STATUS_LIMIT:
+            status = "Awaiting reading"
     if level == "balance":
         runway = provider.get("fundsRunwayInfo") or {}
         days = runway.get("days") if isinstance(runway, dict) else None
@@ -196,11 +202,13 @@ def build_segment(provider: dict, now: datetime) -> dict:
         "title": title,
         "plan": provider.get("plan") or "",
         "level": level,
+        "width": SEGMENT_WIDTH + (PROFILE_EXTRA if profile else 0),
         "limitKey": urgency.get("limitKey"),
         "big": big,
         "unit": unit_label,
         "fuel": round(fuel, 1),
         "status": status,
+        "detail": detail or status,
         "muted": level == "idle",
         "aria": aria,
         "card": {
@@ -243,10 +251,12 @@ def split_overflow(segments: list[dict], cap: int = MAX_SEGMENTS) -> tuple[list[
     return shown, foldable[room:]
 
 
-def layout_width(shown: int, fine: bool, *, chip: bool = False, status: int = 0) -> int:
+def layout_width(
+    shown: int, fine: bool, *, chip: bool = False, status: int = 0, extra: int = 0
+) -> int:
     """Window width for ``shown`` segments, an optional fine pill, error chip
     and status text (``status`` is that text's width in pixels)."""
-    width = HOME_WIDTH + shown * SEGMENT_WIDTH + OPEN_WIDTH + status
+    width = HOME_WIDTH + shown * SEGMENT_WIDTH + extra + OPEN_WIDTH + status
     if fine:
         width += FINE_WIDTH
     if chip:
@@ -331,7 +341,8 @@ class TabModel:
             else None
         )
         status = {"loading": LOADING_WIDTH, "empty": EMPTY_WIDTH}.get(state, 0)
-        width = layout_width(len(shown), bool(fine), chip=bool(error), status=status)
+        extra = PROFILE_EXTRA * sum(1 for s in shown if s["profile"])
+        width = layout_width(len(shown), bool(fine), chip=bool(error), status=status, extra=extra)
         return {
             "state": state,
             "dark": bool(dark),
@@ -446,11 +457,6 @@ class TabBridge:
             self._controller.tab.collapse()
         return {"ok": True}
 
-    def resize_to_content(self, width: float) -> dict:
-        if self._controller is not None:
-            self._controller.tab.set_width(width)
-        return {"ok": True}
-
 
 # --- the window ------------------------------------------------------------
 
@@ -543,19 +549,13 @@ class TabHost:
         self._apply(x, y, width, height)
 
     def set_base(self, width: float, height: float = TAB_HEIGHT) -> None:
-        with self._lock:
-            self._base = (float(width), float(height))
-            self.fit()
-
-    def set_width(self, width: float) -> None:
+        """The window's content width changed (a refresh added or dropped a segment)."""
         width = clamp_number(width, 120, 2400)
         with self._lock:
-            self._base = (width, self._base[1])
-            if self._expanded is None:
-                self.fit()
-            else:
+            self._base = (width, float(height))
+            if self._expanded is not None:
                 self._expanded = (max(width, self._expanded[0]), self._expanded[1])
-                self.fit()
+            self.fit()
 
     def expand(self, width: float, height: float) -> dict:
         """Grow downward (or upward near the bottom edge) to hold a hover card."""
@@ -590,6 +590,26 @@ class TabHost:
                 self._apply(None, None, width, height)
             else:
                 self._apply(origin[0], origin[1], width, height)
+
+    def hide_taskbar_button(self) -> None:
+        """Make the tab a tool window (no taskbar button, no Alt+Tab entry).
+
+        ``Form.ShowInTaskbar`` recreates the window handle, which aborts
+        WebView2's start-up, so the extended style is changed directly.
+        """
+        if sys.platform != "win32" or not self.hwnd:
+            return
+        try:
+            import ctypes
+
+            user32 = ctypes.windll.user32
+            gwl_exstyle, tool_window, app_window = -20, 0x00000080, 0x00040000
+            style = user32.GetWindowLongW(self.hwnd, gwl_exstyle)
+            user32.SetWindowLongW(
+                self.hwnd, gwl_exstyle, (style | tool_window) & ~app_window
+            )
+        except OSError:
+            LOGGER.debug("Could not hide the tab's taskbar button", exc_info=True)
 
     def begin_drag(self) -> None:
         if sys.platform != "win32" or not self.hwnd:
@@ -677,10 +697,7 @@ class TabHost:
             self.hwnd_box[0] = int(native.Handle.ToInt64())
         except (AttributeError, OSError, RuntimeError):
             return
-        try:
-            native.ShowInTaskbar = False
-        except Exception:  # noqa: BLE001 -- the tab still works with a taskbar button
-            LOGGER.debug("Could not hide the tab's taskbar button", exc_info=True)
+        self.hide_taskbar_button()
         _apply_win11_chrome(self.window, self._icon_path, dark)
 
         def on_closing(_sender, args) -> None:

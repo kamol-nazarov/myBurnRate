@@ -88,12 +88,12 @@ body.up { flex-direction: column-reverse; }
 .home { position: relative; display: flex; align-items: center; width: 40px; flex: none; height: 48px; cursor: grab; }
 .brand { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 7px; background: var(--brand); color: #fff; flex: none; }
 .badge {
-  position: absolute; top: 7px; left: 14px; min-width: 16px; height: 16px; padding: 0 4px;
+  position: absolute; top: 5px; left: 17px; min-width: 14px; height: 14px; padding: 0 3px;
   border-radius: 8px; background: var(--soon); color: var(--badge-ink);
   font-size: 9px; font-weight: 800; display: grid; place-items: center; border: 2px solid var(--surface); box-sizing: content-box;
 }
 .segs { list-style: none; display: flex; flex: none; }
-.segs li { flex: none; width: 156px; }
+.segs li { flex: none; }
 .seg { display: flex; align-items: center; gap: 8px; width: 100%; height: 48px; padding: 0 10px; border-radius: 10px; }
 .segs li + li .seg { box-shadow: inset 1px 0 0 var(--line); border-radius: 0 10px 10px 0; }
 .seg:hover, .seg.on { background: var(--hover); }
@@ -104,11 +104,11 @@ body.up { flex-direction: column-reverse; }
 .logo svg { width: 13px; height: 13px; display: block; }
 .brand-chip { background: var(--bl-bg); color: var(--bl-fg); border: var(--bl-ring); }
 html[data-theme="dark"] .brand-chip { background: var(--bd-bg); color: var(--bd-fg); border: var(--bd-ring); }
-.txt { display: flex; flex-direction: column; gap: 3px; min-width: 0; width: 98px; }
+.txt { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
 .top { display: flex; align-items: baseline; gap: 5px; min-width: 0; white-space: nowrap; }
 .top b { font-size: 15px; font-weight: 800; letter-spacing: -0.02em; }
 .top span { font-size: 10px; color: var(--muted); font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
-.fuel { display: block; width: 84px; height: 4px; border-radius: 9px; background: var(--track); overflow: hidden; }
+.fuel { display: block; width: 100%; max-width: 100px; height: 4px; border-radius: 9px; background: var(--track); overflow: hidden; }
 .fuel i { display: block; height: 100%; border-radius: 9px; background: var(--ok); }
 .st { font-size: 10px; font-weight: 700; white-space: nowrap; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
 .l-out .fuel i, .l-soon .fuel i { background: var(--soon); }
@@ -217,8 +217,8 @@ body.up .card-wrap { padding: 8px 8px 0; }
       ? '<div class="top"><b>' + esc(s.name) + "</b>" + (s.unit ? "<span>" + esc(s.unit) + "</span>" : "") + "</div>"
       : '<div class="top"><b>' + esc(s.big) + "</b><span>" + esc(s.unit) + "</span></div>" +
         '<span class="fuel"><i style="width:' + Number(s.fuel || 0) + '%"></i></span>';
-    return '<li class="' + cls + '"><button class="seg" type="button" data-i="' + i + '" aria-label="' + esc(s.aria) +
-      '" title="' + esc(s.status) + '">' + logo(s.key) + '<div class="txt">' + top +
+    return '<li class="' + cls + '" style="width:' + Number(s.width || 156) + 'px"><button class="seg" type="button" data-i="' + i + '" aria-label="' + esc(s.aria) +
+      '" title="' + esc(s.detail || s.status) + '">' + logo(s.key) + '<div class="txt">' + top +
       '<span class="st">' + esc(s.status) + "</span></div></button></li>";
   }
 
