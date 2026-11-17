@@ -139,15 +139,108 @@ report({
 
 @needs_chrome
 @browser
-def test_two_profiles_of_one_provider_get_one_group_each(tmp_path):
+def test_two_profiles_of_one_provider_get_one_group_each_ordered_by_display_rank(tmp_path):
     html = build_page(pref="dark", color_scheme="dark", report=d2_report("profiles"), probe=PROFILES_PROBE, extra_css=FAST)
     r = probe(html, 440, tmp_path, height=640)
     assert "Claude Code · Personal" in r["titles"] and "Claude Code · Work" in r["titles"]
-    # most urgent first, but the Work profile sits right after the Personal one (the tab's rule), not by its own urgency
-    assert r["keys"] == ["claude-code", "claude-code-work", "codex", "opencode-go", "grok", "openrouter"]
+    # the service's displayRank decides: the healthy Work profile does not jump ahead of Codex or OpenCode Go
+    assert r["keys"] == ["claude-code", "codex", "opencode-go", "claude-code-work", "grok", "openrouter"]
     assert r["hint"].startswith("most urgent first")
     assert r["badges"].count(None) == len(r["badges"])
     assert r["logos"] == ["#claude", "#claude"]
+
+
+ORDER_PROBE = """
+await until(() => document.querySelectorAll('#providerList .provider-item').length >= 3);
+const g = [...document.querySelectorAll('#providerList .provider-item')];
+report({ keys: g.map(x => x.dataset.key), levels: g.map(x => x.dataset.level), hint: document.getElementById('providersHint').textContent });
+"""
+
+
+@needs_chrome
+@browser
+def test_a_more_urgent_provider_is_never_behind_a_healthy_profile(tmp_path):
+    """Claude Primary out, Claude Work ok, Codex soon must render out, soon, ok."""
+    html = build_page(pref="light", report=d2_report("mixed-profiles"), probe=ORDER_PROBE, extra_css=FAST)
+    r = probe(html, 440, tmp_path, height=640)
+    assert r["keys"] == ["claude-code", "codex", "claude-code-work"]
+    assert r["levels"] == ["out", "soon", "ok"]
+    assert r["hint"].startswith("most urgent first")
+
+
+@needs_chrome
+@browser
+def test_a_saved_custom_order_beats_display_rank(tmp_path):
+    report = d2_report("profiles")
+    service_order = [p["key"] for p in report["providers"]]
+    html = build_page(
+        pref="light", report=report, init={"providerOrder": service_order}, probe=ORDER_PROBE.replace(">= 3", ">= 6"), extra_css=FAST
+    )
+    r = probe(html, 440, tmp_path, height=640)
+    assert r["keys"] == service_order and r["keys"] != sorted(service_order, key=lambda k: {p["key"]: p["displayRank"] for p in report["providers"]}[k])
+    assert r["hint"].startswith("your order")
+
+
+@needs_chrome
+@browser
+def test_without_display_rank_the_service_order_is_kept(tmp_path):
+    report = d2_report("mixed-profiles")
+    for prov in report["providers"]:
+        del prov["displayRank"]
+    html = build_page(pref="light", report=report, probe=ORDER_PROBE, extra_css=FAST)
+    r = probe(html, 440, tmp_path, height=640)
+    assert r["keys"] == ["claude-code", "claude-code-work", "codex"]  # as sent: the page does not sort on its own
+    assert r["hint"].startswith("your order")
+
+
+LANE_STATES_PROBE = """
+await until(() => document.querySelectorAll('#providerList .lane').length >= 5);
+const lane = (key) => document.querySelector('#providerList .lane[data-limit="' + key + '"]');
+const read = (key) => {
+  const l = lane(key);
+  return {
+    pct: l.querySelector('.lane-pct').textContent,
+    note: l.querySelector('.lane-note').textContent,
+    use: !!l.querySelector('.lane-use'),
+    dry: !!l.querySelector('.lane-dry'),
+    refill: !!l.querySelector('.lane-refill'),
+    soon: l.classList.contains('is-soon'),
+    warn: l.classList.contains('is-warn'),
+    useWidth: l.querySelector('.lane-use') ? l.querySelector('.lane-use').style.width : null,
+    label: l.querySelector('.lane-track').getAttribute('aria-label'),
+  };
+};
+report({ none: read('5h'), stale: read('weekly'), out: read('monthly'), safe: read('credits'), outDry: read('extra') });
+"""
+
+
+@needs_chrome
+@browser
+@pytest.mark.parametrize("pref", ["light", "dark"])
+def test_lanes_claim_no_usable_time_without_a_forecast_and_none_when_exhausted(tmp_path, pref):
+    html = build_page(pref=pref, color_scheme=pref, report=d2_report("lane-states"), probe=LANE_STATES_PROBE, extra_css=FAST)
+    r = probe(html, 440, tmp_path, height=640)
+
+    # no forecast, and a stale one: the clock and the refill only, nothing drawn as usable, a plain "pace unknown"
+    for case in ("none", "stale"):
+        lane = r[case]
+        assert lane["use"] is False and lane["dry"] is False and lane["refill"] is True, (case, lane)
+        assert lane["note"].endswith("pace unknown") and lane["note"].startswith("Refills in "), (case, lane)
+    assert r["none"]["note"] == "Refills in 3h · pace unknown"
+    assert r["none"]["pct"] == "40%" and r["stale"]["pct"] == "35%"
+
+    # exhausted: no usable time before the refill, the whole wait is the dry stretch, and the label agrees
+    for case in ("out", "outDry"):
+        lane = r[case]
+        assert lane["pct"] == "0%" and lane["use"] is False and lane["dry"] is True and lane["refill"] is True, (case, lane)
+        assert lane["soon"] is True and lane["note"].startswith("Out · refills in "), (case, lane)
+        assert "0% left" in lane["label"] and "Out" in lane["label"], (case, lane)
+    assert r["out"]["note"] == "Out · refills in 24h"
+
+    # a forecast that says it lasts (even with numeric hours) is usable time all the way to the refill
+    safe = r["safe"]
+    assert safe["use"] is True and safe["dry"] is False and safe["refill"] is True
+    assert safe["note"] == "Refills in 10h" and not safe["soon"] and not safe["warn"]
 
 
 STATES_PROBE = """
@@ -511,7 +604,7 @@ report({
   tags: g.map(x => (x.querySelector('.tag') || {}).textContent || null),
   claudeLane: g[0].querySelector('.lane .lane-note').textContent,
   laneCount: document.querySelectorAll('#providerList .lane').length,
-  noteGlitches: [...document.querySelectorAll('#providerList .lane-note')].filter(n => /pace|→|undefined|NaN/.test(n.textContent)).length,
+  noteGlitches: [...document.querySelectorAll('#providerList .lane-note')].filter(n => /pace →|→|undefined|NaN/.test(n.textContent)).length,
   balance: [...document.querySelectorAll('#providerList .balrow')].map(b => b.textContent.trim().replace(/\s+/g, ' ')),
 });
 """
@@ -520,19 +613,23 @@ report({
 @needs_chrome
 @browser
 @pytest.mark.parametrize("pref", ["light", "dark"])
-def test_real_demo_data_orders_like_the_tab_and_renders_cleanly(tmp_path, pref):
+def test_real_demo_data_follows_display_rank_and_renders_cleanly(tmp_path, pref):
     """The demo snapshot as the real ``merge_provider_entries`` sends it, not a hand-made fixture."""
-    from spend_app.tab_window import tab_providers
     from tests_spend.test_wealthfront_ui import demo_report
 
     report = demo_report()
     html = build_page(pref=pref, color_scheme=pref, report=report, probe=REAL_DATA_PROBE, extra_css=FAST)
     r = probe(html, 440, tmp_path, height=640)
-    # one rule for both surfaces: the tab's order, profiles of a provider kept together
-    assert r["keys"] == [p["key"] for p in tab_providers(report["providers"])]
-    assert r["keys"][:5] == ["claude-code", "claude-code-work", "codex", "opencode-go", "opencode-go-2"]
-    assert r["titles"][:2] == ["Claude Code · Primary", "Claude Code · Work"]
-    assert r["tags"][:2] == ["About to run out", None] and r["tags"][2:4] == ["Dry before refill", "Dry before refill"]
+    providers = report["providers"]
+    ranks = [p.get("displayRank") for p in providers]
+    # one source of order for both surfaces: the window shows exactly the service's ranking
+    expected = [p["key"] for p in sorted(providers, key=lambda p: p["displayRank"])] if all(rank is not None for rank in ranks) else [p["key"] for p in providers]
+    assert r["keys"] == expected
+    by_key = dict(zip(r["keys"], zip(r["titles"], r["tags"])))
+    assert by_key["claude-code"] == ("Claude Code · Primary", "About to run out")
+    assert by_key["claude-code-work"][0] == "Claude Code · Work" and by_key["claude-code-work"][1] is None
+    assert by_key["codex"][1] == "Dry before refill" and by_key["opencode-go"][1] == "Dry before refill"
+    assert r["keys"][0] == "claude-code"
     assert r["claudeLane"] == "Dry in ~1h · refills in 2h"
     assert r["noteGlitches"] == 0
     assert any(line.startswith("$23.40 balance left · runway ~42d") for line in r["balance"])

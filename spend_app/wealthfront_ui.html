@@ -5279,7 +5279,6 @@ function paintHeroText(data, animate = true) {
 /* ---------- Limits: one group per provider or profile, lanes with refill timelines ---------- */
 const LIMIT_NAMES = { "5h": "5-hour", weekly: "Weekly", monthly: "Monthly", balance: "Balance" };
 const LIMIT_TAGS = { out: "Out of quota", soon: "About to run out", warn: "Dry before refill" };
-const LEVEL_RANK = { out: 0, soon: 1, warn: 2, ok: 3, balance: 4, idle: 5 };
 const LIMIT_TICKS = [[6, "6h"], [24, "1d"], [72, "3d"]];
 const LIMIT_MIN_HORIZON_H = 96;
 
@@ -5335,10 +5334,17 @@ function laneGridHtml(horizon) {
     .map(h => `<i class="lane-grid" style="left:${pctStyle(limitX(h, horizon))}"></i>`).join("");
 }
 
-function paceOf(w) {
+/* The forecast's verdict, or null when there is none (no forecast, a stale one, a state we do not know). */
+function paceState(w) {
   const pace = w && w.pace && typeof w.pace === "object" ? w.pace : null;
-  if (!pace || (pace.state !== "tight" && pace.state !== "dry")) return null;
-  return Number.isFinite(Number(pace.hoursToDry)) ? pace : null;
+  return pace && (pace.state === "tight" || pace.state === "dry" || pace.state === "safe") ? pace.state : null;
+}
+
+/* The forecast, only when it says the window runs dry before it resets. */
+function paceOf(w) {
+  const state = paceState(w);
+  if (state !== "tight" && state !== "dry") return null;
+  return Number.isFinite(Number(w.pace.hoursToDry)) ? w.pace : null;
 }
 
 function renderLane(w, horizon) {
@@ -5370,6 +5376,14 @@ function renderLane(w, horizon) {
     /* No reset time to place on the clock: show the plain share left. */
     track = `<i class="lane-base"></i><i class="lane-use" style="width:${rem.toFixed(1)}%"></i>`;
     if (!pace && (w.runway || w.forecast)) notes.push(w.runway || w.forecast);
+  } else if (rem <= 0) {
+    /* Nothing left: no usable time before the refill, whatever any forecast says. */
+    tone = "is-soon";
+    notes.push(`Out · refills in ${fmtSpan(resetH)}`);
+    track = `<i class="lane-base"></i>
+      <i class="lane-dry" style="left:0;width:${pctStyle(refillFrac)}"></i>
+      <i class="lane-dot" style="left:0"></i>
+      <i class="lane-refill" style="left:${pctStyle(refillFrac)}"></i>`;
   } else if (pace) {
     const hd = Number(pace.hoursToDry);
     const dryAt = Math.min(hd, resetH);
@@ -5381,12 +5395,19 @@ function renderLane(w, horizon) {
       <i class="lane-dry" style="left:${pctStyle(dryFrac)};width:${pctStyle(Math.max(0, refillFrac - dryFrac))}"></i>
       <i class="lane-dot" style="left:${pctStyle(dryFrac)}"></i>
       <i class="lane-refill" style="left:${pctStyle(refillFrac)}"></i>`;
-  } else {
-    notes.push(rem <= 0 ? `Out · refills in ${fmtSpan(resetH)}` : `Refills in ${fmtSpan(resetH)}`);
-    /* An older service sends only its text forecast: show it as is, derive nothing. */
+  } else if (paceState(w) === "safe") {
+    /* The forecast says it lasts until the refill. */
+    notes.push(`Refills in ${fmtSpan(resetH)}`);
     if (w.runway || w.forecast) notes.push(w.runway || w.forecast);
     track = `<i class="lane-base"></i>
       <i class="lane-use" style="width:${pctStyle(Math.max(refillFrac, 0.012))}"></i>
+      <i class="lane-refill" style="left:${pctStyle(refillFrac)}"></i>`;
+  } else {
+    /* No usable forecast: draw the clock and the refill, claim nothing about the time in between.
+       An older service's text forecast is shown as it is. */
+    notes.push(`Refills in ${fmtSpan(resetH)}`);
+    notes.push(w.runway || w.forecast || "pace unknown");
+    track = `<i class="lane-base"></i>
       <i class="lane-refill" style="left:${pctStyle(refillFrac)}"></i>`;
   }
   const note = notes.join(" · ");
@@ -5456,66 +5477,14 @@ function renderUsageRow(prov) {
     </div>`;
 }
 
-/* Providers that can have several profiles; a profile's key is the family key plus "-<name>" (claude-code-work). */
-const PROFILE_FAMILIES = ["claude-code", "opencode-go", "zcode", "codex", "antigravity", "grok", "muse"];
-
-function profileFamily(key) {
-  const text = String(key || "");
-  for (const family of PROFILE_FAMILIES) {
-    if (text === family || text.startsWith(family + "-")) return family;
-  }
-  return text;
-}
-
 const finiteOrNull = (v) => (v !== null && v !== undefined && v !== "" && Number.isFinite(Number(v))) ? Number(v) : null;
 
-/* The window a provider is graded on: the one that runs dry soonest, else the one with the least left. */
-function focusWindow(prov) {
-  const measured = (prov.windows || []).filter(w => !w.unavailable && finiteOrNull(w.remainingPct) !== null);
-  if (!measured.length) return null;
-  const drying = measured.filter(w => paceOf(w));
-  if (drying.length) return drying.reduce((best, w) => Number(w.pace.hoursToDry) < Number(best.pace.hoursToDry) ? w : best);
-  return measured.reduce((best, w) => Number(w.remainingPct) < Number(best.remainingPct) ? w : best);
-}
-
-/* Order inside one urgency level: soonest to run dry, least left, smallest balance. */
-function limitSortKey(prov) {
-  const level = prov.urgency && prov.urgency.level;
-  const w = focusWindow(prov);
-  const isBalance = prov.isPayg || (prov.remaining && prov.remaining.kind === "balance");
-  const balance = isBalance ? finiteOrNull(prov.fundsRemainingUsd) : null;
-  return [
-    level in LEVEL_RANK ? LEVEL_RANK[level] : LEVEL_RANK.idle,
-    w && paceOf(w) ? Number(w.pace.hoursToDry) : Infinity,
-    w ? Number(w.remainingPct) : Infinity,
-    balance === null ? Infinity : balance
-  ];
-}
-
-/* Most urgent first, the profiles of one provider together at the spot of the most urgent one,
-   unless the owner has dragged the list into an order of their own. */
+/* The service decides the order (provider.displayRank, 0 first) so this window and the tab can never drift apart.
+   Without it (an older service) the service's own order stays; a saved custom order always wins. */
 function orderProviders(providers) {
-  const urgent = !state.providerOrder.length && providers.some(p => p.urgency && p.urgency.level in LEVEL_RANK);
-  if (!urgent) return { list: providers, byUrgency: false };
-  const cmp = (a, b) => {
-    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
-    return 0;
-  };
-  const sorted = providers.map((p, i) => ({ p, i, k: limitSortKey(p) })).sort((a, b) => cmp(a.k, b.k) || a.i - b.i).map(x => x.p);
-  const families = new Map();
-  for (const p of sorted) {
-    const fam = profileFamily(p.key);
-    if (!families.has(fam)) families.set(fam, []);
-    families.get(fam).push(p);
-  }
-  const list = [];
-  for (const p of sorted) {
-    const fam = profileFamily(p.key);
-    if (families.has(fam)) {
-      list.push(...families.get(fam));
-      families.delete(fam);
-    }
-  }
+  const ranked = !state.providerOrder.length && providers.length > 0 && providers.every(p => finiteOrNull(p.displayRank) !== null);
+  if (!ranked) return { list: providers, byUrgency: false };
+  const list = providers.map((p, i) => ({ p, i })).sort((a, b) => Number(a.p.displayRank) - Number(b.p.displayRank) || a.i - b.i).map(x => x.p);
   return { list, byUrgency: true };
 }
 
