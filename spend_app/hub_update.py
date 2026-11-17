@@ -9,11 +9,14 @@ deliberate command its owner types.
 
 from __future__ import annotations
 
+import getpass
 import json
 import os
 import re
+import secrets
 import shlex
 import subprocess
+from pathlib import Path
 
 _SAFE = re.compile(r"[A-Za-z0-9_.@:/+-]+")
 
@@ -27,6 +30,98 @@ if not isinstance(health, dict) or health.get("status") != "ok":
     raise SystemExit("Hub health check did not report a healthy BURNRATE service.")
 print(json.dumps({"version": __version__, "build": build_id()}))
 """
+
+
+def _find_account_entry(accounts: dict, target: str) -> tuple[str, dict] | None:
+    users = accounts.get("users")
+    if not isinstance(users, dict):
+        return None
+    clean = (target or "").strip().lower()
+    if not clean:
+        return None
+    direct = users.get(clean)
+    if isinstance(direct, dict):
+        return clean, direct
+    for key, rec in users.items():
+        if not isinstance(rec, dict):
+            continue
+        if (
+            str(key).strip().lower() == clean
+            or str(rec.get("email") or "").strip().lower() == clean
+            or str(rec.get("username") or "").strip().lower() == clean
+        ):
+            return key, rec
+    return None
+
+
+def reset_hub_password(
+    database_path: Path,
+    email: str,
+    *,
+    prompt_fn=None,
+    echo=print,
+) -> int:
+    from spend_app.auth_model import Principal, audit
+    from spend_app.db import connect, initialize, utc_now
+    from spend_app.setup_wizard import (
+        MIN_PASSWORD_LENGTH,
+        PBKDF2_ITERATIONS,
+        _hash_password,
+        _read_accounts,
+        _write_accounts,
+    )
+
+    clean = (email or "").strip().lower()
+    if not clean:
+        echo("Provide the account email address.")
+        return 2
+    initialize(database_path)
+    with connect(database_path) as connection:
+        accounts = _read_accounts(connection)
+        if _find_account_entry(accounts, clean) is None:
+            echo("No matching account found on this hub.")
+            return 2
+
+    prompt = getpass.getpass if prompt_fn is None else prompt_fn
+    pw1 = prompt(f"New password (at least {MIN_PASSWORD_LENGTH} characters): ")
+    pw2 = prompt("Confirm new password: ")
+    if pw1 != pw2:
+        echo("Passwords do not match.")
+        return 2
+    if len(pw1) < MIN_PASSWORD_LENGTH:
+        echo(f"Use a password of at least {MIN_PASSWORD_LENGTH} characters.")
+        return 2
+
+    with connect(database_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        accounts = _read_accounts(connection)
+        found = _find_account_entry(accounts, clean)
+        if found is None:
+            echo("No matching account found on this hub.")
+            return 2
+        _, rec = found
+        salt_hex, hash_hex = _hash_password(pw1, iterations=PBKDF2_ITERATIONS)
+        rec.setdefault("id", secrets.token_hex(16))
+        rec.update(
+            salt=salt_hex,
+            passwordHash=hash_hex,
+            iterations=PBKDF2_ITERATIONS,
+            passwordChangedAt=utc_now(),
+        )
+        _write_accounts(connection, accounts)
+        now_stamp = utc_now()
+        connection.execute(
+            "UPDATE owner_sessions SET revoked_at=? WHERE revoked_at IS NULL",
+            (now_stamp,),
+        )
+        audit(
+            connection,
+            Principal("system", "local-cli"),
+            "account.password_reset",
+            rec["id"],
+        )
+    echo("Password updated. All active owner sessions have been revoked.")
+    return 0
 
 
 def update_hub(*, ssh: str, path: str, service: str, branch: str, push_local: bool = False,
@@ -88,3 +183,8 @@ def add_parser(subparsers) -> None:
     update.add_argument("--branch", default=os.getenv("BURNRATE_HUB_BRANCH", "prod"), help="Branch the hub tracks")
     update.add_argument("--push-local", action="store_true", help="Deploy this checkout's commit (unpublished work)")
     update.add_argument("--dry-run", action="store_true", help="Print the steps without running them")
+    reset_pw = commands.add_parser(
+        "reset-password",
+        help="Reset the hub owner password locally on the server",
+    )
+    reset_pw.add_argument("email", help="Account email address")

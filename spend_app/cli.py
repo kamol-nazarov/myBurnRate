@@ -552,6 +552,9 @@ def _main() -> int:
         from spend_app.hub_update import update_hub
         return update_hub(ssh=args.ssh, path=args.path, service=args.service, branch=args.branch,
                           push_local=args.push_local, dry_run=args.dry_run)
+    if args.command == "hub" and args.hub_command == "reset-password":
+        from spend_app.hub_update import reset_hub_password
+        return reset_hub_password(settings.database_path, args.email)
     if args.command == "machines":
         from spend_app.sync import list_machines, register_machine, revoke_machine
 
