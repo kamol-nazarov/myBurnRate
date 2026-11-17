@@ -24,10 +24,12 @@ from spend_app import __version__, native_geometry
 from spend_app.error_codes import (
     HUB_PROTOCOL_VERSION,
     CodedError,
+    error_message,
     format_error,
     map_http_error,
     map_transport_error,
 )
+from spend_app.redact import redact_hub_urls
 from spend_app.native_alerts import QuotaWatcher
 from spend_app.native_autoupdate import UpdateChecker
 from spend_app.native_desktop import (
@@ -1068,6 +1070,7 @@ class DesktopBridge:
     """In-process Python bridge exposed to the local WebView2 UI."""
 
     OWNER_SESSION_VAULT_REF = "burnrate-owner-session"
+    MACHINE_TOKEN_VAULT_REF = "burnrate-machine-token"
 
     def __init__(
         self,
@@ -1085,6 +1088,11 @@ class DesktopBridge:
         self._owner_session_lock = threading.RLock()
         self._owner_session: str | None = None
         self._owner_session_expires_at: str | None = None
+        self._machine_token: str | None = None
+        self._sync_status: str = "idle"
+        self._sync_error_code: str | None = None
+        self._sync_error_message: str | None = None
+        self._sync_gen: int = 0
         # (checked_at, owned); None = never checked. A 0.0 timestamp would
         # read as fresh on a machine that booted within the recheck window.
         self._service_alerts: tuple[float, bool] | None = None
@@ -1270,16 +1278,6 @@ class DesktopBridge:
         self._service_alerts = (time.monotonic(), owned)
         return owned
 
-    def open_owner_access(self) -> dict:
-        """Open the fixed local credential UI without a token in its URL."""
-        if self._demo:
-            return {"ok": False, "error": "Owner access is disabled in demo mode."}
-        base = getattr(self._client, "base_url", "")
-        parsed = urlsplit(base)
-        if parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or parsed.path:
-            return {"ok": False, "error": "Local tracker address unavailable."}
-        return {"ok": open_in_browser(base + "/auth")}
-
     def open_external(self, url: str) -> dict:
         """Open a pinned-repository https URL in the default browser."""
         if self._smoke_test:
@@ -1448,7 +1446,8 @@ class DesktopBridge:
 
     def get_onboarding_data(self) -> dict:
         try:
-            return build_onboarding_data(self._client, demo=self._demo)
+            data = build_onboarding_data(self._client, demo=self._demo)
+            return self._enrich_account_payload(data, fetch_remote_machines=False)
         except Exception:
             LOGGER.debug("Onboarding data failed", exc_info=True)
             return {
@@ -1678,13 +1677,14 @@ class DesktopBridge:
                 connections = self._client.request("/api/connections")
                 machines = self._client.request("/api/machines")
                 setup = self._client.request("/api/setup/state")
-            return {
+            payload = {
                 "ok": True,
                 "connections": connections.get("connections") or [],
                 "machines": machines.get("machines") or [],
                 "setup": setup.get("setup") or {},
                 "hubAvailable": bool(setup.get("hubAvailable", False)),
             }
+            return self._enrich_account_payload(payload, fetch_remote_machines=True)
         except DesktopError as exc:
             out = {"ok": False, "error": str(exc)}
             if getattr(exc, "code", None):
@@ -2317,10 +2317,22 @@ class DesktopBridge:
                     else:
                         res = http.post(url, json=json_body, headers=headers)
         except CodedError as exc:
-            return None, None, {"ok": False, "code": exc.code, "error": str(exc)}
+            msg = redact_hub_urls(error_message(exc.code, retry_after=exc.retry_after))
+            return None, None, {
+                "ok": False,
+                "code": exc.code,
+                "message": msg,
+                "error": redact_hub_urls(str(exc)),
+                "retryAfter": exc.retry_after,
+            }
         except Exception as exc:
             code, _ = map_transport_error(exc)
-            return None, None, {"ok": False, "code": code, "error": format_error(code)}
+            return None, None, {
+                "ok": False,
+                "code": code,
+                "message": redact_hub_urls(error_message(code)),
+                "error": redact_hub_urls(format_error(code)),
+            }
 
         try:
             data = res.json() if getattr(res, "content", b"") else {}
@@ -2334,20 +2346,714 @@ class DesktopBridge:
                 headers=getattr(res, "headers", None),
                 endpoint_path=path,
             )
-            if token and (res.status_code == 401 or mapped.code == "AUTH-107"):
+            if token and mapped.code == "AUTH-107":
                 self._clear_owner_session()
             if (
                 res.status_code == 404
                 and isinstance(data, dict)
                 and isinstance(data.get("error"), str)
             ):
-                return None, res, {"ok": False, "code": mapped.code, "error": data["error"]}
-            return None, res, {"ok": False, "code": mapped.code, "error": str(mapped)}
+                safe_detail = redact_hub_urls(data["error"])
+                return None, res, {
+                    "ok": False,
+                    "code": mapped.code,
+                    "message": safe_detail,
+                    "error": safe_detail,
+                    "retryAfter": mapped.retry_after,
+                }
+            return None, res, {
+                "ok": False,
+                "code": mapped.code,
+                "message": redact_hub_urls(error_message(mapped.code, retry_after=mapped.retry_after)),
+                "error": redact_hub_urls(str(mapped)),
+                "retryAfter": mapped.retry_after,
+            }
 
         if not isinstance(data, dict):
-            return None, res, {"ok": False, "code": "HUB-501", "error": format_error("HUB-501")}
+            return None, res, {
+                "ok": False,
+                "code": "HUB-501",
+                "message": error_message("HUB-501"),
+                "error": format_error("HUB-501"),
+            }
 
         return data, res, None
+
+    # -- H5 desktop account & computers -----------------------------------
+
+    @staticmethod
+    def _default_computer_name() -> str:
+        import socket
+
+        for candidate in (
+            socket.gethostname() or "",
+            os.environ.get("COMPUTERNAME", ""),
+        ):
+            clean = str(candidate).strip()
+            if clean:
+                return clean[:64]
+        return "My computer"
+
+    @staticmethod
+    def _h5_err(
+        code: str,
+        *,
+        retry_after: int | None = None,
+        message: str | None = None,
+    ) -> dict:
+        resolved = code if code else "HUB-501"
+        raw_msg = message if message is not None else error_message(resolved, retry_after=retry_after)
+        return {
+            "ok": False,
+            "code": resolved,
+            "message": redact_hub_urls(str(raw_msg)),
+        }
+
+    @classmethod
+    def _h5_err_from_call(cls, call_err: dict) -> dict:
+        code = str(call_err.get("code") or "HUB-501")
+        retry_after = call_err.get("retryAfter")
+        msg = call_err.get("message")
+        return cls._h5_err(
+            code,
+            retry_after=retry_after if isinstance(retry_after, int) else None,
+            message=str(msg) if msg else None,
+        )
+
+    def _save_owner_session_vault_only(
+        self, token: str, expires_at: str | None = None
+    ) -> None:
+        clean_token = str(token or "").strip()
+        if not clean_token:
+            self._clear_owner_session()
+            return
+        with self._owner_session_lock:
+            self._owner_session = clean_token
+            self._owner_session_expires_at = expires_at
+            vault = self._resolve_vault()
+            if vault is not None:
+                try:
+                    vault.put(clean_token, self.OWNER_SESSION_VAULT_REF)
+                except Exception:
+                    pass
+            db_path = self._db_path()
+            if db_path is not None and db_path.is_file():
+                try:
+                    from spend_app.db import connect
+                    from spend_app.setup_wizard import read_setup_state, write_setup_state
+                    from spend_app.sync import clear_hub_proxy_cache
+
+                    with connect(db_path) as conn:
+                        conn.execute("BEGIN IMMEDIATE")
+                        state = read_setup_state(conn)
+                        spoke = state.get("spokeConfig") or {}
+                        if "ownerSession" in spoke:
+                            spoke.pop("ownerSession", None)
+                            state["spokeConfig"] = spoke
+                            write_setup_state(conn, state)
+                    clear_hub_proxy_cache()
+                except Exception:
+                    pass
+
+    def _get_machine_token(self) -> str | None:
+        with self._owner_session_lock:
+            if self._machine_token:
+                return self._machine_token
+            vault = self._resolve_vault()
+            if vault is not None:
+                try:
+                    token = vault.get(self.MACHINE_TOKEN_VAULT_REF)
+                    if isinstance(token, str) and token.strip():
+                        self._machine_token = token.strip()
+                        return self._machine_token
+                except Exception:
+                    pass
+        db_path = self._db_path()
+        if db_path is not None and db_path.is_file():
+            try:
+                from spend_app.db import connect
+                from spend_app.setup_wizard import read_setup_state
+
+                with connect(db_path) as conn:
+                    spoke = (read_setup_state(conn).get("spokeConfig") or {})
+                    db_tok = str(spoke.get("token") or "").strip() or None
+                if db_tok:
+                    with self._owner_session_lock:
+                        self._machine_token = db_tok
+                    return db_tok
+            except Exception:
+                pass
+        return None
+
+    def _save_machine_token(self, token: str) -> None:
+        clean_token = str(token or "").strip()
+        if not clean_token:
+            self._clear_machine_token()
+            return
+        with self._owner_session_lock:
+            self._machine_token = clean_token
+            vault = self._resolve_vault()
+            if vault is not None:
+                try:
+                    vault.put(clean_token, self.MACHINE_TOKEN_VAULT_REF)
+                except Exception:
+                    pass
+            db_path = self._db_path()
+            if db_path is not None and db_path.is_file():
+                try:
+                    from spend_app.db import connect
+                    from spend_app.setup_wizard import read_setup_state, write_setup_state
+                    from spend_app.sync import clear_hub_proxy_cache
+
+                    with connect(db_path) as conn:
+                        conn.execute("BEGIN IMMEDIATE")
+                        state = read_setup_state(conn)
+                        spoke = state.get("spokeConfig") or {}
+                        if "token" in spoke:
+                            spoke.pop("token", None)
+                            state["spokeConfig"] = spoke
+                            write_setup_state(conn, state)
+                    clear_hub_proxy_cache()
+                except Exception:
+                    pass
+
+    def _clear_machine_token(self) -> None:
+        with self._owner_session_lock:
+            self._machine_token = None
+            vault = self._resolve_vault()
+            if vault is not None:
+                try:
+                    vault.delete(self.MACHINE_TOKEN_VAULT_REF)
+                except Exception:
+                    pass
+            db_path = self._db_path()
+            if db_path is not None and db_path.is_file():
+                try:
+                    from spend_app.db import connect
+                    from spend_app.setup_wizard import read_setup_state, write_setup_state
+                    from spend_app.sync import clear_hub_proxy_cache
+
+                    with connect(db_path) as conn:
+                        conn.execute("BEGIN IMMEDIATE")
+                        state = read_setup_state(conn)
+                        spoke = state.get("spokeConfig") or {}
+                        if "token" in spoke:
+                            spoke.pop("token", None)
+                            state["spokeConfig"] = spoke
+                            write_setup_state(conn, state)
+                    clear_hub_proxy_cache()
+                except Exception:
+                    pass
+
+    def _local_machine_id(self) -> str:
+        db_path = self._db_path()
+        if db_path is not None and db_path.is_file():
+            try:
+                from spend_app.db import connect
+                from spend_app.setup_wizard import read_setup_state
+
+                with connect(db_path) as conn:
+                    state = read_setup_state(conn)
+                return str((state.get("account") or {}).get("machineId") or "").strip()
+            except Exception:
+                return ""
+        return ""
+
+    @staticmethod
+    def _annotate_machines(
+        machines: list[dict] | None, current_machine_id: str = ""
+    ) -> list[dict]:
+        rows: list[dict] = []
+        for item in machines or []:
+            if not isinstance(item, dict):
+                continue
+            mid = str(item.get("id") or "").strip()
+            if not mid:
+                continue
+            is_cur = bool(item.get("isCurrent") or (current_machine_id and mid == current_machine_id))
+            rows.append(
+                {
+                    "id": mid,
+                    "name": str(item.get("name") or mid),
+                    "os": str(item.get("os") or ""),
+                    "online": item.get("online", True),
+                    "lastSeenAt": item.get("lastSeenAt"),
+                    "registeredAt": item.get("registeredAt"),
+                    "isCurrent": is_cur,
+                }
+            )
+        rows.sort(key=lambda r: (0 if r["isCurrent"] else 1))
+        return rows
+
+    def _enrich_account_payload(
+        self, payload: dict, *, fetch_remote_machines: bool = False
+    ) -> dict:
+        if not isinstance(payload, dict):
+            return payload
+        if self._demo:
+            payload.setdefault("hasOwnerSession", False)
+            payload.setdefault("accountEmail", "")
+            payload.setdefault("computerName", "Sample Desktop")
+            payload.setdefault("syncState", {"status": "idle", "code": None, "message": None})
+            return payload
+
+        current_mid = self._local_machine_id()
+        has_session = bool(self.owner_session_status().get("hasOwnerSession"))
+
+        if fetch_remote_machines and has_session:
+            listed = self.list_computers()
+            if listed.get("ok") and isinstance(listed.get("machines"), list):
+                payload["machines"] = listed["machines"]
+            else:
+                has_session = bool(self.owner_session_status().get("hasOwnerSession"))
+
+        setup = dict(payload.get("setup") or {}) if isinstance(payload.get("setup"), dict) else {}
+        account = dict(setup.get("account") or {}) if isinstance(setup.get("account"), dict) else {}
+        spoke = dict(setup.get("spokeConfig") or {}) if isinstance(setup.get("spokeConfig"), dict) else {}
+
+        spoke["hasOwnerSession"] = has_session
+        spoke["hasToken"] = bool(self._get_machine_token() or spoke.get("hasToken"))
+        if self._owner_session_expires_at and not spoke.get("ownerSessionExpiresAt"):
+            spoke["ownerSessionExpiresAt"] = self._owner_session_expires_at
+        setup["spokeConfig"] = spoke
+        setup["account"] = account
+
+        comp_name = str(
+            setup.get("computerName")
+            or payload.get("computerName")
+            or self._default_computer_name()
+        ).strip()
+        setup["computerName"] = comp_name
+
+        acct_email = str(
+            account.get("email")
+            or account.get("username")
+            or payload.get("accountEmail")
+            or ""
+        ).strip()
+
+        with self._owner_session_lock:
+            sync_state = {
+                "status": self._sync_status,
+                "code": self._sync_error_code,
+                "message": self._sync_error_message,
+            }
+
+        payload["setup"] = setup
+        payload["hasOwnerSession"] = has_session
+        payload["accountEmail"] = acct_email
+        payload["computerName"] = comp_name
+        payload["syncState"] = sync_state
+        if "machines" in payload and isinstance(payload["machines"], list):
+            payload["machines"] = self._annotate_machines(payload["machines"], current_mid)
+        return payload
+
+    def _run_background_first_sync(
+        self,
+        *,
+        sync_gen: int,
+        hub_url: str,
+        machine_token: str,
+        machine_name: str,
+        db_path: Path | None,
+    ) -> None:
+        try:
+            from spend_app.config import load_settings
+            from spend_app.pricing import PricingEngine
+            from spend_app.sync import _HUB_TEST_CLIENTS, clear_hub_proxy_cache, sync_once
+
+            client_settings = getattr(self._client, "settings", None)
+            if client_settings is None and db_path is not None:
+                client_settings = load_settings(database_path=db_path)
+            if client_settings is not None:
+                pricing = getattr(self._client, "pricing", None)
+                if pricing is None:
+                    pricing_dir = getattr(client_settings, "pricing_path", None)
+                    pricing = (
+                        PricingEngine.load(pricing_dir)
+                        if pricing_dir is not None and Path(pricing_dir).is_dir()
+                        else PricingEngine([])
+                    )
+                test_client = _HUB_TEST_CLIENTS.get(hub_url)
+                sync_once(
+                    client_settings,
+                    pricing,
+                    hub_url=hub_url,
+                    token=machine_token,
+                    machine_name=machine_name,
+                    collect_local=False,
+                    client=test_client,
+                )
+                clear_hub_proxy_cache()
+            with self._owner_session_lock:
+                if self._sync_gen == sync_gen:
+                    self._sync_status = "ok"
+                    self._sync_error_code = None
+                    self._sync_error_message = None
+        except Exception:
+            LOGGER.debug("Background first sync failed (SYNC-201)", exc_info=True)
+            with self._owner_session_lock:
+                if self._sync_gen == sync_gen:
+                    self._sync_status = "error"
+                    self._sync_error_code = "SYNC-201"
+                    self._sync_error_message = redact_hub_urls(error_message("SYNC-201"))
+
+    def _authenticate_and_register(
+        self,
+        *,
+        endpoint: str,
+        email: str,
+        password: str,
+        computer_name: str = "",
+    ) -> dict:
+        if self._demo:
+            return self._h5_err("HUB-501", message="Account actions are disabled in demo mode.")
+
+        from spend_app.setup_wizard import MIN_PASSWORD_LENGTH, normalize_email
+
+        raw_email = (email or "").strip()
+        if endpoint == "/api/account/register":
+            normalized = normalize_email(raw_email)
+            if normalized is None:
+                return self._h5_err("AUTH-106")
+            clean_user = normalized
+            if len(str(password or "")) < MIN_PASSWORD_LENGTH:
+                return self._h5_err("AUTH-105")
+        else:
+            if not raw_email:
+                return self._h5_err("AUTH-106")
+            if "@" in raw_email:
+                normalized = normalize_email(raw_email)
+                if normalized is None:
+                    return self._h5_err("AUTH-106")
+                clean_user = normalized
+            else:
+                clean_user = raw_email
+            if not password:
+                return self._h5_err("AUTH-101")
+
+        hub_url, err = self._resolve_hub_origin()
+        if err is not None:
+            return self._h5_err(str(err.get("code") or "NET-001"))
+
+        clean_comp = (computer_name or "").strip() or self._default_computer_name()
+        auth_data, auth_res, call_err = self._call_hub(
+            hub_url,
+            "POST",
+            endpoint,
+            json_body={
+                "username": clean_user,
+                "password": password,
+                "computerName": clean_comp,
+                "deviceLabel": clean_comp,
+            },
+            handshake=True,
+        )
+        if call_err is not None:
+            return self._h5_err_from_call(call_err)
+
+        from spend_app.auth_model import extract_cookie
+
+        session_token = extract_cookie(auth_res)
+        if not session_token:
+            return self._h5_err("HUB-501")
+
+        db_path = self._db_path()
+        device_id: str | None = None
+        if db_path is not None:
+            try:
+                from spend_app.sync import get_or_create_device_id
+
+                device_id = get_or_create_device_id(db_path)
+            except Exception:
+                device_id = None
+
+        reg_body: dict[str, object] = {
+            "action": "register",
+            "name": clean_comp,
+            "os": sys.platform,
+        }
+        if device_id:
+            reg_body["deviceId"] = device_id
+
+        reg_data, _, reg_err = self._call_hub(
+            hub_url,
+            "POST",
+            "/api/machines",
+            json_body=reg_body,
+            token=session_token,
+        )
+        if reg_err is not None:
+            return self._h5_err_from_call(reg_err)
+
+        machine = reg_data.get("machine") if isinstance(reg_data.get("machine"), dict) else {}
+        machine_id = str(machine.get("id") or "").strip()
+        machine_token = str(reg_data.get("token") or "").strip()
+        if not machine_token:
+            return self._h5_err("HUB-501")
+
+        expires_at = auth_data.get("expiresAt")
+        self._save_owner_session_vault_only(session_token, expires_at)
+        self._save_machine_token(machine_token)
+
+        acct_raw = dict(auth_data.get("account") or {}) if isinstance(auth_data.get("account"), dict) else {}
+        acct_email = str(acct_raw.get("email") or acct_raw.get("username") or clean_user).strip()
+        account_meta = {
+            "username": str(acct_raw.get("username") or acct_email),
+            "email": acct_email,
+            "needsEmail": bool(acct_raw.get("needsEmail", False)),
+            "machineId": machine_id,
+        }
+
+        if db_path is not None:
+            try:
+                from spend_app.db import connect, initialize
+                from spend_app.setup_wizard import read_setup_state, write_setup_state
+                from spend_app.sync import clear_hub_proxy_cache, prepare_spoke_sync
+
+                initialize(db_path)
+                with connect(db_path) as conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                    state = read_setup_state(conn)
+                    state["role"] = "spoke"
+                    state["computerName"] = clean_comp
+                    state["account"] = account_meta
+                    spoke = dict(state.get("spokeConfig") or {})
+                    spoke.pop("token", None)
+                    spoke.pop("ownerSession", None)
+                    spoke.pop("hubUrl", None)
+                    spoke["enabled"] = True
+                    spoke["hubConfigured"] = True
+                    spoke["ownerSessionExpiresAt"] = expires_at
+                    state["spokeConfig"] = spoke
+                    write_setup_state(conn, state)
+                prepare_spoke_sync(db_path, hub_url, machine_token)
+                clear_hub_proxy_cache()
+            except Exception:
+                LOGGER.debug("Could not persist local spoke metadata", exc_info=True)
+
+        with self._owner_session_lock:
+            self._sync_gen += 1
+            sync_gen = self._sync_gen
+            self._sync_status = "syncing"
+            self._sync_error_code = None
+            self._sync_error_message = None
+
+        threading.Thread(
+            target=self._run_background_first_sync,
+            kwargs={
+                "sync_gen": sync_gen,
+                "hub_url": hub_url,
+                "machine_token": machine_token,
+                "machine_name": clean_comp,
+                "db_path": db_path,
+            },
+            name="burnrate-first-sync",
+            daemon=True,
+        ).start()
+
+        safe_machines = self._annotate_machines(reg_data.get("machines") or [], machine_id)
+        return {
+            "ok": True,
+            "account": account_meta,
+            "computerName": clean_comp,
+            "machines": safe_machines,
+            "syncStarted": True,
+            "syncState": {
+                "status": "syncing",
+                "code": None,
+                "message": None,
+            },
+        }
+
+    def sign_in(
+        self,
+        email: str,
+        password: str,
+        computer_name: str = "",
+    ) -> dict:
+        return self._authenticate_and_register(
+            endpoint="/api/account/login",
+            email=email,
+            password=password,
+            computer_name=computer_name,
+        )
+
+    def create_account(
+        self,
+        email: str,
+        password: str,
+        computer_name: str = "",
+    ) -> dict:
+        return self._authenticate_and_register(
+            endpoint="/api/account/register",
+            email=email,
+            password=password,
+            computer_name=computer_name,
+        )
+
+    def sign_out(self) -> dict:
+        if self._demo:
+            return self._h5_err("HUB-501", message="Account actions are disabled in demo mode.")
+
+        token = self._get_owner_session_token()
+        local_mid = self._local_machine_id()
+        if token:
+            hub_url, err = self._resolve_hub_origin()
+            if err is not None:
+                return self._h5_err(str(err.get("code") or "NET-001"))
+            if local_mid:
+                _, rev_res, rev_err = self._call_hub(
+                    hub_url,
+                    "POST",
+                    "/api/machines",
+                    json_body={"action": "revoke", "id": local_mid},
+                    token=token,
+                )
+                if rev_err is not None:
+                    rev_code = str(rev_err.get("code") or "")
+                    if rev_code not in {"DEV-301", "AUTH-107"} and (
+                        rev_res is None or rev_res.status_code not in {401, 404}
+                    ):
+                        return self._h5_err_from_call(rev_err)
+            _, res, call_err = self._call_hub(
+                hub_url,
+                "POST",
+                "/api/auth/logout",
+                json_body={},
+                token=token,
+            )
+            if (
+                call_err is not None
+                and call_err.get("code") != "AUTH-107"
+                and (res is None or res.status_code != 401)
+            ):
+                return self._h5_err_from_call(call_err)
+
+        self._clear_owner_session()
+        self._clear_machine_token()
+
+        with self._owner_session_lock:
+            self._sync_gen += 1
+            self._sync_status = "idle"
+            self._sync_error_code = None
+            self._sync_error_message = None
+
+        db_path = self._db_path()
+        if db_path is not None and db_path.is_file():
+            try:
+                from spend_app.db import connect
+                from spend_app.setup_wizard import read_setup_state, write_setup_state
+                from spend_app.sync import clear_hub_proxy_cache
+
+                with connect(db_path) as conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                    state = read_setup_state(conn)
+                    if state.get("role") == "spoke":
+                        state["role"] = "local"
+                    state["account"] = {}
+                    spoke = dict(state.get("spokeConfig") or {})
+                    spoke.pop("token", None)
+                    spoke.pop("ownerSession", None)
+                    spoke.pop("ownerSessionExpiresAt", None)
+                    spoke.pop("lastSyncError", None)
+                    spoke["enabled"] = False
+                    state["spokeConfig"] = spoke
+                    write_setup_state(conn, state)
+                clear_hub_proxy_cache()
+            except Exception:
+                LOGGER.debug("Could not clear local spoke state", exc_info=True)
+
+        return {"ok": True}
+
+    def change_password(self, current_password: str, new_password: str) -> dict:
+        if self._demo:
+            return self._h5_err("HUB-501", message="Account actions are disabled in demo mode.")
+        if not current_password:
+            return self._h5_err("AUTH-101")
+        from spend_app.setup_wizard import MIN_PASSWORD_LENGTH
+
+        if len(str(new_password or "")) < MIN_PASSWORD_LENGTH:
+            return self._h5_err("AUTH-105")
+        hub_url, err = self._resolve_hub_origin()
+        if err is not None:
+            return self._h5_err(str(err.get("code") or "NET-001"))
+        token = self._get_owner_session_token()
+        if not token:
+            return self._h5_err("AUTH-107")
+        _, _, call_err = self._call_hub(
+            hub_url,
+            "POST",
+            "/api/account/password",
+            json_body={
+                "currentPassword": current_password,
+                "newPassword": str(new_password),
+            },
+            token=token,
+        )
+        if call_err is not None:
+            return self._h5_err_from_call(call_err)
+        return {"ok": True}
+
+    def list_computers(self) -> dict:
+        if self._demo:
+            try:
+                res = self._client.request("/api/machines")
+                return {
+                    "ok": True,
+                    "machines": self._annotate_machines(res.get("machines") or [], ""),
+                }
+            except Exception:
+                return {"ok": True, "machines": []}
+        hub_url, err = self._resolve_hub_origin()
+        if err is not None:
+            return self._h5_err(str(err.get("code") or "NET-001"))
+        token = self._get_owner_session_token()
+        if not token:
+            return self._h5_err("AUTH-107")
+        data, _, call_err = self._call_hub(
+            hub_url,
+            "GET",
+            "/api/machines",
+            token=token,
+        )
+        if call_err is not None:
+            return self._h5_err_from_call(call_err)
+        return {
+            "ok": True,
+            "machines": self._annotate_machines(
+                data.get("machines") or [], self._local_machine_id()
+            ),
+        }
+
+    def remove_computer(self, machine_id: str) -> dict:
+        if self._demo:
+            return self._h5_err("HUB-501", message="Account actions are disabled in demo mode.")
+        clean_id = str(machine_id or "").strip()
+        if not clean_id:
+            return self._h5_err("DEV-302", message="Choose a computer to remove.")
+        local_mid = self._local_machine_id()
+        if clean_id in {"local", "all"} or (local_mid and clean_id == local_mid):
+            return self._h5_err("DEV-302", message="Use Sign out to disconnect this computer.")
+        hub_url, err = self._resolve_hub_origin()
+        if err is not None:
+            return self._h5_err(str(err.get("code") or "NET-001"))
+        token = self._get_owner_session_token()
+        if not token:
+            return self._h5_err("AUTH-107")
+        data, _, call_err = self._call_hub(
+            hub_url,
+            "POST",
+            "/api/machines",
+            json_body={"action": "revoke", "id": clean_id},
+            token=token,
+        )
+        if call_err is not None:
+            return self._h5_err_from_call(call_err)
+        return {
+            "ok": True,
+            "machines": self._annotate_machines(data.get("machines") or [], local_mid),
+        }
 
     def owner_session_status(self) -> dict:
         if self._demo:
@@ -2797,6 +3503,11 @@ class DesktopBridge:
                     "machines": res.get("machines") or [],
                     "syncResult": sync_res,
                 }
+            with self._owner_session_lock:
+                self._sync_gen += 1
+                self._sync_status = "ok"
+                self._sync_error_code = None
+                self._sync_error_message = None
             return {
                 "ok": True,
                 "triggeredAt": res.get("triggeredAt"),

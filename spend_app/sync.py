@@ -1322,6 +1322,30 @@ def register_hub_test_client(hub_url: str, client: object) -> None:
     _HUB_TEST_CLIENTS[hub_url.strip().rstrip("/")] = client
 
 
+def _vault_get_secret(database_path: Path, ref: str) -> str | None:
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return None
+    try:
+        from spend_app.connection_secrets import Vault
+
+        val = Vault(database_path).get(ref)
+        return str(val).strip() if isinstance(val, str) and val.strip() else None
+    except Exception:
+        return None
+
+
+def _vault_put_secret(database_path: Path, ref: str, value: str) -> bool:
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return False
+    try:
+        from spend_app.connection_secrets import Vault
+
+        Vault(database_path).put(value, ref)
+        return True
+    except Exception:
+        return False
+
+
 def clear_hub_proxy_cache() -> None:
     """Forget every Hub copy, e.g. after hub connection changes."""
     with _HUB_PROXY_LOCK:
@@ -1389,9 +1413,13 @@ def post_to_configured_hub(
         if strict:
             raise HubMutationError(str(exc), 422) from exc
         return None
-    token = str(spoke.get("ownerSession") or "").strip()
+    token = str(spoke.get("ownerSession") or "").strip() or (
+        _vault_get_secret(settings.database_path, "burnrate-owner-session") or ""
+    )
     if path == "/api/machines" and not token:
-        token = str(spoke.get("token") or "").strip()
+        token = str(spoke.get("token") or "").strip() or (
+            _vault_get_secret(settings.database_path, "burnrate-machine-token") or ""
+        )
     if not hub_url or not token:
         if strict:
             raise HubMutationError("Reconnect this computer to its hub before saving plans.")
@@ -1740,7 +1768,9 @@ def fetch_from_configured_hub(
     except ValueError:
         return None
     from spend_app.auth_model import digest, moment, parse
-    token = str(spoke.get("ownerSession") or "").strip()
+    token = str(spoke.get("ownerSession") or "").strip() or (
+        _vault_get_secret(settings.database_path, "burnrate-owner-session") or ""
+    )
     expiry = parse(spoke.get("ownerSessionExpiresAt"))
     if expiry is not None and expiry <= moment():
         return None

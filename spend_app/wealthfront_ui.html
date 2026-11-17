@@ -2598,6 +2598,180 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
   user-select: text;
 }
 
+/* <!-- H5 --> */
+.h5-acct-card {
+  padding: 11px 12px 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 9px;
+  min-width: 0;
+}
+.h5-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.h5-hint {
+  font-size: 11px;
+  color: var(--ink-secondary);
+  line-height: 1.4;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.h5-seg {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.h5-seg-btn {
+  flex: 1 1 100px;
+  min-width: 0;
+  font: 600 11.5px var(--font);
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-input);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+  text-align: center;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.h5-seg-btn:hover {
+  background: var(--surface-subtle);
+}
+.h5-seg-btn.on {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.h5-err {
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+  color: var(--danger);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 11.5px;
+  line-height: 1.38;
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.h5-err b {
+  font-weight: 700;
+}
+.h5-err span {
+  font-size: 11px;
+}
+.h5-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  min-width: 0;
+}
+.h5-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+  min-width: 0;
+}
+.h5-field label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-secondary);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.h5-comp-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+.h5-comp-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 0;
+  border-top: 1px solid var(--divider);
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.h5-comp-info {
+  flex: 1 1 150px;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.h5-comp-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.h5-comp-name {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.h5-comp-meta {
+  font-size: 11px;
+  color: var(--ink-secondary);
+  overflow-wrap: anywhere;
+}
+.h5-comp-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+.h5-comp-confirm {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 4px;
+  font-size: 11px;
+  color: var(--ink-secondary);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.h5-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.h5-pw-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 7px;
+  padding-top: 9px;
+  border-top: 1px solid var(--divider);
+  min-width: 0;
+}
+.h11-ob-account.h5-ob-account {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 9px;
+  padding: 11px 12px;
+  background: var(--surface);
+}
+/* <!-- /H5 --> */
+
 /* Narrow window (min width is 336px; 304px is the floor we still fit): shrink the mini chart
    and stack into a single column at or below 350px so no provider subtitle ever clips. */
 @media (max-width: 350px) {
@@ -4718,6 +4892,15 @@ const state = {
   accountFormOpen: false,
   accountAuthMode: "login",
   accountBusy: false,
+  // H5
+  accountError: null,
+  accountDraft: { email: "", password: "", computerName: "" },
+  changePwOpen: false,
+  changePwBusy: false,
+  changePwError: null,
+  removeConfirmId: null,
+  removeBusyId: null,
+  signOutBusy: false,
   /* H11 settings */
   setupScan: { status: "idle", data: null, scanning: false, startedAt: "", pollTimer: 0, pollStarted: 0, progressText: "", error: "", completeBusy: false, deferBusy: false },
   notifications: { status: "idle", available: true, kinds: [], busyKey: "", testing: false, testStatus: "", testError: false },
@@ -5588,14 +5771,12 @@ function onboardingHtml() {
     const scanBusy = !!ss.scanning || !!ss.pollTimer;
     const statusText = ss.error || ss.progressText || "";
     const statusCls = ss.error ? "err" : "";
+    /* <!-- H5 --> */
     const hubAccountCard = `
-      <div class="h11-ob-account">
-        <div class="source-info">
-          <div class="source-name">Hub account</div>
-          <div class="source-meta">${d.hubConnected ? "Connected to your hub. Manage sync and sessions in Settings &rarr; Hub account." : "Sync usage across computers in Settings &rarr; Hub account."}</div>
-        </div>
-        <button class="btn-secondary" type="button" data-ob-hub>${d.hubConnected ? "Manage" : "Open Settings"}</button>
+      <div class="h11-ob-account h5-ob-account">
+        ${h5HubAccountHtml("onboarding")}
       </div>`;
+    /* <!-- /H5 --> */
     const obFootActions = `
       <div class="h11-ob-actions">
         <button class="btn-ghost" type="button" data-ob-defer ${ss.deferBusy ? "disabled" : ""}>${ss.deferBusy ? "Saving…" : "Set up later"}</button>
@@ -6289,108 +6470,24 @@ function paintSettingsBody() {
   }
 
   if (tab === "computers") {
-    const machines = state.settingsData.machines || [];
-    const setup = state.settingsData.setup || {};
-    const account = setup.account || {};
-    const spoke = setup.spokeConfig || {};
-    const hubConnected = !!(spoke.enabled && (spoke.hubConfigured || spoke.hubUrl));
-    const syncErrMap = {
-      hub_unreachable: "Could not reach the hub",
-      hub_rejected: "Hub rejected this computer's sync credential",
-      sync_failed: "Sync failed"
-    };
-    const syncErrRaw = spoke.lastSyncError ? String(spoke.lastSyncError) : "";
-    const syncErr = syncErrRaw ? (syncErrMap[syncErrRaw] || "Sync failed") : "";
-    const defaultUser = account.username || "";
-    const defaultComp = setup.computerName || "";
-    const ownerSignedIn = !!spoke.hasOwnerSession && (!spoke.ownerSessionExpiresAt || Date.parse(spoke.ownerSessionExpiresAt) > Date.now());
-    const showAccountForm = !state.demo && (!ownerSignedIn || state.accountFormOpen);
-    const showEmailMigratePrompt = !state.demo && hubConnected && ownerSignedIn && !!account.needsEmail && !account.emailPromptDismissed && !state.accountFormOpen;
-
+    /* <!-- H5 --> */
     body.innerHTML = `
       ${!state.demo ? `
-      <div class="wf-card">
-        <div class="card-header">
-          <span class="card-title">Central Hub account</span>
-          <span class="state-badge ${hubConnected ? (syncErr ? "warn" : "ok") : ""}">
-            ${hubConnected ? (syncErr ? "Sync issue" : ownerSignedIn ? "Owner signed in" : "Sync only") : "Not signed in"}
-          </span>
+        <div class="wf-card h5-acct-card" id="h5AccountCard">
+          ${h5HubAccountHtml("settings")}
         </div>
-        ${hubConnected ? `
-          <div class="source-row" style="border-top:none;padding-top:4px">
-            <span class="source-logo" style="background:var(--accent-soft);color:var(--accent)">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-            </span>
-            <div class="source-info">
-              <div class="source-name">${esc(account.username || "Paired spoke")}</div>
-              <div class="source-meta">${esc(defaultComp || "Connected to hub")}</div>
-            </div>
-            <button class="btn-secondary" id="accountToggleBtn" type="button" onclick="toggleAccountForm()">
-              ${state.accountFormOpen ? "Cancel" : ownerSignedIn ? "Reconnect" : "Sign in"}
-            </button>
+      ` : `
+        <div class="wf-card">
+          <div class="card-header">
+            <span class="card-title">Computers</span>
+            <span class="card-subtitle">${(state.settingsData.machines || []).length} in view</span>
           </div>
-          ${syncErr ? `<div style="padding:0 12px 9px;font-size:10.5px;color:var(--warn)">${esc(syncErr)}</div>` : ""}
-          ${showEmailMigratePrompt ? `
-            <form autocomplete="off" novalidate onsubmit="event.preventDefault();submitAccountEmail()" style="padding:8px 12px 10px;display:grid;gap:6px;border-top:1px solid var(--divider)">
-              <div style="font-size:11px;color:var(--ink-secondary);line-height:1.38">
-                Add an email address to your hub account so password resets work cleanly.
-              </div>
-              <input class="text-input" id="migrateEmailInput" type="email" autocomplete="off" spellcheck="false" placeholder="Email address"/>
-              <input class="text-input" id="migrateEmailPassword" type="password" autocomplete="current-password" placeholder="Confirm current password"/>
-              <div style="display:flex;justify-content:flex-end;gap:6px">
-                <button class="btn-secondary" type="button" onclick="dismissEmailPrompt()">Later</button>
-                <button class="btn-primary" id="saveEmailBtn" type="submit">Save email</button>
-              </div>
-            </form>
-          ` : ""}
-        ` : `
-          <div style="padding:2px 12px 6px;font-size:11px;color:var(--ink-secondary);line-height:1.38">
-            Sign in to your VPS hub so this computer counts toward <strong>All computers</strong> automatically.
-          </div>
-        `}
-        <div style="padding:8px 12px"><button class="btn-secondary" type="button" onclick="openOwnerAccess()">Owner access and sessions…</button></div>
-        ${showAccountForm ? `
-          <form class="hub-form" autocomplete="off" novalidate onsubmit="event.preventDefault();submitHubAccount()" style="padding:4px 12px 11px;display:grid;gap:6px;border-top:${hubConnected ? "1px solid var(--divider)" : "none"}">
-            <div style="display:flex;gap:5px">
-              <button class="btn-secondary ${state.accountAuthMode === "login" ? "active" : ""}" id="authMode_login" type="button" aria-pressed="${state.accountAuthMode === "login"}" onclick="setAccountAuthMode('login')">Sign in</button>
-              <button class="btn-secondary ${state.accountAuthMode === "register" ? "active" : ""}" id="authMode_register" type="button" aria-pressed="${state.accountAuthMode === "register"}" onclick="setAccountAuthMode('register')">Create hub account</button>
-            </div>
-            <input class="text-input" id="hubAccountUser" autocomplete="off" spellcheck="false" placeholder="${state.accountAuthMode === 'register' ? 'Account email' : 'Account email or username'}" value="${esc(defaultUser)}"/>
-            <input class="text-input" id="hubAccountPass" type="password" autocomplete="new-password" placeholder="Account password"/>
-            <input class="text-input" id="hubAccountComp" placeholder="This computer's name (e.g. Laptop)" value="${esc(defaultComp)}" autocomplete="off"/>
-            <div style="display:flex;justify-content:flex-end">
-              <button class="btn-primary" id="hubSignInBtn" type="submit" ${state.accountBusy ? "disabled" : ""}>
-                ${state.accountBusy ? "Connecting…" : (state.accountAuthMode === "register" ? "Create account &amp; sync" : "Sign in &amp; sync")}
-              </button>
-            </div>
-          </form>
-        ` : ""}
-      </div>
-      ` : ""}
-
-      <div class="wf-card">
-        <div class="card-header">
-          <span class="card-title">Paired computers</span>
-          <span class="card-subtitle">${machines.length} in view</span>
+          <div style="padding:0 12px 10px">${h5MachinesListHtml(state.settingsData.machines || [], "", false)}</div>
         </div>
-        <div>
-          ${machines.map(m => `
-            <div class="source-row">
-              <span class="source-logo" style="background:var(--accent-soft);color:var(--accent)">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
-              </span>
-              <div class="source-info">
-                <div class="source-name">${esc(m.name || m.id)}</div>
-                <div class="source-meta">${m.online !== false ? "Contributing live telemetry" : "Showing last synced copy"}</div>
-              </div>
-              <span class="state-badge ${m.online !== false ? "ok" : ""}">${m.online !== false ? "Online" : "Offline"}</span>
-            </div>
-          `).join("") || '<div class="empty-state">This computer is tracking locally.</div>'}
-        </div>
-      </div>
+      `}
       ${!state.demo && apiHas("trigger_sync") ? h11SyncCardHtml() : ""}
-
     `;
+    /* <!-- /H5 --> */
     return;
   }
 
@@ -6996,65 +7093,524 @@ window.dismissCandidate = async function(source, candidateId) {
   }
 };
 
-window.openOwnerAccess = async function() {
-  const result = await window.pywebview?.api?.open_owner_access();
-  if (!result?.ok) showToast(result?.error || "Open /auth on your local tracker for owner access.");
+// H5
+function h5RelativeTime(iso) {
+  if (!iso) return "";
+  const ms = Date.parse(String(iso));
+  if (Number.isNaN(ms)) return "";
+  const diffMin = Math.max(0, Math.round((Date.now() - ms) / 60000));
+  if (diffMin < 1) return "just now";
+  if (diffMin < 60) return `${diffMin} min ago`;
+  const diffHr = Math.round(diffMin / 60);
+  if (diffHr < 24) return `${diffHr} h ago`;
+  const diffDay = Math.round(diffHr / 24);
+  if (diffDay === 1) return "yesterday";
+  return `${diffDay} d ago`;
+}
+
+function h5ErrorGuidance(code) {
+  const c = String(code || "");
+  if (c === "AUTH-101") return "Check them and try again.";
+  if (c === "AUTH-102") return "Wait a moment and try again.";
+  if (c === "AUTH-103") return "Switch to Sign in to use that account.";
+  if (c === "AUTH-104") return "Switch to Create account on a new hub.";
+  if (c === "AUTH-105") return "Pick a longer password and try again.";
+  if (c === "AUTH-106") return "Check the email address and try again.";
+  if (c === "AUTH-107") return "Sign in again to continue.";
+  if (c === "DEV-301") return "Sign in again to re-add this computer.";
+  if (c === "DEV-302") return "Choose a different name for this computer.";
+  if (c === "NET-001" || c === "NET-002" || c === "NET-003") return "Check your connection and try again.";
+  if (c === "SYNC-201") return "Usage on this computer stays saved locally.";
+  return "";
+}
+
+function h5NormalizeErr(res, fallbackMsg) {
+  const code = String((res && res.code) || "").trim();
+  let msg = String((res && (res.message || res.error)) || fallbackMsg || "Something went wrong.").trim();
+  if (code) {
+    const suffix = " Error " + code;
+    if (msg.endsWith(suffix)) msg = msg.slice(0, -suffix.length).trim();
+  }
+  return { code, message: msg };
+}
+
+function h5RenderErrBanner(errObj) {
+  if (!errObj || (!errObj.message && !errObj.code)) return "";
+  const code = String(errObj.code || "").trim();
+  const guide = h5ErrorGuidance(code);
+  const tail = code ? `${guide ? guide + " " : ""}Error ${code}` : guide;
+  return `
+    <div class="h5-err" role="alert">
+      <b>${esc(errObj.message || "Something went wrong.")}</b>
+      ${tail ? `<span>${esc(tail)}</span>` : ""}
+    </div>`;
+}
+
+function h5AccountContextData() {
+  const sData = state.settingsData || {};
+  const obData = (state.onboarding && state.onboarding.data) || {};
+  const setup = sData.setup || {};
+  const account = setup.account || {};
+  const spoke = setup.spokeConfig || {};
+  const machines = (Array.isArray(sData.machines) && sData.machines.length)
+    ? sData.machines
+    : (Array.isArray(obData.machines) ? obData.machines : []);
+  const syncState = sData.syncState || obData.syncState || {};
+  const hasOwnerSession = !!(
+    sData.hasOwnerSession
+    || spoke.hasOwnerSession
+    || obData.hasOwnerSession
+    || (spoke.enabled && (spoke.hubConfigured || spoke.hubUrl))
+    || obData.hubConnected
+  );
+  const expired = !!(spoke.ownerSessionExpiresAt && Date.parse(spoke.ownerSessionExpiresAt) <= Date.now());
+  const signedIn = hasOwnerSession && !expired;
+  const email = String(
+    sData.accountEmail
+    || account.email
+    || account.username
+    || obData.accountEmail
+    || ""
+  ).trim();
+  const computerName = String(
+    setup.computerName
+    || sData.computerName
+    || obData.computerName
+    || ""
+  ).trim();
+  const syncErrMap = {
+    hub_unreachable: "Could not reach the hub",
+    hub_rejected: "Hub rejected this computer's sync credential",
+    sync_failed: "Sync failed",
+  };
+  const syncCodeMap = {
+    hub_unreachable: "NET-001",
+    hub_rejected: "AUTH-101",
+    sync_failed: "SYNC-201",
+  };
+  const syncErrRaw = spoke.lastSyncError ? String(spoke.lastSyncError) : "";
+  const syncErrMapped = syncErrRaw ? (syncErrMap[syncErrRaw] || "Sync failed") : "";
+  const syncErrCode = String(
+    syncState.code
+    || (syncState.status === "error" ? "SYNC-201" : "")
+    || (syncErrRaw ? (syncCodeMap[syncErrRaw] || "SYNC-201") : "")
+  ).trim();
+  const syncErrMsg = syncErrCode
+    ? String(syncState.message || syncErrMapped || "Signed in, but the first sync didn't finish. It will retry.")
+    : "";
+  return {
+    signedIn,
+    email,
+    computerName,
+    account,
+    machines,
+    currentMachineId: String(account.machineId || ""),
+    syncStatus: String(syncState.status || (signedIn ? "syncing" : "idle")),
+    syncErrCode,
+    syncErrMsg,
+  };
+}
+
+function h5MachinesListHtml(machines, currentMachineId, canRemove) {
+  const list = Array.isArray(machines) ? machines : [];
+  if (!list.length) {
+    return '<div class="h5-hint">Waiting for this computer to appear in Computers…</div>';
+  }
+  return `<div class="h5-comp-list">
+    ${list.map(m => {
+      const mid = String(m.id || "");
+      const isCur = !!(m.isCurrent || m.isLocal || (currentMachineId && mid === currentMachineId));
+      const rel = h5RelativeTime(m.lastSeenAt);
+      let meta = "";
+      if (isCur) {
+        meta = rel ? `This computer · synced ${rel}` : "This computer · syncing…";
+      } else if (rel) {
+        meta = m.online !== false ? `Synced ${rel}` : `Last seen ${rel}`;
+      } else {
+        meta = m.online !== false ? "Connected" : "Offline";
+      }
+      const confirming = canRemove && !isCur && state.removeConfirmId === mid;
+      const removing = canRemove && !isCur && state.removeBusyId === mid;
+      return `
+        <div class="h5-comp-row" data-machine-id="${esc(mid)}">
+          <div class="h5-comp-info">
+            <div class="h5-comp-name-row">
+              <span class="h5-comp-name">${esc(m.name || mid)}</span>
+              ${isCur ? '<span class="state-badge ok">This computer</span>' : ""}
+            </div>
+            <div class="h5-comp-meta">${esc(meta)}</div>
+          </div>
+          ${canRemove && !isCur && !confirming ? `
+            <div class="h5-comp-actions">
+              <button class="btn-secondary" type="button" data-h5-remove-ask="${esc(mid)}" onclick="h5AskRemoveComputer('${esc(mid)}')" ${removing ? "disabled" : ""}>${removing ? "Removing…" : "Remove"}</button>
+            </div>
+          ` : ""}
+          ${confirming ? `
+            <div class="h5-comp-confirm">
+              <span>Remove ${esc(m.name || mid)}?</span>
+              <div class="h5-comp-actions">
+                <button class="btn-secondary" type="button" onclick="h5CancelRemoveComputer()" ${removing ? "disabled" : ""}>Cancel</button>
+                <button class="btn-danger-quiet" type="button" data-h5-remove-confirm="${esc(mid)}" onclick="h5ConfirmRemoveComputer('${esc(mid)}')" ${removing ? "disabled" : ""}>${removing ? "Removing…" : "Confirm"}</button>
+              </div>
+            </div>
+          ` : ""}
+        </div>`;
+    }).join("")}
+  </div>`;
+}
+
+function h5HubAccountHtml(context = "settings") {
+  const ctx = context === "onboarding" ? "onboarding" : "settings";
+  const prefix = ctx === "onboarding" ? "ob_" : "";
+  const idUser = ctx === "onboarding" ? "obHubAccountUser" : "hubAccountUser";
+  const idPass = ctx === "onboarding" ? "obHubAccountPass" : "hubAccountPass";
+  const idComp = ctx === "onboarding" ? "obHubAccountComp" : "hubAccountComp";
+  const idBtn = ctx === "onboarding" ? "obHubSignInBtn" : "hubSignInBtn";
+
+  const info = h5AccountContextData();
+  const mode = state.accountAuthMode === "register" ? "register" : "login";
+  const busy = !!state.accountBusy;
+  const emailVal = state.accountDraft.email !== "" ? state.accountDraft.email : info.email;
+  const compVal = state.accountDraft.computerName !== "" ? state.accountDraft.computerName : info.computerName;
+
+  if (info.signedIn) {
+    const badgeCls = info.syncErrCode ? "warn" : "ok";
+    const badgeLabel = info.syncErrCode ? "Sync issue" : "Syncing";
+    const canManage = ctx === "settings";
+    const showEmailMigrate = canManage && !!info.account.needsEmail && !info.account.emailPromptDismissed;
+    const errBanner = state.accountError ? h5RenderErrBanner(state.accountError) : "";
+    const syncBanner = info.syncErrCode
+      ? h5RenderErrBanner({ code: info.syncErrCode, message: info.syncErrMsg })
+      : "";
+    return `
+      <div class="h5-head">
+        <span class="card-title">Hub account</span>
+        <span class="state-badge ${badgeCls}">${badgeLabel}</span>
+      </div>
+      <div class="h5-hint">Signed in as ${esc(info.email || "hub owner")}</div>
+      ${syncBanner}
+      ${errBanner}
+      ${showEmailMigrate ? `
+        <form autocomplete="off" novalidate onsubmit="event.preventDefault();submitAccountEmail()" class="h5-pw-form">
+          <div class="h5-hint">Add an email address to your hub account so password resets work cleanly.</div>
+          <input class="text-input" id="migrateEmailInput" type="email" autocomplete="off" spellcheck="false" placeholder="Email address"/>
+          <input class="text-input" id="migrateEmailPassword" type="password" autocomplete="current-password" placeholder="Confirm current password"/>
+          <div class="h5-actions">
+            <button class="btn-secondary" type="button" onclick="dismissEmailPrompt()">Later</button>
+            <button class="btn-primary" id="saveEmailBtn" type="submit">Save email</button>
+          </div>
+        </form>
+      ` : ""}
+      ${h5MachinesListHtml(info.machines, info.currentMachineId, canManage && apiHas("remove_computer"))}
+      <div class="h5-actions">
+        ${canManage && apiHas("change_password") ? `<button class="btn-secondary ${state.changePwOpen ? "active" : ""}" id="h5ChangePwToggleBtn" type="button" onclick="h5ToggleChangePassword()">${state.changePwOpen ? "Cancel" : "Change password"}</button>` : ""}
+        ${apiHas("sign_out") ? `<button class="btn-secondary" id="${prefix}h5SignOutBtn" type="button" onclick="h5SignOut()" ${state.signOutBusy ? "disabled" : ""}>${state.signOutBusy ? "Signing out…" : "Sign out"}</button>` : ""}
+      </div>
+      ${canManage && state.changePwOpen ? `
+        <form class="h5-pw-form" id="h5ChangePwForm" autocomplete="off" novalidate onsubmit="event.preventDefault();h5SubmitChangePassword()">
+          ${state.changePwError ? h5RenderErrBanner(state.changePwError) : ""}
+          <div class="h5-field">
+            <label for="h5CurPass">Current password</label>
+            <input class="text-input" id="h5CurPass" type="password" autocomplete="current-password" placeholder="Current password"/>
+          </div>
+          <div class="h5-field">
+            <label for="h5NewPass">New password</label>
+            <input class="text-input" id="h5NewPass" type="password" autocomplete="new-password" placeholder="At least 12 characters"/>
+          </div>
+          <div class="h5-field">
+            <label for="h5ConfirmPass">Confirm new password</label>
+            <input class="text-input" id="h5ConfirmPass" type="password" autocomplete="new-password" placeholder="Confirm new password"/>
+          </div>
+          <div class="h5-actions">
+            <button class="btn-secondary" type="button" onclick="h5ToggleChangePassword()" ${state.changePwBusy ? "disabled" : ""}>Cancel</button>
+            <button class="btn-primary" id="h5SavePwBtn" type="submit" ${state.changePwBusy ? "disabled" : ""}>${state.changePwBusy ? "Updating…" : "Update password"}</button>
+          </div>
+        </form>
+      ` : ""}
+    `;
+  }
+
+  return `
+    <div class="h5-head">
+      <span class="card-title">Hub account</span>
+      <span class="state-badge">Not signed in</span>
+    </div>
+    ${!state.accountError ? '<div class="h5-hint">Sign in on every computer you want to track. Usage from all of them comes together in this app.</div>' : ""}
+    <div class="h5-seg" role="tablist" aria-label="Account mode">
+      <button class="h5-seg-btn ${mode === "login" ? "on" : ""}" id="${prefix}authMode_login" type="button" role="tab" aria-selected="${mode === "login"}" onclick="setAccountAuthMode('login')">Sign in</button>
+      <button class="h5-seg-btn ${mode === "register" ? "on" : ""}" id="${prefix}authMode_register" type="button" role="tab" aria-selected="${mode === "register"}" onclick="setAccountAuthMode('register')">Create account</button>
+    </div>
+    ${state.accountError ? h5RenderErrBanner(state.accountError) : ""}
+    <form class="h5-form hub-form" autocomplete="off" novalidate onsubmit="event.preventDefault();submitHubAccount('${ctx}')">
+      <div class="h5-field">
+        <label for="${idUser}">Email</label>
+        <input class="text-input" id="${idUser}" type="email" autocomplete="email" spellcheck="false" placeholder="you@example.com" value="${esc(emailVal)}" oninput="h5UpdateDraft('email', this.value)"/>
+      </div>
+      <div class="h5-field">
+        <label for="${idPass}">Password</label>
+        <input class="text-input" id="${idPass}" type="password" autocomplete="new-password" placeholder="At least 12 characters" value="${esc(state.accountDraft.password || "")}" oninput="h5UpdateDraft('password', this.value)"/>
+      </div>
+      <div class="h5-field">
+        <label for="${idComp}">This computer's name</label>
+        <input class="text-input" id="${idComp}" type="text" autocomplete="off" placeholder="e.g. Desktop-Office" value="${esc(compVal)}" oninput="h5UpdateDraft('computerName', this.value)"/>
+      </div>
+      <div class="h5-actions">
+        <button class="btn-primary" id="${idBtn}" type="submit" ${busy ? "disabled" : ""}>
+          ${busy ? (mode === "register" ? "Creating…" : "Signing in…") : (mode === "register" ? "Create account" : "Sign in")}
+        </button>
+      </div>
+    </form>
+    <div class="h5-hint">Forgot your password? It can be reset on the hub server.</div>
+  `;
+}
+
+function h5RenderAccountSurfaces() {
+  if (state.settingsOpen && state.settingsTab === "computers") renderSettingsBody();
+  if (!state.report || !getNormalizedProviders(state.report).length) rebuildOnboarding();
+}
+
+window.h5UpdateDraft = function(field, value) {
+  if (field === "email" || field === "password" || field === "computerName") {
+    state.accountDraft[field] = String(value ?? "");
+  }
 };
 
 window.toggleAccountForm = function() {
   state.accountFormOpen = !state.accountFormOpen;
-  renderSettingsBody();
+  h5RenderAccountSurfaces();
 };
 
 window.setAccountAuthMode = function(mode) {
   state.accountAuthMode = mode === "register" ? "register" : "login";
-  renderSettingsBody();
+  state.accountError = null;
+  h5RenderAccountSurfaces();
 };
 
-window.submitHubAccount = async function() {
+window.submitHubAccount = async function(context = "settings") {
   if (!apiAvailable() || state.accountBusy) return;
-  const username = document.getElementById("hubAccountUser")?.value.trim() || "";
-  const password = document.getElementById("hubAccountPass")?.value || "";
-  const computerName = document.getElementById("hubAccountComp")?.value.trim() || "";
-  if (!username || !password) {
-    showToast(state.accountAuthMode === "register" ? "Enter your email and password" : "Enter your account email or username and password");
+  const ctx = context === "onboarding" ? "onboarding" : "settings";
+  const idUser = ctx === "onboarding" ? "obHubAccountUser" : "hubAccountUser";
+  const idPass = ctx === "onboarding" ? "obHubAccountPass" : "hubAccountPass";
+  const idComp = ctx === "onboarding" ? "obHubAccountComp" : "hubAccountComp";
+  const email = (document.getElementById(idUser)?.value ?? state.accountDraft.email ?? "").trim();
+  const password = document.getElementById(idPass)?.value ?? state.accountDraft.password ?? "";
+  const computerName = (document.getElementById(idComp)?.value ?? state.accountDraft.computerName ?? "").trim();
+  state.accountDraft = { email, password, computerName };
+
+  if (!email) {
+    state.accountError = { code: "AUTH-106", message: "Enter a valid email address." };
+    h5RenderAccountSurfaces();
+    return;
+  }
+  if (state.accountAuthMode === "register" && password.length < 12) {
+    state.accountError = { code: "AUTH-105", message: "Use a password of at least 12 characters." };
+    h5RenderAccountSurfaces();
+    return;
+  }
+  if (!password) {
+    state.accountError = { code: "AUTH-101", message: "That email and password don't match." };
+    h5RenderAccountSurfaces();
     return;
   }
 
   state.accountBusy = true;
-  const btn = document.getElementById("hubSignInBtn");
-  if (btn) {
-    btn.disabled = true;
-    btn.textContent = "Connecting…";
-  }
+  state.accountError = null;
+  h5RenderAccountSurfaces();
+
   try {
-    const res = await window.pywebview.api.connect_hub_account(
-      username,
-      password,
-      computerName,
-      state.accountAuthMode
-    );
+    let res;
+    if (state.accountAuthMode === "register") {
+      if (apiHas("create_account")) res = await window.pywebview.api.create_account(email, password, computerName);
+      else res = await window.pywebview.api.connect_hub_account(email, password, computerName, "register");
+    } else {
+      if (apiHas("sign_in")) res = await window.pywebview.api.sign_in(email, password, computerName);
+      else res = await window.pywebview.api.connect_hub_account(email, password, computerName, "login");
+    }
+    state.accountBusy = false;
     if (res && res.ok) {
-      state.accountBusy = false;
       state.accountFormOpen = false;
-      showToast(res.warning || "Connected to Hub! Syncing all computers.");
+      state.accountError = null;
+      state.accountDraft.password = "";
+      if (res.account && state.settingsData) {
+        state.settingsData.setup = Object.assign({}, state.settingsData.setup || {}, {
+          account: res.account,
+          computerName: res.computerName || computerName,
+          spokeConfig: Object.assign({}, (state.settingsData.setup || {}).spokeConfig || {}, {
+            enabled: true,
+            hasOwnerSession: true,
+          }),
+        });
+        state.settingsData.accountEmail = res.account.email || res.account.username || email;
+        state.settingsData.hasOwnerSession = true;
+        if (Array.isArray(res.machines)) state.settingsData.machines = res.machines;
+      }
+      if (state.onboarding && state.onboarding.data) {
+        state.onboarding.data = Object.assign({}, state.onboarding.data, {
+          hubConnected: true,
+          hasOwnerSession: true,
+          accountEmail: (res.account && (res.account.email || res.account.username)) || email,
+          computerName: res.computerName || computerName,
+          machines: Array.isArray(res.machines) ? res.machines : (state.onboarding.data.machines || []),
+        });
+        state.onboarding.sig = JSON.stringify(state.onboarding.data);
+      }
+      showToast(res.warning || (state.accountAuthMode === "register" ? "Account created" : "Signed in"));
+      h5RenderAccountSurfaces();
       await refreshSettingsData();
       loadUsage(false, false);
-    } else {
-      state.accountBusy = false;
-      if (btn) {
-        btn.disabled = false;
-        btn.textContent = state.accountAuthMode === "register" ? "Create account & sync" : "Sign in & sync";
+      if (res.syncStarted) {
+        setTimeout(() => {
+          if (!state.demo && apiHas("get_settings_data")) refreshSettingsData();
+        }, 1600);
       }
-      showToast((res && res.error) || "Hub sign-in failed");
+    } else {
+      state.accountError = h5NormalizeErr(res, "Sign-in failed.");
+      h5RenderAccountSurfaces();
     }
   } catch (err) {
     state.accountBusy = false;
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = state.accountAuthMode === "register" ? "Create account & sync" : "Sign in & sync";
+    state.accountError = { code: "HUB-501", message: "Sign-in failed." };
+    h5RenderAccountSurfaces();
+  }
+};
+
+window.h5SignOut = async function() {
+  if (!apiHas("sign_out") || state.signOutBusy) return;
+  state.signOutBusy = true;
+  state.accountError = null;
+  h5RenderAccountSurfaces();
+  try {
+    const res = await window.pywebview.api.sign_out();
+    state.signOutBusy = false;
+    if (res && res.ok) {
+      state.changePwOpen = false;
+      state.changePwError = null;
+      state.removeConfirmId = null;
+      state.accountError = null;
+      state.accountDraft.password = "";
+      if (state.settingsData) {
+        state.settingsData.hasOwnerSession = false;
+        state.settingsData.accountEmail = "";
+        state.settingsData.syncState = { status: "idle", code: null, message: null };
+        if (state.settingsData.setup) {
+          state.settingsData.setup.account = {};
+          if (state.settingsData.setup.spokeConfig) {
+            state.settingsData.setup.spokeConfig.hasOwnerSession = false;
+            state.settingsData.setup.spokeConfig.enabled = false;
+          }
+        }
+        state.settingsData.machines = [];
+      }
+      if (state.onboarding && state.onboarding.data) {
+        state.onboarding.data = Object.assign({}, state.onboarding.data, {
+          hubConnected: false,
+          hasOwnerSession: false,
+          accountEmail: "",
+          machines: [],
+          syncState: { status: "idle", code: null, message: null },
+        });
+        state.onboarding.sig = JSON.stringify(state.onboarding.data);
+      }
+      showToast("Signed out");
+      h5RenderAccountSurfaces();
+      await refreshSettingsData();
+      loadUsage(false, false);
+    } else {
+      state.accountError = h5NormalizeErr(res, "Could not sign out.");
+      h5RenderAccountSurfaces();
     }
-    showToast("Hub sign-in failed");
+  } catch (err) {
+    state.signOutBusy = false;
+    state.accountError = { code: "HUB-501", message: "Could not sign out." };
+    h5RenderAccountSurfaces();
+  }
+};
+
+window.h5ToggleChangePassword = function() {
+  state.changePwOpen = !state.changePwOpen;
+  state.changePwError = null;
+  renderSettingsBody();
+};
+
+window.h5SubmitChangePassword = async function() {
+  if (!apiHas("change_password") || state.changePwBusy) return;
+  const curPass = document.getElementById("h5CurPass")?.value || "";
+  const newPass = document.getElementById("h5NewPass")?.value || "";
+  const confirmPass = document.getElementById("h5ConfirmPass")?.value ?? newPass;
+  if (!curPass) {
+    state.changePwError = { code: "AUTH-101", message: "Enter your current password." };
+    renderSettingsBody();
+    return;
+  }
+  if (newPass.length < 12) {
+    state.changePwError = { code: "AUTH-105", message: "Use a password of at least 12 characters." };
+    renderSettingsBody();
+    return;
+  }
+  if (newPass !== confirmPass) {
+    state.changePwError = { code: "AUTH-105", message: "New passwords don't match." };
+    renderSettingsBody();
+    return;
+  }
+  state.changePwBusy = true;
+  state.changePwError = null;
+  renderSettingsBody();
+  try {
+    const res = await window.pywebview.api.change_password(curPass, newPass);
+    state.changePwBusy = false;
+    if (res && res.ok) {
+      state.changePwOpen = false;
+      state.changePwError = null;
+      showToast("Password updated");
+      renderSettingsBody();
+    } else {
+      state.changePwError = h5NormalizeErr(res, "Could not update password.");
+      renderSettingsBody();
+    }
+  } catch (err) {
+    state.changePwBusy = false;
+    state.changePwError = { code: "HUB-501", message: "Could not update password." };
+    renderSettingsBody();
+  }
+};
+
+window.h5AskRemoveComputer = function(id) {
+  state.removeConfirmId = String(id || "");
+  renderSettingsBody();
+};
+
+window.h5CancelRemoveComputer = function() {
+  state.removeConfirmId = null;
+  renderSettingsBody();
+};
+
+window.h5ConfirmRemoveComputer = async function(id) {
+  const mid = String(id || "").trim();
+  if (!mid || !apiHas("remove_computer") || state.removeBusyId) return;
+  state.removeBusyId = mid;
+  state.accountError = null;
+  renderSettingsBody();
+  try {
+    const res = await window.pywebview.api.remove_computer(mid);
+    state.removeBusyId = null;
+    state.removeConfirmId = null;
+    if (res && res.ok) {
+      if (Array.isArray(res.machines) && state.settingsData) {
+        state.settingsData.machines = res.machines;
+      } else {
+        await refreshSettingsData();
+      }
+      showToast("Computer removed");
+      renderSettingsBody();
+    } else {
+      state.accountError = h5NormalizeErr(res, "Could not remove computer.");
+      renderSettingsBody();
+    }
+  } catch (err) {
+    state.removeBusyId = null;
+    state.removeConfirmId = null;
+    state.accountError = { code: "HUB-501", message: "Could not remove computer." };
+    renderSettingsBody();
   }
 };
 
@@ -7829,7 +8385,10 @@ window.h11TriggerSync = async function() {
     st.code = "";
     st.isError = false;
     st.status = res.triggeredAt ? `Synced at ${h11FormatTime(res.triggeredAt)}.` : "Synced with hub.";
-    if (Array.isArray(res.machines) && state.settingsData) state.settingsData.machines = res.machines;
+    if (state.settingsData) {
+      if (Array.isArray(res.machines)) state.settingsData.machines = res.machines;
+      state.settingsData.syncState = { status: "ok", code: null, message: null };
+    }
     renderSettingsBody();
     loadUsage(false, false);
   } else {
@@ -7907,10 +8466,17 @@ document.addEventListener("keydown", (e) => {
       state.addDraft = null;
       renderSettingsBody();
       document.getElementById("addProfBtn_" + src)?.focus();
+    } else if (state.removeConfirmId) {
+      state.removeConfirmId = null;
+      renderSettingsBody();
+    } else if (state.changePwOpen) {
+      state.changePwOpen = false;
+      state.changePwError = null;
+      renderSettingsBody();
+      document.getElementById("h5ChangePwToggleBtn")?.focus();
     } else if (state.accountFormOpen) {
       state.accountFormOpen = false;
       renderSettingsBody();
-      document.getElementById("accountToggleBtn")?.focus();
     } else {
       closeSettings(true);
     }

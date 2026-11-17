@@ -1179,15 +1179,21 @@ await wait(30);
 out.zaiAfterRevert = document.getElementById('ob_consent_zai').getAttribute('aria-checked');
 out.consentErrStatus = (document.getElementById('obScanStatus') || {}).textContent || '';
 
-// Hub account placeholder opens Settings -> Computers
-out.hasHubPlaceholder = !!list.querySelector('.h11-ob-account [data-ob-hub]');
-list.querySelector('[data-ob-hub]').click();
-await wait(60);
-out.hubOpenedSettings = {
-  open: document.getElementById('settingsSheet').classList.contains('open'),
-  tab: state.settingsTab,
-};
-closeSettings(false);
+// Shared H5 Hub account form inside .h11-ob-account
+const obAcct = list.querySelector('.h11-ob-account');
+out.hasSharedHubForm = !!(
+  obAcct
+  && obAcct.querySelector('#obHubAccountUser')
+  && obAcct.querySelector('#obHubAccountPass')
+  && obAcct.querySelector('#obHubAccountComp')
+  && obAcct.querySelector('#ob_authMode_login')
+  && obAcct.querySelector('#ob_authMode_register')
+  && obAcct.querySelector('#obHubSignInBtn')
+);
+obAcct.querySelector('#ob_authMode_register').click();
+await wait(30);
+out.obCreateBtnText = (document.getElementById('obHubSignInBtn') || {}).textContent?.trim() || '';
+document.getElementById('ob_authMode_login').click();
 await wait(30);
 
 // Defer onboarding ("Set up later")
@@ -1247,8 +1253,8 @@ def test_h11_onboarding_scan_consent_hub_complete_and_defer(tmp_path: Path):
     assert r["zaiBefore"] == "true"
     assert r["zaiAfterRevert"] == "true"
     assert r["consentErrStatus"] == "Could not save consent preference."
-    assert r["hasHubPlaceholder"] is True
-    assert r["hubOpenedSettings"] == {"open": True, "tab": "computers"}
+    assert r["hasSharedHubForm"] is True
+    assert r["obCreateBtnText"] == "Create account"
     assert "Settings" in r["deferStatus"]
     assert r["deferToast"] == "Setup paused"
     assert r["completeCalls"] == [["complete_onboarding", ""]]
@@ -1579,6 +1585,8 @@ def test_h11_settings_computers_sync_now_success_and_coded_errors(tmp_path: Path
             "ok": True,
             "connections": [],
             "machines": [{"id": "pc-1", "name": "Desk PC", "online": True}],
+            "hasOwnerSession": True,
+            "accountEmail": "owner@example.com",
             "setup": {},
             "hubAvailable": True,
         },

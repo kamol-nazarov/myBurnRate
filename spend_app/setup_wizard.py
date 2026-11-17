@@ -528,14 +528,23 @@ def rotate_spoke_machine_token(settings, *, client=None) -> dict | None:
     """Exchange the configured spoke's machine bearer for a fresh one on the hub."""
     from spend_app.config import resolve_hub_url
     from spend_app.hub_origin import hub_origin
-    from spend_app.sync import _cursor_key, read_sync_cursor, rotate_spoke_sync_credential
+    from spend_app.sync import (
+        _cursor_key,
+        _vault_get_secret,
+        _vault_put_secret,
+        read_sync_cursor,
+        rotate_spoke_sync_credential,
+    )
 
     with connect(settings.database_path) as connection:
         state = read_setup_state(connection)
     spoke = state.get("spokeConfig") or {}
     if state.get("role") != "spoke" or not spoke.get("enabled"):
         return None
-    token = str(spoke.get("token") or "").strip()
+    db_has_token = bool(str(spoke.get("token") or "").strip())
+    token = str(spoke.get("token") or "").strip() or (
+        _vault_get_secret(settings.database_path, "burnrate-machine-token") or ""
+    )
     if not token:
         return None
     raw_hub_url = resolve_hub_url() or str(spoke.get("hubUrl") or "").strip()
@@ -566,9 +575,14 @@ def rotate_spoke_machine_token(settings, *, client=None) -> dict | None:
         current = read_setup_state(connection)
         row = connection.execute("SELECT value FROM app_meta WHERE key=?", (_cursor_key(hub_url),)).fetchone()
         generation = json.loads(row[0]).get("generation") if row else None
-        if current["spokeConfig"].get("token") != token or generation != prior_generation:
+        current_tok = str(current["spokeConfig"].get("token") or "").strip() or (
+            _vault_get_secret(settings.database_path, "burnrate-machine-token") or ""
+        )
+        if current_tok != token or generation != prior_generation:
             return {"ok": False, "status": 409}
-        current["spokeConfig"]["token"] = replacement["token"]
+        if db_has_token or "token" in current["spokeConfig"]:
+            current["spokeConfig"]["token"] = replacement["token"]
+        _vault_put_secret(settings.database_path, "burnrate-machine-token", replacement["token"])
         current["spokeConfig"]["tokenExpiresAt"] = replacement.get("expiresAt")
         current["spokeConfig"]["rotationRequired"] = False
         rotate_spoke_sync_credential(connection, hub_url, replacement["token"])
@@ -588,8 +602,11 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
         return None
     from spend_app.config import resolve_hub_url
     from spend_app.hub_origin import hub_origin
+    from spend_app.sync import _vault_get_secret
 
-    token = str(spoke.get("token") or "").strip()
+    token = str(spoke.get("token") or "").strip() or (
+        _vault_get_secret(settings.database_path, "burnrate-machine-token") or ""
+    )
     if not token:
         return None
     try:
@@ -615,7 +632,10 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
             connection.execute("BEGIN IMMEDIATE")
             latest = read_setup_state(connection)
             latest_hub = _safe_resolve_hub_url() or str(latest["spokeConfig"].get("hubUrl") or "").strip().rstrip("/")
-            if latest["spokeConfig"].get("token") != token or latest_hub != configured_hub_url:
+            latest_tok = str(latest["spokeConfig"].get("token") or "").strip() or (
+                _vault_get_secret(settings.database_path, "burnrate-machine-token") or ""
+            )
+            if latest_tok != token or latest_hub != configured_hub_url:
                 return {"ok": False, "error": "Hub connection changed; retry sync with the current configuration."}
             latest["spokeConfig"]["lastSyncAt"] = utc_now()
             latest["spokeConfig"]["lastSyncError"] = None
@@ -658,7 +678,10 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
             connection.execute("BEGIN IMMEDIATE")
             latest = read_setup_state(connection)
             latest_hub = _safe_resolve_hub_url() or str(latest["spokeConfig"].get("hubUrl") or "").strip().rstrip("/")
-            if latest["spokeConfig"].get("token") != token or latest_hub != configured_hub_url:
+            latest_tok = str(latest["spokeConfig"].get("token") or "").strip() or (
+                _vault_get_secret(settings.database_path, "burnrate-machine-token") or ""
+            )
+            if latest_tok != token or latest_hub != configured_hub_url:
                 return {"ok": False, "error": "Hub connection changed; retry sync with the current configuration."}
             latest["spokeConfig"]["lastSyncError"] = code
             write_setup_state(connection, latest)
