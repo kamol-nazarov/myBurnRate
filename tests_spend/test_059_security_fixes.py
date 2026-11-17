@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 from datetime import UTC, datetime, timedelta
 import json
 import logging
@@ -23,7 +22,6 @@ from spend_app.connection_paths import LocationError
 from spend_app.connection_secrets import (
     MACHINE_TOKEN_VAULT_REF,
     OWNER_SESSION_VAULT_REF,
-    get_vault,
     clear_spoke_credentials,
     publish_spoke_credentials,
     read_vault_secret,
@@ -289,22 +287,7 @@ def test_s2_all_credential_writers_enforce_vault_only_and_app903(
         finally:
             set_vault_factory(prev)
 
-        # 2. /api/setup/rotate-machine -> 503 APP-903, zero DB token
-        orig_tok, orig_sess = _connect_cleanly()
-        rot_vault_1 = _ReadExistingWriteFailVault(
-            {MACHINE_TOKEN_VAULT_REF: orig_tok, OWNER_SESSION_VAULT_REF: orig_sess},
-            vault_mode,
-        )
-        prev = set_vault_factory(lambda _db: rot_vault_1)
-        try:
-            res_rm = spoke_client.post("/api/setup/rotate-machine", headers=local_headers, json={})
-            assert res_rm.status_code == 503, res_rm.text
-            assert res_rm.json()["error"]["code"] == "APP-903"
-            _assert_no_db_secrets(spoke_settings.database_path)
-        finally:
-            set_vault_factory(prev)
-
-        # 3. setup_wizard.rotate_spoke_machine_token -> ok=False APP-903, zero DB token
+        # 2. setup_wizard.rotate_spoke_machine_token -> ok=False APP-903, zero DB token
         orig_tok2, orig_sess2 = _connect_cleanly()
         rot_vault_2 = _ReadExistingWriteFailVault(
             {MACHINE_TOKEN_VAULT_REF: orig_tok2, OWNER_SESSION_VAULT_REF: orig_sess2},
@@ -319,48 +302,17 @@ def test_s2_all_credential_writers_enforce_vault_only_and_app903(
         finally:
             set_vault_factory(prev)
 
-        # 4. DesktopBridge.rotate_owner_session -> ok=False APP-903, zero DB ownerSession
-        orig_tok3, orig_sess3 = _connect_cleanly()
-        rot_vault_3 = _ReadExistingWriteFailVault(
-            {MACHINE_TOKEN_VAULT_REF: orig_tok3, OWNER_SESSION_VAULT_REF: orig_sess3},
-            vault_mode,
-        )
-        prev = set_vault_factory(lambda _db: rot_vault_3)
-        try:
-            rot_bridge = DesktopBridge(
-                NativeClient(spoke_settings, port=17360),
-                preferences=tmp_path / f"prefs_rot_{vault_mode}.json",
-                vault=rot_vault_3,
-            )
-            res_ro = rot_bridge.rotate_owner_session()
-            assert res_ro["ok"] is False
-            assert res_ro["code"] == "APP-903"
-            _assert_no_db_secrets(spoke_settings.database_path)
-        finally:
-            set_vault_factory(prev)
-
-        # 5. /api/setup/owner-session & DesktopBridge acquisition writers -> APP-903
+        # 3. DesktopBridge acquisition writers -> APP-903
         prev = set_vault_factory(_bad_factory)
         try:
-            res_os = spoke_client.post(
-                "/api/setup/owner-session",
-                headers=local_headers,
-                json={"username": "owner@example.com", "password": PASSWORD},
-            )
-            assert res_os.status_code == 503, res_os.text
-            assert res_os.json()["error"]["code"] == "APP-903"
-
             bridge = DesktopBridge(
                 NativeClient(spoke_settings, port=17360),
                 preferences=tmp_path / f"prefs_{vault_mode}.json",
                 vault=bad_vault,
             )
-            for res in (
-                bridge.sign_in("owner@example.com", PASSWORD, "BadBridge"),
-                bridge.sign_in_owner("owner@example.com", PASSWORD),
-            ):
-                assert res["ok"] is False
-                assert res["code"] == "APP-903"
+            res = bridge.sign_in("owner@example.com", PASSWORD, "BadBridge")
+            assert res["ok"] is False
+            assert res["code"] == "APP-903"
 
             # DesktopBridge.create_account on a fresh hub with no account yet
             monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
@@ -868,7 +820,7 @@ def test_s4_vacuum_failure_logs_redacted_warning_preserves_marker_and_retries(
 # ---------------------------------------------------------------------------
 
 
-def test_s8_delayed_rotation_success_after_sign_out_owner_revokes_new_session(
+def test_s8_delayed_rotation_success_after_sign_out_revokes_new_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _hub_settings, hub_client, spoke_settings, _spoke_app = _create_paired_hub_and_spoke(
@@ -906,8 +858,8 @@ def test_s8_delayed_rotation_success_after_sign_out_owner_revokes_new_session(
     allow_return = threading.Event()
     issued_tokens: list[str] = []
 
-    def _delayed_rotate(hub_url, path, headers, *, client=None, timeout=8.0):
-        res = real_post(hub_url, path, headers, client=client, timeout=timeout)
+    def _delayed_rotate(hub_url, path, headers, *, json_body=None, client=None, timeout=8.0):
+        res = real_post(hub_url, path, headers, json_body=json_body, client=client, timeout=timeout)
         if path == "/api/auth/session/rotate":
             tok = auth_model.extract_cookie(res) or ""
             if tok:
@@ -933,7 +885,7 @@ def test_s8_delayed_rotation_success_after_sign_out_owner_revokes_new_session(
     assert rotated_on_hub.wait(timeout=3.0)
 
     # Owner signs out while the delayed rotation response is still in flight.
-    signout_res = bridge.sign_out_owner()
+    signout_res = bridge.sign_out()
     assert signout_res["ok"] is True
     assert read_vault_secret(db_path, OWNER_SESSION_VAULT_REF, vault=vault) is None
 
@@ -942,7 +894,7 @@ def test_s8_delayed_rotation_success_after_sign_out_owner_revokes_new_session(
 
     assert rot_error == ["AUTH-107"]
     assert read_vault_secret(db_path, OWNER_SESSION_VAULT_REF, vault=vault) is None
-    assert bridge.owner_session_status()["hasOwnerSession"] is False
+    assert bridge._owner_session_status()["hasOwnerSession"] is False
     assert len(issued_tokens) == 1
     probe_new = hub_client.get(
         "/api/machines",
@@ -1015,7 +967,7 @@ def test_s8_stale_rotation_rejection_does_not_delete_newer_sign_in_credential(
     assert rotate_started.wait(timeout=3.0)
 
     # Fresh sign-in replaces the legacy session before the stale rejection returns.
-    signin = bridge.sign_in_owner("owner@example.com", PASSWORD, "WinnerPC")
+    signin = bridge.sign_in("owner@example.com", PASSWORD, "WinnerPC")
     assert signin["ok"] is True
     winner_tok = read_vault_secret(db_path, OWNER_SESSION_VAULT_REF, vault=vault)
     assert winner_tok and winner_tok != old_session
@@ -1025,7 +977,7 @@ def test_s8_stale_rotation_rejection_does_not_delete_newer_sign_in_credential(
 
     assert rot_error == ["AUTH-107"]
     assert read_vault_secret(db_path, OWNER_SESSION_VAULT_REF, vault=vault) == winner_tok
-    assert bridge.owner_session_status()["hasOwnerSession"] is True
+    assert bridge._owner_session_status()["hasOwnerSession"] is True
     with connect(db_path) as conn:
         sc = setup_wizard.read_setup_state(conn).get("spokeConfig") or {}
         assert sc.get("ownerSessionRotationRequired") is False
@@ -1414,7 +1366,7 @@ def test_s8_r3_rotation_publishes_before_clear_then_sign_out_revokes_new_token(
         assert read_vault_secret(db_path, OWNER_SESSION_VAULT_REF, vault=vault) is None
         assert read_vault_secret(db_path, MACHINE_TOKEN_VAULT_REF, vault=vault) is None
         assert read_vault_secret(db_path, PENDING_REVOKE_VAULT_REF, vault=vault) is None
-        assert bridge.owner_session_status()["hasOwnerSession"] is False
+        assert bridge._owner_session_status()["hasOwnerSession"] is False
         with connect(db_path) as conn:
             sc = setup_wizard.read_setup_state(conn).get("spokeConfig") or {}
         assert sc.get("signedOut") is True
@@ -1454,21 +1406,36 @@ def test_s8_r3_rotation_publishes_after_sign_out_clear_is_revoked(
         _wait_for_first_sync(bridge)
         old_tok = read_vault_secret(db_path, OWNER_SESSION_VAULT_REF, vault=vault) or ""
 
+        with connect(db_path) as conn:
+            st = setup_wizard.read_setup_state(conn)
+            st["spokeConfig"]["ownerSessionRotationRequired"] = True
+            setup_wizard.write_setup_state(conn, st)
+
         rot_issued = threading.Event()
         allow_publish = threading.Event()
         issued_tokens: list[str] = []
-        real_pub = bridge._publish_owner_session
+        real_pub = connection_secrets.publish_spoke_credentials
 
-        def _paused_publish(new_tok, *args, **kwargs):
-            issued_tokens.append(new_tok)
-            rot_issued.set()
-            assert allow_publish.wait(timeout=4.0)
-            return real_pub(new_tok, *args, **kwargs)
+        def _paused_publish(db_p, *, owner_session=None, **kwargs):
+            if owner_session:
+                issued_tokens.append(owner_session)
+                rot_issued.set()
+                assert allow_publish.wait(timeout=4.0)
+            return real_pub(db_p, owner_session=owner_session, **kwargs)
 
-        monkeypatch.setattr(bridge, "_publish_owner_session", _paused_publish)
+        monkeypatch.setattr(connection_secrets, "publish_spoke_credentials", _paused_publish)
 
-        rot_box: list[dict] = []
-        t_rot = threading.Thread(target=lambda: rot_box.append(bridge.rotate_owner_session()))
+        rot_box: list[str] = []
+
+        def _run_rot():
+            try:
+                sync.ensure_fresh_owner_session(
+                    db_path, HUB_URL, old_tok, vault=vault, client=hub_client
+                )
+            except CodedError as exc:
+                rot_box.append(exc.code)
+
+        t_rot = threading.Thread(target=_run_rot)
         t_rot.start()
         assert rot_issued.wait(timeout=3.0)
 
@@ -1480,15 +1447,13 @@ def test_s8_r3_rotation_publishes_after_sign_out_clear_is_revoked(
         allow_publish.set()
         t_rot.join(timeout=4.0)
 
-        assert len(rot_box) == 1
-        assert rot_box[0]["ok"] is False
-        assert rot_box[0]["code"] == "AUTH-107"
+        assert rot_box == ["AUTH-107"]
         assert len(issued_tokens) == 1
         new_tok = issued_tokens[0]
         assert read_vault_secret(db_path, OWNER_SESSION_VAULT_REF, vault=vault) is None
         assert read_vault_secret(db_path, MACHINE_TOKEN_VAULT_REF, vault=vault) is None
         assert read_vault_secret(db_path, PENDING_REVOKE_VAULT_REF, vault=vault) is None
-        assert bridge.owner_session_status()["hasOwnerSession"] is False
+        assert bridge._owner_session_status()["hasOwnerSession"] is False
         with connect(db_path) as conn:
             sc = setup_wizard.read_setup_state(conn).get("spokeConfig") or {}
         assert sc.get("signedOut") is True
@@ -1524,7 +1489,7 @@ def test_s8_r3_offline_revoke_queues_in_vault_only_and_flushes_on_next_hub_conta
             vault=vault,
         )
         with hub_client:
-            # 1) sign_out_owner offline leaves machine token intact; next sync_once flushes pending revoke
+            # 1) owner-only clear + offline revoke leaves machine token intact; next sync_once flushes pending revoke
             res_in = bridge.sign_in("owner@example.com", PASSWORD, "R3OfflinePC")
             assert res_in["ok"] is True
             _wait_for_first_sync(bridge)
@@ -1548,11 +1513,10 @@ def test_s8_r3_offline_revoke_queues_in_vault_only_and_flushes_on_next_hub_conta
                     raise httpx.ConnectError("offline")
 
             monkeypatch.setattr(httpx, "Client", _OfflineClient)
-            so_owner = bridge.sign_out_owner()
-            assert so_owner["ok"] is False
-            assert so_owner["code"] == "NET-001"
+            bridge._clear_owner_session()
+            connection_secrets.revoke_or_queue_owner_session(db_path, HUB_URL, tok1, vault=vault)
             assert read_vault_secret(db_path, OWNER_SESSION_VAULT_REF, vault=vault) is None
-            assert bridge.owner_session_status()["hasOwnerSession"] is False
+            assert bridge._owner_session_status()["hasOwnerSession"] is False
 
             pending = read_pending_revokes(db_path, vault=vault)
             assert any(item["token"] == tok1 for item in pending)
@@ -1601,7 +1565,7 @@ def test_s8_r3_offline_revoke_queues_in_vault_only_and_flushes_on_next_hub_conta
             assert OWNER_SESSION_VAULT_REF not in vault.items
             assert MACHINE_TOKEN_VAULT_REF not in vault.items
             assert PENDING_REVOKE_VAULT_REF in vault.items
-            assert bridge.owner_session_status()["hasOwnerSession"] is False
+            assert bridge._owner_session_status()["hasOwnerSession"] is False
 
             with connect(db_path) as conn:
                 st = setup_wizard.read_setup_state(conn)
@@ -1611,7 +1575,7 @@ def test_s8_r3_offline_revoke_queues_in_vault_only_and_flushes_on_next_hub_conta
             assert st["spokeConfig"].get("signedOut") is True
             assert tok2 not in " ".join(f"{k}:{v}" for k, v in rows)
 
-            # Next hub contact via list_owner_sessions / sign_in flushes tok2 + machine revoke
+            # Next hub contact via sign_in flushes tok2 + machine revoke
             monkeypatch.setitem(sync._HUB_TEST_CLIENTS, HUB_URL, hub_client)
             res_in3 = bridge.sign_in("owner@example.com", PASSWORD, "R3OfflinePC")
             assert res_in3["ok"] is True
@@ -1783,7 +1747,6 @@ def test_b4_r3_commit_failure_does_not_clobber_concurrent_winner_credentials(
 def test_s9_r4_rejected_and_redirected_revokes_stay_queued_per_operation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import httpx
     from spend_app.connection_secrets import (
         enqueue_pending_revokes,
         flush_pending_revokes,
@@ -1890,7 +1853,7 @@ def test_s9_r4_rejected_and_redirected_revokes_stay_queued_per_operation(
     assert remaining["br_s_429"]["lastError"] == "AUTH-102"
     assert remaining["br_s_429"].get("nextAttemptAt")
 
-    # 3) Stale rotation cleanup in ensure_fresh_owner_session & DesktopBridge.rotate_owner_session
+    # 3) Stale rotation cleanup in ensure_fresh_owner_session
     # must queue orphaned replacement tokens on 403/429/302 (never discard)
     _hub_settings, hub_client, spoke_settings, _spoke_app = _create_paired_hub_and_spoke(
         tmp_path / "stale_sub", monkeypatch
@@ -1955,7 +1918,7 @@ def test_s9_r4_rejected_and_redirected_revokes_stay_queued_per_operation(
         t = threading.Thread(target=_worker)
         t.start()
         assert rotated_evt.wait(timeout=3.0)
-        assert bridge.sign_out_owner()["ok"] is True
+        bridge._clear_owner_session()
         release_evt.set()
         t.join(timeout=3.0)
 
@@ -1964,43 +1927,53 @@ def test_s9_r4_rejected_and_redirected_revokes_stay_queued_per_operation(
         queued = read_pending_revokes(stale_db, vault=stale_vault)
         assert any(q["kind"] == "owner_logout" and q["token"] == issued_new[0] for q in queued)
 
-        # Also test DesktopBridge.rotate_owner_session stale-rotation cleanup queuing on 429
+        # Also verify ensure_fresh_owner_session stale-rotation cleanup queuing on 429
         monkeypatch.setattr(sync, "_hub_post_with_cookie_isolation", real_post)
-        res_relogin = bridge.sign_in_owner("owner@example.com", PASSWORD, "R4BridgeStale")
+        res_relogin = bridge.sign_in("owner@example.com", PASSWORD, "R4BridgeStale")
         assert res_relogin["ok"] is True
-        real_call_hub = bridge._call_hub
+        _wait_for_first_sync(bridge)
+        tok_429 = read_vault_secret(stale_db, OWNER_SESSION_VAULT_REF, vault=stale_vault) or ""
+        with connect(stale_db) as conn:
+            st_429 = setup_wizard.read_setup_state(conn)
+            st_429["spokeConfig"]["ownerSessionRotationRequired"] = True
+            setup_wizard.write_setup_state(conn, st_429)
+
         b_rot_evt = threading.Event()
         b_rel_evt = threading.Event()
         b_issued: list[str] = []
 
-        def _bridge_call_hub(hub_url, method, p, **kw):
-            if p == "/api/auth/session/rotate":
-                data, res, err = real_call_hub(hub_url, method, p, **kw)
-                tok = auth_model.extract_cookie(res) or ""
+        def _intercept_429(hub_url, path, headers, *, client=None, timeout=8.0, json_body=None):
+            if path == "/api/auth/session/rotate":
+                r = real_post(hub_url, path, headers, json_body=json_body, client=client, timeout=timeout)
+                tok = auth_model.extract_cookie(r) or ""
                 if tok:
                     b_issued.append(tok)
                 b_rot_evt.set()
                 assert b_rel_evt.wait(timeout=3.0)
-                return data, res, err
-            if p == "/api/auth/logout" and b_issued and kw.get("token") == b_issued[0]:
-                fake_429 = _FakeRes(429, {"error": {"code": "AUTH-102"}})
-                return None, fake_429, {"ok": False, "code": "AUTH-102", "error": "rate limited"}
-            return real_call_hub(hub_url, method, p, **kw)
+                return r
+            if path == "/api/auth/logout" and b_issued and headers.get("Authorization") == f"Bearer {b_issued[0]}":
+                return _FakeRes(429, {"error": {"code": "AUTH-102"}})
+            return real_post(hub_url, path, headers, json_body=json_body, client=client, timeout=timeout)
 
-        monkeypatch.setattr(bridge, "_call_hub", _bridge_call_hub)
-        b_rot_res: list[dict] = []
+        monkeypatch.setattr(sync, "_hub_post_with_cookie_isolation", _intercept_429)
+        b_errs: list[str] = []
 
         def _b_worker():
-            b_rot_res.append(bridge.rotate_owner_session())
+            try:
+                sync.ensure_fresh_owner_session(
+                    stale_db, HUB_URL, tok_429, vault=stale_vault, client=hub_client
+                )
+            except CodedError as exc:
+                b_errs.append(exc.code)
 
         t_b = threading.Thread(target=_b_worker)
         t_b.start()
         assert b_rot_evt.wait(timeout=3.0)
-        assert bridge.sign_out_owner()["ok"] is True
+        bridge._clear_owner_session()
         b_rel_evt.set()
         t_b.join(timeout=3.0)
 
-        assert len(b_rot_res) == 1 and b_rot_res[0]["code"] == "AUTH-107"
+        assert b_errs == ["AUTH-107"]
         assert len(b_issued) == 1
         queued_b = read_pending_revokes(stale_db, vault=stale_vault)
         assert any(q["kind"] == "owner_logout" and q["token"] == b_issued[0] for q in queued_b)
@@ -2179,7 +2152,7 @@ def test_s11_r4_hub_self_revoke_and_full_sign_out_revokes_machine_only_credentia
         assert r_replay.status_code == 401
         assert r_replay.json()["error"]["code"] == "DEV-301"
 
-        # 2) Client machine-only full sign_out online: sign_in -> sign_out_owner -> sign_out
+        # 2) Client machine-only full sign_out online: sign_in -> _clear_owner_session -> sign_out
         vault = _MemoryVault()
         prev_factory = set_vault_factory(lambda _db: vault)
         try:
@@ -2194,7 +2167,7 @@ def test_s11_r4_hub_self_revoke_and_full_sign_out_revokes_machine_only_credentia
             mtok1 = read_vault_secret(spoke_settings.database_path, MACHINE_TOKEN_VAULT_REF, vault=vault) or ""
             assert mtok1
 
-            assert bridge.sign_out_owner() == {"ok": True}
+            bridge._clear_owner_session()
             assert read_vault_secret(spoke_settings.database_path, OWNER_SESSION_VAULT_REF, vault=vault) is None
             assert read_vault_secret(spoke_settings.database_path, MACHINE_TOKEN_VAULT_REF, vault=vault) == mtok1
 
@@ -2209,7 +2182,7 @@ def test_s11_r4_hub_self_revoke_and_full_sign_out_revokes_machine_only_credentia
             _wait_for_first_sync(bridge)
             mtok2 = read_vault_secret(spoke_settings.database_path, MACHINE_TOKEN_VAULT_REF, vault=vault) or ""
             assert mtok2
-            assert bridge.sign_out_owner() == {"ok": True}
+            bridge._clear_owner_session()
 
             sync._HUB_TEST_CLIENTS.clear()
 
@@ -2469,9 +2442,7 @@ def test_b5_r4_queue_bounds_dedupe_backoff_broken_vault_and_diagnostics_count(
 def test_s12_r5_stale_machine_rotation_after_full_sign_out_revokes_or_queues_successor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import httpx
     from spend_app.connection_secrets import (
-        PENDING_REVOKE_VAULT_REF,
         flush_pending_revokes,
         read_pending_revokes,
     )
@@ -2505,7 +2476,7 @@ def test_s12_r5_stale_machine_rotation_after_full_sign_out_revokes_or_queues_suc
         # 1) Background rotate_spoke_machine_token: M -> N online while full sign_out clears M
         assert bridge.sign_in("owner@example.com", PASSWORD, "S12BgOnline")["ok"] is True
         _wait_for_first_sync(bridge)
-        assert bridge.sign_out_owner() == {"ok": True}
+        bridge._clear_owner_session()
         mtok_bg = read_vault_secret(spoke_db, MACHINE_TOKEN_VAULT_REF, vault=vault) or ""
         assert mtok_bg
 
@@ -2549,8 +2520,8 @@ def test_s12_r5_stale_machine_rotation_after_full_sign_out_revokes_or_queues_suc
         monkeypatch.setattr(sync, "_hub_post_with_cookie_isolation", real_post)
         assert bridge.sign_in("owner@example.com", PASSWORD, "S12BgOffline")["ok"] is True
         _wait_for_first_sync(bridge)
-        assert bridge.sign_out_owner() == {"ok": True}
-        mtok_bg_q = read_vault_secret(spoke_db, MACHINE_TOKEN_VAULT_REF, vault=vault) or ""
+        bridge._clear_owner_session()
+        assert read_vault_secret(spoke_db, MACHINE_TOKEN_VAULT_REF, vault=vault)
 
         bg_rot_evt.clear()
         bg_rel_evt.clear()
@@ -2587,50 +2558,6 @@ def test_s12_r5_stale_machine_rotation_after_full_sign_out_revokes_or_queues_suc
         monkeypatch.setattr(sync, "_hub_post_with_cookie_isolation", real_post)
         assert flush_pending_revokes(spoke_db, HUB_URL, vault=vault, client=hub_client, ignore_backoff=True) is True
         assert sync.authenticate_machine_token(hub_settings.database_path, bg_issued_n2[0]) is None
-
-        # 3) Explicit POST /api/setup/rotate-machine: M -> N online & queued when self-revoke fails
-        assert bridge.sign_in("owner@example.com", PASSWORD, "S12RouteOnline")["ok"] is True
-        _wait_for_first_sync(bridge)
-        assert bridge.sign_out_owner() == {"ok": True}
-        rt_evt = threading.Event()
-        rt_rel = threading.Event()
-        rt_issued: list[str] = []
-
-        def _intercept_route(hub_url, path, headers, *, client=None, timeout=8.0, json_body=None):
-            if path == "/api/auth/machine/rotate":
-                r = real_post(hub_url, path, headers, json_body=json_body, client=client, timeout=timeout)
-                if r.status_code == 200:
-                    rt_issued.append(str(r.json().get("token") or ""))
-                rt_evt.set()
-                assert rt_rel.wait(timeout=3.0)
-                return r
-            return real_post(hub_url, path, headers, json_body=json_body, client=client, timeout=timeout)
-
-        monkeypatch.setattr(sync, "_hub_post_with_cookie_isolation", _intercept_route)
-        route_resp: list[object] = []
-        with TestClient(spoke_app) as spoke_client:
-            def _rt_worker():
-                route_resp.append(
-                    spoke_client.post(
-                        "/api/setup/rotate-machine",
-                        headers={"X-BURNRATE-Request": "1", "X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION)},
-                        json={},
-                    )
-                )
-
-            t_rt = threading.Thread(target=_rt_worker)
-            t_rt.start()
-            assert rt_evt.wait(timeout=3.0)
-            assert bridge.sign_out() == {"ok": True}
-            rt_rel.set()
-            t_rt.join(timeout=3.0)
-
-        assert len(route_resp) == 1
-        assert route_resp[0].status_code == 409
-        assert route_resp[0].json()["error"]["code"] == "DEV-301"
-        assert len(rt_issued) == 1 and rt_issued[0]
-        assert sync.authenticate_machine_token(hub_settings.database_path, rt_issued[0]) is None
-        assert PENDING_REVOKE_VAULT_REF not in vault.items
 
         # 4) Failed / fenced auth & rotation callers revoke/queue issued tokens cleanly:
         # 4a) DesktopBridge._authenticate_and_register when /api/machines fails revokes session_token
@@ -2793,11 +2720,9 @@ def test_b5_r5_sign_out_persists_revoke_intent_before_clearing_credentials(
 ) -> None:
     import httpx
     from spend_app.connection_secrets import (
-        MAX_PENDING_REVOKES,
         PENDING_REVOKE_VAULT_REF,
         enqueue_pending_revokes,
         pending_revoke_count,
-        read_pending_revokes,
     )
 
     class _OfflineClient:
@@ -2861,31 +2786,7 @@ def test_b5_r5_sign_out_persists_revoke_intent_before_clearing_credentials(
         assert st_63["spokeConfig"]["enabled"] is True
         assert not st_63["spokeConfig"].get("signedOut")
 
-    # 2) 64 existing + 1 new (sign_out_owner) offline -> APP-903; owner session & SQLite intact
-    db_64 = tmp_path / "b5r5_64.db"
-    v_64 = _MemoryVault()
-    _seed_spoke(db_64, v_64, owner="br_s_preserve_64", machine="br_m_preserve_64")
-    enqueue_pending_revokes(
-        db_64,
-        [{"kind": "owner_logout", "token": f"br_s_full64_{i}", "hubUrl": HUB_URL} for i in range(MAX_PENDING_REVOKES)],
-        vault=v_64,
-    )
-    bridge_64 = DesktopBridge(
-        NativeClient(_make_settings(db_64), port=17431),
-        preferences=tmp_path / "b5r5_64_prefs.json",
-        vault=v_64,
-    )
-    assert bridge_64._get_owner_session_token() == "br_s_preserve_64"
-    res_64 = bridge_64.sign_out_owner()
-    assert res_64["ok"] is False and res_64["code"] == "APP-903"
-    assert read_vault_secret(db_64, OWNER_SESSION_VAULT_REF, vault=v_64) == "br_s_preserve_64"
-    assert read_vault_secret(db_64, MACHINE_TOKEN_VAULT_REF, vault=v_64) == "br_m_preserve_64"
-    assert bridge_64._owner_session == "br_s_preserve_64"
-    assert pending_revoke_count(db_64, vault=v_64) == MAX_PENDING_REVOKES
-    with connect(db_64) as conn:
-        assert not setup_wizard.read_setup_state(conn)["spokeConfig"].get("signedOut")
-
-    # 3) _WriteFailVault failing on PENDING_REVOKE_VAULT_REF for BOTH sign_out and sign_out_owner
+    # 2) _WriteFailVault failing on PENDING_REVOKE_VAULT_REF for sign_out -> APP-903; creds intact
     class _WriteFailPendingVault(_MemoryVault):
         def put(self, secret: str, ref: str | None = None) -> str:
             if ref == PENDING_REVOKE_VAULT_REF:
@@ -2903,12 +2804,6 @@ def test_b5_r5_sign_out_persists_revoke_intent_before_clearing_credentials(
     assert bridge_wf._get_owner_session_token() == "br_s_wf"
     assert bridge_wf._get_machine_token() == "br_m_wf"
 
-    res_wf_owner = bridge_wf.sign_out_owner()
-    assert res_wf_owner["ok"] is False and res_wf_owner["code"] == "APP-903"
-    assert read_vault_secret(db_wf, OWNER_SESSION_VAULT_REF, vault=v_wf) == "br_s_wf"
-    assert read_vault_secret(db_wf, MACHINE_TOKEN_VAULT_REF, vault=v_wf) == "br_m_wf"
-    assert bridge_wf._owner_session == "br_s_wf"
-
     res_wf_full = bridge_wf.sign_out()
     assert res_wf_full["ok"] is False and res_wf_full["code"] == "APP-903"
     assert read_vault_secret(db_wf, OWNER_SESSION_VAULT_REF, vault=v_wf) == "br_s_wf"
@@ -2921,7 +2816,7 @@ def test_b5_r5_sign_out_persists_revoke_intent_before_clearing_credentials(
         assert st_wf["spokeConfig"]["enabled"] is True
         assert not st_wf["spokeConfig"].get("signedOut")
 
-    # 4) Normal online sign_out & sign_out_owner: write PENDING_REVOKE BEFORE deleting creds, then ack
+    # 3) Normal online sign_out: write PENDING_REVOKE BEFORE deleting creds, then ack
     ops: list[tuple[str, str]] = []
 
     class _RecordingVault(_MemoryVault):
@@ -2946,11 +2841,6 @@ def test_b5_r5_sign_out_persists_revoke_intent_before_clearing_credentials(
         with hub_client:
             assert bridge_on.sign_in("owner@example.com", PASSWORD, "B5R5Online")["ok"] is True
             _wait_for_first_sync(bridge_on)
-            ops.clear()
-            assert bridge_on.sign_out_owner() == {"ok": True}
-            assert ops.index(("put", PENDING_REVOKE_VAULT_REF)) < ops.index(("delete", OWNER_SESSION_VAULT_REF))
-            assert PENDING_REVOKE_VAULT_REF not in v_rec.items
-
             ops.clear()
             assert bridge_on.sign_out() == {"ok": True}
             assert ops.index(("put", PENDING_REVOKE_VAULT_REF)) < ops.index(("delete", MACHINE_TOKEN_VAULT_REF))
@@ -3045,3 +2935,358 @@ def test_b6_r5_flush_backoff_and_retry_after_measured_after_http_duration(
         db_path, HUB_URL, vault=vault, client=_SlowClient(), clock=lambda: clock_now[0]
     ) is False
     assert calls == ["br_s_b6_slow2"]
+# ---------------------------------------------------------------------------
+# Round 6 ? S13, B7, B8 regression tests
+# ---------------------------------------------------------------------------
+
+
+def test_s13_r6_snapshot_failure_fails_closed_and_signed_out_login_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _hub_settings, hub_client, spoke_settings, _spoke_app = _create_paired_hub_and_spoke(
+        tmp_path / "s13", monkeypatch
+    )
+    db_path = spoke_settings.database_path
+    vault = _MemoryVault()
+    prev_factory = set_vault_factory(lambda _db: vault)
+    try:
+        monkeypatch.setattr(sync, "sync_once", lambda *_a, **_kw: {"ok": True})
+        bridge = DesktopBridge(
+            NativeClient(spoke_settings, port=17440),
+            preferences=tmp_path / "s13_prefs.json",
+            vault=vault,
+        )
+
+        with hub_client:
+            # 1) Snapshot failure on an existing DB returns APP-903 BEFORE any _call_hub call
+            initialize(db_path)
+            called_hub: list[tuple[str, str]] = []
+            real_call_hub = bridge._call_hub
+
+            def _spy_call_hub(hub_url, method, path, **kw):
+                called_hub.append((method, path))
+                return real_call_hub(hub_url, method, path, **kw)
+
+            monkeypatch.setattr(bridge, "_call_hub", _spy_call_hub)
+            real_read = setup_wizard.read_setup_state
+            monkeypatch.setattr(
+                setup_wizard,
+                "read_setup_state",
+                lambda *_a, **_kw: (_ for _ in ()).throw(sqlite3.OperationalError("db corrupt")),
+            )
+
+            res_snap_fail = bridge.sign_in("owner@example.com", PASSWORD, "S13SnapFail")
+            assert res_snap_fail["ok"] is False
+            assert res_snap_fail["code"] == "APP-903"
+            assert called_hub == []
+
+            res_create_fail = bridge.create_account("owner@example.com", PASSWORD, "S13SnapCreateFail")
+            assert res_create_fail["ok"] is False
+            assert res_create_fail["code"] == "APP-903"
+            assert called_hub == []
+
+            # 2) Restore DB reads; fresh sign_in after full sign_out (signedOut=True) succeeds
+            monkeypatch.setattr(setup_wizard, "read_setup_state", real_read)
+            monkeypatch.setattr(bridge, "_call_hub", real_call_hub)
+
+            res_in1 = bridge.sign_in("owner@example.com", PASSWORD, "S13FirstPC")
+            assert res_in1["ok"] is True
+            _wait_for_first_sync(bridge)
+            assert bridge.sign_out() == {"ok": True}
+            with connect(db_path) as conn:
+                assert setup_wizard.read_setup_state(conn)["spokeConfig"].get("signedOut") is True
+
+            res_in2 = bridge.sign_in("owner@example.com", PASSWORD, "S13SecondPC")
+            assert res_in2["ok"] is True
+            _wait_for_first_sync(bridge)
+            assert read_vault_secret(db_path, OWNER_SESSION_VAULT_REF, vault=vault)
+            assert read_vault_secret(db_path, MACHINE_TOKEN_VAULT_REF, vault=vault)
+            with connect(db_path) as conn:
+                sc_after = setup_wizard.read_setup_state(conn)["spokeConfig"]
+                assert not sc_after.get("signedOut")
+
+            # 3) Concurrent sign_out during in-flight sign_in fences publication & revokes BOTH tokens
+            assert bridge.sign_out() == {"ok": True}
+            reg_done = threading.Event()
+            allow_pub = threading.Event()
+            minted_pair: list[str] = []
+
+            def _pause_on_reg(hub_url, method, path, **kw):
+                data, res, err = real_call_hub(hub_url, method, path, **kw)
+                if path == "/api/account/login" and err is None:
+                    minted_pair.append(auth_model.extract_cookie(res) or "")
+                if path == "/api/machines" and method == "POST" and err is None and isinstance(data, dict):
+                    minted_pair.append(str(data.get("token") or ""))
+                    reg_done.set()
+                    assert allow_pub.wait(timeout=4.0)
+                return data, res, err
+
+            monkeypatch.setattr(bridge, "_call_hub", _pause_on_reg)
+            in_box: list[dict] = []
+            t_in = threading.Thread(
+                target=lambda: in_box.append(bridge.sign_in("owner@example.com", PASSWORD, "S13RacePC"))
+            )
+            t_in.start()
+            assert reg_done.wait(timeout=3.0)
+
+            assert bridge.sign_out() == {"ok": True}
+            allow_pub.set()
+            t_in.join(timeout=4.0)
+
+            assert len(in_box) == 1
+            assert in_box[0]["ok"] is False
+            assert len(minted_pair) == 2
+            assert read_vault_secret(db_path, OWNER_SESSION_VAULT_REF, vault=vault) is None
+            assert read_vault_secret(db_path, MACHINE_TOKEN_VAULT_REF, vault=vault) is None
+            assert hub_client.get(
+                "/api/machines", headers={"Authorization": f"Bearer {minted_pair[0]}"}
+            ).status_code == 401
+            assert sync.authenticate_machine_token(_hub_settings.database_path, minted_pair[1]) is None
+    finally:
+        set_vault_factory(prev_factory)
+
+
+def test_b7_r6_machine_rotation_and_bg_sync_succeed_after_owner_only_clear(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hub_settings, hub_client, spoke_settings, _spoke_app = _create_paired_hub_and_spoke(
+        tmp_path / "b7", monkeypatch
+    )
+    db_path = spoke_settings.database_path
+    vault = _MemoryVault()
+    prev_factory = set_vault_factory(lambda _db: vault)
+    try:
+        bridge = DesktopBridge(
+            NativeClient(spoke_settings, port=17441),
+            preferences=tmp_path / "b7_prefs.json",
+            vault=vault,
+        )
+        with hub_client:
+            real_sync_once = sync.sync_once
+            monkeypatch.setattr(sync, "sync_once", lambda *_a, **_kw: {"ok": True})
+            assert bridge.sign_in("owner@example.com", PASSWORD, "B7MachinePC")["ok"] is True
+            _wait_for_first_sync(bridge)
+            monkeypatch.setattr(sync, "sync_once", real_sync_once)
+
+            tok_m = read_vault_secret(db_path, MACHINE_TOKEN_VAULT_REF, vault=vault) or ""
+            assert tok_m.startswith("br_m_")
+
+            # Owner-only clear with mark_signed_out=True (simulates owner expiry/clear without full sign-out)
+            clear_spoke_credentials(
+                db_path,
+                clear_owner_session=True,
+                mark_signed_out=True,
+                vault=vault,
+            )
+            assert read_vault_secret(db_path, OWNER_SESSION_VAULT_REF, vault=vault) is None
+            assert read_vault_secret(db_path, MACHINE_TOKEN_VAULT_REF, vault=vault) == tok_m
+
+            # 1) Direct rotate_spoke_machine_token succeeds (M -> N) and revokes M
+            rot_res = setup_wizard.rotate_spoke_machine_token(spoke_settings, client=hub_client)
+            assert rot_res is not None and rot_res.get("ok") is True, rot_res
+            tok_n = read_vault_secret(db_path, MACHINE_TOKEN_VAULT_REF, vault=vault) or ""
+            assert tok_n and tok_n != tok_m
+            assert sync.authenticate_machine_token(hub_settings.database_path, tok_m) is None
+            assert sync.authenticate_machine_token(hub_settings.database_path, tok_n) is not None
+
+            # 2) maybe_run_configured_spoke_sync with rotationRequired=True rotates N -> P and syncs
+            with connect(db_path) as conn:
+                st = setup_wizard.read_setup_state(conn)
+                st["spokeConfig"]["rotationRequired"] = True
+                setup_wizard.write_setup_state(conn, st)
+
+            bg_res = setup_wizard.maybe_run_configured_spoke_sync(
+                spoke_settings, PricingEngine([]), client=hub_client
+            )
+            assert bg_res is not None and bg_res.get("ok") is True, bg_res
+            assert bg_res.get("tokenRotated") is True
+            tok_p = read_vault_secret(db_path, MACHINE_TOKEN_VAULT_REF, vault=vault) or ""
+            assert tok_p and tok_p != tok_n
+            assert sync.authenticate_machine_token(hub_settings.database_path, tok_n) is None
+            assert sync.authenticate_machine_token(hub_settings.database_path, tok_p) is not None
+
+            # 3) Subsequent background sync continues working with P
+            bg_res2 = setup_wizard.maybe_run_configured_spoke_sync(
+                spoke_settings, PricingEngine([]), client=hub_client
+            )
+            assert bg_res2 is not None and bg_res2.get("ok") is True, bg_res2
+    finally:
+        set_vault_factory(prev_factory)
+
+
+def test_b8_r6_failed_cleanup_and_queue_retains_in_memory_warns_and_flushes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from spend_app import freshness
+    from spend_app.connection_secrets import (
+        MAX_PENDING_REVOKES,
+        PENDING_REVOKE_VAULT_REF,
+        clear_in_memory_pending_revokes,
+        enqueue_pending_revokes,
+        flush_pending_revokes,
+        has_revoke_retention_warning,
+        pending_revoke_count,
+        retained_pending_revoke_count,
+    )
+
+    clear_in_memory_pending_revokes()
+    secret_hub = "https://b8-secret-hub.example.com:8443"
+    hub_settings, hub_client, spoke_settings, spoke_app = _create_paired_hub_and_spoke(
+        tmp_path / "b8", monkeypatch
+    )
+    monkeypatch.setenv("BURNRATE_HUB_URL", secret_hub)
+    monkeypatch.setitem(sync._HUB_TEST_CLIENTS, secret_hub, hub_client)
+    _patch_native_to_local(monkeypatch, spoke_app, port=17442)
+    db_path = spoke_settings.database_path
+
+    class _WriteFailPendingVault(_MemoryVault):
+        def put(self, secret: str, ref: str | None = None) -> str:
+            if ref == PENDING_REVOKE_VAULT_REF:
+                raise LocationError("keychain refused pending revoke write")
+            return super().put(secret, ref)
+
+    class _FakeErrRes:
+        def __init__(self, status_code: int, code: str) -> None:
+            self.status_code = status_code
+            self._payload = {"error": {"code": code}}
+            self.content = json.dumps(self._payload).encode("utf-8")
+            self.headers: dict[str, str] = {}
+            self.cookies: dict[str, str] = {}
+
+        def json(self):
+            return self._payload
+
+    # 1) bridge.sign_in where /api/machines fails and logout+queue both fail -> APP-903 + memory retention
+    v_wf = _WriteFailPendingVault()
+    prev_factory = set_vault_factory(lambda _db: v_wf)
+    try:
+        bridge = DesktopBridge(
+            NativeClient(spoke_settings, port=17442),
+            preferences=tmp_path / "b8_prefs.json",
+            vault=v_wf,
+        )
+        real_call_hub = bridge._call_hub
+        real_post = sync._hub_post_with_cookie_isolation
+        minted_sess: list[str] = []
+
+        def _fail_reg_call(hub_url, method, path, **kw):
+            data, res, err = real_call_hub(hub_url, method, path, **kw)
+            if path == "/api/account/login" and err is None:
+                minted_sess.append(auth_model.extract_cookie(res) or "")
+            if path == "/api/machines" and method == "POST":
+                return None, _FakeErrRes(500, "HUB-501"), {"ok": False, "code": "HUB-501", "message": "err"}
+            return data, res, err
+
+        def _fail_logout_post(hub_url, path, headers, *, client=None, timeout=8.0, json_body=None):
+            if path == "/api/auth/logout":
+                return _FakeErrRes(503, "HUB-501")
+            return real_post(hub_url, path, headers, json_body=json_body, client=client, timeout=timeout)
+
+        monkeypatch.setattr(bridge, "_call_hub", _fail_reg_call)
+        monkeypatch.setattr(sync, "_hub_post_with_cookie_isolation", _fail_logout_post)
+
+        with hub_client, caplog.at_level(logging.WARNING, logger="spend_app.connection_secrets"):
+            res_fail = bridge.sign_in("owner@example.com", PASSWORD, "B8SignInFail")
+
+        assert res_fail["ok"] is False
+        assert res_fail["code"] == "APP-903"
+        assert len(minted_sess) == 1 and minted_sess[0]
+        assert retained_pending_revoke_count() == 1
+        assert has_revoke_retention_warning() is True
+        assert pending_revoke_count(db_path, vault=v_wf) == 1
+        assert "retained in memory" in caplog.text
+        assert minted_sess[0] not in caplog.text
+        assert secret_hub not in caplog.text
+
+        # Surface warning in both freshness.report() and DesktopBridge.get_diagnostics_data()
+        rep_warn = freshness.report(spoke_settings, background=False)
+        assert rep_warn["pendingRevokeRetentionWarning"] is True
+        assert any(i.get("key") == "pending-revoke-retention" and i.get("severity") == "warn" for i in rep_warn["issues"])
+
+        with TestClient(spoke_app):
+            pass
+        diag = bridge.get_diagnostics_data()
+        assert diag["ok"] is True
+        assert diag.get("pendingRevokeRetentionWarning") is True
+        assert diag["pendingRevokeCount"] >= 1
+
+        # Next hub contact flushes retained token even when vault still refuses writes
+        monkeypatch.setattr(sync, "_hub_post_with_cookie_isolation", real_post)
+        with hub_client:
+            assert flush_pending_revokes(db_path, secret_hub, vault=v_wf, client=hub_client, ignore_backoff=True) is True
+            assert hub_client.get("/api/machines", headers={"Authorization": f"Bearer {minted_sess[0]}"}).status_code == 401
+        assert retained_pending_revoke_count() == 0
+        assert has_revoke_retention_warning() is False
+        assert freshness.report(spoke_settings, background=False)["pendingRevokeRetentionWarning"] is False
+        assert "pendingRevokeRetentionWarning" not in bridge.get_diagnostics_data()
+
+        # 2) rotate_spoke_machine_token fence conflict + full queue + failing self-revoke -> APP-903 + retains & flushes
+        monkeypatch.setattr(bridge, "_call_hub", real_call_hub)
+        v_full = _MemoryVault()
+        set_vault_factory(lambda _db: v_full)
+        bridge2 = DesktopBridge(
+            NativeClient(spoke_settings, port=17442),
+            preferences=tmp_path / "b8_prefs2.json",
+            vault=v_full,
+        )
+        with hub_client:
+            real_sync_once = sync.sync_once
+            monkeypatch.setattr(sync, "sync_once", lambda *_a, **_kw: {"ok": True})
+            assert bridge2.sign_in("owner@example.com", PASSWORD, "B8RotateFull")["ok"] is True
+            _wait_for_first_sync(bridge2)
+            monkeypatch.setattr(sync, "sync_once", real_sync_once)
+
+            # Fill pending queue to MAX_PENDING_REVOKES with machine_self_revoke (intercepted with 503 during test)
+            enqueue_pending_revokes(
+                db_path,
+                [{"kind": "machine_self_revoke", "token": f"br_m_fill_{i}", "hubUrl": secret_hub} for i in range(MAX_PENDING_REVOKES)],
+                vault=v_full,
+            )
+
+            rot_evt = threading.Event()
+            rel_evt = threading.Event()
+            issued_m: list[str] = []
+
+            def _intercept_rot_full(hub_url, path, headers, *, client=None, timeout=8.0, json_body=None):
+                if path == "/api/auth/machine/rotate":
+                    r = real_post(hub_url, path, headers, json_body=json_body, client=client, timeout=timeout)
+                    if r.status_code == 200:
+                        issued_m.append(str(r.json().get("token") or ""))
+                    rot_evt.set()
+                    assert rel_evt.wait(timeout=3.0)
+                    return r
+                if path == "/api/machines/self/revoke":
+                    return _FakeErrRes(503, "HUB-501")
+                return real_post(hub_url, path, headers, json_body=json_body, client=client, timeout=timeout)
+
+            monkeypatch.setattr(sync, "_hub_post_with_cookie_isolation", _intercept_rot_full)
+            rot_out: list[object] = []
+            t_r = threading.Thread(
+                target=lambda: rot_out.append(setup_wizard.rotate_spoke_machine_token(spoke_settings, client=hub_client))
+            )
+            t_r.start()
+            assert rot_evt.wait(timeout=3.0)
+            # Clear creds locally (without revoking to hub since queue is full) so rotate hits conflict
+            clear_spoke_credentials(db_path, clear_machine_token=True, clear_owner_session=True, mark_signed_out=True, vault=v_full)
+            rel_evt.set()
+            t_r.join(timeout=3.0)
+
+            assert rot_out and isinstance(rot_out[0], dict) and rot_out[0].get("code") == "APP-903"
+            assert len(issued_m) == 1 and issued_m[0]
+            assert retained_pending_revoke_count() == 1
+            assert has_revoke_retention_warning() is True
+
+            # Flush with live hub revokes retained machine token (over batches) and clears warning
+            monkeypatch.setattr(sync, "_hub_post_with_cookie_isolation", real_post)
+            flushed = False
+            for _ in range(12):
+                if flush_pending_revokes(db_path, secret_hub, vault=v_full, client=hub_client, ignore_backoff=True):
+                    flushed = True
+                    break
+            assert flushed is True
+            assert sync.authenticate_machine_token(hub_settings.database_path, issued_m[0]) is None
+            assert retained_pending_revoke_count() == 0
+            assert has_revoke_retention_warning() is False
+    finally:
+        clear_in_memory_pending_revokes()
+        set_vault_factory(prev_factory)

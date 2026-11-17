@@ -701,15 +701,8 @@ def test_auth_107_expired_revoked_session_relay_and_b2_native_client_mapping(
     )
     assert joined.status_code == 200, joined.text
 
-    local_signin = local_client.post(
-        "/api/setup/owner-session",
-        headers=LOCAL_HEADERS,
-        json={"username": "owner@example.com", "password": PASSWORD},
-    )
-    assert local_signin.status_code == 200, local_signin.text
-
     bridge = DesktopBridge(NativeClient(local_settings, port=17331))
-    assert bridge.owner_session_status()["hasOwnerSession"] is True
+    assert bridge._owner_session_status()["hasOwnerSession"] is True
 
     # Revoke all active owner sessions in the hub DB
     with connect(hs.database_path) as conn:
@@ -720,10 +713,10 @@ def test_auth_107_expired_revoked_session_relay_and_b2_native_client_mapping(
     assert relay_res.status_code == 401
     assert relay_res.json() == {"error": {"code": "AUTH-107"}}
 
-    bridge_res = bridge.list_owner_sessions()
+    bridge_res = bridge.list_computers()
     assert bridge_res["ok"] is False
     assert bridge_res["code"] == "AUTH-107"
-    assert bridge.owner_session_status()["hasOwnerSession"] is False
+    assert bridge._owner_session_status()["hasOwnerSession"] is False
 
     # 10b. B2 check: NativeClient.request does NOT mask 401/403 as "could not authenticate this window"
     cases = [
@@ -785,10 +778,15 @@ def test_dev_301_revoked_invalid_machine_token(tmp_path: Path, monkeypatch) -> N
     assert push_res.status_code == 401
     assert push_res.json() == {"error": {"code": "DEV-301"}}
 
-    # 11b. /api/setup/rotate-machine with revoked br_m_ token -> 401 DEV-301
-    rotate_res = local_client.post("/api/setup/rotate-machine", headers=LOCAL_HEADERS, json={})
-    assert rotate_res.status_code == 401
-    assert rotate_res.json() == {"error": {"code": "DEV-301"}}
+    # 11b. /api/auth/machine/rotate on hub with revoked br_m_ token -> 401 DEV-301, and spoke rotation refuses
+    hub_rot = hub_client.post(
+        "/api/auth/machine/rotate",
+        headers={"Authorization": f"Bearer {revoked_token}", "Content-Type": "application/json"},
+        json={},
+    )
+    assert hub_rot.status_code == 401
+    assert hub_rot.json() == {"error": {"code": "DEV-301"}}
+    assert setup_wizard.rotate_spoke_machine_token(local_settings, client=hub_client) == {"ok": False, "status": 401}
 
     # 11c. NativeClient.request bootstrap with br_m_ token against real hub app -> DesktopError DEV-301
     # Hub has a distinct break-glass secret while NativeClient holds the revoked br_m_ token.

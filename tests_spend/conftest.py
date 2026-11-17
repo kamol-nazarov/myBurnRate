@@ -200,8 +200,9 @@ class _InMemoryTestVault:
 @pytest.fixture(autouse=True)
 def _in_memory_vault_factory():
     """Route get_vault() to an in-memory per-DB vault so tests never touch Windows Credential Manager."""
-    from spend_app.connection_secrets import set_vault_factory
+    from spend_app.connection_secrets import clear_in_memory_pending_revokes, set_vault_factory
 
+    clear_in_memory_pending_revokes()
     stores: dict[str, dict[str, str]] = {}
 
     def _factory(database_path):
@@ -213,6 +214,7 @@ def _in_memory_vault_factory():
     try:
         yield stores
     finally:
+        clear_in_memory_pending_revokes()
         set_vault_factory(previous)
 
 

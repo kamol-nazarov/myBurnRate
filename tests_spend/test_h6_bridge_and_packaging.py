@@ -200,17 +200,53 @@ def _load_hatch_build_module(monkeypatch: pytest.MonkeyPatch):
     return module
 
 
+def test_desktop_bridge_public_method_allowlist_and_removed_setup_routes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import inspect
+
+    expected_methods = {
+        "add_profile", "attach", "attach_host", "begin_resize", "browse_location",
+        "call_page", "change_password", "check_for_update", "close_window",
+        "complete_onboarding", "confirm_suggested_plan", "connect_hub_account",
+        "connect_source", "copy_image_to_clipboard", "create_account",
+        "defer_onboarding", "disconnect_source", "dismiss_candidate",
+        "dismiss_email_prompt", "fetch_alert_providers", "fetch_analytics_summary",
+        "fetch_entity_detail", "fetch_usage", "get_diagnostics_data",
+        "get_diagnostics_report", "get_initial_state", "get_notification_settings",
+        "get_onboarding_data", "get_settings_data", "get_setup_check",
+        "get_setup_progress", "get_setup_scan", "get_week_share_data",
+        "install_update", "list_computers", "minimize_window", "opacity_state",
+        "open_external", "quit_app", "remove_computer", "remove_profile",
+        "rename_profile", "report_effective_theme", "run_setup_scan",
+        "save_analytics_window", "save_period", "save_provider_order",
+        "send_test_notification", "service_owns_plan_alerts", "set_account_email",
+        "set_auto_fade", "set_close_to_tray", "set_hud_density", "set_hud_mini",
+        "set_idle_opacity", "set_low_quota_alerts", "set_notification_kind",
+        "set_setup_consent", "set_theme", "set_topmost", "set_tray_available",
+        "set_ui_busy", "sign_in", "sign_out", "trigger_sync", "update_summary",
+    }
+    actual_methods = {
+        name
+        for name, val in inspect.getmembers(DesktopBridge)
+        if not name.startswith("_") and callable(val)
+    }
+    assert actual_methods == expected_methods
+
+    _, _, _, spoke_app = _create_paired_hub_and_spoke(tmp_path, monkeypatch)
+    with TestClient(spoke_app, base_url="http://127.0.0.1:17331") as spoke_client:
+        hdrs = {"Origin": "http://127.0.0.1:17331", "X-BURNRATE-Request": "1"}
+        for path in ("/api/setup/owner-session", "/api/setup/rotate-machine"):
+            res = spoke_client.post(path, headers=hdrs, json={})
+            assert res.status_code == 404
+            assert res.json() == {"detail": "Not Found"}
+
+
 def test_desktop_bridge_vault_persistence_across_instances_and_sign_out(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _, hub_client, spoke_settings, _ = _create_paired_hub_and_spoke(tmp_path, monkeypatch)
-    initialize(spoke_settings.database_path)
-    with connect(spoke_settings.database_path) as conn:
-        state = setup_wizard.read_setup_state(conn)
-        state["role"] = "spoke"
-        state["spokeConfig"] = {"enabled": True, "hubUrl": HUB_URL}
-        setup_wizard.write_setup_state(conn, state)
-
+    monkeypatch.setattr(sync, "sync_once", lambda *_a, **_kw: {"ok": True})
     shared_vault = _MemoryVault()
     with hub_client:
         bridge1 = DesktopBridge(
@@ -218,43 +254,42 @@ def test_desktop_bridge_vault_persistence_across_instances_and_sign_out(
             preferences=tmp_path / "prefs1.json",
             vault=shared_vault,
         )
-        signed_in = bridge1.sign_in_owner(
-            "owner@example.com", PASSWORD, device_label="Workstation 1"
-        )
+        signed_in = bridge1.sign_in("owner@example.com", PASSWORD, "Workstation 1")
         assert signed_in["ok"] is True, signed_in
-        assert signed_in["sessionId"]
-        assert "br_s_" not in str(signed_in)
+        assert "br_s_" not in str(signed_in) and "br_m_" not in str(signed_in)
         assert DesktopBridge.OWNER_SESSION_VAULT_REF in shared_vault.items
         vault_token = shared_vault.items[DesktopBridge.OWNER_SESSION_VAULT_REF]
         assert vault_token.startswith("br_s_")
 
-        # Strip DB copy to prove a second DesktopBridge instance restores from the shared Vault
         with connect(spoke_settings.database_path) as conn:
-            st = setup_wizard.read_setup_state(conn)
-            st["spokeConfig"].pop("ownerSession", None)
-            setup_wizard.write_setup_state(conn, st)
+            import json as _json
+            raw_row = conn.execute(
+                "SELECT value FROM app_meta WHERE key=?", (setup_wizard.SETUP_META_KEY,)
+            ).fetchone()
+            raw_sc = (_json.loads(raw_row[0]) if raw_row else {}).get("spokeConfig") or {}
+            sc = setup_wizard.read_setup_state(conn)["spokeConfig"]
+        assert "ownerSession" not in raw_sc and "token" not in raw_sc
+        assert "ownerSession" not in sc and not sc.get("token")
 
         bridge2 = DesktopBridge(
             NativeClient(spoke_settings, port=17331),
             preferences=tmp_path / "prefs2.json",
             vault=shared_vault,
         )
-        status2 = bridge2.owner_session_status()
+        status2 = bridge2._owner_session_status()
         assert status2["ok"] is True
         assert status2["hasOwnerSession"] is True
-        assert status2["expiresAt"] == signed_in["expiresAt"]
 
-        listed = bridge2.list_owner_sessions()
+        listed = bridge2.list_computers()
         assert listed["ok"] is True, listed
-        assert listed["currentSessionId"] == signed_in["sessionId"]
 
-        signed_out = bridge2.sign_out_owner()
+        signed_out = bridge2.sign_out()
         assert signed_out == {"ok": True}
         assert DesktopBridge.OWNER_SESSION_VAULT_REF not in shared_vault.items
         with pytest.raises(LocationError):
             shared_vault.get(DesktopBridge.OWNER_SESSION_VAULT_REF)
 
-        assert bridge2.owner_session_status() == {
+        assert bridge2._owner_session_status() == {
             "ok": True,
             "hasOwnerSession": False,
             "expiresAt": None,
@@ -264,7 +299,7 @@ def test_desktop_bridge_vault_persistence_across_instances_and_sign_out(
             preferences=tmp_path / "prefs3.json",
             vault=shared_vault,
         )
-        assert bridge3.owner_session_status()["hasOwnerSession"] is False
+        assert bridge3._owner_session_status()["hasOwnerSession"] is False
 
 
 def test_desktop_bridge_falls_back_gracefully_when_vault_raises_location_error(
@@ -285,22 +320,21 @@ def test_desktop_bridge_falls_back_gracefully_when_vault_raises_location_error(
             preferences=tmp_path / "prefs1.json",
             vault=broken_vault,
         )
-        res = bridge1.sign_in_owner("owner@example.com", PASSWORD)
+        res = bridge1.sign_in("owner@example.com", PASSWORD, "Broken Box")
         assert res["ok"] is False
         assert res["code"] == "APP-903"
-        assert bridge1.owner_session_status()["hasOwnerSession"] is False
+        assert bridge1._owner_session_status()["hasOwnerSession"] is False
         with connect(spoke_settings.database_path) as conn:
             sc = setup_wizard.read_setup_state(conn)["spokeConfig"]
         assert "ownerSession" not in sc
 
-        # Second instance also sees no session (never persisted in SQLite)
         bridge2 = DesktopBridge(
             NativeClient(spoke_settings, port=17331),
             preferences=tmp_path / "prefs2.json",
             vault=broken_vault,
         )
-        assert bridge2.owner_session_status()["hasOwnerSession"] is False
-        assert bridge2.sign_out_owner() == {"ok": True}
+        assert bridge2._owner_session_status()["hasOwnerSession"] is False
+        assert bridge2.sign_out() == {"ok": True}
 
 
 def test_desktop_bridge_owner_session_status_clears_expired_session(
@@ -327,7 +361,7 @@ def test_desktop_bridge_owner_session_status_clears_expired_session(
         preferences=tmp_path / "prefs.json",
         vault=vault,
     )
-    status = bridge.owner_session_status()
+    status = bridge._owner_session_status()
     assert status == {"ok": True, "hasOwnerSession": False, "expiresAt": None}
     assert DesktopBridge.OWNER_SESSION_VAULT_REF not in vault.items
     with connect(spoke_settings.database_path) as conn:
@@ -364,7 +398,7 @@ def test_desktop_bridge_connect_hub_account_syncs_owner_session_to_vault(
             DesktopBridge.OWNER_SESSION_VAULT_REF
         )
         assert vault_session.startswith("br_s_")
-        assert bridge.owner_session_status()["hasOwnerSession"] is True
+        assert bridge._owner_session_status()["hasOwnerSession"] is True
 
 
 def test_desktop_bridge_demo_mode_rejects_owner_session_actions(tmp_path: Path) -> None:
@@ -374,52 +408,20 @@ def test_desktop_bridge_demo_mode_rejects_owner_session_actions(tmp_path: Path) 
         demo=True,
         vault=_MemoryVault(),
     )
-    assert bridge.owner_session_status() == {
+    assert bridge._owner_session_status() == {
         "ok": True,
         "hasOwnerSession": False,
         "expiresAt": None,
     }
     for res in (
-        bridge.sign_in_owner("owner@example.com", PASSWORD),
-        bridge.list_owner_sessions(),
-        bridge.revoke_owner_session("sess-1"),
-        bridge.rotate_owner_session(),
-        bridge.sign_out_owner(),
-        bridge.get_owner_audit(),
+        bridge.sign_in("owner@example.com", PASSWORD),
+        bridge.create_account("owner@example.com", PASSWORD),
+        bridge.sign_out(),
+        bridge.change_password(PASSWORD, "new-pass-word-123"),
+        bridge.remove_computer("machine-1"),
     ):
         assert res["ok"] is False
-        assert "demo mode" in res["error"].lower()
-
-
-def test_desktop_bridge_get_owner_audit_authenticated_and_signed_out(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _, hub_client, spoke_settings, _ = _create_paired_hub_and_spoke(tmp_path, monkeypatch)
-    initialize(spoke_settings.database_path)
-    with connect(spoke_settings.database_path) as conn:
-        state = setup_wizard.read_setup_state(conn)
-        state["role"] = "spoke"
-        state["spokeConfig"] = {"enabled": True, "hubUrl": HUB_URL}
-        setup_wizard.write_setup_state(conn, state)
-
-    vault = _MemoryVault()
-    with hub_client:
-        bridge = DesktopBridge(
-            NativeClient(spoke_settings, port=17331),
-            preferences=tmp_path / "prefs.json",
-            vault=vault,
-        )
-        signed_out_audit = bridge.get_owner_audit()
-        assert signed_out_audit["ok"] is False
-        assert signed_out_audit["code"] == "AUTH-107"
-
-        signed_in = bridge.sign_in_owner("owner@example.com", PASSWORD)
-        assert signed_in["ok"] is True, signed_in
-
-        audit = bridge.get_owner_audit()
-        assert audit["ok"] is True, audit
-        assert isinstance(audit["actions"], list)
-        assert any("account" in str(a.get("action") or "") for a in audit["actions"])
+        assert "demo mode" in res["message"].lower()
 
 
 def test_pyproject_wheel_packages_and_hatch_build_exclude_spend_web(

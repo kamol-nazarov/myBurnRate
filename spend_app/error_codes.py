@@ -354,7 +354,7 @@ def map_http_error(
         default_code = (
             "APP-901"
             if local_service
-            and not endpoint_path.startswith(("/api/setup/account", "/api/setup/owner-session", "/api/setup/rotate-machine", "/api/account/"))
+            and not endpoint_path.startswith(("/api/setup/account", "/api/account/"))
             else "HUB-501"
         )
         return CodedError(default_code, status_code=502 if not local_service else status_code)

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -655,16 +654,12 @@ def test_l7_spoke_join_register_login_owner_session_and_rotate_end_to_end(
         assert hub_summary.status_code == 200
         assert hub_summary.json()["totals"]["tokens"] == 10000
 
-        # 3) Spoke 1 signs in owner via DesktopBridge (never exposing br_s_ to caller)
+        # 3) Spoke 1 signs in via DesktopBridge (vault-only; never exposing br_s_ / br_m_ to caller)
         bridge = DesktopBridge(NativeClient(spoke1_settings, port=17331), vault=spoke1_vault)
-        sign_in = bridge.sign_in_owner(
-            "owner@example.com", PASSWORD, device_label="Spoke One Desktop"
-        )
+        sign_in = bridge.sign_in("owner@example.com", PASSWORD, "Spoke One Desktop")
         assert sign_in["ok"] is True, sign_in
-        assert sign_in["sessionId"]
-        assert sign_in["expiresAt"]
         assert "sessionToken" not in sign_in
-        assert "br_s_" not in str(sign_in)
+        assert "br_s_" not in str(sign_in) and "br_m_" not in str(sign_in)
         with connect(spoke1_settings.database_path) as conn:
             sc_after_signin = setup_wizard.read_setup_state(conn)["spokeConfig"]
         assert "ownerSession" not in sc_after_signin
@@ -672,56 +667,30 @@ def test_l7_spoke_join_register_login_owner_session_and_rotate_end_to_end(
         assert session_before.startswith("br_s_")
         assert session_before != initial_owner_session
 
-        listed = bridge.list_owner_sessions()
+        listed = bridge.list_computers()
         assert listed["ok"] is True, listed
-        assert listed["currentSessionId"] == sign_in["sessionId"]
-        assert len(listed["sessions"]) >= 2
-        assert "br_s_" not in str(listed)
+        assert len(listed["machines"]) >= 2
+        assert "br_s_" not in str(listed) and "br_m_" not in str(listed)
 
-        # 4) Spoke 1 rotates hub session via DesktopBridge
-        rot = bridge.rotate_owner_session()
-        assert rot["ok"] is True, rot
-        assert "sessionToken" not in rot
-        assert "br_s_" not in str(rot)
-        assert rot["sessionId"] != sign_in["sessionId"]
+        # 4) Auto owner-session rotation replaces session in vault and revokes predecessor
         with connect(spoke1_settings.database_path) as conn:
-            sc_after_rot = setup_wizard.read_setup_state(conn)["spokeConfig"]
-        assert "ownerSession" not in sc_after_rot
-        session_after = spoke1_vault.get(DesktopBridge.OWNER_SESSION_VAULT_REF)
-        assert session_after.startswith("br_s_")
-        assert session_after != session_before
-
-        # Old hub session is revoked; new hub session is valid on hub
+            st = setup_wizard.read_setup_state(conn)
+            st["spokeConfig"]["ownerSessionRotationRequired"] = True
+            setup_wizard.write_setup_state(conn, st)
+        session_after = sync.ensure_fresh_owner_session(
+            spoke1_settings.database_path, HUB_URL, session_before, vault=spoke1_vault, client=hub_client
+        )
+        assert session_after.startswith("br_s_") and session_after != session_before
         hub_client.cookies.clear()
-        assert (
-            hub_client.get(
-                "/api/machines", headers={"Authorization": f"Bearer {session_before}"}
-            ).status_code
-            == 401
-        )
-        assert (
-            hub_client.get(
-                "/api/machines", headers={"Authorization": f"Bearer {session_after}"}
-            ).status_code
-            == 200
-        )
+        assert hub_client.get("/api/machines", headers={"Authorization": f"Bearer {session_before}"}).status_code == 401
+        assert hub_client.get("/api/machines", headers={"Authorization": f"Bearer {session_after}"}).status_code == 200
 
-        # 5) Spoke 1 revokes another active owner session via DesktopBridge
-        listed_after_rot = bridge.list_owner_sessions()
-        assert listed_after_rot["ok"] is True, listed_after_rot
-        other_sids = [
-            s["id"]
-            for s in listed_after_rot["sessions"]
-            if s["id"] != rot["sessionId"] and not s.get("revoked_at")
-        ]
-        assert other_sids
-        target_sid = other_sids[0]
-        rev = bridge.revoke_owner_session(target_sid)
-        assert rev == {"ok": True}
-        listed_after_rev = bridge.list_owner_sessions()
-        assert listed_after_rev["ok"] is True
-        revoked_row = next(s for s in listed_after_rev["sessions"] if s["id"] == target_sid)
-        assert revoked_row.get("revoked_at") is not None
+        # 5) Spoke 1 removes Spoke 2 via DesktopBridge.remove_computer
+        other_mids = [m["id"] for m in listed["machines"] if not m["isCurrent"] and m["id"] != "local"]
+        assert other_mids
+        rem = bridge.remove_computer(other_mids[0])
+        assert rem["ok"] is True, rem
+        assert all(m["id"] != other_mids[0] for m in rem["machines"])
 
 
 def test_l7_native_client_extracts_cookie_from_set_cookie_header_and_cookies_jar(
@@ -1113,11 +1082,11 @@ def test_l15_saved_plain_http_config_blocked_at_egress_without_sending_tokens(
 
         bridge = DesktopBridge(NativeClient(spoke_settings, port=17331), vault=_MemoryVault())
         for res in (
-            bridge.sign_in_owner("owner@example.com", PASSWORD),
-            bridge.list_owner_sessions(),
-            bridge.rotate_owner_session(),
-            bridge.sign_out_owner(),
-            bridge.get_owner_audit(),
+            bridge.sign_in("owner@example.com", PASSWORD),
+            bridge.create_account("owner@example.com", PASSWORD),
+            bridge.list_computers(),
+            bridge.change_password(PASSWORD, "new-password-123"),
+            bridge.remove_computer("other-machine"),
         ):
             assert res["ok"] is False
             assert res["code"] == "NET-003"
@@ -1125,18 +1094,9 @@ def test_l15_saved_plain_http_config_blocked_at_egress_without_sending_tokens(
         # 4) Direct fetch_from_configured_hub
         assert sync.fetch_from_configured_hub(spoke_settings, "/api/spend/hud", ttl_seconds=0) is None
 
-        # 5) Setup spoke owner-session / rotate-machine / background sync / sync_once
-        owner_res = spoke_client.post(
-            "/api/setup/owner-session",
-            headers=local_headers,
-            json={"username": "owner", "password": PASSWORD},
-        )
-        assert owner_res.status_code == 422
-        assert owner_res.json()["error"] == {"code": "NET-003"}
-
-        rot_machine_res = spoke_client.post("/api/setup/rotate-machine", headers=local_headers, json={})
-        assert rot_machine_res.status_code == 422
-        assert rot_machine_res.json()["error"] == {"code": "NET-003"}
+        # 5) Background machine rotation / background sync / sync_once
+        with pytest.raises(ValueError, match="HTTPS"):
+            setup_wizard.rotate_spoke_machine_token(spoke_settings)
 
         bg_res = setup_wizard.maybe_run_configured_spoke_sync(
             spoke_settings, PricingEngine.load(spoke_settings.pricing_path)

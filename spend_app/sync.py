@@ -16,7 +16,6 @@ import sqlite3
 import sys
 import threading
 import time
-from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -34,7 +33,6 @@ from spend_app.error_codes import (
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
-from spend_app.connection_api import payload as read_trusted_json, trusted
 from spend_app.db import (
     EXACT_USAGE_SOURCES,
     RETIRED_SOURCES,
@@ -1401,7 +1399,6 @@ def migrate_legacy_spoke_secrets(database_path: Path, *, vault=None) -> dict[str
         mark_cleanup_pending_in_tx,
         verified_vault_put,
     )
-    from spend_app.redact import redact_hub_urls
     from spend_app.setup_wizard import read_setup_state, write_setup_state
 
     with db_secret_lock(db_file):
@@ -1578,11 +1575,9 @@ def ensure_fresh_owner_session(
     from spend_app.connection_secrets import (
         OWNER_SESSION_VAULT_REF,
         clear_spoke_credentials,
-        enqueue_pending_revokes,
         mark_cleanup_pending_in_tx,
         publish_spoke_credentials,
         read_vault_secret,
-        response_is_terminal_revoke,
         revoke_or_queue_owner_session,
     )
     from spend_app.error_codes import CodedError, HUB_PROTOCOL_VERSION, map_transport_error
@@ -1653,24 +1648,25 @@ def ensure_fresh_owner_session(
             ):
                 raise _StaleOwnerLifecycle()
 
+        def _fence_clear_on_err(_conn, current_state) -> None:
+            sp = current_state.get("spokeConfig") or {}
+            cur_gen = int(sp.get("credentialGeneration") or 0)
+            cur_tok = (
+                read_vault_secret(db_file, OWNER_SESSION_VAULT_REF, vault=vault)
+                or str(sp.get("ownerSession") or "").strip()
+            )
+            if cur_gen != captured_gen or cur_tok != captured_token:
+                raise _StaleOwnerLifecycle()
+
         if response.status_code != 200 or not new_token or not isinstance(data, dict):
+            q_err: CodedError | None = None
             if response.status_code != 401:
-                old_revoke_ok = False
                 try:
-                    old_logout = _hub_post_with_cookie_isolation(
-                        hub_url, "/api/auth/logout", headers, client=client, timeout=4.0
+                    revoke_or_queue_owner_session(
+                        db_file, hub_url, captured_token, vault=vault, client=client
                     )
-                    old_revoke_ok = response_is_terminal_revoke("owner_logout", old_logout)
-                except Exception:
-                    old_revoke_ok = False
-                if not old_revoke_ok:
-                    enqueue_pending_revokes(
-                        db_file,
-                        [{"kind": "owner_logout", "token": captured_token, "hubUrl": hub_url}],
-                        vault=vault,
-                        hub_url=hub_url,
-                        client=client,
-                    )
+                except CodedError as qe:
+                    q_err = qe
             try:
                 clear_spoke_credentials(
                     db_file,
@@ -1681,6 +1677,8 @@ def ensure_fresh_owner_session(
                 clear_hub_proxy_cache()
             except _StaleOwnerLifecycle:
                 pass
+            if q_err is not None:
+                raise q_err
             raise CodedError("AUTH-107", status_code=401)
 
         expires_at = data.get("expiresAt")
@@ -1701,52 +1699,11 @@ def ensure_fresh_owner_session(
                 apply_state=_apply,
             )
         except _StaleOwnerLifecycle:
-            revoke_ok = False
-            try:
-                logout_res = _hub_post_with_cookie_isolation(
-                    hub_url,
-                    "/api/auth/logout",
-                    {
-                        "Authorization": f"Bearer {new_token}",
-                        "Content-Type": "application/json",
-                        "X-BURNRATE-Request": "1",
-                        "X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION),
-                    },
-                    client=client,
-                    timeout=4.0,
-                )
-                revoke_ok = response_is_terminal_revoke("owner_logout", logout_res)
-            except Exception:
-                revoke_ok = False
-            if not revoke_ok:
-                enqueue_pending_revokes(
-                    db_file,
-                    [{"kind": "owner_logout", "token": new_token, "hubUrl": hub_url}],
-                    vault=vault,
-                    hub_url=hub_url,
-                    client=client,
-                )
-            raise CodedError("AUTH-107", status_code=401) from None
-        except CodedError as exc:
             revoke_or_queue_owner_session(
-                db_file,
-                hub_url,
-                new_token,
-                vault=vault,
-                client=client,
-                suppress_queue_error=(exc.code == "APP-903"),
+                db_file, hub_url, new_token, vault=vault, client=client
             )
-
-            def _fence_clear_on_err(_conn, current_state) -> None:
-                sp = current_state.get("spokeConfig") or {}
-                cur_gen = int(sp.get("credentialGeneration") or 0)
-                cur_tok = (
-                    read_vault_secret(db_file, OWNER_SESSION_VAULT_REF, vault=vault)
-                    or str(sp.get("ownerSession") or "").strip()
-                )
-                if cur_gen != captured_gen or cur_tok != captured_token:
-                    raise _StaleOwnerLifecycle()
-
+            raise CodedError("AUTH-107", status_code=401) from None
+        except CodedError:
             try:
                 clear_spoke_credentials(
                     db_file,
@@ -1757,16 +1714,17 @@ def ensure_fresh_owner_session(
                 clear_hub_proxy_cache()
             except (_StaleOwnerLifecycle, CodedError):
                 pass
-            raise
-        except Exception:
             revoke_or_queue_owner_session(
-                db_file,
-                hub_url,
-                new_token,
-                vault=vault,
-                client=client,
-                suppress_queue_error=True,
+                db_file, hub_url, new_token, vault=vault, client=client
             )
+            raise
+        except Exception as exc:
+            try:
+                revoke_or_queue_owner_session(
+                    db_file, hub_url, new_token, vault=vault, client=client
+                )
+            except CodedError as q_exc:
+                raise q_exc from exc
             raise
         clear_hub_proxy_cache()
         return new_token

@@ -1,5 +1,6 @@
 """BURNRATE-owned credential-store references and explicit, bounded API tests."""
 import hashlib
+import logging
 import os
 import sys
 import threading
@@ -14,6 +15,7 @@ from spend_app.integration_policy import assert_allowed_host, identity_headers
 
 # Balance sources are checked against their own policy lane.
 POLICY_LANES = {"openrouter": "openrouter_credits", "deepseek": "deepseek_balance"}
+LOGGER = logging.getLogger(__name__)
 
 
 def store_name() -> str:
@@ -100,6 +102,10 @@ class Vault:
 OWNER_SESSION_VAULT_REF = "burnrate-owner-session"
 MACHINE_TOKEN_VAULT_REF = "burnrate-machine-token"
 PENDING_REVOKE_VAULT_REF = "burnrate-pending-revoke"
+
+_IN_MEMORY_REVOKES_LOCK = threading.Lock()
+_IN_MEMORY_PENDING_REVOKES: list[dict] = []
+_REVOKE_RETENTION_WARNING = False
 
 _VAULT_FACTORY = None
 _DB_SECRET_LOCKS_GUARD = threading.Lock()
@@ -538,9 +544,37 @@ def read_pending_revokes(database_path: Path | str | None, *, vault=None) -> lis
     return _parse_pending_revokes(raw)
 
 
+def clear_in_memory_pending_revokes() -> None:
+    """Reset process-local unpersisted revocation queue and warning (for tests)."""
+    global _REVOKE_RETENTION_WARNING
+    with _IN_MEMORY_REVOKES_LOCK:
+        _IN_MEMORY_PENDING_REVOKES.clear()
+        _REVOKE_RETENTION_WARNING = False
+
+
+def retained_pending_revoke_count() -> int:
+    with _IN_MEMORY_REVOKES_LOCK:
+        return len(_IN_MEMORY_PENDING_REVOKES)
+
+
+def has_revoke_retention_warning() -> bool:
+    with _IN_MEMORY_REVOKES_LOCK:
+        return bool(_REVOKE_RETENTION_WARNING or _IN_MEMORY_PENDING_REVOKES)
+
+
+def _retain_in_memory_revoke(entry: dict) -> None:
+    global _REVOKE_RETENTION_WARNING
+    with _IN_MEMORY_REVOKES_LOCK:
+        merged = _merge_pending_revokes(_IN_MEMORY_PENDING_REVOKES, [entry])
+        if len(merged) > MAX_PENDING_REVOKES:
+            merged = merged[-MAX_PENDING_REVOKES:]
+        _IN_MEMORY_PENDING_REVOKES[:] = merged
+        _REVOKE_RETENTION_WARNING = True
+
+
 def pending_revoke_count(database_path: Path | str | None, *, vault=None) -> int:
-    """Return the count of vault-stored pending revokes (never exposes tokens or URLs)."""
-    return len(read_pending_revokes(database_path, vault=vault))
+    """Return the count of vault-stored and retained pending revokes (never exposes tokens or URLs)."""
+    return len(read_pending_revokes(database_path, vault=vault)) + retained_pending_revoke_count()
 
 
 def _resolve_vault_for_pending(db_file: Path | None, vault):
@@ -688,7 +722,6 @@ def _revoke_or_queue_token(
     machine_id: str | None = None,
     vault=None,
     client=None,
-    suppress_queue_error: bool = False,
 ) -> bool:
     from spend_app.error_codes import HUB_PROTOCOL_VERSION, CodedError
     from spend_app.sync import _hub_post_with_cookie_isolation
@@ -734,8 +767,15 @@ def _revoke_or_queue_token(
             client=client,
         )
     except CodedError:
-        if not suppress_queue_error:
-            raise
+        from spend_app.redact import redact_hub_urls
+
+        _retain_in_memory_revoke(entry)
+        LOGGER.warning(
+            "Could not persist pending credential revocation (%s); retained in memory for retry (%s)",
+            kind,
+            redact_hub_urls(clean_hub) if clean_hub else "no-hub",
+        )
+        raise
     return False
 
 
@@ -747,7 +787,6 @@ def revoke_or_queue_machine_token(
     machine_id: str | None = None,
     vault=None,
     client=None,
-    suppress_queue_error: bool = False,
 ) -> bool:
     """Best-effort self-revoke a newly issued/fenced machine token, or queue it durably."""
     return _revoke_or_queue_token(
@@ -759,7 +798,6 @@ def revoke_or_queue_machine_token(
         machine_id=machine_id,
         vault=vault,
         client=client,
-        suppress_queue_error=suppress_queue_error,
     )
 
 
@@ -770,7 +808,6 @@ def revoke_or_queue_owner_session(
     *,
     vault=None,
     client=None,
-    suppress_queue_error: bool = False,
 ) -> bool:
     """Best-effort logout a newly issued/fenced owner session, or queue it durably."""
     return _revoke_or_queue_token(
@@ -781,7 +818,6 @@ def revoke_or_queue_owner_session(
         endpoint="/api/auth/logout",
         vault=vault,
         client=client,
-        suppress_queue_error=suppress_queue_error,
     )
 
 
@@ -825,32 +861,40 @@ def flush_pending_revokes(
     db_file = Path(database_path) if database_path is not None else None
     lock_cm = db_secret_lock(db_file) if db_file is not None else None
 
+    with _IN_MEMORY_REVOKES_LOCK:
+        mem_pending = [dict(item) for item in _IN_MEMORY_PENDING_REVOKES]
+
     use_vault = None
-    pending: list[dict] = []
+    vault_pending: list[dict] = []
     if lock_cm is not None:
         lock_cm.acquire()
     try:
         use_vault = _resolve_vault_for_pending(db_file, vault)
-        if use_vault is None:
+        if use_vault is None and not mem_pending:
             return True
-        if db_file is not None:
-            from spend_app.db import connect, initialize
+        if use_vault is not None:
+            try:
+                if db_file is not None:
+                    from spend_app.db import connect, initialize
 
-            initialize(db_file)
-            with connect(db_file) as conn:
-                conn.execute("BEGIN IMMEDIATE")
-                pending = _parse_pending_revokes(
-                    read_vault_secret(db_file, PENDING_REVOKE_VAULT_REF, vault=use_vault)
-                )
-                conn.commit()
-        else:
-            pending = _parse_pending_revokes(
-                read_vault_secret(None, PENDING_REVOKE_VAULT_REF, vault=use_vault)
-            )
+                    initialize(db_file)
+                    with connect(db_file) as conn:
+                        conn.execute("BEGIN IMMEDIATE")
+                        vault_pending = _parse_pending_revokes(
+                            read_vault_secret(db_file, PENDING_REVOKE_VAULT_REF, vault=use_vault)
+                        )
+                        conn.commit()
+                else:
+                    vault_pending = _parse_pending_revokes(
+                        read_vault_secret(None, PENDING_REVOKE_VAULT_REF, vault=use_vault)
+                    )
+            except Exception:
+                vault_pending = []
     finally:
         if lock_cm is not None:
             lock_cm.release()
 
+    pending = _merge_pending_revokes(vault_pending, mem_pending)
     if not pending:
         return True
 
@@ -1036,31 +1080,72 @@ def flush_pending_revokes(
             updated.append(item_copy)
         return updated
 
-    if lock_cm is not None:
-        lock_cm.acquire()
-    try:
-        if db_file is not None:
-            from spend_app.db import connect
+    global _REVOKE_RETENTION_WARNING
+    done_keys = {_pending_dedupe_key(item) for item in batch if str(item["id"]) in done_ids}
+    reconcile_moment = _now_utc()
+    with _IN_MEMORY_REVOKES_LOCK:
+        mem_filtered = [
+            cur
+            for cur in _IN_MEMORY_PENDING_REVOKES
+            if str(cur.get("id") or "") not in done_ids and _pending_dedupe_key(cur) not in done_keys
+        ]
+        updated_mem = _reconcile(mem_filtered, reconcile_moment)
+        _IN_MEMORY_PENDING_REVOKES[:] = updated_mem
+        if not updated_mem:
+            _REVOKE_RETENTION_WARNING = False
+        mem_snapshot = [dict(cur) for cur in updated_mem]
 
-            with connect(db_file) as conn:
-                conn.execute("BEGIN IMMEDIATE")
-                latest = _parse_pending_revokes(
-                    read_vault_secret(db_file, PENDING_REVOKE_VAULT_REF, vault=use_vault)
-                )
-                updated = _reconcile(latest, _now_utc())
-                _write_pending_revokes(use_vault, updated, database_path=db_file)
-                conn.commit()
-        else:
-            latest = _parse_pending_revokes(
-                read_vault_secret(None, PENDING_REVOKE_VAULT_REF, vault=use_vault)
-            )
-            updated = _reconcile(latest, _now_utc())
-            _write_pending_revokes(use_vault, updated, database_path=None)
-    finally:
+    updated_vault: list[dict] = []
+    if use_vault is not None:
         if lock_cm is not None:
-            lock_cm.release()
+            lock_cm.acquire()
+        try:
+            def _reconcile_vault(latest: list[dict], db_arg: Path | None) -> list[dict]:
+                global _REVOKE_RETENTION_WARNING
+                rec = _reconcile(latest, _now_utc())
+                if mem_snapshot:
+                    promoted = _merge_pending_revokes(rec, mem_snapshot)
+                    if len(promoted) <= MAX_PENDING_REVOKES:
+                        try:
+                            _write_pending_revokes(use_vault, promoted, database_path=db_arg)
+                            promoted_ids = {str(e.get("id") or "") for e in mem_snapshot}
+                            promoted_keys = {_pending_dedupe_key(e) for e in mem_snapshot}
+                            with _IN_MEMORY_REVOKES_LOCK:
+                                _IN_MEMORY_PENDING_REVOKES[:] = [
+                                    cur
+                                    for cur in _IN_MEMORY_PENDING_REVOKES
+                                    if str(cur.get("id") or "") not in promoted_ids
+                                    and _pending_dedupe_key(cur) not in promoted_keys
+                                ]
+                                if not _IN_MEMORY_PENDING_REVOKES:
+                                    _REVOKE_RETENTION_WARNING = False
+                            return promoted
+                        except Exception:
+                            pass
+                if rec != latest:
+                    _write_pending_revokes(use_vault, rec, database_path=db_arg)
+                return rec
 
-    return not any_failed and len(updated) == 0
+            if db_file is not None:
+                from spend_app.db import connect
+
+                with connect(db_file) as conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                    latest = _parse_pending_revokes(
+                        read_vault_secret(db_file, PENDING_REVOKE_VAULT_REF, vault=use_vault)
+                    )
+                    updated_vault = _reconcile_vault(latest, db_file)
+                    conn.commit()
+            else:
+                latest = _parse_pending_revokes(
+                    read_vault_secret(None, PENDING_REVOKE_VAULT_REF, vault=use_vault)
+                )
+                updated_vault = _reconcile_vault(latest, None)
+        finally:
+            if lock_cm is not None:
+                lock_cm.release()
+
+    return not any_failed and len(updated_vault) == 0 and retained_pending_revoke_count() == 0
 
 
 CLEANUP_PENDING_META_KEY = "secrets.cleanup_pending.v1"
