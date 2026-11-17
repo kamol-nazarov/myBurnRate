@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en" data-theme-pref="system">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>BURNRATE tab</title>
+<script>
+/* Same theme scheme as the full window: the host stamps the saved preference
+   on <html>; "system" follows the OS; every payload then pins the app's
+   effective theme so the tab can never disagree with the main window. */
+(function () {
+  var root = document.documentElement;
+  var query = null;
+  try { query = window.matchMedia("(prefers-color-scheme: dark)"); } catch (e) {}
+  function resolve(pref) {
+    if (pref === "dark" || pref === "light") return pref;
+    return query && query.matches ? "dark" : "light";
+  }
+  function apply(pref) { root.dataset.theme = resolve(pref); }
+  window.burnrateTabTheme = { setDark: function (dark) { root.dataset.theme = dark ? "dark" : "light"; } };
+  apply(root.dataset.themePref);
+  if (query) {
+    var follow = function () { if ((root.dataset.themePref || "system") === "system") apply("system"); };
+    if (query.addEventListener) query.addEventListener("change", follow);
+    else if (query.addListener) query.addListener(follow);
+  }
+})();
+</script>
+<style>
+/*__EMBEDDED_FONTS__*/
+:root {
+  --font: "Manrope", -apple-system, "Segoe UI Variable Text", system-ui, sans-serif;
+  --surface: #ffffff;
+  --card: #f4f4fa;
+  --ink: #18172b;
+  --muted: #68677d;
+  --line: rgba(24, 23, 43, 0.09);
+  --hover: rgba(24, 23, 43, 0.06);
+  --track: rgba(24, 23, 43, 0.12);
+  --soon: #c9293a;
+  --warn: #a8480a;
+  --ok: #4840bb;
+  --bal: #13795b;
+  --chip-bg: #fdecee;
+  --chip-ink: #a3202f;
+  --badge-ink: #ffffff;
+  --brand: #564ed1;
+}
+html[data-theme="dark"] {
+  --surface: #18172b;
+  --card: #201f33;
+  --ink: #ffffff;
+  --muted: #b4b3c9;
+  --line: rgba(255, 255, 255, 0.08);
+  --hover: rgba(255, 255, 255, 0.08);
+  --track: rgba(255, 255, 255, 0.16);
+  --soon: #ff6b7a;
+  --warn: #f5a524;
+  --ok: #9b95ff;
+  --bal: #5be3a8;
+  --chip-bg: rgba(255, 107, 122, 0.16);
+  --chip-ink: #ffb3bb;
+  --badge-ink: #18172b;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  height: 100%;
+  overflow: hidden;
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+  cursor: default;
+}
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; text-align: left; }
+button:focus-visible { outline: 2px solid var(--ok); outline-offset: -2px; }
+[hidden] { display: none !important; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+body { display: flex; flex-direction: column; }
+body.up { flex-direction: column-reverse; }
+
+/* ---- the bar -------------------------------------------------------- */
+.tab { height: 60px; flex: none; display: flex; align-items: center; padding: 0 4px 0 8px; border-radius: 14px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); }
+.home { position: relative; display: flex; align-items: center; width: 34px; flex: none; height: 48px; cursor: grab; }
+.brand { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 7px; background: var(--brand); color: #fff; flex: none; }
+.badge {
+  position: absolute; top: 5px; left: 15px; min-width: 14px; height: 14px; padding: 0 3px;
+  border-radius: 8px; background: var(--soon); color: var(--badge-ink);
+  font-size: 9px; font-weight: 800; display: grid; place-items: center; border: 2px solid var(--surface); box-sizing: content-box;
+}
+.segs { list-style: none; display: flex; flex: none; }
+.segs li { flex: none; }
+.seg { display: flex; align-items: center; gap: 7px; width: 100%; height: 48px; padding: 0 8px; border-radius: 10px; }
+.segs li + li .seg { box-shadow: inset 1px 0 0 var(--line); border-radius: 0 10px 10px 0; }
+.seg:hover, .seg.on { background: var(--hover); }
+.logo {
+  width: 22px; height: 22px; border-radius: 7px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center; position: relative;
+}
+.logo svg { width: 12px; height: 12px; display: block; }
+.brand-chip { background: var(--bl-bg); color: var(--bl-fg); border: var(--bl-ring); }
+html[data-theme="dark"] .brand-chip { background: var(--bd-bg); color: var(--bd-fg); border: var(--bd-ring); }
+.txt { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.top { display: flex; align-items: baseline; gap: 5px; min-width: 0; white-space: nowrap; }
+.top b { font-size: 15px; font-weight: 800; letter-spacing: -0.02em; }
+.top span { font-size: 10px; color: var(--muted); font-weight: 600; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.top b { flex: none; }
+.fuel { display: block; width: 100%; max-width: 72px; height: 4px; border-radius: 9px; background: var(--track); overflow: hidden; }
+.fuel i { display: block; height: 100%; border-radius: 9px; background: var(--ok); }
+.st { font-size: 10px; font-weight: 700; white-space: nowrap; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.l-out .fuel i, .l-soon .fuel i { background: var(--soon); }
+.l-out .st, .l-soon .st, .l-out .top b, .l-soon .top b { color: var(--soon); }
+.l-warn .fuel i { background: var(--warn); }
+.l-warn .st { color: var(--warn); }
+.l-balance .top b { color: var(--bal); }
+.l-balance .fuel i { background: var(--bal); opacity: 0.6; }
+.l-idle { opacity: 0.6; }
+.l-idle .top b { font-size: 12px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; }
+.l-idle .st { font-weight: 600; }
+
+.fine { flex: none; width: 60px; height: 48px; display: flex; align-items: center; justify-content: center; border-radius: 10px; }
+.fine span { font-size: 10.5px; font-weight: 800; padding: 5px 8px; border-radius: 99px; background: var(--hover); color: var(--muted); white-space: nowrap; }
+.fine:hover span, .fine.on span { color: var(--ink); }
+
+.status { flex: none; height: 48px; display: flex; align-items: center; padding: 0 12px; border-radius: 10px; font-size: 12px; font-weight: 700; color: var(--muted); white-space: nowrap; }
+button.status:hover { background: var(--hover); color: var(--ink); }
+.status b { color: var(--ink); font-weight: 800; margin-right: 6px; }
+.chip {
+  flex: none; width: 212px; margin: 0 2px 0 4px; padding: 6px 9px; border-radius: 10px;
+  background: var(--chip-bg); color: var(--chip-ink); font-size: 10.5px; font-weight: 700; line-height: 1.3;
+  display: flex; align-items: center; gap: 7px;
+}
+.chip svg { flex: none; }
+.stale .segs, .stale .fine { opacity: 0.5; }
+.spacer { flex: 1; }
+.open { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; color: var(--muted); flex: none; margin-left: 2px; }
+.open:hover { background: var(--hover); color: var(--ink); }
+
+/* ---- the hover card --------------------------------------------------- */
+.card-wrap { flex: none; padding: 6px 0 0; }
+body.up .card-wrap { padding: 0 0 6px; }
+.card { width: 300px; box-shadow: 0 6px 22px rgba(24, 23, 43, 0.18); background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+.ph { display: flex; align-items: center; gap: 9px; }
+.ph b { display: block; font-size: 13px; }
+.ph small { display: block; font-size: 11px; color: var(--muted); }
+.pw { display: flex; flex-direction: column; gap: 4px; padding-top: 8px; border-top: 1px solid var(--line); }
+.pl, .pr { display: flex; justify-content: space-between; gap: 8px; }
+.pl { font-size: 12px; }
+.pl span { font-weight: 600; }
+.pr { font-size: 10.5px; color: var(--muted); }
+.pb { height: 5px; border-radius: 9px; background: var(--track); overflow: hidden; display: block; }
+.pb i { display: block; height: 100%; background: var(--ok); border-radius: 9px; }
+.pw.l-out .pb i, .pw.l-soon .pb i { background: var(--soon); }
+.pw.l-warn .pb i { background: var(--warn); }
+.pw.muted { opacity: 0.65; }
+.pc { display: flex; gap: 6px; align-items: flex-start; font-size: 11px; font-weight: 700; line-height: 1.35; }
+.pc svg { flex: none; margin-top: 1px; }
+.pc.soon { color: var(--soon); }
+.pc.warn { color: var(--warn); }
+.pc.ok { color: var(--bal); font-weight: 600; }
+.bal { font-size: 18px; font-weight: 800; color: var(--bal); }
+.po { align-self: flex-start; font-size: 12px; font-weight: 700; color: var(--ink); background: var(--hover); border-radius: 8px; padding: 6px 10px; }
+.po:hover { background: var(--track); }
+.fine-row { display: flex; align-items: center; gap: 8px; font-size: 12px; padding-top: 6px; }
+.fine-row b { font-weight: 700; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fine-row span { color: var(--muted); font-size: 11px; font-weight: 600; white-space: nowrap; }
+</style>
+</head>
+<body>
+<!--__BRAND_SPRITE__-->
+<div class="tab" id="tab" role="region" aria-label="BURNRATE usage tab">
+  <div class="home" id="home" title="Drag to move">
+    <span class="brand" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17 17 7M8 7h9v9"/></svg></span>
+    <span class="badge" id="badge" hidden></span>
+  </div>
+  <ul class="segs" id="segs" aria-label="What is left per provider, most urgent first"></ul>
+  <button class="fine" id="fine" type="button" hidden></button>
+  <div id="status"></div>
+  <div class="chip" id="chip" role="status" hidden></div>
+  <span class="spacer"></span>
+  <button class="open" id="open" type="button" aria-label="Open BURNRATE" title="Open BURNRATE"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button>
+</div>
+<div class="card-wrap" id="cardWrap" hidden><div class="card" id="card" role="dialog" aria-label="Provider limits"></div></div>
+<script>
+/*__BRAND_JS__*/
+(function () {
+  "use strict";
+  var HIDE_DELAY = 220, SHOW_DELAY = 140;
+  var state = null, openKey = null, showTimer = 0, hideTimer = 0, ready = false;
+  var $ = function (id) { return document.getElementById(id); };
+
+  function esc(value) {
+    return String(value === null || value === undefined ? "" : value)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+  function api() { return window.pywebview && window.pywebview.api ? window.pywebview.api : null; }
+  function call(name) {
+    var a = api();
+    if (!a || typeof a[name] !== "function") return Promise.resolve(null);
+    var args = Array.prototype.slice.call(arguments, 1);
+    try { return Promise.resolve(a[name].apply(a, args)).catch(function () { return null; }); }
+    catch (e) { return Promise.resolve(null); }
+  }
+  function logo(key) {
+    return typeof logoHtml === "function" ? logoHtml(key, "logo", false) : '<span class="logo"></span>';
+  }
+  var WARN = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>';
+  var CHECK = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>';
+
+  function segHtml(s, i) {
+    var cls = "l-" + esc(s.level);
+    var top = s.muted
+      ? '<div class="top"><b>' + esc(s.name) + "</b>" + (s.unit ? "<span>" + esc(s.unit) + "</span>" : "") + "</div>"
+      : '<div class="top"><b>' + esc(s.big) + "</b><span>" + esc(s.unit) + "</span></div>" +
+        '<span class="fuel"><i style="width:' + Number(s.fuel || 0) + '%"></i></span>';
+    return '<li class="' + cls + '" style="width:' + Number(s.width || 156) + 'px"><button class="seg" type="button" data-i="' + i + '" aria-label="' + esc(s.aria) +
+      '" title="' + esc(s.aria) + '">' + logo(s.key) + '<div class="txt">' + top +
+      '<span class="st">' + esc(s.status) + "</span></div></button></li>";
+  }
+
+  function render(next) {
+    state = next;
+    if (window.burnrateTabTheme) window.burnrateTabTheme.setDark(!!next.dark);
+    var tab = $("tab");
+    tab.classList.toggle("stale", !!next.stale);
+    $("segs").innerHTML = (next.segments || []).map(segHtml).join("");
+    var badge = $("badge");
+    badge.hidden = !(next.urgentCount > 0);
+    badge.textContent = next.urgentCount || "";
+    badge.setAttribute("aria-label", next.urgentCount + " about to run out");
+    var fine = $("fine");
+    if (next.fine) {
+      fine.hidden = false;
+      fine.innerHTML = "<span>+" + esc(next.fine.count) + " fine</span>";
+      fine.setAttribute("aria-label", next.fine.count + " more providers, all fine");
+    } else { fine.hidden = true; fine.innerHTML = ""; }
+    var status = $("status");
+    if (next.state === "loading") {
+      status.innerHTML = '<div class="status"><b>BURNRATE</b>Loading…</div>';
+    } else if (next.state === "empty") {
+      status.innerHTML = '<button class="status" type="button" id="emptyBtn"><b>No limits yet</b>· Open BURNRATE to add a source</button>';
+    } else { status.innerHTML = ""; }
+    var chip = $("chip");
+    if (next.error) {
+      chip.hidden = false;
+      chip.title = next.error.message || "";
+      chip.innerHTML = WARN + "<span>" + esc(next.error.text) + "</span>";
+    } else { chip.hidden = true; chip.innerHTML = ""; }
+    var emptyBtn = $("emptyBtn");
+    if (emptyBtn) emptyBtn.addEventListener("click", function () { call("open_full"); });
+    if (openKey !== null) {
+      var still = cardFor(openKey);
+      if (still) fillCard(still); else hideCard();
+    }
+  }
+
+  /* ---- hover card ---------------------------------------------------- */
+  function cardFor(key) {
+    if (!state) return null;
+    if (key === "__fine__") return state.fine ? { fine: state.fine } : null;
+    var list = state.segments || [];
+    for (var i = 0; i < list.length; i++) if (list[i].key === key) return list[i];
+    return null;
+  }
+  function windowHtml(r) {
+    if (r.muted) {
+      return '<div class="pw muted"><div class="pl"><span>' + esc(r.label) + '</span><b>—</b></div><div class="pr"><span>' + esc(r.note) + "</span></div></div>";
+    }
+    var pace = "";
+    if (r.pace) {
+      pace = '<p class="pc ' + esc(r.pace.level) + '">' + (r.pace.level === "ok" ? CHECK : WARN) + "<span>" + esc(r.pace.text) + "</span></p>";
+    }
+    return '<div class="pw l-' + esc(r.level) + '"><div class="pl"><span>' + esc(r.label) + "</span><b>" + esc(r.leftPct) + '% left</b></div>' +
+      '<span class="pb"><i style="width:' + Number(r.leftPct) + '%"></i></span>' +
+      '<div class="pr"><span>' + esc(r.resets) + "</span><span>" + esc(r.usedPct) + "% used</span></div>" + pace + "</div>";
+  }
+  function cardHtml(seg) {
+    if (seg.fine) {
+      return '<div class="ph"><div><b>' + esc(seg.fine.count) + ' more, all fine</b><small>Nothing close to running out</small></div></div>' +
+        seg.fine.items.map(function (it) {
+          return '<div class="fine-row">' + logo(it.key) + "<b>" + esc(it.title) + "</b><span>" + esc(it.text) + "</span></div>";
+        }).join("") + '<button class="po" type="button" data-open>Open BURNRATE</button>';
+    }
+    var c = seg.card || {};
+    var body = (c.rows || []).map(windowHtml).join("");
+    if (c.balance) {
+      body += '<div class="pw"><div class="pl"><span>Balance</span><span class="bal">$' + esc(Number(c.balance.amount || 0).toFixed(2)) +
+        '</span></div><div class="pr"><span>' + esc(c.balance.summary) + "</span></div></div>";
+    }
+    if (!body) body = '<div class="pw"><div class="pr"><span>' + esc(seg.status || c.summary || "Awaiting reading") + "</span></div></div>";
+    return '<div class="ph">' + logo(seg.key) + "<div><b>" + esc(seg.title) + "</b><small>" + esc(seg.plan) + "</small></div></div>" +
+      body + '<button class="po" type="button" data-open>Open BURNRATE</button>';
+  }
+  function fillCard(seg) {
+    var card = $("card");
+    card.innerHTML = cardHtml(seg);
+    $("cardWrap").hidden = false;
+    var layout = (state && state.layout) || {};
+    var cardW = layout.cardWidth || 300;
+    var seat = openKey === "__fine__" ? $("fine") : document.querySelector('.seg[data-i="' + segIndex(openKey) + '"]');
+    var left = 0;
+    if (seat) left = Math.max(0, Math.min(seat.getBoundingClientRect().left, (layout.width || cardW) - cardW));
+    card.style.marginLeft = left + "px";
+    var cardH = card.offsetHeight;
+    var width = Math.max(layout.width || 0, left + cardW);
+    var height = (layout.height || 60) + (layout.cardGap || 6) + cardH;
+    call("expand", width, height, left, cardW, cardH).then(function (res) {
+      document.body.classList.toggle("up", !!(res && res.up));
+    });
+  }
+  function segIndex(key) {
+    var list = (state && state.segments) || [];
+    for (var i = 0; i < list.length; i++) if (list[i].key === key) return i;
+    return -1;
+  }
+  function showCard(key, seat) {
+    var seg = cardFor(key);
+    if (!seg) return;
+    openKey = key;
+    document.querySelectorAll(".seg.on, .fine.on").forEach(function (el) { el.classList.remove("on"); });
+    if (seat) seat.classList.add("on");
+    fillCard(seg);
+  }
+  function hideCard() {
+    clearTimeout(showTimer);
+    if (openKey === null) return;
+    openKey = null;
+    document.querySelectorAll(".seg.on, .fine.on").forEach(function (el) { el.classList.remove("on"); });
+    $("cardWrap").hidden = true;
+    document.body.classList.remove("up");
+    call("collapse");
+  }
+  function scheduleShow(key, seat) {
+    clearTimeout(hideTimer);
+    clearTimeout(showTimer);
+    if (openKey === key) return;
+    showTimer = setTimeout(function () { showCard(key, seat); }, openKey === null ? SHOW_DELAY : 0);
+  }
+  function scheduleHide() {
+    clearTimeout(showTimer);
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(hideCard, HIDE_DELAY);
+  }
+
+  /* ---- events ----------------------------------------------------------- */
+  var segsEl = $("segs");
+  function segFrom(target) { return target.closest ? target.closest(".seg") : null; }
+  segsEl.addEventListener("mouseover", function (e) {
+    var seat = segFrom(e.target);
+    if (!seat || !state) return;
+    var seg = state.segments[Number(seat.dataset.i)];
+    if (seg) scheduleShow(seg.key, seat);
+  });
+  segsEl.addEventListener("focusin", function (e) {
+    var seat = segFrom(e.target);
+    if (!seat || !state) return;
+    var seg = state.segments[Number(seat.dataset.i)];
+    if (seg) { clearTimeout(hideTimer); showCard(seg.key, seat); }
+  });
+  segsEl.addEventListener("click", function (e) { if (segFrom(e.target)) call("open_full"); });
+  $("fine").addEventListener("mouseenter", function () { scheduleShow("__fine__", $("fine")); });
+  $("fine").addEventListener("focus", function () { clearTimeout(hideTimer); showCard("__fine__", $("fine")); });
+  $("fine").addEventListener("click", function () { call("open_full"); });
+  $("open").addEventListener("click", function () { call("open_full"); });
+  $("cardWrap").addEventListener("click", function (e) {
+    if (e.target.closest && e.target.closest("[data-open]")) call("open_full");
+  });
+  $("cardWrap").addEventListener("mouseenter", function () { clearTimeout(hideTimer); });
+  document.documentElement.addEventListener("mouseleave", scheduleHide);
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && openKey !== null) { hideCard(); }
+  });
+  document.addEventListener("focusout", function (e) {
+    if (e.relatedTarget === null || !document.body.contains(e.relatedTarget)) scheduleHide();
+  });
+  $("tab").addEventListener("mousedown", function (e) {
+    if (e.button !== 0) return;
+    if (e.target === $("tab") || e.target.closest("#home") || e.target === $("segs") || e.target.classList.contains("spacer")) {
+      e.preventDefault();
+      call("begin_drag");
+    }
+  });
+  document.addEventListener("contextmenu", function (e) { e.preventDefault(); });
+
+  function poll() {
+    call("get_state").then(function (next) { if (next) render(next); });
+  }
+  window.burnrateTab = { update: render, show: showCard, hide: hideCard, get state() { return state; } };
+  window.addEventListener("pywebviewready", function () { ready = true; poll(); });
+  setInterval(function () { if (ready) poll(); }, 20000);
+  if (api()) { ready = true; poll(); }
+})();
+</script>
+</body>
+</html>

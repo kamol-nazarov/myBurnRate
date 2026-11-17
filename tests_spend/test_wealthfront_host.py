@@ -215,7 +215,7 @@ LEFT = Monitor(Rect(-1920, -200, 0, 880), Rect(-1920, -200, 0, 840))
 @pytest.mark.parametrize("dpi", [96, 144, 192])
 @pytest.mark.parametrize(
     "rect",
-    [(210, 100, 444, 612), (-1500, -190, 400, 500), (2400, 100, 380, 556)],
+    [(210, 100, 444, 612), (-1500, -200, 400, 520), (2400, 100, 440, 640)],
 )
 def test_geometry_round_trips_exactly_at_each_dpi_and_across_monitors(dpi, rect):
     monitors = [PRIMARY, LEFT]
@@ -258,9 +258,9 @@ def test_offscreen_saved_rect_keeps_size_and_drops_position():
     assert (plan.width, plan.height) == (420, 600)
     # A monitor that was unplugged: the rect sat on LEFT, which is gone now.
     gone = native_geometry.plan_restore(
-        SavedGeometry(-1500, 0, 400, 500, 96), [PRIMARY], 96
+        SavedGeometry(-1500, 0, 400, 520, 96), [PRIMARY], 96
     )
-    assert gone.position is None and (gone.width, gone.height) == (400, 500)
+    assert gone.position is None and (gone.width, gone.height) == (400, 520)
     # Only a sliver visible is also treated as off-screen.
     sliver = native_geometry.plan_restore(
         SavedGeometry(-390, 0, 400, 500, 96), [PRIMARY], 96
@@ -273,7 +273,7 @@ def test_size_is_clamped_to_the_minimum_and_the_work_area():
         SavedGeometry(100, 100, 100, 100, 96), [PRIMARY], 96
     )
     assert (tiny.width, tiny.height) == native_geometry.MIN_SIZE
-    assert native_geometry.min_size_for(150) == (525, 687)
+    assert native_geometry.min_size_for(150) == (593, 812)
     huge = native_geometry.plan_restore(
         SavedGeometry(0, 0, 9000, 9000, 96), [PRIMARY], 96
     )
@@ -307,8 +307,8 @@ def test_malformed_saved_geometry_means_nothing_saved(raw):
 
 
 def test_default_size_is_kept_when_nothing_is_saved():
-    assert native_geometry.DEFAULT_SIZE == (380, 556)
-    assert native_geometry.MIN_SIZE == (336, 440)
+    assert native_geometry.DEFAULT_SIZE == (440, 640)
+    assert native_geometry.MIN_SIZE == (380, 520)
 
 
 def test_geometry_tracker_saves_only_a_visible_normal_window(tmp_path):
@@ -1204,7 +1204,8 @@ def test_second_launch_unhides_a_tray_hidden_window(monkeypatch):
 
     monkeypatch.setattr(ctypes, "windll", type("W", (), {"user32": User32})())
     assert host_module._focus_existing_window("BURNRATE") is True
-    assert shown == [5]  # SW_SHOW before anything else
+    # The tab is put away (SW_HIDE) before the full window is shown (SW_SHOW).
+    assert shown == [0, 5]
 
 
 # --- automatic update checks -------------------------------------------------

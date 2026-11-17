@@ -206,7 +206,7 @@ def test_desktop_bridge_public_method_allowlist_and_removed_setup_routes(
     import inspect
 
     expected_methods = {
-        "add_profile", "attach", "attach_host", "begin_resize", "browse_location",
+        "add_profile", "attach", "attach_host", "attach_surfaces", "begin_resize", "browse_location",
         "call_page", "change_password", "check_for_update", "close_window",
         "complete_onboarding", "confirm_suggested_plan", "connect_hub_account",
         "connect_source", "copy_image_to_clipboard", "create_account",
@@ -224,7 +224,7 @@ def test_desktop_bridge_public_method_allowlist_and_removed_setup_routes(
         "set_auto_fade", "set_close_to_tray", "set_hud_density", "set_hud_mini",
         "set_idle_opacity", "set_low_quota_alerts", "set_notification_kind",
         "set_setup_consent", "set_theme", "set_topmost", "set_tray_available",
-        "set_ui_busy", "sign_in", "sign_out", "trigger_sync", "update_summary",
+        "set_ui_busy", "show_tab", "sign_in", "sign_out", "trigger_sync", "update_summary",
     }
     actual_methods = {
         name
@@ -482,7 +482,7 @@ def test_pyproject_wheel_packages_and_hatch_build_exclude_spend_web(
 def test_cli_check_desktop_assets_ok_and_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    assert cli._DESKTOP_ASSETS == ("wealthfront_ui.html",)
+    assert cli._DESKTOP_ASSETS == ("wealthfront_ui.html", "tab_ui.html")
     ok_check = cli._check_desktop_assets()
     assert ok_check["id"] == "desktop_assets"
     assert ok_check["status"] == "ok"

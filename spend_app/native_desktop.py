@@ -405,12 +405,40 @@ def _demo_series(now: datetime, span_hours: float, period: str) -> list[dict]:
     return points
 
 
+def _iso_z(value: datetime) -> str:
+    return value.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _demo_forecast(
+    now: datetime, resets_at: datetime, hours_to_dry: float, burn: float
+) -> dict:
+    """A run-dry forecast shaped like ``capacity_forecast``'s, from fixed pace."""
+    projected = now + timedelta(hours=hours_to_dry)
+    before = (resets_at - projected).total_seconds() / 3600
+    span = f"{max(1, round(hours_to_dry))}h"
+    return {
+        "state": "tight" if before <= 12 else "dry",
+        "projectedRunDry": projected.replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z"),
+        "hoursRemaining": hours_to_dry,
+        "hoursBeforeReset": round(before, 4),
+        "burnPctPerHour": burn,
+        "line": f"pace → dry in ~{span} ({max(1, round(before))}h before reset)",
+    }
+
+
 def demo_hud() -> dict:
     now = datetime.now(UTC)
     in_3h = (now + timedelta(hours=3, minutes=18)).isoformat().replace("+00:00", "Z")
     in_4d = (now + timedelta(days=4, hours=14)).isoformat().replace("+00:00", "Z")
     in_9d = (now + timedelta(days=9, hours=6)).isoformat().replace("+00:00", "Z")
     stamp = now.isoformat().replace("+00:00", "Z")
+    # The sample the tab and the full window are designed against: Claude Code
+    # runs dry within the hour, Codex and OpenCode Go within the day or two.
+    cc_5h_reset = now + timedelta(hours=2, minutes=14)
+    cc_week_reset = now + timedelta(days=3, hours=6)
+    week_reset = now + timedelta(days=4, hours=14)
     return {
         "generatedAt": stamp,
         "status": "live",
@@ -424,16 +452,18 @@ def demo_hud() -> dict:
                     {
                         "limitKey": "5h",
                         "label": "5-hour window",
-                        "pct": 18.0,
+                        "pct": 46.0,
                         "unit": "pct",
-                        "resetsAt": in_3h,
+                        "resetsAt": _iso_z(cc_5h_reset),
+                        "forecast": _demo_forecast(now, cc_5h_reset, 1.17, 39.3),
                     },
                     {
                         "limitKey": "weekly",
                         "label": "Weekly window",
-                        "pct": 25.0,
+                        "pct": 61.0,
                         "unit": "pct",
-                        "resetsAt": in_4d,
+                        "resetsAt": _iso_z(cc_week_reset),
+                        "forecast": _demo_forecast(now, cc_week_reset, 27.0, 1.44),
                     },
                 ],
             },
@@ -476,9 +506,10 @@ def demo_hud() -> dict:
                     {
                         "limitKey": "weekly",
                         "label": "Weekly window",
-                        "pct": 32.0,
+                        "pct": 44.0,
                         "unit": "pct",
                         "resetsAt": in_4d,
+                        "forecast": _demo_forecast(now, week_reset, 32.0, 1.75),
                     },
                     {
                         "limitKey": "monthly",
@@ -545,7 +576,7 @@ def demo_hud() -> dict:
                     {
                         "limitKey": "weekly",
                         "label": "Weekly",
-                        "pct": 1.0,
+                        "pct": 12.0,
                         "unit": "pct",
                         "resetsAt": in_4d,
                     }
@@ -560,9 +591,10 @@ def demo_hud() -> dict:
                     {
                         "limitKey": "weekly",
                         "label": "Weekly",
-                        "pct": 14.0,
+                        "pct": 38.0,
                         "unit": "pct",
                         "resetsAt": in_4d,
+                        "forecast": _demo_forecast(now, week_reset, 14.0, 4.43),
                     }
                 ],
             },
@@ -571,13 +603,18 @@ def demo_hud() -> dict:
                 "title": "OpenRouter",
                 "plan": "PAYG",
                 "isPayg": True,
-                "fundsRemainingUsd": 15.84,
-                "fundsRunway": {"line": "Runway ~42d at recent pace"},
+                "fundsRemainingUsd": 23.40,
+                "fundsRunway": {
+                    "state": "estimate",
+                    "days": 42.0,
+                    "runsOutAt": _iso_z(now + timedelta(days=42)),
+                    "line": "Runway ~42d at recent pace",
+                },
                 "rows": [
                     {
                         "limitKey": "balance",
                         "label": "Balance",
-                        "used": 15.84,
+                        "used": 23.40,
                         "unit": "usd",
                         "runway": {"line": "Runway ~42d at recent pace"},
                     }
@@ -2171,9 +2208,12 @@ def main(
             # Edge WebView2 has no interactive desktop compositor; verify bundled
             # Wealthfront HTML, embedded Manrope WOFF2, and bridge APIs,
             # then run the native Tk window smoke path.
+            from spend_app.tab_window import load_tab_html
             from spend_app.wealthfront_window import DesktopBridge, load_ui_html
 
             bundled_html = load_ui_html()
+            if '<symbol id="claude"' not in load_tab_html():
+                return 1
             bridge = DesktopBridge(
                 DemoClient() if demo else NativeClient(settings, port), demo=demo
             )

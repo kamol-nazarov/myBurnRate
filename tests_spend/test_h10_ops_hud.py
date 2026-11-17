@@ -441,16 +441,18 @@ def test_fetch_usage_attaches_activity_and_today_total(tmp_path):
     assert res_empty["report"]["todayTotal"] == today_total
 
 
-def test_hud_mini_and_density_persistence_and_initial_state(tmp_path):
+def test_hud_density_persistence_and_initial_state(tmp_path):
     prefs = tmp_path / "native-window.json"
     prefs.write_text(json.dumps({"period": "week", "customFlag": 42}), encoding="utf-8")
 
     bridge = DesktopBridge(DemoClient(), preferences=prefs, demo=True)
     init = bridge.get_initial_state()
     assert init["hudMini"] is False
+    assert init["surface"] == "full"
     assert init["hudDensity"] == "compact"
 
-    assert bridge.set_hud_mini(True) == {"ok": True, "hudMini": True}
+    # The in-page mini bar is gone: the old call is a harmless no-op.
+    assert bridge.set_hud_mini(True) == {"ok": True, "hudMini": False}
     assert bridge.set_hud_density("comfortable") == {
         "ok": True,
         "hudDensity": "comfortable",
@@ -466,20 +468,38 @@ def test_hud_mini_and_density_persistence_and_initial_state(tmp_path):
     }
 
     stored = json.loads(prefs.read_text(encoding="utf-8"))
-    assert stored["hudMini"] is True
+    assert "hudMini" not in stored
+    assert stored["surface"] == "full"
     assert stored["hudDensity"] == "comfortable"
     assert stored["customFlag"] == 42
 
     reloaded = DesktopBridge(DemoClient(), preferences=prefs, demo=True)
     reloaded_init = reloaded.get_initial_state()
-    assert reloaded_init["hudMini"] is True
+    assert reloaded_init["surface"] == "full"
     assert reloaded_init["hudDensity"] == "comfortable"
 
     # Unknown density on disk normalizes to "compact"
-    prefs.write_text(json.dumps({"hudMini": 1, "hudDensity": "ultra"}), encoding="utf-8")
+    prefs.write_text(json.dumps({"hudDensity": "ultra"}), encoding="utf-8")
     normalized = DesktopBridge(DemoClient(), preferences=prefs, demo=True).get_initial_state()
-    assert normalized["hudMini"] is True
     assert normalized["hudDensity"] == "compact"
+
+
+def test_an_old_saved_mini_bar_becomes_the_tab(tmp_path):
+    prefs = tmp_path / "native-window.json"
+    prefs.write_text(json.dumps({"hudMini": 1, "customFlag": 7}), encoding="utf-8")
+
+    bridge = DesktopBridge(DemoClient(), preferences=prefs, demo=True)
+    assert bridge.surface == "tab"
+    assert bridge.get_initial_state()["surface"] == "tab"
+    stored = json.loads(prefs.read_text(encoding="utf-8"))
+    assert stored["surface"] == "tab" and "hudMini" not in stored
+    assert stored["customFlag"] == 7
+
+    # An explicit surface wins over a stale hudMini, and junk falls back to full.
+    prefs.write_text(json.dumps({"hudMini": True, "surface": "full"}), encoding="utf-8")
+    assert DesktopBridge(DemoClient(), preferences=prefs, demo=True).surface == "full"
+    prefs.write_text(json.dumps({"surface": "sideways"}), encoding="utf-8")
+    assert DesktopBridge(DemoClient(), preferences=prefs, demo=True).surface == "full"
 
 
 def test_get_diagnostics_data_demo_and_mocked_client(tmp_path):
