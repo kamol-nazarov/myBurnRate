@@ -71,6 +71,7 @@
   --lane-name: 62px;
   --lane-pct: 40px;
   --lane-gap: 8px;
+  --lane-level: rgba(72, 64, 187, 0.35);
   --border: rgba(24, 23, 43, 0.075);
   --border-input: rgba(24, 23, 43, 0.15);
   --divider: #f0f0f6;
@@ -173,6 +174,7 @@ html[data-theme="dark"] {
   --danger-border: rgba(240, 122, 134, 0.32);
   --danger-quiet-bg: #2a1a20;
   --danger-ink: #f6a1aa;
+  --lane-level: rgba(143, 136, 245, 0.4);
   --border: rgba(255, 255, 255, 0.075);
   --border-input: rgba(255, 255, 255, 0.15);
   --divider: #232530;
@@ -4016,6 +4018,8 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
 .lane-base { position: absolute; left: 0; right: 0; top: 5px; height: 6px; border-radius: 3px; background: var(--track); }
 .lane-grid { position: absolute; top: 0; bottom: 0; width: 1px; margin-left: -0.5px; background: var(--divider); }
 .lane-use { position: absolute; left: 0; top: 4px; height: 8px; border-radius: 4px; background: var(--accent); }
+/* A level bar is a soft fill with an accent outline: distinct from the solid timeline fill, and 3:1 against the track */
+.lane-level { position: absolute; left: 0; top: 4px; height: 8px; border-radius: 4px; background: var(--lane-level); box-shadow: inset 0 0 0 1px var(--accent); }
 .lane-dry {
   position: absolute;
   top: 4px;
@@ -4037,7 +4041,6 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
 .lane.is-muted .lane-pct,
 .lane.is-muted .lane-note { color: var(--ink-tertiary); }
 .lane.is-muted .lane-base { background: transparent; border: 1px dashed var(--track-muted); height: 6px; }
-.lane-track.is-plain .lane-use { background: var(--accent); }
 
 .balrow { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; }
 .balrow strong.provider-rem { font-size: 20px; font-weight: 800; }
@@ -4058,6 +4061,8 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
 .leg .u { background: var(--accent); }
 .leg .d { border: 1px dashed var(--amber); background: var(--surface); }
 .leg .r { width: 3px; background: var(--mint); }
+.leg .l { background: var(--lane-level); box-shadow: inset 0 0 0 1px var(--accent); }
+.leg span[hidden] { display: none; }
 
 .provider-item .drawer-collapse { margin-top: -2px; }
 .drawer-box { transform: none; }
@@ -4256,7 +4261,7 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
             <div class="skel-lane" aria-hidden="true"><i class="skel skel-line skel-w15"></i><i class="skel skel-bar"></i></div>
           </div>
         </div>
-        <p class="leg" id="limitLegend" hidden><span><i class="u"></i>usable at this pace</span><span><i class="d"></i>dry before refill</span><span><i class="r"></i>refill</span></p>
+        <p class="leg" id="limitLegend" hidden><span><i class="u"></i>usable at this pace</span><span><i class="d"></i>dry before refill</span><span><i class="r"></i>refill</span><span id="limitLegendLevel" hidden><i class="l"></i>left (no pace yet)</span></p>
       </section>
 
       <!-- Today: value, tokens, chart, range -->
@@ -5279,7 +5284,6 @@ function paintHeroText(data, animate = true) {
 /* ---------- Limits: one group per provider or profile, lanes with refill timelines ---------- */
 const LIMIT_NAMES = { "5h": "5-hour", weekly: "Weekly", monthly: "Monthly", balance: "Balance" };
 const LIMIT_TAGS = { out: "Out of quota", soon: "About to run out", warn: "Dry before refill" };
-const LEVEL_RANK = { out: 0, soon: 1, warn: 2, ok: 3, balance: 4, idle: 5 };
 const LIMIT_TICKS = [[6, "6h"], [24, "1d"], [72, "3d"]];
 const LIMIT_MIN_HORIZON_H = 96;
 
@@ -5335,10 +5339,17 @@ function laneGridHtml(horizon) {
     .map(h => `<i class="lane-grid" style="left:${pctStyle(limitX(h, horizon))}"></i>`).join("");
 }
 
-function paceOf(w) {
+/* The forecast's verdict, or null when there is none (no forecast, a stale one, a state we do not know). */
+function paceState(w) {
   const pace = w && w.pace && typeof w.pace === "object" ? w.pace : null;
-  if (!pace || (pace.state !== "tight" && pace.state !== "dry")) return null;
-  return Number.isFinite(Number(pace.hoursToDry)) ? pace : null;
+  return pace && (pace.state === "tight" || pace.state === "dry" || pace.state === "safe") ? pace.state : null;
+}
+
+/* The forecast, only when it says the window runs dry before it resets. */
+function paceOf(w) {
+  const state = paceState(w);
+  if (state !== "tight" && state !== "dry") return null;
+  return Number.isFinite(Number(w.pace.hoursToDry)) ? w.pace : null;
 }
 
 function renderLane(w, horizon) {
@@ -5362,14 +5373,25 @@ function renderLane(w, horizon) {
   const notes = [];
   let tone = rem <= 10 ? "is-soon" : "";
   let track;
+  let level = false;
+  let label = "";
 
   if (w.unit === "credits" && w.remainingCredits !== null && w.remainingCredits !== undefined) {
     notes.push(`${fmtCredits(w.remainingCredits)} cr left`);
   }
   if (!hasClock) {
-    /* No reset time to place on the clock: show the plain share left. */
-    track = `<i class="lane-base"></i><i class="lane-use" style="width:${rem.toFixed(1)}%"></i>`;
+    /* No reset time to place on the clock: a level bar, the share left, off the time axis. */
+    level = true;
+    track = `<i class="lane-base"></i><i class="lane-level" style="width:${rem.toFixed(1)}%"></i>`;
     if (!pace && (w.runway || w.forecast)) notes.push(w.runway || w.forecast);
+  } else if (rem <= 0) {
+    /* Nothing left: no usable time before the refill, whatever any forecast says. */
+    tone = "is-soon";
+    notes.push(`Out · refills in ${fmtSpan(resetH)}`);
+    track = `<i class="lane-base"></i>
+      <i class="lane-dry" style="left:0;width:${pctStyle(refillFrac)}"></i>
+      <i class="lane-dot" style="left:0"></i>
+      <i class="lane-refill" style="left:${pctStyle(refillFrac)}"></i>`;
   } else if (pace) {
     const hd = Number(pace.hoursToDry);
     const dryAt = Math.min(hd, resetH);
@@ -5381,20 +5403,28 @@ function renderLane(w, horizon) {
       <i class="lane-dry" style="left:${pctStyle(dryFrac)};width:${pctStyle(Math.max(0, refillFrac - dryFrac))}"></i>
       <i class="lane-dot" style="left:${pctStyle(dryFrac)}"></i>
       <i class="lane-refill" style="left:${pctStyle(refillFrac)}"></i>`;
-  } else {
-    notes.push(rem <= 0 ? `Out · refills in ${fmtSpan(resetH)}` : `Refills in ${fmtSpan(resetH)}`);
-    /* An older service sends only its text forecast: show it as is, derive nothing. */
+  } else if (paceState(w) === "safe") {
+    /* The forecast says it lasts until the refill. */
+    notes.push(`Refills in ${fmtSpan(resetH)}`);
     if (w.runway || w.forecast) notes.push(w.runway || w.forecast);
     track = `<i class="lane-base"></i>
       <i class="lane-use" style="width:${pctStyle(Math.max(refillFrac, 0.012))}"></i>
       <i class="lane-refill" style="left:${pctStyle(refillFrac)}"></i>`;
+  } else {
+    /* No forecast (absent, stale or unknown): a level bar, never a claim about usable time.
+       An older service's text forecast is shown as it is. */
+    level = true;
+    notes.push(`Refills in ${fmtSpan(resetH)}`);
+    if (w.runway || w.forecast) notes.push(w.runway || w.forecast);
+    track = `<i class="lane-base"></i><i class="lane-level" style="width:${rem.toFixed(1)}%"></i>`;
+    label = `${name}: ${Math.round(rem)}% left, refills in ${fmtSpan(resetH)}${w.runway || w.forecast ? ", " + (w.runway || w.forecast) : ", no pace forecast yet"}`;
   }
   const note = notes.join(" · ");
-  const label = `${name}: ${Math.round(rem)}% left${note ? ". " + note : ""}`;
+  if (!label) label = `${name}: ${Math.round(rem)}% left${note ? ". " + note : ""}`;
   return `
     <div class="lane ${tone}" data-limit="${esc(w.limitKey || "")}">
       <span class="lane-name">${esc(name)}</span>
-      <div class="lane-track${hasClock ? "" : " is-plain"}" role="img" aria-label="${esc(label)}">${hasClock ? laneGridHtml(horizon) : ""}${track}</div>
+      <div class="lane-track${level ? " is-level" : ""}" role="img" aria-label="${esc(label)}">${hasClock && !level ? laneGridHtml(horizon) : ""}${track}</div>
       <b class="lane-pct">${Math.round(rem)}%</b>
       ${note ? `<span class="lane-note">${esc(note)}</span>` : ""}
     </div>`;
@@ -5456,66 +5486,14 @@ function renderUsageRow(prov) {
     </div>`;
 }
 
-/* Providers that can have several profiles; a profile's key is the family key plus "-<name>" (claude-code-work). */
-const PROFILE_FAMILIES = ["claude-code", "opencode-go", "zcode", "codex", "antigravity", "grok", "muse"];
-
-function profileFamily(key) {
-  const text = String(key || "");
-  for (const family of PROFILE_FAMILIES) {
-    if (text === family || text.startsWith(family + "-")) return family;
-  }
-  return text;
-}
-
 const finiteOrNull = (v) => (v !== null && v !== undefined && v !== "" && Number.isFinite(Number(v))) ? Number(v) : null;
 
-/* The window a provider is graded on: the one that runs dry soonest, else the one with the least left. */
-function focusWindow(prov) {
-  const measured = (prov.windows || []).filter(w => !w.unavailable && finiteOrNull(w.remainingPct) !== null);
-  if (!measured.length) return null;
-  const drying = measured.filter(w => paceOf(w));
-  if (drying.length) return drying.reduce((best, w) => Number(w.pace.hoursToDry) < Number(best.pace.hoursToDry) ? w : best);
-  return measured.reduce((best, w) => Number(w.remainingPct) < Number(best.remainingPct) ? w : best);
-}
-
-/* Order inside one urgency level: soonest to run dry, least left, smallest balance. */
-function limitSortKey(prov) {
-  const level = prov.urgency && prov.urgency.level;
-  const w = focusWindow(prov);
-  const isBalance = prov.isPayg || (prov.remaining && prov.remaining.kind === "balance");
-  const balance = isBalance ? finiteOrNull(prov.fundsRemainingUsd) : null;
-  return [
-    level in LEVEL_RANK ? LEVEL_RANK[level] : LEVEL_RANK.idle,
-    w && paceOf(w) ? Number(w.pace.hoursToDry) : Infinity,
-    w ? Number(w.remainingPct) : Infinity,
-    balance === null ? Infinity : balance
-  ];
-}
-
-/* Most urgent first, the profiles of one provider together at the spot of the most urgent one,
-   unless the owner has dragged the list into an order of their own. */
+/* The service decides the order (provider.displayRank, 0 first) so this window and the tab can never drift apart.
+   Without it (an older service) the service's own order stays; a saved custom order always wins. */
 function orderProviders(providers) {
-  const urgent = !state.providerOrder.length && providers.some(p => p.urgency && p.urgency.level in LEVEL_RANK);
-  if (!urgent) return { list: providers, byUrgency: false };
-  const cmp = (a, b) => {
-    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
-    return 0;
-  };
-  const sorted = providers.map((p, i) => ({ p, i, k: limitSortKey(p) })).sort((a, b) => cmp(a.k, b.k) || a.i - b.i).map(x => x.p);
-  const families = new Map();
-  for (const p of sorted) {
-    const fam = profileFamily(p.key);
-    if (!families.has(fam)) families.set(fam, []);
-    families.get(fam).push(p);
-  }
-  const list = [];
-  for (const p of sorted) {
-    const fam = profileFamily(p.key);
-    if (families.has(fam)) {
-      list.push(...families.get(fam));
-      families.delete(fam);
-    }
-  }
+  const ranked = !state.providerOrder.length && providers.length > 0 && providers.every(p => finiteOrNull(p.displayRank) !== null);
+  if (!ranked) return { list: providers, byUrgency: false };
+  const list = providers.map((p, i) => ({ p, i })).sort((a, b) => Number(a.p.displayRank) - Number(b.p.displayRank) || a.i - b.i).map(x => x.p);
   return { list, byUrgency: true };
 }
 
@@ -5687,6 +5665,7 @@ function renderLimits(providers) {
       <button class="limits-empty-link" type="button" onclick="openSettings('sources')">Add a source</button>
     </div>` : "";
   list.innerHTML = emptyCard + ordered.map((prov, idx) => renderLimitGroup(prov, idx, horizon, doStagger)).join("");
+  document.getElementById("limitLegendLevel").hidden = !list.querySelector(".lane-track.is-level");
   if (focusedKey) {
     const again = Array.from(list.querySelectorAll(".provider-row")).find(el => el.dataset.rowKey === focusedKey);
     if (again) again.focus();

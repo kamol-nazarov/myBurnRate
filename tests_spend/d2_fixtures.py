@@ -178,11 +178,32 @@ def live_activity() -> list[dict]:
     ]
 
 
+def _rank(report: dict, order: list[str]) -> None:
+    """Stamp ``displayRank`` the way the service does: the position in ``order``, 0 first."""
+    by_key = {prov["key"]: prov for prov in report["providers"]}
+    assert set(order) == set(by_key), (sorted(order), sorted(by_key))
+    for rank, key in enumerate(order):
+        by_key[key]["displayRank"] = rank
+
+
+def lane_states_provider() -> dict:
+    """One provider whose windows cover every pace case a lane must tell apart."""
+    windows = [
+        _window("5h", "5-hour window", 40.0, 3.0, pace=None),
+        _window("weekly", "Weekly window", 35.0, 76.0, pace={"state": "stale", "hoursToDry": None, "hoursDryBeforeReset": None, "runsDryAt": None}),
+        _window("monthly", "Monthly window", 0.0, 24.0, pace=None),
+        _window("credits", "Safe numeric", 70.0, 10.0, pace=_pace("safe", 40.0, None)),
+        _window("extra", "Out and dry", 0.0, 5.0, pace=_pace("dry", 0.0, 5.0)),
+    ]
+    return _provider("lane-states", "Lane states", "Test plan", windows, level="out", text="out · resets in 1d")
+
+
 def d2_report(variant: str = "default") -> dict:
     """``default`` is the canvas state; the other variants exercise one state each."""
     report = demo_report()
     report["providers"] = contract_providers()
     report["activity"] = live_activity()
+    _rank(report, ["claude-code", "codex", "opencode-go", "grok", "openrouter"])
     if variant == "profiles":
         work = copy.deepcopy(report["providers"][0])
         work["key"] = "claude-code-work"
@@ -193,9 +214,27 @@ def d2_report(variant: str = "default") -> dict:
             win["remainingPct"], win["usedPct"], win["pace"] = 88.0, 12.0, _pace("safe", None, None)
         report["providers"][0]["profile"] = "Personal"
         report["providers"].insert(1, work)
+        # urgency first; the Work profile only follows Personal when it ties with it
+        _rank(report, ["claude-code", "codex", "opencode-go", "claude-code-work", "grok", "openrouter"])
+    elif variant == "mixed-profiles":
+        # Claude Primary out, Claude Work ok, Codex soon: a more urgent provider is never behind a healthy profile
+        primary, codex = report["providers"][0], report["providers"][1]
+        primary["profile"], primary["urgency"] = "Primary", {"level": "out", "limitKey": "5h", "text": "out · resets in 2h"}
+        primary["windows"] = [_window("5h", "5-hour window", 0.0, 2.0, pace=None)]
+        work = copy.deepcopy(primary)
+        work["key"], work["profile"] = "claude-code-work", "Work"
+        work["urgency"] = {"level": "ok", "limitKey": "5h", "text": "resets in 2h"}
+        work["windows"] = [_window("5h", "5-hour window", 88.0, 2.0, pace=_pace("safe", None, None))]
+        codex["urgency"] = {"level": "soon", "limitKey": "weekly", "text": "dry in ~2h"}
+        codex["windows"] = [_window("weekly", "Weekly", 50.0, 100.0, pace=_pace("tight", 1.5, 98.0))]
+        report["providers"] = [primary, work, codex]
+        _rank(report, ["claude-code", "codex", "claude-code-work"])
+    elif variant == "lane-states":
+        report["providers"] = [lane_states_provider()]
+        _rank(report, ["lane-states"])
     elif variant == "old-service":
         for prov in report["providers"]:
-            for key in ("profile", "fundsRunwayInfo", "urgency"):
+            for key in ("profile", "fundsRunwayInfo", "urgency", "displayRank"):
                 prov.pop(key, None)
             for win in prov["windows"]:
                 win.pop("pace", None)
