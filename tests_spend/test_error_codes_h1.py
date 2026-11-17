@@ -14,6 +14,7 @@ from spend_app import aggregate, auth_model, auth_throttle, setup_wizard, sync
 from spend_app.api import create_app
 from spend_app.config import Settings
 from spend_app.connection_paths import LocationError
+from spend_app.connection_secrets import MACHINE_TOKEN_VAULT_REF, read_vault_secret
 from spend_app.db import connect, initialize
 from spend_app.error_codes import (
     ERROR_CATALOG,
@@ -707,7 +708,7 @@ def test_auth_107_expired_revoked_session_relay_and_b2_native_client_mapping(
     )
     assert local_signin.status_code == 200, local_signin.text
 
-    bridge = DesktopBridge(NativeClient(local_settings, port=17331), vault=_MemoryVault())
+    bridge = DesktopBridge(NativeClient(local_settings, port=17331))
     assert bridge.owner_session_status()["hasOwnerSession"] is True
 
     # Revoke all active owner sessions in the hub DB
@@ -771,7 +772,9 @@ def test_dev_301_revoked_invalid_machine_token(tmp_path: Path, monkeypatch) -> N
     sync.revoke_machine(hs.database_path, machine_id=machine_id)
 
     with connect(local_settings.database_path) as conn:
-        revoked_token = setup_wizard.read_setup_state(conn)["spokeConfig"]["token"]
+        assert not setup_wizard.read_setup_state(conn)["spokeConfig"].get("token")
+    revoked_token = read_vault_secret(local_settings.database_path, MACHINE_TOKEN_VAULT_REF)
+    assert revoked_token
 
     # 11a. /api/sync/push with revoked/invalid br_m_ token -> 401 DEV-301
     push_res = hub_client.post(

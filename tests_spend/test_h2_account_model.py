@@ -16,6 +16,11 @@ from fastapi.testclient import TestClient
 from spend_app import aggregate, auth_model, auth_throttle, cli, hub_update, setup_wizard, sync
 from spend_app.api import create_app
 from spend_app.config import Settings
+from spend_app.connection_secrets import (
+    MACHINE_TOKEN_VAULT_REF,
+    OWNER_SESSION_VAULT_REF,
+    read_vault_secret,
+)
 from spend_app.db import connect, initialize
 from spend_app.error_codes import HUB_PROTOCOL_VERSION
 from spend_app.native_desktop import NativeClient
@@ -717,7 +722,9 @@ def test_h2_password_change_validates_rotates_and_revokes_other_sessions(
         )
         assert spoke_join.status_code == 200, spoke_join.text
         with connect(ss.database_path) as conn:
-            s3_token = setup_wizard.read_setup_state(conn)["spokeConfig"]["ownerSession"]
+            assert "ownerSession" not in setup_wizard.read_setup_state(conn)["spokeConfig"]
+        s3_token = read_vault_secret(ss.database_path, OWNER_SESSION_VAULT_REF)
+        assert s3_token
 
         # Wrong current password -> 401 AUTH-101
         wrong_cur = hub_client.post(
@@ -1035,7 +1042,9 @@ def test_h2_maybe_run_configured_spoke_sync_auto_rotates_near_expiry_and_on_flag
         mid = joined.json()["account"]["machineId"]
 
         with connect(ss.database_path) as conn:
-            token_0 = setup_wizard.read_setup_state(conn)["spokeConfig"]["token"]
+            assert not setup_wizard.read_setup_state(conn)["spokeConfig"].get("token")
+        token_0 = read_vault_secret(ss.database_path, MACHINE_TOKEN_VAULT_REF)
+        assert token_0
 
         # 1. Token expiring well outside grace window (ROTATION_GRACE_DAYS + 5) -> NO rotation
         far_exp = auth_model.stamp(auth_model.moment() + timedelta(days=auth_model.ROTATION_GRACE_DAYS + 5))
@@ -1050,7 +1059,7 @@ def test_h2_maybe_run_configured_spoke_sync_auto_rotates_near_expiry_and_on_flag
         assert "tokenRotated" not in res_no_rot
         with connect(ss.database_path) as conn:
             st = setup_wizard.read_setup_state(conn)
-            active_tok = sync._vault_get_secret(ss.database_path, "burnrate-machine-token") or st["spokeConfig"]["token"]
+            active_tok = read_vault_secret(ss.database_path, MACHINE_TOKEN_VAULT_REF)
             assert active_tok == token_0
             assert st["spokeConfig"]["tokenExpiresAt"] == far_exp
             assert st["spokeConfig"]["rotationRequired"] is False
@@ -1068,7 +1077,7 @@ def test_h2_maybe_run_configured_spoke_sync_auto_rotates_near_expiry_and_on_flag
         assert res_near.get("rotationRequired") is False
         with connect(ss.database_path) as conn:
             st1 = setup_wizard.read_setup_state(conn)
-            token_1 = sync._vault_get_secret(ss.database_path, "burnrate-machine-token") or st1["spokeConfig"]["token"]
+            token_1 = read_vault_secret(ss.database_path, MACHINE_TOKEN_VAULT_REF)
             assert token_1 and token_1 != token_0
             assert auth_model.parse(st1["spokeConfig"]["tokenExpiresAt"]) > auth_model.moment() + timedelta(days=80)
             assert st1["spokeConfig"]["rotationRequired"] is False
@@ -1094,7 +1103,7 @@ def test_h2_maybe_run_configured_spoke_sync_auto_rotates_near_expiry_and_on_flag
         assert res_req.get("rotationRequired") is False
         with connect(ss.database_path) as conn:
             st2 = setup_wizard.read_setup_state(conn)
-            token_2 = sync._vault_get_secret(ss.database_path, "burnrate-machine-token") or st2["spokeConfig"]["token"]
+            token_2 = read_vault_secret(ss.database_path, MACHINE_TOKEN_VAULT_REF)
             assert token_2 != token_1
             assert st2["spokeConfig"]["rotationRequired"] is False
             cursor2 = sync.read_sync_cursor(ss.database_path, HUB_URL)

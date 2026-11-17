@@ -28,9 +28,16 @@ def _spoke(tmp_path: Path, monkeypatch, hub, *, owner_session: str = "synthetic-
                         anthropic_admin_key=None, openai_admin_key=None, timezone="UTC",
                         cache_hit_threshold=0.75, over_routing_token_ceiling=40000)
     initialize(settings.database_path)
-    with connect(settings.database_path) as connection:
-        write_setup_state(connection, {"role": "spoke", "spokeConfig": {
-            "enabled": True, "hubUrl": "https://hub.test", "token": "spoke-token", "ownerSession": owner_session}})
+    from spend_app.connection_secrets import publish_spoke_credentials
+    def _apply(_conn, st):
+        st["role"] = "spoke"
+        st["spokeConfig"] = {**st.get("spokeConfig", {}), "enabled": True, "hubUrl": "https://hub.test"}
+    publish_spoke_credentials(
+        settings.database_path,
+        machine_token="spoke-token",
+        owner_session=owner_session,
+        apply_state=_apply,
+    )
     monkeypatch.setitem(sync_module._HUB_TEST_CLIENTS, "https://hub.test", hub)
     sync_module.clear_hub_proxy_cache()
     return settings
@@ -233,9 +240,16 @@ def test_hub_auth_rejection_empties_only_that_credentials_proxy_cache(tmp_path, 
                               anthropic_admin_key=None, openai_admin_key=None, timezone="UTC",
                               cache_hit_threshold=0.75, over_routing_token_ceiling=40000)
     initialize(other_settings.database_path)
-    with connect(other_settings.database_path) as connection:
-        write_setup_state(connection, {"role": "spoke", "spokeConfig": {
-            "enabled": True, "hubUrl": "https://hub.test", "token": "spoke-token", "ownerSession": other_token}})
+    from spend_app.connection_secrets import publish_spoke_credentials
+    def _apply_other(_conn, st):
+        st["role"] = "spoke"
+        st["spokeConfig"] = {**st.get("spokeConfig", {}), "enabled": True, "hubUrl": "https://hub.test"}
+    publish_spoke_credentials(
+        other_settings.database_path,
+        machine_token="spoke-token",
+        owner_session=other_token,
+        apply_state=_apply_other,
+    )
 
     try:
         fetch = sync_module.fetch_from_configured_hub
