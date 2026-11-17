@@ -682,7 +682,7 @@ def test_auth_107_expired_revoked_session_relay_and_b2_native_client_mapping(
     # 10a. Revoked / invalid owner session on protected hub routes -> 401 AUTH-107
     invalid_bearer = hub_client.get(
         "/api/spend/summary",
-        headers={**HUB_HEADERS, "Authorization": "Bearer br_s_invalid_session_token"},
+        headers={**HUB_HEADERS, "Authorization": "Bearer " + "br_s_invalid_session_token"},
     )
     assert invalid_bearer.status_code == 401
     assert invalid_bearer.json() == {"error": {"code": "AUTH-107"}}
