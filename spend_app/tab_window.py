@@ -652,6 +652,20 @@ class TabBridge:
         if self._controller is not None:
             self._controller.tab.begin_drag()
 
+    def press(self) -> dict:
+        """The page saw the primary button go down: remember where the pointer and
+        the window were, so a drag that starts a few pixels later does not lag."""
+        if self._controller is not None:
+            self._controller.tab.note_press()
+        return {"ok": True}
+
+    def set_focus(self, inside: bool) -> dict:
+        """The page reports whether a keyboard focus ring is inside the tab (the
+        tab stays fully opaque while it is)."""
+        if self._controller is not None:
+            self._controller.tab.keyboard_focus = bool(inside)
+        return {"ok": True}
+
     def expand(
         self,
         width: float,
@@ -753,6 +767,13 @@ class TabHost:
         #: Physical top-left of the collapsed tab for the whole expansion session.
         self._anchor: tuple[int, int] | None = None
         self.on_reflow = None
+        #: Called after the tab has been shown (the fader starts it fully opaque).
+        self.on_shown = None
+        #: Whether a keyboard focus ring is inside the page (reported by the page).
+        self.keyboard_focus = False
+        self._dragging = False
+        self._press: tuple | None = None
+        self._settle_timer: threading.Timer | None = None
         self._last_budget: float | None = None
         self._reflowing = False
         self.visible = False
@@ -762,6 +783,77 @@ class TabHost:
     @property
     def hwnd(self) -> int:
         return int(self.hwnd_box[0] or 0)
+
+    # -- fading support (read by WindowOpacityController) ------------------------
+
+    def visible_screen_rects(self) -> list[tuple[int, int, int, int]]:
+        """The visible parts (strip, plus the card while one is open) as screen
+        rectangles ``(left, top, right, bottom)``; everything else is cut away."""
+        rect = native_geometry.window_rect(self.hwnd)
+        if rect is None:
+            return []
+        scale = max(self._dpi(), 1) / 96
+        return [
+            (rect.left + left, rect.top + top, rect.left + right, rect.top + bottom)
+            for left, top, right, bottom, _radius in shape_rects(
+                (rect.width, rect.height), scale, self._card, self._up
+            )
+        ]
+
+    def contains_screen_point(self, point, margin: int = 4) -> bool:
+        x, y = point
+        return any(
+            left - margin <= x <= right + margin and top - margin <= y <= bottom + margin
+            for left, top, right, bottom in self.visible_screen_rects()
+        )
+
+    def holds_opaque(self) -> bool:
+        """The tab stays fully opaque while a hover card is open or the keyboard
+        focus ring is inside it."""
+        return self._expanded is not None or self.keyboard_focus
+
+    def prepare_layered(self) -> None:
+        """Make the (still hidden) form a layered window at full alpha, so the
+        first fade later is only an alpha change: no restyle while it is on
+        screen, and no flash."""
+        if sys.platform != "win32" or not self.hwnd:
+            return
+        try:
+            import ctypes
+
+            user32 = ctypes.windll.user32
+            style = user32.GetWindowLongW(self.hwnd, -20)
+            if not (style & 0x00080000):
+                user32.SetWindowLongW(self.hwnd, -20, style | 0x00080000)
+            user32.SetLayeredWindowAttributes(self.hwnd, 0, 255, 0x02)
+        except (OSError, AttributeError):
+            LOGGER.warning("Could not make the tab a layered window", exc_info=True)
+
+    # -- staying on screen after a drag -------------------------------------------
+
+    def note_moved(self) -> None:
+        """The window moved (a drag, a monitor change): once the mouse is up and
+        it has been still for a moment, pull it back inside the work area."""
+        timer = self._settle_timer
+        if timer is not None:
+            timer.cancel()
+        timer = threading.Timer(0.5, self._settle)
+        timer.daemon = True
+        self._settle_timer = timer
+        timer.start()
+
+    def _settle(self) -> None:
+        if self.quitting or not self.visible or self._expanded is not None:
+            return
+        if native_geometry.left_button_down():
+            self.note_moved()  # still dragging: look again later
+            return
+        try:
+            with self._lock:
+                self.fit()
+            self.tracker.notify_changed()
+        except Exception:  # noqa: BLE001
+            LOGGER.warning("Could not settle the tab after a move", exc_info=True)
 
     def _snapshot(self, hwnd: int):
         """Never save while a hover card has stretched (or shifted) the window."""
@@ -997,17 +1089,61 @@ class TabHost:
         except OSError:
             LOGGER.debug("Could not hide the tab's taskbar button", exc_info=True)
 
+    DRAG_POLL = 0.008
+    PRESS_FRESH = 5.0
+
+    def note_press(self) -> None:
+        self._press = (native_geometry.cursor_pos(), time.monotonic())
+
     def begin_drag(self) -> None:
+        """Drag the tab with the pointer until the left button is released.
+
+        Done by polling the native cursor position (not by the page's mouse
+        events), so a fast move that leaves the window, or a lagging WebView,
+        never drops the drag. Any open hover card is put away first.
+        """
+        if self.quitting or not self.visible or self._dragging:
+            return
+        self.collapse()
+        start = native_geometry.cursor_pos()
+        press = self._press
+        if press is not None and press[0] is not None and time.monotonic() - press[1] < self.PRESS_FRESH:
+            start = press[0]  # where the button went down, before the pointer travelled to the threshold
+        rect = self._current()
+        if start is None or rect is None or not native_geometry.left_button_down():
+            return
+        self._dragging = True
+        threading.Thread(
+            target=self._drag_loop, args=(start, (rect.left, rect.top)),
+            name="burnrate-tab-drag", daemon=True,
+        ).start()
+
+    def _drag_loop(self, start_cursor, start_window) -> None:
+        try:
+            while native_geometry.left_button_down() and not self.quitting and self.visible:
+                position = native_geometry.cursor_pos()
+                if position is not None:
+                    self._move_to(
+                        start_window[0] + position[0] - start_cursor[0],
+                        start_window[1] + position[1] - start_cursor[1],
+                    )
+                time.sleep(self.DRAG_POLL)
+        except Exception:  # noqa: BLE001 -- a failed drag must not take the app down
+            LOGGER.warning("Tab drag failed", exc_info=True)
+        finally:
+            self._dragging = False
+            self._press = None
+            self.tracker.notify_changed()  # save the new spot under "tabWindow"
+            self.note_moved()  # and clamp it back on screen once it has settled
+
+    def _move_to(self, x: int, y: int) -> None:
+        """Move without resizing, activating or restacking."""
         if sys.platform != "win32" or not self.hwnd:
             return
-        try:
-            import ctypes
+        import ctypes
 
-            user32 = ctypes.windll.user32
-            user32.ReleaseCapture()
-            user32.PostMessageW(self.hwnd, 0xA1, 2, 0)  # WM_NCLBUTTONDOWN, HTCAPTION
-        except OSError:
-            pass
+        flags = 0x0001 | 0x0004 | 0x0010  # NOSIZE | NOZORDER | NOACTIVATE
+        ctypes.windll.user32.SetWindowPos(self.hwnd, 0, x, y, 0, 0, flags)
 
     # -- show / hide ---------------------------------------------------------
 
@@ -1023,13 +1159,24 @@ class TabHost:
         else:
             self._apply(position[0], position[1], width, height)
 
-    def show(self, *, activate: bool = True) -> None:
+    def is_shown(self) -> bool:
+        """Whether the tab is really on screen (not only flagged visible)."""
+        if not self.visible:
+            return False
+        if sys.platform != "win32" or not self.hwnd:
+            return True
+        import ctypes
+
+        return bool(ctypes.windll.user32.IsWindowVisible(self.hwnd))
+
+    def show(self, *, activate: bool = True, strict: bool = False) -> None:
+        """Show the tab. With ``strict`` a failure is raised (after being logged)
+        instead of swallowed, so the caller can fall back to the full window."""
         if self.quitting:
             return
-        with self._lock:
-            self.fit()
-            self.visible = True
         try:
+            with self._lock:
+                self.fit()
             if activate:
                 self.window.show()
             elif sys.platform == "win32" and self.hwnd:
@@ -1038,8 +1185,14 @@ class TabHost:
                 ctypes.windll.user32.ShowWindow(self.hwnd, 4)  # SW_SHOWNOACTIVATE
             else:
                 self.window.show()
+            self.visible = True
+            if self.on_shown is not None:
+                self.on_shown()
         except Exception:  # noqa: BLE001
-            LOGGER.debug("Tab show skipped", exc_info=True)
+            self.visible = False
+            LOGGER.warning("Tab show failed", exc_info=True)
+            if strict:
+                raise
 
     def hide(self) -> None:
         if self.quitting:
@@ -1051,7 +1204,7 @@ class TabHost:
         try:
             self.window.hide()
         except Exception:  # noqa: BLE001
-            LOGGER.debug("Tab hide skipped", exc_info=True)
+            LOGGER.warning("Tab hide failed", exc_info=True)
 
     def destroy(self) -> None:
         self.quitting = True
@@ -1059,7 +1212,7 @@ class TabHost:
         try:
             self.window.destroy()
         except Exception:  # noqa: BLE001
-            LOGGER.debug("Tab destroy skipped", exc_info=True)
+            LOGGER.warning("Tab destroy failed", exc_info=True)
 
     def push(self, payload: dict) -> None:
         """Hand a payload to the page on a worker (never on the UI thread)."""
@@ -1089,6 +1242,7 @@ class TabHost:
         self.hide_taskbar_button()
         _apply_win11_chrome(self.window, self._icon_path, dark)
         self.drop_dwm_frame()
+        self.prepare_layered()
 
         def on_closing(_sender, args) -> None:
             if self.quitting:
@@ -1112,7 +1266,7 @@ class TabHost:
             native.FormClosing += on_closing
             native.DpiChanged += lambda *_args: self.fit()
         except Exception:  # noqa: BLE001
-            LOGGER.debug("Tab form hooks skipped", exc_info=True)
+            LOGGER.warning("Tab form hooks failed", exc_info=True)
 
 
 # --- switching ---------------------------------------------------------------
@@ -1217,13 +1371,9 @@ class SurfaceController:
 
     def _apply(self, action: str) -> None:
         if action == "tab":
-            self.bridge._remember_surface("tab")
-            self.main.hide()
-            self.tab.show()
+            self._to_tab()
         elif action == "full":
-            self.bridge._remember_surface("full")
-            self.tab.hide()
-            self.main.show()
+            self._to_full()
         elif action == "toggle":
             if self.tab.visible:
                 self.tab.hide()
@@ -1241,3 +1391,45 @@ class SurfaceController:
                 self.tab.hide()
             else:
                 self.main.quit()
+        LOGGER.info(
+            "Surface %s -> surface=%s main_visible=%s tab_visible=%s",
+            action, self.surface, self._safe(self.main.is_visible), self.tab.visible,
+        )
+
+    @staticmethod
+    def _safe(call):
+        try:
+            return call()
+        except Exception:  # noqa: BLE001
+            LOGGER.warning("Window call failed", exc_info=True)
+            return None
+
+    def _to_tab(self) -> None:
+        """Shrink to the tab. The tab comes up first and the full window only
+        goes once the tab is really showing, so a failure can never leave the
+        user with no window: it is rolled back to the full window."""
+        self.bridge._remember_surface("tab")
+        try:
+            self.tab.show(strict=True)
+            if not self.tab.is_shown():
+                raise RuntimeError("the tab window did not appear")
+            self.main.hide()
+            if self._safe(self.main.is_visible):
+                raise RuntimeError("the full window is still visible")
+        except Exception:  # noqa: BLE001 -- anything: keep the full window
+            LOGGER.warning("Shrink to tab failed; keeping the full window", exc_info=True)
+            self.bridge._remember_surface("full")
+            self._safe(self.tab.hide)
+            self._safe(self.main.show)
+
+    def _to_full(self) -> None:
+        self.bridge._remember_surface("full")
+        try:
+            self.main.show()
+            if not self._safe(self.main.is_visible):
+                raise RuntimeError("the full window did not appear")
+            self.tab.hide()
+        except Exception:  # noqa: BLE001
+            LOGGER.warning("Opening the full window failed; keeping the tab", exc_info=True)
+            self.bridge._remember_surface("tab")
+            self._safe(self.tab.show)

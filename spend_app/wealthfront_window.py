@@ -795,6 +795,8 @@ THEME_ATTRIBUTE = 'data-theme-pref="system"'
 SERVICE_ALERT_RECHECK_SECONDS = 300.0
 TRAY_HINT_KEY = "trayHintShown"
 TAB_WINDOW_TITLE = "BURNRATE tab"
+#: How long the tab stays opaque after the pointer leaves it (Auto-fade).
+TAB_FADE_DELAY = 1.5
 TAB_LIGHT_BACKGROUND = "#FFFFFF"
 TAB_DARK_BACKGROUND = "#18172B"
 HOST_PAGE_METHODS = frozenset({"refresh", "openSettings", "notify", "setUpdate"})
@@ -967,22 +969,117 @@ def _set_window_topmost(window, hwnd_getter, enabled: bool) -> None:
         raise ctypes.WinError(ctypes.get_last_error())
 
 
-class WindowOpacityController:
-    """Smoothly fades the Win32 frameless window when the cursor leaves its bounds."""
+class Win32Fade:
+    """The few user32 calls the fader makes, behind one seam so tests can fake them."""
 
-    def __init__(self, bridge: DesktopBridge, hwnd_getter) -> None:
+    LWA_ALPHA = 0x02
+    WS_EX_LAYERED = 0x00080000
+    GWL_EXSTYLE = -20
+
+    def __init__(self) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        self._ctypes = ctypes
+        self._wintypes = wintypes
+        self._u = ctypes.windll.user32
+        self._u.SetLayeredWindowAttributes.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint32, ctypes.c_ubyte, ctypes.c_uint32,
+        ]
+
+    def is_window(self, hwnd: int) -> bool:
+        return bool(self._u.IsWindow(hwnd))
+
+    def is_iconic(self, hwnd: int) -> bool:
+        return bool(self._u.IsIconic(hwnd))
+
+    def is_visible(self, hwnd: int) -> bool:
+        return bool(self._u.IsWindowVisible(hwnd))
+
+    def cursor_pos(self):
+        point = self._wintypes.POINT()
+        if not self._u.GetCursorPos(self._ctypes.byref(point)):
+            return None
+        return point.x, point.y
+
+    def window_rect(self, hwnd: int):
+        rect = self._wintypes.RECT()
+        if not self._u.GetWindowRect(hwnd, self._ctypes.byref(rect)):
+            return None
+        return rect.left, rect.top, rect.right, rect.bottom
+
+    def left_button_down(self) -> bool:
+        return bool(self._u.GetAsyncKeyState(0x01) & 0x8000)
+
+    def ensure_layered(self, hwnd: int) -> bool:
+        try:
+            style = self._u.GetWindowLongW(hwnd, self.GWL_EXSTYLE)
+            if not (style & self.WS_EX_LAYERED):
+                self._u.SetWindowLongW(hwnd, self.GWL_EXSTYLE, style | self.WS_EX_LAYERED)
+            return bool(self._u.SetLayeredWindowAttributes(hwnd, 0, 255, self.LWA_ALPHA))
+        except OSError:
+            return False
+
+    def set_alpha(self, hwnd: int, alpha: int) -> None:
+        self._u.SetLayeredWindowAttributes(hwnd, 0, max(0, min(255, int(alpha))), self.LWA_ALPHA)
+
+
+class FadeTarget:
+    """One window the opacity controller fades.
+
+    ``hit_test(point)`` says whether the cursor is over the window's visible
+    part (default: its rectangle plus a 4 px margin); ``hold()`` keeps it
+    opaque for reasons the cursor cannot tell (a hover card, keyboard focus);
+    ``leave_delay`` is how long it stays opaque after the cursor leaves.
+    """
+
+    def __init__(self, hwnd_getter, *, hit_test=None, hold=None, leave_delay: float = 0.16,
+                 follows_ui_busy: bool = True) -> None:
+        self.hwnd_getter = hwnd_getter
+        self.hit_test = hit_test
+        self.hold = hold
+        self.leave_delay = leave_delay
+        self.follows_ui_busy = follows_ui_busy
+        self.layered_hwnd = 0
+        self.alpha = 255.0
+        self.shown = False
+        self.last_inside_at = 0.0
+        self.dragging = False
+        self.awake_until = 0.0
+
+
+class WindowOpacityController:
+    """Fades the app's frameless windows when the cursor leaves them (Auto-fade).
+
+    One loop serves every window (the full window and the tab), so there is a
+    single set of rules and a single owner of the layered-window calls.
+    """
+
+    MARGIN = 4
+    FLOOR = 46.0
+    CEILING = 235.0
+
+    def __init__(self, bridge: DesktopBridge, hwnd_getter, *, api=None) -> None:
         self._bridge = bridge
-        self._hwnd_getter = hwnd_getter
+        self._api = api
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self._layered_hwnd = 0
-        self._current_alpha = 255.0
-        self._awake_until = 0.0
+        self._targets: list[FadeTarget] = [FadeTarget(hwnd_getter)]
 
-    def wake(self, seconds: float = 2.5) -> None:
+    @property
+    def main(self) -> FadeTarget:
+        return self._targets[0]
+
+    def add_target(self, target: FadeTarget) -> FadeTarget:
+        self._targets.append(target)
+        return target
+
+    def wake(self, seconds: float = 2.5, target: FadeTarget | None = None) -> None:
         """Hold full opacity for a moment, e.g. right after a tray click shows
         the window while the cursor is still over the taskbar."""
-        self._awake_until = time.monotonic() + seconds
+        until = time.monotonic() + seconds
+        for item in ([target] if target is not None else self._targets[:1]):
+            item.awake_until = until
 
     def start(self) -> None:
         if sys.platform != "win32" or self._thread is not None:
@@ -995,104 +1092,115 @@ class WindowOpacityController:
     def stop(self) -> None:
         self._stop.set()
 
-    def _ensure_layered(self, user32, hwnd: int) -> bool:
-        if self._layered_hwnd == hwnd:
-            return True
-        try:
-            gwl_exstyle = -20
-            ws_ex_layered = 0x00080000
-            style = user32.GetWindowLongW(hwnd, gwl_exstyle)
-            if not (style & ws_ex_layered):
-                user32.SetWindowLongW(hwnd, gwl_exstyle, style | ws_ex_layered)
-            user32.SetLayeredWindowAttributes(hwnd, 0, 255, 0x02)
-            self._layered_hwnd = hwnd
-            self._current_alpha = 255.0
-            return True
-        except OSError:
+    def _win32(self):
+        if self._api is None:
+            self._api = Win32Fade()
+        return self._api
+
+    def _inside(self, target: FadeTarget, api, point) -> bool:
+        if target.hit_test is not None:
+            return bool(target.hit_test(point))
+        rect = api.window_rect(int(target.hwnd_getter() or 0))
+        if rect is None:
             return False
+        margin = self.MARGIN
+        return (rect[0] - margin) <= point[0] <= (rect[2] + margin) and (
+            rect[1] - margin
+        ) <= point[1] <= (rect[3] + margin)
+
+    def tick_target(self, target: FadeTarget, now: float) -> bool:
+        """One pass for one window; True while it is still mid-fade."""
+        api = self._win32()
+        hwnd = int(target.hwnd_getter() or 0)
+        if not hwnd or not api.is_window(hwnd):
+            return False
+        if api.is_iconic(hwnd) or not api.is_visible(hwnd):
+            # Minimized, or hidden to the tray: nothing to fade, no layered
+            # calls against a window that is not on screen, and the next time
+            # it appears it starts fully opaque.
+            target.shown = False
+            return False
+        if target.layered_hwnd != hwnd:
+            if not api.ensure_layered(hwnd):
+                return False
+            target.layered_hwnd = hwnd
+            target.alpha = 255.0
+        if not target.shown:
+            target.shown = True
+            target.alpha = 255.0
+            target.last_inside_at = now
+            api.set_alpha(hwnd, 255)
+
+        held = bool(target.hold()) if target.hold is not None else False
+        if held:
+            target.last_inside_at = now  # the fade delay starts when the hold ends
+        hovered = True
+        point = api.cursor_pos()
+        if point is not None:
+            inside = self._inside(target, api, point)
+            left_down = api.left_button_down()
+            if inside and left_down:
+                target.dragging = True
+            elif not left_down:
+                target.dragging = False
+            if inside or target.dragging:
+                target.last_inside_at = now
+                hovered = True
+            else:
+                hovered = (now - target.last_inside_at) < target.leave_delay
+
+        auto_fade, idle_opacity, ui_busy = self._bridge.opacity_state()
+        if (
+            not auto_fade
+            or (ui_busy and target.follows_ui_busy)
+            or hovered
+            or held
+            or now < target.awake_until
+        ):
+            goal = 255.0
+        else:
+            goal = max(self.FLOOR, min(self.CEILING, round(idle_opacity * 255.0)))
+
+        diff = goal - target.alpha
+        if abs(diff) >= 0.75:
+            # Snappy fade-in on hover (~130ms), silky fade-out on leave (~250ms)
+            rate = 0.30 if diff > 0 else 0.15
+            step = diff * rate
+            if abs(step) < 1.1:
+                target.alpha = goal
+            else:
+                target.alpha += step
+            try:
+                api.set_alpha(hwnd, max(35, min(255, round(target.alpha))))
+            except OSError:
+                pass
+            return True
+        if target.alpha != goal:
+            target.alpha = goal
+            try:
+                api.set_alpha(hwnd, round(goal))
+            except OSError:
+                pass
+        return False
+
+    def tick(self, now: float | None = None) -> float:
+        """One pass over every window; returns how long to sleep before the next."""
+        now = time.monotonic() if now is None else now
+        fading = False
+        for target in list(self._targets):
+            try:
+                fading = self.tick_target(target, now) or fading
+            except OSError:
+                LOGGER.debug("Fade pass skipped", exc_info=True)
+        return 0.016 if fading else 0.055
 
     def _run(self) -> None:
         try:
-            import ctypes
-            from ctypes import wintypes
+            import ctypes  # noqa: F401 -- Win32Fade needs it; stop quietly where it is missing
         except ImportError:
             return
-
-        user32 = ctypes.windll.user32
-        pt = wintypes.POINT()
-        rect = wintypes.RECT()
-        last_inside_at = time.monotonic()
-        dragging_inside = False
-
         while not self._stop.is_set():
-            hwnd = int(self._hwnd_getter() or 0)
-            if not hwnd or not user32.IsWindow(hwnd):
-                self._stop.wait(0.08)
-                continue
-            if user32.IsIconic(hwnd) or not user32.IsWindowVisible(hwnd):
-                # Minimized, or hidden to the tray: nothing to fade, and no
-                # layered-window calls against a window that is not on screen.
-                self._stop.wait(0.15)
-                continue
-            if not self._ensure_layered(user32, hwnd):
-                self._stop.wait(0.25)
-                continue
-
-            hovered = True
-            if user32.GetCursorPos(ctypes.byref(pt)) and user32.GetWindowRect(
-                hwnd, ctypes.byref(rect)
-            ):
-                inside = (rect.left - 4) <= pt.x <= (rect.right + 4) and (
-                    rect.top - 4
-                ) <= pt.y <= (rect.bottom + 4)
-                lmb_down = bool(user32.GetAsyncKeyState(0x01) & 0x8000)
-                if inside and lmb_down:
-                    dragging_inside = True
-                elif not lmb_down:
-                    dragging_inside = False
-
-                now = time.monotonic()
-                if inside or dragging_inside:
-                    last_inside_at = now
-                    hovered = True
-                else:
-                    # Brief 160ms grace window prevents edge jitter when brushing border
-                    hovered = (now - last_inside_at) < 0.16
-
-            auto_fade, idle_opacity, ui_busy = self._bridge.opacity_state()
-            if (
-                not auto_fade
-                or ui_busy
-                or hovered
-                or time.monotonic() < self._awake_until
-            ):
-                target = 255.0
-            else:
-                target = max(46.0, min(235.0, round(idle_opacity * 255.0)))
-
-            diff = target - self._current_alpha
-            if abs(diff) >= 0.75:
-                # Snappy fade-in on hover (~130ms), silky fade-out on leave (~250ms)
-                rate = 0.30 if diff > 0 else 0.15
-                step = diff * rate
-                if abs(step) < 1.1:
-                    self._current_alpha = target
-                else:
-                    self._current_alpha += step
-                alpha_byte = max(35, min(255, round(self._current_alpha)))
-                try:
-                    user32.SetLayeredWindowAttributes(hwnd, 0, alpha_byte, 0x02)
-                except OSError:
-                    pass
-                self._stop.wait(0.016)
-            else:
-                if self._current_alpha != target:
-                    self._current_alpha = target
-                    try:
-                        user32.SetLayeredWindowAttributes(hwnd, 0, round(target), 0x02)
-                    except OSError:
-                        pass
-                self._stop.wait(0.055)
+            self._stop.wait(self.tick())
 
 
 _CREDENTIAL_UNSET = object()
@@ -3366,8 +3474,10 @@ class DesktopBridge:
     def show_tab(self) -> dict:
         """Shrink to the tab: hide this window and show the always-on-top tab."""
         if self._surfaces is None:
+            LOGGER.warning("Shrink to tab was asked for but no tab is attached; minimizing instead")
             self.minimize_window()
             return {"ok": False, "fallback": "minimize"}
+        LOGGER.info("Shrink to tab requested")
         self._surfaces.show_tab()
         return {"ok": True}
 
@@ -4491,6 +4601,56 @@ def _remove_tree(path: Path, attempts: int = 16, pause: float = 0.25) -> bool:
     return False
 
 
+DESKTOP_LOG_NAME = "desktop.log"
+_DESKTOP_LOG_MARK = "_burnrate_desktop_log"
+
+
+def configure_desktop_logging(logs_dir: Path | None = None) -> Path | None:
+    """Write the desktop app's own log (warnings, window transitions) to
+    ``desktop.log`` next to the service's ``dashboard.log``, redacted like it.
+
+    pythonw has no console, so without this a failure in the window code
+    leaves no trace. Idempotent; returns the log path (``None`` if unwritable).
+    """
+    import logging.handlers
+
+    from spend_app.config import default_logs_path
+    from spend_app.redact import RedactingFormatter
+
+    try:
+        directory = Path(logs_dir) if logs_dir is not None else default_logs_path()
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / DESKTOP_LOG_NAME
+        logger = logging.getLogger("spend_app")
+        for handler in list(logger.handlers):
+            if getattr(handler, _DESKTOP_LOG_MARK, False):
+                logger.removeHandler(handler)
+                handler.close()
+        handler = logging.handlers.RotatingFileHandler(
+            path, maxBytes=512_000, backupCount=3, encoding="utf-8"
+        )
+        setattr(handler, _DESKTOP_LOG_MARK, True)
+        handler.setFormatter(
+            RedactingFormatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+        )
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+        webview_logger = logging.getLogger("pywebview")
+        if not any(getattr(h, _DESKTOP_LOG_MARK, False) for h in webview_logger.handlers):
+            webview_handler = logging.handlers.RotatingFileHandler(
+                path, maxBytes=512_000, backupCount=3, encoding="utf-8"
+            )
+            setattr(webview_handler, _DESKTOP_LOG_MARK, True)
+            webview_handler.setFormatter(
+                RedactingFormatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+            )
+            webview_handler.setLevel(logging.WARNING)
+            webview_logger.addHandler(webview_handler)
+        return path
+    except OSError:
+        return None
+
+
 def run_webview(
     client: NativeClient | DemoClient,
     *,
@@ -4504,6 +4664,8 @@ def run_webview(
 
     if not demo and not smoke_test and _focus_existing_window("BURNRATE"):
         return 0
+    if not demo and not smoke_test:
+        configure_desktop_logging()
 
     bridge = DesktopBridge(
         client, preferences=preferences, demo=demo, smoke_test=smoke_test
@@ -4576,6 +4738,19 @@ def run_webview(
         persist=persist,
     )
     surfaces = SurfaceController(host, tab_host, bridge, store)
+    # The tab fades with the same Auto-fade rules as the full window, driven by the
+    # one controller: it is "hovered" while the cursor is over the strip or its
+    # card, and stays opaque while a card is open or the keyboard focus is in it.
+    fade_target = opacity_ctl.add_target(
+        FadeTarget(
+            lambda: tab_host.hwnd,
+            hit_test=tab_host.contains_screen_point,
+            hold=tab_host.holds_opaque,
+            leave_delay=TAB_FADE_DELAY,
+            follows_ui_busy=False,
+        )
+    )
+    tab_host.on_shown = lambda: opacity_ctl.wake(2.5, fade_target)
     host.surfaces = surfaces
     bridge.attach_surfaces(surfaces)
     tab_bridge.attach_controller(surfaces)
@@ -4589,7 +4764,11 @@ def run_webview(
     bridge._tab_model.subscribe(push_tab)
     tab_host.on_reflow = push_tab  # a new monitor or DPI means a new width budget
     # A second launch asks this process (not the raw windows) to open the full one.
-    activation = ActivationListener(surfaces.show_full)
+    def on_second_launch() -> None:
+        LOGGER.info("A second launch asked this process to open the full window")
+        surfaces.show_full()
+
+    activation = ActivationListener(on_second_launch)
     if not demo and not smoke_test:
         activation.start()
     result = [0]
@@ -4612,6 +4791,7 @@ def run_webview(
     def on_tab_moved(*_position):
         tab_host.tracker.notify_changed()
         tab_host.check_budget()
+        tab_host.note_moved()
 
     def on_moved(*_position):
         tracker.notify_changed()

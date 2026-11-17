@@ -364,6 +364,28 @@ def snapshot(hwnd: int) -> SavedGeometry | None:
     return SavedGeometry(rect.left, rect.top, rect.width, rect.height, window_dpi(hwnd))
 
 
+def cursor_pos() -> tuple[int, int] | None:
+    """The cursor's screen position in physical pixels."""
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    point = wintypes.POINT()
+    if not ctypes.windll.user32.GetCursorPos(ctypes.byref(point)):
+        return None
+    return point.x, point.y
+
+
+def left_button_down() -> bool:
+    """Whether the left mouse button is held (a drag in progress)."""
+    if sys.platform != "win32":
+        return False
+    import ctypes
+
+    return bool(ctypes.windll.user32.GetAsyncKeyState(0x01) & 0x8000)
+
+
 def apply_before_show(native, plan: RestorePlan | None) -> None:
     """Place the WinForms ``native`` form; call on the UI thread before ``Show``.
 

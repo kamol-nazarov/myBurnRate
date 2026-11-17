@@ -212,6 +212,7 @@ body.up .card-wrap { padding: 0 0 6px; }
   var HIDE_DELAY = 220, SHOW_DELAY = 140;
   var state = null, openKey = null, showTimer = 0, hideTimer = 0, ready = false;
   var lastSig = null, restoring = false, rebuilding = false;
+  var DRAG_PX = 4, press = null, dragging = false, swallowClick = false, lastRing = false;
   var $ = function (id) { return document.getElementById(id); };
 
   function esc(value) {
@@ -450,6 +451,7 @@ body.up .card-wrap { padding: 0 0 6px; }
   function scheduleShow(key, seat) {
     clearTimeout(hideTimer);
     clearTimeout(showTimer);
+    if (press || dragging) return;
     if (openKey === key) return;
     showTimer = setTimeout(function () { showCard(key, seat); }, openKey === null ? SHOW_DELAY : 0);
   }
@@ -469,7 +471,7 @@ body.up .card-wrap { padding: 0 0 6px; }
     if (seg) scheduleShow(seg.key, seat);
   });
   segsEl.addEventListener("focusin", function (e) {
-    if (restoring) return;
+    if (restoring || press) return;
     var seat = segFrom(e.target);
     if (!seat || !state) return;
     var seg = state.segments[Number(seat.dataset.i)];
@@ -477,10 +479,10 @@ body.up .card-wrap { padding: 0 0 6px; }
   });
   segsEl.addEventListener("click", function (e) { if (segFrom(e.target)) call("open_full"); });
   $("fine").addEventListener("mouseenter", function () { scheduleShow("__fine__", $("fine")); });
-  $("fine").addEventListener("focus", function () { if (restoring) return; clearTimeout(hideTimer); showCard("__fine__", $("fine")); });
+  $("fine").addEventListener("focus", function () { if (restoring || press) return; clearTimeout(hideTimer); showCard("__fine__", $("fine")); });
   $("fine").addEventListener("click", function () { call("open_full"); });
   $("urgentPill").addEventListener("mouseenter", function () { scheduleShow("__urgent__", $("urgentPill")); });
-  $("urgentPill").addEventListener("focus", function () { if (restoring) return; clearTimeout(hideTimer); showCard("__urgent__", $("urgentPill")); });
+  $("urgentPill").addEventListener("focus", function () { if (restoring || press) return; clearTimeout(hideTimer); showCard("__urgent__", $("urgentPill")); });
   $("urgentPill").addEventListener("click", function () { call("open_full"); });
   $("open").addEventListener("click", function () { call("open_full"); });
   $("cardWrap").addEventListener("click", function (e) {
@@ -495,13 +497,46 @@ body.up .card-wrap { padding: 0 0 6px; }
     if (rebuilding) return;
     if (e.relatedTarget === null || !document.body.contains(e.relatedTarget)) scheduleHide();
   });
+  /* Drag from anywhere on the strip: a press that moves more than DRAG_PX starts a
+     native window drag (and closes the card); a press and release without moving
+     stays a normal click. No click follows a drag. */
   $("tab").addEventListener("mousedown", function (e) {
     if (e.button !== 0) return;
-    if (e.target === $("tab") || e.target.closest("#home") || e.target === $("segs") || e.target.classList.contains("spacer")) {
-      e.preventDefault();
-      call("begin_drag");
-    }
+    press = { x: e.clientX, y: e.clientY };
+    dragging = false;
+    swallowClick = false;
+    call("press");
   });
+  document.addEventListener("mousemove", function (e) {
+    if (!press) return;
+    if (e.buttons === 0) { press = null; dragging = false; return; }  // released out of sight
+    if (dragging) return;
+    if (Math.abs(e.clientX - press.x) <= DRAG_PX && Math.abs(e.clientY - press.y) <= DRAG_PX) return;
+    dragging = true;
+    swallowClick = true;
+    clearTimeout(showTimer);
+    clearTimeout(hideTimer);
+    hideCard();
+    call("begin_drag");
+  });
+  document.addEventListener("mouseup", function () { press = null; dragging = false; });
+  document.addEventListener("click", function (e) {
+    if (swallowClick && e.detail > 0) {  // a mouse click that ends a drag; keyboard clicks still work
+      swallowClick = false;
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }, true);
+
+  /* The tab stays fully opaque while a keyboard focus ring is inside it. */
+  function reportFocus() {
+    var el = document.activeElement;
+    var ring = !!(el && el !== document.body && el.matches && el.matches(":focus-visible"));
+    if (ring !== lastRing) { lastRing = ring; call("set_focus", ring); }
+  }
+  document.addEventListener("focusin", reportFocus);
+  document.addEventListener("focusout", function () { setTimeout(reportFocus, 0); });
+  window.addEventListener("blur", function () { setTimeout(reportFocus, 0); });
   document.addEventListener("contextmenu", function (e) { e.preventDefault(); });
 
   function poll() {
