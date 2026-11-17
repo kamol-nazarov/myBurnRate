@@ -1246,3 +1246,267 @@ def test_h9_ui_no_horizontal_overflow_at_narrow_widths(tmp_path, width):
     assert pop["popOpen"] is True
     assert pop["popLeft"] >= 0
     assert pop["popRight"] <= pop["innerWidth"]
+
+
+H9_H10_MINI_MODE_PROBE = """
+await until(() => !document.getElementById('h9AnalyticsSection').hidden && document.querySelectorAll('#h9ModelBody .h9-model-row').length > 0);
+const sec = document.getElementById('h9AnalyticsSection');
+const detail = document.getElementById('h9DetailView');
+const stack = document.querySelector('.section-stack');
+const miniBar = document.getElementById('hudMiniBar');
+const out = {};
+
+out.initialFull = {
+  isMini: document.documentElement.classList.contains('is-mini'),
+  secDisplay: getComputedStyle(sec).display,
+  miniDisplay: getComputedStyle(miniBar).display,
+};
+
+document.getElementById('miniModeBtn').click();
+await until(() => document.documentElement.classList.contains('is-mini'));
+out.afterMini = {
+  isMini: document.documentElement.classList.contains('is-mini'),
+  secDisplay: getComputedStyle(sec).display,
+  heroDisplay: getComputedStyle(document.getElementById('heroSection')).display,
+  miniDisplay: getComputedStyle(miniBar).display,
+};
+
+document.getElementById('fullModeBtn').click();
+await until(() => !document.documentElement.classList.contains('is-mini'));
+out.backToFull = {
+  isMini: document.documentElement.classList.contains('is-mini'),
+  secDisplay: getComputedStyle(sec).display,
+};
+
+// Open H9 detail, then switch to Mini: detail must close cleanly so mini bar shows
+document.querySelector('#h9ModelBody .h9-model-row[data-h9-entity-key="claude-opus-4-6"]').click();
+await until(() => !detail.hidden && state.h9EntityData?.key === 'claude-opus-4-6');
+document.getElementById('miniModeBtn').click();
+await until(() => document.documentElement.classList.contains('is-mini') && detail.hidden);
+out.miniFromDetail = {
+  h9View: state.h9View,
+  detailHidden: detail.hidden,
+  detailDisplay: getComputedStyle(detail).display,
+  stackHidden: stack.hidden,
+  miniDisplay: getComputedStyle(miniBar).display,
+  secDisplay: getComputedStyle(sec).display,
+};
+
+miniBar.click();
+await until(() => !document.documentElement.classList.contains('is-mini'));
+out.expandedFromMiniBar = {
+  isMini: document.documentElement.classList.contains('is-mini'),
+  secDisplay: getComputedStyle(sec).display,
+  detailHidden: detail.hidden,
+};
+report(out);
+"""
+
+
+@needs_chrome
+@browser
+def test_h9_ui_mini_mode_hides_analytics_and_closes_detail(tmp_path):
+    api_js = _h9_api_js() + """
+    api.set_hud_mini = async function (v) { window.__calls.push(["set_hud_mini", v]); return { ok: true, hudMini: !!v }; };
+    api.set_hud_density = async function (v) { window.__calls.push(["set_hud_density", v]); return { ok: true, hudDensity: v }; };
+    """
+    html = build_page(
+        pref="light",
+        api_js=api_js,
+        probe=H9_H10_MINI_MODE_PROBE,
+        extra_css=FAST,
+    )
+    r = probe(html, 960, tmp_path, height=900)
+    assert r["initialFull"]["isMini"] is False
+    assert r["initialFull"]["secDisplay"] != "none"
+    assert r["initialFull"]["miniDisplay"] == "none"
+
+    assert r["afterMini"]["isMini"] is True
+    assert r["afterMini"]["secDisplay"] == "none"
+    assert r["afterMini"]["heroDisplay"] == "none"
+    assert r["afterMini"]["miniDisplay"] != "none"
+
+    assert r["backToFull"]["isMini"] is False
+    assert r["backToFull"]["secDisplay"] != "none"
+
+    assert r["miniFromDetail"]["h9View"] == "overview"
+    assert r["miniFromDetail"]["detailHidden"] is True
+    assert r["miniFromDetail"]["detailDisplay"] == "none"
+    assert r["miniFromDetail"]["stackHidden"] is False
+    assert r["miniFromDetail"]["miniDisplay"] != "none"
+    assert r["miniFromDetail"]["secDisplay"] == "none"
+
+    assert r["expandedFromMiniBar"]["isMini"] is False
+    assert r["expandedFromMiniBar"]["secDisplay"] != "none"
+    assert r["expandedFromMiniBar"]["detailHidden"] is True
+
+
+H9_H10_DIAGNOSTICS_ESCAPE_PROBE = """
+await until(() => !document.getElementById('h9AnalyticsSection').hidden && document.querySelectorAll('#h9ModelBody .h9-model-row').length > 0);
+const scrollBody = document.getElementById('scrollBody');
+const detail = document.getElementById('h9DetailView');
+const diagView = document.getElementById('diagnosticsView');
+const pop = document.getElementById('h9RangePopover');
+const out = {};
+
+scrollBody.style.scrollBehavior = 'auto';
+scrollBody.scrollTop = 340;
+await wait(20);
+out.overviewScrollBefore = scrollBody.scrollTop;
+
+document.querySelector('#h9ModelBody .h9-model-row[data-h9-entity-key="claude-opus-4-6"]').click();
+await until(() => !detail.hidden && state.h9EntityData?.key === 'claude-opus-4-6');
+scrollBody.scrollTop = 180;
+await wait(20);
+out.detailScrollBefore = scrollBody.scrollTop;
+
+// Open detail range popover, then open Diagnostics directly -> popover closes, only Diagnostics shows
+document.getElementById('h9DetailRangeBtn').click();
+await until(() => pop.classList.contains('open'));
+document.getElementById('diagBtn').click();
+await until(() => state.diagnosticsOpen && !diagView.hidden);
+out.diagOpened = {
+  isDiagClass: document.documentElement.classList.contains('is-diagnostics'),
+  popOpen: pop.classList.contains('open'),
+  diagHidden: diagView.hidden,
+  scrollHidden: scrollBody.hidden,
+  scrollDisplay: getComputedStyle(scrollBody).display,
+  opsDisplay: getComputedStyle(document.getElementById('opsBar')).display,
+};
+
+// First Escape closes Diagnostics only and restores Detail scroll (~180px)
+document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+await until(() => !state.diagnosticsOpen && diagView.hidden);
+await wait(50);
+out.afterFirstEsc = {
+  isDiagClass: document.documentElement.classList.contains('is-diagnostics'),
+  diagHidden: diagView.hidden,
+  detailHidden: detail.hidden,
+  scrollHidden: scrollBody.hidden,
+  detailScrollRestored: scrollBody.scrollTop,
+};
+
+// Second Escape closes Detail and restores Overview scroll (~340px)
+document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+await until(() => detail.hidden);
+await wait(50);
+out.afterSecondEsc = {
+  detailHidden: detail.hidden,
+  heroHidden: document.getElementById('heroSection').hidden,
+  stackHidden: document.querySelector('.section-stack').hidden,
+  overviewScrollRestored: scrollBody.scrollTop,
+};
+report(out);
+"""
+
+
+@needs_chrome
+@browser
+def test_h9_ui_diagnostics_detail_popover_escape_and_scroll_restore(tmp_path):
+    api_js = _h9_api_js() + """
+    api.get_diagnostics_data = async function () {
+      return {
+        ok: true,
+        freshness: { status: "ok", ingest: { lastPassSeconds: 1.1, lastPassAgeSeconds: 10 }, machines: [], issues: [] },
+        health: { ingest: [], quotas: [], sources: [], pricingGaps: [], providerVsComputedVariancePct: 1.2 }
+      };
+    };
+    """
+    html = build_page(
+        pref="light",
+        api_js=api_js,
+        probe=H9_H10_DIAGNOSTICS_ESCAPE_PROBE,
+        extra_css=FAST,
+    )
+    r = probe(html, 960, tmp_path, height=420)
+    assert r["overviewScrollBefore"] >= 300
+    assert r["detailScrollBefore"] >= 150
+
+    d = r["diagOpened"]
+    assert d["isDiagClass"] is True
+    assert d["popOpen"] is False
+    assert d["diagHidden"] is False
+    assert d["scrollHidden"] is True
+    assert d["scrollDisplay"] == "none"
+    assert d["opsDisplay"] == "none"
+
+    e1 = r["afterFirstEsc"]
+    assert e1["isDiagClass"] is False
+    assert e1["diagHidden"] is True
+    assert e1["detailHidden"] is False
+    assert e1["scrollHidden"] is False
+    assert abs(e1["detailScrollRestored"] - r["detailScrollBefore"]) <= 4
+
+    e2 = r["afterSecondEsc"]
+    assert e2["detailHidden"] is True
+    assert e2["heroHidden"] is False
+    assert e2["stackHidden"] is False
+    assert abs(e2["overviewScrollRestored"] - r["overviewScrollBefore"]) <= 4
+
+
+NARROW_OPS_AND_ANALYTICS_PROBE = """
+await until(() =>
+  !document.getElementById('h9AnalyticsSection').hidden &&
+  !document.getElementById('hudQuickPlan').hidden &&
+  !document.getElementById('runningNowCard').hidden &&
+  document.querySelectorAll('#h9ModelBody .h9-model-card').length > 0
+);
+const scrollBody = document.getElementById('scrollBody');
+report({
+  docScroll: document.documentElement.scrollWidth,
+  docClient: document.documentElement.clientWidth,
+  bodyScroll: scrollBody.scrollWidth,
+  bodyClient: scrollBody.clientWidth,
+  opsHeight: document.getElementById('opsBar').getBoundingClientRect().height,
+  quickPlanVisible: !document.getElementById('hudQuickPlan').hidden,
+  runningVisible: !document.getElementById('runningNowCard').hidden,
+  analyticsVisible: !document.getElementById('h9AnalyticsSection').hidden,
+});
+"""
+
+
+@needs_chrome
+@browser
+@pytest.mark.parametrize("width", [304, 336, 380])
+def test_h9_ui_narrow_fit_with_ops_bar_and_hud(tmp_path, width):
+    from tests_spend.test_wealthfront_ui import demo_report as _demo_report
+
+    rep = _demo_report()
+    rep["activity"] = [
+        {
+            "name": "Fix analytics merge in narrow desktop viewport",
+            "modelKey": "claude-opus-4-6",
+            "toolKey": "claude-code",
+            "machineName": "Desktop",
+            "startedAt": "2026-11-16T22:00:00Z",
+            "state": "live",
+        }
+    ]
+    api_js = _h9_api_js() + """
+    api.get_setup_check = async function () {
+      return {
+        ok: true,
+        check: {
+          plans: {
+            suggestions: [
+              { lane: "claude-code", name: "Claude Max", amount_usd: 100, cadence: "monthly", basis: "Detected local Claude Code activity" }
+            ]
+          }
+        }
+      };
+    };
+    """
+    html = build_page(
+        pref="light",
+        report=rep,
+        api_js=api_js,
+        probe=NARROW_OPS_AND_ANALYTICS_PROBE,
+        extra_css=FAST,
+    )
+    r = probe(html, width, tmp_path, height=900)
+    assert r["docScroll"] <= r["docClient"], (width, r)
+    assert r["bodyScroll"] <= r["bodyClient"], (width, r)
+    assert r["opsHeight"] > 0
+    assert r["quickPlanVisible"] is True
+    assert r["runningVisible"] is True
+    assert r["analyticsVisible"] is True

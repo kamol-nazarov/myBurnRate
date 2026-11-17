@@ -1,12 +1,12 @@
 """Comprehensive security tests for Package B (Account and session surface).
 
 Covers audit items M1, L2, L3, L5, L7, L15, L16, and N1:
-- M1: CSRF and content-type/header gates on account, pairing, and setup routes
+- M1: CSRF and content-type/header gates on account and setup routes
 - L2: Break-glass GET ?token= redirect, query stripping, and no duplicate sessions
 - L3: OpenAPI / Swagger / ReDoc disabled (404)
 - L5: value_error_handler logging + fixed error body vs. UserFacingError pass-through
 - L7: Cookie-only sessions, no machine token on register/login, spoke join & NativeClient
-- L15: pairing.hub_origin HTTPS enforcement for non-loopback hosts
+- L15: hub_origin.hub_origin HTTPS enforcement for non-loopback hosts
 - L16: Setup token min length, non-ASCII safety, and per-user + global throttling
 - N1: Static bearer disabled by default without conftest override
 """
@@ -20,11 +20,13 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from spend_app import aggregate, auth_model, auth_throttle, pairing, setup_wizard, sync
+from spend_app import aggregate, auth_model, auth_throttle, hub_origin, setup_wizard, sync
 from spend_app.api import create_app
 from spend_app.config import Settings
+from spend_app.connection_paths import LocationError
 from spend_app.db import UsageEvent, connect, initialize, upsert_usage_event
 from spend_app.native_desktop import DesktopError, NativeClient
+from spend_app.wealthfront_window import DesktopBridge
 
 ROOT = Path(__file__).resolve().parents[1]
 HUB_URL = "https://hub.test"
@@ -32,6 +34,23 @@ ACCESS_TOKEN = "synthetic-break-glass-token-00"
 SETUP_TOKEN = "synthetic-setup-token-32-chars-00"
 PASSWORD = "synthetic-long-password-123"
 HUB_UI = {"Origin": HUB_URL, "X-BURNRATE-Request": "1"}
+
+
+class _MemoryVault:
+    def __init__(self) -> None:
+        self._items: dict[str, str] = {}
+
+    def put(self, secret: str, ref: str = "") -> str:
+        self._items[ref] = secret
+        return ref
+
+    def get(self, ref: str) -> str:
+        if ref not in self._items:
+            raise LocationError(f"missing ref: {ref}")
+        return self._items[ref]
+
+    def delete(self, ref: str) -> None:
+        self._items.pop(ref, None)
 
 
 def _settings(tmp_path: Path, name: str = "spend.db") -> Settings:
@@ -138,7 +157,7 @@ def _make_local_client(
 
 @pytest.mark.parametrize(
     "path",
-    ["/api/account/register", "/api/account/login", "/api/pairing/redeem"],
+    ["/api/account/register", "/api/account/login"],
 )
 def test_m1_cross_site_and_form_posts_rejected_and_no_owner_created(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str
@@ -272,9 +291,9 @@ def test_m1_cookie_authenticated_account_post_requires_same_origin(
 
 @pytest.mark.parametrize(
     "path",
-    ["/api/account/register", "/api/account/login", "/api/pairing/redeem"],
+    ["/api/account/register", "/api/account/login"],
 )
-def test_m1_get_on_public_account_and_pairing_paths_not_allowed(
+def test_m1_get_on_public_account_paths_not_allowed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str
 ) -> None:
     _, client = _make_hub_client(tmp_path, monkeypatch)
@@ -286,12 +305,12 @@ def test_m1_get_on_public_account_and_pairing_paths_not_allowed(
         assert auth_get.status_code == 405
 
 
-def test_m1_bounded_json_gates_across_account_pairing_and_connect_spoke(
+def test_m1_bounded_json_gates_across_account_and_setup_account(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _, hub_client = _make_hub_client(tmp_path, monkeypatch)
     with hub_client:
-        for path in ("/api/account/register", "/api/account/login", "/api/pairing/redeem"):
+        for path in ("/api/account/register", "/api/account/login"):
             missing_hdr = hub_client.post(
                 path,
                 headers={"Origin": HUB_URL, "Content-Type": "application/json"},
@@ -313,14 +332,14 @@ def test_m1_bounded_json_gates_across_account_pairing_and_connect_spoke(
     _, local_client = _make_local_client(tmp_path, monkeypatch)
     with local_client:
         missing_hdr = local_client.post(
-            "/api/setup/connect-spoke",
+            "/api/setup/account",
             headers={"Origin": "http://127.0.0.1:17331", "Content-Type": "application/json"},
             content="{}",
         )
         assert missing_hdr.status_code == 403
 
         wrong_ct = local_client.post(
-            "/api/setup/connect-spoke",
+            "/api/setup/account",
             headers={
                 "Origin": "http://127.0.0.1:17331",
                 "X-BURNRATE-Request": "1",
@@ -659,27 +678,40 @@ def test_l7_spoke_join_register_login_owner_session_and_rotate_end_to_end(
         assert hub_summary.status_code == 200
         assert hub_summary.json()["totals"]["tokens"] == 10000
 
-        # 3) Spoke 1 refreshes owner session via /api/setup/owner-session
-        sign_in = spoke1.post(
-            "/api/setup/owner-session",
-            headers=local_ui,
-            json={"username": "owner@example.com", "password": PASSWORD},
+        # 3) Spoke 1 signs in owner via DesktopBridge (never exposing br_s_ to caller)
+        vault = _MemoryVault()
+        bridge = DesktopBridge(NativeClient(spoke1_settings, port=17331), vault=vault)
+        sign_in = bridge.sign_in_owner(
+            "owner@example.com", PASSWORD, device_label="Spoke One Desktop"
         )
-        assert sign_in.status_code == 200, sign_in.text
-        assert auth_model.LOCAL_COOKIE in spoke1.cookies
+        assert sign_in["ok"] is True, sign_in
+        assert sign_in["sessionId"]
+        assert sign_in["expiresAt"]
+        assert "sessionToken" not in sign_in
+        assert "br_s_" not in str(sign_in)
         with connect(spoke1_settings.database_path) as conn:
             session_before = setup_wizard.read_setup_state(conn)["spokeConfig"]["ownerSession"]
         assert session_before.startswith("br_s_")
         assert session_before != sc1["ownerSession"]
+        assert vault.get(DesktopBridge.OWNER_SESSION_VAULT_REF) == session_before
 
-        # 4) Spoke 1 rotates hub session via /api/auth/session/rotate relay
-        rot = spoke1.post("/api/auth/session/rotate", headers=local_ui, json={})
-        assert rot.status_code == 200, rot.text
-        assert "sessionToken" not in rot.json()
+        listed = bridge.list_owner_sessions()
+        assert listed["ok"] is True, listed
+        assert listed["currentSessionId"] == sign_in["sessionId"]
+        assert len(listed["sessions"]) >= 2
+        assert "br_s_" not in str(listed)
+
+        # 4) Spoke 1 rotates hub session via DesktopBridge
+        rot = bridge.rotate_owner_session()
+        assert rot["ok"] is True, rot
+        assert "sessionToken" not in rot
+        assert "br_s_" not in str(rot)
+        assert rot["sessionId"] != sign_in["sessionId"]
         with connect(spoke1_settings.database_path) as conn:
             session_after = setup_wizard.read_setup_state(conn)["spokeConfig"]["ownerSession"]
         assert session_after.startswith("br_s_")
         assert session_after != session_before
+        assert vault.get(DesktopBridge.OWNER_SESSION_VAULT_REF) == session_after
 
         # Old hub session is revoked; new hub session is valid on hub
         hub_client.cookies.clear()
@@ -695,6 +727,23 @@ def test_l7_spoke_join_register_login_owner_session_and_rotate_end_to_end(
             ).status_code
             == 200
         )
+
+        # 5) Spoke 1 revokes another active owner session via DesktopBridge
+        listed_after_rot = bridge.list_owner_sessions()
+        assert listed_after_rot["ok"] is True, listed_after_rot
+        other_sids = [
+            s["id"]
+            for s in listed_after_rot["sessions"]
+            if s["id"] != rot["sessionId"] and not s.get("revoked_at")
+        ]
+        assert other_sids
+        target_sid = other_sids[0]
+        rev = bridge.revoke_owner_session(target_sid)
+        assert rev == {"ok": True}
+        listed_after_rev = bridge.list_owner_sessions()
+        assert listed_after_rev["ok"] is True
+        revoked_row = next(s for s in listed_after_rev["sessions"] if s["id"] == target_sid)
+        assert revoked_row.get("revoked_at") is not None
 
 
 def test_l7_native_client_extracts_cookie_from_set_cookie_header_and_cookies_jar(
@@ -790,7 +839,7 @@ def test_l7_native_client_extracts_cookie_from_set_cookie_header_and_cookies_jar
 )
 def test_l15_hub_origin_rejects_plain_http_non_loopback(bad_url: str) -> None:
     with pytest.raises(ValueError, match="HTTPS"):
-        pairing.hub_origin(bad_url)
+        hub_origin.hub_origin(bad_url)
 
 
 @pytest.mark.parametrize(
@@ -804,38 +853,7 @@ def test_l15_hub_origin_rejects_plain_http_non_loopback(bad_url: str) -> None:
     ],
 )
 def test_l15_hub_origin_allows_https_and_loopback(good_url: str, expected: str) -> None:
-    assert pairing.hub_origin(good_url) == expected
-
-
-def test_l15_pair_hub_and_pairing_redeem_reject_plain_http_non_loopback(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("BURNRATE_ALLOWED_HOSTS", "hub.test,hub.example")
-    settings, https_client = _make_hub_client(tmp_path, monkeypatch, base_url=HUB_URL)
-    with https_client:
-        bad_pair = https_client.post(
-            "/api/setup/pair-hub",
-            headers={**HUB_UI, "Authorization": f"Bearer {ACCESS_TOKEN}"},
-            json={"name": "Remote", "hubUrl": "http://hub.example"},
-        )
-        assert bad_pair.status_code == 422
-
-        good_pair = https_client.post(
-            "/api/setup/pair-hub",
-            headers={**HUB_UI, "Authorization": f"Bearer {ACCESS_TOKEN}"},
-            json={"name": "Remote", "hubUrl": HUB_URL},
-        )
-        assert good_pair.status_code == 200
-        code = good_pair.json()["pairingCode"]
-
-    http_app = create_app(settings, enable_scheduler=False)
-    with TestClient(http_app, base_url="http://hub.example") as http_client:
-        redeem_res = http_client.post(
-            "/api/pairing/redeem",
-            headers={"Origin": "http://hub.example", "X-BURNRATE-Request": "1"},
-            json={"pairingCode": code},
-        )
-        assert redeem_res.status_code == 403
+    assert hub_origin.hub_origin(good_url) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -1058,66 +1076,6 @@ def test_l15_setup_account_rejects_plain_http_without_outbound_call_or_persisten
     assert "serverUrl" not in state["account"]
 
 
-def test_l15_connect_spoke_manual_rejects_plain_http_without_outbound_call_or_persistence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    spoke_settings, spoke_client = _make_local_client(tmp_path, monkeypatch, db_name="spoke_manual.db")
-    with spoke_client:
-        httpx_calls, test_client_calls = _install_recording_hub_transport(monkeypatch, "http://hub.example")
-        res = spoke_client.post(
-            "/api/setup/connect-spoke",
-            headers={"Origin": "http://127.0.0.1:17331", "X-BURNRATE-Request": "1"},
-            json={
-                "hubUrl": "http://hub.example",
-                "token": "br_m_synthetic_token",
-                "computerName": "Laptop",
-                "testSync": True,
-            },
-        )
-    assert res.status_code == 422
-    assert res.json()["error"] == {"code": "NET-003"}
-    assert httpx_calls == []
-    assert test_client_calls == []
-    with connect(spoke_settings.database_path) as conn:
-        state = setup_wizard.read_setup_state(conn)
-    assert state["role"] == "hub"
-    assert state["spokeConfig"]["enabled"] is False
-    assert state["spokeConfig"]["hubUrl"] == ""
-    assert state["spokeConfig"]["token"] == ""
-
-
-def test_l15_connect_spoke_pairing_code_rejects_plain_http_without_outbound_call_or_persistence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    bad_code = setup_wizard.encode_pairing_code(
-        hub_url="http://hub.example",
-        token="br_p_synthetic_pairing_secret",
-        machine_id="grant-1",
-        machine_name="Laptop",
-        hub_name="Hub",
-    )
-    spoke_settings, spoke_client = _make_local_client(tmp_path, monkeypatch, db_name="spoke_code.db")
-    with spoke_client:
-        httpx_calls, test_client_calls = _install_recording_hub_transport(monkeypatch, "http://hub.example")
-        res = spoke_client.post(
-            "/api/setup/connect-spoke",
-            headers={"Origin": "http://127.0.0.1:17331", "X-BURNRATE-Request": "1"},
-            json={"pairingCode": bad_code, "testSync": True},
-        )
-        with pytest.raises(ValueError, match="HTTPS"):
-            pairing.exchange_remote("http://hub.example", bad_code)
-    assert res.status_code == 422
-    assert res.json()["error"] == {"code": "NET-003"}
-    assert httpx_calls == []
-    assert test_client_calls == []
-    with connect(spoke_settings.database_path) as conn:
-        state = setup_wizard.read_setup_state(conn)
-    assert state["role"] == "hub"
-    assert state["spokeConfig"]["enabled"] is False
-    assert state["spokeConfig"]["hubUrl"] == ""
-    assert state["spokeConfig"]["token"] == ""
-
-
 def test_l15_saved_plain_http_config_blocked_at_egress_without_sending_tokens(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1135,11 +1093,9 @@ def test_l15_saved_plain_http_config_blocked_at_egress_without_sending_tokens(
             "ownerSession": "br_s_saved_owner_session",
         }
         setup_wizard.write_setup_state(conn, state)
-        local_sid = auth_model.create_local_session(conn, device_label="Spoke browser")
 
     with spoke_client:
         httpx_calls, test_client_calls = _install_recording_hub_transport(monkeypatch, "http://hub.example")
-        spoke_client.cookies.set(auth_model.LOCAL_COOKIE, local_sid["localToken"])
         local_headers = {"Origin": "http://127.0.0.1:17331", "X-BURNRATE-Request": "1"}
 
         # 1) Direct post_to_configured_hub strict/non-strict
@@ -1164,18 +1120,29 @@ def test_l15_saved_plain_http_config_blocked_at_egress_without_sending_tokens(
         assert sub_res.status_code == 422
         assert "HTTPS" in sub_res.json()["error"]
 
-        # 3) Auth relay routes (GET and POST)
+        # 3) Spoke HTTP auth routes are closed locally (401 AUTH-107) and DesktopBridge fails closed with NET-003
         sessions_res = spoke_client.get("/api/auth/sessions")
-        assert sessions_res.status_code == 422
-        assert sessions_res.json()["error"] == {"code": "NET-003"}
+        assert sessions_res.status_code == 401
+        assert sessions_res.json()["error"] == {"code": "AUTH-107"}
 
         rotate_res = spoke_client.post("/api/auth/session/rotate", headers=local_headers, json={})
-        assert rotate_res.status_code == 422
-        assert rotate_res.json()["error"] == {"code": "NET-003"}
+        assert rotate_res.status_code == 401
+        assert rotate_res.json()["error"] == {"code": "AUTH-107"}
 
         logout_res = spoke_client.post("/api/auth/logout", headers=local_headers, json={})
-        assert logout_res.status_code == 422
-        assert logout_res.json()["error"] == {"code": "NET-003"}
+        assert logout_res.status_code == 401
+        assert logout_res.json()["error"] == {"code": "AUTH-107"}
+
+        bridge = DesktopBridge(NativeClient(spoke_settings, port=17331), vault=_MemoryVault())
+        for res in (
+            bridge.sign_in_owner("owner@example.com", PASSWORD),
+            bridge.list_owner_sessions(),
+            bridge.rotate_owner_session(),
+            bridge.sign_out_owner(),
+            bridge.get_owner_audit(),
+        ):
+            assert res["ok"] is False
+            assert res["code"] == "NET-003"
 
         # 4) Direct fetch_from_configured_hub
         assert sync.fetch_from_configured_hub(spoke_settings, "/api/spend/hud", ttl_seconds=0) is None
@@ -1247,16 +1214,3 @@ def test_l15_loopback_http_stays_allowed_across_setup_and_egress(
             spoke_settings, PricingEngine.load(spoke_settings.pricing_path)
         )
         assert bg_sync is not None and bg_sync.get("ok") is True
-
-        pair_res = hub_client.post(
-            "/api/setup/pair-hub",
-            headers={"Origin": loopback_url, "X-BURNRATE-Request": "1", "Authorization": f"Bearer {ACCESS_TOKEN}"},
-            json={"name": "Loopback Paired", "hubUrl": loopback_url},
-        )
-        assert pair_res.status_code == 200, pair_res.text
-        connect_res = spoke_client.post(
-            "/api/setup/connect-spoke",
-            headers={"Origin": "http://127.0.0.1:17331", "X-BURNRATE-Request": "1"},
-            json={"pairingCode": pair_res.json()["pairingCode"], "testSync": True},
-        )
-        assert connect_res.status_code == 200, connect_res.text

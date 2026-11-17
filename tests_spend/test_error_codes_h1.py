@@ -15,6 +15,7 @@ from spend_app import aggregate, auth_model, auth_throttle, setup_wizard, sync
 from spend_app.api import create_app
 from spend_app.auth_page import AUTH_HTML
 from spend_app.config import Settings
+from spend_app.connection_paths import LocationError
 from spend_app.db import connect, initialize
 from spend_app.error_codes import (
     ERROR_CATALOG,
@@ -54,6 +55,23 @@ EXPECTED_CODES = {
     "APP-901",
     "APP-902",
 }
+
+
+class _MemoryVault:
+    def __init__(self) -> None:
+        self._items: dict[str, str] = {}
+
+    def put(self, secret: str, ref: str = "") -> str:
+        self._items[ref] = secret
+        return ref
+
+    def get(self, ref: str) -> str:
+        if ref not in self._items:
+            raise LocationError(f"missing ref: {ref}")
+        return self._items[ref]
+
+    def delete(self, ref: str) -> None:
+        self._items.pop(ref, None)
 
 
 def _make_settings(db_path: Path) -> Settings:
@@ -667,6 +685,9 @@ def test_auth_107_expired_revoked_session_relay_and_b2_native_client_mapping(
     )
     assert local_signin.status_code == 200, local_signin.text
 
+    bridge = DesktopBridge(NativeClient(local_settings, port=17331), vault=_MemoryVault())
+    assert bridge.owner_session_status()["hasOwnerSession"] is True
+
     # Revoke all active owner sessions in the hub DB
     with connect(hs.database_path) as conn:
         conn.execute("UPDATE owner_sessions SET revoked_at='2026-01-01T00:00:00Z' WHERE revoked_at IS NULL")
@@ -675,6 +696,11 @@ def test_auth_107_expired_revoked_session_relay_and_b2_native_client_mapping(
     relay_res = local_client.get("/api/auth/sessions", headers=LOCAL_HEADERS)
     assert relay_res.status_code == 401
     assert relay_res.json() == {"error": {"code": "AUTH-107"}}
+
+    bridge_res = bridge.list_owner_sessions()
+    assert bridge_res["ok"] is False
+    assert bridge_res["code"] == "AUTH-107"
+    assert bridge.owner_session_status()["hasOwnerSession"] is False
 
     # 10b. B2 check: NativeClient.request does NOT mask 401/403 as "could not authenticate this window"
     cases = [
@@ -1173,14 +1199,6 @@ def test_never_leak_raw_local_tracker_503_text(tmp_path: Path, monkeypatch) -> N
         res_settings = bridge.get_settings_data()
         assert res_settings["ok"] is False
         assert SENTINEL not in json.dumps(res_settings)
-
-        res_pair = bridge.create_pairing_code("OtherComputer")
-        assert res_pair["ok"] is False
-        assert SENTINEL not in json.dumps(res_pair)
-
-        res_join = bridge.join_with_code("brpair_synthetic_code")
-        assert res_join["ok"] is False
-        assert SENTINEL not in json.dumps(res_join)
 
 
 # ---------------------------------------------------------------------------

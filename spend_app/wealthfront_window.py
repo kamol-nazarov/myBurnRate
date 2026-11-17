@@ -9,7 +9,11 @@ import logging
 import math
 import os
 import shutil
+import struct
 import sys
+from datetime import UTC, datetime, timedelta
+from uuid import uuid4
+import zlib
 import tempfile
 import threading
 import time
@@ -17,7 +21,13 @@ from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 
 from spend_app import __version__, native_geometry
-from spend_app.error_codes import format_error
+from spend_app.error_codes import (
+    HUB_PROTOCOL_VERSION,
+    CodedError,
+    format_error,
+    map_http_error,
+    map_transport_error,
+)
 from spend_app.native_alerts import QuotaWatcher
 from spend_app.native_autoupdate import UpdateChecker
 from spend_app.native_desktop import (
@@ -28,7 +38,7 @@ from spend_app.native_desktop import (
     SourceMutation,
 )
 from spend_app.native_links import is_allowed_external_url
-from spend_app.native_onboarding import build_onboarding_data
+from spend_app.native_onboarding import build_onboarding_data, build_setup_scan_data
 from spend_app.native_prefs import PreferenceStore, store_for
 from spend_app.native_tray import TrayController, run_on_ui
 from spend_app.opencode_providers import provider_tool_name
@@ -1057,6 +1067,8 @@ class WindowOpacityController:
 class DesktopBridge:
     """In-process Python bridge exposed to the local WebView2 UI."""
 
+    OWNER_SESSION_VAULT_REF = "burnrate-owner-session"
+
     def __init__(
         self,
         client: NativeClient | DemoClient,
@@ -1064,10 +1076,15 @@ class DesktopBridge:
         preferences: Path | None = None,
         demo: bool = False,
         smoke_test: bool = False,
+        vault=None,
     ) -> None:
         self._client = client
         self._preferences = preferences
         self._smoke_test = smoke_test
+        self._vault = vault
+        self._owner_session_lock = threading.RLock()
+        self._owner_session: str | None = None
+        self._owner_session_expires_at: str | None = None
         # (checked_at, owned); None = never checked. A 0.0 timestamp would
         # read as fresh on a machine that booted within the recheck window.
         self._service_alerts: tuple[float, bool] | None = None
@@ -1109,6 +1126,10 @@ class DesktopBridge:
         self._close_to_tray = bool(saved.get("closeToTray", True))
         self._low_quota_alerts = bool(saved.get("lowQuotaAlerts", True))
         self._analytics_window = normalize_analytics_window(saved.get("analyticsWindow") or self._period)
+        # H10 ops/hud
+        self._hud_mini = bool(saved.get("hudMini", False))
+        raw_density = str(saved.get("hudDensity") or "compact").strip().lower()
+        self._hud_density = raw_density if raw_density in {"compact", "comfortable"} else "compact"
 
     def attach(self, window, hwnd_getter) -> None:
         self._window = window
@@ -1157,6 +1178,8 @@ class DesktopBridge:
                 "closeToTray": self._close_to_tray,
                 "lowQuotaAlerts": self._low_quota_alerts,
                 "analyticsWindow": self._analytics_window,
+                "hudMini": self._hud_mini,
+                "hudDensity": self._hud_density,
             }
         )
 
@@ -1175,6 +1198,8 @@ class DesktopBridge:
             "trayAvailable": self._tray_available,
             "version": __version__,
             "update": self.update_summary(),
+            "hudMini": self._hud_mini,
+            "hudDensity": self._hud_density,
         }
 
     # -- theme -------------------------------------------------------------
@@ -1565,6 +1590,17 @@ class DesktopBridge:
                     provider_order=self._provider_order,
                     connections=connections,
                 )
+                # H10 ops/hud
+                report["activity"] = (
+                    hud.get("activity")
+                    if isinstance(hud, dict) and isinstance(hud.get("activity"), list)
+                    else (_demo_activity() if self._demo else [])
+                )
+                today_total = (
+                    today_report.get("total") if isinstance(today_report, dict) else None
+                )
+                if isinstance(today_total, dict):
+                    report["todayTotal"] = today_total
             return {"ok": True, "report": report}
         except DesktopError as exc:
             return {"ok": False, "error": str(exc)}
@@ -1965,6 +2001,7 @@ class DesktopBridge:
                 self._client.request("/api/setup/defer", {})
             except DesktopError:
                 pass
+            self._sync_owner_session_from_db()
             out = {
                 "ok": True,
                 "account": res.get("account") or {},
@@ -2035,41 +2072,477 @@ class DesktopBridge:
         except (OSError, RuntimeError, ValueError, KeyError, TypeError):
             return {"ok": False, "code": "HUB-501", "error": format_error("HUB-501")}
 
-    def create_pairing_code(self, name: str) -> dict:
+
+    def _db_path(self) -> Path | None:
+        settings = getattr(self._client, "settings", None)
+        path = getattr(settings, "database_path", None)
+        return Path(path) if path is not None else None
+
+    def _resolve_vault(self):
         if self._demo:
-            return {"ok": False, "error": "Pairing is disabled in demo mode."}
-        clean_name = (name or "").strip()
-        if not clean_name:
-            return {"ok": False, "error": "Enter a computer name."}
+            return None
+        if self._vault is not None:
+            return self._vault
+        db_path = self._db_path()
+        if db_path is None:
+            return None
+        from spend_app.connection_secrets import Vault
+
+        return Vault(db_path)
+
+    def _sync_owner_session_from_db(self) -> None:
+        db_path = self._db_path()
+        if db_path is None or not db_path.is_file():
+            return
+        from spend_app.db import connect
+        from spend_app.setup_wizard import read_setup_state
+
         try:
-            res = self._client.request(
-                "/api/setup/pair-hub", {"name": clean_name}
+            with connect(db_path) as conn:
+                state = read_setup_state(conn)
+        except Exception:
+            return
+        spoke = state.get("spokeConfig") or {}
+        token = str(spoke.get("ownerSession") or "").strip() or None
+        expires_at = spoke.get("ownerSessionExpiresAt")
+        with self._owner_session_lock:
+            self._owner_session = token
+            self._owner_session_expires_at = expires_at if token else None
+        if token and (self._vault is not None or not os.getenv("PYTEST_CURRENT_TEST")):
+            vault = self._resolve_vault()
+            if vault is not None:
+                try:
+                    vault.put(token, self.OWNER_SESSION_VAULT_REF)
+                except Exception:
+                    pass
+
+    def _get_owner_session_info(self) -> tuple[str | None, str | None]:
+        db_path = self._db_path()
+        db_token: str | None = None
+        db_expires_at: str | None = None
+        if db_path is not None and db_path.is_file():
+            try:
+                from spend_app.db import connect
+                from spend_app.setup_wizard import read_setup_state
+
+                with connect(db_path) as conn:
+                    state = read_setup_state(conn)
+                spoke = state.get("spokeConfig") or {}
+                db_token = str(spoke.get("ownerSession") or "").strip() or None
+                db_expires_at = spoke.get("ownerSessionExpiresAt")
+            except Exception:
+                db_token = None
+                db_expires_at = None
+
+        with self._owner_session_lock:
+            if self._owner_session:
+                return self._owner_session, self._owner_session_expires_at or db_expires_at
+
+            vault = self._resolve_vault()
+            if vault is not None:
+                try:
+                    vault_token = vault.get(self.OWNER_SESSION_VAULT_REF)
+                    if isinstance(vault_token, str) and vault_token.strip():
+                        self._owner_session = vault_token.strip()
+                        self._owner_session_expires_at = db_expires_at
+                        return self._owner_session, self._owner_session_expires_at
+                except Exception:
+                    pass
+
+            if db_token:
+                self._owner_session = db_token
+                self._owner_session_expires_at = db_expires_at
+                return db_token, db_expires_at
+
+        return None, None
+
+    def _get_owner_session_token(self) -> str | None:
+        token, _ = self._get_owner_session_info()
+        return token
+
+    def _save_owner_session(self, token: str, expires_at: str | None = None) -> None:
+        clean_token = str(token or "").strip()
+        if not clean_token:
+            self._clear_owner_session()
+            return
+        with self._owner_session_lock:
+            self._owner_session = clean_token
+            self._owner_session_expires_at = expires_at
+            vault = self._resolve_vault()
+            if vault is not None:
+                try:
+                    vault.put(clean_token, self.OWNER_SESSION_VAULT_REF)
+                except Exception:
+                    pass
+            db_path = self._db_path()
+            if db_path is not None and db_path.is_file():
+                try:
+                    from spend_app.db import connect
+                    from spend_app.setup_wizard import read_setup_state, write_setup_state
+                    from spend_app.sync import clear_hub_proxy_cache
+
+                    with connect(db_path) as conn:
+                        conn.execute("BEGIN IMMEDIATE")
+                        state = read_setup_state(conn)
+                        spoke = state.get("spokeConfig") or {}
+                        if (
+                            state.get("role") == "spoke"
+                            or spoke.get("enabled")
+                            or spoke.get("hubUrl")
+                        ):
+                            spoke["ownerSession"] = clean_token
+                            spoke["ownerSessionExpiresAt"] = expires_at
+                            state["spokeConfig"] = spoke
+                            write_setup_state(conn, state)
+                    clear_hub_proxy_cache()
+                except Exception:
+                    pass
+
+    def _clear_owner_session(self) -> None:
+        with self._owner_session_lock:
+            self._owner_session = None
+            self._owner_session_expires_at = None
+            vault = self._resolve_vault()
+            if vault is not None:
+                try:
+                    vault.delete(self.OWNER_SESSION_VAULT_REF)
+                except Exception:
+                    pass
+            db_path = self._db_path()
+            if db_path is not None and db_path.is_file():
+                try:
+                    from spend_app.db import connect
+                    from spend_app.setup_wizard import read_setup_state, write_setup_state
+                    from spend_app.sync import clear_hub_proxy_cache
+
+                    with connect(db_path) as conn:
+                        conn.execute("BEGIN IMMEDIATE")
+                        state = read_setup_state(conn)
+                        spoke = state.get("spokeConfig") or {}
+                        if (
+                            "ownerSession" in spoke
+                            or "ownerSessionExpiresAt" in spoke
+                        ):
+                            spoke.pop("ownerSession", None)
+                            spoke.pop("ownerSessionExpiresAt", None)
+                            state["spokeConfig"] = spoke
+                            write_setup_state(conn, state)
+                    clear_hub_proxy_cache()
+                except Exception:
+                    pass
+
+    def _resolve_hub_origin(self) -> tuple[str | None, dict | None]:
+        from spend_app.config import resolve_hub_url
+        from spend_app.db import connect
+        from spend_app.hub_origin import hub_origin
+        from spend_app.setup_wizard import read_setup_state
+
+        raw_hub_url = ""
+        try:
+            raw_hub_url = resolve_hub_url()
+        except ValueError as exc:
+            code = "NET-003" if "HTTPS" in str(exc) else "NET-001"
+            return None, {"ok": False, "code": code, "error": format_error(code)}
+
+        if not raw_hub_url:
+            db_path = self._db_path()
+            if db_path is not None and db_path.is_file():
+                try:
+                    with connect(db_path) as conn:
+                        state = read_setup_state(conn)
+                    raw_hub_url = str((state.get("spokeConfig") or {}).get("hubUrl") or "").strip()
+                except Exception:
+                    raw_hub_url = ""
+
+        if not raw_hub_url:
+            return None, {"ok": False, "code": "NET-001", "error": format_error("NET-001")}
+
+        try:
+            return hub_origin(raw_hub_url), None
+        except ValueError as exc:
+            code = "NET-003" if "HTTPS" in str(exc) else "NET-001"
+            return None, {"ok": False, "code": code, "error": format_error(code)}
+
+    def _call_hub(
+        self,
+        hub_url: str,
+        method: str,
+        path: str,
+        *,
+        json_body: dict | None = None,
+        token: str | None = None,
+        handshake: bool = False,
+    ) -> tuple[dict | None, object | None, dict | None]:
+        import httpx
+        from spend_app.setup_wizard import _hub_protocol_handshake
+        from spend_app.sync import _HUB_TEST_CLIENTS
+
+        test_client = _HUB_TEST_CLIENTS.get(hub_url)
+        headers = {
+            "X-BURNRATE-Request": "1",
+            "X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION),
+        }
+        if json_body is not None:
+            headers["Content-Type"] = "application/json"
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
+        try:
+            if handshake:
+                _hub_protocol_handshake(hub_url, test_client)
+            if test_client is not None:
+                cookies = getattr(test_client, "cookies", None)
+                saved_jar = (
+                    list(cookies.jar)
+                    if cookies is not None and hasattr(cookies, "jar")
+                    else None
+                )
+                if cookies is not None:
+                    cookies.clear()
+                try:
+                    if method == "GET":
+                        res = test_client.get(path, headers=headers)
+                    else:
+                        res = test_client.post(path, json=json_body, headers=headers)
+                finally:
+                    if cookies is not None and saved_jar is not None:
+                        cookies.clear()
+                        for cookie in saved_jar:
+                            cookies.jar.set_cookie(cookie)
+            else:
+                with httpx.Client(timeout=10.0, trust_env=False, follow_redirects=False) as http:
+                    url = f"{hub_url}{path}"
+                    if method == "GET":
+                        res = http.get(url, headers=headers)
+                    else:
+                        res = http.post(url, json=json_body, headers=headers)
+        except CodedError as exc:
+            return None, None, {"ok": False, "code": exc.code, "error": str(exc)}
+        except Exception as exc:
+            code, _ = map_transport_error(exc)
+            return None, None, {"ok": False, "code": code, "error": format_error(code)}
+
+        try:
+            data = res.json() if getattr(res, "content", b"") else {}
+        except ValueError:
+            data = None
+
+        if res.status_code >= 400:
+            mapped = map_http_error(
+                res.status_code,
+                data,
+                headers=getattr(res, "headers", None),
+                endpoint_path=path,
             )
-            return {"ok": True, "pairingCode": res.get("pairingCode", "")}
-        except DesktopError as exc:
-            code = getattr(exc, "code", None)
-            if code:
-                return {"ok": False, "code": code, "error": str(exc)}
-            return {"ok": False, "code": "HUB-501", "error": format_error("HUB-501")}
-        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            if token and (res.status_code == 401 or mapped.code == "AUTH-107"):
+                self._clear_owner_session()
+            if (
+                res.status_code == 404
+                and isinstance(data, dict)
+                and isinstance(data.get("error"), str)
+            ):
+                return None, res, {"ok": False, "code": mapped.code, "error": data["error"]}
+            return None, res, {"ok": False, "code": mapped.code, "error": str(mapped)}
+
+        if not isinstance(data, dict):
+            return None, res, {"ok": False, "code": "HUB-501", "error": format_error("HUB-501")}
+
+        return data, res, None
+
+    def owner_session_status(self) -> dict:
+        if self._demo:
+            return {"ok": True, "hasOwnerSession": False, "expiresAt": None}
+        token, expires_at = self._get_owner_session_info()
+        if not token:
+            return {"ok": True, "hasOwnerSession": False, "expiresAt": None}
+        if expires_at:
+            from spend_app.auth_model import moment, parse
+
+            parsed = parse(expires_at)
+            if parsed is not None and parsed <= moment():
+                self._clear_owner_session()
+                return {"ok": True, "hasOwnerSession": False, "expiresAt": None}
+        return {"ok": True, "hasOwnerSession": True, "expiresAt": expires_at}
+
+    def sign_in_owner(
+        self,
+        username: str,
+        password: str,
+        device_label: str = "",
+    ) -> dict:
+        if self._demo:
+            return {"ok": False, "error": "Hub sign-in is disabled in demo mode."}
+        clean_user = (username or "").strip()
+        if not clean_user:
+            return {"ok": False, "code": "AUTH-106", "error": format_error("AUTH-106")}
+        if not password:
+            return {"ok": False, "code": "AUTH-101", "error": format_error("AUTH-101")}
+
+        hub_url, err = self._resolve_hub_origin()
+        if err is not None:
+            return err
+
+        label = (device_label or "").strip()
+        if not label:
+            db_path = self._db_path()
+            if db_path is not None and db_path.is_file():
+                try:
+                    from spend_app.db import connect
+                    from spend_app.setup_wizard import read_setup_state
+
+                    with connect(db_path) as conn:
+                        label = str(read_setup_state(conn).get("computerName") or "").strip()
+                except Exception:
+                    label = ""
+        if not label:
+            label = "Desktop app"
+
+        data, res, call_err = self._call_hub(
+            hub_url,
+            "POST",
+            "/api/account/login",
+            json_body={
+                "username": clean_user,
+                "password": password,
+                "sessionOnly": True,
+                "deviceLabel": label,
+            },
+            handshake=True,
+        )
+        if call_err is not None:
+            return call_err
+
+        from spend_app.auth_model import extract_cookie
+
+        token = extract_cookie(res)
+        if not token:
             return {"ok": False, "code": "HUB-501", "error": format_error("HUB-501")}
 
-    def join_with_code(self, code: str) -> dict:
+        expires_at = data.get("expiresAt")
+        self._save_owner_session(token, expires_at)
+        return {
+            "ok": True,
+            "sessionId": data.get("sessionId"),
+            "expiresAt": expires_at,
+        }
+
+    def list_owner_sessions(self) -> dict:
         if self._demo:
-            return {"ok": False, "error": "Pairing is disabled in demo mode."}
-        try:
-            self._client.request(
-                "/api/setup/connect-spoke",
-                {"pairingCode": code.strip(), "testSync": True},
+            return {"ok": False, "error": "Owner sessions are disabled in demo mode."}
+        hub_url, err = self._resolve_hub_origin()
+        if err is not None:
+            return err
+        token = self._get_owner_session_token()
+        if not token:
+            return {"ok": False, "code": "AUTH-107", "error": format_error("AUTH-107")}
+        data, _, call_err = self._call_hub(
+            hub_url,
+            "GET",
+            "/api/auth/sessions",
+            token=token,
+        )
+        if call_err is not None:
+            return call_err
+        return {
+            "ok": True,
+            "sessions": data.get("sessions") or [],
+            "currentSessionId": data.get("currentSessionId"),
+        }
+
+    def revoke_owner_session(self, session_id: str) -> dict:
+        if self._demo:
+            return {"ok": False, "error": "Owner sessions are disabled in demo mode."}
+        hub_url, err = self._resolve_hub_origin()
+        if err is not None:
+            return err
+        token = self._get_owner_session_token()
+        if not token:
+            return {"ok": False, "code": "AUTH-107", "error": format_error("AUTH-107")}
+        clean_sid = str(session_id or "").strip()
+        if not clean_sid:
+            return {"ok": False, "code": "HUB-501", "error": "Choose a session to revoke."}
+        _, _, call_err = self._call_hub(
+            hub_url,
+            "POST",
+            "/api/auth/sessions/revoke",
+            json_body={"id": clean_sid},
+            token=token,
+        )
+        if call_err is not None:
+            return call_err
+        return {"ok": True}
+
+    def rotate_owner_session(self) -> dict:
+        if self._demo:
+            return {"ok": False, "error": "Owner sessions are disabled in demo mode."}
+        hub_url, err = self._resolve_hub_origin()
+        if err is not None:
+            return err
+        token = self._get_owner_session_token()
+        if not token:
+            return {"ok": False, "code": "AUTH-107", "error": format_error("AUTH-107")}
+        data, res, call_err = self._call_hub(
+            hub_url,
+            "POST",
+            "/api/auth/session/rotate",
+            json_body={},
+            token=token,
+        )
+        if call_err is not None:
+            return call_err
+
+        from spend_app.auth_model import extract_cookie
+
+        new_token = extract_cookie(res)
+        if not new_token:
+            return {"ok": False, "code": "HUB-501", "error": format_error("HUB-501")}
+
+        expires_at = data.get("expiresAt")
+        self._save_owner_session(new_token, expires_at)
+        return {
+            "ok": True,
+            "sessionId": data.get("sessionId"),
+            "expiresAt": expires_at,
+        }
+
+    def sign_out_owner(self) -> dict:
+        if self._demo:
+            return {"ok": False, "error": "Owner sessions are disabled in demo mode."}
+        hub_url, err = self._resolve_hub_origin()
+        if err is not None:
+            return err
+        token = self._get_owner_session_token()
+        if token:
+            _, res, call_err = self._call_hub(
+                hub_url,
+                "POST",
+                "/api/auth/logout",
+                json_body={},
+                token=token,
             )
-            return {"ok": True}
-        except DesktopError as exc:
-            code = getattr(exc, "code", None)
-            if code:
-                return {"ok": False, "code": code, "error": str(exc)}
-            return {"ok": False, "code": "HUB-501", "error": format_error("HUB-501")}
-        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
-            return {"ok": False, "code": "HUB-501", "error": format_error("HUB-501")}
+            if call_err is not None and (res is None or res.status_code != 401):
+                return call_err
+        self._clear_owner_session()
+        return {"ok": True}
+
+    def get_owner_audit(self) -> dict:
+        if self._demo:
+            return {"ok": False, "error": "Owner sessions are disabled in demo mode."}
+        hub_url, err = self._resolve_hub_origin()
+        if err is not None:
+            return err
+        token = self._get_owner_session_token()
+        if not token:
+            return {"ok": False, "code": "AUTH-107", "error": format_error("AUTH-107")}
+        data, _, call_err = self._call_hub(
+            hub_url,
+            "GET",
+            "/api/auth/audit",
+            token=token,
+        )
+        if call_err is not None:
+            return call_err
+        return {"ok": True, "actions": data.get("actions") or []}
 
     def minimize_window(self) -> None:
         if self._window is not None:
@@ -2099,6 +2572,667 @@ class DesktopBridge:
         except OSError:
             pass
 
+    # -- H11 settings ------------------------------------------------------
+
+    def _ensure_ready(self) -> None:
+        if self._demo or self._service_ready:
+            return
+        with self._lock:
+            if not self._service_ready:
+                self._client.ensure_service()
+                self._service_ready = True
+
+    @staticmethod
+    def _h11_error(exc: BaseException, fallback_code: str = "APP-901") -> dict:
+        code = getattr(exc, "code", None) or fallback_code
+        msg = str(exc) if isinstance(exc, DesktopError) and str(exc) else format_error(code)
+        return {"ok": False, "code": code, "error": msg}
+
+    def get_setup_scan(self) -> dict:
+        try:
+            self._ensure_ready()
+            return build_setup_scan_data(self._client, demo=self._demo)
+        except DesktopError as exc:
+            return self._h11_error(exc)
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "code": "APP-901", "error": format_error("APP-901")}
+
+    def run_setup_scan(self) -> dict:
+        if self._demo:
+            data = build_setup_scan_data(self._client, demo=True)
+            data["started"] = data.get("checkedAt")
+            return data
+        try:
+            self._ensure_ready()
+            scan_res = self._client.request("/api/setup/scan", {})
+            data = build_setup_scan_data(self._client, demo=False)
+            if isinstance(scan_res, dict):
+                data["started"] = scan_res.get("started")
+                data["harnesses"] = scan_res.get("harnesses") or []
+            return data
+        except DesktopError as exc:
+            return self._h11_error(exc)
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "code": "APP-901", "error": format_error("APP-901")}
+
+    def get_setup_progress(self) -> dict:
+        if self._demo:
+            progress = build_setup_scan_data(self._client, demo=True).get("progress") or {}
+            return {
+                "ok": True,
+                "heartbeat": progress.get("heartbeat") or {},
+                "sources": progress.get("sources") or [],
+            }
+        try:
+            self._ensure_ready()
+            res = self._client.request("/api/setup/progress")
+            return {
+                "ok": True,
+                "heartbeat": res.get("heartbeat") or {},
+                "sources": res.get("sources") or [],
+            }
+        except DesktopError as exc:
+            return self._h11_error(exc)
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "code": "APP-901", "error": format_error("APP-901")}
+
+    def set_setup_consent(self, key: str, enabled: bool) -> dict:
+        if self._demo:
+            return {"ok": False, "error": "Settings changes are disabled in demo mode."}
+        clean_key = str(key or "").strip()
+        if not clean_key:
+            return {"ok": False, "error": "Choose a setting to change."}
+        try:
+            self._ensure_ready()
+            res = self._client.request(
+                "/api/setup/consent", {"switches": {clean_key: bool(enabled)}}
+            )
+            return {
+                "ok": True,
+                "consent": res.get("consent") or [],
+                "warning": res.get("warning"),
+            }
+        except DesktopError as exc:
+            return self._h11_error(exc)
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "code": "APP-901", "error": format_error("APP-901")}
+
+    def complete_onboarding(self, computer_name: str = "") -> dict:
+        if self._demo:
+            return {"ok": True, "setup": {"completed": True}}
+        body: dict = {}
+        clean_name = str(computer_name or "").strip()
+        if clean_name:
+            body["computerName"] = clean_name
+        try:
+            self._ensure_ready()
+            res = self._client.request("/api/setup/complete", body)
+            return {"ok": True, "setup": res.get("setup") or {}}
+        except DesktopError as exc:
+            return self._h11_error(exc)
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "code": "APP-901", "error": format_error("APP-901")}
+
+    def defer_onboarding(self) -> dict:
+        if self._demo:
+            return {"ok": True, "setup": {}}
+        try:
+            self._ensure_ready()
+            res = self._client.request("/api/setup/defer", {})
+            return {"ok": True, "setup": res.get("setup") or {}}
+        except DesktopError as exc:
+            return self._h11_error(exc)
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "code": "APP-901", "error": format_error("APP-901")}
+
+    def get_notification_settings(self) -> dict:
+        if self._demo:
+            from spend_app.notify import KINDS
+
+            return {
+                "ok": True,
+                "available": False,
+                "kinds": [{"key": k, "label": lbl, "on": True} for k, lbl in KINDS],
+            }
+        try:
+            self._ensure_ready()
+            res = self._client.request("/api/setup/notifications")
+            return {
+                "ok": True,
+                "available": bool(res.get("available")),
+                "kinds": res.get("kinds") or [],
+            }
+        except DesktopError as exc:
+            return self._h11_error(exc)
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "code": "APP-901", "error": format_error("APP-901")}
+
+    def set_notification_kind(self, key: str, enabled: bool) -> dict:
+        if self._demo:
+            return {"ok": False, "error": "Notification changes are disabled in demo mode."}
+        clean_key = str(key or "").strip()
+        if not clean_key:
+            return {"ok": False, "error": "Choose a notification to change."}
+        try:
+            self._ensure_ready()
+            res = self._client.request(
+                "/api/setup/notifications", {"kinds": {clean_key: bool(enabled)}}
+            )
+            self._service_alerts = None
+            kinds = res.get("kinds") or []
+            if clean_key in {"threshold", "dry"}:
+                plan_on = any(
+                    bool(item.get("on"))
+                    for item in kinds
+                    if isinstance(item, dict) and item.get("key") in {"threshold", "dry"}
+                )
+                self._low_quota_alerts = plan_on
+                self._write_preferences()
+            return {
+                "ok": True,
+                "available": bool(res.get("available")),
+                "kinds": kinds,
+                "lowQuotaAlerts": self._low_quota_alerts,
+            }
+        except DesktopError as exc:
+            return self._h11_error(exc)
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "code": "APP-901", "error": format_error("APP-901")}
+
+    def send_test_notification(self) -> dict:
+        if self._demo:
+            return {"ok": False, "error": "Test notifications are disabled in demo mode."}
+        try:
+            self._ensure_ready()
+            self._client.request("/api/setup/notifications/test", {})
+            return {"ok": True}
+        except DesktopError as exc:
+            if exc.status_code == 502 and getattr(exc, "code", None) == "HUB-501":
+                return {
+                    "ok": False,
+                    "error": "Windows did not show the test notification. Check Windows notification settings for BURNRATE.",
+                }
+            return self._h11_error(exc)
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "code": "APP-901", "error": format_error("APP-901")}
+
+    def get_diagnostics_report(self) -> dict:
+        if self._demo:
+            return {"ok": False, "error": "Diagnostics are disabled in demo mode."}
+        try:
+            self._ensure_ready()
+            res = self._client.request("/api/setup/diagnostics", {})
+            return {"ok": True, "text": str(res.get("text") or "")}
+        except DesktopError as exc:
+            return self._h11_error(exc)
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "code": "APP-901", "error": format_error("APP-901")}
+
+    def trigger_sync(self) -> dict:
+        if self._demo:
+            return {"ok": False, "error": "Sync is disabled in demo mode."}
+        try:
+            self._ensure_ready()
+            res = self._client.request("/api/sync/trigger", {})
+            sync_res = res.get("syncResult") if isinstance(res.get("syncResult"), dict) else None
+            sync_failed = res.get("ok") is False or (
+                sync_res is not None and sync_res.get("ok") is False
+            )
+            if sync_failed:
+                raw_err = str((sync_res or {}).get("error") or res.get("error") or "sync_failed")
+                code = (sync_res or {}).get("code") or (
+                    "NET-001"
+                    if raw_err == "hub_unreachable"
+                    else "AUTH-101"
+                    if raw_err == "hub_rejected"
+                    else "SYNC-201"
+                )
+                return {
+                    "ok": False,
+                    "code": code,
+                    "error": format_error(code),
+                    "rawError": raw_err,
+                    "triggeredAt": res.get("triggeredAt"),
+                    "setup": res.get("setup") or {},
+                    "machines": res.get("machines") or [],
+                    "syncResult": sync_res,
+                }
+            return {
+                "ok": True,
+                "triggeredAt": res.get("triggeredAt"),
+                "setup": res.get("setup") or {},
+                "machines": res.get("machines") or [],
+                "syncResult": sync_res,
+            }
+        except DesktopError as exc:
+            return self._h11_error(exc, fallback_code="SYNC-201")
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "code": "SYNC-201", "error": format_error("SYNC-201")}
+
+
+    # H10 ops/hud
+
+    def set_hud_mini(self, enabled: bool) -> dict:
+        self._hud_mini = bool(enabled)
+        self._write_preferences()
+        return {"ok": True, "hudMini": self._hud_mini}
+
+    def set_hud_density(self, density: str) -> dict:
+        val = str(density or "").strip().lower()
+        self._hud_density = val if val in {"compact", "comfortable"} else "compact"
+        self._write_preferences()
+        return {"ok": True, "hudDensity": self._hud_density}
+
+    def copy_image_to_clipboard(self, data_url: str) -> dict:
+        if not isinstance(data_url, str) or not data_url.startswith("data:image/png;base64,"):
+            return {"ok": False, "error": "Expected a PNG data URL."}
+        b64 = data_url.split(",", 1)[1].strip()
+        if not b64 or len(b64) > 16_000_000:
+            return {"ok": False, "error": "Image payload size out of bounds."}
+        try:
+            png_bytes = base64.b64decode(b64, validate=True)
+            dib_bytes = _png_to_cf_dib(png_bytes)
+            _write_win32_clipboard(png_bytes, dib_bytes)
+        except Exception as exc:  # noqa: BLE001 -- surfaced cleanly to UI
+            LOGGER.debug("Copy image to clipboard failed", exc_info=True)
+            return {"ok": False, "error": str(exc) or "Could not copy image to clipboard."}
+        return {"ok": True}
+
+    def get_diagnostics_data(self) -> dict:
+        if self._demo:
+            return {
+                "ok": True,
+                "health": _demo_health(),
+                "freshness": _demo_freshness(),
+            }
+        try:
+            with self._lock:
+                if not self._service_ready:
+                    self._client.ensure_service()
+                    self._service_ready = True
+                health = self._safe_request("/api/spend/health")
+                freshness = self._safe_request("/api/spend/freshness")
+            if health is None and freshness is None:
+                return {"ok": False, "error": "Diagnostics unavailable."}
+            return {"ok": True, "health": health, "freshness": freshness}
+        except DesktopError as exc:
+            return {"ok": False, "error": str(exc)}
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "error": "Could not load diagnostics."}
+
+    def get_week_share_data(self, machine: str = "all") -> dict:
+        if self._demo:
+            return {"ok": True, "week": _demo_week_share()}
+        use_machine = machine or "all"
+        try:
+            with self._lock:
+                if not self._service_ready:
+                    self._client.ensure_service()
+                    self._service_ready = True
+                data = self._client.request(
+                    "/api/spend/share/week?" + urlencode({"machine": use_machine})
+                )
+            return {"ok": True, "week": data}
+        except DesktopError as exc:
+            return {"ok": False, "error": str(exc)}
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "error": "Could not build weekly share card."}
+
+    def get_setup_check(self) -> dict:
+        if self._demo:
+            return {"ok": True, "check": {"plans": {"active": [], "suggestions": []}}}
+        try:
+            with self._lock:
+                if not self._service_ready:
+                    self._client.ensure_service()
+                    self._service_ready = True
+                data = self._safe_request("/api/setup/check")
+            if not isinstance(data, dict):
+                return {"ok": False, "error": "Setup check unavailable."}
+            return {"ok": True, "check": data}
+        except DesktopError as exc:
+            return {"ok": False, "error": str(exc)}
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "error": "Could not check suggested plans."}
+
+    def confirm_suggested_plan(self, suggestion: dict) -> dict:
+        if self._demo:
+            return {"ok": False, "error": "Plan changes are disabled in demo mode."}
+        if not isinstance(suggestion, dict):
+            return {"ok": False, "error": "Invalid plan suggestion."}
+        name = str(suggestion.get("name") or "").strip()
+        tool_key = str(suggestion.get("tool_key") or "").strip()
+        cadence = str(suggestion.get("cadence") or "monthly").strip() or "monthly"
+        try:
+            amount = float(suggestion.get("amount_usd"))
+        except (TypeError, ValueError):
+            amount = 0.0
+        if not name or not tool_key or not math.isfinite(amount) or amount <= 0:
+            return {"ok": False, "error": "Invalid plan amount or provider."}
+        now_utc = datetime.now(UTC)
+        month_start = f"{now_utc.year:04d}-{now_utc.month:02d}-01"
+        body = {
+            "operation": "add",
+            "request_id": f"desktop-hud-plan-{uuid4()}",
+            "values": {
+                "name": name,
+                "tool_key": tool_key,
+                "amount_usd": f"{amount:.2f}",
+                "cadence": cadence,
+                "start_date": month_start,
+                "end_date": None,
+            },
+        }
+        try:
+            with self._lock:
+                if not self._service_ready:
+                    self._client.ensure_service()
+                    self._service_ready = True
+                res = self._client.request("/api/subscriptions", body)
+            return {"ok": True, "result": res}
+        except DesktopError as exc:
+            return {"ok": False, "error": str(exc)}
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "error": "Could not save plan."}
+
+
+# H10 ops/hud helpers
+
+
+def _paeth_predictor(a: int, b: int, c: int) -> int:
+    p = a + b - c
+    pa = abs(p - a)
+    pb = abs(p - b)
+    pc = abs(p - c)
+    if pa <= pb and pa <= pc:
+        return a
+    if pb <= pc:
+        return b
+    return c
+
+
+def _png_to_cf_dib(png_bytes: bytes) -> bytes:
+    """Decode an 8-bit RGB/RGBA PNG into Windows CF_DIB (32-bit BGRA)."""
+    if len(png_bytes) < 24 or png_bytes[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("Invalid PNG signature.")
+    pos = 8
+    width = height = bit_depth = color_type = 0
+    saw_ihdr = False
+    idat_parts: list[bytes] = []
+    while pos + 8 <= len(png_bytes):
+        length, ctype = struct.unpack(">I4s", png_bytes[pos : pos + 8])
+        pos += 8
+        if pos + length + 4 > len(png_bytes):
+            raise ValueError("Truncated PNG chunk.")
+        cdata = png_bytes[pos : pos + length]
+        pos += length + 4  # skip CRC
+        if ctype == b"IHDR":
+            if length != 13:
+                raise ValueError("Invalid IHDR chunk.")
+            width, height, bit_depth, color_type, comp, filt, interlace = struct.unpack(
+                ">IIBBBBB", cdata
+            )
+            if width <= 0 or height <= 0 or bit_depth != 8 or color_type not in (2, 6):
+                raise ValueError("Unsupported PNG format.")
+            if comp != 0 or filt != 0 or interlace != 0:
+                raise ValueError("Unsupported PNG compression or interlacing.")
+            saw_ihdr = True
+        elif ctype == b"IDAT":
+            idat_parts.append(cdata)
+        elif ctype == b"IEND":
+            break
+    if not saw_ihdr or not idat_parts:
+        raise ValueError("Missing PNG image data.")
+
+    raw = zlib.decompress(b"".join(idat_parts))
+    bpp = 4 if color_type == 6 else 3
+    stride = width * bpp
+    expected = height * (1 + stride)
+    if len(raw) != expected:
+        raise ValueError("Corrupt PNG scanline length.")
+
+    rows: list[bytes] = []
+    prev = bytes(stride)
+    idx = 0
+    for _ in range(height):
+        ftype = raw[idx]
+        idx += 1
+        scan = bytearray(raw[idx : idx + stride])
+        idx += stride
+        if ftype == 0:
+            pass
+        elif ftype == 1:
+            for i in range(bpp, stride):
+                scan[i] = (scan[i] + scan[i - bpp]) & 0xFF
+        elif ftype == 2:
+            for i in range(stride):
+                scan[i] = (scan[i] + prev[i]) & 0xFF
+        elif ftype == 3:
+            for i in range(stride):
+                left = scan[i - bpp] if i >= bpp else 0
+                scan[i] = (scan[i] + ((left + prev[i]) >> 1)) & 0xFF
+        elif ftype == 4:
+            for i in range(stride):
+                left = scan[i - bpp] if i >= bpp else 0
+                up = prev[i]
+                up_left = prev[i - bpp] if i >= bpp else 0
+                scan[i] = (scan[i] + _paeth_predictor(left, up, up_left)) & 0xFF
+        else:
+            raise ValueError(f"Unsupported PNG filter type {ftype}.")
+        row_bytes = bytes(scan)
+        rows.append(row_bytes)
+        prev = row_bytes
+
+    pixels = bytearray(width * height * 4)
+    out_pos = 0
+    for y in range(height - 1, -1, -1):
+        row = rows[y]
+        if bpp == 4:
+            for x in range(0, stride, 4):
+                pixels[out_pos] = row[x + 2]
+                pixels[out_pos + 1] = row[x + 1]
+                pixels[out_pos + 2] = row[x]
+                pixels[out_pos + 3] = row[x + 3]
+                out_pos += 4
+        else:
+            for x in range(0, stride, 3):
+                pixels[out_pos] = row[x + 2]
+                pixels[out_pos + 1] = row[x + 1]
+                pixels[out_pos + 2] = row[x]
+                pixels[out_pos + 3] = 255
+                out_pos += 4
+
+    header = struct.pack(
+        "<IiiHHIIiiII",
+        40,
+        width,
+        height,
+        1,
+        32,
+        0,
+        len(pixels),
+        0,
+        0,
+        0,
+        0,
+    )
+    return header + bytes(pixels)
+
+
+def _alloc_hglobal(kernel32, data: bytes) -> int:
+    import ctypes
+
+    hglobal = kernel32.GlobalAlloc(0x0042, len(data))  # GMEM_MOVEABLE | GMEM_ZEROINIT
+    if not hglobal:
+        raise OSError("GlobalAlloc failed for clipboard image.")
+    ptr = kernel32.GlobalLock(hglobal)
+    if not ptr:
+        kernel32.GlobalFree(hglobal)
+        raise OSError("GlobalLock failed for clipboard image.")
+    try:
+        ctypes.memmove(ptr, data, len(data))
+    finally:
+        kernel32.GlobalUnlock(hglobal)
+    return hglobal
+
+
+def _write_win32_clipboard(png_bytes: bytes, dib_bytes: bytes) -> None:
+    if sys.platform != "win32":
+        raise RuntimeError("Clipboard image copy is only supported on Windows.")
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    user32 = ctypes.windll.user32
+
+    kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
+    kernel32.GlobalAlloc.restype = ctypes.c_void_p
+    kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+    kernel32.GlobalUnlock.restype = ctypes.c_int
+    kernel32.GlobalFree.argtypes = [ctypes.c_void_p]
+    kernel32.GlobalFree.restype = ctypes.c_void_p
+
+    user32.OpenClipboard.argtypes = [ctypes.c_void_p]
+    user32.OpenClipboard.restype = ctypes.c_int
+    user32.CloseClipboard.argtypes = []
+    user32.CloseClipboard.restype = ctypes.c_int
+    user32.EmptyClipboard.argtypes = []
+    user32.EmptyClipboard.restype = ctypes.c_int
+    user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+    user32.SetClipboardData.restype = ctypes.c_void_p
+    user32.RegisterClipboardFormatW.argtypes = [ctypes.c_wchar_p]
+    user32.RegisterClipboardFormatW.restype = ctypes.c_uint
+
+    opened = False
+    for _ in range(5):
+        if user32.OpenClipboard(None):
+            opened = True
+            break
+        time.sleep(0.01)
+    if not opened:
+        raise OSError("Could not open Windows clipboard.")
+    try:
+        user32.EmptyClipboard()
+        h_dib = _alloc_hglobal(kernel32, dib_bytes)
+        if not user32.SetClipboardData(8, h_dib):  # CF_DIB
+            kernel32.GlobalFree(h_dib)
+            raise OSError("SetClipboardData(CF_DIB) failed.")
+        png_fmt = user32.RegisterClipboardFormatW("PNG")
+        if png_fmt:
+            h_png = _alloc_hglobal(kernel32, png_bytes)
+            if not user32.SetClipboardData(png_fmt, h_png):
+                kernel32.GlobalFree(h_png)
+    finally:
+        user32.CloseClipboard()
+
+
+def _demo_activity() -> list[dict]:
+    now = datetime.now(UTC)
+    return [
+        {
+            "id": "demo-claude-1",
+            "name": "Refactor HUD bridge and clipboard export",
+            "state": "LIVE",
+            "modelKey": "claude-opus-4-1",
+            "machineId": "local",
+            "machineName": "Desktop",
+            "startedAt": (now - timedelta(minutes=34)).isoformat().replace("+00:00", "Z"),
+        },
+        {
+            "id": "demo-codex-2",
+            "name": "Run integration verification suite",
+            "state": "LIVE",
+            "modelKey": "gpt-5-codex",
+            "machineId": "example-laptop",
+            "machineName": "Laptop",
+            "startedAt": (now - timedelta(minutes=14)).isoformat().replace("+00:00", "Z"),
+        },
+        {
+            "id": "demo-gemini-3",
+            "name": "Audit diagnostics pricing coverage",
+            "state": "LIVE",
+            "modelKey": "gemini-2.5-pro",
+            "machineId": "local",
+            "machineName": "Desktop",
+            "startedAt": (now - timedelta(minutes=5)).isoformat().replace("+00:00", "Z"),
+        },
+    ]
+
+
+def _demo_health() -> dict:
+    now = datetime.now(UTC)
+    stamp = now.isoformat().replace("+00:00", "Z")
+    return {
+        "generatedAt": stamp,
+        "ingest": [
+            {
+                "source": "claude_local",
+                "status": "success",
+                "eventsLast24h": 142,
+                "lastSuccess": stamp,
+            },
+            {
+                "source": "codex_local",
+                "status": "success",
+                "eventsLast24h": 98,
+                "lastSuccess": stamp,
+            },
+        ],
+        "quotas": [
+            {
+                "providerKey": "claude-code",
+                "status": "ok",
+                "lastPoll": stamp,
+            },
+            {
+                "providerKey": "codex",
+                "status": "ok",
+                "lastPoll": stamp,
+            },
+        ],
+        "sources": [],
+        "pricingGaps": [],
+        "providerVsComputedVariancePct": 1.4,
+    }
+
+
+def _demo_freshness() -> dict:
+    now = datetime.now(UTC)
+    stamp = now.isoformat().replace("+00:00", "Z")
+    return {
+        "generatedAt": stamp,
+        "version": __version__,
+        "status": "ok",
+        "issues": [],
+        "ingest": {"lastPassSeconds": 1.2, "lastPassAgeSeconds": 12},
+        "machines": [
+            {"key": "Desktop", "state": "online", "ageSeconds": 12, "lastSeenAt": stamp},
+            {"key": "Laptop", "state": "online", "ageSeconds": 45, "lastSeenAt": stamp},
+        ],
+    }
+
+
+def _demo_week_share() -> dict:
+    now = datetime.now(UTC)
+    start = now - timedelta(days=7)
+    return {
+        "from": start.isoformat().replace("+00:00", "Z"),
+        "to": now.isoformat().replace("+00:00", "Z"),
+        "days": 7,
+        "usd": 127.34,
+        "complete": True,
+        "planUsd": 60.0,
+        "tokens": 8_200_000,
+        "sessions": 50,
+        "cacheReusePct": 68.0,
+        "tools": [
+            {"name": "Claude Code", "usd": 52.10, "sharePct": 40.9},
+            {"name": "Codex", "usd": 41.82, "sharePct": 32.8},
+            {"name": "OpenCode", "usd": 18.60, "sharePct": 14.6},
+            {"name": "Muse Code", "usd": 9.72, "sharePct": 7.6},
+        ],
+    }
 
 def _find_icon() -> Path | None:
     resource_root = Path(__file__).resolve().parents[1]

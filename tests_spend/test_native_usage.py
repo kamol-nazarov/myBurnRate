@@ -370,7 +370,7 @@ def test_usage_api_hub_proxy_uses_owner_session_and_spoke_fallback_is_labeled(
     spoke_client.close()
 
 
-def test_pairing_code_fallback_uses_own_id_and_excludes_stale_hub_rows(
+def test_spoke_fallback_uses_own_id_and_excludes_stale_hub_rows(
     tmp_path, monkeypatch
 ):
     from spend_app import sync
@@ -378,24 +378,21 @@ def test_pairing_code_fallback_uses_own_id_and_excludes_stale_hub_rows(
     from spend_app.db import connect, initialize
     from spend_app.setup_wizard import read_setup_state
 
+    hub_url = "https://hub.invalid"
+    monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
     hub_settings = make_settings(tmp_path / "pair-hub.db")
+    monkeypatch.delenv("BURNRATE_CENTRAL_SERVER", raising=False)
     spoke_settings = make_settings(tmp_path / "pair-spoke.db")
     initialize(hub_settings.database_path)
     initialize(spoke_settings.database_path)
     hub_app = create_app(hub_settings, enable_scheduler=False)
     spoke_app = create_app(spoke_settings, enable_scheduler=False)
-    hub_client, spoke_client = TestClient(hub_app), TestClient(spoke_app)
+    hub_client = TestClient(hub_app, base_url=hub_url)
+    spoke_client = TestClient(spoke_app)
     headers = {"X-BURNRATE-Request": "1"}
-    hub_url = "https://pairing-hub.invalid"
     try:
-        paired = hub_client.post(
-            "/api/setup/pair-hub",
-            headers=headers,
-            json={"hubUrl": hub_url, "name": "Travel computer"},
-        )
-        assert paired.status_code == 200, paired.text
-        code = paired.json()["pairingCode"]
-        monkeypatch.setitem(sync._HUB_TEST_CLIENTS, hub_url, TestClient(hub_app, base_url=hub_url))
+        monkeypatch.setenv("BURNRATE_HUB_URL", hub_url)
+        monkeypatch.setitem(sync._HUB_TEST_CLIENTS, hub_url, hub_client)
 
         now = datetime.now(UTC)
         with connect(spoke_settings.database_path) as connection:
@@ -432,10 +429,12 @@ def test_pairing_code_fallback_uses_own_id_and_excludes_stale_hub_rows(
             now=now,
         )
         connected = spoke_client.post(
-            "/api/setup/connect-spoke",
+            "/api/setup/account",
             headers=headers,
             json={
-                "pairingCode": code,
+                "mode": "register",
+                "username": "owner@example.com",
+                "password": "synthetic-spoke-password",
                 "computerName": "Travel computer",
                 "testSync": False,
             },

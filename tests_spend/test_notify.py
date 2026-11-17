@@ -177,6 +177,7 @@ def test_the_toast_text_travels_outside_the_script(monkeypatch) -> None:
     script = base64.b64decode(args[-1]).decode("utf-16-le")
     assert args[-2] == "-EncodedCommand" and "Remove-Item" not in script and "SecurityElement" in script
     assert kwargs["env"]["BURNRATE_TOAST_TITLE"] == title
-    assert kwargs["env"]["BURNRATE_TOAST_URL"].endswith("/setup?step=4")
+    assert "BURNRATE_TOAST_URL" not in kwargs["env"]
+    assert "activationType" not in script and "BURNRATE_TOAST_URL" not in script
     with pytest.raises(OSError):
         notify.show_toast("x", "y", run=lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="denied"))

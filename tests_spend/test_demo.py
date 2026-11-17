@@ -72,13 +72,12 @@ def test_the_demo_hud_shows_meters_repos_and_a_week_worth_more_than_its_plans(tm
 
 
 def test_demo_mode_reads_and_moves_nothing_on_this_computer(tmp_path: Path, monkeypatch) -> None:
-    from spend_app import quotas, setup_wizard
+    from spend_app import quotas
 
     monkeypatch.setenv("BURNRATE_DEMO", "1")
     monkeypatch.setattr(quotas, "poll_quotas", lambda **_: (_ for _ in ()).throw(AssertionError("polled")))
     database = tmp_path / "spend.db"
     demo.seed(database, now=NOW)
     client = TestClient(create_app(_settings(database), enable_scheduler=False, now=NOW))
-    assert [item["kind"] for item in setup_wizard.detect_network_addresses(17377)] == ["local"]
     assert client.post("/api/hud/native", json={"action": "resize"}).json() == {"ok": False, "reason": "demo"}
     assert client.post("/api/spend/quotas/refresh").json()["providersPolled"] == 0

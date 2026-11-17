@@ -558,7 +558,6 @@ out.drawerOpen = document.querySelectorAll('.provider-item.open').length;
 for (const tab of ['sources', 'computers', 'general']) {
   await openSettings(tab); await wait(80);
   if (tab === 'sources') { toggleSourceEdit('openrouter'); await wait(30); }
-  if (tab === 'computers') { setPairMode('create'); await wait(30); }
   if (tab === 'general') { await checkForUpdates(); await wait(30); }
   out[tab] = smallText();
 }
@@ -796,10 +795,6 @@ esc(); await wait(30);
 out.afterEditorEsc = { editor: !!document.querySelector('.inline-editor'), sheetOpen: sheet.classList.contains('open'),
                        focus: document.activeElement.id };
 setSettingsTab('computers'); await wait(30);
-setPairMode('join'); await wait(30);
-out.pairOpen = !!document.getElementById('joinCodeInput');
-esc(); await wait(30);
-out.afterPairEsc = { pair: !!document.getElementById('joinCodeInput'), sheetOpen: sheet.classList.contains('open') };
 esc(); await wait(30);
 out.afterSheetEsc = { open: sheet.classList.contains('open'), inert: sheet.inert, shellInert: document.getElementById('appShell').inert,
                       focus: document.activeElement.id, vis: getComputedStyle(sheet).visibility, busy: window.__busy.slice(-1)[0] };
@@ -852,8 +847,6 @@ def test_escape_closes_layers_in_order_and_closed_layers_are_inert(tmp_path):
         "sheetOpen": True,
         "focus": "cfg_openrouter",
     }
-    assert r["pairOpen"] is True
-    assert r["afterPairEsc"] == {"pair": False, "sheetOpen": True}
     assert r["afterSheetEsc"] == {
         "open": False,
         "inert": True,

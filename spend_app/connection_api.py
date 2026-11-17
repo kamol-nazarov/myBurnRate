@@ -22,7 +22,6 @@ _MACHINE_READ_PATHS = {
 _PUBLIC_ACCOUNT_PATHS = {
     "/api/account/register",
     "/api/account/login",
-    "/api/pairing/redeem",
 }
 
 _TEST_HOSTS = {"testserver", "test"}
