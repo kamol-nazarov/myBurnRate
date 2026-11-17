@@ -1818,7 +1818,10 @@ def test_distinct_windows_directories_have_distinct_unresolved_scopes(tmp_path: 
     first = tmp_path / "Straße"
     second = tmp_path / "Strasse"
     first.mkdir()
-    second.mkdir()
+    try:
+        second.mkdir()
+    except FileExistsError:
+        pytest.skip("Filesystem folds sharp-s and ss")
     if first.samefile(second):
         pytest.skip("Filesystem folds sharp-s and ss")
     assert codex_quota.unresolved_scope(first) != codex_quota.unresolved_scope(second)
@@ -2007,6 +2010,7 @@ class _CloudStat:
         return getattr(self.real, name)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="OneDrive cloud reparse tags are Windows-specific")
 def test_unchanged_cloud_ancestor_is_not_a_location_change(tmp_path: Path, monkeypatch) -> None:
     from uuid import uuid4
     from spend_app import connection_paths as cp, connections, profile_detect, quotas

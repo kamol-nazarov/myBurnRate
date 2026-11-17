@@ -804,6 +804,7 @@ def test_is_name_surrogate_distinguishes_cloud_and_fails_closed(monkeypatch):
         assert paths.is_name_surrogate("C:/fake/surrogate") is True
 
 
+@pytest.mark.skipif(os.name != "nt", reason="The lstat-based junction check runs only on Windows; POSIX scans classify entries from the directory listing")
 def test_source_files_treats_lstat_permission_error_entries_as_links(monkeypatch, tmp_path):
     from spend_app import connection_paths as paths
 
