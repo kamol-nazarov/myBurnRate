@@ -171,7 +171,7 @@ def resolve_hub_url() -> str:
     load_user_env()
     override = os.getenv(HUB_URL_ENV, "").strip()
     if override:
-        from spend_app.pairing import hub_origin
+        from spend_app.hub_origin import hub_origin
 
         return hub_origin(override)
     return builtin_hub_url()

@@ -19,7 +19,6 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from urllib.parse import urlsplit
 
 import httpx
 
@@ -113,7 +112,6 @@ class NativeClient:
                             "/api/spend/usage",
                             "/api/spend/quotas/refresh",
                             "/api/setup/account",
-                            "/api/setup/connect-spoke",
                         )
                     )
                     else 20,
@@ -1450,7 +1448,7 @@ class SettingsWindow:
 
     @staticmethod
     def _build(window, app):
-        from tkinter import filedialog, messagebox, simpledialog, ttk
+        from tkinter import filedialog, messagebox, ttk
 
         tk = app.tk
         window.title("BURNRATE Settings")
@@ -1510,7 +1508,6 @@ class SettingsWindow:
         )
         machines.heading("#0", text="COMPUTER", anchor="w")
         machines.heading("state", text="STATUS", anchor="w")
-        pair_state = {}
         feedback = ttk.Label(
             computers,
             text="All paired computers contribute to the combined usage view.",
@@ -1539,7 +1536,6 @@ class SettingsWindow:
                 return (
                     app.client.request("/api/connections"),
                     app.client.request("/api/machines"),
-                    app.client.request("/api/setup/state"),
                 )
 
             def show(data):
@@ -1571,7 +1567,6 @@ class SettingsWindow:
                         text=row.get("name") or row["id"],
                         values=("Online" if row.get("online") else "Last synced copy",),
                     )
-                pair_state.update(data[2].get("setup") or {})
 
             app.submit(read, show, failure)
 
@@ -1770,131 +1765,6 @@ class SettingsWindow:
         details.pack(side="bottom", fill="x", pady=(8, 12))
         listing.pack(fill="both", expand=True, pady=6)
 
-        pair_pending = [False]
-
-        def pairing_busy(busy):
-            pair_pending[0] = busy
-            if window.winfo_exists():
-                for button in pair_buttons:
-                    button.configure(state="disabled" if busy else "normal")
-
-        def pairing_failed(exc):
-            pairing_busy(False)
-            failure(exc)
-
-        def join():
-            if app.demo or pair_pending[0]:
-                return
-            code = simpledialog.askstring(
-                "Join my computers",
-                "Paste the pairing code from your main computer:",
-                parent=window,
-            )
-            if code:
-
-                def done(_):
-                    pairing_busy(False)
-                    if window.winfo_exists():
-                        feedback.configure(
-                            text="Connected. Usage from your paired computers will sync in the background."
-                        )
-                        load()
-                    app.change_scope()
-
-                pairing_busy(True)
-                app.submit(
-                    lambda: app.client.request(
-                        "/api/setup/connect-spoke",
-                        {"pairingCode": code, "testSync": True},
-                    ),
-                    done,
-                    pairing_failed,
-                )
-
-        def create_code():
-            if app.demo or pair_pending[0]:
-                return
-            if pair_state.get("role") == "spoke":
-                messagebox.showinfo(
-                    "Pair a computer",
-                    "Create a pairing code on your main computer, then paste it on the new computer.",
-                    parent=window,
-                )
-                return
-            address = simpledialog.askstring(
-                "Main computer address",
-                "Address the other computer can reach (for example your private HTTPS hub):",
-                parent=window,
-            )
-            if not address:
-                return
-            parsed = urlsplit(address)
-            if (
-                parsed.scheme not in {"https", "http"}
-                or not parsed.hostname
-                or parsed.hostname in {"localhost", "127.0.0.1", "::1"}
-            ):
-                messagebox.showerror(
-                    "Pair a computer",
-                    "Enter a reachable hub address, not this computer's loopback address.",
-                    parent=window,
-                )
-                return
-            name = simpledialog.askstring(
-                "New computer", "Name of the computer you want to add:", parent=window
-            )
-            if not name:
-                return
-
-            def done(data):
-                pairing_busy(False)
-                if not window.winfo_exists():
-                    return
-                dialog = tk.Toplevel(window)
-                dialog.configure(background=theme.BG)
-                dialog.after(0, lambda: theme.dark_titlebar(dialog))
-                dialog.title("Pairing code")
-                outer = ttk.Frame(dialog, padding=18)
-                outer.pack(fill="both", expand=True)
-                card_shell, body = theme.card(outer, padding=(18, 16, 18, 16))
-                card_shell.pack(fill="both", expand=True)
-                ttk.Label(
-                    body,
-                    text="Paste this private code on the other computer within 15 minutes. It works once.",
-                    wraplength=460,
-                    style="Card.TLabel",
-                ).pack()
-                text = ttk.Entry(body, width=70)
-                text.insert(0, data["pairingCode"])
-                text.configure(state="readonly")
-                text.pack(fill="x", pady=12)
-
-                def copy_code():
-                    dialog.clipboard_clear()
-                    dialog.clipboard_append(data["pairingCode"])
-
-                ttk.Button(
-                    body, text="Copy code", style="Accent.TButton", command=copy_code
-                ).pack()
-                load()
-
-            pairing_busy(True)
-            app.submit(
-                lambda: app.client.request(
-                    "/api/setup/pair-hub", {"hubUrl": address, "name": name}
-                ),
-                done,
-                pairing_failed,
-            )
-
-        pair_actions = ttk.Frame(computers, style="Card.TFrame")
-        pair_actions.pack(side="bottom", fill="x")
-        pair_buttons = [
-            ttk.Button(pair_actions, text="Create pairing code…", command=create_code),
-            ttk.Button(pair_actions, text="Join with code…", command=join),
-        ]
-        for button in pair_buttons:
-            button.pack(side="left", padx=(0, 8))
         feedback.pack(side="bottom", fill="x", pady=(8, 12))
         machines.pack(fill="both", expand=True, pady=(0, 10))
 
@@ -1918,7 +1788,7 @@ class SettingsWindow:
         if app.demo:
             ttk.Label(
                 general,
-                text="Sample-data demo: connections and computer pairing are disabled.",
+                text="Sample-data demo: connections and account sync are disabled.",
                 style="CardCaption.TLabel",
             ).pack(anchor="w", pady=15)
         load()

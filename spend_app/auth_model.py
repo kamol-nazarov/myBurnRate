@@ -1,7 +1,7 @@
-"""Principals, expiring human sessions, one-use pairing grants and admin audit.
+"""Principals, expiring human sessions and admin audit.
 
 Only credential hashes live on the hub. Transactions serialize credential
-replacement and grant redemption; no process-local authentication cache exists.
+replacement; no process-local authentication cache exists.
 """
 from __future__ import annotations
 
@@ -18,7 +18,6 @@ MACHINE_DAYS = 90
 LEGACY_MACHINE_DAYS = 180
 ROTATION_GRACE_DAYS = 14
 SESSION_DAYS = 30
-PAIRING_MINUTES = 15
 LOCAL_SESSION_DAYS = 30
 COOKIE = "burnrate_access"
 LOCAL_COOKIE = "burnrate_local"
@@ -96,17 +95,12 @@ def ensure_schema(path):
             "BEGIN SELECT RAISE(ABORT, 'admin audit is append-only'); END",
         ):
             connection.execute(sql)
-        grant_cols = {row[1] for row in connection.execute("PRAGMA table_info(pairing_grants)")}
-        if grant_cols and "by_name" not in grant_cols:
+        if connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pairing_grants'"
+        ).fetchone():
             connection.commit()
             connection.execute("BEGIN IMMEDIATE")
-            grant_cols = {row[1] for row in connection.execute("PRAGMA table_info(pairing_grants)")}
-            if "by_name" not in grant_cols:
-                connection.execute("ALTER TABLE pairing_grants ADD COLUMN by_name INTEGER NOT NULL DEFAULT 0")
-                connection.execute(
-                    "UPDATE pairing_grants SET expires_at=? WHERE machine_id IS NULL AND used_at IS NULL",
-                    (stamp(moment() - timedelta(seconds=1)),),
-                )
+            connection.execute("DROP TABLE IF EXISTS pairing_grants")
             connection.commit()
         if connection.execute("SELECT 1 FROM app_meta WHERE key=?", (MARKER,)).fetchone():
             row = connection.execute("SELECT value FROM app_meta WHERE key='machines.v1'").fetchone()
@@ -130,9 +124,6 @@ def ensure_schema(path):
             "CREATE TABLE IF NOT EXISTS owner_sessions (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, "
             "role TEXT NOT NULL, token_hash TEXT NOT NULL, created_at TEXT NOT NULL, "
             "last_used_at TEXT, expires_at TEXT NOT NULL, revoked_at TEXT, device_label TEXT NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS pairing_grants (id TEXT PRIMARY KEY, secret_hash TEXT NOT NULL, "
-            "hub_origin TEXT NOT NULL, machine_id TEXT, machine_name TEXT NOT NULL, os_name TEXT NOT NULL, "
-            "created_at TEXT NOT NULL, expires_at TEXT NOT NULL, used_at TEXT, by_name INTEGER NOT NULL DEFAULT 0)",
         ):
             connection.execute(sql)
         changed = False

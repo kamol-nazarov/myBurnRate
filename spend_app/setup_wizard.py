@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import hmac
 import json
 import os
 import re
 import secrets
-import shutil
 import socket
-import subprocess
 import sys
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -35,7 +32,6 @@ from spend_app.error_codes import (
 )
 from spend_app.diagnostics import detect_local_sources
 from spend_app.plan_service import PlanConflict, PlanError, apply_mutation, effective_terms, list_plans
-from spend_app.platform_paths import NO_WINDOW
 from spend_app.pricing import PricingEngine
 from spend_app.setup_checks import collection_progress, consent_state, lane_rows, plan_issues, plan_suggestions, write_consent
 from spend_app.subscriptions import add_subscription, materialize_subscription_days
@@ -47,8 +43,6 @@ from spend_app.sync import (
     expire_hub_proxy_cache,
     list_machines,
     post_to_configured_hub,
-    register_machine,
-    register_or_reconnect_machine,
     rename_machine,
     sync_once,
 )
@@ -56,13 +50,12 @@ from spend_app.sync import (
 
 SETUP_META_KEY = "app_setup.v1"
 ACCOUNTS_META_KEY = "accounts.v1"
-PAIRING_PREFIX = "brpair_"
 SETUP_TOKEN_ENV = "BURNRATE_SETUP_TOKEN"
 PBKDF2_ITERATIONS = 600_000
 LEGACY_PBKDF2_ITERATIONS = 120_000
 
 # A hub that already has an account accepts no new ones (one owner, many
-# computers); computers join with a pairing code. Opt out deliberately.
+# computers); computers join by signing in. Opt out deliberately.
 ALLOW_REGISTRATION_ENV = "BURNRATE_ALLOW_REGISTRATION"
 
 
@@ -507,126 +500,6 @@ def _sync_plans_into_local_db(connection, timezone_name: str, remote_plans: list
     return added
 
 
-def encode_pairing_code(
-    *,
-    hub_url: str,
-    token: str,
-    machine_id: str,
-    machine_name: str,
-    hub_name: str,
-) -> str:
-    payload = {
-        "v": 2,
-        "hubUrl": hub_url.strip().rstrip("/"),
-        "token": token.strip(),
-        "machineId": machine_id,
-        "machineName": machine_name,
-        "hubName": hub_name,
-    }
-    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    encoded = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
-    return f"{PAIRING_PREFIX}{encoded}"
-
-
-def decode_pairing_code(code: str) -> dict:
-    clean = (code or "").strip()
-    if not clean.startswith(PAIRING_PREFIX):
-        raise ValueError("Pairing code must start with 'brpair_'.")
-    if len(clean) > 8192:
-        raise ValueError("Pairing code too large.")
-    b64 = clean[len(PAIRING_PREFIX) :]
-    padding = "=" * ((4 - len(b64) % 4) % 4)
-    try:
-        raw = base64.urlsafe_b64decode((b64 + padding).encode("ascii"))
-        data = json.loads(raw.decode("utf-8"))
-    except Exception as exc:
-        raise ValueError("Invalid pairing code format.") from exc
-    if not isinstance(data, dict) or not data.get("hubUrl") or not data.get("token"):
-        raise ValueError("Pairing code is missing hubUrl or token.")
-    if data.get("v") != 2 or not str(data.get("token", "")).startswith("br_p_"):
-        raise ValueError("Create a fresh single-use pairing code on the upgraded hub.")
-    return data
-
-
-def ensure_tailscale_hub_proxy(port: int = 17331) -> bool:
-    """Expose 127.0.0.1:<port> on the local Tailscale interface only (never public)."""
-    if os.environ.get("PYTEST_CURRENT_TEST"):
-        return False
-    ts_bin = shutil.which("tailscale")
-    if not ts_bin:
-        return False
-    try:
-        proc = subprocess.run(
-            [ts_bin, "serve", "--bg", "--tcp", str(port), f"tcp://127.0.0.1:{port}"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-            creationflags=NO_WINDOW,
-        )
-        return proc.returncode == 0
-    except Exception:
-        return False
-
-
-def detect_network_addresses(port: int = 17331) -> list[dict]:
-    from spend_app.config import demo_mode
-
-    if demo_mode():
-        # A demo, often screenshotted, never shows this computer's real addresses.
-        return [{"label": "Localhost (this computer)", "url": f"http://127.0.0.1:{port}", "kind": "local"}]
-    urls: list[dict] = []
-    seen: set[str] = set()
-    ts_bin = shutil.which("tailscale")
-    if ts_bin:
-        try:
-            proc = subprocess.run(
-                [ts_bin, "serve", "status", "--json"],
-                capture_output=True,
-                text=True,
-                timeout=2,
-                check=False,
-                # The installed service has no console: without this, every
-                # setup-state read flashed a terminal window on Windows.
-                creationflags=NO_WINDOW,
-            )
-            if proc.returncode == 0 and proc.stdout.strip():
-                serve_data = json.loads(proc.stdout)
-                web = serve_data.get("Web") or {}
-                target_suffix = f":{port}"
-                for host_port, cfg in web.items():
-                    handlers = (cfg or {}).get("Handlers") or {}
-                    for handler in handlers.values():
-                        proxy = str((handler or {}).get("Proxy") or "")
-                        if proxy.endswith(target_suffix) or f":{port}/" in proxy:
-                            https_url = f"https://{host_port[:-4]}" if host_port.endswith(":443") else f"https://{host_port}"
-                            if https_url not in seen:
-                                seen.add(https_url)
-                                urls.append(
-                                    {
-                                        "label": f"Tailscale Serve HTTPS ({https_url})",
-                                        "url": https_url,
-                                        "kind": "tailscale_https",
-                                    }
-                                )
-        except Exception:
-            pass
-    try:
-        host_ips = socket.getaddrinfo(socket.gethostname(), None, family=socket.AF_INET)
-        for item in host_ips:
-            ip = str(item[4][0])
-            if ip.startswith("127.") or ip in seen:
-                continue
-            seen.add(ip)
-            kind = "Tailscale" if ip.startswith("100.") else "LAN"
-            urls.append({"label": f"{kind} ({ip})", "url": f"http://{ip}:{port}", "kind": kind.lower()})
-    except Exception:
-        pass
-    rank = {"tailscale_https": 0, "tailscale": 1, "lan": 2}
-    urls.sort(key=lambda entry: (rank.get(entry["kind"], 3), entry["url"]))
-    urls.append({"label": "Localhost (this computer)", "url": f"http://127.0.0.1:{port}", "kind": "local"})
-    return urls
-
 
 def _should_auto_rotate_token(
     expires_at_raw: object, rotation_required: bool, *, now: datetime | None = None
@@ -644,7 +517,7 @@ def _should_auto_rotate_token(
 def rotate_spoke_machine_token(settings, *, client=None) -> dict | None:
     """Exchange the configured spoke's machine bearer for a fresh one on the hub."""
     from spend_app.config import resolve_hub_url
-    from spend_app.pairing import hub_origin
+    from spend_app.hub_origin import hub_origin
     from spend_app.sync import _cursor_key, read_sync_cursor, rotate_spoke_sync_credential
 
     with connect(settings.database_path) as connection:
@@ -704,7 +577,7 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
     if state.get("role") != "spoke" or not spoke.get("enabled"):
         return None
     from spend_app.config import resolve_hub_url
-    from spend_app.pairing import hub_origin
+    from spend_app.hub_origin import hub_origin
 
     token = str(spoke.get("token") or "").strip()
     if not token:
@@ -733,7 +606,7 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
             latest = read_setup_state(connection)
             latest_hub = _safe_resolve_hub_url() or str(latest["spokeConfig"].get("hubUrl") or "").strip().rstrip("/")
             if latest["spokeConfig"].get("token") != token or latest_hub != configured_hub_url:
-                return {"ok": False, "error": "Pairing changed; retry sync with the current configuration."}
+                return {"ok": False, "error": "Hub connection changed; retry sync with the current configuration."}
             latest["spokeConfig"]["lastSyncAt"] = utc_now()
             latest["spokeConfig"]["lastSyncError"] = None
             if isinstance(result.get("machineId"), str) and result["machineId"]:
@@ -776,7 +649,7 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
             latest = read_setup_state(connection)
             latest_hub = _safe_resolve_hub_url() or str(latest["spokeConfig"].get("hubUrl") or "").strip().rstrip("/")
             if latest["spokeConfig"].get("token") != token or latest_hub != configured_hub_url:
-                return {"ok": False, "error": "Pairing changed; retry sync with the current configuration."}
+                return {"ok": False, "error": "Hub connection changed; retry sync with the current configuration."}
             latest["spokeConfig"]["lastSyncError"] = code
             write_setup_state(connection, latest)
         return {"ok": False, "error": code}
@@ -936,7 +809,7 @@ def _call_central_server_account(
 ) -> tuple[str, dict, str]:
     """Call `/api/account/register` or `/api/account/login` on the configured hub."""
     from spend_app.config import resolve_hub_url
-    from spend_app.pairing import hub_origin
+    from spend_app.hub_origin import hub_origin
 
     try:
         clean_primary = (server_url or "").strip().rstrip("/") or resolve_hub_url()
@@ -1072,7 +945,6 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
     @router.get("/api/setup/state")
     def get_setup_state(request: Request):
         initialize(settings.database_path)
-        port = request.url.port or 17331
         with connect(settings.database_path) as connection:
             state = read_setup_state(connection)
             machines = list_machines(connection)
@@ -1087,7 +959,6 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 "hubAvailable": bool(_safe_resolve_hub_url()),
                 "os": sys.platform,
                 "timezone": settings.timezone,
-                "networkAddresses": detect_network_addresses(port),
                 "machines": machines,
                 "subscriptions": active_plans,
                 "presets": list(SUBSCRIPTION_PRESETS),
@@ -1758,15 +1629,6 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
         except (PlanError, ValueError) as exc:
             return JSONResponse({"error": str(exc)}, status_code=422)
 
-    @router.post("/api/pairing/redeem")
-    async def redeem_pairing(request: Request):
-        from spend_app.pairing import redeem, hub_origin
-        try:
-            body = await _bounded_json(request)
-            return redeem(settings.database_path, request.state.principal, str(body.get("pairingCode") or ""),
-                          hub_origin(f"{request.url.scheme}://{request.headers.get('host', '')}"))
-        except ValueError:
-            return JSONResponse({"error": "Invalid pairing request."}, status_code=403)
 
     @router.post("/api/setup/owner-session")
     async def spoke_owner_session(request: Request):
@@ -1790,7 +1652,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             spoke = state["spokeConfig"]
             if state.get("role") != "spoke" or not spoke.get("enabled"):
                 return error_response("AUTH-107", status_code=409)
-            from spend_app.pairing import hub_origin
+            from spend_app.hub_origin import hub_origin
             from spend_app.config import resolve_hub_url
 
             try:
@@ -1839,7 +1701,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             "X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION),
             "Content-Type": "application/json",
         }
-        from spend_app.pairing import hub_origin
+        from spend_app.hub_origin import hub_origin
         from spend_app.config import resolve_hub_url
 
         try:
@@ -1937,7 +1799,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     return error_response("AUTH-101", status_code=422)
             computer_name = str(body.get("computerName") or "").strip() or _default_computer_name()
             from spend_app.config import resolve_hub_url
-            from spend_app.pairing import hub_origin
+            from spend_app.hub_origin import hub_origin
 
             try:
                 raw_server_url = resolve_hub_url()
@@ -2045,8 +1907,8 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
 
             account_generation = None
             if not reuse_machine:
-                from spend_app.sync import prepare_pairing_sync
-                account_generation = prepare_pairing_sync(settings.database_path, working_url, token)
+                from spend_app.sync import prepare_spoke_sync
+                account_generation = prepare_spoke_sync(settings.database_path, working_url, token)
             sync_result = None
             if test_sync:
                 sync_client = _HUB_TEST_CLIENTS.get(working_url)
@@ -2304,159 +2166,6 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
         res = await run_in_threadpool(_do_scan)
         return JSONResponse(res, headers={"Cache-Control": "no-store"})
 
-    @router.post("/api/setup/pair-hub")
-    async def create_hub_pairing(request: Request):
-        refused = _setup_request_refused(request)
-        if refused:
-            return refused
-        try:
-            body = await _bounded_json(request)
-            if not isinstance(body, dict):
-                raise ValueError("Expected a JSON object.")
-            remote_name = str(body.get("name") or body.get("remoteName") or "Remote Computer").strip()
-            from spend_app.config import resolve_hub_url
-
-            hub_url = (
-                resolve_hub_url()
-                or str(
-                    body.get("hubUrl")
-                    or body.get("hubHost")
-                    or f"{request.url.scheme}://{request.headers.get('host', '127.0.0.1:17331')}"
-                )
-            ).strip().rstrip("/")
-            from spend_app.pairing import issue
-            reg = issue(settings.database_path, request.state.principal, hub_url=hub_url,
-                        name=remote_name, os_name=str(body.get("os") or ""),
-                        machine_id=str(body.get("machineId") or "") or None)
-            return JSONResponse(reg, headers={"Cache-Control": "no-store"})
-        except ValueError as exc:
-            return JSONResponse({"error": str(exc)}, status_code=422)
-
-    @router.post("/api/setup/connect-spoke")
-    async def connect_spoke(request: Request):
-        refused = _setup_request_refused(request)
-        if refused:
-            return refused
-        try:
-            body = await _bounded_json(request)
-            if not isinstance(body, dict):
-                raise ValueError("Expected a JSON object.")
-            pairing_code = str(body.get("pairingCode") or "").strip()
-            paired_id = ""
-            from spend_app.pairing import exchange_remote, hub_origin
-            redeemed_expires_at = None
-            if pairing_code:
-                decoded = decode_pairing_code(pairing_code)
-                hub_url = hub_origin(str(decoded["hubUrl"]))
-                redeemed = exchange_remote(hub_url, pairing_code)
-                token = str(redeemed["token"]).strip()
-                redeemed_expires_at = redeemed.get("expiresAt")
-                decoded["machineId"] = redeemed["machine"]["id"]
-                default_name = str(decoded.get("machineName") or "")
-                paired_id = str(decoded.get("machineId") or "")
-            else:
-                from spend_app.config import resolve_hub_url
-
-                raw_hub_url = resolve_hub_url() or str(body.get("hubUrl") or "").strip()
-                token = str(body.get("token") or "").strip()
-                if not raw_hub_url and not token:
-                    raise ValueError("Provide a Pairing Code (brpair_...) or both Hub URL and Token.")
-                hub_url = hub_origin(raw_hub_url) if raw_hub_url else ""
-                default_name = ""
-            if not hub_url or not token:
-                raise ValueError("Provide a Pairing Code (brpair_...) or both Hub URL and Token.")
-            computer_name = (
-                str(body.get("computerName") or "").strip()
-                or default_name
-                or _default_computer_name()
-            )
-            test_sync = bool(body.get("testSync", True))
-            sync_result = None
-            # A pairing may replace the machine identity on the same hub. Its
-            # new receiver has no knowledge of this spoke's previous cursor.
-            # Re-send a snapshot; ordinary sign-in/rotation keeps the cursor.
-            from spend_app.sync import prepare_pairing_sync, read_sync_cursor, write_sync_cursor
-            previous_cursor = read_sync_cursor(settings.database_path, hub_url)
-            pairing_generation = prepare_pairing_sync(settings.database_path, hub_url, token)
-            if test_sync:
-                try:
-                    sync_result = sync_once(
-                        settings,
-                        pricing,
-                        hub_url=hub_url,
-                        token=token,
-                        machine_name=computer_name,
-                        collect_local=False,
-                        client=_HUB_TEST_CLIENTS.get(hub_url),
-                    )
-                except Exception:
-                    if not pairing_code:
-                        # A bad pasted token must not strand a working spoke.
-                        try:
-                            write_sync_cursor(settings.database_path, hub_url, previous_cursor,
-                                              expected_generation=pairing_generation)
-                        except RuntimeError:
-                            pass  # A newer pairing owns the cursor now.
-                        raise
-                    # Redemption already authenticated/minted this credential
-                    # and can have revoked the old one. Save the new credential
-                    # coherently; a transient first-push failure can retry.
-                    sync_result = {"ok": False, "error": "Paired; initial sync was unavailable. Background sync will retry."}
-                paired_id = str((sync_result or {}).get("machineId") or paired_id)
-            initialize(settings.database_path)
-            with connect(settings.database_path) as connection:
-                connection.execute("BEGIN IMMEDIATE")
-                from spend_app.sync import _cursor_key
-                row = connection.execute("SELECT value FROM app_meta WHERE key=?", (_cursor_key(hub_url),)).fetchone()
-                if not row or json.loads(row[0]).get("generation") != pairing_generation:
-                    return JSONResponse({"error": "Pairing changed during connection. Create a fresh code."}, status_code=409)
-                state = read_setup_state(connection)
-                state["role"] = "spoke"
-                state["computerName"] = computer_name
-                state["account"] = {**state.get("account", {}), "machineId": paired_id}
-                previous_spoke = state["spokeConfig"]
-                owner_session = ({key: previous_spoke[key] for key in ("ownerSession", "ownerSessionExpiresAt")
-                                  if key in previous_spoke}
-                                 if str(previous_spoke.get("hubUrl") or "").rstrip("/") == hub_url else {})
-                state["spokeConfig"] = {
-                    "hubUrl": hub_url,
-                    "token": token,
-                    "tokenExpiresAt": (sync_result or {}).get("tokenExpiresAt") or redeemed_expires_at,
-                    "rotationRequired": bool((sync_result or {}).get("rotationRequired")),
-                    "enabled": True,
-                    "lastSyncAt": utc_now() if sync_result and sync_result.get("ok") else state["spokeConfig"].get("lastSyncAt"),
-                    "lastSyncError": normalize_spoke_sync_error(sync_result.get("error")) if sync_result and not sync_result.get("ok") else None,
-                    "usageChangesPending": bool((sync_result or {}).get("usageChangesPending")),
-                    "eventsPushed": int((sync_result or {}).get("eventsWritten") or 0),
-                    **owner_session,
-                }
-                saved = write_setup_state(connection, state)
-            rename_machine(settings.database_path, machine_id="local", name=computer_name)
-            clear_hub_proxy_cache()
-            return JSONResponse(
-                {
-                    "ok": True,
-                    "setup": public_setup_state(saved),
-                    "syncResult": sync_result,
-                },
-                headers={"Cache-Control": "no-store"},
-            )
-        except RequestTooLargeError:
-            return error_response("REQ-401", status_code=422)
-        except CodedError as exc:
-            return error_response(exc.code, status_code=exc.status_code, retry_after=exc.retry_after)
-        except HTTPException as exc:
-            return error_response(
-                "NET-002" if exc.status_code == 403 else "APP-901",
-                status_code=exc.status_code,
-            )
-        except Exception as exc:
-            msg = str(exc)
-            if "HTTPS" in msg:
-                return error_response("NET-003", status_code=422)
-            if "hub" in msg.lower() or "url" in msg.lower() or "address" in msg.lower():
-                return error_response("NET-001", status_code=422)
-            return error_response("DEV-301" if "token" in msg.lower() else "APP-901", status_code=422)
 
     @router.post("/api/setup/complete")
     async def complete_setup(request: Request):
@@ -3210,21 +2919,12 @@ SETUP_WIZARD_HTML = """<!doctype html>
             </button>
             <button type="button" class="role-card" role="radio" data-role="hub" aria-checked="false">
               <strong>Make this the hub</strong>
-              <small>Your other computers send their usage here. You give each one a pairing code.</small>
+              <small>Your other computers send their usage here when signed in to your account.</small>
             </button>
           </div>
 
           <div id="wiz-join" class="sub-box" hidden>
-            <div class="auth-tabs" role="tablist" aria-label="How to join">
-              <button type="button" class="auth-tab active" id="wiz-join-code-tab" role="tab">Pairing code</button>
-              <button type="button" class="auth-tab" id="wiz-join-account-tab" role="tab">Account</button>
-            </div>
-            <div id="wiz-join-code" class="field-group">
-              <label for="wiz-pair-input">Pairing code from your hub</label>
-              <textarea id="wiz-pair-input" class="text-input" spellcheck="false" autocomplete="off" placeholder="brpair_…"></textarea>
-              <span class="hint">On the hub, open setup, choose Make this the hub, then Create pairing code.</span>
-            </div>
-            <div id="wiz-join-account" class="field-group" hidden>
+            <div id="wiz-join-account" class="field-group">
               <div class="form-grid">
                 <div class="field-group">
                   <label for="wiz-username">Username or email</label>
@@ -3249,28 +2949,6 @@ SETUP_WIZARD_HTML = """<!doctype html>
             </div>
           </div>
 
-          <div id="wiz-hub" class="sub-box" hidden>
-            <div class="section-head">
-              <h3>Add another computer</h3>
-              <p class="hint">Create a code here, then paste it on the other computer under Join my hub. Each code works for one computer.</p>
-            </div>
-            <div class="field-group">
-              <label>Address the other computer uses to reach this one</label>
-              <div id="wiz-hub-addresses" class="plan-list"></div>
-            </div>
-            <div class="inline-row">
-              <input id="wiz-remote-name" class="text-input" maxlength="64" placeholder="Name of the other computer">
-              <button type="button" class="btn btn-sm" id="wiz-pair-create">Create pairing code</button>
-            </div>
-            <div id="wiz-pair-result" class="field-group" hidden>
-              <label for="wiz-pair-code">Pairing code</label>
-              <div id="wiz-pair-code" class="code-box"></div>
-              <div class="inline-row">
-                <button type="button" class="btn btn-sm" id="wiz-pair-copy">Copy code</button>
-                <span class="hint">The code contains a key for this hub. Share it only with your own computers.</span>
-              </div>
-            </div>
-          </div>
 
           <div id="wiz-role-warning" class="status-banner err" hidden></div>
           <div id="wiz-step1-status" class="status-banner" hidden></div>
@@ -3404,7 +3082,6 @@ SETUP_WIZARD_HTML = """<!doctype html>
         const LAST_STEP = 4;
         let step = 1;
         let role = "standalone";
-        let joinMode = "code";
         let authMode = "login";
         let connected = false;
         let changingRole = false;
@@ -3513,11 +3190,6 @@ SETUP_WIZARD_HTML = """<!doctype html>
           $("wiz-roles").hidden = !choosing;
           document.querySelectorAll(".role-card").forEach(card => card.setAttribute("aria-checked", String(card.dataset.role === role)));
           $("wiz-join").hidden = !choosing || role !== "spoke";
-          $("wiz-hub").hidden = role !== "hub";
-          $("wiz-join-code-tab").classList.toggle("active", joinMode === "code");
-          $("wiz-join-account-tab").classList.toggle("active", joinMode === "account");
-          $("wiz-join-code").hidden = joinMode !== "code";
-          $("wiz-join-account").hidden = joinMode !== "account";
           $("wiz-confirm-group").hidden = authMode !== "register";
           $("wiz-setup-token-group").hidden = authMode !== "register";
           $("wiz-password").autocomplete = authMode === "register" ? "new-password" : "current-password";
@@ -3527,73 +3199,33 @@ SETUP_WIZARD_HTML = """<!doctype html>
           banner("wiz-role-warning", "err", leaving ? "When you finish, this computer stops sending its usage to your hub." : "");
         }
 
-        function renderHubAddresses() {
-          const list = $("wiz-hub-addresses");
-          list.replaceChildren(...(stateData?.networkAddresses || []).map((address, index) => {
-            const label = el("label", "check-row");
-            const input = el("input");
-            input.type = "radio";
-            input.name = "hub-address";
-            input.value = address.url;
-            input.checked = index === 0;
-            const copy = el("span");
-            copy.append(el("strong", null, address.url), el("small", null, address.label));
-            label.append(input, copy);
-            return label;
-          }));
-        }
-
-        async function createPairingCode() {
-          const remoteName = $("wiz-remote-name").value.trim() || "Another computer";
-          const hubUrl = document.querySelector('input[name="hub-address"]:checked')?.value;
-          try {
-            const res = await api("/api/setup/pair-hub", "POST", {remoteName, hubUrl});
-            $("wiz-pair-code").textContent = res.pairingCode;
-            $("wiz-pair-result").hidden = false;
-            banner("wiz-step1-status", "", "");
-          } catch (err) {
-            banner("wiz-step1-status", "err", err.message);
-          }
-        }
-
         async function leaveStep1() {
           const computerName = $("wiz-computer-name").value.trim();
           if (role !== "spoke" || (connected && !changingRole)) return true;
-          if (joinMode === "code") {
-            const pairingCode = $("wiz-pair-input").value.trim();
-            if (!pairingCode) {
-              banner("wiz-step1-status", "err", "Paste the pairing code from your hub.");
-              return false;
-            }
-            banner("wiz-step1-status", "", "Joining your hub…");
-            const res = await api("/api/setup/connect-spoke", "POST", {pairingCode, computerName, testSync: false});
-            stateData.setup = res.setup;
-          } else {
-            const username = $("wiz-username").value.trim();
-            const password = $("wiz-password").value;
-            const minimum = stateData?.minPasswordLength || 12;
-            if (!username || !password) {
-              banner("wiz-step1-status", "err", "Enter your username and password.");
-              return false;
-            }
-            if (authMode === "register") {
-              if (password.length < minimum) {
-                banner("wiz-step1-status", "err", "Choose a password of at least " + minimum + " characters.");
-                return false;
-              }
-              if (password !== $("wiz-password-confirm").value) {
-                banner("wiz-step1-status", "err", "The two passwords do not match.");
-                return false;
-              }
-            }
-            banner("wiz-step1-status", "", authMode === "register" ? "Creating your account…" : "Signing in…");
-            const res = await api("/api/setup/account", "POST", {
-              mode: authMode, username, password, computerName,
-              testSync: false,
-              setupToken: $("wiz-setup-token").value.trim()
-            });
-            stateData.setup = res.setup;
+          const username = $("wiz-username").value.trim();
+          const password = $("wiz-password").value;
+          const minimum = stateData?.minPasswordLength || 12;
+          if (!username || !password) {
+            banner("wiz-step1-status", "err", "Enter your username and password.");
+            return false;
           }
+          if (authMode === "register") {
+            if (password.length < minimum) {
+              banner("wiz-step1-status", "err", "Choose a password of at least " + minimum + " characters.");
+              return false;
+            }
+            if (password !== $("wiz-password-confirm").value) {
+              banner("wiz-step1-status", "err", "The two passwords do not match.");
+              return false;
+            }
+          }
+          banner("wiz-step1-status", "", authMode === "register" ? "Creating your account…" : "Signing in…");
+          const res = await api("/api/setup/account", "POST", {
+            mode: authMode, username, password, computerName,
+            testSync: false,
+            setupToken: $("wiz-setup-token").value.trim()
+          });
+          stateData.setup = res.setup;
           $("wiz-password").value = "";
           $("wiz-password-confirm").value = "";
           changingRole = false;
@@ -4079,13 +3711,7 @@ SETUP_WIZARD_HTML = """<!doctype html>
           renderStep1();
         }));
         $("wiz-change-role").addEventListener("click", () => { changingRole = true; renderStep1(); });
-        $("wiz-join-code-tab").addEventListener("click", () => { joinMode = "code"; renderStep1(); });
-        $("wiz-join-account-tab").addEventListener("click", () => { joinMode = "account"; renderStep1(); });
         $("wiz-auth-switch").addEventListener("click", () => { authMode = authMode === "register" ? "login" : "register"; renderStep1(); });
-        $("wiz-pair-create").addEventListener("click", createPairingCode);
-        $("wiz-pair-copy").addEventListener("click", async () => {
-          try { await navigator.clipboard.writeText($("wiz-pair-code").textContent); $("wiz-pair-copy").textContent = "Copied"; } catch {}
-        });
         $("wiz-scan-btn").addEventListener("click", startScan);
         $("wiz-plan-add").addEventListener("click", addPlan);
         document.querySelectorAll("#wizard-stepper li").forEach(li => li.addEventListener("click", () => goTo(Number(li.dataset.step))));
@@ -4135,7 +3761,6 @@ SETUP_WIZARD_HTML = """<!doctype html>
           $("wiz-hud-top").checked = s.hudConfig?.alwaysOnTop !== false;
           role = s.role === "spoke" ? "spoke" : (s.completed && s.role === "hub" ? "hub" : "standalone");
           renderStep1();
-          renderHubAddresses();
           renderPresetPicker();
           const wanted = Number(new URLSearchParams(location.search).get("step"));
           if (wanted >= 2 && wanted <= LAST_STEP) showStep(wanted);

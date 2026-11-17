@@ -12,9 +12,8 @@ burnrate demo [--port 17377] [--data-root DIR] # Serve made-up data on 127.0.0.1
 
 # Multi-computer management & sync
 burnrate machines list
-burnrate machines register --name "MacBook Pro"
 burnrate machines revoke --id <machine_id>
-burnrate sync [--hub https://<hub>] --token-file <path-to-token> [--once]
+burnrate sync --token-file <path-to-token> [--once]
 # or: set BURNRATE_SYNC_TOKEN and omit both flags
 burnrate hub update --ssh <host> [--push-local] [--dry-run]  # Fast-forward a self-hosted hub, restart it, print its build
 
@@ -41,7 +40,7 @@ Optional keys in `.env` (all empty by default — copy `.env.example` to `.env` 
 | `BURNRATE_ACCESS_TOKEN` | Bootstrap/break-glass credential and explicitly configured legacy bearer automation. Normal UI uses a 30-day owner session at `/auth`. Rotation persists only a hash and invalidates the old environment value |
 | `BURNRATE_ALLOW_ADMIN_BEARER` | Default `0` restricts the static credential to `/api/auth/bootstrap` and `/api/auth/rotate`. Set `1` only when automation must use the static bearer for other API calls |
 | `BURNRATE_SETUP_TOKEN` | One-time token required to create the first account on a hub |
-| `BURNRATE_ALLOW_REGISTRATION` | Set to `1` on a hub to accept new accounts after the first. A new account is another **owner** with full credential control; turn it off immediately after use (off: computers join with pairing codes) |
+| `BURNRATE_ALLOW_REGISTRATION` | Deprecated; hubs accept registration only while zero accounts exist |
 | `BURNRATE_HUB_URL` | Optional hub address override (e.g. in `%LOCALAPPDATA%\BURNRATE\.env` for testing). Takes precedence over the build-time address in `spend_app/_build_config.py` |
 | `BURNRATE_HUB_SSH` / `BURNRATE_HUB_PATH` / `BURNRATE_HUB_SERVICE` | Defaults for `burnrate hub update` |
 | `BURNRATE_DESKTOP_NOTIFICATIONS` | Desktop notifications from the desktop service; `0` turns them off (the CLI never sends them) |
@@ -87,18 +86,17 @@ BURNRATE never turns on Tailscale, Serve or Funnel. To reach the HUD from your t
 
 ## Hub authentication migration
 
-No new dependency is required. Sessions last 30 days; machine tokens last 90 days; pairing invitations
-last 15 minutes and redeem once at the exact hub origin. These durations are fixed policy constants.
-`machines.v1` and `accounts.v1` migrate automatically, in one transaction with marker `auth_model.v1`.
+No new dependency is required. Sessions last 30 days and machine tokens last 90 days (fixed policy
+constants). `machines.v1` and `accounts.v1` migrate automatically, in one transaction with marker
+`auth_model.v1`. The obsolete `pairing_grants` table is dropped automatically on upgrade; computers
+that were already paired keep their machine tokens and keep syncing.
 Legacy machine hashes are retained; expiry is the original `created_at` plus 180 days (not 180 days
-from upgrade), with `rotation_required=true`. A token already older than that needs re-pairing.
-Account password hashes and creation dates stay intact; stable IDs and owner roles are added.
+from upgrade), with `rotation_required=true`. Account password hashes and creation dates stay intact;
+stable IDs and owner roles are added.
 
 The hub never asks an existing owner for the setup token again. Old 0.5.5 spokes can still push
 with unexpired migrated tokens, but must upgrade/sign in for hub-wide reads. `/auth` on a spoke
 stores a separate owner session server-side; it is excluded from public setup state and diagnostics.
-Use **Rotate this computer's token** before machine expiry; after expiry use a fresh pairing code.
-Explicit re-pairing resends a usage snapshot so a replacement machine identity never reuses the old
-sync cursor. Same-hub re-pairing keeps a separate owner session; sign-in and token rotation keep
-the machine cursor intact.
+Spokes automatically rotate their machine token before expiry; an expired or revoked computer signs
+in again to re-register and resend a fresh usage snapshot.
 See [self-hosting](self-hosting.md#auth-model-upgrade-and-rollback) for backups and rollback.

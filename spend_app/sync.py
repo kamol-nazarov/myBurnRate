@@ -331,7 +331,7 @@ def _register_in_connection(
     token = f"br_m_{matched_id}_{secrets.token_urlsafe(32)}"
     prev = state["machines"].get(matched_id) or {}
     if reconnect and prev.get("revoked") and not matched_by_device_id:
-        raise ValueError("This machine is revoked; pair it again using its machine ID.")
+        raise ValueError("This machine is revoked; sign in again on that computer or specify its machine ID.")
     stored_device_id = clean_device_id or prev.get("device_id")
     record = {
         "id": matched_id, "name": clean_name, "os": (os_name or prev.get("os") or "").strip()[:32],
@@ -420,8 +420,6 @@ def revoke_machine(
         if machine_id not in state["machines"]:
             raise ValueError(f"Unknown machine: {machine_id}")
         state["machines"][machine_id].update(revoked=True, revoked_at=utc_now(), token_hash="")
-        connection.execute("UPDATE pairing_grants SET used_at=? WHERE machine_id=? AND used_at IS NULL",
-                           (utc_now(), machine_id))
         _write_state(connection, state)
         if actor:
             from spend_app.auth_model import audit
@@ -1157,7 +1155,7 @@ def write_sync_cursor(database_path: Path, hub_url: str, cursor: dict, *, expect
             row = connection.execute("SELECT value FROM app_meta WHERE key=?", (_cursor_key(hub_url),)).fetchone()
             current = json.loads(row[0]) if row else {}
             if current.get("generation") != expected_generation:
-                raise RuntimeError("Pairing changed; retry sync with the current configuration.")
+                raise RuntimeError("Hub connection changed; retry sync with the current configuration.")
         connection.execute(
             "INSERT INTO app_meta(key, value) VALUES(?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -1165,7 +1163,7 @@ def write_sync_cursor(database_path: Path, hub_url: str, cursor: dict, *, expect
         )
 
 
-def prepare_pairing_sync(database_path: Path, hub_url: str, token: str) -> str:
+def prepare_spoke_sync(database_path: Path, hub_url: str, token: str) -> str:
     """Seed a fresh receiver from current rows without weakening journal order.
 
     Compacting acknowledged changes must not discard the initial snapshot.
@@ -1204,7 +1202,7 @@ def sync_once(
     client=None,
 ) -> dict:
     """Collect local usage/activity and push incremental rows to ``hub_url``."""
-    from spend_app.pairing import hub_origin
+    from spend_app.hub_origin import hub_origin
 
     hub_url = hub_origin(hub_url)
     if collect_local:
@@ -1234,7 +1232,7 @@ def sync_once(
     cursor = read_sync_cursor(settings.database_path, hub_url)
     generation = cursor.get("generation")
     if cursor.get("credential_hash") and not hmac.compare_digest(cursor["credential_hash"], _token_hash(token.strip())):
-        raise RuntimeError("Pairing changed; retry sync with the current configuration.")
+        raise RuntimeError("Hub connection changed; retry sync with the current configuration.")
     total_written = 0
     total_skipped = 0
     last_result: dict = {"ok": True, "eventsWritten": 0}
@@ -1325,7 +1323,7 @@ def register_hub_test_client(hub_url: str, client: object) -> None:
 
 
 def clear_hub_proxy_cache() -> None:
-    """Forget every Hub copy, e.g. after pairing changes."""
+    """Forget every Hub copy, e.g. after hub connection changes."""
     with _HUB_PROXY_LOCK:
         _HUB_PROXY_CACHE.clear()
 
@@ -1382,7 +1380,7 @@ def post_to_configured_hub(
     if not spoke.get("enabled"):
         return None
     from spend_app.config import resolve_hub_url
-    from spend_app.pairing import hub_origin
+    from spend_app.hub_origin import hub_origin
 
     try:
         raw_hub_url = resolve_hub_url() or str(spoke.get("hubUrl") or "").strip()
@@ -1732,7 +1730,7 @@ def fetch_from_configured_hub(
     if not spoke.get("enabled"):
         return None
     from spend_app.config import resolve_hub_url
-    from spend_app.pairing import hub_origin
+    from spend_app.hub_origin import hub_origin
 
     try:
         raw_hub_url = resolve_hub_url() or str(spoke.get("hubUrl") or "").strip()
@@ -1799,7 +1797,7 @@ def _read_hub_copy(cache_key: tuple, hub_url: str, token: str, path: str, params
         if cred_key in _HUB_REJECTED_CREDENTIALS:
             return None
         start_gen = _HUB_CREDENTIAL_GENERATIONS.get(cred_key, 0)
-    from spend_app.pairing import hub_origin
+    from spend_app.hub_origin import hub_origin
 
     try:
         hub_url = hub_origin(hub_url)

@@ -26,7 +26,7 @@ def auth_router(settings):
             return None
         raw_hub_url = str(state["spokeConfig"].get("hubUrl") or "").strip()
         if raw_hub_url:
-            from spend_app.pairing import hub_origin
+            from spend_app.hub_origin import hub_origin
             try:
                 hub_origin(raw_hub_url)
             except ValueError as exc:

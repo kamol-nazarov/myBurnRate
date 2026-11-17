@@ -193,16 +193,13 @@ vulnerability, use [SECURITY.md](SECURITY.md); never open a public issue with se
 myBurnRate can self-host its own hub, so a laptop and a desktop share one history without a cloud
 account.
 
-1. **Run a hub.** On an always-on machine, open the setup wizard at
-   `http://127.0.0.1:17331/setup`, choose **Make this the hub**, and create a pairing code. A Docker
-   deployment with automatic HTTPS is in the [self-hosting guide](docs/self-hosting.md).
-2. **Join from every other computer.** Open **Settings → Computers** and paste the pairing code under
-   **Join with code**, or sign in to your hub account with the hub address, account and computer
-   name.
-3. **Sign in for All computers.** Open `/auth` (or **Owner access** in the dashboard) on each paired
-   computer and sign in to the owner account. Its separate, revocable 30-day session authorizes
-   the aggregate view. Without it, usage stays scoped to this computer with a sign-in notice.
-   Pairing codes last 15 minutes and work once; machine tokens expire in 90 days.
+1. **Run a hub.** Deploy the hub container (or run it behind HTTPS on an always-on machine) as
+   described in the [self-hosting guide](docs/self-hosting.md).
+2. **Create your account on the first computer.** Open **Settings → Computers** (or setup) and
+   create your hub account with your email, password and computer name.
+3. **Sign in on every other computer.** Sign in to the same hub account from **Settings →
+   Computers**. Each computer receives its own 90-day machine token (auto-rotated in the
+   background) plus a revocable 30-day owner session for the **All computers** aggregate view.
 
 The hub is also available as a container image, `ghcr.io/kamol-nazarov/myburnrate-hub`, built for
 x86-64 and ARM. The [self-hosting guide](docs/self-hosting.md) covers Docker with automatic HTTPS,
@@ -219,8 +216,8 @@ burnrate serve [--host H] [--port P]        local service and optional dashboard
 burnrate demo [--no-browser]                sample data in a temporary folder
 burnrate init                               create the database
 burnrate doctor                             check Python, data, pricing, assets, loopback bind
-burnrate sync --hub URL --token-file PATH  push this computer's usage to a hub
-burnrate machines list|register|revoke      manage paired computers on a hub
+burnrate sync --token-file PATH             push this computer's usage to the configured hub
+burnrate machines list|revoke               manage connected computers on a hub
 burnrate subscription add|list|apply        effective-dated plans
 burnrate backfill                           advanced historical import
 burnrate pricing-refresh | pricing-audit    review rate cards and expiring prices

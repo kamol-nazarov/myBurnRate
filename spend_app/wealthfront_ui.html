@@ -2577,9 +2577,7 @@ const state = {
   addDraft: null,
   accountFormOpen: false,
   accountAuthMode: "login",
-  accountBusy: false,
-  pairMode: null,
-  generatedCode: null
+  accountBusy: false
 };
 
 function syncUiBusy() {
@@ -4162,34 +4160,6 @@ function paintSettingsBody() {
         </div>
       </div>
 
-      ${!state.demo ? `
-      <div class="wf-card" style="padding:11px 12px;display:grid;gap:8px">
-        <div class="card-title" style="font-size:12.5px">Pairing code (passwordless)</div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap">
-          <button class="btn-secondary ${state.pairMode === "create" ? "active" : ""}" id="pairBtn_create" type="button" aria-pressed="${state.pairMode === "create"}" onclick="setPairMode('create')">Create pairing code</button>
-          <button class="btn-secondary ${state.pairMode === "join" ? "active" : ""}" id="pairBtn_join" type="button" aria-pressed="${state.pairMode === "join"}" onclick="setPairMode('join')">Join with code</button>
-        </div>
-        ${state.pairMode === "create" ? `
-          <form autocomplete="off" novalidate onsubmit="event.preventDefault();submitCreatePair()" style="display:grid;gap:6px;margin-top:2px">
-            <input class="text-input" id="pairCompName" placeholder="Name of new computer (e.g. MacBook Pro)"/>
-            <div><button class="btn-primary" type="submit">Generate code</button></div>
-          </form>
-        ` : ""}
-        ${state.pairMode === "join" ? `
-          <form autocomplete="off" novalidate onsubmit="event.preventDefault();submitJoinPair()" style="display:grid;gap:6px;margin-top:2px">
-            <input class="text-input" id="joinCodeInput" autocomplete="off" spellcheck="false" placeholder="Paste pairing code from hub"/>
-            <div><button class="btn-primary" type="submit">Connect &amp; sync</button></div>
-          </form>
-        ` : ""}
-        ${state.generatedCode ? `
-          <div style="display:grid;gap:5px;margin-top:2px;background:var(--surface-subtle);padding:8px;border-radius:9px">
-            <span style="font-size:10.5px;color:var(--ink-secondary)">Private pairing code (paste on the other computer):</span>
-            <input class="text-input" readonly value="${esc(state.generatedCode)}"/>
-            <div><button class="btn-secondary" type="button" onclick="navigator.clipboard.writeText('${esc(state.generatedCode)}');showToast('Copied pairing code')">Copy code</button></div>
-          </div>
-        ` : ""}
-      </div>
-      ` : ""}
     `;
     return;
   }
@@ -4888,37 +4858,6 @@ window.dismissEmailPrompt = async function() {
   } catch (err) {}
 };
 
-window.setPairMode = function(mode) {
-  state.pairMode = state.pairMode === mode ? null : mode;
-  renderSettingsBody();
-};
-
-window.submitCreatePair = async function() {
-  const name = document.getElementById("pairCompName")?.value.trim() || "";
-  if (!name) { showToast("Enter computer name"); return; }
-  const res = await window.pywebview.api.create_pairing_code(name);
-  if (res && res.ok) {
-    state.generatedCode = res.pairingCode;
-    state.pairMode = null;
-    await refreshSettingsData();
-  } else {
-    showToast((res && res.error) || "Could not create pairing code");
-  }
-};
-
-window.submitJoinPair = async function() {
-  const code = document.getElementById("joinCodeInput")?.value.trim() || "";
-  if (!code) { showToast("Paste a pairing code first"); return; }
-  const res = await window.pywebview.api.join_with_code(code);
-  if (res && res.ok) {
-    state.pairMode = null;
-    showToast("Paired! Syncing in background.");
-    await refreshSettingsData();
-    loadUsage(false, false);
-  } else {
-    showToast((res && res.error) || "Pairing failed");
-  }
-};
 
 function updatePinButton() {
   const button = document.getElementById("pinBtn");
@@ -5132,11 +5071,6 @@ document.addEventListener("keydown", (e) => {
       state.accountFormOpen = false;
       renderSettingsBody();
       document.getElementById("accountToggleBtn")?.focus();
-    } else if (state.pairMode) {
-      const mode = state.pairMode;
-      state.pairMode = null;
-      renderSettingsBody();
-      document.getElementById("pairBtn_" + mode)?.focus();
     } else {
       closeSettings(true);
     }
