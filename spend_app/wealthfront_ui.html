@@ -2256,6 +2256,41 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
+.ops-bar[hidden],
+.scroll-body[hidden],
+html.is-diagnostics #opsBar,
+html.is-diagnostics #scrollBody { display: none !important; }
+.ops-seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 24px;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--seg-bg);
+  border: 1px solid var(--border);
+}
+.ops-seg-btn {
+  border: none;
+  background: transparent;
+  color: var(--ink-secondary);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.2;
+  min-height: 18px;
+  padding: 1.5px 7.5px;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
+}
+.ops-seg-btn:hover { color: var(--ink); }
+.ops-seg-btn.active {
+  background: var(--seg-thumb);
+  color: var(--ink);
+  font-weight: 680;
+  box-shadow: var(--seg-shadow);
+}
 .ops-pill {
   position: relative;
   display: inline-flex;
@@ -2458,6 +2493,8 @@ html.is-mini .hud-mini-bar { display: grid; }
 
 html.is-comfortable .ops-bar { padding: 6px 14px 8px; gap: 6px; }
 html.is-comfortable .ops-pill { min-height: 28px; padding: 3px 10px; font-size: 11px; }
+html.is-comfortable .ops-seg { min-height: 28px; }
+html.is-comfortable .ops-seg-btn { min-height: 22px; padding: 2.5px 9px; font-size: 11px; }
 html.is-comfortable .section-stack { gap: 12px; padding: 12px 14px 18px; }
 html.is-comfortable .provider-row { padding: 11px 12px; gap: 7px; }
 html.is-comfortable .running-row { padding: 11px 12px; gap: 10px; }
@@ -2498,7 +2535,7 @@ html.is-comfortable .quick-plan-banner { padding: 11px 12px; }
   box-shadow: var(--shadow-card);
   padding: 10px 12px;
   display: grid;
-  gap: 7px;
+  gap: 5px;
   min-width: 0;
 }
 .diag-eyebrow {
@@ -2508,8 +2545,8 @@ html.is-comfortable .quick-plan-banner { padding: 11px 12px; }
   text-transform: uppercase;
   color: var(--ink-tertiary);
 }
-.diag-heading { font-family: var(--display); font-size: 13px; font-weight: 700; color: var(--ink); }
-.diag-note { font-size: 11.5px; color: var(--ink-secondary); line-height: 1.4; overflow-wrap: anywhere; }
+.diag-heading { margin: 0; font-family: var(--display); font-size: 13px; font-weight: 700; line-height: 1.25; color: var(--ink); }
+.diag-note { margin: 0; font-size: 11.5px; color: var(--ink-secondary); line-height: 1.4; overflow-wrap: anywhere; }
 .diag-list { display: grid; gap: 6px; }
 .diag-item {
   display: flex;
@@ -2662,8 +2699,11 @@ html.is-comfortable .quick-plan-banner { padding: 11px 12px; }
       <span>Diagnostics</span>
     </button>
     <button class="ops-pill" id="shareWeekBtn" type="button" aria-label="Copy weekly share card">Share week</button>
-    <button class="ops-pill" id="miniModeBtn" type="button" aria-pressed="false" aria-label="Toggle compact mini view">Compact</button>
-    <button class="ops-pill" id="densityBtn" type="button" aria-pressed="false" aria-label="Toggle comfortable density">Compact spacing</button>
+    <div class="ops-seg" id="viewModeGroup" role="group" aria-label="Window view">
+      <button class="ops-seg-btn active" id="fullModeBtn" type="button" aria-pressed="true">Full</button>
+      <button class="ops-seg-btn" id="miniModeBtn" type="button" aria-pressed="false">Mini</button>
+    </div>
+    <button class="ops-pill" id="densityBtn" type="button" aria-pressed="false" aria-label="Spacing density">Density: Compact</button>
   </div>
 
   <!-- Main scrollable feed -->
@@ -2972,6 +3012,7 @@ const state = {
   hudDensity: "compact",
   diagnosticsOpen: false,
   diagnostics: null,
+  savedOverviewScrollTop: 0,
   lastPlanCheckAt: 0,
   updateInfo: null,
   updateCheck: { status: "idle", error: "" },
@@ -5768,16 +5809,23 @@ function applyHudMode(mini, density, persist = true) {
   document.documentElement.classList.toggle("is-mini", state.hudMini);
   document.documentElement.classList.toggle("is-comfortable", state.hudDensity === "comfortable");
 
+  const fullBtn = document.getElementById("fullModeBtn");
+  if (fullBtn) {
+    fullBtn.classList.toggle("active", !state.hudMini);
+    fullBtn.setAttribute("aria-pressed", String(!state.hudMini));
+  }
   const miniBtn = document.getElementById("miniModeBtn");
   if (miniBtn) {
+    miniBtn.classList.toggle("active", state.hudMini);
     miniBtn.setAttribute("aria-pressed", String(state.hudMini));
-    miniBtn.textContent = state.hudMini ? "Full view" : "Compact";
   }
   const densBtn = document.getElementById("densityBtn");
   if (densBtn) {
     const comfy = state.hudDensity === "comfortable";
+    densBtn.classList.toggle("active", comfy);
     densBtn.setAttribute("aria-pressed", String(comfy));
-    densBtn.textContent = comfy ? "Comfortable" : "Compact spacing";
+    densBtn.textContent = comfy ? "Density: Comfortable" : "Density: Compact";
+    densBtn.title = comfy ? "Switch to compact spacing density" : "Switch to comfortable spacing density";
   }
   if (state.report) {
     renderHudOps(state.report);
@@ -5985,12 +6033,18 @@ async function loadDiagnostics(background = false) {
 }
 
 window.openDiagnostics = async function() {
+  const scrollBody = document.getElementById("scrollBody");
+  if (scrollBody && !state.diagnosticsOpen) {
+    state.savedOverviewScrollTop = scrollBody.scrollTop;
+  }
   closeScopePopover(false);
   state.diagnosticsOpen = true;
+  document.documentElement.classList.add("is-diagnostics");
   document.getElementById("opsBar").hidden = true;
-  document.getElementById("scrollBody").hidden = true;
+  if (scrollBody) scrollBody.hidden = true;
   const view = document.getElementById("diagnosticsView");
   view.hidden = false;
+  view.scrollTop = 0;
   renderDiagnosticsView();
   await loadDiagnostics(false);
   document.getElementById("diagnosticsBackBtn")?.focus();
@@ -6000,8 +6054,20 @@ window.closeDiagnostics = function(returnFocus = true) {
   if (!state.diagnosticsOpen) return;
   state.diagnosticsOpen = false;
   document.getElementById("diagnosticsView").hidden = true;
+  document.documentElement.classList.remove("is-diagnostics");
   document.getElementById("opsBar").hidden = false;
-  document.getElementById("scrollBody").hidden = false;
+  const scrollBody = document.getElementById("scrollBody");
+  if (scrollBody) {
+    scrollBody.hidden = false;
+    const targetTop = Number(state.savedOverviewScrollTop) || 0;
+    const prevBehavior = scrollBody.style.scrollBehavior;
+    scrollBody.style.scrollBehavior = "auto";
+    scrollBody.scrollTop = targetTop;
+    requestAnimationFrame(() => {
+      scrollBody.scrollTop = targetTop;
+      scrollBody.style.scrollBehavior = prevBehavior;
+    });
+  }
   if (state.report) renderChart(false);
   if (returnFocus) document.getElementById("diagBtn")?.focus();
 };
@@ -6241,7 +6307,8 @@ document.getElementById("diagBtn")?.addEventListener("click", () => openDiagnost
 document.getElementById("diagnosticsBackBtn")?.addEventListener("click", () => closeDiagnostics(true));
 document.getElementById("diagRefreshBtn")?.addEventListener("click", () => loadDiagnostics(false));
 document.getElementById("shareWeekBtn")?.addEventListener("click", () => shareWeek());
-document.getElementById("miniModeBtn")?.addEventListener("click", () => applyHudMode(!state.hudMini, state.hudDensity, true));
+document.getElementById("fullModeBtn")?.addEventListener("click", () => applyHudMode(false, state.hudDensity, true));
+document.getElementById("miniModeBtn")?.addEventListener("click", () => applyHudMode(true, state.hudDensity, true));
 document.getElementById("densityBtn")?.addEventListener("click", () => applyHudMode(state.hudMini, state.hudDensity === "comfortable" ? "compact" : "comfortable", true));
 document.getElementById("hudMiniBar")?.addEventListener("click", () => applyHudMode(false, state.hudDensity, true));
 

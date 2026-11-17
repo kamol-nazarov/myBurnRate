@@ -868,6 +868,12 @@ def test_browser_diagnostics_view_sections_navigation_and_xss(tmp_path):
     await until(() => document.querySelector('.provider-row'));
     const diagBtn = document.getElementById('diagBtn');
     const view = document.getElementById('diagnosticsView');
+    const scrollBody = document.getElementById('scrollBody');
+    const opsBar = document.getElementById('opsBar');
+    scrollBody.style.scrollBehavior = 'auto';
+    scrollBody.scrollTop = 140;
+    await wait(20);
+    const savedScrollBefore = scrollBody.scrollTop;
     diagBtn.click();
     await until(() => document.querySelectorAll('#diagIngestGrid .diag-ingest-card').length === 4);
     await wait(30);
@@ -878,10 +884,15 @@ def test_browser_diagnostics_view_sections_navigation_and_xss(tmp_path):
       tag: el.querySelector('.diag-tag').textContent
     }));
     const out = {
+      savedScrollBefore,
       openState: {
         viewHidden: view.hidden,
-        scrollHidden: document.getElementById('scrollBody').hidden,
-        opsHidden: document.getElementById('opsBar').hidden,
+        viewDisplay: getComputedStyle(view).display,
+        scrollHidden: scrollBody.hidden,
+        scrollDisplay: getComputedStyle(scrollBody).display,
+        heroHeight: document.getElementById('heroSection').getBoundingClientRect().height,
+        opsHidden: opsBar.hidden,
+        opsDisplay: getComputedStyle(opsBar).display,
         focusId: document.activeElement.id,
         hasAlarm: diagBtn.classList.contains('has-alarm'),
       },
@@ -920,35 +931,50 @@ def test_browser_diagnostics_view_sections_navigation_and_xss(tmp_path):
 
     // Return via Back button
     document.getElementById('diagnosticsBackBtn').click();
-    await wait(20);
+    await wait(50);
     out.afterBack = {
       viewHidden: view.hidden,
-      scrollHidden: document.getElementById('scrollBody').hidden,
-      opsHidden: document.getElementById('opsBar').hidden,
+      scrollHidden: scrollBody.hidden,
+      scrollDisplay: getComputedStyle(scrollBody).display,
+      scrollTop: scrollBody.scrollTop,
+      opsHidden: opsBar.hidden,
+      opsDisplay: getComputedStyle(opsBar).display,
       focusId: document.activeElement.id,
     };
 
-    // Reopen and return via Escape
+    // Scroll again, reopen and return via Escape
+    scrollBody.scrollTop = 95;
+    await wait(20);
+    const savedScrollSecond = scrollBody.scrollTop;
     diagBtn.click();
     await until(() => !view.hidden);
     await wait(20);
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-    await wait(20);
+    await wait(50);
+    out.savedScrollSecond = savedScrollSecond;
     out.afterEsc = {
       viewHidden: view.hidden,
-      scrollHidden: document.getElementById('scrollBody').hidden,
-      opsHidden: document.getElementById('opsBar').hidden,
+      scrollHidden: scrollBody.hidden,
+      scrollDisplay: getComputedStyle(scrollBody).display,
+      scrollTop: scrollBody.scrollTop,
+      opsHidden: opsBar.hidden,
+      opsDisplay: getComputedStyle(opsBar).display,
       focusId: document.activeElement.id,
     };
     report(out);
     """
     html = build_page(pref="light", api_js=api_js, probe=probe_js, extra_css=FAST)
-    r = probe(html, 380, tmp_path, height=900)
+    r = probe(html, 380, tmp_path, height=340)
 
+    assert r["savedScrollBefore"] > 0
     assert r["openState"] == {
         "viewHidden": False,
+        "viewDisplay": "grid",
         "scrollHidden": True,
+        "scrollDisplay": "none",
+        "heroHeight": 0,
         "opsHidden": True,
+        "opsDisplay": "none",
         "focusId": "diagnosticsBackBtn",
         "hasAlarm": True,
     }
@@ -986,13 +1012,20 @@ def test_browser_diagnostics_view_sections_navigation_and_xss(tmp_path):
     assert r["afterBack"] == {
         "viewHidden": True,
         "scrollHidden": False,
+        "scrollDisplay": "flex",
+        "scrollTop": r["savedScrollBefore"],
         "opsHidden": False,
+        "opsDisplay": "flex",
         "focusId": "diagBtn",
     }
+    assert r["savedScrollSecond"] > 0
     assert r["afterEsc"] == {
         "viewHidden": True,
         "scrollHidden": False,
+        "scrollDisplay": "flex",
+        "scrollTop": r["savedScrollSecond"],
         "opsHidden": False,
+        "opsDisplay": "flex",
         "focusId": "diagBtn",
     }
 
@@ -1054,12 +1087,18 @@ def test_browser_hud_mini_bar_density_and_initial_state(tmp_path):
     probe_js = """
     await until(() => document.querySelector('.provider-row'));
     const root = document.documentElement;
+    const fullBtn = document.getElementById('fullModeBtn');
     const miniBtn = document.getElementById('miniModeBtn');
     const densBtn = document.getElementById('densityBtn');
     const miniBar = document.getElementById('hudMiniBar');
     const out = {
       bootMini: root.classList.contains('is-mini'),
       bootComfy: root.classList.contains('is-comfortable'),
+      bootFullPressed: fullBtn.getAttribute('aria-pressed'),
+      bootMiniPressed: miniBtn.getAttribute('aria-pressed'),
+      bootFullLabel: fullBtn.textContent,
+      bootMiniLabel: miniBtn.textContent,
+      bootDensityLabel: densBtn.textContent,
       bootCalls: window.__calls.filter(c => c[0] === 'set_hud_mini' || c[0] === 'set_hud_density'),
       miniDisplayBefore: getComputedStyle(miniBar).display,
     };
@@ -1068,8 +1107,10 @@ def test_browser_hud_mini_bar_density_and_initial_state(tmp_path):
     await wait(20);
     out.afterMiniClick = {
       isMini: root.classList.contains('is-mini'),
-      pressed: miniBtn.getAttribute('aria-pressed'),
-      label: miniBtn.textContent,
+      fullPressed: fullBtn.getAttribute('aria-pressed'),
+      miniPressed: miniBtn.getAttribute('aria-pressed'),
+      fullLabel: fullBtn.textContent,
+      miniLabel: miniBtn.textContent,
       miniDisplay: getComputedStyle(miniBar).display,
       heroDisplay: getComputedStyle(document.getElementById('heroSection')).display,
       todayText: document.getElementById('hudMiniToday').textContent,
@@ -1084,8 +1125,19 @@ def test_browser_hud_mini_bar_density_and_initial_state(tmp_path):
     await wait(20);
     out.afterMiniBarExpand = {
       isMini: root.classList.contains('is-mini'),
-      pressed: miniBtn.getAttribute('aria-pressed'),
-      label: miniBtn.textContent,
+      fullPressed: fullBtn.getAttribute('aria-pressed'),
+      miniPressed: miniBtn.getAttribute('aria-pressed'),
+    };
+
+    // Clicking Full button also works explicitly
+    miniBtn.click();
+    await wait(20);
+    fullBtn.click();
+    await wait(20);
+    out.afterFullBtn = {
+      isMini: root.classList.contains('is-mini'),
+      fullPressed: fullBtn.getAttribute('aria-pressed'),
+      miniPressed: miniBtn.getAttribute('aria-pressed'),
     };
 
     // Density toggle
@@ -1118,11 +1170,15 @@ def test_browser_hud_mini_bar_density_and_initial_state(tmp_path):
     r = probe(html, 380, tmp_path, height=850)
 
     assert r["bootMini"] is False and r["bootComfy"] is False
+    assert r["bootFullPressed"] == "true" and r["bootMiniPressed"] == "false"
+    assert r["bootFullLabel"] == "Full" and r["bootMiniLabel"] == "Mini"
+    assert r["bootDensityLabel"] == "Density: Compact"
     assert r["bootCalls"] == []
     assert r["miniDisplayBefore"] == "none"
 
     m = r["afterMiniClick"]
-    assert m["isMini"] is True and m["pressed"] == "true" and m["label"] == "Full view"
+    assert m["isMini"] is True and m["fullPressed"] == "false" and m["miniPressed"] == "true"
+    assert m["fullLabel"] == "Full" and m["miniLabel"] == "Mini"
     assert m["miniDisplay"] == "grid" and m["heroDisplay"] == "none"
     assert m["todayText"] == "≥$42.50"
     assert m["liveText"] == "2 live"
@@ -1130,10 +1186,15 @@ def test_browser_hud_mini_bar_density_and_initial_state(tmp_path):
     assert m["pctText"] == "15% left"
     assert "tone-warn" in m["pctClass"]
 
-    assert r["afterMiniBarExpand"] == {"isMini": False, "pressed": "false", "label": "Compact"}
-    assert r["afterComfy"] == {"isComfy": True, "pressed": "true", "label": "Comfortable"}
-    assert r["afterCompact"] == {"isComfy": False, "pressed": "false", "label": "Compact spacing"}
+    assert r["afterMiniBarExpand"] == {"isMini": False, "fullPressed": "true", "miniPressed": "false"}
+    assert r["afterFullBtn"] == {"isMini": False, "fullPressed": "true", "miniPressed": "false"}
+    assert r["afterComfy"] == {"isComfy": True, "pressed": "true", "label": "Density: Comfortable"}
+    assert r["afterCompact"] == {"isComfy": False, "pressed": "false", "label": "Density: Compact"}
     assert r["calls"] == [
+        ["set_hud_mini", True],
+        ["set_hud_density", "compact"],
+        ["set_hud_mini", False],
+        ["set_hud_density", "compact"],
         ["set_hud_mini", True],
         ["set_hud_density", "compact"],
         ["set_hud_mini", False],
@@ -1473,7 +1534,7 @@ def test_browser_responsive_no_horizontal_overflow_at_304_and_480(tmp_path):
     document.getElementById('diagnosticsBackBtn').click();
     await wait(30);
     checks.push(measure('mini-480'));
-    document.getElementById('miniModeBtn').click();
+    document.getElementById('fullModeBtn').click();
     await wait(30);
     checks.push(measure('overview-480'));
 
