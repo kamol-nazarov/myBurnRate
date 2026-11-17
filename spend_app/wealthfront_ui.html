@@ -2225,6 +2225,321 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
 
 .ob-row .source-meta { white-space: normal; overflow: visible; text-overflow: clip; }
 
+/* H11 settings */
+.ob {
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+.ob > * {
+  min-width: 0;
+}
+.ob-group {
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+.ob-hero,
+.ob-list,
+.ob-label {
+  min-width: 0;
+}
+.ob-lede {
+  max-width: min(290px, 100%);
+}
+.ob .h11-scan-body {
+  padding: 0;
+}
+#h11SourcesScanCard .toggle-row,
+#h11NotificationsCard .toggle-row,
+#h11DiagnosticsCard .toggle-row,
+#h11SyncCard .toggle-row {
+  min-width: 0;
+  flex-wrap: wrap;
+}
+#h11SourcesScanCard .toggle-row > div:first-child,
+#h11NotificationsCard .toggle-row > div:first-child,
+#h11DiagnosticsCard .toggle-row > div:first-child,
+#h11SyncCard .toggle-row > div:first-child {
+  flex: 1 1 150px;
+  min-width: 0;
+}
+#h11SourcesScanCard .toggle-title,
+#h11SourcesScanCard .toggle-sub,
+#h11SourcesScanCard .source-name,
+#h11SourcesScanCard .source-meta,
+#h11NotificationsCard .toggle-title,
+#h11NotificationsCard .toggle-sub,
+#h11NotificationsCard .source-name,
+#h11NotificationsCard .source-meta,
+#h11DiagnosticsCard .toggle-title,
+#h11DiagnosticsCard .toggle-sub,
+#h11DiagnosticsCard .source-name,
+#h11DiagnosticsCard .source-meta,
+#h11SyncCard .toggle-title,
+#h11SyncCard .toggle-sub,
+#h11SyncCard .source-name,
+#h11SyncCard .source-meta {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.h11-card-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.h11-scan-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  padding: 2px 12px 10px;
+  min-width: 0;
+}
+.h11-scan-section {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 5px;
+  padding-top: 6px;
+  border-top: 1px solid var(--divider);
+  min-width: 0;
+}
+.h11-scan-section:first-child {
+  padding-top: 0;
+  border-top: none;
+}
+.h11-section-label {
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.h11-scan-row {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-subtle);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 5px;
+  min-width: 0;
+}
+.h11-scan-row.is-attention {
+  border-color: var(--warn-border);
+}
+.h11-scan-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.h11-scan-top .source-info {
+  flex: 1;
+  min-width: 0;
+}
+.h11-scan-top .source-name,
+.h11-scan-top .source-meta {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+}
+.h11-scan-top .state-badge {
+  flex-shrink: 0;
+}
+.h11-scan-facts {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+  font-size: 11px;
+  color: var(--ink-secondary);
+  line-height: 1.38;
+  min-width: 0;
+}
+.h11-fact-line {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  min-width: 0;
+}
+.h11-fact-key {
+  font-size: 10.5px;
+  font-weight: 650;
+  color: var(--ink-tertiary);
+  min-width: 44px;
+  flex-shrink: 0;
+}
+.h11-fact-val {
+  color: var(--ink);
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.h11-fix-hint {
+  font-size: 10.8px;
+  color: var(--warn);
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  border-radius: 7px;
+  padding: 4px 7px;
+  line-height: 1.35;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.h11-consent-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 6px;
+  margin-top: 2px;
+  border-top: 1px solid var(--divider);
+  min-width: 0;
+}
+.h11-consent-row .switch {
+  flex-shrink: 0;
+}
+.h11-consent-row.standalone {
+  padding: 8px 10px;
+  margin-top: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-subtle);
+}
+.h11-consent-copy {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1px;
+}
+.h11-consent-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ink);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.h11-consent-detail {
+  font-size: 10.5px;
+  color: var(--ink-secondary);
+  line-height: 1.35;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.h11-source-health {
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-subtle);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 3px;
+  min-width: 0;
+}
+.h11-health-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+.h11-health-head .source-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.h11-health-head .state-badge {
+  flex-shrink: 0;
+}
+.h11-health-meta {
+  font-size: 10.5px;
+  color: var(--ink-secondary);
+  line-height: 1.36;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.h11-not-found {
+  font-size: 10.8px;
+  color: var(--ink-tertiary);
+  line-height: 1.38;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.h11-ob-account {
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.h11-ob-account .source-info {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+.h11-ob-account .source-meta {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+}
+.h11-ob-account button {
+  flex-shrink: 0;
+}
+.h11-ob-actions {
+  padding-top: 9px;
+  border-top: 1px solid var(--divider);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.h11-status-line {
+  font-size: 10.8px;
+  color: var(--ink-secondary);
+  line-height: 1.38;
+  user-select: text;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.h11-status-line.ok {
+  color: var(--mint);
+}
+.h11-status-line.err {
+  color: var(--danger);
+}
+.h11-card-block {
+  padding: 10px 12px 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  min-width: 0;
+}
+.h11-inline-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.h11-diag-text {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.38;
+  resize: vertical;
+  min-height: 92px;
+  user-select: text;
+}
+
 /* Narrow window (min width is 336px; 304px is the floor we still fit): shrink the mini chart
    and stack into a single column at or below 350px so no provider subtitle ever clips. */
 @media (max-width: 350px) {
@@ -2579,7 +2894,12 @@ const state = {
   accountAuthMode: "login",
   accountBusy: false,
   pairMode: null,
-  generatedCode: null
+  generatedCode: null,
+  /* H11 settings */
+  setupScan: { status: "idle", data: null, scanning: false, startedAt: "", pollTimer: 0, pollStarted: 0, progressText: "", error: "", completeBusy: false, deferBusy: false },
+  notifications: { status: "idle", available: true, kinds: [], busyKey: "", testing: false, testStatus: "", testError: false },
+  diagnostics: { busy: false, text: "", status: "", showBox: false, isError: false },
+  syncTrigger: { busy: false, status: "", code: "", isError: false }
 };
 
 function syncUiBusy() {
@@ -3302,10 +3622,25 @@ async function loadOnboarding() {
   }
   ob.fetching = true;
   let next = null;
+  let scanRes = null;
   try {
-    const res = await window.pywebview.api.get_onboarding_data();
+    const [obSettled, scanSettled] = await Promise.allSettled([
+      window.pywebview.api.get_onboarding_data(),
+      apiHas("get_setup_scan") ? window.pywebview.api.get_setup_scan() : Promise.resolve(null)
+    ]);
+    const res = obSettled.status === "fulfilled" ? obSettled.value : null;
     if (res && res.ok && (Array.isArray(res.tools) || Array.isArray(res.apiSources))) next = res;
+    scanRes = scanSettled.status === "fulfilled" ? scanSettled.value : null;
   } catch (err) { next = null; }
+  if (scanRes && scanRes.ok) {
+    state.setupScan.data = scanRes;
+    state.setupScan.status = "ready";
+    state.setupScan.error = "";
+    if (next) next = Object.assign({}, next, { scan: scanRes });
+  } else if (scanRes && scanRes.error) {
+    state.setupScan.error = String(scanRes.error);
+    state.setupScan.status = "failed";
+  }
   ob.fetching = false;
   ob.fetchedAt = Date.now();
   const sig = next ? JSON.stringify(next) : "";
@@ -3420,6 +3755,47 @@ function onboardingHtml() {
     ? `Hub connected. <button class="ob-link" type="button" data-ob-hub>Manage</button>`
     : `Using BURNRATE on another computer? <button class="ob-link" type="button" data-ob-hub>Sign in to your hub</button>`;
 
+  /* H11 settings */
+  const scan = d.scan || (apiHas("get_setup_scan") ? state.setupScan.data : null);
+  if (scan && scan.ok) {
+    const ss = state.setupScan;
+    const scanBusy = !!ss.scanning || !!ss.pollTimer;
+    const statusText = ss.error || ss.progressText || "";
+    const statusCls = ss.error ? "err" : "";
+    const hubAccountCard = `
+      <div class="h11-ob-account">
+        <div class="source-info">
+          <div class="source-name">Hub account</div>
+          <div class="source-meta">${d.hubConnected ? "Connected to your hub. Manage sync and sessions in Settings &rarr; Hub account." : "Sync usage across computers in Settings &rarr; Hub account."}</div>
+        </div>
+        <button class="btn-secondary" type="button" data-ob-hub>${d.hubConnected ? "Manage" : "Open Settings"}</button>
+      </div>`;
+    const obFootActions = `
+      <div class="h11-ob-actions">
+        <button class="btn-ghost" type="button" data-ob-defer ${ss.deferBusy ? "disabled" : ""}>${ss.deferBusy ? "Saving…" : "Set up later"}</button>
+        <button class="btn-primary" type="button" data-ob-complete ${ss.completeBusy ? "disabled" : ""}>${ss.completeBusy ? "Finishing…" : "Complete setup"}</button>
+      </div>`;
+    return `
+      <div class="ob">
+        ${hero}
+        <div class="ob-group">
+          <div class="ob-label">
+            <span>What we found</span>
+            ${apiHas("run_setup_scan") ? `<button class="btn-secondary" type="button" data-ob-scan ${scanBusy ? "disabled" : ""}>${scanBusy ? "Scanning…" : "Recheck"}</button>` : `<span class="ob-count">${found} detected</span>`}
+          </div>
+          ${statusText ? `<div class="h11-status-line ${statusCls}" id="obScanStatus" role="status">${esc(statusText)}</div>` : ""}
+          ${h11ScanBodyHtml(scan, "ob")}
+        </div>
+        ${apis.length ? `
+          <div class="ob-group">
+            <div class="ob-label"><span>Add an API balance</span></div>
+            <div class="ob-list">${apiRows}</div>
+          </div>` : ""}
+        ${hubAccountCard}
+        ${obFootActions}
+      </div>`;
+  }
+
   return `
     <div class="ob">
       ${hero}
@@ -3446,6 +3822,10 @@ function rebuildOnboarding() {
   if (list.contains(active)) {
     if (active.dataset.obToggle) refocus = `[data-ob-toggle="${CSS.escape(active.dataset.obToggle)}"]`;
     else if (active.dataset.obConnect) refocus = `[data-ob-connect="${CSS.escape(active.dataset.obConnect)}"]`;
+    else if (active.dataset.consentKey) refocus = `[data-consent-key="${CSS.escape(active.dataset.consentKey)}"]`;
+    else if (active.dataset.obScan !== undefined) refocus = "[data-ob-scan]";
+    else if (active.dataset.obComplete !== undefined) refocus = "[data-ob-complete]";
+    else if (active.dataset.obDefer !== undefined) refocus = "[data-ob-defer]";
     else if (active.dataset.obHub !== undefined) refocus = "[data-ob-hub]";
     else if (active.id) refocus = "#" + CSS.escape(active.id);
   }
@@ -3519,6 +3899,9 @@ function bindOnboarding() {
   list.addEventListener("click", (e) => {
     const toggle = e.target.closest("[data-ob-toggle]");
     if (toggle) { toggleOnboardingSource(toggle.dataset.obToggle); return; }
+    if (e.target.closest("[data-ob-scan]")) { h11RunSetupScan(); return; }
+    if (e.target.closest("[data-ob-complete]")) { h11CompleteOnboarding(); return; }
+    if (e.target.closest("[data-ob-defer]")) { h11DeferOnboarding(); return; }
     if (e.target.closest("[data-ob-hub]")) openSettings("computers");
   });
   list.addEventListener("submit", (e) => {
@@ -3925,6 +4308,8 @@ window.openSettings = async function(tab = "sources") {
 
 window.closeSettings = function(returnFocus = true) {
   if (!state.settingsOpen) return;
+  /* H11 settings */
+  h11StopScanPollIfIdle();
   state.settingsOpen = false;
   const sheet = document.getElementById("settingsSheet");
   sheet.classList.remove("open");
@@ -3943,6 +4328,8 @@ function setSettingsTab(tab, rerender = true) {
     b.tabIndex = on ? 0 : -1;
   });
   if (rerender || state.settingsOpen) renderSettingsBody();
+  /* H11 settings */
+  h11EnsureSettingsTabExtras(tab);
 }
 
 async function refreshSettingsData() {
@@ -3954,6 +4341,8 @@ async function refreshSettingsData() {
   } else if (res && res.error) {
     showToast(res.error);
   }
+  /* H11 settings */
+  h11EnsureSettingsTabExtras(state.settingsTab);
 }
 
 function renderSettingsBody() {
@@ -4057,6 +4446,7 @@ function paintSettingsBody() {
           ${conns.map(c => renderConnectionGroup(c)).join("")}
         </div>
       </div>
+      ${apiHas("get_setup_scan") ? h11SourcesScanCardHtml() : ""}
     `;
     return;
   }
@@ -4161,6 +4551,7 @@ function paintSettingsBody() {
           `).join("") || '<div class="empty-state">This computer is tracking locally.</div>'}
         </div>
       </div>
+      ${!state.demo && apiHas("trigger_sync") ? h11SyncCardHtml() : ""}
 
       ${!state.demo ? `
       <div class="wf-card" style="padding:11px 12px;display:grid;gap:8px">
@@ -4259,6 +4650,8 @@ function paintSettingsBody() {
         ? "Closing this window keeps BURNRATE in the tray. Background collection and live quota polling continue automatically; use Quit to exit."
         : "Background collection and live quota polling continue automatically when you close this window."}
     </div>
+    ${apiHas("get_notification_settings") ? h11NotificationsCardHtml() : ""}
+    ${apiHas("get_diagnostics_report") ? h11DiagnosticsCardHtml() : ""}
   `;
 }
 
@@ -5072,6 +5465,612 @@ window.resetProviderOrder = async function() {
   loadUsage(false, false);
   showToast("Provider order reset");
 };
+
+/* H11 settings */
+const H11_METER_BADGES = {
+  ok: ["Meter OK", "ok"],
+  held: ["Old reading", "warn"],
+  unavailable: ["No meter", "danger"],
+  idle: ["Idle", ""]
+};
+const H11_USAGE_BADGES = {
+  ok: ["Reading", "ok"],
+  warn: ["Not recent", "warn"],
+  bad: ["Failed", "danger"],
+  waiting: ["Waiting", "warn"],
+  missing: ["Not installed", ""]
+};
+const H11_HEALTH_BADGES = {
+  healthy: ["Healthy", "ok"],
+  partial: ["Partial", "warn"],
+  failed: ["Failed", "danger"],
+  stale: ["Stale", "warn"],
+  detected_without_history: ["No usage yet", "warn"],
+  waiting_activity: ["Waiting", "warn"],
+  awaiting_ingest: ["Waiting", "warn"],
+  not_detected: ["Not found", ""],
+  not_checked: ["Not checked", ""],
+  configuration_missing: ["Off", ""]
+};
+
+function h11SafeId(raw) {
+  return String(raw || "").replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
+function h11FormatTime(iso) {
+  if (!iso) return "none";
+  const parsed = Date.parse(iso);
+  if (!Number.isFinite(parsed)) return String(iso);
+  try {
+    return new Date(parsed).toLocaleString();
+  } catch (err) {
+    return String(iso);
+  }
+}
+
+function h11ConsentSwitchHtml(info, prefix) {
+  const key = String(info && info.key || "");
+  if (!key) return "";
+  const idBase = `${prefix}_consent_${h11SafeId(key)}`;
+  const on = !!info.enabled;
+  return `
+    <div class="h11-consent-row">
+      <div class="h11-consent-copy">
+        <div class="h11-consent-title" id="${idBase}Label">${esc(info.label || key)}</div>
+        ${info.detail ? `<div class="h11-consent-detail" id="${idBase}Desc">${esc(info.detail)}</div>` : ""}
+      </div>
+      <button class="switch ${on ? "on" : ""}" id="${idBase}" type="button" role="switch" aria-checked="${on ? "true" : "false"}" aria-labelledby="${idBase}Label" ${info.detail ? `aria-describedby="${idBase}Desc"` : ""} data-consent-key="${esc(key)}" onclick="h11ToggleConsent(this.dataset.consentKey)"></button>
+    </div>`;
+}
+
+function h11ScanBodyHtml(scan, prefix) {
+  if (!scan) return "";
+  const lanes = Array.isArray(scan.lanes) ? scan.lanes : [];
+  const usageOnly = Array.isArray(scan.usageOnly) ? scan.usageOnly : [];
+  const notFound = Array.isArray(scan.notFound) ? scan.notFound : [];
+  const consentList = Array.isArray(scan.consent) ? scan.consent : [];
+  const sources = Array.isArray(scan.sources) ? scan.sources : [];
+  const renderedConsent = new Set();
+
+  const laneHtml = lanes.map(row => {
+    const meter = row.meter || {};
+    const usage = row.usage || {};
+    const badge = H11_METER_BADGES[meter.state] || [String(meter.state || "Unknown"), ""];
+    const attention = meter.state && meter.state !== "ok" && meter.state !== "idle";
+    const consentInfo = row.consent ? consentList.find(item => item.key === row.consent) : null;
+    if (consentInfo && consentInfo.key) renderedConsent.add(consentInfo.key);
+    return `
+      <div class="h11-scan-row ${attention ? "is-attention" : ""}">
+        <div class="h11-scan-top">
+          ${logoHtml(row.tool || row.key, "source-logo")}
+          <div class="source-info">
+            <div class="source-name">${esc(row.name || row.key)}</div>
+            ${row.plan ? `<div class="source-meta">${esc(row.plan)}</div>` : ""}
+          </div>
+          <span class="state-badge ${badge[1]}">${esc(badge[0])}</span>
+        </div>
+        <div class="h11-scan-facts">
+          <div class="h11-fact-line"><span class="h11-fact-key">Usage</span><span class="h11-fact-val">${esc(usage.text || "Not checked")}</span></div>
+          <div class="h11-fact-line"><span class="h11-fact-key">Meter</span><span class="h11-fact-val">${esc(meter.text || "No reading")}</span></div>
+          ${meter.detail ? `<div class="h11-health-meta">${esc(meter.detail)}</div>` : ""}
+          ${meter.fix ? `<div class="h11-fix-hint">&rarr; ${esc(meter.fix)}</div>` : ""}
+        </div>
+        ${consentInfo ? h11ConsentSwitchHtml(consentInfo, prefix) : ""}
+      </div>`;
+  }).join("");
+
+  const extraConsent = consentList.filter(item => item && item.key && !renderedConsent.has(item.key));
+  const extraConsentHtml = extraConsent.map(info => `
+    <div class="h11-consent-row standalone">
+      <div class="h11-consent-copy">
+        <div class="h11-consent-title" id="${prefix}_consent_${h11SafeId(info.key)}Label">${esc(info.label || info.key)}</div>
+        ${info.detail ? `<div class="h11-consent-detail" id="${prefix}_consent_${h11SafeId(info.key)}Desc">${esc(info.detail)}</div>` : ""}
+      </div>
+      <button class="switch ${info.enabled ? "on" : ""}" id="${prefix}_consent_${h11SafeId(info.key)}" type="button" role="switch" aria-checked="${info.enabled ? "true" : "false"}" aria-labelledby="${prefix}_consent_${h11SafeId(info.key)}Label" ${info.detail ? `aria-describedby="${prefix}_consent_${h11SafeId(info.key)}Desc"` : ""} data-consent-key="${esc(info.key)}" onclick="h11ToggleConsent(this.dataset.consentKey)"></button>
+    </div>`).join("");
+
+  const usageOnlyHtml = usageOnly.map(item => {
+    const usage = item.usage || {};
+    const badge = H11_USAGE_BADGES[usage.state] || [String(usage.state || "Usage"), ""];
+    const meta = [usage.text, usage.path].filter(Boolean).join(" · ");
+    return `
+      <div class="h11-scan-row">
+        <div class="h11-scan-top">
+          ${logoHtml(item.tool || item.key, "source-logo")}
+          <div class="source-info">
+            <div class="source-name">${esc(item.name || item.key)}</div>
+            ${meta ? `<div class="source-meta">${esc(meta)}</div>` : ""}
+          </div>
+          <span class="state-badge ${badge[1]}">${esc(badge[0])}</span>
+        </div>
+      </div>`;
+  }).join("");
+
+  const sourceHealthHtml = sources.map(src => {
+    const st = String(src.state || "");
+    const badge = H11_HEALTH_BADGES[st] || [st.replace(/_/g, " ") || "Unknown", ""];
+    const attemptLine = `Last attempt: ${h11FormatTime(src.lastAttempt)} · Last success: ${h11FormatTime(src.lastSuccess)}`;
+    const detectedNote = st === "detected_without_history" ? "Installed on this computer, waiting for recorded usage." : "";
+    return `
+      <div class="h11-source-health">
+        <div class="h11-health-head">
+          <span class="source-name">${esc(src.source)}</span>
+          <span class="state-badge ${badge[1]}">${esc(badge[0])}</span>
+        </div>
+        ${src.path ? `<div class="h11-health-meta">${esc(src.path)}</div>` : ""}
+        ${detectedNote ? `<div class="h11-health-meta">${esc(detectedNote)}</div>` : ""}
+        ${src.reason ? `<div class="h11-health-meta">${esc(src.reason)}</div>` : ""}
+        ${src.nextAction ? `<div class="h11-health-meta">${esc(src.nextAction)}</div>` : ""}
+        <div class="h11-health-meta">${esc(attemptLine)}</div>
+      </div>`;
+  }).join("");
+
+  return `
+    <div class="h11-scan-body">
+      ${laneHtml ? `<div class="h11-scan-section">${laneHtml}</div>` : ""}
+      ${extraConsentHtml ? `<div class="h11-scan-section"><div class="h11-section-label">Experimental quota meters</div>${extraConsentHtml}</div>` : ""}
+      ${usageOnlyHtml ? `<div class="h11-scan-section"><div class="h11-section-label">Also reading usage from</div>${usageOnlyHtml}</div>` : ""}
+      ${notFound.length ? `<div class="h11-scan-section"><div class="h11-not-found">Not installed on this computer: ${esc(notFound.join(", "))}.</div></div>` : ""}
+      ${sourceHealthHtml ? `<div class="h11-scan-section"><div class="h11-section-label">Source status &amp; history</div>${sourceHealthHtml}</div>` : ""}
+    </div>`;
+}
+
+function h11SourcesScanCardHtml() {
+  const ss = state.setupScan;
+  const busy = !!ss.scanning || !!ss.pollTimer;
+  let inner = "";
+  if (ss.status === "loading" && !ss.data) {
+    inner = '<div class="ob-loading" role="status">Checking tools on this computer…</div>';
+  } else if (ss.error && !ss.data) {
+    inner = `<div class="h11-card-block"><div class="h11-status-line err" role="alert">${esc(ss.error)}</div></div>`;
+  } else if (ss.data) {
+    inner = `
+      ${(ss.error || ss.progressText) ? `<div class="h11-card-block" style="padding-bottom:4px"><div class="h11-status-line ${ss.error ? "err" : ""}" id="srcScanStatus" role="status">${esc(ss.error || ss.progressText)}</div></div>` : ""}
+      ${h11ScanBodyHtml(ss.data, "src")}`;
+  } else {
+    inner = '<div class="ob-loading" role="status">No scan results yet.</div>';
+  }
+  return `
+    <div class="wf-card" id="h11SourcesScanCard">
+      <div class="card-header">
+        <span class="card-title">Tool scan &amp; status</span>
+        <div class="h11-card-head-actions">
+          ${apiHas("run_setup_scan") ? `<button class="btn-secondary" id="srcScanBtn" type="button" onclick="h11RunSetupScan()" ${busy ? "disabled" : ""}>${busy ? "Scanning…" : "Recheck"}</button>` : ""}
+        </div>
+      </div>
+      ${inner}
+    </div>`;
+}
+
+function h11SyncCardHtml() {
+  const st = state.syncTrigger;
+  const statusText = st.status || "";
+  return `
+    <div class="wf-card" id="h11SyncCard">
+      <div class="toggle-row">
+        <div>
+          <div class="source-name">Hub sync</div>
+          <div class="source-meta">Push recent usage and refresh computers in view</div>
+        </div>
+        <button class="btn-secondary" id="syncNowBtn" type="button" onclick="h11TriggerSync()" ${st.busy ? "disabled" : ""}>${st.busy ? "Syncing…" : "Sync now"}</button>
+      </div>
+      ${statusText ? `<div class="h11-card-block" style="padding-top:0"><div class="h11-status-line ${st.isError ? "err" : "ok"}" id="syncNowStatus" role="status">${esc(statusText)}</div></div>` : ""}
+    </div>`;
+}
+
+function h11NotificationsCardHtml() {
+  const nf = state.notifications;
+  const kinds = Array.isArray(nf.kinds) ? nf.kinds : [];
+  let rows = "";
+  if (nf.status === "loading" && !kinds.length) {
+    rows = '<div class="ob-loading" role="status">Loading Windows notification settings…</div>';
+  } else if (nf.status === "failed" && !kinds.length) {
+    rows = '<div class="h11-card-block"><div class="h11-status-line err" role="alert">Could not load notification settings.</div></div>';
+  } else {
+    rows = kinds.map(k => {
+      const key = String(k.key || "");
+      const id = `sw_notify_${h11SafeId(key)}`;
+      const on = !!k.on;
+      return `
+        <div class="toggle-row">
+          <div>
+            <div class="source-name" id="${id}Label">${esc(k.label || key)}</div>
+            <div class="source-meta" id="${id}Desc">Windows desktop alert</div>
+          </div>
+          <button class="switch ${on ? "on" : ""}" id="${id}" type="button" role="switch" aria-checked="${on ? "true" : "false"}" aria-labelledby="${id}Label" aria-describedby="${id}Desc" data-notify-key="${esc(key)}" onclick="h11ToggleNotificationKind(this.dataset.notifyKey)" ${nf.busyKey === key ? "disabled" : ""}></button>
+        </div>`;
+    }).join("");
+  }
+  const canTest = apiHas("send_test_notification");
+  const availNote = nf.status === "ready" && !nf.available ? "Notifications come from the desktop service on Windows." : "";
+  const statusMsg = nf.testStatus || availNote;
+  const statusCls = nf.testError ? "err" : (nf.testStatus && !nf.testing ? "ok" : "");
+  return `
+    <div class="wf-card" id="h11NotificationsCard">
+      <div class="card-header">
+        <span class="card-title">Windows notifications</span>
+        ${canTest ? `<button class="btn-secondary" id="notifyTestBtn" type="button" onclick="h11SendTestNotification()" ${nf.testing || (nf.status === "ready" && !nf.available) ? "disabled" : ""}>${nf.testing ? "Sending…" : "Send a test"}</button>` : ""}
+      </div>
+      ${rows}
+      ${statusMsg ? `<div class="h11-card-block" style="padding-top:2px"><div class="h11-status-line ${statusCls}" id="notifyTestStatus" role="status">${esc(statusMsg)}</div></div>` : ""}
+    </div>`;
+}
+
+function h11DiagnosticsCardHtml() {
+  const dg = state.diagnostics;
+  return `
+    <div class="wf-card" id="h11DiagnosticsCard">
+      <div class="toggle-row">
+        <div>
+          <div class="source-name">Diagnostics</div>
+          <div class="source-meta">Copy a redacted report of sources, sync and recent errors</div>
+        </div>
+        <button class="btn-secondary" id="diagCopyBtn" type="button" onclick="h11CopyDiagnostics()" ${dg.busy ? "disabled" : ""}>${dg.busy ? "Collecting…" : "Copy diagnostics"}</button>
+      </div>
+      ${(dg.status || dg.showBox) ? `
+        <div class="h11-card-block" style="padding-top:0">
+          ${dg.status ? `<div class="h11-status-line ${dg.isError ? "err" : "ok"}" id="diagStatus" role="status">${esc(dg.status)}</div>` : ""}
+          <textarea class="text-input h11-diag-text" id="diagReportText" readonly rows="6" aria-label="Redacted diagnostics report" ${dg.showBox ? "" : "hidden"}>${esc(dg.text || "")}</textarea>
+        </div>` : ""}
+    </div>`;
+}
+
+function h11RenderScanSurfaces() {
+  if (state.settingsOpen && state.settingsTab === "sources") renderSettingsBody();
+  if (!state.report || !getNormalizedProviders(state.report).length) rebuildOnboarding();
+}
+
+function h11StopScanPollIfIdle() {
+  const ss = state.setupScan;
+  const obVisible = !state.report || !getNormalizedProviders(state.report).length;
+  if (!state.settingsOpen && !obVisible && ss.pollTimer) {
+    clearInterval(ss.pollTimer);
+    ss.pollTimer = 0;
+  }
+}
+
+async function h11RefreshSetupScan(silent = false) {
+  if (!apiHas("get_setup_scan")) return;
+  const ss = state.setupScan;
+  if (!silent && !ss.data) {
+    ss.status = "loading";
+    h11RenderScanSurfaces();
+  }
+  let res = null;
+  try {
+    res = await window.pywebview.api.get_setup_scan();
+  } catch (err) {
+    res = { ok: false, error: "Could not check this computer." };
+  }
+  if (res && res.ok) {
+    ss.data = res;
+    ss.status = "ready";
+    ss.error = "";
+    if (state.onboarding.data) {
+      state.onboarding.data = Object.assign({}, state.onboarding.data, { scan: res });
+      state.onboarding.sig = JSON.stringify(state.onboarding.data);
+    }
+  } else {
+    ss.status = "failed";
+    ss.error = (res && res.error) || "Could not check this computer.";
+  }
+  h11RenderScanSurfaces();
+}
+
+async function h11PollSetupProgress() {
+  if (!apiHas("get_setup_progress")) return;
+  const ss = state.setupScan;
+  let data = null;
+  try {
+    data = await window.pywebview.api.get_setup_progress();
+  } catch (err) {
+    return;
+  }
+  if (!data || !data.ok) return;
+  const since = Date.parse(ss.startedAt || "") || 0;
+  const sources = Array.isArray(data.sources) ? data.sources : [];
+  const beat = data.heartbeat && typeof data.heartbeat === "object" ? data.heartbeat : {};
+  const done = sources.filter(item => item.status !== "running" && Date.parse(item.finishedAt || "") >= since);
+  const failed = sources.filter(item => item.status === "failed").map(item => item.name || item.source);
+  const passDone = Date.parse(beat.lastPassAt || "") >= since;
+  const gaveUp = Date.now() - ss.pollStarted > 10 * 60 * 1000;
+  let msg = passDone
+    ? `Checked ${sources.length} tools.`
+    : `Reading your tools… ${done.length} of ${sources.length} done.`;
+  if (failed.length) msg += ` Could not read ${failed.join(", ")}.`;
+  if (gaveUp && !passDone) msg = "Still reading your tools in the background. Latest results shown below.";
+  ss.progressText = msg;
+  if (ss.data) {
+    ss.data = Object.assign({}, ss.data, { progress: { heartbeat: beat, sources } });
+  }
+  if (passDone || gaveUp) {
+    if (ss.pollTimer) {
+      clearInterval(ss.pollTimer);
+      ss.pollTimer = 0;
+    }
+    await h11RefreshSetupScan(true);
+  } else {
+    h11RenderScanSurfaces();
+  }
+}
+
+window.h11RunSetupScan = async function() {
+  if (!apiHas("run_setup_scan")) return;
+  const ss = state.setupScan;
+  if (ss.scanning) return;
+  ss.scanning = true;
+  ss.error = "";
+  ss.progressText = "Starting tool check…";
+  h11RenderScanSurfaces();
+  let res = null;
+  try {
+    res = await window.pywebview.api.run_setup_scan();
+  } catch (err) {
+    res = { ok: false, error: "Could not start a check." };
+  }
+  ss.scanning = false;
+  if (!res || !res.ok) {
+    ss.error = (res && res.error) || "Could not start a check.";
+    ss.progressText = "";
+    h11RenderScanSurfaces();
+    return;
+  }
+  ss.startedAt = res.started || "";
+  if (apiHas("get_setup_progress")) {
+    if (ss.pollTimer) clearInterval(ss.pollTimer);
+    ss.pollStarted = Date.now();
+    ss.pollTimer = setInterval(h11PollSetupProgress, 2500);
+    await h11PollSetupProgress();
+  } else {
+    await h11RefreshSetupScan(true);
+  }
+};
+
+window.h11ToggleConsent = async function(key) {
+  if (!key || !apiHas("set_setup_consent")) return;
+  const ss = state.setupScan;
+  const list = (ss.data && Array.isArray(ss.data.consent)) ? ss.data.consent : [];
+  const current = list.find(item => item.key === key);
+  const nextVal = !(current && current.enabled);
+  const patchConsent = (enabled) => {
+    if (!ss.data || !Array.isArray(ss.data.consent)) return;
+    ss.data.consent = ss.data.consent.map(item => item.key === key ? Object.assign({}, item, { enabled }) : item);
+  };
+  patchConsent(nextVal);
+  ss.error = "";
+  h11RenderScanSurfaces();
+  let res = null;
+  try {
+    res = await window.pywebview.api.set_setup_consent(key, nextVal);
+  } catch (err) {
+    res = { ok: false, error: "Could not change that setting." };
+  }
+  if (res && res.ok) {
+    if (Array.isArray(res.consent) && ss.data) ss.data.consent = res.consent;
+    if (res.warning) ss.progressText = String(res.warning);
+    h11RenderScanSurfaces();
+    setTimeout(() => { h11RefreshSetupScan(true); }, 3000);
+  } else {
+    patchConsent(!nextVal);
+    ss.error = (res && res.error) || "Could not change that setting.";
+    h11RenderScanSurfaces();
+  }
+};
+
+window.h11CompleteOnboarding = async function() {
+  if (!apiHas("complete_onboarding")) return;
+  const ss = state.setupScan;
+  if (ss.completeBusy) return;
+  ss.completeBusy = true;
+  ss.error = "";
+  rebuildOnboarding();
+  let res = null;
+  try {
+    res = await window.pywebview.api.complete_onboarding("");
+  } catch (err) {
+    res = { ok: false, error: "Could not finish setup." };
+  }
+  ss.completeBusy = false;
+  if (res && res.ok) {
+    ss.progressText = "Setup complete.";
+    showToast("Setup complete");
+    announce("Setup complete");
+    await loadUsage(true, false);
+  } else {
+    ss.error = (res && res.error) || "Could not finish setup.";
+  }
+  rebuildOnboarding();
+};
+
+window.h11DeferOnboarding = async function() {
+  if (!apiHas("defer_onboarding")) return;
+  const ss = state.setupScan;
+  if (ss.deferBusy) return;
+  ss.deferBusy = true;
+  ss.error = "";
+  rebuildOnboarding();
+  let res = null;
+  try {
+    res = await window.pywebview.api.defer_onboarding();
+  } catch (err) {
+    res = { ok: false, error: "Could not defer setup." };
+  }
+  ss.deferBusy = false;
+  if (res && res.ok) {
+    ss.progressText = "Setup paused. You can recheck anytime in Settings → Sources.";
+    showToast("Setup paused");
+  } else {
+    ss.error = (res && res.error) || "Could not defer setup.";
+  }
+  rebuildOnboarding();
+};
+
+async function h11LoadNotifications(force = false) {
+  if (!apiHas("get_notification_settings")) return;
+  const nf = state.notifications;
+  if (nf.status === "loading" || (nf.status === "ready" && !force)) return;
+  nf.status = "loading";
+  if (state.settingsOpen && state.settingsTab === "general") renderSettingsBody();
+  let res = null;
+  try {
+    res = await window.pywebview.api.get_notification_settings();
+  } catch (err) {
+    res = { ok: false };
+  }
+  if (res && res.ok) {
+    nf.status = "ready";
+    nf.available = !!res.available;
+    nf.kinds = Array.isArray(res.kinds) ? res.kinds : [];
+  } else {
+    nf.status = "failed";
+  }
+  if (state.settingsOpen && state.settingsTab === "general") renderSettingsBody();
+}
+
+window.h11ToggleNotificationKind = async function(key) {
+  if (!key || !apiHas("set_notification_kind")) return;
+  const nf = state.notifications;
+  const prev = nf.kinds.map(item => Object.assign({}, item));
+  const target = nf.kinds.find(item => item.key === key);
+  const nextVal = !(target && target.on);
+  nf.kinds = nf.kinds.map(item => item.key === key ? Object.assign({}, item, { on: nextVal }) : item);
+  nf.busyKey = key;
+  nf.testStatus = "";
+  nf.testError = false;
+  renderSettingsBody();
+  let res = null;
+  try {
+    res = await window.pywebview.api.set_notification_kind(key, nextVal);
+  } catch (err) {
+    res = { ok: false, error: "Could not save notification preference." };
+  }
+  nf.busyKey = "";
+  if (res && res.ok) {
+    if (Array.isArray(res.kinds)) nf.kinds = res.kinds;
+    if (res.lowQuotaAlerts !== undefined) state.lowQuotaAlerts = !!res.lowQuotaAlerts;
+  } else {
+    nf.kinds = prev;
+    nf.testStatus = (res && res.error) || "Could not save notification preference.";
+    nf.testError = true;
+  }
+  renderSettingsBody();
+};
+
+window.h11SendTestNotification = async function() {
+  if (!apiHas("send_test_notification")) return;
+  const nf = state.notifications;
+  if (nf.testing) return;
+  nf.testing = true;
+  nf.testStatus = "Sending…";
+  nf.testError = false;
+  renderSettingsBody();
+  let res = null;
+  try {
+    res = await window.pywebview.api.send_test_notification();
+  } catch (err) {
+    res = { ok: false, error: "Could not send test notification." };
+  }
+  nf.testing = false;
+  if (res && res.ok) {
+    nf.testStatus = "Sent. If nothing appeared, check Windows notification settings for BURNRATE.";
+    nf.testError = false;
+  } else {
+    nf.testStatus = (res && res.error) || "Could not send test notification.";
+    nf.testError = true;
+  }
+  renderSettingsBody();
+};
+
+window.h11CopyDiagnostics = async function() {
+  if (!apiHas("get_diagnostics_report")) return;
+  const dg = state.diagnostics;
+  if (dg.busy) return;
+  dg.busy = true;
+  dg.status = "Collecting…";
+  dg.isError = false;
+  renderSettingsBody();
+  let res = null;
+  try {
+    res = await window.pywebview.api.get_diagnostics_report();
+  } catch (err) {
+    res = { ok: false, error: "Could not collect diagnostics." };
+  }
+  dg.busy = false;
+  if (!res || !res.ok) {
+    dg.status = (res && res.error) || "Could not collect diagnostics.";
+    dg.isError = true;
+    renderSettingsBody();
+    return;
+  }
+  const reportText = String(res.text || "");
+  dg.text = reportText;
+  let copied = false;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(reportText);
+      copied = true;
+    }
+  } catch (err) {
+    copied = false;
+  }
+  if (copied) {
+    dg.status = "Copied to the clipboard.";
+    dg.showBox = false;
+    dg.isError = false;
+    renderSettingsBody();
+  } else {
+    dg.status = "Select the text below and copy it.";
+    dg.showBox = true;
+    dg.isError = false;
+    renderSettingsBody();
+    const box = document.getElementById("diagReportText");
+    if (box) {
+      box.focus();
+      box.select();
+    }
+  }
+};
+
+window.h11TriggerSync = async function() {
+  if (!apiHas("trigger_sync")) return;
+  const st = state.syncTrigger;
+  if (st.busy) return;
+  st.busy = true;
+  st.status = "";
+  st.code = "";
+  st.isError = false;
+  renderSettingsBody();
+  let res = null;
+  try {
+    res = await window.pywebview.api.trigger_sync();
+  } catch (err) {
+    res = { ok: false, code: "SYNC-201", error: "Could not sync with hub." };
+  }
+  st.busy = false;
+  if (res && res.ok) {
+    st.code = "";
+    st.isError = false;
+    st.status = res.triggeredAt ? `Synced at ${h11FormatTime(res.triggeredAt)}.` : "Synced with hub.";
+    if (Array.isArray(res.machines) && state.settingsData) state.settingsData.machines = res.machines;
+    renderSettingsBody();
+    loadUsage(false, false);
+  } else {
+    st.code = (res && res.code) || "SYNC-201";
+    st.isError = true;
+    const msg = (res && res.error) || "Sync failed.";
+    st.status = `[${st.code}] ${msg}`;
+    renderSettingsBody();
+  }
+};
+
+function h11EnsureSettingsTabExtras(tab) {
+  if (tab === "sources" && apiHas("get_setup_scan") && state.setupScan.status === "idle") {
+    h11RefreshSetupScan(false);
+  }
+  if (tab === "general" && apiHas("get_notification_settings") && state.notifications.status === "idle") {
+    h11LoadNotifications(false);
+  }
+}
 
 /* Wire UI Controls */
 document.getElementById("scopeBtn").addEventListener("click", toggleScopePopover);

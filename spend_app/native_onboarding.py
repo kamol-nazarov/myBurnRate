@@ -265,3 +265,187 @@ def build_onboarding_data(
     if error:
         payload["error"] = error
     return payload
+
+# H11 settings
+def demo_setup_scan_data() -> dict:
+    """Representative setup scan payload for ``--demo``."""
+    return {
+        "ok": True,
+        "lanes": [
+            {
+                "key": "claude-code",
+                "name": "Claude",
+                "plan": "Claude Max 20x",
+                "tool": "claude-code",
+                "usage": {"state": "ok", "text": "Reading ~/.claude"},
+                "meter": {"state": "ok", "text": "72% remaining (5h)", "detail": None, "fix": None},
+                "consent": None,
+            },
+            {
+                "key": "codex",
+                "name": "Codex",
+                "plan": "ChatGPT Plus",
+                "tool": "codex",
+                "usage": {"state": "waiting", "text": "Found — no usage yet"},
+                "meter": {
+                    "state": "unavailable",
+                    "text": "No current reading",
+                    "detail": "No reading yet.",
+                    "fix": "Finish a Codex turn. The meter comes from Codex's own session log.",
+                },
+                "consent": None,
+            },
+            {
+                "key": "opencode",
+                "name": "Z.AI",
+                "plan": None,
+                "tool": "opencode",
+                "usage": {"state": "ok", "text": "Reading OpenCode DB"},
+                "meter": {"state": "held", "text": "Held on previous reading", "detail": "Updated 20m ago", "fix": None},
+                "consent": "zai",
+            },
+            {
+                "key": "opencode-go",
+                "name": "OpenCode Go",
+                "plan": None,
+                "tool": "opencode-go",
+                "usage": {"state": "ok", "text": "Reading OpenCode DB"},
+                "meter": {
+                    "state": "unavailable",
+                    "text": "No current reading",
+                    "detail": "Off until enabled below.",
+                    "fix": "Sign in to OpenCode with your Console account.",
+                },
+                "consent": "opencode_go",
+            },
+        ],
+        "usageOnly": [
+            {
+                "key": "cursor_local",
+                "name": "Cursor",
+                "tool": "cursor",
+                "usage": {"state": "ok", "text": "Reading usage", "path": "~/.cursor"},
+            }
+        ],
+        "notFound": ["Antigravity", "Muse"],
+        "consent": [
+            {
+                "key": "zai",
+                "label": "Read Z.AI credits with your Coding Plan key",
+                "detail": "Uses the Z.AI key that OpenCode, ZCode or glm-acp-agent already stores to ask Z.AI for your 5-hour and weekly credits.",
+                "enabled": True,
+                "lanes": ["opencode"],
+            },
+            {
+                "key": "opencode_go",
+                "label": "Read OpenCode Go usage with OpenCode's sign-in",
+                "detail": "Uses the OpenCode Console key each OpenCode profile stores to ask opencode.ai for its Go usage.",
+                "enabled": False,
+                "lanes": ["opencode-go", "opencode-go-*"],
+            },
+        ],
+        "checkedAt": "2026-11-16T12:00:00Z",
+        "progress": {
+            "heartbeat": {"lastPassAt": "2026-11-16T12:00:00Z"},
+            "sources": [
+                {"source": "claude_local", "name": "Claude Code", "status": "success", "startedAt": "2026-11-16T11:59:58Z", "finishedAt": "2026-11-16T12:00:00Z", "events": 42},
+                {"source": "codex_local", "name": "Codex", "status": "success", "startedAt": "2026-11-16T11:59:58Z", "finishedAt": "2026-11-16T12:00:00Z", "events": 0},
+            ],
+        },
+        "sources": [
+            {
+                "source": "claude_local",
+                "state": "healthy",
+                "path": "~/.claude/projects",
+                "nextAction": "No action needed for usage. Quota availability and pricing are reported separately.",
+                "lastAttempt": "2026-11-16T12:00:00Z",
+                "lastSuccess": "2026-11-16T12:00:00Z",
+                "reason": None,
+            },
+            {
+                "source": "codex_local",
+                "state": "detected_without_history",
+                "path": "~/.codex/sessions",
+                "nextAction": "Complete a supported turn and recheck.",
+                "lastAttempt": None,
+                "lastSuccess": None,
+                "reason": None,
+            },
+        ],
+        "sourceDetails": {
+            "claude_local": {
+                "source": "claude_local",
+                "state": "healthy",
+                "path": "~/.claude/projects",
+                "nextAction": "No action needed for usage. Quota availability and pricing are reported separately.",
+                "lastAttempt": "2026-11-16T12:00:00Z",
+                "lastSuccess": "2026-11-16T12:00:00Z",
+                "reason": None,
+            },
+            "codex_local": {
+                "source": "codex_local",
+                "state": "detected_without_history",
+                "path": "~/.codex/sessions",
+                "nextAction": "Complete a supported turn and recheck.",
+                "lastAttempt": None,
+                "lastSuccess": None,
+                "reason": None,
+            },
+        },
+    }
+
+
+def _safe_setup_request(client, path: str) -> dict | None:
+    try:
+        res = client.request(path)
+        return res if isinstance(res, dict) else None
+    except Exception:  # noqa: BLE001 -- degraded partial scan fields are safe
+        return None
+
+
+def build_setup_scan_data(client, *, demo: bool = False) -> dict:
+    """Assemble ``/api/setup/check``, ``/api/setup/progress`` and ``/api/onboarding`` details."""
+    if demo:
+        return demo_setup_scan_data()
+    try:
+        check = client.request("/api/setup/check")
+    except Exception as exc:  # noqa: BLE001 -- surfaced to the UI
+        out = {"ok": False, "error": str(exc) or "Could not check this computer."}
+        code = getattr(exc, "code", None)
+        if code:
+            out["code"] = code
+        return out
+    if not isinstance(check, dict):
+        return {"ok": False, "error": "Could not check this computer."}
+
+    progress = _safe_setup_request(client, "/api/setup/progress")
+    onboarding = _safe_setup_request(client, "/api/onboarding")
+    sources = [
+        item
+        for item in ((onboarding or {}).get("sources") or [])
+        if isinstance(item, dict) and item.get("source")
+    ]
+    source_details = {
+        str(item["source"]): {
+            "source": str(item["source"]),
+            "state": item.get("state"),
+            "path": item.get("path"),
+            "nextAction": item.get("nextAction"),
+            "lastAttempt": item.get("lastAttempt"),
+            "lastSuccess": item.get("lastSuccess"),
+            "reason": item.get("reason"),
+            "detected_without_history": item.get("state") == "detected_without_history",
+        }
+        for item in sources
+    }
+    return {
+        "ok": True,
+        "lanes": check.get("lanes") if isinstance(check.get("lanes"), list) else [],
+        "usageOnly": check.get("usageOnly") if isinstance(check.get("usageOnly"), list) else [],
+        "notFound": check.get("notFound") if isinstance(check.get("notFound"), list) else [],
+        "consent": check.get("consent") if isinstance(check.get("consent"), list) else [],
+        "checkedAt": check.get("checkedAt"),
+        "progress": progress if isinstance(progress, dict) else {"heartbeat": {}, "sources": []},
+        "sources": list(source_details.values()),
+        "sourceDetails": source_details,
+    }

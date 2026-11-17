@@ -34,7 +34,7 @@ from spend_app.native_desktop import (
     SourceMutation,
 )
 from spend_app.native_links import is_allowed_external_url
-from spend_app.native_onboarding import build_onboarding_data
+from spend_app.native_onboarding import build_onboarding_data, build_setup_scan_data
 from spend_app.native_prefs import PreferenceStore, store_for
 from spend_app.native_tray import TrayController, run_on_ui
 from spend_app.opencode_providers import provider_tool_name
@@ -2463,6 +2463,243 @@ class DesktopBridge:
             user32.PostMessageW(hwnd, 0xA1, hit, 0)  # WM_NCLBUTTONDOWN
         except OSError:
             pass
+
+    # -- H11 settings ------------------------------------------------------
+
+    def _ensure_ready(self) -> None:
+        if self._demo or self._service_ready:
+            return
+        with self._lock:
+            if not self._service_ready:
+                self._client.ensure_service()
+                self._service_ready = True
+
+    @staticmethod
+    def _h11_error(exc: BaseException, fallback_code: str = "APP-901") -> dict:
+        code = getattr(exc, "code", None) or fallback_code
+        msg = str(exc) if isinstance(exc, DesktopError) and str(exc) else format_error(code)
+        return {"ok": False, "code": code, "error": msg}
+
+    def get_setup_scan(self) -> dict:
+        try:
+            self._ensure_ready()
+            return build_setup_scan_data(self._client, demo=self._demo)
+        except DesktopError as exc:
+            return self._h11_error(exc)
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "code": "APP-901", "error": format_error("APP-901")}
+
+    def run_setup_scan(self) -> dict:
+        if self._demo:
+            data = build_setup_scan_data(self._client, demo=True)
+            data["started"] = data.get("checkedAt")
+            return data
+        try:
+            self._ensure_ready()
+            scan_res = self._client.request("/api/setup/scan", {})
+            data = build_setup_scan_data(self._client, demo=False)
+            if isinstance(scan_res, dict):
+                data["started"] = scan_res.get("started")
+                data["harnesses"] = scan_res.get("harnesses") or []
+            return data
+        except DesktopError as exc:
+            return self._h11_error(exc)
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "code": "APP-901", "error": format_error("APP-901")}
+
+    def get_setup_progress(self) -> dict:
+        if self._demo:
+            progress = build_setup_scan_data(self._client, demo=True).get("progress") or {}
+            return {
+                "ok": True,
+                "heartbeat": progress.get("heartbeat") or {},
+                "sources": progress.get("sources") or [],
+            }
+        try:
+            self._ensure_ready()
+            res = self._client.request("/api/setup/progress")
+            return {
+                "ok": True,
+                "heartbeat": res.get("heartbeat") or {},
+                "sources": res.get("sources") or [],
+            }
+        except DesktopError as exc:
+            return self._h11_error(exc)
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "code": "APP-901", "error": format_error("APP-901")}
+
+    def set_setup_consent(self, key: str, enabled: bool) -> dict:
+        if self._demo:
+            return {"ok": False, "error": "Settings changes are disabled in demo mode."}
+        clean_key = str(key or "").strip()
+        if not clean_key:
+            return {"ok": False, "error": "Choose a setting to change."}
+        try:
+            self._ensure_ready()
+            res = self._client.request(
+                "/api/setup/consent", {"switches": {clean_key: bool(enabled)}}
+            )
+            return {
+                "ok": True,
+                "consent": res.get("consent") or [],
+                "warning": res.get("warning"),
+            }
+        except DesktopError as exc:
+            return self._h11_error(exc)
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "code": "APP-901", "error": format_error("APP-901")}
+
+    def complete_onboarding(self, computer_name: str = "") -> dict:
+        if self._demo:
+            return {"ok": True, "setup": {"completed": True}}
+        body: dict = {}
+        clean_name = str(computer_name or "").strip()
+        if clean_name:
+            body["computerName"] = clean_name
+        try:
+            self._ensure_ready()
+            res = self._client.request("/api/setup/complete", body)
+            return {"ok": True, "setup": res.get("setup") or {}}
+        except DesktopError as exc:
+            return self._h11_error(exc)
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "code": "APP-901", "error": format_error("APP-901")}
+
+    def defer_onboarding(self) -> dict:
+        if self._demo:
+            return {"ok": True, "setup": {}}
+        try:
+            self._ensure_ready()
+            res = self._client.request("/api/setup/defer", {})
+            return {"ok": True, "setup": res.get("setup") or {}}
+        except DesktopError as exc:
+            return self._h11_error(exc)
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "code": "APP-901", "error": format_error("APP-901")}
+
+    def get_notification_settings(self) -> dict:
+        if self._demo:
+            from spend_app.notify import KINDS
+
+            return {
+                "ok": True,
+                "available": False,
+                "kinds": [{"key": k, "label": lbl, "on": True} for k, lbl in KINDS],
+            }
+        try:
+            self._ensure_ready()
+            res = self._client.request("/api/setup/notifications")
+            return {
+                "ok": True,
+                "available": bool(res.get("available")),
+                "kinds": res.get("kinds") or [],
+            }
+        except DesktopError as exc:
+            return self._h11_error(exc)
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "code": "APP-901", "error": format_error("APP-901")}
+
+    def set_notification_kind(self, key: str, enabled: bool) -> dict:
+        if self._demo:
+            return {"ok": False, "error": "Notification changes are disabled in demo mode."}
+        clean_key = str(key or "").strip()
+        if not clean_key:
+            return {"ok": False, "error": "Choose a notification to change."}
+        try:
+            self._ensure_ready()
+            res = self._client.request(
+                "/api/setup/notifications", {"kinds": {clean_key: bool(enabled)}}
+            )
+            self._service_alerts = None
+            kinds = res.get("kinds") or []
+            if clean_key in {"threshold", "dry"}:
+                plan_on = any(
+                    bool(item.get("on"))
+                    for item in kinds
+                    if isinstance(item, dict) and item.get("key") in {"threshold", "dry"}
+                )
+                self._low_quota_alerts = plan_on
+                self._write_preferences()
+            return {
+                "ok": True,
+                "available": bool(res.get("available")),
+                "kinds": kinds,
+                "lowQuotaAlerts": self._low_quota_alerts,
+            }
+        except DesktopError as exc:
+            return self._h11_error(exc)
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "code": "APP-901", "error": format_error("APP-901")}
+
+    def send_test_notification(self) -> dict:
+        if self._demo:
+            return {"ok": False, "error": "Test notifications are disabled in demo mode."}
+        try:
+            self._ensure_ready()
+            self._client.request("/api/setup/notifications/test", {})
+            return {"ok": True}
+        except DesktopError as exc:
+            if exc.status_code == 502 and getattr(exc, "code", None) == "HUB-501":
+                return {
+                    "ok": False,
+                    "error": "Windows did not show the test notification. Check Windows notification settings for BURNRATE.",
+                }
+            return self._h11_error(exc)
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "code": "APP-901", "error": format_error("APP-901")}
+
+    def get_diagnostics_report(self) -> dict:
+        if self._demo:
+            return {"ok": False, "error": "Diagnostics are disabled in demo mode."}
+        try:
+            self._ensure_ready()
+            res = self._client.request("/api/setup/diagnostics", {})
+            return {"ok": True, "text": str(res.get("text") or "")}
+        except DesktopError as exc:
+            return self._h11_error(exc)
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "code": "APP-901", "error": format_error("APP-901")}
+
+    def trigger_sync(self) -> dict:
+        if self._demo:
+            return {"ok": False, "error": "Sync is disabled in demo mode."}
+        try:
+            self._ensure_ready()
+            res = self._client.request("/api/sync/trigger", {})
+            sync_res = res.get("syncResult") if isinstance(res.get("syncResult"), dict) else None
+            sync_failed = res.get("ok") is False or (
+                sync_res is not None and sync_res.get("ok") is False
+            )
+            if sync_failed:
+                raw_err = str((sync_res or {}).get("error") or res.get("error") or "sync_failed")
+                code = (sync_res or {}).get("code") or (
+                    "NET-001"
+                    if raw_err == "hub_unreachable"
+                    else "AUTH-101"
+                    if raw_err == "hub_rejected"
+                    else "SYNC-201"
+                )
+                return {
+                    "ok": False,
+                    "code": code,
+                    "error": format_error(code),
+                    "rawError": raw_err,
+                    "triggeredAt": res.get("triggeredAt"),
+                    "setup": res.get("setup") or {},
+                    "machines": res.get("machines") or [],
+                    "syncResult": sync_res,
+                }
+            return {
+                "ok": True,
+                "triggeredAt": res.get("triggeredAt"),
+                "setup": res.get("setup") or {},
+                "machines": res.get("machines") or [],
+                "syncResult": sync_res,
+            }
+        except DesktopError as exc:
+            return self._h11_error(exc, fallback_code="SYNC-201")
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "code": "SYNC-201", "error": format_error("SYNC-201")}
 
 
 def _find_icon() -> Path | None:
