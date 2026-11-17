@@ -190,7 +190,7 @@ def lane_states_provider() -> dict:
     """One provider whose windows cover every pace case a lane must tell apart."""
     windows = [
         _window("5h", "5-hour window", 40.0, 3.0, pace=None),
-        _window("weekly", "Weekly window", 35.0, 60.0, pace={"state": "stale", "hoursToDry": None, "hoursDryBeforeReset": None, "runsDryAt": None}),
+        _window("weekly", "Weekly window", 35.0, 76.0, pace={"state": "stale", "hoursToDry": None, "hoursDryBeforeReset": None, "runsDryAt": None}),
         _window("monthly", "Monthly window", 0.0, 24.0, pace=None),
         _window("credits", "Safe numeric", 70.0, 10.0, pace=_pace("safe", 40.0, None)),
         _window("extra", "Out and dry", 0.0, 5.0, pace=_pace("dry", 0.0, 5.0)),
