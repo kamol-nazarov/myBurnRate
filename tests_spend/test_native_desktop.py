@@ -826,7 +826,7 @@ def test_wealthfront_merges_multi_accounts_balances_grok_and_remaining_windows(
 
     # Remaining-usage headline picks the tightest measured window
     assert providers["claude-code"]["remaining"]["kind"] == "quota"
-    assert providers["claude-code"]["remaining"]["headline"] == "75% left"
+    assert providers["claude-code"]["remaining"]["headline"] == "39% left"
     assert providers["claude-code"]["remaining"]["sub"] == "7d"
     assert providers["claude-code"]["burn"]["hasSession"] is True
     assert providers["claude-code"]["burn"]["sessionTokens"] > 0
@@ -839,7 +839,7 @@ def test_wealthfront_merges_multi_accounts_balances_grok_and_remaining_windows(
 
     # Balance providers surface live prepaid credit balances
     assert providers["openrouter"]["remaining"]["kind"] == "balance"
-    assert providers["openrouter"]["fundsRemainingUsd"] == pytest.approx(15.84)
+    assert providers["openrouter"]["fundsRemainingUsd"] == pytest.approx(23.40)
     assert providers["deepseek"]["remaining"]["kind"] == "balance"
     assert providers["deepseek"]["fundsRemainingUsd"] == pytest.approx(54.82)
 

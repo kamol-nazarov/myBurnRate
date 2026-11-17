@@ -44,6 +44,23 @@ from spend_app.native_onboarding import build_onboarding_data, build_setup_scan_
 from spend_app.native_prefs import PreferenceStore, store_for
 from spend_app.native_tray import TrayController, run_on_ui
 from spend_app.opencode_providers import provider_tool_name
+from spend_app.provider_urgency import (
+    PROFILE_FAMILIES,
+    build_funds_runway,
+    build_pace,
+    compute_urgency,
+)
+from spend_app.tab_window import (
+    SURFACE_KEY,
+    SURFACES,
+    TAB_HEIGHT,
+    TAB_PREFERENCE_KEY,
+    SurfaceController,
+    TabBridge,
+    TabHost,
+    TabModel,
+    load_tab_html,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -172,15 +189,7 @@ _SOURCE_DISPLAY_NAMES = {
     "antigravity_local": ("antigravity", "Antigravity"),
     "muse_local": ("muse", "Muse Code"),
 }
-_MULTI_PRIMARY_KEYS = (
-    "claude-code",
-    "opencode-go",
-    "zcode",
-    "codex",
-    "antigravity",
-    "grok",
-    "muse",
-)
+_MULTI_PRIMARY_KEYS = PROFILE_FAMILIES
 
 
 def _store_profile_index(connections: list[dict] | None) -> dict[str, dict]:
@@ -448,6 +457,7 @@ def merge_provider_entries(
                     "windowTokens": win_tok,
                     "forecast": forecast_line,
                     "runway": runway_line,
+                    "pace": build_pace(row.get("forecast")),
                 }
             )
 
@@ -585,36 +595,43 @@ def merge_provider_entries(
                 "summary": summary,
             }
 
-        providers.append(
-            {
-                "key": key,
-                "name": display_name,
-                "badge": badge,
-                "plan": str(card.get("plan") or ""),
-                "inUse": bool(card.get("inUse")),
-                "isPayg": bool(card.get("isPayg")),
-                "fundsRemainingUsd": float(funds_usd) if has_funds else None,
-                "organization": bool(period_entry.get("organization")),
-                "remaining": remaining,
-                "burn": {
-                    "dayTokens": day_tokens,
-                    "sessionTokens": session_tokens,
-                    "hasSession": has_session,
-                    "weekTokens": week_tokens,
-                    "weekBasis": week_basis,
-                },
-                "windows": windows,
-                "tokens": int(period_entry.get("tokens") or 0),
-                "valueUsd": period_entry.get("valueUsd"),
-                "complete": period_entry.get("complete", True),
-                "input": int(period_entry.get("input") or 0),
-                "cached": int(period_entry.get("cached") or 0),
-                "writes": int(period_entry.get("writes") or 0),
-                "output": int(period_entry.get("output") or 0),
-                "reasoning": period_entry.get("reasoning"),
-                "models": period_entry.get("models") or [],
-            }
+        is_profile_member = key in multi_primary_keys or any(
+            key.startswith(pk + "-") for pk in _MULTI_PRIMARY_KEYS
         )
+        provider = {
+            "key": key,
+            "name": display_name,
+            "badge": badge,
+            "profile": badge if is_profile_member and badge else None,
+            "plan": str(card.get("plan") or ""),
+            "inUse": bool(card.get("inUse")),
+            "isPayg": bool(card.get("isPayg")),
+            "fundsRemainingUsd": float(funds_usd) if has_funds else None,
+            "fundsRunwayInfo": build_funds_runway(card.get("fundsRunway"))
+            if has_funds
+            else None,
+            "organization": bool(period_entry.get("organization")),
+            "remaining": remaining,
+            "burn": {
+                "dayTokens": day_tokens,
+                "sessionTokens": session_tokens,
+                "hasSession": has_session,
+                "weekTokens": week_tokens,
+                "weekBasis": week_basis,
+            },
+            "windows": windows,
+            "tokens": int(period_entry.get("tokens") or 0),
+            "valueUsd": period_entry.get("valueUsd"),
+            "complete": period_entry.get("complete", True),
+            "input": int(period_entry.get("input") or 0),
+            "cached": int(period_entry.get("cached") or 0),
+            "writes": int(period_entry.get("writes") or 0),
+            "output": int(period_entry.get("output") or 0),
+            "reasoning": period_entry.get("reasoning"),
+            "models": period_entry.get("models") or [],
+        }
+        provider["urgency"] = compute_urgency(provider)
+        providers.append(provider)
 
     # Include any recorded-usage tools that do not have a quota card (e.g. Org API feeds)
     for key, tool in period_tools.items():
@@ -657,46 +674,48 @@ def merge_provider_entries(
         val_usd = tool.get("valueUsd")
         has_val = isinstance(val_usd, (int, float)) and math.isfinite(float(val_usd))
         headline = f"${float(val_usd):,.2f}" if has_val else "Tracked"
-        providers.append(
-            {
-                "key": key,
-                "name": name,
-                "badge": badge,
-                "plan": plan_label,
-                "inUse": False,
-                "isPayg": is_payg,
-                "fundsRemainingUsd": None,
-                "organization": bool(tool.get("organization")),
-                "remaining": {
-                    "kind": "usage_only",
-                    "headline": headline,
-                    "sub": "API value" if has_val else "usage only",
-                    "barPct": 100.0 if day_tok is not None and day_tok > 0 else 0.0,
-                    "tone": "muted",
-                    "resetsAt": None,
-                    "summary": "Organization API feed"
-                    if tool.get("organization")
-                    else f"{len(tool.get('models') or [])} models recorded",
-                },
-                "burn": {
-                    "dayTokens": day_tok,
-                    "sessionTokens": None,
-                    "hasSession": False,
-                    "weekTokens": week_tok,
-                    "weekBasis": "rolling" if week_tok is not None else None,
-                },
-                "windows": [],
-                "tokens": int(tool.get("tokens") or 0),
-                "valueUsd": val_usd,
-                "complete": tool.get("complete", True),
-                "input": int(tool.get("input") or 0),
-                "cached": int(tool.get("cached") or 0),
-                "writes": int(tool.get("writes") or 0),
-                "output": int(tool.get("output") or 0),
-                "reasoning": tool.get("reasoning"),
-                "models": tool.get("models") or [],
-            }
-        )
+        provider = {
+            "key": key,
+            "name": name,
+            "badge": badge,
+            "profile": badge if is_extra_profile and badge else None,
+            "plan": plan_label,
+            "inUse": False,
+            "isPayg": is_payg,
+            "fundsRemainingUsd": None,
+            "fundsRunwayInfo": None,
+            "organization": bool(tool.get("organization")),
+            "remaining": {
+                "kind": "usage_only",
+                "headline": headline,
+                "sub": "API value" if has_val else "usage only",
+                "barPct": 100.0 if day_tok is not None and day_tok > 0 else 0.0,
+                "tone": "muted",
+                "resetsAt": None,
+                "summary": "Organization API feed"
+                if tool.get("organization")
+                else f"{len(tool.get('models') or [])} models recorded",
+            },
+            "burn": {
+                "dayTokens": day_tok,
+                "sessionTokens": None,
+                "hasSession": False,
+                "weekTokens": week_tok,
+                "weekBasis": "rolling" if week_tok is not None else None,
+            },
+            "windows": [],
+            "tokens": int(tool.get("tokens") or 0),
+            "valueUsd": val_usd,
+            "complete": tool.get("complete", True),
+            "input": int(tool.get("input") or 0),
+            "cached": int(tool.get("cached") or 0),
+            "writes": int(tool.get("writes") or 0),
+            "output": int(tool.get("output") or 0),
+            "reasoning": tool.get("reasoning"),
+            "models": tool.get("models") or [],
+        }
+        provider["urgency"] = compute_urgency(provider)
+        providers.append(provider)
 
     order_list = [
         str(k) for k in (provider_order or []) if isinstance(k, str) and k.strip()
@@ -772,6 +791,9 @@ THEME_CHOICES = ("system", "light", "dark")
 THEME_ATTRIBUTE = 'data-theme-pref="system"'
 SERVICE_ALERT_RECHECK_SECONDS = 300.0
 TRAY_HINT_KEY = "trayHintShown"
+TAB_WINDOW_TITLE = "BURNRATE tab"
+TAB_LIGHT_BACKGROUND = "#FFFFFF"
+TAB_DARK_BACKGROUND = "#18172B"
 HOST_PAGE_METHODS = frozenset({"refresh", "openSettings", "notify", "setUpdate"})
 LIGHT_BACKGROUND = "#F5F6FA"
 DARK_BACKGROUND = "#101117"
@@ -818,6 +840,19 @@ def apply_theme_pref(html: str, theme_pref: str) -> str:
     return html.replace(THEME_ATTRIBUTE, f'data-theme-pref="{pref}"', 1)
 
 
+def embedded_font_css() -> str:
+    """The offline Manrope variable font as an ``@font-face`` rule ("" if absent)."""
+    font_path = Path(__file__).parent / "fonts" / "manrope-latin.woff2"
+    if not font_path.is_file():
+        return ""
+    b64 = base64.b64encode(font_path.read_bytes()).decode("ascii")
+    return (
+        '@font-face{font-family:"Manrope";font-style:normal;'
+        "font-weight:200 800;font-display:block;"
+        f'src:url("data:font/woff2;base64,{b64}") format("woff2");}}'
+    )
+
+
 def load_ui_html(theme_pref: str = "system") -> str:
     """Load wealthfront_ui.html with offline Manrope variable font embedded.
 
@@ -828,16 +863,7 @@ def load_ui_html(theme_pref: str = "system") -> str:
     html_path = Path(__file__).with_name("wealthfront_ui.html")
     html = html_path.read_text(encoding="utf-8")
     html = apply_theme_pref(html, theme_pref)
-    font_path = Path(__file__).parent / "fonts" / "manrope-latin.woff2"
-    if font_path.is_file():
-        b64 = base64.b64encode(font_path.read_bytes()).decode("ascii")
-        font_css = (
-            '@font-face{font-family:"Manrope";font-style:normal;'
-            "font-weight:200 800;font-display:block;"
-            f'src:url("data:font/woff2;base64,{b64}") format("woff2");}}'
-        )
-        html = html.replace("/*__EMBEDDED_FONTS__*/", font_css, 1)
-    return html
+    return html.replace("/*__EMBEDDED_FONTS__*/", embedded_font_css(), 1)
 
 
 def _set_theme_chrome(hwnd: int, dark: bool) -> None:
@@ -1144,8 +1170,15 @@ class DesktopBridge:
         self._close_to_tray = bool(saved.get("closeToTray", True))
         self._low_quota_alerts = bool(saved.get("lowQuotaAlerts", True))
         self._analytics_window = normalize_analytics_window(saved.get("analyticsWindow") or self._period)
-        # H10 ops/hud
-        self._hud_mini = bool(saved.get("hudMini", False))
+        # Which window was last up. The old in-page mini bar becomes the tab.
+        surface = str(saved.get(SURFACE_KEY) or "").strip().lower()
+        if surface not in SURFACES:
+            surface = "tab" if saved.get("hudMini") else "full"
+        self._surface = surface
+        if "hudMini" in saved:
+            self._prefs.update({SURFACE_KEY: surface, "hudMini": None})
+        self._tab_model = TabModel()
+        self._surfaces: SurfaceController | None = None
         raw_density = str(saved.get("hudDensity") or "compact").strip().lower()
         self._hud_density = raw_density if raw_density in {"compact", "comfortable"} else "compact"
         if not self._demo:
@@ -1157,6 +1190,26 @@ class DesktopBridge:
 
     def attach_host(self, host: WindowHost) -> None:
         self._host = host
+
+    def attach_surfaces(self, surfaces: SurfaceController) -> None:
+        self._surfaces = surfaces
+
+    @property
+    def surface(self) -> str:
+        return self._surface
+
+    @property
+    def effective_dark(self) -> bool | None:
+        return self._effective_dark
+
+    @property
+    def current_period(self) -> str:
+        return self._period
+
+    def _remember_surface(self, surface: str) -> None:
+        if surface in SURFACES and surface != self._surface:
+            self._surface = surface
+            self._prefs.update({SURFACE_KEY: surface})
 
     def opacity_state(self) -> tuple[bool, float, bool]:
         # Pinning controls z-order; fading is an independent preference.
@@ -1198,7 +1251,8 @@ class DesktopBridge:
                 "closeToTray": self._close_to_tray,
                 "lowQuotaAlerts": self._low_quota_alerts,
                 "analyticsWindow": self._analytics_window,
-                "hudMini": self._hud_mini,
+                "hudMini": None,
+                SURFACE_KEY: self._surface,
                 "hudDensity": self._hud_density,
             }
         )
@@ -1218,7 +1272,8 @@ class DesktopBridge:
             "trayAvailable": self._tray_available,
             "version": __version__,
             "update": self.update_summary(),
-            "hudMini": self._hud_mini,
+            "hudMini": False,
+            "surface": self._surface,
             "hudDensity": self._hud_density,
         }
 
@@ -1237,6 +1292,7 @@ class DesktopBridge:
         self._effective_dark = bool(dark)
         if self._host is not None:
             self._host.apply_theme(self._effective_dark)
+        self._tab_model.refresh()
         return {"ok": True}
 
     # -- tray / lifecycle --------------------------------------------------
@@ -1612,11 +1668,15 @@ class DesktopBridge:
                 )
                 if isinstance(today_total, dict):
                     report["todayTotal"] = today_total
+            self._tab_model.publish_report(report)
             return {"ok": True, "report": report}
         except DesktopError as exc:
-            return {"ok": False, "error": str(exc)}
+            self._tab_model.publish_error(str(exc), exc.code)
+            return {"ok": False, "error": str(exc), "code": exc.code}
         except (OSError, RuntimeError, ValueError, KeyError, TypeError):
-            return {"ok": False, "error": "Could not refresh usage. Retry shortly."}
+            message = "Could not refresh usage. Retry shortly."
+            self._tab_model.publish_error(message, None)
+            return {"ok": False, "error": message}
 
 
     # H9 analytics
@@ -3280,6 +3340,14 @@ class DesktopBridge:
         if self._window is not None:
             self._window.minimize()
 
+    def show_tab(self) -> dict:
+        """Shrink to the tab: hide this window and show the always-on-top tab."""
+        if self._surfaces is None:
+            self.minimize_window()
+            return {"ok": False, "fallback": "minimize"}
+        self._surfaces.show_tab()
+        return {"ok": True}
+
     def close_window(self) -> dict:
         """The X button: hide to the tray when allowed, otherwise quit."""
         if self._host is not None:
@@ -3550,9 +3618,8 @@ class DesktopBridge:
     # H10 ops/hud
 
     def set_hud_mini(self, enabled: bool) -> dict:
-        self._hud_mini = bool(enabled)
-        self._write_preferences()
-        return {"ok": True, "hudMini": self._hud_mini}
+        """Retired with the in-page mini bar; kept so a stale page never throws."""
+        return {"ok": True, "hudMini": False}
 
     def set_hud_density(self, density: str) -> dict:
         val = str(density or "").strip().lower()
@@ -4007,6 +4074,9 @@ def _focus_existing_window(title: str) -> bool:
         user32 = ctypes.windll.user32
         hwnd = user32.FindWindowW(None, title)
         if hwnd:
+            tab_hwnd = user32.FindWindowW(None, TAB_WINDOW_TITLE)
+            if tab_hwnd:
+                user32.ShowWindow(tab_hwnd, 0)  # SW_HIDE: the full window takes over
             if not user32.IsWindowVisible(hwnd):
                 user32.ShowWindow(hwnd, 5)  # SW_SHOW: it was hidden to the tray
             if user32.IsIconic(hwnd):
@@ -4058,6 +4128,8 @@ class WindowHost:
         self._store = store
         self._icon_path = icon_path
         self._quit_lock = threading.Lock()
+        #: Set by ``run_webview`` once the tab window exists.
+        self.surfaces: SurfaceController | None = None
 
     # -- state -------------------------------------------------------------
 
@@ -4113,8 +4185,21 @@ class WindowHost:
         except Exception:
             LOGGER.debug("Hide skipped", exc_info=True)
 
+    def open_full(self) -> None:
+        """Bring up the full window, putting the tab away."""
+        if self.surfaces is not None:
+            self.surfaces.show_full()
+        else:
+            self.show()
+
+    def show_tab(self) -> None:
+        if self.surfaces is not None:
+            self.surfaces.show_tab()
+
     def toggle(self) -> None:
-        if self.is_visible():
+        if self.surfaces is not None:
+            self.surfaces.toggle()
+        elif self.is_visible():
             self.hide()
         else:
             self.show()
@@ -4156,6 +4241,8 @@ class WindowHost:
     def _finish_quit(self) -> None:
         self.tracker.flush()
         self._stop_workers()
+        if self.surfaces is not None:
+            self.surfaces.tab.destroy()
         try:
             self.window.destroy()
         except Exception:
@@ -4163,6 +4250,9 @@ class WindowHost:
 
     def _stop_workers(self) -> None:
         self.tracker.disable()
+        if self.surfaces is not None:
+            self.surfaces.tab.tracker.flush()
+            self.surfaces.tab.tracker.disable()
         self.opacity.stop()
         if self.watcher is not None:
             self.watcher.stop()
@@ -4182,7 +4272,7 @@ class WindowHost:
         self.bridge.call_page("refresh")
 
     def open_settings(self, tab: str | None = None) -> None:
-        self.show()
+        self.open_full()
         self.bridge.call_page("openSettings", tab)
 
     def apply_theme(self, dark: bool) -> None:
@@ -4225,6 +4315,11 @@ class WindowHost:
                 self._plan = plan
             except Exception:
                 LOGGER.warning("Could not restore the window position", exc_info=True)
+        if self._plan is None:
+            try:
+                native_geometry.apply_default_size(native)
+            except Exception:
+                LOGGER.debug("Could not set the default window size", exc_info=True)
         if self._tray_enabled:
             self._create_tray(native)
         self._install_form_hooks(native)
@@ -4235,7 +4330,8 @@ class WindowHost:
             native,
             self._icon_path,
             on_toggle=self.toggle,
-            on_show=self.show,
+            on_show=self.open_full,
+            on_tab=self.show_tab,
             on_refresh=self.refresh_page,
             on_settings=self.open_settings,
             on_quit=self.quit,
@@ -4388,7 +4484,29 @@ def run_webview(
         frameless=True,
         easy_drag=False,
         on_top=bridge._topmost,
+        hidden=bridge.surface == "tab" and not smoke_test,
         background_color=background_for(resolve_dark(bridge.theme)),
+    )
+    # The tab: a second frameless, always-on-top window, created hidden and
+    # shown only by "Shrink to tab" (or a launch that remembers the tab).
+    tab_bridge = TabBridge(bridge, bridge._tab_model)
+    tab_window_obj = webview.create_window(
+        TAB_WINDOW_TITLE,
+        html=load_tab_html(bridge.theme),
+        js_api=tab_bridge,
+        width=360,
+        height=TAB_HEIGHT,
+        min_size=(120, 40),
+        resizable=False,
+        frameless=True,
+        easy_drag=False,
+        on_top=True,
+        hidden=True,
+        # No DWM frame: the tab cuts its own rounded shape with a window region.
+        shadow=False,
+        background_color=TAB_DARK_BACKGROUND
+        if resolve_dark(bridge.theme)
+        else TAB_LIGHT_BACKGROUND,
     )
 
     hwnd_box = [0]
@@ -4414,12 +4532,43 @@ def run_webview(
         icon_path=_find_icon(),
     )
     bridge.attach_host(host)
+    tab_host = TabHost(
+        tab_window_obj,
+        store=store,
+        icon_path=_find_icon(),
+        persist=persist,
+    )
+    surfaces = SurfaceController(host, tab_host, bridge, store)
+    host.surfaces = surfaces
+    bridge.attach_surfaces(surfaces)
+    tab_bridge.attach_controller(surfaces)
+    saved_tab = store.read().get(TAB_PREFERENCE_KEY) if persist else None
+
+    def push_tab() -> None:
+        payload = tab_bridge.build_payload()
+        tab_host.set_base(payload["layout"]["width"])
+        tab_host.push(payload)
+
+    bridge._tab_model.subscribe(push_tab)
     result = [0]
 
     def on_shown():
         host.on_shown()
         if not smoke_test:
             opacity_ctl.start()
+            # Off the event thread: showing the tab waits for its own page.
+            threading.Thread(
+                target=surfaces.restore_on_launch, name="burnrate-surface", daemon=True
+            ).start()
+
+    def on_tab_before_show():
+        tab_host.on_before_show(
+            on_close_request=surfaces.close_tab, dark=resolve_dark(bridge.theme)
+        )
+        tab_host.restore_position(saved_tab)
+
+    def on_tab_moved(*_position):
+        tab_host.tracker.notify_changed()
 
     def on_moved(*_position):
         tracker.notify_changed()
@@ -4466,7 +4615,15 @@ def run_webview(
                 time.sleep(0.15)
             if ok:
                 try:
-                    window.resize(336, 440)
+                    # The second window must exist and have loaded its page.
+                    ok = len(webview.windows) == 2 and bool(
+                        tab_window_obj.evaluate_js("!!document.getElementById('tab')")
+                    )
+                except (OSError, AttributeError, RuntimeError, ValueError):
+                    ok = False
+            if ok:
+                try:
+                    window.resize(*native_geometry.MIN_SIZE)
                     time.sleep(0.15)
                     count_after = window.evaluate_js(
                         "document.querySelectorAll('#providerList .provider-item').length"
@@ -4476,11 +4633,14 @@ def run_webview(
                     ok = False
             result[0] = 0 if ok else 1
             host.quitting = True  # a direct destroy must never be cancelled
+            tab_host.destroy()
             window.destroy()
 
         threading.Thread(target=verify, daemon=True).start()
 
     window.events.before_show += host.on_before_show
+    tab_window_obj.events.before_show += on_tab_before_show
+    tab_window_obj.events.moved += on_tab_moved
     window.events.shown += on_shown
     window.events.loaded += on_loaded
     window.events.closed += on_closed

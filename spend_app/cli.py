@@ -49,7 +49,7 @@ _RUNTIME_IMPORTS = (
     "tzdata",
     "starlette",
 )
-_DESKTOP_ASSETS = ("wealthfront_ui.html",)
+_DESKTOP_ASSETS = ("wealthfront_ui.html", "tab_ui.html")
 
 
 def _decimal_or_none(value: object):
