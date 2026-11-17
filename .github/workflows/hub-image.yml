@@ -1,12 +1,18 @@
 name: Hub image
 
 # Publishes the hub container (Dockerfile) to GitHub Container Registry for
-# every version tag, for x86-64 and ARM servers, with build provenance.
+# every release candidate dispatch (<version>-rc.<run_number>) and promotes the
+# pinned digest to :<version> / :latest on version tags, with build provenance.
 
 "on":
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version matching spend_app.__version__ (e.g. 0.5.9)"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -28,6 +34,68 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
+      - id: release_ref
+        name: Validate release version and compose pin
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          init_text = Path("spend_app/__init__.py").read_text(encoding="utf-8")
+          match = re.search(r'^__version__\s*=\s*"([^"]+)"', init_text, re.MULTILINE)
+          if not match:
+              raise SystemExit("Could not read __version__ from spend_app/__init__.py")
+          app_version = match.group(1)
+
+          event = os.environ["EVENT_NAME"]
+          if event == "workflow_dispatch":
+              ver = os.environ.get("INPUT_VERSION", "").strip()
+              if ver != app_version:
+                  raise SystemExit(
+                      f"workflow_dispatch input version {ver!r} does not match "
+                      f"spend_app.__version__ {app_version!r}"
+                  )
+              candidate_tag = f"{ver}-rc.{os.environ['RUN_NUMBER']}"
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+                  fh.write(f"version={ver}\n")
+                  fh.write(f"candidate_tag={candidate_tag}\n")
+          elif event == "push":
+              ref_name = os.environ.get("GITHUB_REF_NAME", "")
+              if not ref_name.startswith("v"):
+                  raise SystemExit(f"Unexpected tag ref: {ref_name!r}")
+              ver = ref_name[1:]
+              if ver != app_version:
+                  raise SystemExit(
+                      f"Tag version {ver!r} does not match spend_app.__version__ {app_version!r}"
+                  )
+              compose_text = Path("deploy/hub/compose.yaml").read_text(encoding="utf-8")
+              pattern = rf"myburnrate-hub:{re.escape(ver)}-rc\.(\d+)@(sha256:[0-9a-f]{{64}})"
+              pins = re.findall(pattern, compose_text)
+              if not pins:
+                  raise SystemExit(
+                      f"deploy/hub/compose.yaml must pin myburnrate-hub:{ver}-rc.<N>@sha256:<digest> before tagging"
+                  )
+              unique_pins = set(pins)
+              if len(unique_pins) != 1:
+                  raise SystemExit(
+                      f"Inconsistent myburnrate-hub pins in deploy/hub/compose.yaml: {sorted(unique_pins)}"
+                  )
+              rc_num, digest = pins[0]
+              candidate_tag = f"{ver}-rc.{rc_num}"
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+                  fh.write(f"version={ver}\n")
+                  fh.write(f"candidate_tag={candidate_tag}\n")
+                  fh.write(f"pinned_digest={digest}\n")
+          else:
+              raise SystemExit(f"Unsupported event: {event}")
+          PY
       - name: Security regressions before image publication
         run: |
           python -m pip install --require-hashes -r requirements-dev.txt
@@ -41,14 +109,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: meta
+        if: github.event_name == 'workflow_dispatch'
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ${{ env.IMAGE }}
           tags: |
-            type=semver,pattern={{version}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=sha,enable=${{ !startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=${{ steps.release_ref.outputs.candidate_tag }}
       - id: push
+        if: github.event_name == 'workflow_dispatch'
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
@@ -56,8 +124,51 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+      - name: Print candidate digest
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          echo "Published candidate image: ${{ env.IMAGE }}:${{ steps.release_ref.outputs.candidate_tag }}"
+          echo "Candidate digest: ${{ steps.push.outputs.digest }}"
+          echo "Pin in deploy/hub/compose.yaml as: ${{ steps.release_ref.outputs.candidate_tag }}@${{ steps.push.outputs.digest }}"
+      - id: retag
+        if: github.event_name == 'push'
+        name: Re-tag candidate digest and verify
+        shell: bash
+        env:
+          VERSION: ${{ steps.release_ref.outputs.version }}
+          CANDIDATE_TAG: ${{ steps.release_ref.outputs.candidate_tag }}
+          PINNED_DIGEST: ${{ steps.release_ref.outputs.pinned_digest }}
+        run: |
+          set -euo pipefail
+          CANDIDATE_DIGEST="$(docker buildx imagetools inspect "${IMAGE}:${CANDIDATE_TAG}" --format '{{.Manifest.Digest}}')"
+          if [ "${CANDIDATE_DIGEST}" != "${PINNED_DIGEST}" ]; then
+            echo "Candidate ${IMAGE}:${CANDIDATE_TAG} digest ${CANDIDATE_DIGEST} does not match compose pin ${PINNED_DIGEST}" >&2
+            exit 1
+          fi
+          docker buildx imagetools create \
+            --tag "${IMAGE}:${VERSION}" \
+            --tag "${IMAGE}:latest" \
+            "${IMAGE}@${PINNED_DIGEST}"
+          RELEASE_DIGEST="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{.Manifest.Digest}}')"
+          if [ "${RELEASE_DIGEST}" != "${PINNED_DIGEST}" ]; then
+            echo "Re-tagged ${IMAGE}:${VERSION} digest ${RELEASE_DIGEST} does not match pinned digest ${PINNED_DIGEST}" >&2
+            exit 1
+          fi
+          echo "Verified ${IMAGE}:${VERSION} matches pinned digest ${RELEASE_DIGEST}"
+          echo "digest=${RELEASE_DIGEST}" >> "${GITHUB_OUTPUT}"
+      - id: resolve_digest
+        name: Resolve published digest
+        shell: bash
+        env:
+          PUSH_DIGEST: ${{ steps.push.outputs.digest }}
+          RETAG_DIGEST: ${{ steps.retag.outputs.digest }}
+        run: |
+          DIGEST="${PUSH_DIGEST:-${RETAG_DIGEST}}"
+          test -n "${DIGEST}"
+          echo "digest=${DIGEST}" >> "${GITHUB_OUTPUT}"
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-name: ${{ env.IMAGE }}
-          subject-digest: ${{ steps.push.outputs.digest }}
+          subject-digest: ${{ steps.resolve_digest.outputs.digest }}
           push-to-registry: true
