@@ -312,6 +312,24 @@ def _global_key(database_path: Path | None) -> str:
     return f"{database_path or ''}|global"
 
 
+def _account_throttle_keys(
+    request: Request,
+    database_path: Path,
+    rec: dict,
+    matched_key: str | None = None,
+) -> list[str]:
+    names: list[str] = []
+    seen_names: set[str] = set()
+    for candidate in (matched_key, rec.get("username"), rec.get("email")):
+        cleaned = str(candidate or "").strip().lower()
+        if cleaned and cleaned not in seen_names:
+            seen_names.add(cleaned)
+            names.append(cleaned)
+    if not names:
+        names.append("")
+    return [_client_key(request, name, database_path) for name in names]
+
+
 def _throttled(retry_after: int) -> JSONResponse:
     return error_response("AUTH-102", status_code=429, retry_after=retry_after)
 
@@ -1529,6 +1547,10 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 return error_response("APP-901", status_code=422)
             current_password = str(body.get("currentPassword") or "")
             new_password = str(body.get("newPassword") or "")
+            global_key = _global_key(settings.database_path)
+            retry = _GLOBAL_THROTTLE.retry_after(global_key)
+            if retry:
+                return _throttled(retry)
 
             def _change_pw_tx():
                 from spend_app.auth_model import audit
@@ -1538,18 +1560,30 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     connection.execute("BEGIN IMMEDIATE")
                     accounts = _read_accounts(connection)
                     users = accounts["users"]
-                    rec = next(
-                        (u for u in users.values() if isinstance(u, dict) and u.get("id") == actor.id),
-                        None,
-                    )
+                    matched_key = None
+                    rec = None
+                    for k, u in users.items():
+                        if isinstance(u, dict) and u.get("id") == actor.id:
+                            matched_key, rec = k, u
+                            break
                     if rec is None:
-                        rec = next(
-                            (u for u in users.values() if isinstance(u, dict) and u.get("role", "owner") == "owner"),
-                            None,
-                        )
+                        for k, u in users.items():
+                            if isinstance(u, dict) and u.get("role", "owner") == "owner":
+                                matched_key, rec = k, u
+                                break
                     if not isinstance(rec, dict):
                         return error_response("AUTH-104", status_code=401), False
                     rec.setdefault("id", secrets.token_hex(16))
+                    account_keys = _account_throttle_keys(
+                        request, settings.database_path, rec, matched_key
+                    )
+                    retry_after = max(
+                        [_GLOBAL_THROTTLE.retry_after(global_key)]
+                        + [auth_throttle.retry_after(k) for k in account_keys]
+                    )
+                    if retry_after:
+                        audit(connection, actor, "account.password_change", rec["id"], "failure")
+                        return _throttled(retry_after), True
                     iterations = _account_iterations(rec)
                     if not current_password or not _verify_password(
                         current_password,
@@ -1559,8 +1593,15 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     ):
                         if not current_password:
                             _verify_password("invalid", "00" * 16, "00" * 32, PBKDF2_ITERATIONS)
+                        global_retry = _GLOBAL_THROTTLE.fail(global_key)
+                        key_retries = [auth_throttle.fail(k) for k in account_keys]
                         audit(connection, actor, "account.password_change", rec["id"], "failure")
+                        fail_retry = max([global_retry, *key_retries], default=0)
+                        if fail_retry:
+                            return _throttled(fail_retry), True
                         return error_response("AUTH-101", status_code=401), True
+                    for k in account_keys:
+                        auth_throttle.succeed(k)
                     if len(new_password) < MIN_PASSWORD_LENGTH:
                         audit(connection, actor, "account.password_change", rec["id"], "failure")
                         return error_response("AUTH-105", status_code=422), True
@@ -1619,6 +1660,10 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             password = str(body.get("password") or "")
             if email is None:
                 return error_response("AUTH-106", status_code=422)
+            global_key = _global_key(settings.database_path)
+            retry = _GLOBAL_THROTTLE.retry_after(global_key)
+            if retry:
+                return _throttled(retry)
 
             def _set_email_tx():
                 from spend_app.auth_model import audit
@@ -1642,6 +1687,16 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     if not isinstance(rec, dict) or matched_key is None:
                         return error_response("AUTH-104", status_code=401), False
                     rec.setdefault("id", secrets.token_hex(16))
+                    account_keys = _account_throttle_keys(
+                        request, settings.database_path, rec, matched_key
+                    )
+                    retry_after = max(
+                        [_GLOBAL_THROTTLE.retry_after(global_key)]
+                        + [auth_throttle.retry_after(k) for k in account_keys]
+                    )
+                    if retry_after:
+                        audit(connection, actor, "account.email_set", rec["id"], "failure")
+                        return _throttled(retry_after), True
                     iterations = _account_iterations(rec)
                     if not password or not _verify_password(
                         password,
@@ -1651,8 +1706,15 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     ):
                         if not password:
                             _verify_password("invalid", "00" * 16, "00" * 32, PBKDF2_ITERATIONS)
+                        global_retry = _GLOBAL_THROTTLE.fail(global_key)
+                        key_retries = [auth_throttle.fail(k) for k in account_keys]
                         audit(connection, actor, "account.email_set", rec["id"], "failure")
+                        fail_retry = max([global_retry, *key_retries], default=0)
+                        if fail_retry:
+                            return _throttled(fail_retry), True
                         return error_response("AUTH-101", status_code=401), True
+                    for k in account_keys:
+                        auth_throttle.succeed(k)
                     conflict = users.get(email)
                     if isinstance(conflict, dict) and conflict.get("id") != rec["id"]:
                         audit(connection, actor, "account.email_set", rec["id"], "failure")
@@ -2179,8 +2241,6 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             password = str(body.get("password") or "")
             if email is None:
                 return error_response("AUTH-106", status_code=422)
-            if not password:
-                return error_response("AUTH-101", status_code=401)
             with connect(settings.database_path) as connection:
                 state = read_setup_state(connection)
             spoke = state.get("spokeConfig") or {}

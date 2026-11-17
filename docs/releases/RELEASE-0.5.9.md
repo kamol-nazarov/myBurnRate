@@ -60,17 +60,22 @@ moved into the app.
 
 ## Upgrading from 0.5.8
 
-1. **Computers already paired keep syncing.** Their machine tokens are
+1. **Retire the old Tauri HUD and stop any old background service.** The
+   0.5.9 installer leaves the old Tauri HUD installation in place: quit the old
+   Tauri HUD from the system tray and uninstall it from Windows **Settings →
+   Apps → Apps & features**. Also stop any running older BURNRATE background
+   service before starting 0.5.9 so the new protocol-v2 service can take over.
+2. **Computers already paired keep syncing.** Their machine tokens are
    unchanged and nobody has to sign in again. An older account whose name isn't
    an email keeps working; the app asks once for an email.
-2. **Keep the hub on your tailnet and create the account right after
+3. **Keep the hub on your tailnet and create the account right after
    deploying.** First registration needs no setup token, so anyone who can reach
    a brand-new hub can claim it. See [self-hosting](../self-hosting.md).
-3. **Hub environment.** Delete `BURNRATE_SETUP_TOKEN` and
+4. **Hub environment.** Delete `BURNRATE_SETUP_TOKEN` and
    `BURNRATE_ALLOW_REGISTRATION`; they are ignored. Behind Caddy or another
    proxy, set `BURNRATE_TRUSTED_PROXIES`.
-4. **Pairing codes are gone.** Startup drops the unused `pairing_grants` table.
-5. **Browser links stop working.** `/`, `/hud`, `/setup` and `/auth` now return
+5. **Pairing codes are gone.** Startup drops the unused `pairing_grants` table.
+6. **Browser links stop working.** `/`, `/hud`, `/setup` and `/auth` now return
    `404`. Use the desktop app, or `burnrate desktop --demo` for sample data.
 
 ## Removed

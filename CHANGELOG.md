@@ -118,6 +118,10 @@ This project is licensed under Apache-2.0.
 
 ### Upgrade notes
 
+- **Retire the old Tauri HUD and stop any old background service.** The 0.5.9 installer leaves the
+  old Tauri HUD installation in place: quit the old Tauri HUD from the system tray and uninstall it
+  from Windows **Apps & features**. Also stop any running older BURNRATE background service before
+  starting 0.5.9 so the new protocol-v2 service can take over cleanly.
 - **Already-paired computers keep syncing.** Their machine tokens and sync cursors are unchanged,
   with no need to sign in again. An older hub account whose name isn't an email address keeps
   working, and the desktop app asks you once to add an email.

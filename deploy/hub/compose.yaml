@@ -14,12 +14,25 @@
 #   docker compose up -d
 
 services:
+  # Refuse to publish ports on empty, wildcard (0.0.0.0 / ::), public, or
+  # hostname targets unless BURNRATE_HUB_ALLOW_PUBLIC=1 is explicitly set.
+  publish-check:
+    image: ${BURNRATE_HUB_IMAGE:-ghcr.io/kamol-nazarov/myburnrate-hub:0.5.9}
+    restart: "no"
+    environment:
+      BURNRATE_TAILNET_IP: ${BURNRATE_TAILNET_IP:?Set BURNRATE_TAILNET_IP to this machine's Tailscale IP (e.g. 100.x.y.z)}
+      BURNRATE_HUB_ALLOW_PUBLIC: ${BURNRATE_HUB_ALLOW_PUBLIC:-0}
+    command: ["sh", "-c", "exec python -m spend_app.exposure check-publish \"$BURNRATE_TAILNET_IP\""]
+
   hub:
-    # Pinned by digest so a mutable tag cannot change under an existing
-    # deployment. To upgrade, set BURNRATE_HUB_IMAGE to the new
-    # "tag@sha256:..." published with the release.
-    image: ${BURNRATE_HUB_IMAGE:-ghcr.io/kamol-nazarov/myburnrate-hub:0.5.7@sha256:6730bf72297da0d1facc7eaca3ee0487e5f228f0cb0156d62d0f3f9769cff083}
+    # Unreleased builds reference the 0.5.9 tag; before tagging/dating the
+    # release, pin this to "0.5.9@sha256:..." once published. To upgrade later,
+    # set BURNRATE_HUB_IMAGE to the new "tag@sha256:..." published with the release.
+    image: ${BURNRATE_HUB_IMAGE:-ghcr.io/kamol-nazarov/myburnrate-hub:0.5.9}
     restart: unless-stopped
+    depends_on:
+      publish-check:
+        condition: service_completed_successfully
     environment:
       BURNRATE_CENTRAL_SERVER: "1"
       BURNRATE_SUMMARY_PREWARM: "0"
@@ -45,7 +58,10 @@ services:
     restart: unless-stopped
     network_mode: "service:hub"
     depends_on:
-      - hub
+      publish-check:
+        condition: service_completed_successfully
+      hub:
+        condition: service_started
     environment:
       BURNRATE_DOMAIN: ${BURNRATE_DOMAIN:?Set BURNRATE_DOMAIN to the hub's tailnet name}
     volumes:
