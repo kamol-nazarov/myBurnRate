@@ -21,6 +21,7 @@ from spend_app.adapters.traycer_local import ingest as ingest_traycer_local
 from spend_app.config import Settings, load_settings
 from spend_app.db import initialize
 from spend_app.db import connect
+from spend_app.exposure import trusted_proxies, validate_bind_host
 from spend_app.pricing import PricingEngine
 from spend_app.subscriptions import add_subscription, materialize_subscription_days
 
@@ -86,12 +87,7 @@ def _local_path(source: str, session_glob: str | None, settings: Settings) -> st
 
 
 def require_loopback_host(host: str) -> str:
-    normalized = host.strip().lower()
-    if normalized in _WILDCARD_HOSTS or normalized not in _LOOPBACK_HOSTS:
-        raise ValueError(
-            f"refusing to bind {host!r}; BURNRATE listens on {DEFAULT_SERVE_HOST} only"
-        )
-    return host
+    return validate_bind_host(host, central=False)
 
 
 def _display_path(path: Path) -> str:
@@ -204,7 +200,7 @@ def _check_web_assets() -> dict[str, str]:
 
 def _check_bind() -> dict[str, str]:
     try:
-        require_loopback_host(DEFAULT_SERVE_HOST)
+        validate_bind_host(DEFAULT_SERVE_HOST)
     except ValueError as exc:
         return {"id": "bind", "status": "fail", "detail": str(exc)}
     return {
@@ -251,14 +247,22 @@ def _resolve_sync_token(token: str | None, token_file: str | None) -> str:
 
 def _cmd_serve(host: str, port: int) -> int:
     try:
-        host = require_loopback_host(host)
+        host = validate_bind_host(host)
+        proxies = trusted_proxies()
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
     import uvicorn
 
     print(f"BURNRATE listening on http://{host}:{port}/", flush=True)
-    uvicorn.run("spend_app.api:app", host=host, port=port, log_level="info")
+    uvicorn.run(
+        "spend_app.api:app",
+        host=host,
+        port=port,
+        log_level="info",
+        proxy_headers=bool(proxies),
+        forwarded_allow_ips=list(proxies) if proxies else None,
+    )
     return 0
 
 
@@ -283,7 +287,7 @@ def _main() -> int:
         help="Check Python, timezone data, existing database, pricing, web assets, and localhost bind",
     )
     serve = subparsers.add_parser("serve", help="Run the dashboard on 127.0.0.1")
-    serve.add_argument("--host", default=DEFAULT_SERVE_HOST)
+    serve.add_argument("--host", default=os.environ.get("BURNRATE_HOST") or DEFAULT_SERVE_HOST)
     serve.add_argument("--port", default=DEFAULT_SERVE_PORT, type=int)
     backfill = subparsers.add_parser(
         "backfill",

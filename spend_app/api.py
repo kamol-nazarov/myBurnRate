@@ -182,6 +182,9 @@ def create_app(
     now: datetime | None = None,
 ) -> FastAPI:
     settings = settings or load_settings()
+    from spend_app.exposure import TrustedProxyHeadersMiddleware, trusted_proxies
+
+    trusted_proxies()
     initialize(settings.database_path)
     from spend_app.db import connect
     from spend_app.setup_wizard import deprecated_account_env_warnings
@@ -957,6 +960,7 @@ def create_app(
             headers={"Cache-Control": _asset_cache_header(request, path)},
         )
 
+    app.add_middleware(TrustedProxyHeadersMiddleware)
     return app
 
 
