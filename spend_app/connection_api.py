@@ -102,13 +102,15 @@ def access_allowed(
         central = central_server()
     method = getattr(request, "method", "GET")
     if principal.kind == "machine":
-        if request.url.path in {"/api/sync/push", "/api/auth/machine/rotate"}:
+        if request.url.path in {"/api/sync/push", "/api/auth/machine/rotate", "/api/machines/self/revoke"}:
             return method == "POST"
         if request.url.path == "/api/machines":
             # The route allows a machine to rename or revoke only itself.
             return method in {"GET", "HEAD"} or method == "POST"
         if method in {"GET", "HEAD"} and request.url.path in _MACHINE_READ_PATHS:
             return request.query_params.getlist("machine") == [principal.id]
+        return False
+    if request.url.path == "/api/machines/self/revoke":
         return False
     if principal.kind == "owner":
         permission = "hub.read" if method in {"GET", "HEAD"} else "admin.write"

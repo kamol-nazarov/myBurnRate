@@ -2423,9 +2423,15 @@ class DesktopBridge:
                     cookies.clear()
                 try:
                     if method == "GET":
-                        res = test_client.get(path, headers=headers)
+                        try:
+                            res = test_client.get(path, headers=headers, follow_redirects=False)
+                        except TypeError:
+                            res = test_client.get(path, headers=headers)
                     else:
-                        res = test_client.post(path, json=json_body, headers=headers)
+                        try:
+                            res = test_client.post(path, json=json_body, headers=headers, follow_redirects=False)
+                        except TypeError:
+                            res = test_client.post(path, json=json_body, headers=headers)
                 finally:
                     if cookies is not None and saved_jar is not None:
                         cookies.clear()
@@ -2466,6 +2472,14 @@ class DesktopBridge:
             data = res.json() if getattr(res, "content", b"") else {}
         except ValueError:
             data = None
+
+        if 300 <= res.status_code < 400:
+            return None, res, {
+                "ok": False,
+                "code": "HUB-501",
+                "message": error_message("HUB-501"),
+                "error": format_error("HUB-501"),
+            }
 
         if res.status_code >= 400:
             mapped = map_http_error(
@@ -3036,11 +3050,14 @@ class DesktopBridge:
             return self._h5_err("HUB-501", message="Account actions are disabled in demo mode.")
 
         from spend_app.connection_secrets import (
+            MAX_PENDING_REVOKES,
             clear_spoke_credentials,
             enqueue_pending_revokes,
             flush_pending_revokes,
+            pending_revoke_count,
             read_pending_revokes,
             read_vault_secret,
+            response_is_terminal_revoke,
         )
         from spend_app.sync import _HUB_TEST_CLIENTS, clear_hub_proxy_cache
 
@@ -3058,7 +3075,32 @@ class DesktopBridge:
 
         with self._owner_session_lock:
             mem_owner = self._owner_session
+            mem_machine = self._machine_token
+            if pending_revoke_count(db_path, vault=vault) >= MAX_PENDING_REVOKES:
+                pre_hub, pre_err = self._resolve_hub_origin()
+                if pre_err is None and pre_hub:
+                    try:
+                        flush_pending_revokes(
+                            db_path,
+                            pre_hub,
+                            vault=vault,
+                            client=_HUB_TEST_CLIENTS.get(pre_hub),
+                            ignore_backoff=True,
+                        )
+                    except Exception:
+                        pass
+                if pending_revoke_count(db_path, vault=vault) >= MAX_PENDING_REVOKES:
+                    has_local = bool(
+                        mem_owner
+                        or mem_machine
+                        or read_vault_secret(db_path, self.OWNER_SESSION_VAULT_REF, vault=vault)
+                        or read_vault_secret(db_path, self.MACHINE_TOKEN_VAULT_REF, vault=vault)
+                    )
+                    if has_local:
+                        return self._h5_err("APP-903")
+
             owner_tokens: list[str] = []
+            machine_tokens: list[str] = []
             local_mid = ""
             cleared_hub_url = ""
             if db_path is not None and db_path.is_file():
@@ -3073,6 +3115,7 @@ class DesktopBridge:
                     )
                     clear_hub_proxy_cache()
                     owner_tokens = list(cleared.get("ownerTokens") or [])
+                    machine_tokens = list(cleared.get("machineTokens") or [])
                     local_mid = str(cleared.get("machineId") or "").strip()
                     cleared_hub_url = str(cleared.get("hubUrl") or "").strip()
                 except Exception:
@@ -3081,6 +3124,9 @@ class DesktopBridge:
                 v_owner = read_vault_secret(None, self.OWNER_SESSION_VAULT_REF, vault=vault)
                 if v_owner:
                     owner_tokens.append(v_owner)
+                v_machine = read_vault_secret(None, self.MACHINE_TOKEN_VAULT_REF, vault=vault)
+                if v_machine:
+                    machine_tokens.append(v_machine)
                 if vault is not None:
                     for ref in (self.OWNER_SESSION_VAULT_REF, self.MACHINE_TOKEN_VAULT_REF):
                         try:
@@ -3090,6 +3136,8 @@ class DesktopBridge:
 
             if mem_owner and mem_owner not in owner_tokens:
                 owner_tokens.append(mem_owner)
+            if mem_machine and mem_machine not in machine_tokens:
+                machine_tokens.append(mem_machine)
 
             self._owner_session = None
             self._owner_session_expires_at = None
@@ -3102,30 +3150,53 @@ class DesktopBridge:
             self._sync_error_message = None
 
         existing_pending = read_pending_revokes(db_path, vault=vault)
-        if not owner_tokens and not existing_pending:
+        if not owner_tokens and not machine_tokens and not existing_pending:
             return {"ok": True}
 
         hub_url, err = self._resolve_hub_origin()
         if err is not None:
-            if owner_tokens:
-                enqueue_pending_revokes(
-                    db_path,
-                    [
+            to_queue: list[dict] = []
+            if machine_tokens:
+                for mtok in machine_tokens:
+                    to_queue.append(
                         {
-                            "kind": "owner",
-                            "token": tok,
-                            **({"machineId": local_mid} if (idx == 0 and local_mid) else {}),
+                            "kind": "machine_self_revoke",
+                            "token": mtok,
+                            **({"machineId": local_mid} if local_mid else {}),
                             **({"hubUrl": cleared_hub_url} if cleared_hub_url else {}),
                         }
-                        for idx, tok in enumerate(owner_tokens)
-                    ],
-                    vault=vault,
+                    )
+            elif local_mid and owner_tokens:
+                to_queue.append(
+                    {
+                        "kind": "machine_revoke_owner",
+                        "token": owner_tokens[0],
+                        "machineId": local_mid,
+                        **({"hubUrl": cleared_hub_url} if cleared_hub_url else {}),
+                    }
                 )
+            for tok in owner_tokens:
+                to_queue.append(
+                    {
+                        "kind": "owner_logout",
+                        "token": tok,
+                        **({"hubUrl": cleared_hub_url} if cleared_hub_url else {}),
+                    }
+                )
+            if to_queue:
+                try:
+                    enqueue_pending_revokes(db_path, to_queue, vault=vault)
+                except CodedError as exc:
+                    return self._h5_err(exc.code)
             return self._h5_err(str(err.get("code") or "NET-001"))
 
+        test_client = _HUB_TEST_CLIENTS.get(hub_url)
+        failed_entries: list[dict] = []
+        first_err: dict | None = None
+
+        machine_revoked = False
+        machine_err: dict | None = None
         if local_mid and owner_tokens:
-            machine_revoked = False
-            machine_err: dict | None = None
             for tok in owner_tokens:
                 _, rev_res, rev_err = self._call_hub(
                     hub_url,
@@ -3136,36 +3207,46 @@ class DesktopBridge:
                     fresh_session=True,
                     flush_pending=False,
                 )
-                if rev_err is None:
+                if response_is_terminal_revoke("machine_revoke_owner", rev_res, rev_err):
                     machine_revoked = True
                     break
-                rev_code = str(rev_err.get("code") or "")
-                if rev_code == "DEV-301" or (rev_res is not None and rev_res.status_code == 404):
-                    machine_revoked = True
-                    break
-                if rev_code == "AUTH-107" or (rev_res is not None and rev_res.status_code == 401):
-                    machine_err = None
-                    continue
-                machine_err = rev_err
-                break
-            if not machine_revoked and machine_err is not None:
-                enqueue_pending_revokes(
-                    db_path,
-                    [
-                        {
-                            "kind": "owner",
-                            "token": tok,
-                            **({"machineId": local_mid} if idx == 0 else {}),
-                            "hubUrl": hub_url,
-                        }
-                        for idx, tok in enumerate(owner_tokens)
-                    ],
-                    vault=vault,
-                )
-                return self._h5_err_from_call(machine_err)
+                machine_err = rev_err or self._h5_err("HUB-501")
 
-        failed_entries: list[dict] = []
-        first_err: dict | None = None
+        if not machine_revoked:
+            if machine_tokens:
+                for mtok in machine_tokens:
+                    _, self_res, self_err = self._call_hub(
+                        hub_url,
+                        "POST",
+                        "/api/machines/self/revoke",
+                        json_body={},
+                        token=mtok,
+                        fresh_session=True,
+                        flush_pending=False,
+                    )
+                    if not response_is_terminal_revoke("machine_self_revoke", self_res, self_err):
+                        failed_entries.append(
+                            {
+                                "kind": "machine_self_revoke",
+                                "token": mtok,
+                                "hubUrl": hub_url,
+                                **({"machineId": local_mid} if local_mid else {}),
+                            }
+                        )
+                        if first_err is None:
+                            first_err = self_err or self._h5_err("HUB-501")
+            elif local_mid and owner_tokens:
+                failed_entries.append(
+                    {
+                        "kind": "machine_revoke_owner",
+                        "token": owner_tokens[0],
+                        "machineId": local_mid,
+                        "hubUrl": hub_url,
+                    }
+                )
+                if first_err is None:
+                    first_err = machine_err or self._h5_err("HUB-501")
+
         for tok in owner_tokens:
             _, res, call_err = self._call_hub(
                 hub_url,
@@ -3176,22 +3257,36 @@ class DesktopBridge:
                 fresh_session=True,
                 flush_pending=False,
             )
-            if (
-                call_err is not None
-                and call_err.get("code") != "AUTH-107"
-                and (res is None or res.status_code != 401)
-            ):
-                failed_entries.append({"kind": "owner", "token": tok, "hubUrl": hub_url})
+            if not response_is_terminal_revoke("owner_logout", res, call_err):
+                failed_entries.append({"kind": "owner_logout", "token": tok, "hubUrl": hub_url})
                 if first_err is None:
-                    first_err = call_err
+                    first_err = call_err or self._h5_err("HUB-501")
 
         if failed_entries:
-            enqueue_pending_revokes(db_path, failed_entries, vault=vault)
-            return self._h5_err_from_call(first_err)
+            try:
+                enqueue_pending_revokes(
+                    db_path,
+                    failed_entries,
+                    vault=vault,
+                    hub_url=hub_url,
+                    client=test_client,
+                )
+            except CodedError as exc:
+                return self._h5_err(exc.code)
+            return self._h5_err_from_call(first_err or self._h5_err("NET-001"))
 
         if existing_pending:
-            test_client = _HUB_TEST_CLIENTS.get(hub_url)
-            if not flush_pending_revokes(db_path, hub_url, vault=vault, client=test_client):
+            try:
+                flushed = flush_pending_revokes(
+                    db_path,
+                    hub_url,
+                    vault=vault,
+                    client=test_client,
+                    ignore_backoff=True,
+                )
+            except CodedError as exc:
+                return self._h5_err(exc.code)
+            if not flushed:
                 return self._h5_err("NET-001")
 
         return {"ok": True}
@@ -3447,6 +3542,8 @@ class DesktopBridge:
                 expected_gen=captured_gen,
             )
         except _StaleOwnerLifecycle:
+            from spend_app.connection_secrets import enqueue_pending_revokes, response_is_terminal_revoke
+
             _, res_stale, err_stale = self._call_hub(
                 hub_url,
                 "POST",
@@ -3456,21 +3553,21 @@ class DesktopBridge:
                 fresh_session=True,
                 flush_pending=False,
             )
-            if (
-                err_stale is not None
-                and err_stale.get("code") != "AUTH-107"
-                and (res_stale is None or res_stale.status_code != 401)
-            ):
+            if not response_is_terminal_revoke("owner_logout", res_stale, err_stale):
                 try:
-                    from spend_app.connection_secrets import enqueue_pending_revokes
-
                     enqueue_pending_revokes(
                         self._db_path(),
-                        [{"kind": "owner", "token": new_token, "hubUrl": hub_url}],
+                        [{"kind": "owner_logout", "token": new_token, "hubUrl": hub_url}],
                         vault=self._resolve_vault(),
+                        hub_url=hub_url,
                     )
-                except Exception:
-                    pass
+                except CodedError as exc:
+                    return {
+                        "ok": False,
+                        "code": exc.code,
+                        "message": error_message(exc.code),
+                        "error": format_error(exc.code),
+                    }
             return {"ok": False, "code": "AUTH-107", "error": format_error("AUTH-107")}
         except CodedError as exc:
             return {"ok": False, "code": exc.code, "message": error_message(exc.code), "error": format_error(exc.code)}
@@ -3487,11 +3584,14 @@ class DesktopBridge:
             return {"ok": False, "error": "Owner sessions are disabled in demo mode."}
 
         from spend_app.connection_secrets import (
+            MAX_PENDING_REVOKES,
             clear_spoke_credentials,
             enqueue_pending_revokes,
             flush_pending_revokes,
+            pending_revoke_count,
             read_pending_revokes,
             read_vault_secret,
+            response_is_terminal_revoke,
         )
         from spend_app.sync import _HUB_TEST_CLIENTS, clear_hub_proxy_cache
 
@@ -3499,6 +3599,32 @@ class DesktopBridge:
         vault = self._resolve_vault()
         with self._owner_session_lock:
             mem_owner = self._owner_session
+            if pending_revoke_count(db_path, vault=vault) >= MAX_PENDING_REVOKES:
+                pre_hub, pre_err = self._resolve_hub_origin()
+                if pre_err is None and pre_hub:
+                    try:
+                        flush_pending_revokes(
+                            db_path,
+                            pre_hub,
+                            vault=vault,
+                            client=_HUB_TEST_CLIENTS.get(pre_hub),
+                            ignore_backoff=True,
+                        )
+                    except Exception:
+                        pass
+                if pending_revoke_count(db_path, vault=vault) >= MAX_PENDING_REVOKES:
+                    has_local_owner = bool(
+                        mem_owner
+                        or read_vault_secret(db_path, self.OWNER_SESSION_VAULT_REF, vault=vault)
+                    )
+                    if has_local_owner:
+                        return {
+                            "ok": False,
+                            "code": "APP-903",
+                            "message": error_message("APP-903"),
+                            "error": format_error("APP-903"),
+                        }
+
             removed_owner: list[str] = []
             cleared_hub_url = ""
             if db_path is not None and db_path.is_file():
@@ -3532,20 +3658,29 @@ class DesktopBridge:
         hub_url, err = self._resolve_hub_origin()
         if err is not None:
             if removed_owner:
-                enqueue_pending_revokes(
-                    db_path,
-                    [
-                        {
-                            "kind": "owner",
-                            "token": tok,
-                            **({"hubUrl": cleared_hub_url} if cleared_hub_url else {}),
-                        }
-                        for tok in removed_owner
-                    ],
-                    vault=vault,
-                )
+                try:
+                    enqueue_pending_revokes(
+                        db_path,
+                        [
+                            {
+                                "kind": "owner_logout",
+                                "token": tok,
+                                **({"hubUrl": cleared_hub_url} if cleared_hub_url else {}),
+                            }
+                            for tok in removed_owner
+                        ],
+                        vault=vault,
+                    )
+                except CodedError as exc:
+                    return {
+                        "ok": False,
+                        "code": exc.code,
+                        "message": error_message(exc.code),
+                        "error": format_error(exc.code),
+                    }
             return err
 
+        test_client = _HUB_TEST_CLIENTS.get(hub_url)
         failed_entries: list[dict] = []
         first_err: dict | None = None
         for tok in removed_owner:
@@ -3558,22 +3693,51 @@ class DesktopBridge:
                 fresh_session=True,
                 flush_pending=False,
             )
-            if (
-                call_err is not None
-                and call_err.get("code") != "AUTH-107"
-                and (res is None or res.status_code != 401)
-            ):
-                failed_entries.append({"kind": "owner", "token": tok, "hubUrl": hub_url})
+            if not response_is_terminal_revoke("owner_logout", res, call_err):
+                failed_entries.append({"kind": "owner_logout", "token": tok, "hubUrl": hub_url})
                 if first_err is None:
-                    first_err = call_err
+                    first_err = call_err or {
+                        "ok": False,
+                        "code": "HUB-501",
+                        "message": error_message("HUB-501"),
+                        "error": format_error("HUB-501"),
+                    }
 
         if failed_entries:
-            enqueue_pending_revokes(db_path, failed_entries, vault=vault)
+            try:
+                enqueue_pending_revokes(
+                    db_path,
+                    failed_entries,
+                    vault=vault,
+                    hub_url=hub_url,
+                    client=test_client,
+                )
+            except CodedError as exc:
+                return {
+                    "ok": False,
+                    "code": exc.code,
+                    "message": error_message(exc.code),
+                    "error": format_error(exc.code),
+                }
             return first_err  # type: ignore[return-value]
 
         if read_pending_revokes(db_path, vault=vault):
-            test_client = _HUB_TEST_CLIENTS.get(hub_url)
-            if not flush_pending_revokes(db_path, hub_url, vault=vault, client=test_client):
+            try:
+                flushed = flush_pending_revokes(
+                    db_path,
+                    hub_url,
+                    vault=vault,
+                    client=test_client,
+                    ignore_backoff=True,
+                )
+            except CodedError as exc:
+                return {
+                    "ok": False,
+                    "code": exc.code,
+                    "message": error_message(exc.code),
+                    "error": format_error(exc.code),
+                }
+            if not flushed:
                 return {
                     "ok": False,
                     "code": "NET-001",
@@ -3906,6 +4070,7 @@ class DesktopBridge:
                 "ok": True,
                 "health": _demo_health(),
                 "freshness": _demo_freshness(),
+                "pendingRevokeCount": 0,
             }
         try:
             with self._lock:
@@ -3916,7 +4081,15 @@ class DesktopBridge:
                 freshness = self._safe_request("/api/spend/freshness")
             if health is None and freshness is None:
                 return {"ok": False, "error": "Diagnostics unavailable."}
-            return {"ok": True, "health": health, "freshness": freshness}
+            out = {"ok": True, "health": health, "freshness": freshness}
+            db_path = self._db_path()
+            if db_path is not None or self._vault is not None:
+                from spend_app.connection_secrets import pending_revoke_count
+
+                out["pendingRevokeCount"] = pending_revoke_count(
+                    db_path, vault=self._resolve_vault()
+                )
+            return out
         except DesktopError as exc:
             return {"ok": False, "error": str(exc)}
         except (OSError, RuntimeError, ValueError, KeyError, TypeError):

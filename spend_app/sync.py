@@ -1537,7 +1537,11 @@ def _hub_post_with_cookie_isolation(hub_url: str, path: str, headers: dict, *, j
         if cookies is not None:
             cookies.clear()
         try:
-            return resolved_client.post(path, json=(json_body if json_body is not None else {}), headers=headers)
+            payload = json_body if json_body is not None else {}
+            try:
+                return resolved_client.post(path, json=payload, headers=headers, follow_redirects=False)
+            except TypeError:
+                return resolved_client.post(path, json=payload, headers=headers)
         finally:
             if cookies is not None and saved_jar is not None:
                 cookies.clear()
@@ -1578,6 +1582,7 @@ def ensure_fresh_owner_session(
         mark_cleanup_pending_in_tx,
         publish_spoke_credentials,
         read_vault_secret,
+        response_is_terminal_revoke,
     )
     from spend_app.error_codes import CodedError, HUB_PROTOCOL_VERSION, map_transport_error
     from spend_app.setup_wizard import read_setup_state
@@ -1648,12 +1653,23 @@ def ensure_fresh_owner_session(
                 raise _StaleOwnerLifecycle()
 
         if response.status_code != 200 or not new_token or not isinstance(data, dict):
-            try:
-                _hub_post_with_cookie_isolation(
-                    hub_url, "/api/auth/logout", headers, client=client, timeout=4.0
-                )
-            except Exception:
-                pass
+            if response.status_code != 401:
+                old_revoke_ok = False
+                try:
+                    old_logout = _hub_post_with_cookie_isolation(
+                        hub_url, "/api/auth/logout", headers, client=client, timeout=4.0
+                    )
+                    old_revoke_ok = response_is_terminal_revoke("owner_logout", old_logout)
+                except Exception:
+                    old_revoke_ok = False
+                if not old_revoke_ok:
+                    enqueue_pending_revokes(
+                        db_file,
+                        [{"kind": "owner_logout", "token": captured_token, "hubUrl": hub_url}],
+                        vault=vault,
+                        hub_url=hub_url,
+                        client=client,
+                    )
             try:
                 clear_spoke_credentials(
                     db_file,
@@ -1698,14 +1714,16 @@ def ensure_fresh_owner_session(
                     client=client,
                     timeout=4.0,
                 )
-                revoke_ok = logout_res.status_code < 500
+                revoke_ok = response_is_terminal_revoke("owner_logout", logout_res)
             except Exception:
                 revoke_ok = False
             if not revoke_ok:
                 enqueue_pending_revokes(
                     db_file,
-                    [{"kind": "owner", "token": new_token, "hubUrl": hub_url}],
+                    [{"kind": "owner_logout", "token": new_token, "hubUrl": hub_url}],
                     vault=vault,
+                    hub_url=hub_url,
+                    client=client,
                 )
             raise CodedError("AUTH-107", status_code=401) from None
         except CodedError:
@@ -2419,6 +2437,64 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
             if "unknown machine" in low or "cannot revoke" in low or ("revoked" in low and "multiple or revoked" not in low):
                 return error_response("DEV-301", status_code=422)
             return error_response("DEV-302", status_code=422)
+
+    @router.post("/api/machines/self/revoke")
+    async def self_revoke_machine(request: Request):
+        proto_err = check_protocol_version(request.headers.get("x-burnrate-protocol"))
+        if proto_err is not None:
+            return error_response(proto_err, status_code=426)
+        principal = getattr(getattr(request, "state", None), "principal", None)
+        if principal is None or principal.kind != "machine" or not principal.id:
+            return error_response("AUTH-107", status_code=403)
+        if request.headers.get("x-burnrate-request") != "1":
+            return error_response("NET-002", status_code=403)
+        from spend_app.setup_wizard import RequestTooLargeError
+
+        try:
+            limit = 65536
+            declared = request.headers.get("content-length", "")
+            if declared.isdigit() and int(declared) > limit:
+                raise RequestTooLargeError("Request too large.")
+            chunks = bytearray()
+            async for chunk in request.stream():
+                if len(chunks) + len(chunk) > limit:
+                    raise RequestTooLargeError("Request too large.")
+                chunks.extend(chunk)
+            body: dict = {}
+            if chunks.strip():
+                content_type = request.headers.get("content-type", "").split(";")[0].strip().lower()
+                if content_type != "application/json":
+                    return error_response("APP-901", status_code=415)
+                parsed = json.loads(
+                    chunks, parse_constant=lambda _: (_ for _ in ()).throw(ValueError())
+                )
+                if not isinstance(parsed, dict):
+                    raise ValueError("Expected a JSON object.")
+                body = parsed
+            target_id = str(body.get("id") or "").strip() if body.get("id") is not None else ""
+            if target_id and target_id != str(principal.id):
+                request.state.audit_action = "machine.revoke"
+                request.state.audit_target = target_id
+                return error_response("AUTH-107", status_code=403)
+            request.state.audit_action = "machine.revoke"
+            request.state.audit_target = principal.id
+            revoke_machine(
+                settings.database_path,
+                machine_id=principal.id,
+                actor=principal,
+            )
+            request.state.audit_recorded = True
+            return JSONResponse(
+                {"ok": True, "machineId": principal.id},
+                headers={"Cache-Control": "no-store"},
+            )
+        except RequestTooLargeError:
+            return error_response("REQ-401", status_code=422)
+        except ValueError as exc:
+            low = str(exc).lower()
+            if "unknown machine" in low or "cannot revoke" in low or "revoked" in low:
+                return error_response("DEV-301", status_code=422)
+            return error_response("APP-901", status_code=422)
 
     @router.post("/api/sync/trigger")
     async def sync_trigger():
