@@ -184,12 +184,10 @@ def create_app(
     settings = settings or load_settings()
     initialize(settings.database_path)
     from spend_app.db import connect
-    from spend_app.setup_wizard import setup_token_warning
+    from spend_app.setup_wizard import deprecated_account_env_warnings
 
-    with connect(settings.database_path) as connection:
-        stale_setup_token = setup_token_warning(connection)
-    if stale_setup_token:
-        logging.getLogger("burnrate.setup").warning(stale_setup_token)
+    for warning in deprecated_account_env_warnings():
+        logging.getLogger("burnrate.setup").warning(warning)
     pricing = PricingEngine.load(settings.pricing_path)
     bounded_reads = BoundedReadExecutor(max_workers=1)
 
@@ -343,10 +341,6 @@ def create_app(
     from spend_app.connection_api import central_server
 
     _central = central_server()
-    if _central:
-        _setup_token = os.getenv("BURNRATE_SETUP_TOKEN", "").strip()
-        if _setup_token and len(_setup_token) < 32:
-            raise RuntimeError("BURNRATE_SETUP_TOKEN must be at least 32 characters.")
     with connect(settings.database_path) as connection:
         _protected = bool(_access_token or connection.execute(
             "SELECT 1 FROM app_meta WHERE key='auth.break_glass.v1'"
@@ -376,6 +370,10 @@ def create_app(
             if request.method == "POST":
                 if path in {"/api/account/login", "/api/account/register"}:
                     action = "login" if path.endswith("login") else "account.register"
+                elif path == "/api/account/password":
+                    action = "account.password_change"
+                elif path == "/api/account/email":
+                    action = "account.email_set"
                 elif path.startswith("/api/setup/"):
                     action = "setup.change"
                 elif path == "/api/machines":

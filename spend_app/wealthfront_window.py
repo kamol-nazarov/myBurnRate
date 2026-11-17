@@ -1803,16 +1803,32 @@ class DesktopBridge:
                 "code": "AUTH-106",
                 "error": format_error("AUTH-106"),
             }
-        if not password:
-            code = "AUTH-105" if str(mode or "").strip().lower() == "register" else "AUTH-101"
-            return {
-                "ok": False,
-                "code": code,
-                "error": format_error(code),
-            }
         auth_mode = (
             "register" if str(mode or "").strip().lower() == "register" else "login"
         )
+        if auth_mode == "register":
+            from spend_app.setup_wizard import MIN_PASSWORD_LENGTH, normalize_email
+
+            normalized = normalize_email(clean_user)
+            if normalized is None:
+                return {
+                    "ok": False,
+                    "code": "AUTH-106",
+                    "error": format_error("AUTH-106"),
+                }
+            clean_user = normalized
+            if len(password) < MIN_PASSWORD_LENGTH:
+                return {
+                    "ok": False,
+                    "code": "AUTH-105",
+                    "error": format_error("AUTH-105"),
+                }
+        elif not password:
+            return {
+                "ok": False,
+                "code": "AUTH-101",
+                "error": format_error("AUTH-101"),
+            }
         clean_comp = (computer_name or "").strip()
         try:
             res = self._client.request(
@@ -1823,7 +1839,6 @@ class DesktopBridge:
                     "password": password,
                     "computerName": clean_comp,
                     "testSync": True,
-                    "setupToken": (setup_token or "").strip(),
                 },
             )
             try:
@@ -1842,6 +1857,56 @@ class DesktopBridge:
                 out["warning"] = format_error(warn_code)
                 out["syncResult"] = sync_res
             return out
+        except DesktopError as exc:
+            code = getattr(exc, "code", None)
+            if code:
+                return {"ok": False, "code": code, "error": str(exc)}
+            return {"ok": False, "code": "HUB-501", "error": format_error("HUB-501")}
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "code": "HUB-501", "error": format_error("HUB-501")}
+
+    def set_account_email(self, email: str, password: str) -> dict:
+        if self._demo:
+            return {"ok": False, "error": "Account changes are disabled in demo mode."}
+        from spend_app.setup_wizard import normalize_email
+
+        normalized = normalize_email(email)
+        if normalized is None:
+            return {
+                "ok": False,
+                "code": "AUTH-106",
+                "error": format_error("AUTH-106"),
+            }
+        if not password:
+            return {
+                "ok": False,
+                "code": "AUTH-101",
+                "error": format_error("AUTH-101"),
+            }
+        try:
+            res = self._client.request(
+                "/api/setup/account/email",
+                {"email": normalized, "password": password},
+            )
+            return {
+                "ok": True,
+                "account": res.get("account") or {},
+                "setup": res.get("setup") or {},
+            }
+        except DesktopError as exc:
+            code = getattr(exc, "code", None)
+            if code:
+                return {"ok": False, "code": code, "error": str(exc)}
+            return {"ok": False, "code": "HUB-501", "error": format_error("HUB-501")}
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "code": "HUB-501", "error": format_error("HUB-501")}
+
+    def dismiss_email_prompt(self) -> dict:
+        if self._demo:
+            return {"ok": True}
+        try:
+            res = self._client.request("/api/setup/account/dismiss-email-prompt", {})
+            return {"ok": True, "setup": res.get("setup") or {}}
         except DesktopError as exc:
             code = getattr(exc, "code", None)
             if code:

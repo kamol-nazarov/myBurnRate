@@ -61,9 +61,8 @@ def test_anonymous_hub_shells_redirect_and_health_is_minimal(hub):
 
 def test_owner_session_unlocks_pages_and_supervisor_health(hub):
     registered = hub.post("/api/account/register", headers={"X-BURNRATE-Request": "1"}, json={
-        "username": "synthetic-owner",
+        "username": "synthetic-owner@example.com",
         "password": PASSWORD,
-        "setupToken": "synthetic-setup-token-32-chars-00",
         "sessionOnly": True,
     })
     assert registered.status_code == 200, registered.text

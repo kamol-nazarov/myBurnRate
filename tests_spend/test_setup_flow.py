@@ -74,18 +74,18 @@ def test_set_up_later_stops_the_wizard_opening_on_every_launch(client: TestClien
 
 
 def test_signing_in_never_creates_an_account(client: TestClient) -> None:
-    unknown = client.post("/api/account/login", headers=SETUP, json={"username": "alex", "password": "long-enough-1"})
+    unknown = client.post("/api/account/login", headers=SETUP, json={"username": "alex@example.com", "password": "long-enough-1"})
     assert unknown.status_code == 401 and unknown.json()["error"] == {"code": "AUTH-104"}
-    short = client.post("/api/account/register", headers=SETUP, json={"username": "alex", "password": "short"})
+    short = client.post("/api/account/register", headers=SETUP, json={"username": "alex@example.com", "password": "short"})
     assert short.status_code == 422 and short.json()["error"] == {"code": "AUTH-105"}
-    assert client.post("/api/account/register", headers=SETUP, json={"username": "alex", "password": "long-enough-1"}).status_code == 200
-    assert client.post("/api/account/login", headers=SETUP, json={"username": "alex", "password": "long-enough-1"}).status_code == 200
-    assert client.post("/api/account/login", headers=SETUP, json={"username": "alex", "password": "wrong-password"}).status_code == 401
+    assert client.post("/api/account/register", headers=SETUP, json={"username": "alex@example.com", "password": "long-enough-1"}).status_code == 200
+    assert client.post("/api/account/login", headers=SETUP, json={"username": "alex@example.com", "password": "long-enough-1"}).status_code == 200
+    assert client.post("/api/account/login", headers=SETUP, json={"username": "alex@example.com", "password": "wrong-password"}).status_code == 401
 
 
 def test_registering_from_the_wizard_checks_the_password_before_calling_the_hub(client: TestClient) -> None:
     response = client.post("/api/setup/account", headers=SETUP, json={
-        "mode": "register", "username": "alex", "password": "short", "serverUrl": "https://unreachable.invalid"})
+        "mode": "register", "username": "alex@example.com", "password": "short", "serverUrl": "https://unreachable.invalid"})
     assert response.status_code == 422 and response.json()["error"] == {"code": "AUTH-105"}
 
 
@@ -238,7 +238,7 @@ def test_the_hub_applies_a_plan_change_forwarded_by_a_spoke(client: TestClient, 
         "action": "plan", "operation": "end", "request_id": "spoke-end-muse", "plan_id": plan["id"],
         "expected_version": plan["version"], "end_date": "2026-10-26"})
     assert response.status_code == 403
-    registered = client.post("/api/account/register", headers=SETUP, json={"username": "owner", "password": "synthetic-long-password", "sessionOnly": True})
+    registered = client.post("/api/account/register", headers=SETUP, json={"username": "owner@example.com", "password": "synthetic-long-password", "sessionOnly": True})
     assert "sessionToken" not in registered.json()
     session = registered.cookies["burnrate_access"]
     response = client.post("/api/account/subscriptions", headers={"Authorization": f"Bearer {session}", "X-BURNRATE-Request": "1"}, json={
@@ -250,13 +250,15 @@ def test_the_hub_applies_a_plan_change_forwarded_by_a_spoke(client: TestClient, 
 
 def test_a_hub_with_an_account_accepts_no_new_ones(client: TestClient, monkeypatch) -> None:
     monkeypatch.delenv("BURNRATE_ALLOW_REGISTRATION", raising=False)
-    assert client.post("/api/account/register", headers=SETUP, json={"username": "owner", "password": "long-enough-1"}).status_code == 200
-    stranger = client.post("/api/account/register", headers=SETUP, json={"username": "stranger", "password": "long-enough-2"})
+    assert client.post("/api/account/register", headers=SETUP, json={"username": "owner@example.com", "password": "long-enough-1"}).status_code == 200
+    stranger = client.post("/api/account/register", headers=SETUP, json={"username": "stranger@example.com", "password": "long-enough-2"})
     assert stranger.status_code == 403 and stranger.json()["error"] == {"code": "AUTH-103"}
-    # The owner registering again from another computer still signs in.
-    assert client.post("/api/account/register", headers=SETUP, json={"username": "owner", "password": "long-enough-1"}).status_code == 200
+    # Even the same email cannot re-register once an account exists; it must sign in via /api/account/login.
+    same = client.post("/api/account/register", headers=SETUP, json={"username": "owner@example.com", "password": "long-enough-1"})
+    assert same.status_code == 403 and same.json()["error"] == {"code": "AUTH-103"}
     monkeypatch.setenv("BURNRATE_ALLOW_REGISTRATION", "1")
-    assert client.post("/api/account/register", headers=SETUP, json={"username": "second", "password": "long-enough-3"}).status_code == 200
+    with_env = client.post("/api/account/register", headers=SETUP, json={"username": "second@example.com", "password": "long-enough-3"})
+    assert with_env.status_code == 403 and with_env.json()["error"] == {"code": "AUTH-103"}
 
 
 def test_there_is_no_built_in_hub_address(client: TestClient, monkeypatch) -> None:

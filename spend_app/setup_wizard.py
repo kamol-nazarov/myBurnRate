@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import shutil
 import socket
@@ -131,6 +132,8 @@ def default_setup_state() -> dict:
             "username": "",
             "machineId": "",
             "connectedAt": None,
+            "needsEmail": False,
+            "emailPromptDismissed": False,
         },
         "spokeConfig": {
             "hubUrl": "",
@@ -140,6 +143,8 @@ def default_setup_state() -> dict:
             "lastSyncError": None,
             "usageChangesPending": False,
             "eventsPushed": 0,
+            "tokenExpiresAt": None,
+            "rotationRequired": False,
         },
         "hudConfig": {
             "autoOpen": True,
@@ -324,40 +329,66 @@ async def _bounded_json(request: Request, limit: int = 65536) -> dict:
     return value
 
 
-def _setup_token_allowed(request: Request, body: dict) -> bool:
-    expected = os.getenv(SETUP_TOKEN_ENV, "").strip()
-    if not expected:
-        return False
-    supplied = (
-        request.headers.get("x-burnrate-setup-token", "")
-        or str(body.get("setupToken") or "")
-    ).strip()
-    if not supplied:
-        return False
-    return hmac.compare_digest(
-        hashlib.sha256(supplied.encode("utf-8")).digest(),
-        hashlib.sha256(expected.encode("utf-8")).digest(),
-    )
+_EMAIL_LOCAL_RE = re.compile(r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+$")
+_EMAIL_LABEL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
 
 
-def _setup_token_required_message() -> str:
-    return (
-        "This hub requires a one-time setup token to create its first account. "
-        f"Set {SETUP_TOKEN_ENV} on the hub, then enter it here."
-    )
+def normalize_email(raw: object) -> str | None:
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if len(text) < 3 or len(text) > 254 or any(ch.isspace() for ch in text):
+        return None
+    if text.count("@") != 1:
+        return None
+    local, _, domain = text.partition("@")
+    if not local or len(local) > 64 or local.startswith(".") or local.endswith(".") or ".." in local:
+        return None
+    if not _EMAIL_LOCAL_RE.fullmatch(local):
+        return None
+    if not domain or len(domain) > 253 or "." not in domain or ".." in domain:
+        return None
+    labels = domain.split(".")
+    if any(not _EMAIL_LABEL_RE.fullmatch(label) for label in labels):
+        return None
+    if len(labels[-1]) < 2 or labels[-1].isdigit():
+        return None
+    return f"{local.lower()}@{domain.lower()}"
+
+
+def is_valid_email(raw: object) -> bool:
+    return normalize_email(raw) is not None
+
+
+def account_needs_email(record: dict | None) -> bool:
+    if not isinstance(record, dict):
+        return False
+    candidate = record.get("email") or record.get("username") or ""
+    return not is_valid_email(candidate)
 
 
 def central_server_for_accounts() -> bool:
     return os.getenv("BURNRATE_CENTRAL_SERVER", "").strip().lower() in {"1", "true", "yes"}
 
 
-def setup_token_warning(connection) -> str | None:
-    """Warn when the one-time setup token outlives the account it protects.
+def deprecated_account_env_warnings() -> list[str]:
+    warnings: list[str] = []
+    if os.getenv(SETUP_TOKEN_ENV, "").strip():
+        warnings.append(
+            f"{SETUP_TOKEN_ENV} is deprecated and ignored: first-account registration "
+            "requires no setup token and registration closes once an account exists. "
+            "Remove it from the environment."
+        )
+    if os.getenv(ALLOW_REGISTRATION_ENV, "").strip():
+        warnings.append(
+            f"{ALLOW_REGISTRATION_ENV} is deprecated and ignored: hub registration closes "
+            "permanently after the first account is created. Remove it from the environment."
+        )
+    return warnings
 
-    The token is only consulted while the hub has no account, so a hub that
-    already has one is not made weaker by a lingering value. It is still a
-    secret sitting in the environment for no reason; say so once at startup.
-    """
+
+def setup_token_warning(connection) -> str | None:
+    """Warn when the one-time setup token outlives the account it protects."""
     if not os.getenv(SETUP_TOKEN_ENV, "").strip():
         return None
     if not central_server_for_accounts():
@@ -597,6 +628,71 @@ def detect_network_addresses(port: int = 17331) -> list[dict]:
     return urls
 
 
+def _should_auto_rotate_token(
+    expires_at_raw: object, rotation_required: bool, *, now: datetime | None = None
+) -> bool:
+    if rotation_required:
+        return True
+    from spend_app.auth_model import ROTATION_GRACE_DAYS, moment, parse
+
+    expires = parse(expires_at_raw)
+    if expires is None:
+        return False
+    return expires <= moment(now) + timedelta(days=ROTATION_GRACE_DAYS)
+
+
+def rotate_spoke_machine_token(settings, *, client=None) -> dict | None:
+    """Exchange the configured spoke's machine bearer for a fresh one on the hub."""
+    from spend_app.config import resolve_hub_url
+    from spend_app.pairing import hub_origin
+    from spend_app.sync import _cursor_key, read_sync_cursor, rotate_spoke_sync_credential
+
+    with connect(settings.database_path) as connection:
+        state = read_setup_state(connection)
+    spoke = state.get("spokeConfig") or {}
+    if state.get("role") != "spoke" or not spoke.get("enabled"):
+        return None
+    token = str(spoke.get("token") or "").strip()
+    if not token:
+        return None
+    raw_hub_url = resolve_hub_url() or str(spoke.get("hubUrl") or "").strip()
+    if not raw_hub_url:
+        return None
+    hub_url = hub_origin(raw_hub_url)
+    prior_generation = read_sync_cursor(settings.database_path, hub_url).get("generation")
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-BURNRATE-Request": "1",
+        "X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION),
+        "Content-Type": "application/json",
+    }
+    resolved_client = client or _HUB_TEST_CLIENTS.get(hub_url)
+    if resolved_client is not None:
+        response = resolved_client.post("/api/auth/machine/rotate", json={}, headers=headers)
+    else:
+        import httpx
+        with httpx.Client(timeout=8, trust_env=False) as http:
+            response = http.post(f"{hub_url}/api/auth/machine/rotate", json={}, headers=headers)
+    if response.status_code != 200:
+        return {"ok": False, "status": response.status_code}
+    replacement = response.json()
+    if not isinstance(replacement, dict) or not str(replacement.get("token") or "").strip():
+        return {"ok": False, "status": 502}
+    with connect(settings.database_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        current = read_setup_state(connection)
+        row = connection.execute("SELECT value FROM app_meta WHERE key=?", (_cursor_key(hub_url),)).fetchone()
+        generation = json.loads(row[0]).get("generation") if row else None
+        if current["spokeConfig"].get("token") != token or generation != prior_generation:
+            return {"ok": False, "status": 409}
+        current["spokeConfig"]["token"] = replacement["token"]
+        current["spokeConfig"]["tokenExpiresAt"] = replacement.get("expiresAt")
+        current["spokeConfig"]["rotationRequired"] = False
+        rotate_spoke_sync_credential(connection, hub_url, replacement["token"])
+        write_setup_state(connection, current)
+    return {"ok": True, "expiresAt": replacement.get("expiresAt")}
+
+
 def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=None) -> dict | None:
     """Called by background scheduler or on-demand to push spoke telemetry when configured."""
     try:
@@ -631,6 +727,7 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
         # A push does not make the last Hub copy wrong. Dropping it forces the
         # next HUD poll to wait on the Hub and then fall back to this computer.
         expire_hub_proxy_cache()
+        should_rotate = False
         with connect(settings.database_path) as connection:
             connection.execute("BEGIN IMMEDIATE")
             latest = read_setup_state(connection)
@@ -641,11 +738,28 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
             latest["spokeConfig"]["lastSyncError"] = None
             if isinstance(result.get("machineId"), str) and result["machineId"]:
                 latest["account"] = {**latest.get("account", {}), "machineId": result["machineId"]}
+            if result.get("tokenExpiresAt"):
+                latest["spokeConfig"]["tokenExpiresAt"] = result["tokenExpiresAt"]
+            if "rotationRequired" in result:
+                latest["spokeConfig"]["rotationRequired"] = bool(result["rotationRequired"])
             latest["spokeConfig"]["usageChangesPending"] = bool(result.get("usageChangesPending"))
             latest["spokeConfig"]["eventsPushed"] = int(
                 latest["spokeConfig"].get("eventsPushed") or 0
             ) + int(result.get("eventsWritten") or 0)
             write_setup_state(connection, latest)
+            should_rotate = _should_auto_rotate_token(
+                latest["spokeConfig"].get("tokenExpiresAt"),
+                bool(latest["spokeConfig"].get("rotationRequired")),
+            )
+        if should_rotate:
+            try:
+                rotated = rotate_spoke_machine_token(settings, client=resolved_client)
+                if isinstance(rotated, dict) and rotated.get("ok"):
+                    result["tokenRotated"] = True
+                    result["tokenExpiresAt"] = rotated.get("expiresAt")
+                    result["rotationRequired"] = False
+            except Exception:
+                pass
         return result
     except Exception as exc:
         import httpx
@@ -1160,6 +1274,8 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
 
     @router.post("/api/account/register")
     async def central_account_register(request: Request):
+        from starlette.concurrency import run_in_threadpool
+
         proto_err = check_protocol_version(request.headers.get("x-burnrate-protocol"))
         if proto_err is not None:
             return error_response(proto_err, status_code=426)
@@ -1177,14 +1293,13 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 return error_response("APP-901", status_code=422)
             if not isinstance(body, dict):
                 return error_response("APP-901", status_code=422)
-            username = str(body.get("username") or "").strip()
+            username = normalize_email(body.get("username"))
             password = str(body.get("password") or "")
             computer_name = str(body.get("computerName") or "").strip() or "Connected Computer"
-            os_name = str(body.get("os") or "").strip()
             preset_keys = [str(k) for k in (body.get("presetKeys") or []) if k]
             custom_plans = body.get("customPlans") if isinstance(body.get("customPlans"), list) else []
 
-            if len(username) < 2 or len(username) > 64:
+            if username is None:
                 return error_response("AUTH-106", status_code=422)
             if len(password) < MIN_PASSWORD_LENGTH:
                 return error_response("AUTH-105", status_code=422)
@@ -1198,64 +1313,40 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             if retry:
                 return _throttled(retry)
 
-            user_key = username.lower()
-            initialize(settings.database_path)
-            with connect(settings.database_path) as connection:
-                connection.execute("BEGIN IMMEDIATE")
-                accounts = _read_accounts(connection)
-                existing_user = accounts["users"].get(user_key)
-                local_setup = read_setup_state(connection)
-                if local_setup.get("role") == "spoke" and local_setup["spokeConfig"].get("enabled"):
-                    return error_response("AUTH-103", status_code=403)
-                if isinstance(existing_user, dict):
-                    iterations = _account_iterations(existing_user)
-                    if not _verify_password(
-                        password,
-                        str(existing_user.get("salt") or ""),
-                        str(existing_user.get("passwordHash") or ""),
-                        iterations,
-                    ):
-                        global_retry = _GLOBAL_THROTTLE.fail(global_key)
-                        retry = auth_throttle.fail(key)
-                        if global_retry or retry:
-                            return _throttled(max(global_retry, retry))
-                        return error_response("AUTH-101", status_code=401)
-                    if iterations < PBKDF2_ITERATIONS:
-                        salt_hex, hash_hex = _hash_password(password, iterations=PBKDF2_ITERATIONS)
-                        existing_user.update(
-                            salt=salt_hex,
-                            passwordHash=hash_hex,
-                            iterations=PBKDF2_ITERATIONS,
+            existing_principal = request.state.principal
+            device_label = str(body.get("deviceLabel") or computer_name)
+
+            def _register_tx():
+                from spend_app.auth_model import Principal, audit, create_session
+
+                initialize(settings.database_path)
+                with connect(settings.database_path) as connection:
+                    connection.execute("BEGIN IMMEDIATE")
+                    local_setup = read_setup_state(connection)
+                    if local_setup.get("role") == "spoke" and local_setup["spokeConfig"].get("enabled"):
+                        return None, error_response("AUTH-103", status_code=403)
+                    accounts = _read_accounts(connection)
+                    if accounts["users"]:
+                        return None, error_response("AUTH-103", status_code=403)
+                    if not central_server_for_accounts():
+                        protected = bool(
+                            os.getenv("BURNRATE_ACCESS_TOKEN", "").strip()
+                            or connection.execute(
+                                "SELECT 1 FROM app_meta WHERE key='auth.break_glass.v1'"
+                            ).fetchone()
                         )
-                        _write_accounts(connection, accounts)
-                    auth_throttle.succeed(key)
-                else:
-                    allow = os.getenv(ALLOW_REGISTRATION_ENV, "").strip().lower() in {"1", "true", "yes"}
-                    if accounts["users"] and not allow:
-                        return error_response("AUTH-103", status_code=403)
-                    first_account = not accounts["users"]
-                    if first_account and central_server_for_accounts():
-                        if not _setup_token_allowed(request, body):
+                        if protected and not existing_principal.permits("credentials.manage"):
                             global_retry = _GLOBAL_THROTTLE.fail(global_key)
-                            retry = auth_throttle.fail(key)
-                            if global_retry or retry:
-                                return _throttled(max(global_retry, retry))
-                            return error_response("AUTH-103", status_code=403)
-                    elif first_account:
-                        protected = bool(os.getenv("BURNRATE_ACCESS_TOKEN", "").strip() or connection.execute(
-                            "SELECT 1 FROM app_meta WHERE key='auth.break_glass.v1'"
-                        ).fetchone())
-                        if (protected and not request.state.principal.permits("credentials.manage")
-                                and not _setup_token_allowed(request, body)):
-                            global_retry = _GLOBAL_THROTTLE.fail(global_key)
-                            retry = auth_throttle.fail(key)
-                            if global_retry or retry:
-                                return _throttled(max(global_retry, retry))
-                            return error_response("AUTH-103", status_code=403)
+                            retry_after = auth_throttle.fail(key)
+                            if global_retry or retry_after:
+                                return None, _throttled(max(global_retry, retry_after))
+                            return None, error_response("AUTH-103", status_code=403)
                     salt_hex, hash_hex = _hash_password(password)
-                    accounts["users"][user_key] = {
+                    account_id = secrets.token_hex(16)
+                    accounts["users"][username] = {
                         "username": username,
-                        "id": secrets.token_hex(16),
+                        "email": username,
+                        "id": account_id,
                         "role": "owner",
                         "salt": salt_hex,
                         "passwordHash": hash_hex,
@@ -1264,24 +1355,31 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     }
                     _write_accounts(connection, accounts)
                     auth_throttle.succeed(key)
+                    added_plans = _apply_subscription_presets_and_custom(
+                        connection,
+                        settings.timezone,
+                        preset_keys,
+                        custom_plans,
+                    )
+                    plans_out = effective_terms(connection)
+                    actor = Principal("owner", account_id, "owner")
+                    session = create_session(connection, actor, device_label)
+                    audit(connection, actor, "account.register", account_id)
+                    return {
+                        "actor": actor,
+                        "session": session,
+                        "addedPlans": added_plans,
+                        "subscriptions": plans_out,
+                    }, None
 
-                added_plans = _apply_subscription_presets_and_custom(
-                    connection,
-                    settings.timezone,
-                    preset_keys,
-                    custom_plans,
-                )
-                plans_out = effective_terms(connection)
-                from spend_app.auth_model import Principal, create_session
-                rec = accounts["users"][user_key]
-                if rec.get("role", "owner") != "owner":
-                    return error_response("AUTH-103", status_code=403)
-                rec.setdefault("id", secrets.token_hex(16))
-                actor = Principal("owner", rec["id"], "owner")
-                request.state.principal = actor
-                session = create_session(connection, actor, str(body.get("deviceLabel") or computer_name))
-
+            tx_out, err_resp = await run_in_threadpool(_register_tx)
+            if err_resp is not None:
+                return err_resp
+            request.state.principal = tx_out["actor"]
+            request.state.audit_recorded = True
+            session = tx_out["session"]
             from spend_app.auth_model import set_session_cookie
+
             public_session = {"sessionId": session["sessionId"], "expiresAt": session["expiresAt"]}
             if body.get("sessionOnly"):
                 return set_session_cookie(
@@ -1294,9 +1392,9 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 {
                     "ok": True,
                     **public_session,
-                    "account": {"username": username},
-                    "addedPlans": added_plans,
-                    "subscriptions": plans_out,
+                    "account": {"username": username, "email": username, "needsEmail": False},
+                    "addedPlans": tx_out["addedPlans"],
+                    "subscriptions": tx_out["subscriptions"],
                 },
                 headers={"Cache-Control": "no-store"},
             ), request, session)
@@ -1305,6 +1403,8 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
 
     @router.post("/api/account/login")
     async def central_account_login(request: Request):
+        from starlette.concurrency import run_in_threadpool
+
         proto_err = check_protocol_version(request.headers.get("x-burnrate-protocol"))
         if proto_err is not None:
             return error_response(proto_err, status_code=426)
@@ -1325,7 +1425,6 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             username = str(body.get("username") or "").strip()
             password = str(body.get("password") or "")
             computer_name = str(body.get("computerName") or "").strip() or "Connected Computer"
-            os_name = str(body.get("os") or "").strip()
             preset_keys = [str(k) for k in (body.get("presetKeys") or []) if k]
             custom_plans = body.get("customPlans") if isinstance(body.get("customPlans"), list) else []
 
@@ -1344,63 +1443,96 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 return _throttled(retry)
 
             user_key = username.lower()
-            initialize(settings.database_path)
-            with connect(settings.database_path) as connection:
-                connection.execute("BEGIN IMMEDIATE")
-                accounts = _read_accounts(connection)
-                user_rec = accounts["users"].get(user_key)
-                if not isinstance(user_rec, dict):
-                    # Spend the KDF before answering so an unknown username is
-                    # not measurably cheaper than a wrong password.
-                    _verify_password(password, "00" * 16, "00" * 32, PBKDF2_ITERATIONS)
-                    global_retry = _GLOBAL_THROTTLE.fail(global_key)
-                    retry = auth_throttle.fail(key)
-                    if global_retry or retry:
-                        return _throttled(max(global_retry, retry))
-                    if not accounts["users"]:
-                        return error_response("AUTH-104", status_code=401)
-                    return error_response("AUTH-101", status_code=401)
-                iterations = _account_iterations(user_rec)
-                if not _verify_password(
-                    password,
-                    str(user_rec.get("salt") or ""),
-                    str(user_rec.get("passwordHash") or ""),
-                    iterations,
-                ):
-                    global_retry = _GLOBAL_THROTTLE.fail(global_key)
-                    retry = auth_throttle.fail(key)
-                    if global_retry or retry:
-                        return _throttled(max(global_retry, retry))
-                    return error_response("AUTH-101", status_code=401)
-                display_username = str(user_rec.get("username") or username)
-                if iterations < PBKDF2_ITERATIONS:
-                    salt_hex, hash_hex = _hash_password(password, iterations=PBKDF2_ITERATIONS)
-                    user_rec.update(
-                        salt=salt_hex,
-                        passwordHash=hash_hex,
-                        iterations=PBKDF2_ITERATIONS,
-                    )
-                    _write_accounts(connection, accounts)
-                auth_throttle.succeed(key)
+            device_label = str(body.get("deviceLabel") or computer_name)
 
-                if preset_keys or custom_plans:
-                    _apply_subscription_presets_and_custom(
-                        connection,
-                        settings.timezone,
-                        preset_keys,
-                        custom_plans,
-                    )
-                plans_out = effective_terms(connection)
-                from spend_app.auth_model import Principal, create_session
-                rec = accounts["users"][user_key]
-                if rec.get("role", "owner") != "owner":
-                    return error_response("AUTH-103", status_code=403)
-                rec.setdefault("id", secrets.token_hex(16))
-                actor = Principal("owner", rec["id"], "owner")
-                request.state.principal = actor
-                session = create_session(connection, actor, str(body.get("deviceLabel") or computer_name))
+            def _login_tx():
+                from spend_app.auth_model import Principal, audit, create_session
 
+                initialize(settings.database_path)
+                with connect(settings.database_path) as connection:
+                    connection.execute("BEGIN IMMEDIATE")
+                    accounts = _read_accounts(connection)
+                    user_rec = accounts["users"].get(user_key)
+                    if not isinstance(user_rec, dict):
+                        for k, candidate in accounts["users"].items():
+                            if isinstance(candidate, dict) and (
+                                str(k).lower() == user_key
+                                or str(candidate.get("email") or "").lower() == user_key
+                                or str(candidate.get("username") or "").lower() == user_key
+                            ):
+                                user_rec = candidate
+                                break
+                    if not isinstance(user_rec, dict):
+                        _verify_password(password, "00" * 16, "00" * 32, PBKDF2_ITERATIONS)
+                        global_retry = _GLOBAL_THROTTLE.fail(global_key)
+                        retry_after = auth_throttle.fail(key)
+                        if global_retry or retry_after:
+                            return None, _throttled(max(global_retry, retry_after))
+                        if not accounts["users"]:
+                            return None, error_response("AUTH-104", status_code=401)
+                        return None, error_response("AUTH-101", status_code=401)
+                    iterations = _account_iterations(user_rec)
+                    if not _verify_password(
+                        password,
+                        str(user_rec.get("salt") or ""),
+                        str(user_rec.get("passwordHash") or ""),
+                        iterations,
+                    ):
+                        global_retry = _GLOBAL_THROTTLE.fail(global_key)
+                        retry_after = auth_throttle.fail(key)
+                        if global_retry or retry_after:
+                            return None, _throttled(max(global_retry, retry_after))
+                        return None, error_response("AUTH-101", status_code=401)
+                    display_username = str(user_rec.get("username") or username)
+                    needs_write = False
+                    if not user_rec.get("id"):
+                        user_rec["id"] = secrets.token_hex(16)
+                        needs_write = True
+                    if iterations < PBKDF2_ITERATIONS:
+                        salt_hex, hash_hex = _hash_password(password, iterations=PBKDF2_ITERATIONS)
+                        user_rec.update(
+                            salt=salt_hex,
+                            passwordHash=hash_hex,
+                            iterations=PBKDF2_ITERATIONS,
+                        )
+                        needs_write = True
+                    if needs_write:
+                        _write_accounts(connection, accounts)
+                    auth_throttle.succeed(key)
+                    if preset_keys or custom_plans:
+                        _apply_subscription_presets_and_custom(
+                            connection,
+                            settings.timezone,
+                            preset_keys,
+                            custom_plans,
+                        )
+                    plans_out = effective_terms(connection)
+                    if user_rec.get("role", "owner") != "owner":
+                        return None, error_response("AUTH-103", status_code=403)
+                    actor = Principal("owner", user_rec["id"], "owner")
+                    session = create_session(connection, actor, device_label)
+                    audit(connection, actor, "login", user_rec["id"])
+                    acct_out = {
+                        "username": display_username,
+                        "needsEmail": account_needs_email(user_rec),
+                    }
+                    if user_rec.get("email"):
+                        acct_out["email"] = user_rec["email"]
+                    return {
+                        "actor": actor,
+                        "session": session,
+                        "account": acct_out,
+                        "subscriptions": plans_out,
+                    }, None
+
+            tx_out, err_resp = await run_in_threadpool(_login_tx)
+            if err_resp is not None:
+                return err_resp
+            request.state.principal = tx_out["actor"]
+            request.state.audit_recorded = True
+            session = tx_out["session"]
             from spend_app.auth_model import set_session_cookie
+
             public_session = {"sessionId": session["sessionId"], "expiresAt": session["expiresAt"]}
             if body.get("sessionOnly"):
                 return set_session_cookie(
@@ -1413,11 +1545,184 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 {
                     "ok": True,
                     **public_session,
-                    "account": {"username": display_username},
-                    "subscriptions": plans_out,
+                    "account": tx_out["account"],
+                    "subscriptions": tx_out["subscriptions"],
                 },
                 headers={"Cache-Control": "no-store"},
             ), request, session)
+        except ValueError:
+            return error_response("HUB-501", status_code=422)
+
+    @router.post("/api/account/password")
+    async def central_account_password(request: Request):
+        from starlette.concurrency import run_in_threadpool
+
+        proto_err = check_protocol_version(request.headers.get("x-burnrate-protocol"))
+        if proto_err is not None:
+            return error_response(proto_err, status_code=426)
+        actor = request.state.principal
+        if actor.kind != "owner" or not actor.permits("credentials.manage"):
+            return error_response("AUTH-107", status_code=401 if actor.kind == "unauthenticated" else 403)
+        try:
+            try:
+                body = await _bounded_json(request)
+            except RequestTooLargeError:
+                return error_response("REQ-401", status_code=422)
+            except HTTPException as exc:
+                return error_response(
+                    "NET-002" if exc.status_code == 403 else "APP-901",
+                    status_code=exc.status_code,
+                )
+            except ValueError:
+                return error_response("APP-901", status_code=422)
+            current_password = str(body.get("currentPassword") or "")
+            new_password = str(body.get("newPassword") or "")
+
+            def _change_pw_tx():
+                from spend_app.auth_model import audit
+
+                initialize(settings.database_path)
+                with connect(settings.database_path) as connection:
+                    connection.execute("BEGIN IMMEDIATE")
+                    accounts = _read_accounts(connection)
+                    users = accounts["users"]
+                    rec = next(
+                        (u for u in users.values() if isinstance(u, dict) and u.get("id") == actor.id),
+                        None,
+                    )
+                    if rec is None:
+                        rec = next(
+                            (u for u in users.values() if isinstance(u, dict) and u.get("role", "owner") == "owner"),
+                            None,
+                        )
+                    if not isinstance(rec, dict):
+                        return error_response("AUTH-104", status_code=401), False
+                    rec.setdefault("id", secrets.token_hex(16))
+                    iterations = _account_iterations(rec)
+                    if not current_password or not _verify_password(
+                        current_password,
+                        str(rec.get("salt") or ""),
+                        str(rec.get("passwordHash") or ""),
+                        iterations,
+                    ):
+                        if not current_password:
+                            _verify_password("invalid", "00" * 16, "00" * 32, PBKDF2_ITERATIONS)
+                        audit(connection, actor, "account.password_change", rec["id"], "failure")
+                        return error_response("AUTH-101", status_code=401), True
+                    if len(new_password) < MIN_PASSWORD_LENGTH:
+                        audit(connection, actor, "account.password_change", rec["id"], "failure")
+                        return error_response("AUTH-105", status_code=422), True
+                    salt_hex, hash_hex = _hash_password(new_password, iterations=PBKDF2_ITERATIONS)
+                    now_stamp = utc_now()
+                    rec.update(
+                        salt=salt_hex,
+                        passwordHash=hash_hex,
+                        iterations=PBKDF2_ITERATIONS,
+                        passwordChangedAt=now_stamp,
+                    )
+                    _write_accounts(connection, accounts)
+                    if actor.session_id:
+                        connection.execute(
+                            "UPDATE owner_sessions SET revoked_at=? WHERE id != ? AND revoked_at IS NULL",
+                            (now_stamp, actor.session_id),
+                        )
+                    else:
+                        connection.execute(
+                            "UPDATE owner_sessions SET revoked_at=? WHERE revoked_at IS NULL",
+                            (now_stamp,),
+                        )
+                    audit(connection, actor, "account.password_change", rec["id"])
+                    return JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"}), True
+
+            resp, recorded = await run_in_threadpool(_change_pw_tx)
+            if recorded:
+                request.state.audit_recorded = True
+            return resp
+        except ValueError:
+            return error_response("HUB-501", status_code=422)
+
+    @router.post("/api/account/email")
+    async def central_account_email(request: Request):
+        from starlette.concurrency import run_in_threadpool
+
+        proto_err = check_protocol_version(request.headers.get("x-burnrate-protocol"))
+        if proto_err is not None:
+            return error_response(proto_err, status_code=426)
+        actor = request.state.principal
+        if actor.kind != "owner" or not actor.permits("credentials.manage"):
+            return error_response("AUTH-107", status_code=401 if actor.kind == "unauthenticated" else 403)
+        try:
+            try:
+                body = await _bounded_json(request)
+            except RequestTooLargeError:
+                return error_response("REQ-401", status_code=422)
+            except HTTPException as exc:
+                return error_response(
+                    "NET-002" if exc.status_code == 403 else "APP-901",
+                    status_code=exc.status_code,
+                )
+            except ValueError:
+                return error_response("APP-901", status_code=422)
+            email = normalize_email(body.get("email"))
+            password = str(body.get("password") or "")
+            if email is None:
+                return error_response("AUTH-106", status_code=422)
+
+            def _set_email_tx():
+                from spend_app.auth_model import audit
+
+                initialize(settings.database_path)
+                with connect(settings.database_path) as connection:
+                    connection.execute("BEGIN IMMEDIATE")
+                    accounts = _read_accounts(connection)
+                    users = accounts["users"]
+                    matched_key = None
+                    rec = None
+                    for k, u in users.items():
+                        if isinstance(u, dict) and u.get("id") == actor.id:
+                            matched_key, rec = k, u
+                            break
+                    if rec is None:
+                        for k, u in users.items():
+                            if isinstance(u, dict) and u.get("role", "owner") == "owner":
+                                matched_key, rec = k, u
+                                break
+                    if not isinstance(rec, dict) or matched_key is None:
+                        return error_response("AUTH-104", status_code=401), False
+                    rec.setdefault("id", secrets.token_hex(16))
+                    iterations = _account_iterations(rec)
+                    if not password or not _verify_password(
+                        password,
+                        str(rec.get("salt") or ""),
+                        str(rec.get("passwordHash") or ""),
+                        iterations,
+                    ):
+                        if not password:
+                            _verify_password("invalid", "00" * 16, "00" * 32, PBKDF2_ITERATIONS)
+                        audit(connection, actor, "account.email_set", rec["id"], "failure")
+                        return error_response("AUTH-101", status_code=401), True
+                    conflict = users.get(email)
+                    if isinstance(conflict, dict) and conflict.get("id") != rec["id"]:
+                        audit(connection, actor, "account.email_set", rec["id"], "failure")
+                        return error_response("AUTH-103", status_code=403), True
+                    if matched_key != email:
+                        users.pop(matched_key, None)
+                    rec.update(username=email, email=email, emailSetAt=utc_now())
+                    users[email] = rec
+                    _write_accounts(connection, accounts)
+                    audit(connection, actor, "account.email_set", rec["id"])
+                    return JSONResponse(
+                        {
+                            "ok": True,
+                            "account": {"username": email, "email": email, "needsEmail": False},
+                        },
+                        headers={"Cache-Control": "no-store"},
+                    ), True
+
+            resp, recorded = await run_in_threadpool(_set_email_tx)
+            if recorded:
+                request.state.audit_recorded = True
+            return resp
         except ValueError:
             return error_response("HUB-501", status_code=422)
 
@@ -1583,6 +1888,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     return error_response("DEV-301", status_code=409)
                 current["spokeConfig"]["token"] = replacement["token"]
                 current["spokeConfig"]["tokenExpiresAt"] = replacement["expiresAt"]
+                current["spokeConfig"]["rotationRequired"] = False
                 from spend_app.sync import rotate_spoke_sync_credential
                 rotate_spoke_sync_credential(connection, hub_url, replacement["token"])
                 write_setup_state(connection, current)
@@ -1615,14 +1921,20 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             mode = str(body.get("mode") or "login").strip().lower()
             if mode not in {"login", "register"}:
                 return error_response("APP-901", status_code=422)
-            username = str(body.get("username") or "").strip()
+            raw_username = str(body.get("username") or "").strip()
             password = str(body.get("password") or "")
-            if not username:
-                return error_response("AUTH-106", status_code=422)
-            if not password:
-                return error_response("AUTH-105" if mode == "register" else "AUTH-101", status_code=422)
-            if mode == "register" and len(password) < MIN_PASSWORD_LENGTH:
-                return error_response("AUTH-105", status_code=422)
+            if mode == "register":
+                username = normalize_email(raw_username)
+                if username is None:
+                    return error_response("AUTH-106", status_code=422)
+                if len(password) < MIN_PASSWORD_LENGTH:
+                    return error_response("AUTH-105", status_code=422)
+            else:
+                username = raw_username
+                if not username:
+                    return error_response("AUTH-106", status_code=422)
+                if not password:
+                    return error_response("AUTH-101", status_code=422)
             computer_name = str(body.get("computerName") or "").strip() or _default_computer_name()
             from spend_app.config import resolve_hub_url
             from spend_app.pairing import hub_origin
@@ -1637,7 +1949,6 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     "NET-003" if "HTTPS" in str(exc) else "NET-001",
                     status_code=422,
                 )
-            setup_token = str(body.get("setupToken") or "").strip()
             preset_keys = [str(k) for k in (body.get("presetKeys") or []) if k]
             custom_plans = list(body.get("customPlans")) if isinstance(body.get("customPlans"), list) else []
             test_sync = bool(body.get("testSync", True))
@@ -1662,7 +1973,6 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 "os": sys.platform,
                 "presetKeys": preset_keys,
                 "customPlans": custom_plans,
-                "setupToken": setup_token,
             }
             with connect(settings.database_path) as connection:
                 previous = read_setup_state(connection)
@@ -1685,7 +1995,14 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     "X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION),
                     "Content-Type": "application/json",
                 }
-                reg_payload = {"action": "register", "name": computer_name, "os": sys.platform}
+                from spend_app.sync import get_or_create_device_id
+
+                reg_payload = {
+                    "action": "register",
+                    "name": computer_name,
+                    "os": sys.platform,
+                    "deviceId": get_or_create_device_id(settings.database_path),
+                }
                 reg_client = _HUB_TEST_CLIENTS.get(working_url)
                 try:
                     if reg_client is not None:
@@ -1767,16 +2084,34 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 _sync_plans_into_local_db(connection, settings.timezone, remote_subs)
                 state["role"] = "spoke"
                 state["computerName"] = computer_name
+                account_username = str(account_info.get("username") or username)
+                needs_email = bool(account_info.get("needsEmail", not is_valid_email(account_username)))
+                prev_dismissed = bool((state.get("account") or {}).get("emailPromptDismissed"))
                 state["account"] = {
-                    "username": str(account_info.get("username") or username),
+                    "username": account_username,
                     "machineId": str(machine.get("id") or ""),
                     "connectedAt": utc_now(),
+                    "needsEmail": needs_email,
+                    "emailPromptDismissed": prev_dismissed if needs_email else False,
                 }
+                token_expires_at = (
+                    (sync_result or {}).get("tokenExpiresAt")
+                    or machine.get("expiresAt")
+                    or (None if reuse_machine else reg_data.get("expiresAt"))
+                    or previous_spoke.get("tokenExpiresAt")
+                )
+                rotation_required = bool(
+                    (sync_result or {}).get("rotationRequired")
+                    if isinstance(sync_result, dict) and "rotationRequired" in sync_result
+                    else (previous_spoke.get("rotationRequired") if reuse_machine else machine.get("rotationRequired"))
+                )
                 state["spokeConfig"] = {
                     "hubUrl": working_url,
                     "token": token,
                     "ownerSession": owner_session,
                     "ownerSessionExpiresAt": remote_data.get("expiresAt"),
+                    "tokenExpiresAt": token_expires_at,
+                    "rotationRequired": rotation_required,
                     "enabled": True,
                     "lastSyncAt": utc_now() if sync_result and sync_result.get("ok") else state["spokeConfig"].get("lastSyncAt"),
                     "lastSyncError": normalize_spoke_sync_error(sync_result.get("error")) if sync_result and not sync_result.get("ok") else None,
@@ -1809,6 +2144,143 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             if "address" in msg.lower():
                 return error_response("NET-001", status_code=422)
             return error_response("HUB-501", status_code=422)
+
+    @router.post("/api/setup/account/email")
+    async def spoke_set_account_email(request: Request):
+        refused = _setup_request_refused(request)
+        if refused:
+            return refused
+        try:
+            try:
+                body = await _bounded_json(request)
+            except RequestTooLargeError:
+                return error_response("REQ-401", status_code=422)
+            except HTTPException as exc:
+                return error_response(
+                    "NET-002" if exc.status_code == 403 else "APP-901",
+                    status_code=exc.status_code,
+                )
+            except ValueError:
+                return error_response("APP-901", status_code=422)
+            email = normalize_email(body.get("email"))
+            password = str(body.get("password") or "")
+            if email is None:
+                return error_response("AUTH-106", status_code=422)
+            if not password:
+                return error_response("AUTH-101", status_code=401)
+            with connect(settings.database_path) as connection:
+                state = read_setup_state(connection)
+            spoke = state.get("spokeConfig") or {}
+            if state.get("role") != "spoke" or not spoke.get("enabled"):
+                return error_response("AUTH-107", status_code=409)
+            if not str(spoke.get("ownerSession") or "").strip():
+                return error_response("AUTH-107", status_code=401)
+            from spend_app.sync import HubMutationError
+            from starlette.concurrency import run_in_threadpool
+
+            try:
+                remote = await run_in_threadpool(
+                    post_to_configured_hub,
+                    settings,
+                    "/api/account/email",
+                    {"email": email, "password": password},
+                    strict=True,
+                )
+            except HubMutationError as exc:
+                return error_response(
+                    exc.code or "HUB-501",
+                    status_code=exc.status_code,
+                    retry_after=exc.retry_after,
+                )
+            if not isinstance(remote, dict) or not remote.get("ok"):
+                return error_response("HUB-501", status_code=502)
+            acct = remote.get("account") if isinstance(remote.get("account"), dict) else {}
+            new_username = str(acct.get("username") or email)
+            with connect(settings.database_path) as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                latest = read_setup_state(connection)
+                latest["account"] = {
+                    **latest.get("account", {}),
+                    "username": new_username,
+                    "needsEmail": False,
+                    "emailPromptDismissed": False,
+                }
+                saved = write_setup_state(connection, latest)
+            clear_hub_proxy_cache()
+            return JSONResponse(
+                {"ok": True, "account": saved["account"], "setup": public_setup_state(saved)},
+                headers={"Cache-Control": "no-store"},
+            )
+        except Exception as exc:
+            err_code, err_status = map_transport_error(exc)
+            return error_response(err_code, status_code=err_status)
+
+    @router.post("/api/setup/account/dismiss-email-prompt")
+    async def spoke_dismiss_email_prompt(request: Request):
+        refused = _setup_request_refused(request)
+        if refused:
+            return refused
+        initialize(settings.database_path)
+        with connect(settings.database_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            state = read_setup_state(connection)
+            state["account"] = {**state.get("account", {}), "emailPromptDismissed": True}
+            saved = write_setup_state(connection, state)
+        return JSONResponse(
+            {"ok": True, "setup": public_setup_state(saved)},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @router.post("/api/setup/account/password")
+    async def spoke_change_account_password(request: Request):
+        refused = _setup_request_refused(request)
+        if refused:
+            return refused
+        try:
+            try:
+                body = await _bounded_json(request)
+            except RequestTooLargeError:
+                return error_response("REQ-401", status_code=422)
+            except HTTPException as exc:
+                return error_response(
+                    "NET-002" if exc.status_code == 403 else "APP-901",
+                    status_code=exc.status_code,
+                )
+            except ValueError:
+                return error_response("APP-901", status_code=422)
+            with connect(settings.database_path) as connection:
+                state = read_setup_state(connection)
+            spoke = state.get("spokeConfig") or {}
+            if state.get("role") != "spoke" or not spoke.get("enabled"):
+                return error_response("AUTH-107", status_code=409)
+            if not str(spoke.get("ownerSession") or "").strip():
+                return error_response("AUTH-107", status_code=401)
+            from spend_app.sync import HubMutationError
+            from starlette.concurrency import run_in_threadpool
+
+            try:
+                remote = await run_in_threadpool(
+                    post_to_configured_hub,
+                    settings,
+                    "/api/account/password",
+                    {
+                        "currentPassword": str(body.get("currentPassword") or ""),
+                        "newPassword": str(body.get("newPassword") or ""),
+                    },
+                    strict=True,
+                )
+            except HubMutationError as exc:
+                return error_response(
+                    exc.code or "HUB-501",
+                    status_code=exc.status_code,
+                    retry_after=exc.retry_after,
+                )
+            if not isinstance(remote, dict) or not remote.get("ok"):
+                return error_response("HUB-501", status_code=502)
+            return JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
+        except Exception as exc:
+            err_code, err_status = map_transport_error(exc)
+            return error_response(err_code, status_code=err_status)
 
     @router.post("/api/setup/scan")
     async def scan_and_import(request: Request):
@@ -1872,11 +2344,13 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             pairing_code = str(body.get("pairingCode") or "").strip()
             paired_id = ""
             from spend_app.pairing import exchange_remote, hub_origin
+            redeemed_expires_at = None
             if pairing_code:
                 decoded = decode_pairing_code(pairing_code)
                 hub_url = hub_origin(str(decoded["hubUrl"]))
                 redeemed = exchange_remote(hub_url, pairing_code)
                 token = str(redeemed["token"]).strip()
+                redeemed_expires_at = redeemed.get("expiresAt")
                 decoded["machineId"] = redeemed["machine"]["id"]
                 default_name = str(decoded.get("machineName") or "")
                 paired_id = str(decoded.get("machineId") or "")
@@ -1947,6 +2421,8 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 state["spokeConfig"] = {
                     "hubUrl": hub_url,
                     "token": token,
+                    "tokenExpiresAt": (sync_result or {}).get("tokenExpiresAt") or redeemed_expires_at,
+                    "rotationRequired": bool((sync_result or {}).get("rotationRequired")),
                     "enabled": True,
                     "lastSyncAt": utc_now() if sync_result and sync_result.get("ok") else state["spokeConfig"].get("lastSyncAt"),
                     "lastSyncError": normalize_spoke_sync_error(sync_result.get("error")) if sync_result and not sync_result.get("ok") else None,

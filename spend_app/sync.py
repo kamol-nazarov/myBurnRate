@@ -55,9 +55,47 @@ from spend_app.ingest import IngestRun
 from spend_app.pricing import PricingEngine, UnpricedModelError
 
 MACHINES_META_KEY = "machines.v1"
+DEVICE_ID_META_KEY = "device_id.v1"
 SYNC_CURSOR_PREFIX = "sync.cursor.v1:"
 MACHINE_ONLINE_SECONDS = 90
 _MACHINE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
+_DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}$")
+
+
+def _clean_device_id(value: object) -> str | None:
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw or not _DEVICE_ID_RE.fullmatch(raw):
+        return None
+    return raw
+
+
+def get_or_create_device_id(database_path: Path) -> str:
+    initialize(database_path)
+    with connect(database_path) as connection:
+        row = connection.execute(
+            "SELECT value FROM app_meta WHERE key=?", (DEVICE_ID_META_KEY,)
+        ).fetchone()
+        if row and row[0]:
+            existing = _clean_device_id(row[0])
+            if existing:
+                return existing
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            "SELECT value FROM app_meta WHERE key=?", (DEVICE_ID_META_KEY,)
+        ).fetchone()
+        if row and row[0]:
+            existing = _clean_device_id(row[0])
+            if existing:
+                return existing
+        created = f"dev-{secrets.token_hex(16)}"
+        connection.execute(
+            "INSERT INTO app_meta(key, value) VALUES(?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (DEVICE_ID_META_KEY, created),
+        )
+        return created
 _PREFIX_RE = re.compile(r"^m:([a-z0-9][a-z0-9_-]{0,47}):(.+)$", re.DOTALL)
 
 
@@ -233,17 +271,44 @@ def _ensure_unique_active_machine_name(
 
 
 def _register_in_connection(
-    connection, *, name, os_name="", now=None, reconnect=False, machine_id=None, allow_new_id=False
+    connection,
+    *,
+    name,
+    os_name="",
+    device_id: str | None = None,
+    now=None,
+    reconnect=False,
+    machine_id=None,
+    allow_new_id=False,
 ):
     from spend_app.auth_model import MACHINE_DAYS, moment, stamp
     clean_name = (name or "").strip()
     if not clean_name or len(clean_name) > 64:
         raise ValueError("Machine name must be between 1 and 64 characters.")
+    clean_device_id: str | None = None
+    if device_id is not None and str(device_id).strip():
+        clean_device_id = _clean_device_id(device_id)
+        if not clean_device_id:
+            raise ValueError("Invalid device ID.")
     state = _read_state(connection)
     matched_id = machine_id
+    matched_by_device_id = False
     if matched_id is not None and not allow_new_id and matched_id not in state["machines"]:
         raise ValueError("Unknown machine.")
-    if matched_id is None:
+    if matched_id is None and clean_device_id is not None:
+        device_matches = [
+            mid for mid, rec in state["machines"].items()
+            if isinstance(rec, dict) and rec.get("device_id") == clean_device_id
+        ]
+        if device_matches:
+            matched_id = next(
+                (mid for mid in device_matches if not state["machines"][mid].get("revoked")),
+                device_matches[0],
+            )
+            matched_by_device_id = True
+        else:
+            _ensure_unique_active_machine_name(state, clean_name)
+    elif matched_id is None:
         matches = [
             mid for mid, rec in state["machines"].items()
             if isinstance(rec, dict) and str(rec.get("name", "")).strip().lower() == clean_name.lower()
@@ -255,6 +320,8 @@ def _register_in_connection(
                     "Multiple or revoked machines match that name; specify the machine ID."
                 )
             if reconnect:
+                if state["machines"][active[0]].get("device_id"):
+                    raise ValueError("A machine with that name already exists.")
                 matched_id = active[0]
     if matched_id is None:
         matched_id = f"machine-{secrets.token_hex(8)}"
@@ -263,9 +330,10 @@ def _register_in_connection(
     _ensure_unique_active_machine_name(state, clean_name, exclude_machine_id=matched_id)
     token = f"br_m_{matched_id}_{secrets.token_urlsafe(32)}"
     prev = state["machines"].get(matched_id) or {}
-    if reconnect and prev.get("revoked"):
+    if reconnect and prev.get("revoked") and not matched_by_device_id:
         raise ValueError("This machine is revoked; pair it again using its machine ID.")
-    state["machines"][matched_id] = {
+    stored_device_id = clean_device_id or prev.get("device_id")
+    record = {
         "id": matched_id, "name": clean_name, "os": (os_name or prev.get("os") or "").strip()[:32],
         "token_hash": _token_hash(token), "created_at": stamp(now),
         "registered_at": prev.get("registered_at") or prev.get("created_at") or stamp(now),
@@ -273,6 +341,9 @@ def _register_in_connection(
         "rotation_required": False, "last_seen_at": stamp(now),
         "events_pushed": int(prev.get("events_pushed") or 0),
     }
+    if stored_device_id:
+        record["device_id"] = stored_device_id
+    state["machines"][matched_id] = record
     _write_state(connection, state)
     machines = list_machines(connection, now=now)
     created = next(item for item in machines if item["id"] == matched_id)
@@ -280,11 +351,15 @@ def _register_in_connection(
             "expiresAt": state["machines"][matched_id]["expires_at"]}
 
 
-def register_or_reconnect_machine(database_path: Path, *, name: str, os_name: str = "", now=None, actor=None) -> dict:
+def register_or_reconnect_machine(
+    database_path: Path, *, name: str, os_name: str = "", device_id: str | None = None, now=None, actor=None
+) -> dict:
     initialize(database_path)
     with connect(database_path) as connection:
         connection.execute("BEGIN IMMEDIATE")
-        result = _register_in_connection(connection, name=name, os_name=os_name, now=now, reconnect=True)
+        result = _register_in_connection(
+            connection, name=name, os_name=os_name, device_id=device_id, now=now, reconnect=True
+        )
         if actor:
             from spend_app.auth_model import audit
             audit(connection, actor, "machine.register", result["machine"]["id"], now=now)
@@ -292,11 +367,13 @@ def register_or_reconnect_machine(database_path: Path, *, name: str, os_name: st
     return result
 
 
-def register_machine(database_path: Path, *, name: str, os_name: str = "", now=None, actor=None) -> dict:
+def register_machine(
+    database_path: Path, *, name: str, os_name: str = "", device_id: str | None = None, now=None, actor=None
+) -> dict:
     initialize(database_path)
     with connect(database_path) as connection:
         connection.execute("BEGIN IMMEDIATE")
-        result = _register_in_connection(connection, name=name, os_name=os_name, now=now)
+        result = _register_in_connection(connection, name=name, os_name=os_name, device_id=device_id, now=now)
         if actor:
             from spend_app.auth_model import audit
             audit(connection, actor, "machine.register", result["machine"]["id"], now=now)
@@ -844,6 +921,19 @@ def apply_sync_push(
                 rec["name"] = str(machine_meta["name"]).strip()[:64] or rec["name"]
             if machine_meta.get("os"):
                 rec["os"] = str(machine_meta["os"]).strip()[:32]
+            pushed_dev_id = _clean_device_id(machine_meta.get("deviceId"))
+            if pushed_dev_id and not rec.get("device_id"):
+                taken = any(
+                    mid != machine_id
+                    and isinstance(other, dict)
+                    and not other.get("revoked")
+                    and other.get("device_id") == pushed_dev_id
+                    for mid, other in state["machines"].items()
+                )
+                if not taken:
+                    rec["device_id"] = pushed_dev_id
+            token_expires_at = rec.get("expires_at")
+            rotation_required = bool(rec.get("rotation_required"))
             rec["last_seen_at"] = stamp
             rec["events_pushed"] = int(rec.get("events_pushed") or 0) + written
             _write_state(connection, state)
@@ -880,6 +970,8 @@ def apply_sync_push(
         "machineId": machine_id,
         "eventsWritten": written,
         "receivedAt": stamp,
+        "tokenExpiresAt": token_expires_at,
+        "rotationRequired": rotation_required,
         **({"usageChangeSeq": change_ack, "usageChangesSkipped": skipped_changes} if change_ack is not None else {}),
     }
 
@@ -898,6 +990,7 @@ def export_sync_batch(
     if limit < 1:
         raise ValueError("Sync batch limit must be positive.")
     initialize(database_path)
+    device_id = get_or_create_device_id(database_path)
     with connect(database_path) as connection:
         # Journal identities and current payloads must share a read snapshot.
         connection.execute("BEGIN")
@@ -1022,7 +1115,7 @@ def export_sync_batch(
         row.pop("occurred_epoch_us", None)
 
     payload = {
-        "machine": {"name": hub_name, "os": sys.platform},
+        "machine": {"name": hub_name, "os": sys.platform, "deviceId": device_id},
         "usageEvents": usage_rows,
         "unpricedEvents": unpriced_rows,
         "sessions": sessions,
@@ -1831,10 +1924,15 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
                 if isinstance(hub_res, dict) and isinstance(hub_res.get("machines"), list):
                     return JSONResponse(hub_res, headers={"Cache-Control": "no-store"})
             if action == "register":
+                raw_device_id = body.get("deviceId")
+                device_id = str(raw_device_id).strip() if raw_device_id is not None else None
+                if device_id == "":
+                    device_id = None
                 result = register_or_reconnect_machine(
                     settings.database_path,
                     name=str(body.get("name") or ""),
                     os_name=str(body.get("os") or ""),
+                    device_id=device_id,
                     actor=request.state.principal,
                 )
                 request.state.audit_target = result["machine"]["id"]

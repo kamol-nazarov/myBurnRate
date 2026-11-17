@@ -4078,6 +4078,7 @@ function paintSettingsBody() {
     const defaultComp = setup.computerName || "";
     const ownerSignedIn = !!spoke.hasOwnerSession && (!spoke.ownerSessionExpiresAt || Date.parse(spoke.ownerSessionExpiresAt) > Date.now());
     const showAccountForm = !state.demo && (!ownerSignedIn || state.accountFormOpen);
+    const showEmailMigratePrompt = !state.demo && hubConnected && ownerSignedIn && !!account.needsEmail && !account.emailPromptDismissed && !state.accountFormOpen;
 
     body.innerHTML = `
       ${!state.demo ? `
@@ -4102,6 +4103,19 @@ function paintSettingsBody() {
             </button>
           </div>
           ${syncErr ? `<div style="padding:0 12px 9px;font-size:10.5px;color:var(--warn)">${esc(syncErr)}</div>` : ""}
+          ${showEmailMigratePrompt ? `
+            <form autocomplete="off" novalidate onsubmit="event.preventDefault();submitAccountEmail()" style="padding:8px 12px 10px;display:grid;gap:6px;border-top:1px solid var(--divider)">
+              <div style="font-size:11px;color:var(--ink-secondary);line-height:1.38">
+                Add an email address to your hub account so password resets work cleanly.
+              </div>
+              <input class="text-input" id="migrateEmailInput" type="email" autocomplete="off" spellcheck="false" placeholder="Email address"/>
+              <input class="text-input" id="migrateEmailPassword" type="password" autocomplete="current-password" placeholder="Confirm current password"/>
+              <div style="display:flex;justify-content:flex-end;gap:6px">
+                <button class="btn-secondary" type="button" onclick="dismissEmailPrompt()">Later</button>
+                <button class="btn-primary" id="saveEmailBtn" type="submit">Save email</button>
+              </div>
+            </form>
+          ` : ""}
         ` : `
           <div style="padding:2px 12px 6px;font-size:11px;color:var(--ink-secondary);line-height:1.38">
             Sign in to your VPS hub so this computer counts toward <strong>All computers</strong> automatically.
@@ -4114,9 +4128,8 @@ function paintSettingsBody() {
               <button class="btn-secondary ${state.accountAuthMode === "login" ? "active" : ""}" id="authMode_login" type="button" aria-pressed="${state.accountAuthMode === "login"}" onclick="setAccountAuthMode('login')">Sign in</button>
               <button class="btn-secondary ${state.accountAuthMode === "register" ? "active" : ""}" id="authMode_register" type="button" aria-pressed="${state.accountAuthMode === "register"}" onclick="setAccountAuthMode('register')">Create hub account</button>
             </div>
-            <input class="text-input" id="hubAccountUser" autocomplete="off" spellcheck="false" placeholder="Account email or username" value="${esc(defaultUser)}"/>
+            <input class="text-input" id="hubAccountUser" autocomplete="off" spellcheck="false" placeholder="${state.accountAuthMode === 'register' ? 'Account email' : 'Account email or username'}" value="${esc(defaultUser)}"/>
             <input class="text-input" id="hubAccountPass" type="password" autocomplete="new-password" placeholder="Account password"/>
-            ${state.accountAuthMode === "register" ? `<input class="text-input" id="hubAccountSetupToken" type="password" autocomplete="off" placeholder="Hub setup token (first account only)"/>` : ""}
             <input class="text-input" id="hubAccountComp" placeholder="This computer's name (e.g. Laptop)" value="${esc(defaultComp)}" autocomplete="off"/>
             <div style="display:flex;justify-content:flex-end">
               <button class="btn-primary" id="hubSignInBtn" type="submit" ${state.accountBusy ? "disabled" : ""}>
@@ -4800,9 +4813,11 @@ window.submitHubAccount = async function() {
   if (!apiAvailable() || state.accountBusy) return;
   const username = document.getElementById("hubAccountUser")?.value.trim() || "";
   const password = document.getElementById("hubAccountPass")?.value || "";
-  const setupToken = document.getElementById("hubAccountSetupToken")?.value || "";
   const computerName = document.getElementById("hubAccountComp")?.value.trim() || "";
-  if (!username || !password) { showToast("Enter your account username and password"); return; }
+  if (!username || !password) {
+    showToast(state.accountAuthMode === "register" ? "Enter your email and password" : "Enter your account email or username and password");
+    return;
+  }
 
   state.accountBusy = true;
   const btn = document.getElementById("hubSignInBtn");
@@ -4815,8 +4830,7 @@ window.submitHubAccount = async function() {
       username,
       password,
       computerName,
-      state.accountAuthMode,
-      setupToken
+      state.accountAuthMode
     );
     if (res && res.ok) {
       state.accountBusy = false;
@@ -4840,6 +4854,38 @@ window.submitHubAccount = async function() {
     }
     showToast("Hub sign-in failed");
   }
+};
+
+window.submitAccountEmail = async function() {
+  if (!apiAvailable() || state.accountBusy) return;
+  const email = document.getElementById("migrateEmailInput")?.value.trim() || "";
+  const password = document.getElementById("migrateEmailPassword")?.value || "";
+  if (!email || !password) { showToast("Enter your email address and current password"); return; }
+  const btn = document.getElementById("saveEmailBtn");
+  if (btn) { btn.disabled = true; btn.textContent = "Saving…"; }
+  try {
+    const res = await window.pywebview.api.set_account_email(email, password);
+    if (res && res.ok) {
+      showToast("Account email saved");
+      await refreshSettingsData();
+    } else {
+      if (btn) { btn.disabled = false; btn.textContent = "Save email"; }
+      showToast((res && res.error) || "Could not save account email");
+    }
+  } catch (err) {
+    if (btn) { btn.disabled = false; btn.textContent = "Save email"; }
+    showToast("Could not save account email");
+  }
+};
+
+window.dismissEmailPrompt = async function() {
+  if (!apiAvailable()) return;
+  try {
+    const res = await window.pywebview.api.dismiss_email_prompt();
+    if (res && res.ok) {
+      await refreshSettingsData();
+    }
+  } catch (err) {}
 };
 
 window.setPairMode = function(mode) {

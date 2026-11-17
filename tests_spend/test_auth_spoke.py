@@ -49,7 +49,7 @@ def pair(tmp_path, monkeypatch):
     hs = settings(tmp_path / "hub.db")
     hub_app = create_app(hs, enable_scheduler=False)
     with TestClient(hub_app, base_url=HUB) as hub:
-        registered = hub.post("/api/account/register", headers=HUB_UI, json={"username": "owner", "password": PASSWORD,
+        registered = hub.post("/api/account/register", headers=HUB_UI, json={"username": "owner@example.com", "password": PASSWORD,
             "setupToken": SETUP_TOKEN, "sessionOnly": True})
         assert registered.status_code == 200, registered.text
         hub.cookies.clear()
@@ -86,7 +86,7 @@ def summary(client):
 
 def sign_in(client):
     response = client.post("/api/setup/owner-session", headers=UI,
-                           json={"username": "owner", "password": PASSWORD})
+                           json={"username": "owner@example.com", "password": PASSWORD})
     assert response.status_code == 200, response.text
     return response
 
@@ -210,15 +210,18 @@ def test_spoke_login_refuses_revoked_machine_name_and_expired_rotation_deadline(
     expired_rotate = spoke.post("/api/setup/rotate-machine", headers=UI, json={})
     assert expired_rotate.status_code == 401, expired_rotate.text
 
-    # Revoking the machine on the hub prevents another spoke from reviving it via name-only login.
+    # Revoking the machine on the hub prevents name-only revival, and a new spoke (distinct deviceId) gets a new record.
     sync.revoke_machine(hs.database_path, machine_id=machine_id)
+    name_only = hub.post("/api/machines", headers=ADMIN, json={"action": "register", "name": "laptop"})
+    assert name_only.status_code == 422, name_only.text
     fresh = settings(tmp_path / "fresh-revoked.db")
     with TestClient(create_app(fresh, enable_scheduler=False), base_url="http://testserver") as fresh_spoke:
-        refused = fresh_spoke.post("/api/setup/account", headers=UI, json={
-            "mode": "login", "username": "owner", "password": PASSWORD,
+        joined = fresh_spoke.post("/api/setup/account", headers=UI, json={
+            "mode": "login", "username": "owner@example.com", "password": PASSWORD,
             "computerName": "laptop", "testSync": False,
         })
-        assert refused.status_code == 422, refused.text
+        assert joined.status_code == 200, joined.text
+        assert joined.json()["account"]["machineId"] != machine_id
     with connect(hs.database_path) as conn:
         assert sync._read_state(conn)["machines"][machine_id]["revoked"] is True
 
@@ -227,7 +230,7 @@ def test_setup_account_on_synced_spoke_preserves_machine_identity(pair, monkeypa
     _, hub, ss, spoke = pair
     monkeypatch.setenv("BURNRATE_HUB_URL", HUB)
     original_token = state(ss)["token"]
-    response = spoke.post("/api/setup/account", headers=UI, json={"mode": "login", "username": "owner",
+    response = spoke.post("/api/setup/account", headers=UI, json={"mode": "login", "username": "owner@example.com",
         "password": PASSWORD, "computerName": "Second laptop", "testSync": True})
     assert response.status_code == 200, response.text
     saved = state(ss)
@@ -246,7 +249,7 @@ def test_fresh_setup_account_enables_owner_view(pair, tmp_path, monkeypatch):
     fresh = settings(tmp_path / "fresh.db")
     with TestClient(create_app(fresh, enable_scheduler=False), base_url="http://testserver") as spoke:
         seed(fresh.database_path, "fresh-event", 3000)
-        response = spoke.post("/api/setup/account", headers=UI, json={"mode": "login", "username": "owner",
+        response = spoke.post("/api/setup/account", headers=UI, json={"mode": "login", "username": "owner@example.com",
             "password": PASSWORD, "computerName": "Fresh laptop", "testSync": True})
         assert response.status_code == 200, response.text
         saved = state(fresh)
@@ -344,7 +347,7 @@ def test_local_token_protected_first_registration_requires_owner(tmp_path, monke
     auth_throttle.reset()
     setup_wizard._GLOBAL_THROTTLE.reset()
     app = create_app(settings(tmp_path / "protected.db"), enable_scheduler=False)
-    payload = {"username": "owner", "password": PASSWORD, "sessionOnly": True}
+    payload = {"username": "owner@example.com", "password": PASSWORD, "sessionOnly": True}
     with TestClient(app) as client:
         denied = client.post("/api/account/register", headers={"X-BURNRATE-Request": "1"}, json=payload)
         assert denied.status_code in (401, 403), denied.text
@@ -370,7 +373,7 @@ def test_rotated_recovery_remains_protected_after_environment_removed(tmp_path, 
     monkeypatch.delenv("BURNRATE_ACCESS_TOKEN", raising=False)
     with TestClient(create_app(local, enable_scheduler=False)) as client:
         assert client.get("/api/machines").status_code == 401
-        denied = client.post("/api/account/register", headers={"X-BURNRATE-Request": "1"}, json={"username": "owner", "password": PASSWORD, "sessionOnly": True})
+        denied = client.post("/api/account/register", headers={"X-BURNRATE-Request": "1"}, json={"username": "owner@example.com", "password": PASSWORD, "sessionOnly": True})
         assert denied.status_code in (401, 403) and "sessionToken" not in denied.text
         old = client.post("/api/auth/bootstrap", headers={"Authorization": "Bearer " + recovery})
         assert old.status_code == 401
@@ -428,7 +431,7 @@ def test_session_rotation_and_revocation_failures_are_audited_once(pair):
     assert revocations[0]["target"] == "/api/auth/sessions/revoke"
     assert unknown not in str(revocations) and bad_token not in str(rotations)
 
-    login = hub.post("/api/account/login", headers=HUB_UI, json={"username": "owner", "password": PASSWORD, "sessionOnly": True})
+    login = hub.post("/api/account/login", headers=HUB_UI, json={"username": "owner@example.com", "password": PASSWORD, "sessionOnly": True})
     assert login.status_code == 200, login.text
     session_id = login.json()["sessionId"]
     hub.cookies.clear()
@@ -453,7 +456,7 @@ def test_paired_spoke_blocks_local_owner_creation_but_hub_signin_works(pair):
     before = state(ss).get("ownerSession")
     with connect(ss.database_path) as conn:
         assert not setup_wizard._read_accounts(conn)["users"]
-    attempt = spoke.post("/api/account/register", headers=UI, json={"username": "synthetic-local-owner",
+    attempt = spoke.post("/api/account/register", headers=UI, json={"username": "synthetic-local-owner@example.com",
                          "password": PASSWORD, "sessionOnly": True})
     assert attempt.status_code == 403, attempt.text
     assert "sessionToken" not in attempt.text and state(ss).get("ownerSession") == before
@@ -633,7 +636,7 @@ def test_disabled_spoke_account_login_rebinds_and_reseeds(pair, monkeypatch):
         setup_wizard.write_setup_state(conn, old_state)
     seed(ss.database_path, "disabled-snapshot", 1700)
     response = spoke.post("/api/setup/account", headers=UI,
-        json={"mode": "login", "username": "owner", "password": PASSWORD,
+        json={"mode": "login", "username": "owner@example.com", "password": PASSWORD,
               "computerName": name, "testSync": True})
     assert response.status_code == 200, response.text
     saved = state(ss)
@@ -665,7 +668,7 @@ def test_expired_reused_machine_does_not_block_owner_login(pair, monkeypatch):
         machines["machines"][machine_id]["expires_at"] = auth_model.stamp(auth_model.moment() - timedelta(seconds=1))
         sync._write_state(conn, machines)
     response = spoke.post("/api/setup/account", headers=UI,
-        json={"mode": "login", "username": "owner", "password": PASSWORD,
+        json={"mode": "login", "username": "owner@example.com", "password": PASSWORD,
               "computerName": name, "testSync": True})
     assert response.status_code == 200, response.text
     saved = state(ss)
