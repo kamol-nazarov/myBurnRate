@@ -52,16 +52,28 @@ class Vault:
 
     def put(self, secret, ref=None):
         ref = ref or "burnrate-" + uuid.uuid4().hex
+        previous = None
+        try:
+            previous = self.get(ref)
+        except Exception:
+            previous = None
         try:
             self.backend().set_password(self.service, ref, secret)
             if self.get(ref) != secret:
                 raise RuntimeError()
             return ref
         except Exception:
-            try:
-                self.delete(ref)
-            except Exception:
-                pass
+            if previous:
+                try:
+                    if self.get(ref) != previous:
+                        self.backend().set_password(self.service, ref, previous)
+                except Exception:
+                    pass
+            else:
+                try:
+                    self.delete(ref)
+                except Exception:
+                    pass
             raise LocationError("Secure credential storage failed; the existing connection was preserved.") from None
 
     def get(self, ref):
@@ -81,6 +93,53 @@ class Vault:
         backend = self.backend()
         if backend.get_password(self.service, ref) is not None:
             backend.delete_password(self.service, ref)
+
+
+_VAULT_FACTORY = None
+
+
+def set_vault_factory(factory):
+    """Install (or clear with ``None``) the vault factory used by ``get_vault``."""
+    global _VAULT_FACTORY
+    previous = _VAULT_FACTORY
+    _VAULT_FACTORY = factory
+    return previous
+
+
+def get_vault(database):
+    """Return the active credential vault for ``database``."""
+    if _VAULT_FACTORY is not None:
+        return _VAULT_FACTORY(database)
+    return Vault(database)
+
+
+def verified_vault_put(vault, secret: str, ref: str) -> str:
+    """Write ``secret`` to ``vault`` at ``ref`` and verify readback matches."""
+    if vault is None:
+        raise LocationError("Secure credential storage is unavailable.")
+    clean = str(secret or "")
+    if not clean:
+        raise LocationError("Cannot store an empty credential.")
+    previous = None
+    try:
+        previous = vault.get(ref)
+    except Exception:
+        previous = None
+    stored_ref = vault.put(clean, ref) or ref
+    readback = vault.get(stored_ref)
+    if readback != clean:
+        if previous:
+            try:
+                vault.put(previous, stored_ref)
+            except Exception:
+                pass
+        else:
+            try:
+                vault.delete(stored_ref)
+            except Exception:
+                pass
+        raise LocationError("Secure credential readback failed.")
+    return stored_ref
 
 
 def test_provider(source, key):

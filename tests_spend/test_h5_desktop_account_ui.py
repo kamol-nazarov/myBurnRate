@@ -646,6 +646,317 @@ def test_h5_sign_out_revokes_session_clears_vault_disables_spoke_and_handles_off
         assert auth_check.status_code == 401
 
 
+def test_h5_vault_only_end_to_end_sign_in_sync_rotate_sign_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from spend_app.connection_paths import LocationError
+    from spend_app.connection_secrets import get_vault
+    from spend_app.pricing import PricingEngine
+
+    _, hub_client, spoke_settings, _ = _create_paired_hub_and_spoke(tmp_path, monkeypatch)
+
+    # No explicit vault= passed: uses conftest's injected vault factory directly.
+    bridge = DesktopBridge(
+        NativeClient(spoke_settings, port=17351),
+        preferences=tmp_path / "prefs-e2e.json",
+    )
+
+    with hub_client:
+        res = bridge.sign_in("owner@example.com", PASSWORD, "E2E Desk")
+        assert res["ok"] is True, res
+        sync_state = _wait_for_first_sync(bridge)
+        assert sync_state["status"] == "ok", sync_state
+
+        vault = get_vault(spoke_settings.database_path)
+        sess_tok = vault.get(DesktopBridge.OWNER_SESSION_VAULT_REF)
+        mach_tok_1 = vault.get(DesktopBridge.MACHINE_TOKEN_VAULT_REF)
+        assert sess_tok.startswith("br_s_")
+        assert mach_tok_1.startswith("br_m_")
+
+        # SQLite setup state & app_meta must NOT store plaintext tokens
+        with connect(spoke_settings.database_path) as conn:
+            st = setup_wizard.read_setup_state(conn)
+            raw_rows = conn.execute("SELECT key, value FROM app_meta").fetchall()
+        assert "token" not in st["spokeConfig"]
+        assert "ownerSession" not in st["spokeConfig"]
+        joined_meta = json.dumps(raw_rows)
+        assert mach_tok_1 not in joined_meta
+        assert sess_tok not in joined_meta
+
+        # Background scheduler sync reads the machine token from the vault
+        bg_res = setup_wizard.maybe_run_configured_spoke_sync(
+            spoke_settings, PricingEngine([]), client=hub_client
+        )
+        assert bg_res is not None and bg_res.get("ok") is True, bg_res
+
+        # Rotation updates the vault and leaves DB free of plaintext token
+        rot_res = setup_wizard.rotate_spoke_machine_token(spoke_settings, client=hub_client)
+        assert rot_res is not None and rot_res.get("ok") is True, rot_res
+        mach_tok_2 = vault.get(DesktopBridge.MACHINE_TOKEN_VAULT_REF)
+        assert mach_tok_2.startswith("br_m_")
+        assert mach_tok_2 != mach_tok_1
+        with connect(spoke_settings.database_path) as conn:
+            st_after_rot = setup_wizard.read_setup_state(conn)
+        assert "token" not in st_after_rot["spokeConfig"]
+
+        # Sync works with the rotated token from the vault
+        bg_res_2 = setup_wizard.maybe_run_configured_spoke_sync(
+            spoke_settings, PricingEngine([]), client=hub_client
+        )
+        assert bg_res_2 is not None and bg_res_2.get("ok") is True, bg_res_2
+
+        # Sign out clears vault tokens completely
+        out_res = bridge.sign_out()
+        assert out_res == {"ok": True}
+        with pytest.raises(LocationError):
+            vault.get(DesktopBridge.OWNER_SESSION_VAULT_REF)
+        with pytest.raises(LocationError):
+            vault.get(DesktopBridge.MACHINE_TOKEN_VAULT_REF)
+
+
+def test_h5_failing_vault_returns_app_903_and_preserves_tokens(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from spend_app.connection_paths import LocationError
+    from spend_app.connection_secrets import get_vault, set_vault_factory
+
+    class _RefusingPutVault:
+        def available(self) -> bool:
+            return True
+
+        def put(self, secret: str, ref: str | None = None) -> str:
+            raise LocationError("Keychain refused write")
+
+        def get(self, ref: str) -> str:
+            raise LocationError("missing")
+
+        def delete(self, ref: str) -> None:
+            pass
+
+    class _MismatchReadbackVault:
+        def __init__(self, store: dict[str, str]):
+            self._store = store
+
+        def available(self) -> bool:
+            return True
+
+        def put(self, secret: str, ref: str | None = None) -> str:
+            # Pretend write succeeded without persisting the new value
+            return ref or "burnrate-x"
+
+        def get(self, ref: str) -> str:
+            if ref not in self._store:
+                raise LocationError("missing")
+            return self._store[ref]
+
+        def delete(self, ref: str) -> None:
+            self._store.pop(ref, None)
+
+    # 1. Failing vault on create_account -> APP-903, stays local, no plaintext file
+    _, empty_hub_client, spoke_empty, _ = _create_empty_hub_and_spoke(tmp_path / "empty", monkeypatch)
+    prev_factory = set_vault_factory(lambda _db: _RefusingPutVault())
+    try:
+        with empty_hub_client:
+            b_empty = DesktopBridge(
+                NativeClient(spoke_empty, port=17352),
+                preferences=tmp_path / "empty" / "prefs.json",
+            )
+            res_create = b_empty.create_account("owner@example.com", PASSWORD, "Locked Box")
+            assert res_create["ok"] is False
+            assert res_create["code"] == "APP-903"
+            assert "keychain" in res_create["message"].lower()
+            _assert_no_secrets_or_hub_url(res_create, label="create_account APP-903")
+            with connect(spoke_empty.database_path) as conn:
+                st = setup_wizard.read_setup_state(conn)
+            assert st["role"] == "local"
+            assert st["spokeConfig"]["enabled"] is False
+    finally:
+        set_vault_factory(prev_factory)
+
+    # 2. Mismatched readback on sign_in -> APP-903, does not save partial owner session
+    _, hub_client, spoke_settings, _ = _create_paired_hub_and_spoke(tmp_path / "paired", monkeypatch)
+    mismatch_store: dict[str, str] = {}
+    prev_factory = set_vault_factory(lambda _db: _MismatchReadbackVault(mismatch_store))
+    try:
+        with hub_client:
+            b_sign = DesktopBridge(
+                NativeClient(spoke_settings, port=17353),
+                preferences=tmp_path / "paired" / "prefs.json",
+            )
+            res_signin = b_sign.sign_in("owner@example.com", PASSWORD, "Mismatch Box")
+            assert res_signin["ok"] is False
+            assert res_signin["code"] == "APP-903"
+            assert "keychain" in res_signin["message"].lower()
+            assert b_sign.owner_session_status()["hasOwnerSession"] is False
+            assert mismatch_store == {}
+    finally:
+        set_vault_factory(prev_factory)
+
+    # 3. Partial write failure (session succeeds, machine token fails) rolls back session
+    class _FailMachineTokenOnlyVault:
+        def __init__(self):
+            self.items: dict[str, str] = {}
+
+        def put(self, secret: str, ref: str = "") -> str:
+            if ref == DesktopBridge.MACHINE_TOKEN_VAULT_REF:
+                raise LocationError("refused machine token")
+            self.items[ref] = secret
+            return ref
+
+        def get(self, ref: str) -> str:
+            if ref not in self.items:
+                raise LocationError("missing")
+            return self.items[ref]
+
+        def delete(self, ref: str) -> None:
+            self.items.pop(ref, None)
+
+    partial_vault = _FailMachineTokenOnlyVault()
+    with hub_client:
+        b_partial = DesktopBridge(
+            NativeClient(spoke_settings, port=17354),
+            preferences=tmp_path / "paired" / "prefs_partial.json",
+            vault=partial_vault,
+        )
+        res_partial = b_partial.sign_in("owner@example.com", PASSWORD, "Partial Box")
+        assert res_partial["ok"] is False
+        assert res_partial["code"] == "APP-903"
+        assert DesktopBridge.OWNER_SESSION_VAULT_REF not in partial_vault.items
+        assert b_partial.owner_session_status()["hasOwnerSession"] is False
+
+    # 4. Failing vault on rotate_spoke_machine_token preserves old credential & cursor locally
+    monkeypatch.setattr(sync, "sync_once", lambda *_a, **_kw: {"ok": True})
+    with hub_client:
+        b_ok = DesktopBridge(
+            NativeClient(spoke_settings, port=17355),
+            preferences=tmp_path / "paired" / "prefs_ok.json",
+        )
+        res_ok = b_ok.sign_in("owner@example.com", PASSWORD, "Rotate Box")
+        assert res_ok["ok"] is True, res_ok
+        _wait_for_first_sync(b_ok)
+
+        real_vault = get_vault(spoke_settings.database_path)
+        old_tok = real_vault.get(DesktopBridge.MACHINE_TOKEN_VAULT_REF)
+        before_cursor = sync.read_sync_cursor(spoke_settings.database_path, HUB_URL)
+
+        # Install vault that rejects replacing the existing token (preserving old_tok in store)
+        backing_store = {
+            DesktopBridge.MACHINE_TOKEN_VAULT_REF: old_tok,
+            DesktopBridge.OWNER_SESSION_VAULT_REF: real_vault.get(
+                DesktopBridge.OWNER_SESSION_VAULT_REF
+            ),
+        }
+        prev_factory = set_vault_factory(lambda _db: _MismatchReadbackVault(backing_store))
+        try:
+            rot_fail = setup_wizard.rotate_spoke_machine_token(spoke_settings, client=hub_client)
+            assert rot_fail is not None
+            assert rot_fail["ok"] is False
+            assert rot_fail["code"] == "APP-903"
+            after_cursor = sync.read_sync_cursor(spoke_settings.database_path, HUB_URL)
+            assert after_cursor == before_cursor
+            assert backing_store[DesktopBridge.MACHINE_TOKEN_VAULT_REF] == old_tok
+            with connect(spoke_settings.database_path) as conn:
+                st_rot = setup_wizard.read_setup_state(conn)
+            assert "token" not in st_rot["spokeConfig"]
+        finally:
+            set_vault_factory(prev_factory)
+
+
+def test_h5_legacy_sqlite_secrets_migrate_on_startup_and_fallback_when_vault_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from spend_app.connection_secrets import get_vault, set_vault_factory
+    from spend_app.pricing import PricingEngine
+
+    # Case A: Vault available -> DesktopBridge startup migrates token & ownerSession out of DB
+    hub_settings, hub_client, spoke_settings, _ = _create_paired_hub_and_spoke(
+        tmp_path / "mig_ok", monkeypatch
+    )
+    reg = sync.register_machine(
+        hub_settings.database_path,
+        name="Pre-0.5.9 PC",
+        os_name="win32",
+        device_id="dev-legacy-mig-01",
+    )
+    legacy_token = reg["token"]
+    legacy_session = "br_s_legacy_owner_session_token"
+    with connect(spoke_settings.database_path) as conn:
+        st = setup_wizard.default_setup_state()
+        st["role"] = "spoke"
+        st["computerName"] = "Pre-0.5.9 PC"
+        st["account"]["machineId"] = reg["machine"]["id"]
+        st["spokeConfig"].update(
+            hubUrl=HUB_URL,
+            token=legacy_token,
+            ownerSession=legacy_session,
+            enabled=True,
+        )
+        setup_wizard.write_setup_state(conn, st)
+
+    bridge = DesktopBridge(
+        NativeClient(spoke_settings, port=17356),
+        preferences=tmp_path / "mig_ok" / "prefs.json",
+    )
+    vault = get_vault(spoke_settings.database_path)
+    assert vault.get(DesktopBridge.MACHINE_TOKEN_VAULT_REF) == legacy_token
+    assert vault.get(DesktopBridge.OWNER_SESSION_VAULT_REF) == legacy_session
+    with connect(spoke_settings.database_path) as conn:
+        migrated_st = setup_wizard.read_setup_state(conn)
+    assert "token" not in migrated_st["spokeConfig"]
+    assert "ownerSession" not in migrated_st["spokeConfig"]
+    assert bridge._get_machine_token() == legacy_token
+
+    with hub_client:
+        sync_res = setup_wizard.maybe_run_configured_spoke_sync(
+            spoke_settings, PricingEngine([]), client=hub_client
+        )
+        assert sync_res is not None and sync_res.get("ok") is True, sync_res
+
+    # Case B: Vault unavailable -> leave secrets in SQLite DB and keep syncing
+    hub_b, hub_client_b, spoke_b, _ = _create_paired_hub_and_spoke(
+        tmp_path / "mig_no_vault", monkeypatch
+    )
+    reg_b = sync.register_machine(
+        hub_b.database_path,
+        name="No-Keychain PC",
+        os_name="linux",
+        device_id="dev-legacy-mig-02",
+    )
+    legacy_token_b = reg_b["token"]
+    legacy_session_b = "br_s_legacy_no_vault_session"
+    with connect(spoke_b.database_path) as conn:
+        st_b = setup_wizard.default_setup_state()
+        st_b["role"] = "spoke"
+        st_b["computerName"] = "No-Keychain PC"
+        st_b["account"]["machineId"] = reg_b["machine"]["id"]
+        st_b["spokeConfig"].update(
+            hubUrl=HUB_URL,
+            token=legacy_token_b,
+            ownerSession=legacy_session_b,
+            enabled=True,
+        )
+        setup_wizard.write_setup_state(conn, st_b)
+
+    prev_factory = set_vault_factory(lambda _db: None)
+    try:
+        bridge_b = DesktopBridge(
+            NativeClient(spoke_b, port=17357),
+            preferences=tmp_path / "mig_no_vault" / "prefs.json",
+        )
+        with hub_client_b:
+            sync_res_b = setup_wizard.maybe_run_configured_spoke_sync(
+                spoke_b, PricingEngine([]), client=hub_client_b
+            )
+            assert sync_res_b is not None and sync_res_b.get("ok") is True, sync_res_b
+        with connect(spoke_b.database_path) as conn:
+            kept_st = setup_wizard.read_setup_state(conn)
+        assert kept_st["spokeConfig"].get("token") == legacy_token_b
+        assert kept_st["spokeConfig"].get("ownerSession") == legacy_session_b
+        assert bridge_b._get_machine_token() == legacy_token_b
+    finally:
+        set_vault_factory(prev_factory)
+
+
 # ---------------------------------------------------------------------------
 # 2. Desktop UI States (spend_app/wealthfront_ui.html via Headless Chrome)
 # ---------------------------------------------------------------------------
@@ -909,6 +1220,7 @@ def test_h5_ui_signed_out_tabs_prefill_validation_submit_and_no_legacy_owner_lin
     const initialBody = document.getElementById('sheetBody').textContent;
     out.hasLegacyOwnerLink = /owner access/i.test(initialBody);
     out.hasHubAddr = /https?:\\/\\//i.test(initialBody) || /hub\\.test/i.test(initialBody);
+    out.hasSyncCardWhenSignedOut = !!document.getElementById('h11SyncCard');
 
     // Switch to Create account tab -> button label updates & 12+ char validation emits AUTH-105
     document.getElementById('authMode_register').click();
@@ -965,6 +1277,7 @@ def test_h5_ui_signed_out_tabs_prefill_validation_submit_and_no_legacy_owner_lin
     assert r["loginBtnText"] == "Sign in"
     assert r["hasLegacyOwnerLink"] is False
     assert r["hasHubAddr"] is False
+    assert r["hasSyncCardWhenSignedOut"] is False
     assert r["regTabSelected"] == "true"
     assert r["regBtnText"] == "Create account"
     assert "Error AUTH-105" in r["shortErrText"]
@@ -1082,6 +1395,8 @@ def test_h5_ui_signed_in_computers_and_inline_remove_flow(tmp_path: Path):
     const curRow = document.querySelector('[data-machine-id="m-cur"]');
     const otherRow = document.querySelector('[data-machine-id="m-other"]');
     out.curBadge = curRow.querySelector('.state-badge.ok') ? curRow.querySelector('.state-badge.ok').textContent.trim() : '';
+    out.curMeta = curRow.querySelector('.h5-comp-meta') ? curRow.querySelector('.h5-comp-meta').textContent.trim() : '';
+    out.hasSyncCardWhenSignedIn = !!document.getElementById('h11SyncCard');
     out.curHasRemove = !!curRow.querySelector('[data-h5-remove-ask]');
     out.otherHasRemove = !!otherRow.querySelector('[data-h5-remove-ask="m-other"]');
 
@@ -1115,6 +1430,9 @@ def test_h5_ui_signed_in_computers_and_inline_remove_flow(tmp_path: Path):
     r = probe(html, 380, tmp_path, height=820)
     assert r["signedInHint"] == "Signed in as owner@example.com"
     assert r["curBadge"] == "This computer"
+    assert "this computer" not in r["curMeta"].lower()
+    assert r["curMeta"].startswith("Synced ")
+    assert r["hasSyncCardWhenSignedIn"] is True
     assert r["curHasRemove"] is False
     assert r["otherHasRemove"] is True
     assert r["confirmPrompt"] == "Remove MacBook Pro?"
@@ -1136,6 +1454,9 @@ def test_h5_ui_change_password_validation_error_success_and_sign_out(tmp_path: P
     const out = {};
     document.getElementById('h5ChangePwToggleBtn').click();
     await until(() => document.getElementById('h5ChangePwForm'));
+    out.toggleHiddenWhileOpen = !document.getElementById('h5ChangePwToggleBtn');
+    out.cancelButtonCount = [...document.querySelectorAll('#h5AccountCard button')].filter(b => b.textContent.trim() === 'Cancel').length;
+    out.formHasCancelBtn = !!document.getElementById('h5CancelPwBtn');
 
     // 1. Short new password -> client-side AUTH-105
     document.getElementById('h5CurPass').value = 'current-pass-123';
@@ -1194,6 +1515,9 @@ def test_h5_ui_change_password_validation_error_success_and_sign_out(tmp_path: P
         extra_css=FAST,
     )
     r = probe(html, 380, tmp_path, height=860)
+    assert r["toggleHiddenWhileOpen"] is True
+    assert r["cancelButtonCount"] == 1
+    assert r["formHasCancelBtn"] is True
     assert "Error AUTH-105" in r["shortErr"]
     assert "Error AUTH-105" in r["mismatchErr"]
     assert r["callsAfterClientErrors"] == 0

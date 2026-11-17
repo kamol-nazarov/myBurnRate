@@ -1138,6 +1138,8 @@ class DesktopBridge:
         self._hud_mini = bool(saved.get("hudMini", False))
         raw_density = str(saved.get("hudDensity") or "compact").strip().lower()
         self._hud_density = raw_density if raw_density in {"compact", "comfortable"} else "compact"
+        if not self._demo:
+            self._migrate_legacy_secrets()
 
     def attach(self, window, hwnd_getter) -> None:
         self._window = window
@@ -2086,9 +2088,20 @@ class DesktopBridge:
         db_path = self._db_path()
         if db_path is None:
             return None
-        from spend_app.connection_secrets import Vault
+        from spend_app.connection_secrets import get_vault
 
-        return Vault(db_path)
+        return get_vault(db_path)
+
+    def _migrate_legacy_secrets(self) -> None:
+        db_path = self._db_path()
+        if db_path is None or not db_path.is_file():
+            return
+        try:
+            from spend_app.sync import migrate_legacy_spoke_secrets
+
+            migrate_legacy_spoke_secrets(db_path, vault=self._resolve_vault())
+        except Exception:
+            LOGGER.debug("Legacy spoke secret migration skipped", exc_info=True)
 
     def _sync_owner_session_from_db(self) -> None:
         db_path = self._db_path()
@@ -2108,11 +2121,13 @@ class DesktopBridge:
         with self._owner_session_lock:
             self._owner_session = token
             self._owner_session_expires_at = expires_at if token else None
-        if token and (self._vault is not None or not os.getenv("PYTEST_CURRENT_TEST")):
+        if token:
             vault = self._resolve_vault()
             if vault is not None:
                 try:
-                    vault.put(token, self.OWNER_SESSION_VAULT_REF)
+                    from spend_app.connection_secrets import verified_vault_put
+
+                    verified_vault_put(vault, token, self.OWNER_SESSION_VAULT_REF)
                 except Exception:
                     pass
 
@@ -2428,14 +2443,12 @@ class DesktopBridge:
             self._clear_owner_session()
             return
         with self._owner_session_lock:
+            vault = self._resolve_vault()
+            from spend_app.connection_secrets import verified_vault_put
+
+            verified_vault_put(vault, clean_token, self.OWNER_SESSION_VAULT_REF)
             self._owner_session = clean_token
             self._owner_session_expires_at = expires_at
-            vault = self._resolve_vault()
-            if vault is not None:
-                try:
-                    vault.put(clean_token, self.OWNER_SESSION_VAULT_REF)
-                except Exception:
-                    pass
             db_path = self._db_path()
             if db_path is not None and db_path.is_file():
                 try:
@@ -2491,13 +2504,11 @@ class DesktopBridge:
             self._clear_machine_token()
             return
         with self._owner_session_lock:
-            self._machine_token = clean_token
             vault = self._resolve_vault()
-            if vault is not None:
-                try:
-                    vault.put(clean_token, self.MACHINE_TOKEN_VAULT_REF)
-                except Exception:
-                    pass
+            from spend_app.connection_secrets import verified_vault_put
+
+            verified_vault_put(vault, clean_token, self.MACHINE_TOKEN_VAULT_REF)
+            self._machine_token = clean_token
             db_path = self._db_path()
             if db_path is not None and db_path.is_file():
                 try:
@@ -2674,12 +2685,23 @@ class DesktopBridge:
                         if pricing_dir is not None and Path(pricing_dir).is_dir()
                         else PricingEngine([])
                     )
+                sync_token = None
+                vault = self._resolve_vault()
+                if vault is not None:
+                    try:
+                        val = vault.get(self.MACHINE_TOKEN_VAULT_REF)
+                        if isinstance(val, str) and val.strip():
+                            sync_token = val.strip()
+                    except Exception:
+                        sync_token = None
+                if not sync_token:
+                    sync_token = machine_token
                 test_client = _HUB_TEST_CLIENTS.get(hub_url)
                 sync_once(
                     client_settings,
                     pricing,
                     hub_url=hub_url,
-                    token=machine_token,
+                    token=sync_token,
                     machine_name=machine_name,
                     collect_local=False,
                     client=test_client,
@@ -2793,8 +2815,51 @@ class DesktopBridge:
             return self._h5_err("HUB-501")
 
         expires_at = auth_data.get("expiresAt")
-        self._save_owner_session_vault_only(session_token, expires_at)
-        self._save_machine_token(machine_token)
+        with self._owner_session_lock:
+            prev_session = self._owner_session
+            prev_expires = self._owner_session_expires_at
+            prev_machine = self._machine_token
+            prev_vault_session = None
+            vault = self._resolve_vault()
+            if vault is not None:
+                try:
+                    raw_prev = vault.get(self.OWNER_SESSION_VAULT_REF)
+                    if isinstance(raw_prev, str) and raw_prev.strip():
+                        prev_vault_session = raw_prev.strip()
+                except Exception:
+                    prev_vault_session = None
+        try:
+            self._save_owner_session_vault_only(session_token, expires_at)
+        except Exception:
+            LOGGER.debug("Owner session vault write failed (APP-903)", exc_info=True)
+            return self._h5_err("APP-903")
+        try:
+            self._save_machine_token(machine_token)
+        except Exception:
+            LOGGER.debug("Machine token vault write failed (APP-903)", exc_info=True)
+            with self._owner_session_lock:
+                self._owner_session = prev_session
+                self._owner_session_expires_at = prev_expires
+                self._machine_token = prev_machine
+                if prev_vault_session:
+                    try:
+                        from spend_app.connection_secrets import verified_vault_put
+
+                        verified_vault_put(
+                            self._resolve_vault(),
+                            prev_vault_session,
+                            self.OWNER_SESSION_VAULT_REF,
+                        )
+                    except Exception:
+                        pass
+                else:
+                    v = self._resolve_vault()
+                    if v is not None:
+                        try:
+                            v.delete(self.OWNER_SESSION_VAULT_REF)
+                        except Exception:
+                            pass
+            return self._h5_err("APP-903")
 
         acct_raw = dict(auth_data.get("account") or {}) if isinstance(auth_data.get("account"), dict) else {}
         acct_email = str(acct_raw.get("email") or acct_raw.get("username") or clean_user).strip()

@@ -25,6 +25,7 @@ from spend_app.error_codes import (
     HUB_PROTOCOL_VERSION,
     CodedError,
     check_protocol_version,
+    error_message,
     error_response,
     format_error,
     map_http_error,
@@ -580,9 +581,25 @@ def rotate_spoke_machine_token(settings, *, client=None) -> dict | None:
         )
         if current_tok != token or generation != prior_generation:
             return {"ok": False, "status": 409}
-        if db_has_token or "token" in current["spokeConfig"]:
+        vault_saved = _vault_put_secret(
+            settings.database_path, "burnrate-machine-token", replacement["token"]
+        )
+        if not vault_saved:
+            from spend_app.connection_secrets import get_vault
+
+            active_vault = None
+            try:
+                active_vault = get_vault(settings.database_path)
+            except Exception:
+                active_vault = None
+            vault_available = active_vault is not None and bool(
+                getattr(active_vault, "available", lambda: True)()
+            )
+            if not db_has_token or vault_available:
+                return {"ok": False, "code": "APP-903", "message": error_message("APP-903")}
             current["spokeConfig"]["token"] = replacement["token"]
-        _vault_put_secret(settings.database_path, "burnrate-machine-token", replacement["token"])
+        else:
+            current["spokeConfig"].pop("token", None)
         current["spokeConfig"]["tokenExpiresAt"] = replacement.get("expiresAt")
         current["spokeConfig"]["rotationRequired"] = False
         rotate_spoke_sync_credential(connection, hub_url, replacement["token"])
@@ -602,7 +619,16 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
         return None
     from spend_app.config import resolve_hub_url
     from spend_app.hub_origin import hub_origin
-    from spend_app.sync import _vault_get_secret
+    from spend_app.sync import _vault_get_secret, migrate_legacy_spoke_secrets
+
+    migrated = migrate_legacy_spoke_secrets(settings.database_path)
+    if migrated.get("token") or migrated.get("ownerSession"):
+        try:
+            with connect(settings.database_path) as connection:
+                state = read_setup_state(connection)
+            spoke = state.get("spokeConfig") or {}
+        except Exception:
+            pass
 
     token = str(spoke.get("token") or "").strip() or (
         _vault_get_secret(settings.database_path, "burnrate-machine-token") or ""

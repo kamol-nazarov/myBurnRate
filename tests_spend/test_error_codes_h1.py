@@ -21,6 +21,7 @@ from spend_app.error_codes import (
     ERROR_CATALOG,
     HUB_PROTOCOL_VERSION,
     CodedError,
+    error_message,
     format_error,
 )
 from spend_app.native_desktop import DesktopError, NativeClient
@@ -54,6 +55,7 @@ EXPECTED_CODES = {
     "HUB-502",
     "APP-901",
     "APP-902",
+    "APP-903",
 }
 
 
@@ -258,9 +260,12 @@ def _patch_httpx_for_fake_responses(monkeypatch, handler):
 # ---------------------------------------------------------------------------
 
 
-def test_error_catalog_has_all_18_codes() -> None:
+def test_error_catalog_has_all_19_codes() -> None:
     assert set(ERROR_CATALOG) == EXPECTED_CODES
-    assert len(ERROR_CATALOG) == 18
+    assert len(ERROR_CATALOG) == 19
+    msg = error_message("APP-903")
+    assert "keychain" in msg.lower()
+    assert format_error("APP-903") == f"{msg} Error APP-903"
 
 
 def test_net_001_transport_and_invalid_url_paths(tmp_path: Path, monkeypatch) -> None:

@@ -83,6 +83,10 @@ ERROR_CATALOG: dict[str, dict[str, object]] = {
         "message": "Update BURNRATE to work with your hub.",
         "status": 426,
     },
+    "APP-903": {
+        "message": "This computer's keychain couldn't save your sign-in. Check OS keychain access and try again.",
+        "status": 503,
+    },
 }
 
 

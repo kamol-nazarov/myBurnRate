@@ -163,6 +163,59 @@ def _no_real_claude_accounts(monkeypatch):
     monkeypatch.setattr("spend_app.claude_accounts.extra_accounts", lambda: ())
 
 
+class _InMemoryTestVault:
+    def __init__(self, store: dict[str, str], service: str) -> None:
+        self._store = store
+        self.service = service
+
+    def available(self) -> bool:
+        return True
+
+    def put(self, secret: str, ref: str | None = None) -> str:
+        from spend_app.connection_paths import LocationError
+
+        if not isinstance(secret, str) or not secret:
+            raise LocationError("Invalid secret.")
+        use_ref = ref or ("burnrate-" + os.urandom(16).hex())
+        self._store[use_ref] = secret
+        return use_ref
+
+    def get(self, ref: str) -> str:
+        from spend_app.connection_paths import LocationError
+
+        if not isinstance(ref, str) or not ref.startswith("burnrate-"):
+            raise LocationError("Invalid credential reference.")
+        if ref not in self._store:
+            raise LocationError("Saved credential unavailable.")
+        return self._store[ref]
+
+    def delete(self, ref: str) -> None:
+        from spend_app.connection_paths import LocationError
+
+        if not isinstance(ref, str) or not ref.startswith("burnrate-"):
+            raise LocationError("Not a BURNRATE-owned credential.")
+        self._store.pop(ref, None)
+
+
+@pytest.fixture(autouse=True)
+def _in_memory_vault_factory():
+    """Route get_vault() to an in-memory per-DB vault so tests never touch Windows Credential Manager."""
+    from spend_app.connection_secrets import set_vault_factory
+
+    stores: dict[str, dict[str, str]] = {}
+
+    def _factory(database_path):
+        key = os.path.normcase(str(database_path))
+        store = stores.setdefault(key, {})
+        return _InMemoryTestVault(store, f"BURNRATE/test/{key}")
+
+    previous = set_vault_factory(_factory)
+    try:
+        yield stores
+    finally:
+        set_vault_factory(previous)
+
+
 @pytest.fixture(autouse=True)
 def _block_live_httpx(monkeypatch):
     """Fail httpx calls whose host is not loopback, unless the client is mocked.

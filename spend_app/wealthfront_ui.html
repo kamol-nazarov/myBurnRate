@@ -6471,6 +6471,7 @@ function paintSettingsBody() {
 
   if (tab === "computers") {
     /* <!-- H5 --> */
+    const acctInfo = !state.demo ? h5AccountContextData() : null;
     body.innerHTML = `
       ${!state.demo ? `
         <div class="wf-card h5-acct-card" id="h5AccountCard">
@@ -6485,7 +6486,7 @@ function paintSettingsBody() {
           <div style="padding:0 12px 10px">${h5MachinesListHtml(state.settingsData.machines || [], "", false)}</div>
         </div>
       `}
-      ${!state.demo && apiHas("trigger_sync") ? h11SyncCardHtml() : ""}
+      ${!state.demo && acctInfo && acctInfo.signedIn && apiHas("trigger_sync") ? h11SyncCardHtml() : ""}
     `;
     /* <!-- /H5 --> */
     return;
@@ -7223,7 +7224,7 @@ function h5MachinesListHtml(machines, currentMachineId, canRemove) {
       const rel = h5RelativeTime(m.lastSeenAt);
       let meta = "";
       if (isCur) {
-        meta = rel ? `This computer · synced ${rel}` : "This computer · syncing…";
+        meta = rel ? `Synced ${rel}` : "Syncing…";
       } else if (rel) {
         meta = m.online !== false ? `Synced ${rel}` : `Last seen ${rel}`;
       } else {
@@ -7302,10 +7303,12 @@ function h5HubAccountHtml(context = "settings") {
         </form>
       ` : ""}
       ${h5MachinesListHtml(info.machines, info.currentMachineId, canManage && apiHas("remove_computer"))}
-      <div class="h5-actions">
-        ${canManage && apiHas("change_password") ? `<button class="btn-secondary ${state.changePwOpen ? "active" : ""}" id="h5ChangePwToggleBtn" type="button" onclick="h5ToggleChangePassword()">${state.changePwOpen ? "Cancel" : "Change password"}</button>` : ""}
-        ${apiHas("sign_out") ? `<button class="btn-secondary" id="${prefix}h5SignOutBtn" type="button" onclick="h5SignOut()" ${state.signOutBusy ? "disabled" : ""}>${state.signOutBusy ? "Signing out…" : "Sign out"}</button>` : ""}
-      </div>
+      ${((canManage && apiHas("change_password") && !state.changePwOpen) || apiHas("sign_out")) ? `
+        <div class="h5-actions">
+          ${canManage && apiHas("change_password") && !state.changePwOpen ? `<button class="btn-secondary" id="h5ChangePwToggleBtn" type="button" onclick="h5ToggleChangePassword()">Change password</button>` : ""}
+          ${apiHas("sign_out") ? `<button class="btn-secondary" id="${prefix}h5SignOutBtn" type="button" onclick="h5SignOut()" ${state.signOutBusy ? "disabled" : ""}>${state.signOutBusy ? "Signing out…" : "Sign out"}</button>` : ""}
+        </div>
+      ` : ""}
       ${canManage && state.changePwOpen ? `
         <form class="h5-pw-form" id="h5ChangePwForm" autocomplete="off" novalidate onsubmit="event.preventDefault();h5SubmitChangePassword()">
           ${state.changePwError ? h5RenderErrBanner(state.changePwError) : ""}
@@ -7322,7 +7325,7 @@ function h5HubAccountHtml(context = "settings") {
             <input class="text-input" id="h5ConfirmPass" type="password" autocomplete="new-password" placeholder="Confirm new password"/>
           </div>
           <div class="h5-actions">
-            <button class="btn-secondary" type="button" onclick="h5ToggleChangePassword()" ${state.changePwBusy ? "disabled" : ""}>Cancel</button>
+            <button class="btn-secondary" id="h5CancelPwBtn" type="button" onclick="h5ToggleChangePassword()" ${state.changePwBusy ? "disabled" : ""}>Cancel</button>
             <button class="btn-primary" id="h5SavePwBtn" type="submit" ${state.changePwBusy ? "disabled" : ""}>${state.changePwBusy ? "Updating…" : "Update password"}</button>
           </div>
         </form>
