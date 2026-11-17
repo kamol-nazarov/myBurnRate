@@ -9,6 +9,85 @@ This project is licensed under Apache-2.0.
 
 ## [0.5.9] - Unreleased
 
+### Added
+
+- **One hub account per hub, email and password only.** Your hub account is your email address and a
+  password of at least 12 characters. The first account can register without a setup token, and
+  registration then closes for good (`AUTH-103`), so nobody else can claim your hub. You can change
+  your password from the desktop app (it needs the current one and signs your other sessions out),
+  and a forgotten password is reset on the hub's own machine with
+  `burnrate hub reset-password <email>`. Account creation, sign-in, password changes and computer
+  removal are written to the hub's audit log. `BURNRATE_SETUP_TOKEN` and
+  `BURNRATE_ALLOW_REGISTRATION` are no longer used.
+- **Each computer registers once.** Every install creates its own device id, so signing in again on
+  the same computer reconnects the same entry (with a fresh machine token) instead of adding a
+  duplicate. A name already used by a different computer is refused (`DEV-302`). Machine tokens
+  refresh themselves before they expire.
+- **The hub address is built into the app.** Release builds embed it from
+  `BURNRATE_BUILTIN_HUB_URL` at build time (`https://` only; the build fails otherwise) through the
+  generated `spend_app/_build_config.py`. For testing, `BURNRATE_HUB_URL` in the environment or in
+  `%LOCALAPPDATA%\BURNRATE\.env` overrides it. The address is never shown or asked for in the app,
+  and it is redacted from API responses, `syncCommand`, logs, error messages and the diagnostics
+  copy. A hub address already saved in an older install moves to the resolved address on start.
+- **Plain-English errors with a code.** Sign-in and sync failures now read like "That email and
+  password don't match. Error AUTH-101" instead of raw server text. The codes live in
+  `spend_app/error_codes.py` and fall into seven families: `NET` (can't reach the hub), `AUTH`
+  (sign-in), `DEV` (this computer), `SYNC`, `HUB`, `APP` and `REQ`. `/api/hub/info` and the
+  `X-BURNRATE-Protocol` header report protocol version 2, so an app and hub that no longer match
+  say so (`HUB-502` or `APP-902`) instead of failing in odd ways.
+- **Hub exposure guard.** In hub mode the hub refuses to start on a public or wildcard address
+  unless you set `BURNRATE_HUB_ALLOW_PUBLIC=1`. Loopback, private (RFC 1918) and Tailscale
+  addresses are fine. The hub trusts `X-Forwarded-For` and `X-Forwarded-Proto` only from the
+  proxies listed in `BURNRATE_TRUSTED_PROXIES` (default loopback), and sign-in and registration are
+  throttled per real client instead of one shared bucket behind the proxy.
+- **Hub account screen in the desktop app.** Settings → Hub account lets you sign in or create the
+  account, see your Computers with **Remove**, **Change password**, and **Sign out**. Signing in
+  returns as soon as this computer is registered; the first sync runs in the background, and if it
+  fails you see `SYNC-201` and it retries by itself.
+- **Credentials live only in your OS keychain.** The owner session and machine token are no longer
+  kept in the SQLite database. Copies from older installs move to the keychain on first start
+  (and are removed from the database only once the keychain read-back matches). If the keychain
+  can't save a sign-in, you get `APP-903` instead of a silent fallback.
+- **Dashboard features now in the desktop app.** Everything from the old web dashboard that you
+  asked to keep:
+  - **Analytics.** Time ranges from 15m to YTD and a tool filter, token-activity charts
+    (stacked or cumulative), a weekday-by-hour heatmap, the "What a million costs" ladder, cost by
+    model with a per-model and per-tool drilldown, "Where money leaks", forecast against plans, and
+    a pricing-coverage banner for unpriced models.
+  - **Running now and Diagnostics.** A live list of active agent sessions, and a Diagnostics view
+    with per-computer freshness, ingest passes, quota pollers, unpriced models and
+    provider-versus-computed variance.
+  - **Compact mode extras.** A mini bar, a compact or comfortable density toggle, a weekly share
+    card you can copy as an image, and a one-click quick plan suggestion.
+  - **Setup and settings.** A full setup scan across every tool, with the experimental quota
+    consent switches for Z.AI and OpenCode Go, per-kind notification toggles with **Send a test**,
+    **Copy diagnostics**, and **Sync now**.
+
+### Changed
+
+- **Desktop commands replace the browser.** `burnrate demo` no longer opens a browser (use
+  `burnrate desktop --demo` for the desktop app), and `burnrate serve` and `demo` now run only the
+  JSON API. `burnrate doctor` checks the packaged `desktop_assets`.
+- **Hub setup is leaner.** Signing in with your hub account is the only way to join a hub, and the
+  hub must be reachable only over your tailnet or private network (see `docs/self-hosting.md`).
+- **Upgrade migration drops `pairing_grants`.** Existing databases drop the obsolete
+  `pairing_grants` table on startup (discarding any unused pairing codes). Computers that were
+  already paired keep their machine tokens and keep syncing without signing in again.
+- **Icons moved.** App icons now live in `assets/icons/` (they were in `src-tauri/icons/`).
+
+### Security
+
+- **Public hubs need a deliberate choice.** The bind guard (`BURNRATE_HUB_ALLOW_PUBLIC=1`), the
+  trusted-proxy rule and per-client throttling above keep an open first-registration hub from being
+  exposed or brute-forced by accident. Deploy it on your tailnet and create the account right
+  away.
+- **Credentials leave the database.** Owner sessions and machine tokens sit in the OS keychain
+  only, not in SQLite.
+- **No hub address in the app's output.** The built-in address is redacted from the UI, API,
+  logs and diagnostics.
+- **Errors never carry server text.** The desktop app shows fixed messages and codes, not raw
+  responses from the hub.
+
 ### Removed
 
 - **Browser HTML pages and asset pipeline removed.** Removed `/`, `/hud`, `/setup`, `/auth`,
@@ -16,8 +95,11 @@ This project is licensed under Apache-2.0.
   `starting.html`), `frontend_src/`, and browser asset-build/preview scripts. All non-API paths
   now return `404` JSON (`REQ-404`), while `/api/*`, `/healthz`, and the native desktop window
   (`spend_app/wealthfront_ui.html`) remain intact; spoke owner sessions are held by the desktop
-  bridge instead of the removed `burnrate_local` cookie, and `burnrate doctor` checks packaged
-  `desktop_assets`.
+  bridge instead of the removed `burnrate_local` cookie.
+- **Features that left with the pages.** The attention incidents panel, Repos today, the plan
+  manager screens, the live-push (SSE) consumer, probe mode, the standalone/hub role switcher with
+  LAN addresses, the Plans & Balances setup step, and the HUD preview cards are gone and have no
+  replacement.
 - **Pairing codes and pairing routes removed.** Computers now join the hub solely by signing in
   to your hub account. Removed `spend_app/pairing.py` (keeping `hub_origin` in
   `spend_app/hub_origin.py`), `/api/pairing/redeem`, `/api/setup/pair-hub`,
@@ -26,12 +108,26 @@ This project is licensed under Apache-2.0.
   and bridge methods (`create_pairing_code`, `join_with_code`), and CLI `machines register`,
   `sync --hub --token`, and `desktop --hub --token`. Redaction keeps masking historical `brpair_`
   tokens in old logs.
+- **The Tauri HUD is retired.** `src-tauri/` is gone, along with `.github/workflows/desktop.yml`
+  and the Tauri bundle, `latest.json` and update-signing steps in the release workflow. The native
+  installer and `native-latest.json` are unchanged.
+- **Scoop and winget manifests are no longer published.** They pointed at the Tauri bundle;
+  `packaging/render_manifests.py` is removed.
 
-### Changed
+### Upgrade notes
 
-- **Upgrade migration drops `pairing_grants`.** Existing databases drop the obsolete `pairing_grants`
-  table idempotently on startup (discarding any unused pairing codes), while already-paired
-  computers retain their machine tokens and keep syncing without re-authentication.
+- **Already-paired computers keep syncing.** Their machine tokens and sync cursors are unchanged,
+  with no need to sign in again. An older hub account whose name isn't an email address keeps
+  working, and the desktop app asks you once to add an email.
+- **Put the hub on your tailnet and create the account right after deploying.** The first
+  registration needs no setup token, so anyone who can reach a new hub can claim it. See
+  `docs/self-hosting.md`.
+- **Hub env vars.** Remove `BURNRATE_SETUP_TOKEN` and `BURNRATE_ALLOW_REGISTRATION` from the hub's
+  environment (they are ignored now). Behind Caddy or another proxy, set
+  `BURNRATE_TRUSTED_PROXIES` to its address, and set `BURNRATE_HUB_ALLOW_PUBLIC=1` only if you
+  really must bind a public address.
+- **Anything that opened a page in a browser** (links to `/`, `/hud`, `/setup`, `/auth`) now gets
+  a `404`. Use the desktop app, or `burnrate desktop --demo` for sample data.
 
 ## [0.5.8] - 2026-11-16
 
