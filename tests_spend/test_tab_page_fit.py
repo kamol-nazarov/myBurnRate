@@ -171,3 +171,32 @@ def test_a_provider_that_vanishes_entirely_leaves_focus_on_the_page_not_a_stale_
       """)
     assert "error" not in out, out.get("error")
     assert out["active"]["id"] not in ("fine", "urgentPill")
+
+
+def test_the_urgent_pill_is_amber_for_warn_only_and_red_with_an_out_inside(tmp_path):
+    from tests_spend.test_tab_review import out_cards
+
+    warn_model = TabModel()
+    warn_model.publish_report({"providers": providers(*many_urgent(9))})
+    red_model = TabModel()
+    red_model.publish_report({"providers": providers(*out_cards(8))})
+    warn = warn_model.payload(dark=False, now=NOW, budget=700)
+    red = red_model.payload(dark=False, now=NOW, budget=420)
+    assert warn["urgentMore"]["severity"] == "warn" and red["urgentMore"]["severity"] == "soon"
+    out = run_page(tmp_path, f"""
+      function pill() {{
+        var el = document.getElementById('urgentPill');
+        var span = el.querySelector('span');
+        return {{ text: span.textContent, warn: el.classList.contains('warn'),
+                  bg: getComputedStyle(span).backgroundColor, aria: el.getAttribute('aria-label') }};
+      }}
+      window.burnrateTab.update({json.dumps(warn)});
+      report.amber = pill();
+      window.burnrateTab.update({json.dumps(red)});
+      report.red = pill();
+      """)
+    assert "error" not in out, out.get("error")
+    assert out["amber"]["warn"] is True and out["amber"]["text"].endswith("to watch")
+    assert out["red"]["warn"] is False and out["red"]["text"].endswith("urgent")
+    assert out["amber"]["bg"] != out["red"]["bg"]
+    assert "to watch" in out["amber"]["aria"] and "about to run out" in out["red"]["aria"]

@@ -477,3 +477,55 @@ def test_the_physical_window_never_exceeds_the_physical_work_area(monkeypatch, w
     assert physical_width <= monitors[0].work.width  # compared with the real work area
     host.expand(max(data["layout"]["width"], data["layout"]["cardWidth"]), 330, (0, data["layout"]["cardWidth"], 250))
     assert host._target_size()[0] <= monitors[0].work.width
+
+
+# ---- the "+N urgent" pill is coloured by the worst level inside it -------------
+
+def severity_of(cards, budget=700):
+    model = TabModel()
+    model.publish_report({"providers": providers(*cards)})
+    return model.payload(dark=False, budget=budget)["urgentMore"]
+
+
+def test_the_urgent_pill_is_amber_when_it_holds_only_warn_providers():
+    pill = severity_of(many_urgent(9))
+    assert pill["severity"] == "warn"
+    assert {i["level"] for i in pill["items"]} == {"warn"}
+
+
+def out_cards(count):
+    return [card(f"claude-code-{i}", 100.0, dry(0.0, 40.0), title=f"Provider {i}", label=f"P{i}", resets=24.0)
+            for i in range(count)]
+
+
+def test_the_urgent_pill_is_red_when_it_holds_any_out_or_soon_provider():
+    pill = severity_of(out_cards(8), budget=420)
+    assert pill["severity"] == "soon"
+    assert {i["level"] for i in pill["items"]} == {"out"}
+    soon = [card(f"claude-code-{i}", 50.0, dry(1.5, 40.0), title=f"Provider {i}", label=f"P{i}") for i in range(8)]
+    assert severity_of(soon, budget=420)["severity"] == "soon"
+
+
+def test_the_severity_follows_what_is_inside_the_pill_as_the_budget_shrinks():
+    # out/soon providers sort first, so they stay on the strip longest; the pill is amber while
+    # it holds only warn ones and turns red once an out/soon provider has to fold into it
+    cards = out_cards(3) + [
+        card(f"claude-code-{i}", 40.0, dry(20.0 + i, 50.0), title=f"Provider {i}", label=f"P{i}") for i in range(3, 8)
+    ]
+    model = TabModel()
+    model.publish_report({"providers": providers(*cards)})
+    seen = []
+    for budget in range(1400, 239, -20):
+        pill = model.payload(dark=False, budget=budget)["urgentMore"]
+        state = None if pill is None else pill["severity"]
+        has_urgent = pill is not None and any(i["level"] in ("out", "soon") for i in pill["items"])
+        assert (state == "soon") == has_urgent
+        if not seen or seen[-1] != state:
+            seen.append(state)
+    assert seen == [None, "warn", "soon"]
+
+
+def test_a_pill_that_is_not_the_urgent_pill_has_no_severity():
+    model = TabModel()
+    model.publish_report({"providers": providers(*[card(f"k{i}", 10.0 + i, resets=100.0, title=f"P{i}") for i in range(7)])})
+    assert "severity" not in model.payload(dark=False, budget=2000)["fine"]

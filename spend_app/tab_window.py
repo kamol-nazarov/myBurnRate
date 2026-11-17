@@ -402,16 +402,20 @@ def fit_layout(segments: list[dict], *, state: str, has_error: bool, has_code: b
     }
 
 
-def _pill_info(items: list[dict]) -> dict | None:
+def _pill_info(items: list[dict], *, severity: bool = False) -> dict | None:
     if not items:
         return None
-    return {
+    info = {
         "count": len(items),
         "items": [
             {"key": s["key"], "title": s["title"], "level": s["level"], "text": f"{s['big']} {s['unit']}".strip()}
             for s in items
         ],
     }
+    if severity:
+        # red only when something inside is about to run out; amber for "dries before refill"
+        info["severity"] = "soon" if any(s["level"] in URGENT_LEVELS for s in items) else "warn"
+    return info
 
 
 class TabModel:
@@ -504,7 +508,7 @@ class TabModel:
             "error": error,
             "segments": plan["shown"],
             "fine": _pill_info(plan["folded"]),
-            "urgentMore": _pill_info(plan["hidden"]),
+            "urgentMore": _pill_info(plan["hidden"], severity=True),
             "urgentCount": urgent,
             "layout": {
                 "height": TAB_HEIGHT,

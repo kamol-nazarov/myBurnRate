@@ -129,6 +129,7 @@ html[data-theme="dark"] .brand-chip { background: var(--bd-bg); color: var(--bd-
 
 .urgentpill { flex: none; width: 92px; height: 48px; display: flex; align-items: center; justify-content: center; border-radius: 10px; }
 .urgentpill span { font-size: 10.5px; font-weight: 800; padding: 5px 9px; border-radius: 99px; background: var(--soon); color: var(--badge-ink); white-space: nowrap; }
+.urgentpill.warn span { background: var(--warn); }
 .urgentpill:hover, .urgentpill.on { background: var(--hover); }
 .status { flex: none; height: 48px; display: flex; align-items: center; padding: 0 12px; border-radius: 10px; font-size: 12px; font-weight: 700; color: var(--muted); white-space: nowrap; }
 button.status:hover { background: var(--hover); color: var(--ink); }
@@ -306,8 +307,10 @@ body.up .card-wrap { padding: 0 0 6px; }
     var urgentPill = $("urgentPill");
     if (next.urgentMore) {
       urgentPill.hidden = false;
-      urgentPill.innerHTML = pillHtml(next.urgentMore.count, "urgent");
-      urgentPill.setAttribute("aria-label", next.urgentMore.count + " more providers about to run out");
+      var watching = next.urgentMore.severity === "warn";
+      urgentPill.classList.toggle("warn", watching);
+      urgentPill.innerHTML = pillHtml(next.urgentMore.count, watching ? "to watch" : "urgent");
+      urgentPill.setAttribute("aria-label", next.urgentMore.count + (watching ? " more providers to watch" : " more providers about to run out"));
     } else { urgentPill.hidden = true; urgentPill.innerHTML = ""; }
     var status = $("status");
     if (next.state === "loading") {
