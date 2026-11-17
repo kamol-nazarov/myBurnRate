@@ -67,8 +67,8 @@ def test_validate_builtin_hub_url_accepts_empty_and_normalizes_https() -> None:
         == "https://hub.example.ts.net:8449"
     )
     assert (
-        build_config.validate_builtin_hub_url("  HTTPS://My-Hub.Tail982D0E.ts.net:8449/  ")
-        == "https://my-hub.tail982d0e.ts.net:8449"
+        build_config.validate_builtin_hub_url("  HTTPS://My-Hub.Tail0Ab1C2.ts.net:8449/  ")
+        == "https://my-hub.tail0ab1c2.ts.net:8449"
     )
 
 
@@ -639,7 +639,7 @@ def test_acceptance_sentinel_hub_url_never_leaks(
     from spend_app import redact as redact_mod
     from spend_app import support_report
 
-    sentinel_host = "secret-hub-sentinel.tail982d0e.ts.net"
+    sentinel_host = "secret-hub-sentinel.tail0ab1c2.ts.net"
     sentinel_url = f"https://{sentinel_host}:8449"
     sentinel_terms = (
         sentinel_url,

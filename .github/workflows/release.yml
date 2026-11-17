@@ -88,8 +88,9 @@ jobs:
         run: npm ci --prefix tools/tauri --no-audit --no-fund
       - name: Build the native app and its installer (unsigned)
         env:
-          BURNRATE_BUILTIN_HUB_URL: ${{ vars.BURNRATE_BUILTIN_HUB_URL || 'https://ai-harness-vps.tail982d0e.ts.net:8449' }}
+          BURNRATE_BUILTIN_HUB_URL: ${{ secrets.BURNRATE_BUILTIN_HUB_URL }}
         run: |
+          if (-not $env:BURNRATE_BUILTIN_HUB_URL) { throw "Set the BURNRATE_BUILTIN_HUB_URL repository secret" }
           python -m pip install --require-hashes -r requirements-build.txt
           python -m pip install --no-deps --no-build-isolation -e .
           if (-not (Get-Command makensis -ErrorAction SilentlyContinue) -and -not (Test-Path "${env:ProgramFiles(x86)}\NSIS\makensis.exe")) {
@@ -181,8 +182,9 @@ jobs:
           python-version: "3.12"
       - name: Wheel and sdist
         env:
-          BURNRATE_BUILTIN_HUB_URL: ${{ vars.BURNRATE_BUILTIN_HUB_URL || 'https://ai-harness-vps.tail982d0e.ts.net:8449' }}
+          BURNRATE_BUILTIN_HUB_URL: ${{ secrets.BURNRATE_BUILTIN_HUB_URL }}
         run: |
+          test -n "$BURNRATE_BUILTIN_HUB_URL" || { echo "::error::Set the BURNRATE_BUILTIN_HUB_URL repository secret"; exit 1; }
           python -m pip install --require-hashes -r requirements-build.txt
           python -m build --no-isolation --outdir release
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4

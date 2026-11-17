@@ -86,9 +86,10 @@ git-ignored `spend_app/_build_config.py` (`BUILTIN_HUB_URL`) via `packaging/buil
   `spend_app/_build_config.py` before invoking PyInstaller and removes it in a `finally`
   block afterwards.
 - **Release workflow:** `.github/workflows/release.yml` sets `BURNRATE_BUILTIN_HUB_URL`
-  from the `vars.BURNRATE_BUILTIN_HUB_URL` repository variable (defaulting to
-  `https://ai-harness-vps.tail982d0e.ts.net:8449`) in the native Windows installer step
-  and the wheel/sdist step.
+  from the `BURNRATE_BUILTIN_HUB_URL` repository **secret** in the native Windows installer
+  step and the wheel/sdist step, and fails if the secret is missing. It is a secret, not a
+  variable, so the address is masked in the public workflow logs and never committed:
+  `gh secret set BURNRATE_BUILTIN_HUB_URL`.
 
 The build fails if `BURNRATE_BUILTIN_HUB_URL` is set to anything other than a bare
 `https://` origin (non-HTTPS schemes, embedded credentials, paths, query strings, and
