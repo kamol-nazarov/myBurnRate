@@ -10,6 +10,12 @@ from spend_app import aggregate, auth_model, auth_throttle, setup_wizard, sync
 from spend_app.api import create_app
 from spend_app.config import Settings
 from spend_app.connection_paths import LocationError
+from spend_app.connection_secrets import (
+    MACHINE_TOKEN_VAULT_REF,
+    OWNER_SESSION_VAULT_REF,
+    clear_spoke_credentials,
+    read_vault_secret,
+)
 from spend_app.db import UsageEvent, connect, upsert_usage_event
 from spend_app.native_desktop import NativeClient
 from spend_app.pricing import PricingEngine
@@ -91,11 +97,7 @@ def pair(tmp_path, monkeypatch):
             })
             assert joined.status_code == 200, joined.text
             # Leave sync connected without an active owner session so tests can verify sign-in/fallback.
-            with connect(ss.database_path) as conn:
-                current = setup_wizard.read_setup_state(conn)
-                current["spokeConfig"].pop("ownerSession", None)
-                current["spokeConfig"].pop("ownerSessionExpiresAt", None)
-                setup_wizard.write_setup_state(conn, current)
+            clear_spoke_credentials(ss.database_path, clear_owner_session=True)
             spoke.cookies.clear()
             sync.clear_hub_proxy_cache()
             yield hs, hub, ss, spoke
@@ -108,6 +110,16 @@ def pair(tmp_path, monkeypatch):
 def state(settings):
     with connect(settings.database_path) as conn:
         return setup_wizard.read_setup_state(conn)["spokeConfig"]
+
+
+def machine_token_of(settings):
+    assert not state(settings).get("token")
+    return read_vault_secret(settings.database_path, MACHINE_TOKEN_VAULT_REF)
+
+
+def owner_session_of(settings):
+    assert "ownerSession" not in state(settings)
+    return read_vault_secret(settings.database_path, OWNER_SESSION_VAULT_REF)
 
 
 def summary(client):
@@ -142,7 +154,7 @@ def test_spoke_local_session_gates_hub_owner_actions(pair):
     assert ctx.status_code == 200
     assert ctx.json() == {"spoke": True, "hasOwner": False, "localSession": False}
 
-    bridge = DesktopBridge(NativeClient(ss, port=17331), vault=_MemoryVault())
+    bridge = DesktopBridge(NativeClient(ss, port=17331))
     signed = bridge.sign_in_owner("owner@example.com", PASSWORD)
     assert signed["ok"] is True
     assert signed["sessionId"] and signed["expiresAt"]
@@ -175,7 +187,7 @@ def test_spoke_local_session_gates_hub_owner_actions(pair):
 
     logged_out = bridge.sign_out_owner()
     assert logged_out == {"ok": True}
-    assert not state(ss).get("ownerSession")
+    assert not owner_session_of(ss)
     assert bridge.owner_session_status() == {"ok": True, "hasOwnerSession": False, "expiresAt": None}
     assert bridge.list_owner_sessions()["code"] == "AUTH-107"
     assert spoke.get("/api/auth/sessions", headers=UI).status_code == 401
@@ -185,18 +197,18 @@ def test_paired_spoke_owner_signin_logout_and_machine_sync(pair):
     hs, hub, ss, spoke = pair
     before = summary(spoke)
     assert before["totals"]["tokens"] == 7000
-    machine_token = state(ss)["token"]
+    machine_token = machine_token_of(ss)
     response = sign_in(spoke)
     assert response.json()["ok"] is True and response.json().get("expiresAt")
-    owner_token = state(ss)["ownerSession"]
+    owner_token = owner_session_of(ss)
     assert owner_token and owner_token != machine_token and owner_token not in response.text
     wide = summary(spoke)
     assert wide["totals"]["tokens"] == 18000
     assert len(wide["machines"]) == 2
-    bridge = DesktopBridge(NativeClient(ss, port=17331), vault=_MemoryVault())
+    bridge = DesktopBridge(NativeClient(ss, port=17331))
     logout = bridge.sign_out_owner()
     assert logout == {"ok": True}
-    assert not state(ss).get("ownerSession")
+    assert not owner_session_of(ss)
     assert bridge.owner_session_status()["hasOwnerSession"] is False
     hub.cookies.clear()
     assert hub.get("/api/machines", headers={"Authorization": "Bearer " + owner_token}).status_code == 401
@@ -210,7 +222,7 @@ def test_paired_spoke_owner_signin_logout_and_machine_sync(pair):
 def test_rejected_owner_session_discards_wide_cache_and_falls_back(pair, condition):
     hs, hub, ss, spoke = pair
     sign_in(spoke)
-    token = state(ss)["ownerSession"]
+    token = owner_session_of(ss)
     assert summary(spoke)["totals"]["tokens"] == 18000
     with connect(hs.database_path) as conn:
         if condition == "expired":
@@ -228,10 +240,10 @@ def test_rejected_owner_session_discards_wide_cache_and_falls_back(pair, conditi
 
 def test_spoke_machine_rotation_persists_replacement(pair):
     _, hub, ss, spoke = pair
-    old = state(ss)["token"]
+    old = machine_token_of(ss)
     response = spoke.post("/api/setup/rotate-machine", headers=UI, json={})
     assert response.status_code == 200, response.text
-    new = state(ss)["token"]
+    new = machine_token_of(ss)
     assert new != old and new not in response.text
     assert hub.post("/api/sync/push", headers={"Authorization": "Bearer " + old}, json={}).status_code == 401
     result = sync.sync_once(ss, PricingEngine.load(ss.pricing_path), hub_url=HUB, token=new,
@@ -286,14 +298,15 @@ def test_spoke_login_refuses_revoked_machine_name_and_expired_rotation_deadline(
 def test_setup_account_on_synced_spoke_preserves_machine_identity(pair, monkeypatch):
     _, hub, ss, spoke = pair
     monkeypatch.setenv("BURNRATE_HUB_URL", HUB)
-    original_token = state(ss)["token"]
+    original_token = machine_token_of(ss)
     response = spoke.post("/api/setup/account", headers=UI, json={"mode": "login", "username": "owner@example.com",
         "password": PASSWORD, "computerName": "Second laptop", "testSync": True})
     assert response.status_code == 200, response.text
-    saved = state(ss)
-    assert saved["ownerSession"] and saved["token"] and saved["ownerSession"] != saved["token"]
-    assert saved["ownerSession"] not in response.text and saved["token"] not in response.text
-    assert saved["token"] == original_token
+    owner_tok = owner_session_of(ss)
+    mach_tok = machine_token_of(ss)
+    assert owner_tok and mach_tok and owner_tok != mach_tok
+    assert owner_tok not in response.text and mach_tok not in response.text
+    assert mach_tok == original_token
     assert summary(spoke)["totals"]["tokens"] == 18000
     assert len(summary(spoke)["machines"]) == 2
 
@@ -309,9 +322,10 @@ def test_fresh_setup_account_enables_owner_view(pair, tmp_path, monkeypatch):
         response = spoke.post("/api/setup/account", headers=UI, json={"mode": "login", "username": "owner@example.com",
             "password": PASSWORD, "computerName": "Fresh laptop", "testSync": True})
         assert response.status_code == 200, response.text
-        saved = state(fresh)
-        assert saved["ownerSession"] and saved["token"] and saved["ownerSession"] != saved["token"]
-        assert saved["ownerSession"] not in response.text and saved["token"] not in response.text
+        owner_tok = owner_session_of(fresh)
+        mach_tok = machine_token_of(fresh)
+        assert owner_tok and mach_tok and owner_tok != mach_tok
+        assert owner_tok not in response.text and mach_tok not in response.text
         assert summary(spoke)["totals"]["tokens"] == 21000
         assert len(summary(spoke)["machines"]) == 3
 
@@ -490,17 +504,17 @@ def test_paired_spoke_blocks_local_owner_creation_but_hub_signin_works(pair):
     page = spoke.get("/auth")
     assert page.status_code == 404
     assert page.json()["error"]["code"] == "REQ-404"
-    before = state(ss).get("ownerSession")
+    before = owner_session_of(ss)
     with connect(ss.database_path) as conn:
         assert not setup_wizard._read_accounts(conn)["users"]
     attempt = spoke.post("/api/account/register", headers=UI, json={"username": "synthetic-local-owner@example.com",
                          "password": PASSWORD, "sessionOnly": True})
     assert attempt.status_code == 403, attempt.text
-    assert "sessionToken" not in attempt.text and state(ss).get("ownerSession") == before
+    assert "sessionToken" not in attempt.text and owner_session_of(ss) == before
     with connect(ss.database_path) as conn:
         assert not setup_wizard._read_accounts(conn)["users"]
     sign_in(spoke)
-    assert state(ss)["ownerSession"]
+    assert owner_session_of(ss)
     assert summary(spoke)["totals"]["tokens"] == 18000
 
 
@@ -523,7 +537,7 @@ def test_new_identity_reconnect_resends_local_usage_and_keeps_owner_session(pair
         "testSync": True,
     })
     assert repaired.status_code == 200, repaired.text
-    assert state(ss)["ownerSession"] and state(ss)["ownerSession"].startswith("br_s_")
+    assert (owner_session_of(ss) or "").startswith("br_s_")
     with connect(ss.database_path) as conn:
         new_id = setup_wizard.read_setup_state(conn)["account"]["machineId"]
     assert new_id and new_id != old_id
@@ -601,7 +615,7 @@ def test_account_reconnect_survives_failed_initial_sync_and_retries(pair, monkey
     hs, hub, ss, spoke = pair
     sign_in(spoke)
     hub.cookies.clear()
-    before = state(ss).copy()
+    before_token = machine_token_of(ss)
     old_cursor = sync.read_sync_cursor(ss.database_path, HUB)
     with connect(ss.database_path) as conn:
         current = setup_wizard.read_setup_state(conn)
@@ -627,14 +641,15 @@ def test_account_reconnect_survives_failed_initial_sync_and_retries(pair, monkey
         })
     assert response.status_code == 200, response.text
     saved = state(ss)
-    assert saved["token"] != before["token"] and saved["ownerSession"]
-    assert saved["token"] not in response.text
+    new_token = machine_token_of(ss)
+    assert new_token != before_token and owner_session_of(ss)
+    assert new_token not in response.text
     assert saved["lastSyncError"] and not response.json()["syncResult"]["ok"]
     cursor = sync.read_sync_cursor(ss.database_path, HUB)
     assert cursor["generation"] != old_cursor["generation"]
-    assert cursor["credential_hash"] == sync._token_hash(saved["token"])
-    assert sync.authenticate_machine_token(hs.database_path, before["token"]) is None
-    assert sync.authenticate_machine_token(hs.database_path, saved["token"]) == machine_id
+    assert cursor["credential_hash"] == sync._token_hash(new_token)
+    assert sync.authenticate_machine_token(hs.database_path, before_token) is None
+    assert sync.authenticate_machine_token(hs.database_path, new_token) == machine_id
     retry = setup_wizard.maybe_run_configured_spoke_sync(ss, PricingEngine.load(ss.pricing_path), client=hub)
     assert retry["ok"], retry
     assert state(ss)["lastSyncError"] is None
@@ -648,7 +663,7 @@ def test_account_reconnect_survives_failed_initial_sync_and_retries(pair, monkey
 def test_disabled_spoke_account_login_rebinds_and_reseeds(pair, monkeypatch):
     hs, hub, ss, spoke = pair
     monkeypatch.setenv("BURNRATE_HUB_URL", HUB)
-    old_token = state(ss)["token"]
+    old_token = machine_token_of(ss)
     old_cursor = sync.read_sync_cursor(ss.database_path, HUB)
     with connect(ss.database_path) as conn:
         old_state = setup_wizard.read_setup_state(conn)
@@ -663,10 +678,11 @@ def test_disabled_spoke_account_login_rebinds_and_reseeds(pair, monkeypatch):
               "computerName": name, "testSync": True})
     assert response.status_code == 200, response.text
     saved = state(ss)
-    assert saved["enabled"] and saved["token"] != old_token and saved["ownerSession"]
+    new_token = machine_token_of(ss)
+    assert saved["enabled"] and new_token != old_token and owner_session_of(ss)
     cursor = sync.read_sync_cursor(ss.database_path, HUB)
     assert cursor["generation"] != old_cursor["generation"]
-    assert cursor["credential_hash"] == sync._token_hash(saved["token"])
+    assert cursor["credential_hash"] == sync._token_hash(new_token)
     assert response.json()["syncResult"]["ok"]
     with connect(ss.database_path) as conn:
         machine_id = setup_wizard.read_setup_state(conn)["account"]["machineId"]
@@ -681,7 +697,7 @@ def test_disabled_spoke_account_login_rebinds_and_reseeds(pair, monkeypatch):
 def test_expired_reused_machine_does_not_block_owner_login(pair, monkeypatch):
     hs, hub, ss, spoke = pair
     monkeypatch.setenv("BURNRATE_HUB_URL", HUB)
-    before = state(ss).copy()
+    before_token = machine_token_of(ss)
     cursor = sync.read_sync_cursor(ss.database_path, HUB)
     with connect(ss.database_path) as conn:
         setup = setup_wizard.read_setup_state(conn)
@@ -695,7 +711,7 @@ def test_expired_reused_machine_does_not_block_owner_login(pair, monkeypatch):
               "computerName": name, "testSync": True})
     assert response.status_code == 200, response.text
     saved = state(ss)
-    assert saved["token"] == before["token"] and saved["ownerSession"]
+    assert machine_token_of(ss) == before_token and owner_session_of(ss)
     assert saved["lastSyncError"] and not response.json()["syncResult"]["ok"]
     assert sync.read_sync_cursor(ss.database_path, HUB) == cursor
     assert summary(spoke)["totals"]["tokens"] == 18000

@@ -643,13 +643,24 @@ def _main() -> int:
             if not hub_url or not token:
                 print(json.dumps({"error": "Configure a hub and provide --token-file, or sign in from Settings."}))
                 return 2
-            from spend_app.setup_wizard import read_setup_state, write_setup_state
-            initialize(settings.database_path)
-            with connect(settings.database_path) as connection:
-                state = read_setup_state(connection)
+            from spend_app.connection_secrets import publish_spoke_credentials
+            from spend_app.error_codes import CodedError, format_error
+
+            def _apply_cli_token(_conn, state):
                 state["role"] = "spoke"
-                state["spokeConfig"].update(hubUrl=hub_url, token=token, enabled=True)
-                write_setup_state(connection, state)
+                spoke_cfg = dict(state.get("spokeConfig") or {})
+                spoke_cfg.update(hubUrl=hub_url, hubConfigured=True, enabled=True)
+                state["spokeConfig"] = spoke_cfg
+
+            try:
+                publish_spoke_credentials(
+                    settings.database_path,
+                    machine_token=token,
+                    apply_state=_apply_cli_token,
+                )
+            except CodedError as exc:
+                print(json.dumps({"ok": False, "code": exc.code, "error": format_error(exc.code)}))
+                return 2
         from spend_app.native_desktop import main as native_main
         return native_main(settings, demo=args.demo, port=args.port, smoke_test=args.smoke_test)
     return 1

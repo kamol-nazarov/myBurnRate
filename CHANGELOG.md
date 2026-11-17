@@ -41,7 +41,9 @@ This project is licensed under Apache-2.0.
   proxies listed in `BURNRATE_TRUSTED_PROXIES` (default loopback), and sign-in and registration are
   throttled per real client instead of one shared bucket behind the proxy.
 - **Hub account screen in the desktop app.** Settings → Hub account lets you sign in or create the
-  account, see your Computers with **Remove**, **Change password**, and **Sign out**. Signing in
+  account, see your Computers with **Remove**, **Change password**, and **Sign out**. Removing a
+  computer revokes its machine sync token only; any existing owner session on that device stays
+  valid until signed out there or revoked by changing your password. Signing in
   returns as soon as this computer is registered; the first sync runs in the background, and if it
   fails you see `SYNC-201` and it retries by itself.
 - **Credentials live only in your OS keychain.** The owner session and machine token are no longer

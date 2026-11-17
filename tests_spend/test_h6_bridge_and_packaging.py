@@ -286,25 +286,21 @@ def test_desktop_bridge_falls_back_gracefully_when_vault_raises_location_error(
             vault=broken_vault,
         )
         res = bridge1.sign_in_owner("owner@example.com", PASSWORD)
-        assert res["ok"] is True, res
-        assert bridge1.owner_session_status()["hasOwnerSession"] is True
-        assert bridge1.list_owner_sessions()["ok"] is True
+        assert res["ok"] is False
+        assert res["code"] == "APP-903"
+        assert bridge1.owner_session_status()["hasOwnerSession"] is False
+        with connect(spoke_settings.database_path) as conn:
+            sc = setup_wizard.read_setup_state(conn)["spokeConfig"]
+        assert "ownerSession" not in sc
 
-        # Second instance cannot read from Vault (LocationError), falls back to DB mirror
+        # Second instance also sees no session (never persisted in SQLite)
         bridge2 = DesktopBridge(
             NativeClient(spoke_settings, port=17331),
             preferences=tmp_path / "prefs2.json",
             vault=broken_vault,
         )
-        assert bridge2.owner_session_status()["hasOwnerSession"] is True
-        assert bridge2.list_owner_sessions()["ok"] is True
-
-        # Sign-out handles LocationError on delete cleanly and clears DB mirror
-        assert bridge2.sign_out_owner() == {"ok": True}
         assert bridge2.owner_session_status()["hasOwnerSession"] is False
-        with connect(spoke_settings.database_path) as conn:
-            sc = setup_wizard.read_setup_state(conn)["spokeConfig"]
-        assert "ownerSession" not in sc
+        assert bridge2.sign_out_owner() == {"ok": True}
 
 
 def test_desktop_bridge_owner_session_status_clears_expired_session(
@@ -346,12 +342,12 @@ def test_desktop_bridge_connect_hub_account_syncs_owner_session_to_vault(
     _, hub_client, spoke_settings, spoke_app = _create_paired_hub_and_spoke(tmp_path, monkeypatch)
     _patch_native_to_local(monkeypatch, spoke_app, port=17331)
 
-    vault = _MemoryVault()
+    from spend_app.connection_secrets import get_vault
+
     with hub_client:
         bridge = DesktopBridge(
             NativeClient(spoke_settings, port=17331),
             preferences=tmp_path / "prefs.json",
-            vault=vault,
         )
         res = bridge.connect_hub_account(
             "owner@example.com",
@@ -361,9 +357,13 @@ def test_desktop_bridge_connect_hub_account_syncs_owner_session_to_vault(
         )
         assert res["ok"] is True, res
         with connect(spoke_settings.database_path) as conn:
-            db_session = setup_wizard.read_setup_state(conn)["spokeConfig"]["ownerSession"]
-        assert db_session.startswith("br_s_")
-        assert vault.get(DesktopBridge.OWNER_SESSION_VAULT_REF) == db_session
+            sc = setup_wizard.read_setup_state(conn)["spokeConfig"]
+        assert "ownerSession" not in sc
+        assert "token" not in sc or not sc["token"]
+        vault_session = get_vault(spoke_settings.database_path).get(
+            DesktopBridge.OWNER_SESSION_VAULT_REF
+        )
+        assert vault_session.startswith("br_s_")
         assert bridge.owner_session_status()["hasOwnerSession"] is True
 
 

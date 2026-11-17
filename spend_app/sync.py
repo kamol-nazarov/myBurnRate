@@ -1163,6 +1163,22 @@ def write_sync_cursor(database_path: Path, hub_url: str, cursor: dict, *, expect
         )
 
 
+def prepare_spoke_sync_tx(connection, hub_url: str, token: str) -> str:
+    """Seed a fresh receiver inside an open BEGIN IMMEDIATE transaction."""
+    for table in ("usage_events", "unpriced_usage_events"):
+        connection.execute(
+            f"INSERT INTO usage_changes(raw_id) SELECT raw_id FROM {table} "
+            "WHERE raw_id NOT LIKE 'm:%' ORDER BY id"
+        )
+    cursor = {"generation": secrets.token_hex(16), "credential_hash": _token_hash(token)}
+    connection.execute(
+        "INSERT INTO app_meta(key,value) VALUES(?,?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (_cursor_key(hub_url), json.dumps(cursor)),
+    )
+    return cursor["generation"]
+
+
 def prepare_spoke_sync(database_path: Path, hub_url: str, token: str) -> str:
     """Seed a fresh receiver from current rows without weakening journal order.
 
@@ -1172,14 +1188,7 @@ def prepare_spoke_sync(database_path: Path, hub_url: str, token: str) -> str:
     initialize(database_path)
     with connect(database_path) as connection:
         connection.execute("BEGIN IMMEDIATE")
-        for table in ("usage_events", "unpriced_usage_events"):
-            connection.execute(f"INSERT INTO usage_changes(raw_id) SELECT raw_id FROM {table} "
-                               "WHERE raw_id NOT LIKE 'm:%' ORDER BY id")
-        cursor = {"generation": secrets.token_hex(16), "credential_hash": _token_hash(token)}
-        connection.execute("INSERT INTO app_meta(key,value) VALUES(?,?) "
-                           "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                           (_cursor_key(hub_url), json.dumps(cursor)))
-    return cursor["generation"]
+        return prepare_spoke_sync_tx(connection, hub_url, token)
 
 
 def rotate_spoke_sync_credential(connection, hub_url: str, token: str) -> None:
@@ -1346,12 +1355,27 @@ def _vault_put_secret(database_path: Path, ref: str, value: str) -> bool:
         return False
 
 
+_OWNER_ROTATION_LOCKS_GUARD = threading.Lock()
+_OWNER_ROTATION_LOCKS: dict[str, threading.Lock] = {}
+
+
+def _owner_rotation_lock(database_path: Path) -> threading.Lock:
+    key = os.path.normcase(os.path.abspath(str(database_path)))
+    with _OWNER_ROTATION_LOCKS_GUARD:
+        lock = _OWNER_ROTATION_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _OWNER_ROTATION_LOCKS[key] = lock
+        return lock
+
+
 def migrate_legacy_spoke_secrets(database_path: Path, *, vault=None) -> dict[str, bool]:
     """Move legacy SQLite ``spokeConfig.token`` / ``ownerSession`` into the vault.
 
-    Writes each secret to the vault, reads it back to verify it matches, and
-    only then removes the DB copy. When the vault is unavailable or rejects a
-    write, the DB copy is left untouched so syncing continues.
+    Serializes with all credential publishers via ``db_secret_lock`` and
+    ``BEGIN IMMEDIATE``, marks migrated credentials for rotation, removes the
+    DB copies only after verified vault readback, and scrubs SQLite/WAL
+    remnants via ``PRAGMA secure_delete = ON``, ``VACUUM``, and WAL truncate.
     """
     outcome = {"token": False, "ownerSession": False}
     if database_path is None:
@@ -1360,66 +1384,182 @@ def migrate_legacy_spoke_secrets(database_path: Path, *, vault=None) -> dict[str
     if not db_file.is_file():
         return outcome
 
-    from spend_app.connection_secrets import get_vault, verified_vault_put
+    from spend_app.connection_secrets import (
+        MACHINE_TOKEN_VAULT_REF,
+        OWNER_SESSION_VAULT_REF,
+        db_secret_lock,
+        get_vault,
+        verified_vault_put,
+    )
     from spend_app.setup_wizard import read_setup_state, write_setup_state
 
-    try:
-        use_vault = vault if vault is not None else get_vault(db_file)
-    except Exception:
-        return outcome
-    if use_vault is None:
-        return outcome
-
-    try:
-        with connect(db_file) as connection:
-            state = read_setup_state(connection)
-    except Exception:
-        return outcome
-
-    spoke = state.get("spokeConfig") or {}
-    legacy_token = str(spoke.get("token") or "").strip()
-    legacy_session = str(spoke.get("ownerSession") or "").strip()
-    if not legacy_token and not legacy_session:
-        return outcome
-
-    if legacy_token:
+    with db_secret_lock(db_file):
         try:
-            verified_vault_put(use_vault, legacy_token, "burnrate-machine-token")
-            outcome["token"] = True
+            use_vault = vault if vault is not None else get_vault(db_file)
         except Exception:
-            outcome["token"] = False
+            return outcome
+        if use_vault is None:
+            return outcome
 
-    if legacy_session:
         try:
-            verified_vault_put(use_vault, legacy_session, "burnrate-owner-session")
-            outcome["ownerSession"] = True
-        except Exception:
-            outcome["ownerSession"] = False
+            with connect(db_file) as connection:
+                connection.execute("PRAGMA secure_delete = ON")
+                connection.execute("BEGIN IMMEDIATE")
+                latest = read_setup_state(connection)
+                latest_spoke = dict(latest.get("spokeConfig") or {})
+                legacy_token = str(latest_spoke.get("token") or "").strip()
+                legacy_session = str(latest_spoke.get("ownerSession") or "").strip()
+                if not legacy_token and not legacy_session:
+                    return outcome
 
-    if not outcome["token"] and not outcome["ownerSession"]:
-        return outcome
+                changed = False
+                if legacy_token:
+                    try:
+                        verified_vault_put(use_vault, legacy_token, MACHINE_TOKEN_VAULT_REF)
+                        outcome["token"] = True
+                        latest_spoke.pop("token", None)
+                        latest_spoke["rotationRequired"] = True
+                        changed = True
+                    except Exception:
+                        outcome["token"] = False
 
-    try:
-        with connect(db_file) as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            latest = read_setup_state(connection)
-            latest_spoke = dict(latest.get("spokeConfig") or {})
-            changed = False
-            if outcome["token"] and str(latest_spoke.get("token") or "").strip() == legacy_token:
-                latest_spoke.pop("token", None)
-                changed = True
-            if (
-                outcome["ownerSession"]
-                and str(latest_spoke.get("ownerSession") or "").strip() == legacy_session
-            ):
-                latest_spoke.pop("ownerSession", None)
-                changed = True
-            if changed:
+                if legacy_session:
+                    try:
+                        verified_vault_put(use_vault, legacy_session, OWNER_SESSION_VAULT_REF)
+                        outcome["ownerSession"] = True
+                        latest_spoke.pop("ownerSession", None)
+                        latest_spoke["ownerSessionRotationRequired"] = True
+                        changed = True
+                    except Exception:
+                        outcome["ownerSession"] = False
+
+                if not changed:
+                    return outcome
+
                 latest["spokeConfig"] = latest_spoke
                 write_setup_state(connection, latest)
-    except Exception:
-        pass
+                connection.commit()
+                try:
+                    connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    connection.execute("VACUUM")
+                    connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                except Exception:
+                    pass
+        except Exception:
+            return outcome
     return outcome
+
+
+def _hub_post_with_cookie_isolation(hub_url: str, path: str, headers: dict, *, client=None, timeout: float = 8.0):
+    resolved_client = client if client is not None else _HUB_TEST_CLIENTS.get(hub_url)
+    if resolved_client is not None:
+        cookies = getattr(resolved_client, "cookies", None)
+        saved_jar = list(cookies.jar) if cookies is not None and hasattr(cookies, "jar") else None
+        if cookies is not None:
+            cookies.clear()
+        try:
+            return resolved_client.post(path, json={}, headers=headers)
+        finally:
+            if cookies is not None and saved_jar is not None:
+                cookies.clear()
+                for cookie in saved_jar:
+                    cookies.jar.set_cookie(cookie)
+    import httpx
+    with httpx.Client(timeout=timeout, trust_env=False, follow_redirects=False) as http:
+        return http.post(f"{hub_url}{path}", json={}, headers=headers)
+
+
+def ensure_fresh_owner_session(
+    database_path: Path | None,
+    hub_url: str,
+    token: str,
+    *,
+    vault=None,
+    client=None,
+) -> str:
+    """Rotate a migrated legacy owner session before the next hub call.
+
+    If rotation is rejected or cannot complete (invalid/missing response), best-effort
+    revokes and clears the local owner session and raises ``CodedError("AUTH-107")``.
+    """
+    clean_token = str(token or "").strip()
+    if not clean_token or database_path is None:
+        return clean_token
+    db_file = Path(database_path)
+    if not db_file.is_file():
+        return clean_token
+
+    from spend_app.auth_model import extract_cookie
+    from spend_app.connection_secrets import (
+        OWNER_SESSION_VAULT_REF,
+        clear_spoke_credentials,
+        publish_spoke_credentials,
+        read_vault_secret,
+    )
+    from spend_app.error_codes import CodedError, HUB_PROTOCOL_VERSION, map_transport_error
+    from spend_app.setup_wizard import read_setup_state
+
+    with connect(db_file) as connection:
+        spoke = (read_setup_state(connection).get("spokeConfig") or {})
+    if not spoke.get("ownerSessionRotationRequired"):
+        return clean_token
+
+    with _owner_rotation_lock(db_file):
+        with connect(db_file) as connection:
+            spoke = (read_setup_state(connection).get("spokeConfig") or {})
+        vault_tok = read_vault_secret(db_file, OWNER_SESSION_VAULT_REF, vault=vault)
+        if not spoke.get("ownerSessionRotationRequired"):
+            return vault_tok or clean_token
+        active_token = vault_tok or str(spoke.get("ownerSession") or "").strip() or clean_token
+        headers = {
+            "Authorization": f"Bearer {active_token}",
+            "Content-Type": "application/json",
+            "X-BURNRATE-Request": "1",
+            "X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION),
+        }
+        try:
+            response = _hub_post_with_cookie_isolation(
+                hub_url, "/api/auth/session/rotate", headers, client=client
+            )
+        except Exception as exc:
+            err_code, err_status = map_transport_error(exc)
+            raise CodedError(err_code, status_code=err_status) from exc
+
+        new_token = extract_cookie(response) if response.status_code == 200 else None
+        try:
+            data = response.json() if getattr(response, "content", b"") else {}
+        except ValueError:
+            data = None
+        if response.status_code != 200 or not new_token or not isinstance(data, dict):
+            try:
+                _hub_post_with_cookie_isolation(
+                    hub_url, "/api/auth/logout", headers, client=client, timeout=4.0
+                )
+            except Exception:
+                pass
+            clear_spoke_credentials(db_file, clear_owner_session=True, vault=vault)
+            clear_hub_proxy_cache()
+            raise CodedError("AUTH-107", status_code=401)
+
+        expires_at = data.get("expiresAt")
+        def _apply(conn, st):
+            sp = dict(st.get("spokeConfig") or {})
+            sp["ownerSessionExpiresAt"] = expires_at
+            sp["ownerSessionRotationRequired"] = False
+            st["spokeConfig"] = sp
+        try:
+            publish_spoke_credentials(
+                db_file,
+                owner_session=new_token,
+                vault=vault,
+                apply_state=_apply,
+            )
+        except CodedError:
+            clear_spoke_credentials(db_file, clear_owner_session=True, vault=vault)
+            clear_hub_proxy_cache()
+            raise
+        clear_hub_proxy_cache()
+        return new_token
 
 
 def clear_hub_proxy_cache() -> None:
@@ -1489,17 +1629,29 @@ def post_to_configured_hub(
         if strict:
             raise HubMutationError(str(exc), 422) from exc
         return None
-    token = str(spoke.get("ownerSession") or "").strip() or (
+    owner_tok = str(spoke.get("ownerSession") or "").strip() or (
         _vault_get_secret(settings.database_path, "burnrate-owner-session") or ""
     )
+    token = owner_tok
+    using_owner_session = bool(owner_tok)
     if path == "/api/machines" and not token:
         token = str(spoke.get("token") or "").strip() or (
             _vault_get_secret(settings.database_path, "burnrate-machine-token") or ""
         )
+        using_owner_session = False
     if not hub_url or not token:
         if strict:
             raise HubMutationError("Reconnect this computer to its hub before saving plans.")
         return None
+    if using_owner_session:
+        try:
+            token = ensure_fresh_owner_session(settings.database_path, hub_url, token)
+        except Exception as exc:
+            if strict:
+                err_code = getattr(exc, "code", None) or "AUTH-107"
+                err_status = getattr(exc, "status_code", 401)
+                raise HubMutationError(format_error(err_code), err_status, code=err_code) from exc
+            return None
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
@@ -1852,6 +2004,10 @@ def fetch_from_configured_hub(
         return None
     if not hub_url or not token:
         return None
+    try:
+        token = ensure_fresh_owner_session(settings.database_path, hub_url, token)
+    except Exception:
+        return None
     token_digest = digest(token)
 
     clean_params = {k: str(v) for k, v in (params or {}).items() if v is not None}
@@ -2108,7 +2264,7 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
             aggregate.reset_memo()
             STREAM_BROKER.publish({"type": "sync_trigger", "at": utc_now()})
             with connect(settings.database_path) as connection:
-                setup_state = public_setup_state(read_setup_state(connection))
+                setup_state = public_setup_state(read_setup_state(connection), database_path=settings.database_path)
                 machines = list_machines(connection)
             return {
                 "ok": bool(sync_res.get("ok", True)) if isinstance(sync_res, dict) else True,

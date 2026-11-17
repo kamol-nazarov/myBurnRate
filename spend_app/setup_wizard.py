@@ -207,15 +207,29 @@ def normalize_spoke_sync_error(value: object) -> str | None:
     return "sync_failed"
 
 
-def public_setup_state(state: dict) -> dict:
+def public_setup_state(state: dict, *, database_path: Path | None = None) -> dict:
     spoke = dict(state.get("spokeConfig") or {})
     raw_hub_url = str(spoke.pop("hubUrl", "") or "").strip()
-    spoke["hubConfigured"] = bool(raw_hub_url)
+    spoke["hubConfigured"] = bool(raw_hub_url or spoke.get("hubConfigured"))
     raw_token = str(spoke.get("token") or "")
-    spoke["hasToken"] = bool(raw_token)
+    raw_session = spoke.pop("ownerSession", None)
+    has_token = bool(raw_token)
+    has_session = bool(raw_session)
+    if database_path is not None:
+        from spend_app.connection_secrets import (
+            MACHINE_TOKEN_VAULT_REF,
+            OWNER_SESSION_VAULT_REF,
+            read_vault_secret,
+        )
+
+        if not has_token:
+            has_token = bool(read_vault_secret(database_path, MACHINE_TOKEN_VAULT_REF))
+        if not has_session:
+            has_session = bool(read_vault_secret(database_path, OWNER_SESSION_VAULT_REF))
+    spoke["hasToken"] = has_token
     spoke.pop("token", None)
-    spoke["hasOwnerSession"] = bool(spoke.pop("ownerSession", None))
-    spoke["tokenPreview"] = "configured" if raw_token else ""
+    spoke["hasOwnerSession"] = has_session
+    spoke["tokenPreview"] = "configured" if has_token else ""
     spoke["lastSyncError"] = normalize_spoke_sync_error(spoke.get("lastSyncError"))
     account = dict(state.get("account") or {})
     account.pop("serverUrl", None)
@@ -546,10 +560,13 @@ def rotate_spoke_machine_token(settings, *, client=None) -> dict | None:
     """Exchange the configured spoke's machine bearer for a fresh one on the hub."""
     from spend_app.config import resolve_hub_url
     from spend_app.hub_origin import hub_origin
+    from spend_app.connection_secrets import (
+        MACHINE_TOKEN_VAULT_REF,
+        publish_spoke_credentials,
+        read_vault_secret,
+    )
     from spend_app.sync import (
         _cursor_key,
-        _vault_get_secret,
-        _vault_put_secret,
         read_sync_cursor,
         rotate_spoke_sync_credential,
     )
@@ -559,9 +576,8 @@ def rotate_spoke_machine_token(settings, *, client=None) -> dict | None:
     spoke = state.get("spokeConfig") or {}
     if state.get("role") != "spoke" or not spoke.get("enabled"):
         return None
-    db_has_token = bool(str(spoke.get("token") or "").strip())
     token = str(spoke.get("token") or "").strip() or (
-        _vault_get_secret(settings.database_path, "burnrate-machine-token") or ""
+        read_vault_secret(settings.database_path, MACHINE_TOKEN_VAULT_REF) or ""
     )
     if not token:
         return None
@@ -588,39 +604,38 @@ def rotate_spoke_machine_token(settings, *, client=None) -> dict | None:
     replacement = response.json()
     if not isinstance(replacement, dict) or not str(replacement.get("token") or "").strip():
         return {"ok": False, "status": 502}
-    with connect(settings.database_path) as connection:
-        connection.execute("BEGIN IMMEDIATE")
-        current = read_setup_state(connection)
-        row = connection.execute("SELECT value FROM app_meta WHERE key=?", (_cursor_key(hub_url),)).fetchone()
+    class _RotationConflict(Exception):
+        pass
+
+    def _prepare(connection, current):
+        row = connection.execute(
+            "SELECT value FROM app_meta WHERE key=?", (_cursor_key(hub_url),)
+        ).fetchone()
         generation = json.loads(row[0]).get("generation") if row else None
-        current_tok = str(current["spokeConfig"].get("token") or "").strip() or (
-            _vault_get_secret(settings.database_path, "burnrate-machine-token") or ""
+        current_tok = str((current.get("spokeConfig") or {}).get("token") or "").strip() or (
+            read_vault_secret(settings.database_path, MACHINE_TOKEN_VAULT_REF) or ""
         )
         if current_tok != token or generation != prior_generation:
-            return {"ok": False, "status": 409}
-        vault_saved = _vault_put_secret(
-            settings.database_path, "burnrate-machine-token", replacement["token"]
-        )
-        if not vault_saved:
-            from spend_app.connection_secrets import get_vault
+            raise _RotationConflict()
 
-            active_vault = None
-            try:
-                active_vault = get_vault(settings.database_path)
-            except Exception:
-                active_vault = None
-            vault_available = active_vault is not None and bool(
-                getattr(active_vault, "available", lambda: True)()
-            )
-            if not db_has_token or vault_available:
-                return {"ok": False, "code": "APP-903", "message": error_message("APP-903")}
-            current["spokeConfig"]["token"] = replacement["token"]
-        else:
-            current["spokeConfig"].pop("token", None)
-        current["spokeConfig"]["tokenExpiresAt"] = replacement.get("expiresAt")
-        current["spokeConfig"]["rotationRequired"] = False
+    def _apply(connection, current):
+        sc = dict(current.get("spokeConfig") or {})
+        sc["tokenExpiresAt"] = replacement.get("expiresAt")
+        sc["rotationRequired"] = False
+        current["spokeConfig"] = sc
         rotate_spoke_sync_credential(connection, hub_url, replacement["token"])
-        write_setup_state(connection, current)
+
+    try:
+        publish_spoke_credentials(
+            settings.database_path,
+            machine_token=replacement["token"],
+            prepare_state=_prepare,
+            apply_state=_apply,
+        )
+    except _RotationConflict:
+        return {"ok": False, "status": 409}
+    except CodedError as exc:
+        return {"ok": False, "code": exc.code, "message": error_message(exc.code)}
     return {"ok": True, "expiresAt": replacement.get("expiresAt")}
 
 
@@ -687,7 +702,9 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
             if result.get("tokenExpiresAt"):
                 latest["spokeConfig"]["tokenExpiresAt"] = result["tokenExpiresAt"]
             if "rotationRequired" in result:
-                latest["spokeConfig"]["rotationRequired"] = bool(result["rotationRequired"])
+                latest["spokeConfig"]["rotationRequired"] = bool(
+                    latest["spokeConfig"].get("rotationRequired")
+                ) or bool(result["rotationRequired"])
             latest["spokeConfig"]["usageChangesPending"] = bool(result.get("usageChangesPending"))
             latest["spokeConfig"]["eventsPushed"] = int(
                 latest["spokeConfig"].get("eventsPushed") or 0
@@ -1021,7 +1038,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             ).fetchone()[0]
         return JSONResponse(
             {
-                "setup": public_setup_state(state),
+                "setup": public_setup_state(state, database_path=settings.database_path),
                 "hubAvailable": bool(_safe_resolve_hub_url()),
                 "os": sys.platform,
                 "timezone": settings.timezone,
@@ -1207,7 +1224,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             state = read_setup_state(connection)
             state["deferredAt"] = utc_now()
             saved = write_setup_state(connection, state)
-        return JSONResponse({"ok": True, "setup": public_setup_state(saved)}, headers={"Cache-Control": "no-store"})
+        return JSONResponse({"ok": True, "setup": public_setup_state(saved, database_path=settings.database_path)}, headers={"Cache-Control": "no-store"})
 
     @router.post("/api/account/register")
     async def central_account_register(request: Request):
@@ -1793,14 +1810,24 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 "username": str(body.get("username") or ""), "password": str(body.get("password") or ""),
                 "sessionOnly": True, "deviceLabel": state.get("computerName") or "Paired computer",
             })
-            with connect(settings.database_path) as connection:
-                connection.execute("BEGIN IMMEDIATE")
-                state = read_setup_state(connection)
-                if state["spokeConfig"].get("hubUrl") != spoke.get("hubUrl"):
-                    return error_response("AUTH-107", status_code=409)
-                state["spokeConfig"]["ownerSession"] = owner_session
-                state["spokeConfig"]["ownerSessionExpiresAt"] = remote["expiresAt"]
-                write_setup_state(connection, state)
+            from spend_app.connection_secrets import publish_spoke_credentials
+
+            def _prepare_owner_session(_connection, current):
+                if (current.get("spokeConfig") or {}).get("hubUrl") != spoke.get("hubUrl"):
+                    raise CodedError("AUTH-107", status_code=409)
+
+            def _apply_owner_session(_connection, current):
+                sc = dict(current.get("spokeConfig") or {})
+                sc["ownerSessionExpiresAt"] = remote["expiresAt"]
+                sc["ownerSessionRotationRequired"] = False
+                current["spokeConfig"] = sc
+
+            publish_spoke_credentials(
+                settings.database_path,
+                owner_session=owner_session,
+                prepare_state=_prepare_owner_session,
+                apply_state=_apply_owner_session,
+            )
             clear_hub_proxy_cache()
             return JSONResponse(
                 {"ok": True, "expiresAt": remote["expiresAt"]},
@@ -1818,15 +1845,15 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             return refused
         with connect(settings.database_path) as connection:
             state = read_setup_state(connection)
+        from spend_app.connection_secrets import (
+            MACHINE_TOKEN_VAULT_REF,
+            publish_spoke_credentials,
+            read_vault_secret,
+        )
+
         spoke = state["spokeConfig"]
         if state.get("role") != "spoke" or not spoke.get("enabled"):
             return error_response("AUTH-107", status_code=409)
-        headers = {
-            "Authorization": "Bearer " + str(spoke.get("token") or ""),
-            "X-BURNRATE-Request": "1",
-            "X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION),
-            "Content-Type": "application/json",
-        }
         from spend_app.hub_origin import hub_origin
         from spend_app.config import resolve_hub_url
 
@@ -1838,6 +1865,17 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 "NET-003" if "HTTPS" in str(exc) else "NET-001",
                 status_code=422,
             )
+        current_token = str(spoke.get("token") or "").strip() or (
+            read_vault_secret(settings.database_path, MACHINE_TOKEN_VAULT_REF) or ""
+        )
+        if not current_token:
+            return error_response("AUTH-107", status_code=409)
+        headers = {
+            "Authorization": "Bearer " + current_token,
+            "X-BURNRATE-Request": "1",
+            "X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION),
+            "Content-Type": "application/json",
+        }
         from spend_app.sync import read_sync_cursor
         prior_generation = read_sync_cursor(settings.database_path, hub_url).get("generation")
         client = _HUB_TEST_CLIENTS.get(hub_url)
@@ -1866,21 +1904,36 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     retry_after=mapped.retry_after,
                 )
             replacement = response.json()
-            with connect(settings.database_path) as connection:
-                connection.execute("BEGIN IMMEDIATE")
-                current = read_setup_state(connection)
-                from spend_app.sync import _cursor_key
-                row = connection.execute("SELECT value FROM app_meta WHERE key=?", (_cursor_key(hub_url),)).fetchone()
+            from spend_app.sync import _cursor_key, rotate_spoke_sync_credential
+
+            def _prepare_rotate_machine(connection, current):
+                row = connection.execute(
+                    "SELECT value FROM app_meta WHERE key=?", (_cursor_key(hub_url),)
+                ).fetchone()
                 generation = json.loads(row[0]).get("generation") if row else None
-                if current["spokeConfig"].get("token") != spoke.get("token") or generation != prior_generation:
-                    return error_response("DEV-301", status_code=409)
-                current["spokeConfig"]["token"] = replacement["token"]
-                current["spokeConfig"]["tokenExpiresAt"] = replacement["expiresAt"]
-                current["spokeConfig"]["rotationRequired"] = False
-                from spend_app.sync import rotate_spoke_sync_credential
+                live_tok = str((current.get("spokeConfig") or {}).get("token") or "").strip() or (
+                    read_vault_secret(settings.database_path, MACHINE_TOKEN_VAULT_REF) or ""
+                )
+                if live_tok != current_token or generation != prior_generation:
+                    raise CodedError("DEV-301", status_code=409)
+
+            def _apply_rotate_machine(connection, current):
+                sc = dict(current.get("spokeConfig") or {})
+                sc["tokenExpiresAt"] = replacement["expiresAt"]
+                sc["rotationRequired"] = False
+                current["spokeConfig"] = sc
                 rotate_spoke_sync_credential(connection, hub_url, replacement["token"])
-                write_setup_state(connection, current)
+
+            publish_spoke_credentials(
+                settings.database_path,
+                machine_token=replacement["token"],
+                prepare_state=_prepare_rotate_machine,
+                apply_state=_apply_rotate_machine,
+            )
+            clear_hub_proxy_cache()
             return {"ok": True, "expiresAt": replacement["expiresAt"]}
+        except CodedError as exc:
+            return error_response(exc.code, status_code=exc.status_code, retry_after=exc.retry_after)
         except ValueError:
             return error_response("HUB-501", status_code=503)
         except Exception as exc:
@@ -1962,18 +2015,35 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 "presetKeys": preset_keys,
                 "customPlans": custom_plans,
             }
+            from spend_app.connection_secrets import (
+                MACHINE_TOKEN_VAULT_REF,
+                publish_spoke_credentials,
+                read_vault_secret,
+            )
+
             with connect(settings.database_path) as connection:
                 previous = read_setup_state(connection)
             previous_spoke = previous["spokeConfig"]
-            reuse_machine = (mode == "login" and previous.get("role") == "spoke"
-                            and previous_spoke.get("enabled")
-                            and str(previous_spoke.get("hubUrl") or "").rstrip("/").lower() == server_url)
+            previous_token = str(previous_spoke.get("token") or "").strip() or (
+                read_vault_secret(settings.database_path, MACHINE_TOKEN_VAULT_REF) or ""
+            )
+            prev_hub = str(previous_spoke.get("hubUrl") or "").rstrip("/").lower()
+            reuse_machine = (
+                mode == "login"
+                and previous.get("role") == "spoke"
+                and bool(previous_spoke.get("enabled"))
+                and bool(previous_token)
+                and (
+                    prev_hub == server_url
+                    or (not prev_hub and bool(previous_spoke.get("hubConfigured")))
+                )
+            )
             if reuse_machine:
                 remote_payload["sessionOnly"] = True
             working_url, remote_data, owner_session = _call_central_server_account(server_url, endpoint, remote_payload)
             working_url = hub_origin(working_url)
             if reuse_machine:
-                token = str(previous_spoke.get("token") or "").strip()
+                token = previous_token
                 machine = {"id": previous["account"].get("machineId")}
                 machines_list = []
             else:
@@ -2057,31 +2127,41 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                         "error": format_error("SYNC-201"),
                     }
 
-            initialize(settings.database_path)
-            with connect(settings.database_path) as connection:
-                connection.execute("BEGIN IMMEDIATE")
-                state = read_setup_state(connection)
-                if (state["spokeConfig"].get("token") != previous_spoke.get("token")
-                        or state["spokeConfig"].get("hubUrl") != previous_spoke.get("hubUrl")):
-                    return error_response("AUTH-107", status_code=409)
+            account_out = {}
+            local_subs = []
+
+            def _prepare_account(connection, state):
+                cur_spoke = state.get("spokeConfig") or {}
+                cur_tok = str(cur_spoke.get("token") or "").strip() or (
+                    read_vault_secret(settings.database_path, MACHINE_TOKEN_VAULT_REF) or ""
+                )
+                if (
+                    cur_tok != previous_token
+                    or cur_spoke.get("hubUrl") != previous_spoke.get("hubUrl")
+                ):
+                    raise CodedError("AUTH-107", status_code=409)
                 if account_generation:
                     from spend_app.sync import _cursor_key
                     row = connection.execute("SELECT value FROM app_meta WHERE key=?", (_cursor_key(working_url),)).fetchone()
                     if not row or json.loads(row[0]).get("generation") != account_generation:
-                        return error_response("AUTH-107", status_code=409)
+                        raise CodedError("AUTH-107", status_code=409)
+
+            def _apply_account(connection, state):
+                nonlocal account_out, local_subs
                 _sync_plans_into_local_db(connection, settings.timezone, remote_subs)
                 state["role"] = "spoke"
                 state["computerName"] = computer_name
                 account_username = str(account_info.get("username") or username)
                 needs_email = bool(account_info.get("needsEmail", not is_valid_email(account_username)))
                 prev_dismissed = bool((state.get("account") or {}).get("emailPromptDismissed"))
-                state["account"] = {
+                account_out = {
                     "username": account_username,
                     "machineId": str(machine.get("id") or ""),
                     "connectedAt": utc_now(),
                     "needsEmail": needs_email,
                     "emailPromptDismissed": prev_dismissed if needs_email else False,
                 }
+                state["account"] = account_out
                 token_expires_at = (
                     (sync_result or {}).get("tokenExpiresAt")
                     or machine.get("expiresAt")
@@ -2095,19 +2175,26 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 )
                 state["spokeConfig"] = {
                     "hubUrl": working_url,
-                    "token": token,
-                    "ownerSession": owner_session,
+                    "hubConfigured": True,
                     "ownerSessionExpiresAt": remote_data.get("expiresAt"),
+                    "ownerSessionRotationRequired": False,
                     "tokenExpiresAt": token_expires_at,
                     "rotationRequired": rotation_required,
                     "enabled": True,
-                    "lastSyncAt": utc_now() if sync_result and sync_result.get("ok") else state["spokeConfig"].get("lastSyncAt"),
+                    "lastSyncAt": utc_now() if sync_result and sync_result.get("ok") else (state.get("spokeConfig") or {}).get("lastSyncAt"),
                     "lastSyncError": normalize_spoke_sync_error(sync_result.get("error")) if sync_result and not sync_result.get("ok") else None,
                     "usageChangesPending": bool((sync_result or {}).get("usageChangesPending")),
                     "eventsPushed": int((sync_result or {}).get("eventsWritten") or 0),
                 }
-                saved = write_setup_state(connection, state)
                 local_subs = effective_terms(connection)
+
+            saved = publish_spoke_credentials(
+                settings.database_path,
+                owner_session=owner_session,
+                machine_token=token,
+                prepare_state=_prepare_account,
+                apply_state=_apply_account,
+            )
 
             rename_machine(settings.database_path, machine_id="local", name=computer_name)
             clear_hub_proxy_cache()
@@ -2115,8 +2202,8 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             return JSONResponse(
                 {
                     "ok": True,
-                    "account": state["account"],
-                    "setup": public_setup_state(saved),
+                    "account": account_out,
+                    "setup": public_setup_state(saved, database_path=settings.database_path),
                     "subscriptions": remote_subs or local_subs,
                     "machines": machines_list,
                     "syncResult": sync_result,
@@ -2198,7 +2285,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 saved = write_setup_state(connection, latest)
             clear_hub_proxy_cache()
             return JSONResponse(
-                {"ok": True, "account": saved["account"], "setup": public_setup_state(saved)},
+                {"ok": True, "account": saved["account"], "setup": public_setup_state(saved, database_path=settings.database_path)},
                 headers={"Cache-Control": "no-store"},
             )
         except Exception as exc:
@@ -2217,7 +2304,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             state["account"] = {**state.get("account", {}), "emailPromptDismissed": True}
             saved = write_setup_state(connection, state)
         return JSONResponse(
-            {"ok": True, "setup": public_setup_state(saved)},
+            {"ok": True, "setup": public_setup_state(saved, database_path=settings.database_path)},
             headers={"Cache-Control": "no-store"},
         )
 
@@ -2366,7 +2453,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 {
                     "ok": True,
                     "addedPlans": added_plans,
-                    "setup": public_setup_state(saved),
+                    "setup": public_setup_state(saved, database_path=settings.database_path),
                     "subscriptions": plans_out,
                 },
                 headers={"Cache-Control": "no-store"},
