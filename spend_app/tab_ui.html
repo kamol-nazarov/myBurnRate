@@ -212,6 +212,7 @@ body.up .card-wrap { padding: 0 0 6px; }
   var HIDE_DELAY = 220, SHOW_DELAY = 140;
   var state = null, openKey = null, showTimer = 0, hideTimer = 0, ready = false;
   var lastSig = null, restoring = false, rebuilding = false;
+  var lastRevision = 0;
   var DRAG_PX = 4, press = null, dragging = false, swallowClick = false, lastRing = false;
   var $ = function (id) { return document.getElementById(id); };
 
@@ -298,8 +299,10 @@ body.up .card-wrap { padding: 0 0 6px; }
   }
 
   function render(next) {
-    var sig = JSON.stringify(next);
-    if (sig === lastSig) return;
+    var display = Object.assign({}, next);
+    delete display.revision;
+    var sig = JSON.stringify(display);
+    if (sig === lastSig) { state = next; return; }
     lastSig = sig;
     var token = focusToken();
     rebuilding = true;
@@ -539,11 +542,19 @@ body.up .card-wrap { padding: 0 0 6px; }
   window.addEventListener("blur", function () { setTimeout(reportFocus, 0); });
   document.addEventListener("contextmenu", function (e) { e.preventDefault(); });
 
-  function poll() {
-    call("get_state").then(function (next) { if (next) render(next); });
+  function applyUpdate(next) {
+    if (!next) return;
+    if (Number.isSafeInteger(next.revision) && next.revision > 0) {
+      if (next.revision <= lastRevision) return;
+      lastRevision = next.revision;
+    } else if (lastRevision) {
+      return;
+    }
+    render(next);
   }
+  function poll() { call("get_state").then(applyUpdate); }
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(function () { if (state) { lastSig = null; render(state); } });
-  window.burnrateTab = { update: render, show: showCard, hide: hideCard, get state() { return state; } };
+  window.burnrateTab = { update: applyUpdate, show: showCard, hide: hideCard, get state() { return state; } };
   window.addEventListener("pywebviewready", function () { ready = true; poll(); });
   setInterval(function () { if (ready) poll(); }, 20000);
   if (api()) { ready = true; poll(); }

@@ -283,6 +283,23 @@ def test_tab_bridge_state_and_actions():
     assert tab_bridge.collapse() == {"ok": True}
 
 
+def test_tab_push_and_poll_share_a_revision_including_theme_changes():
+    bridge, _, _, surfaces, *_ = make()
+    tab_bridge = TabBridge(bridge, bridge._tab_model, surfaces)
+    pushed = []
+    bridge._tab_model.subscribe(lambda: pushed.append(tab_bridge.build_payload()))
+    initial = tab_bridge.get_state()
+    bridge.fetch_usage("today", "all")
+    bridge.report_effective_theme(not initial["dark"])
+    latest = tab_bridge.get_state()
+    assert [item["state"] for item in pushed] == ["ready", "ready"]
+    revisions = [initial["revision"], *(item["revision"] for item in pushed), latest["revision"]]
+    assert revisions == sorted(set(revisions))
+    assert latest["dark"] == pushed[-1]["dark"] != initial["dark"]
+    # A re-opened desktop has a fresh page and bridge and starts its own sequence.
+    assert TabBridge(bridge, bridge._tab_model, surfaces).get_state()["revision"] == 1
+
+
 def test_tab_bridge_expand_reports_the_growth_direction(monkeypatch):
     bridge, _, tab, surfaces, *_ = make()
     tab_bridge = TabBridge(bridge, bridge._tab_model, surfaces)
@@ -473,6 +490,30 @@ def test_a_tab_launch_starts_the_full_window_hidden_and_raises_the_tab(monkeypat
     main, tab = fake.windows
     assert main.kwargs["hidden"] is True
     assert "show" in tab.calls and "hide" not in tab.calls
+
+
+def test_a_tab_launch_recovers_when_the_native_tab_cannot_be_shown(monkeypatch, tmp_path):
+    prefs = tmp_path / "native-window.json"
+    prefs.write_text(json.dumps({"surface": "tab"}), encoding="utf-8")
+    fake = install_fake_webview(monkeypatch)
+    monkeypatch.setattr(ww.WindowHost, "is_visible", lambda host: "show" in host.window.calls)
+
+    def fail_to_show():
+        raise OSError("native tab unavailable")
+
+    def start(**_kwargs):
+        main, tab = fake.windows
+        assert main.kwargs["hidden"] and tab.kwargs["hidden"]
+        tab.show = fail_to_show
+        for window in fake.windows:
+            window.events.before_show.fire()
+        main.events.shown.fire()
+        assert wait_for(lambda: json.loads(prefs.read_text(encoding="utf-8"))["surface"] == "full")
+        assert "show" in main.calls
+        main.destroy()
+
+    fake.start = start
+    ww.run_webview(DemoClient(), preferences=prefs, demo=True)
 
 
 def test_a_full_launch_creates_the_main_window_visible(monkeypatch, tmp_path):

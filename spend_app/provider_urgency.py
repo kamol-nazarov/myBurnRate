@@ -10,6 +10,8 @@ from __future__ import annotations
 import math
 from datetime import UTC, datetime
 
+from spend_app.timeutil import parse_utc
+
 LEVELS = ("out", "soon", "warn", "ok", "balance", "idle")
 LEVEL_RANK = {level: rank for rank, level in enumerate(LEVELS)}
 PACE_STATES = ("tight", "dry", "safe")
@@ -83,11 +85,11 @@ def build_funds_runway(card_runway) -> dict | None:
     }
 
 
-def _measured(window: dict) -> bool:
-    return (
-        not window.get("unavailable")
-        and _number(window.get("remainingPct")) is not None
-    )
+def window_has_current_reading(window: dict, now: datetime) -> bool:
+    if window.get("unavailable") or window.get("stale") or _number(window.get("remainingPct")) is None:
+        return False
+    reset = parse_utc(window.get("resetsAt"))
+    return reset is None or now < reset
 
 
 def _is_drying(window: dict) -> bool:
@@ -106,25 +108,39 @@ def _remaining_pct(window: dict) -> float:
     return math.inf if pct is None else pct
 
 
-def focus_window(provider: dict) -> dict | None:
+def focus_window(provider: dict, now: datetime | None = None) -> dict | None:
     """The window the provider is graded on.
 
-    Any window that will run dry before it resets wins, soonest first;
-    otherwise the window with the least left.
+    A currently exhausted window takes precedence. Among the other windows,
+    choose the one predicted to run dry soonest, then the one with least left.
     """
-    measured = [w for w in provider.get("windows") or [] if _measured(w)]
+    now = now or datetime.now(UTC)
+    measured = [w for w in provider.get("windows") or [] if window_has_current_reading(w, now)]
     if not measured:
         return None
+    least_remaining = min(measured, key=_remaining_pct)
+    if _remaining_pct(least_remaining) <= 0:
+        return least_remaining
     drying = [w for w in measured if _is_drying(w)]
     if drying:
         return min(drying, key=_hours_to_dry)
-    return min(measured, key=_remaining_pct)
+    return least_remaining
 
 
 def _balance(provider: dict) -> float | None:
     if provider.get("isPayg") or (provider.get("remaining") or {}).get("kind") == "balance":
         return _number(provider.get("fundsRemainingUsd"))
     return None
+
+
+def _balance_level(balance: float) -> str:
+    if balance <= 0:
+        return "out"
+    if balance < SOON_BALANCE:
+        return "soon"
+    if balance < WARN_BALANCE:
+        return "warn"
+    return "balance"
 
 
 def format_hours(hours: float | None) -> str:
@@ -138,7 +154,7 @@ def format_hours(hours: float | None) -> str:
 
 def format_reset(resets_at, now: datetime | None = None) -> str:
     """``resets in 2h`` or ``resets in 5d``; empty when there is no reset."""
-    reset = _parse(resets_at)
+    reset = parse_utc(resets_at)
     if reset is None:
         return ""
     now = now or datetime.now(UTC)
@@ -152,35 +168,18 @@ def format_reset(resets_at, now: datetime | None = None) -> str:
     return f"resets in {int(round(hours / 24))}d"
 
 
-def _parse(value) -> datetime | None:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
-
-
 def compute_urgency(provider: dict, now: datetime | None = None) -> dict:
     """``{"level", "limitKey", "text"}`` for one merged provider."""
     balance = _balance(provider)
     if balance is not None:
-        if balance <= 0:
-            level = "out"
-        elif balance < SOON_BALANCE:
-            level = "soon"
-        elif balance < WARN_BALANCE:
-            level = "warn"
-        else:
-            level = "balance"
         return {
-            "level": level,
+            "level": _balance_level(balance),
             "limitKey": None,
             "text": f"${max(0.0, balance):,.2f} balance",
         }
 
-    window = focus_window(provider)
+    now = now or datetime.now(UTC)
+    window = focus_window(provider, now)
     if window is None:
         remaining = provider.get("remaining") or {}
         reason = "No key" if provider.get("isPayg") else str(remaining.get("summary") or "")
@@ -231,13 +230,15 @@ def _sort_hours(window: dict | None) -> float:
     return _hours_to_dry(window)
 
 
-def sort_key(provider: dict) -> tuple:
+def sort_key(provider: dict, now: datetime | None = None) -> tuple:
     """The contract's order: level, then soonest dry (``tight``/``dry`` pace
     only), then least left, then smallest balance."""
-    urgency = provider.get("urgency") or {}
-    level = urgency.get("level") or "idle"
-    window = focus_window(provider)
+    window = focus_window(provider, now)
     balance = _balance(provider)
+    if balance is not None:
+        level = _balance_level(balance)
+    else:
+        level = grade_window(window) if window else "idle"
     return (
         LEVEL_RANK.get(level, len(LEVELS)),
         _sort_hours(window),
@@ -246,13 +247,14 @@ def sort_key(provider: dict) -> tuple:
     )
 
 
-def display_order(providers) -> list[dict]:
+def display_order(providers, now: datetime | None = None) -> list[dict]:
     """Providers most urgent first, the one order every surface shows.
 
     Sorted by ``sort_key``. Only when two providers tie exactly do the profiles
     of one family sit together (at the spot of the family's first member in
     the given order); a healthy profile never precedes a more urgent provider.
     """
+    now = now or datetime.now(UTC)
     items = [p for p in providers if isinstance(p, dict)]
     first_seen: dict[str, int] = {}
     for index, provider in enumerate(items):
@@ -260,7 +262,7 @@ def display_order(providers) -> list[dict]:
     indexed = list(enumerate(items))
     indexed.sort(
         key=lambda pair: (
-            *sort_key(pair[1]),
+            *sort_key(pair[1], now),
             first_seen[profile_family(pair[1].get("key"))],
             pair[0],
         )
@@ -268,7 +270,7 @@ def display_order(providers) -> list[dict]:
     return [provider for _, provider in indexed]
 
 
-def assign_display_rank(providers: list[dict]) -> None:
+def assign_display_rank(providers: list[dict], now: datetime | None = None) -> None:
     """Stamp ``provider["displayRank"]`` (0..n-1) from :func:`display_order`."""
-    for rank, provider in enumerate(display_order(providers)):
+    for rank, provider in enumerate(display_order(providers, now)):
         provider["displayRank"] = rank

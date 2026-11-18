@@ -10,6 +10,7 @@ import math
 import os
 import shutil
 import struct
+import sqlite3
 import sys
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
@@ -51,6 +52,7 @@ from spend_app.provider_urgency import (
     build_funds_runway,
     build_pace,
     compute_urgency,
+    window_has_current_reading,
 )
 from spend_app.tab_window import (
     SURFACE_KEY,
@@ -277,8 +279,11 @@ def merge_provider_entries(
     week_report: dict | None = None,
     provider_order: list[str] | None = None,
     connections: list[dict] | None = None,
+    *,
+    now: datetime | None = None,
 ) -> list[dict]:
     """Merge live quota/balance lanes with recorded token telemetry across accounts."""
+    now = now or datetime.now(UTC)
     capacity = (hud or {}).get("capacity") if isinstance(hud, dict) else []
     if not isinstance(capacity, list):
         capacity = []
@@ -448,7 +453,7 @@ def merge_provider_entries(
                     "reason": reason,
                     "unit": unit,
                     "usedPct": round(used_pct, 1) if used_pct is not None else None,
-                    "remainingPct": round(rem_pct, 1) if rem_pct is not None else None,
+                    "remainingPct": rem_pct,
                     "used": used_amt,
                     "allowance": allowance,
                     "remainingCredits": rem_credits,
@@ -509,9 +514,7 @@ def merge_provider_entries(
         has_funds = isinstance(funds_usd, (int, float)) and math.isfinite(
             float(funds_usd)
         )
-        measured_windows = [
-            w for w in windows if w["remainingPct"] is not None and not w["unavailable"]
-        ]
+        measured_windows = [w for w in windows if window_has_current_reading(w, now)]
 
         if has_funds:
             bal = max(0.0, float(funds_usd))
@@ -632,7 +635,7 @@ def merge_provider_entries(
             "reasoning": period_entry.get("reasoning"),
             "models": period_entry.get("models") or [],
         }
-        provider["urgency"] = compute_urgency(provider)
+        provider["urgency"] = compute_urgency(provider, now)
         providers.append(provider)
 
     # Include any recorded-usage tools that do not have a quota card (e.g. Org API feeds)
@@ -716,7 +719,7 @@ def merge_provider_entries(
             "reasoning": tool.get("reasoning"),
             "models": tool.get("models") or [],
         }
-        provider["urgency"] = compute_urgency(provider)
+        provider["urgency"] = compute_urgency(provider, now)
         providers.append(provider)
 
     order_list = [
@@ -731,7 +734,7 @@ def merge_provider_entries(
             *_default_provider_rank(item["key"]),
         )
     )
-    assign_display_rank(providers)
+    assign_display_rank(providers, now)
     return providers
 
 
@@ -1289,11 +1292,15 @@ class DesktopBridge:
         if "hudMini" in saved:
             self._prefs.update({SURFACE_KEY: surface, "hudMini": None})
         self._tab_model = TabModel()
+        self._quota_auth_scope: tuple | None = None
+        self._quota_capacity: dict[tuple[str, str], list[dict]] = {}
+        self._published_usage_machine: str | None = None
         self._surfaces: SurfaceController | None = None
         # How many fetch_usage calls are running; the tab waits on this rather
         # than starting a refresh of its own.
         self._refresh_state = threading.Lock()
         self._refreshes_running = 0
+        self._usage_request = 0
         self._refresh_idle = threading.Event()
         self._refresh_idle.set()
         raw_density = str(saved.get("hudDensity") or "compact").strip().lower()
@@ -1728,10 +1735,13 @@ class DesktopBridge:
         self, period: str = "today", machine: str = "all", restart: bool = False
     ) -> dict:
         with self._refresh_state:
+            self._usage_request += 1
+            request = self._usage_request
             self._refreshes_running += 1
             self._refresh_idle.clear()
         try:
-            return self._fetch_usage(period, machine, restart)
+            with self._lock:
+                return self._fetch_usage(period, machine, restart, request)
         finally:
             with self._refresh_state:
                 self._refreshes_running -= 1
@@ -1743,71 +1753,124 @@ class DesktopBridge:
         return self._refresh_idle.wait(timeout)
 
     def _fetch_usage(
-        self, period: str = "today", machine: str = "all", restart: bool = False
+        self, period: str, machine: str, restart: bool, request: int
     ) -> dict:
         use_period = period if period in PERIOD_LABELS else "today"
         use_machine = machine or "all"
+        auth_scope = self._quota_session_scope()
+        if auth_scope != self._quota_auth_scope:
+            self._quota_auth_scope = auth_scope
+            self._quota_capacity.clear()
+            self._published_usage_machine = None
         try:
-            with self._lock:
-                if restart or not self._service_ready:
-                    self._client.ensure_service()
-                    self._service_ready = True
-                if restart and not self._demo:
-                    self._safe_request("/api/spend/quotas/refresh", {})
-                report = self._client.snapshot(use_period, use_machine)
-                today_report = (
-                    report
-                    if use_period == "today"
-                    else self._safe_snapshot("today", use_machine)
-                )
-                week_report = (
-                    report
-                    if use_period == "week"
-                    else self._safe_snapshot("week", use_machine)
-                )
-                query = urlencode({"machine": use_machine})
-                hud = self._safe_request("/api/spend/hud?" + query)
-                hud_usage = self._safe_request("/api/spend/hud/usage?" + query)
-                conns_res = (
-                    self._safe_request("/api/connections")
-                    if not self._demo
-                    else None
-                )
-                connections = (
-                    conns_res.get("connections")
-                    if isinstance(conns_res, dict)
-                    and isinstance(conns_res.get("connections"), list)
-                    else None
-                )
-                report["providers"] = merge_provider_entries(
-                    report,
-                    hud=hud,
-                    hud_usage=hud_usage,
-                    today_report=today_report,
-                    week_report=week_report,
-                    provider_order=self._provider_order,
-                    connections=connections,
-                )
-                # H10 ops/hud
-                report["activity"] = (
-                    hud.get("activity")
-                    if isinstance(hud, dict) and isinstance(hud.get("activity"), list)
-                    else (_demo_activity() if self._demo else [])
-                )
-                today_total = (
-                    today_report.get("total") if isinstance(today_report, dict) else None
-                )
-                if isinstance(today_total, dict):
-                    report["todayTotal"] = today_total
-            self._tab_model.publish_report(report)
+            if restart or not self._service_ready:
+                self._client.ensure_service()
+                self._service_ready = True
+                if auth_scope is None:
+                    auth_scope = self._quota_session_scope()
+                    self._quota_auth_scope = auth_scope
+            if restart and not self._demo:
+                self._safe_request("/api/spend/quotas/refresh", {})
+            report = self._client.snapshot(use_period, use_machine)
+            today_report = report if use_period == "today" else self._safe_snapshot("today", use_machine)
+            week_report = report if use_period == "week" else self._safe_snapshot("week", use_machine)
+            query = urlencode({"machine": use_machine})
+            hud = self._safe_request("/api/spend/hud?" + query)
+            hud_usage = self._safe_request("/api/spend/hud/usage?" + query)
+            conns_res = self._safe_request("/api/connections") if not self._demo else None
+            connections = (conns_res or {}).get("connections")
+            if not isinstance(connections, list):
+                connections = None
+            if auth_scope != self._quota_session_scope():
+                raise DesktopError("Computer connection changed. Refresh to load current usage.")
+            capacity, quota_status = self._resolve_quota_capacity(
+                use_machine, report.get("scope", ""), hud, can_reuse=auth_scope is not None
+            )
+            report["quotaStatus"] = quota_status
+            report["providers"] = merge_provider_entries(
+                report,
+                hud={"capacity": capacity},
+                hud_usage=hud_usage,
+                today_report=today_report,
+                week_report=week_report,
+                provider_order=self._provider_order,
+                connections=connections,
+            )
+            activity = (hud or {}).get("activity")
+            report["activity"] = activity if isinstance(activity, list) else (_demo_activity() if self._demo else [])
+            today_total = (today_report or {}).get("total")
+            if isinstance(today_total, dict):
+                report["todayTotal"] = today_total
+            if request == self._usage_request:
+                self._tab_model.publish_report(report)
+                self._published_usage_machine = use_machine
             return {"ok": True, "report": report}
         except DesktopError as exc:
-            self._tab_model.publish_error(str(exc), exc.code)
-            return {"ok": False, "error": str(exc), "code": exc.code}
+            message, code = str(exc), exc.code
+            error = {"ok": False, "error": message, "code": code}
         except (OSError, RuntimeError, ValueError, KeyError, TypeError):
-            message = "Could not refresh usage. Retry shortly."
-            self._tab_model.publish_error(message, None)
-            return {"ok": False, "error": message}
+            message, code = "Could not refresh usage. Retry shortly.", None
+            error = {"ok": False, "error": message}
+        if request == self._usage_request:
+            same_scope = use_machine == self._published_usage_machine and auth_scope == self._quota_session_scope()
+            if not same_scope:
+                self._published_usage_machine = None
+            self._tab_model.publish_error(message, code, retain_providers=same_scope)
+        return error
+
+    def _quota_session_scope(self) -> tuple | None:
+        """Use persisted connection metadata so a changed hub cannot inherit capacity."""
+        db_path = self._db_path()
+        if self._demo or db_path is None:
+            return ("local",)
+        if not db_path.is_file():
+            return None
+        from spend_app.config import resolve_hub_url
+        from spend_app.db import connect
+        from spend_app.setup_wizard import read_setup_state
+
+        try:
+            with connect(db_path) as conn:
+                state = read_setup_state(conn)
+            spoke = state.get("spokeConfig") or {}
+            account = state.get("account") or {}
+            hub = (resolve_hub_url() or spoke.get("hubUrl")) if spoke.get("enabled") else None
+            return (
+                state.get("role"),
+                hub,
+                spoke.get("credentialGeneration"),
+                account.get("machineId"),
+                account.get("connectedAt"),
+            )
+        except (OSError, RuntimeError, ValueError, TypeError, sqlite3.Error):
+            return None
+
+    def _resolve_quota_capacity(
+        self, machine: str, scope: str, hud: dict | None, *, can_reuse: bool
+    ) -> tuple[list[dict], str]:
+        hud = hud or {}
+        capacity = hud.get("capacity")
+        hud_scope = hud.get("scope")
+        if scope == "unavailable":
+            return [], "unavailable"
+        key = (machine, scope)
+        if (
+            isinstance(capacity, list)
+            and hud.get("ok") is not False
+            and (hud_scope == scope or (not hud_scope and scope != "local-fallback"))
+        ):
+            if can_reuse:
+                self._quota_capacity[key] = capacity
+            return capacity, "fresh"
+        if can_reuse and self._quota_capacity.get(key):
+            return self._quota_capacity[key], "stale"
+        return [], "unavailable"
+
+    def _clear_quota_cache(self) -> None:
+        with self._lock:
+            self._quota_capacity.clear()
+            self._published_usage_machine = None
+            self._tab_model.publish_report({"providers": [], "quotaStatus": "unavailable"})
 
 
     # H9 analytics
@@ -1843,7 +1906,7 @@ class DesktopBridge:
             return {"ok": False, "error": "Could not load analytics summary."}
 
     def fetch_entity_detail(
-        self, kind: str, key: str, window: str = "1d", machine: str = "all"
+        self, kind: str, key: str, window: str = "1d", machine: str = "all", tool: str = ""
     ) -> dict:
         use_kind = str(kind or "").strip().lower()
         use_key = str(key or "").strip()
@@ -1851,20 +1914,20 @@ class DesktopBridge:
             return {"ok": False, "error": "Invalid analytics entity."}
         use_window = normalize_analytics_window(window)
         use_machine = str(machine or "all").strip() or "all"
+        use_tool = str(tool or "").strip() if use_kind == "model" else ""
+        if use_tool == "all":
+            use_tool = ""
+        params = {"kind": use_kind, "key": use_key, "window": use_window, "machine": use_machine}
+        if use_tool:
+            params["tool"] = use_tool
         try:
             with self._lock:
                 if not self._service_ready:
                     self._client.ensure_service()
                     self._service_ready = True
-                query = urlencode(
-                    {
-                        "kind": use_kind,
-                        "key": use_key,
-                        "window": use_window,
-                        "machine": use_machine,
-                    }
-                )
-                entity = self._client.request("/api/spend/entity?" + query)
+                entity = self._client.request("/api/spend/entity?" + urlencode(params))
+            if use_tool and (not isinstance(entity, dict) or entity.get("selectedTool") != use_tool):
+                return {"ok": False, "error": "Detail for this tool profile is unavailable."}
             return {"ok": True, "entity": entity}
         except DesktopError as exc:
             return {"ok": False, "error": str(exc)}
@@ -1960,9 +2023,12 @@ class DesktopBridge:
         mutation = self._mutations.setdefault(
             mutation_key, SourceMutation(self._client)
         )
+        affects_capacity = body.get("operation") in {"connect", "disable", "add_profile", "remove_profile"}
         try:
             res = mutation.send(body)
             self._mutations.pop(mutation_key, None)
+            if affects_capacity:
+                self._clear_quota_cache()
             return (res if isinstance(res, dict) else {}), None
         except DesktopError as exc:
             if retry_409 and exc.status_code == 409 and profile is not None:
@@ -1987,6 +2053,8 @@ class DesktopBridge:
                     try:
                         res = mutation.send(retry_body)
                         self._mutations.pop(mutation_key, None)
+                        if affects_capacity:
+                            self._clear_quota_cache()
                         return (res if isinstance(res, dict) else {}), None
                     except DesktopError as retry_exc:
                         if (
@@ -2212,6 +2280,7 @@ class DesktopBridge:
                 self._machine_token_gen = None
             self._get_owner_session_info()
             self._get_machine_token()
+            self._clear_quota_cache()
             out = {
                 "ok": True,
                 "account": res.get("account") or {},
@@ -3135,6 +3204,7 @@ class DesktopBridge:
             self._machine_token = machine_token
             self._machine_token_gen = saved_gen
 
+        self._clear_quota_cache()
         with self._owner_session_lock:
             self._sync_gen += 1
             sync_gen = self._sync_gen
@@ -3260,6 +3330,7 @@ class DesktopBridge:
             self._sync_error_code = None
             self._sync_error_message = None
 
+        self._clear_quota_cache()
         owner_tokens = list(cleared.get("ownerTokens") or [])
         local_mid = str(cleared.get("machineId") or "").strip()
         queued_tasks = list(cleared.get("queuedTasks") or [])
@@ -4758,7 +4829,7 @@ def run_webview(
 
     def push_tab() -> None:
         payload = tab_bridge.build_payload()
-        tab_host.set_base(payload["layout"]["width"])
+        tab_host.set_base(payload["layout"]["width"], revision=payload["revision"])
         tab_host.push(payload)
 
     bridge._tab_model.subscribe(push_tab)

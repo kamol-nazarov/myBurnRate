@@ -29,6 +29,7 @@ from spend_app.provider_urgency import (
     format_hours,
     format_reset,
     grade_window,
+    window_has_current_reading,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -144,7 +145,7 @@ def _card_rows(provider: dict, now: datetime) -> list[dict]:
     for window in provider.get("windows") or []:
         left = _pct(window.get("remainingPct"))
         label = window_label(window)
-        if window.get("unavailable") or left is None:
+        if not window_has_current_reading(window, now):
             if window.get("unit") == "usd":
                 continue
             rows.append(
@@ -233,9 +234,9 @@ def _headline_forms(provider: dict, exact: str, level: str, name: str) -> tuple[
 
 
 def build_segment(provider: dict, now: datetime) -> dict:
-    urgency = provider.get("urgency") or compute_urgency(provider, now)
+    urgency = compute_urgency(provider, now)
     level = urgency.get("level") or "idle"
-    window = focus_window(provider)
+    window = focus_window(provider, now)
     big, unit, fuel = _headline(provider, window)
     profile = provider.get("profile")
     unit_label = f"{profile} · {unit}" if profile and unit and unit != "balance" else unit
@@ -283,21 +284,20 @@ def build_segment(provider: dict, now: datetime) -> dict:
     }
 
 
-def tab_providers(providers) -> list[dict]:
+def tab_providers(providers, now: datetime | None = None) -> list[dict]:
     """Providers the tab can say something about, most urgent first.
 
-    The order is the one Python stamps on every provider (``displayRank``), so
-    the tab and the full window can never disagree; providers without a rank
-    (a hand-built list) are ordered by the same rule here.
+    The same rule as the full window applies. A render-time clock lets a
+    cached reading expire between refreshes.
     """
     usable = [
         p
         for p in providers or []
         if isinstance(p, dict) and (p.get("remaining") or {}).get("kind") != "usage_only"
     ]
-    if usable and all(isinstance(p.get("displayRank"), int) for p in usable):
+    if now is None and usable and all(isinstance(p.get("displayRank"), int) for p in usable):
         return sorted(usable, key=lambda p: p["displayRank"])
-    return display_order(usable)
+    return display_order(usable, now)
 
 
 def split_overflow(segments: list[dict], cap: int = MAX_SEGMENTS) -> tuple[list[dict], list[dict]]:
@@ -493,15 +493,21 @@ class TabModel:
         providers = report.get("providers") if isinstance(report, dict) else None
         if not isinstance(providers, list):
             return
+        quota_failed = report.get("quotaStatus") in ("stale", "unavailable")
         with self._lock:
             self._providers = providers
             self._loaded = True
-            self._error = None
+            self._error = (
+                {"message": "Quota refresh failed.", "code": None, "text": "Quota refresh failed"}
+                if quota_failed else None
+            )
             self._updated = time.monotonic()
         self._notify()
 
-    def publish_error(self, message: str, code: str | None) -> None:
+    def publish_error(self, message: str, code: str | None, *, retain_providers: bool = True) -> None:
         with self._lock:
+            if not retain_providers:
+                self._providers = []
             self._error = {"message": str(message or ""), "code": code, "text": short_error(message, code)}
         self._notify()
 
@@ -532,7 +538,7 @@ class TabModel:
             providers = list(self._providers)
             loaded = self._loaded
             error = dict(self._error) if self._error else None
-        segments = [build_segment(p, now) for p in tab_providers(providers)]
+        segments = [build_segment(p, now) for p in tab_providers(providers, now)]
         if not loaded and error is None:
             state = "loading"
         elif not segments:
@@ -623,6 +629,8 @@ class TabBridge:
         self._bridge = bridge
         self._model = model
         self._controller = controller
+        self._payload_lock = threading.Lock()
+        self._revision = 0
 
     def attach_controller(self, controller) -> None:
         self._controller = controller
@@ -634,8 +642,14 @@ class TabBridge:
         return bool(effective) if effective is not None else resolve_dark(self._bridge.theme)
 
     def build_payload(self) -> dict:
-        budget = self._controller.tab.logical_budget() if self._controller is not None else None
-        return self._model.payload(dark=self._dark(), demo=self._bridge.demo, budget=budget)
+        # Push callbacks and page polls share one snapshot order, including changes
+        # to layout, time-sensitive readings and theme. A new page has a new bridge.
+        with self._payload_lock:
+            budget = self._controller.tab.logical_budget() if self._controller is not None else None
+            payload = self._model.payload(dark=self._dark(), demo=self._bridge.demo, budget=budget)
+            self._revision += 1
+            payload["revision"] = self._revision
+            return payload
 
     def get_state(self) -> dict:
         """The current payload. If a refresh is already in flight, wait for its
@@ -776,6 +790,7 @@ class TabHost:
         self._settle_timer: threading.Timer | None = None
         self._last_budget: float | None = None
         self._reflowing = False
+        self._layout_revision = 0
         self.visible = False
         self.quitting = False
         self._lock = threading.RLock()
@@ -949,10 +964,14 @@ class TabHost:
         self._apply_shape()
         self.check_budget()
 
-    def set_base(self, width: float, height: float = TAB_HEIGHT) -> None:
+    def set_base(self, width: float, height: float = TAB_HEIGHT, *, revision: int | None = None) -> None:
         """The window's content width changed (a refresh added or dropped a segment)."""
         width = clamp_number(width, 120, 2400)
         with self._lock:
+            if revision is not None:
+                if revision <= self._layout_revision:
+                    return
+                self._layout_revision = revision
             self._base = (width, float(height))
             if self._expanded is not None:
                 self._expanded = (max(width, self._expanded[0]), self._expanded[1])
@@ -1385,7 +1404,7 @@ class SurfaceController:
                 self.main.show()
         elif action == "restore":
             if self.surface == "tab":
-                self.tab.show(activate=False)
+                self._restore_tab_on_launch()
         elif action == "close-tab":
             if self.main.can_hide_to_tray():
                 self.tab.hide()
@@ -1404,15 +1423,37 @@ class SurfaceController:
             LOGGER.warning("Window call failed", exc_info=True)
             return None
 
+    def _show_tab_verified(self, *, activate: bool = True) -> None:
+        self.tab.show(activate=activate, strict=True)
+        if not self.tab.is_shown():
+            self.tab.visible = False
+            raise RuntimeError("the tab window did not appear")
+
+    def _show_full_verified(self) -> None:
+        self.main.show()
+        if not self.main.is_visible():
+            raise RuntimeError("the full window did not appear")
+
+    def _restore_tab_on_launch(self) -> None:
+        try:
+            self._show_tab_verified(activate=False)
+        except Exception:  # noqa: BLE001 -- native show or visibility check failed
+            LOGGER.warning("Saved tab could not be restored; opening the full window", exc_info=True)
+            try:
+                self._show_full_verified()
+            except Exception:  # noqa: BLE001 -- keep the saved surface available for retry
+                LOGGER.warning("Full window fallback failed", exc_info=True)
+            else:
+                self.bridge._remember_surface("full")
+                self._safe(self.tab.hide)
+
     def _to_tab(self) -> None:
         """Shrink to the tab. The tab comes up first and the full window only
         goes once the tab is really showing, so a failure can never leave the
         user with no window: it is rolled back to the full window."""
         self.bridge._remember_surface("tab")
         try:
-            self.tab.show(strict=True)
-            if not self.tab.is_shown():
-                raise RuntimeError("the tab window did not appear")
+            self._show_tab_verified()
             self.main.hide()
             if self._safe(self.main.is_visible):
                 raise RuntimeError("the full window is still visible")
@@ -1425,9 +1466,7 @@ class SurfaceController:
     def _to_full(self) -> None:
         self.bridge._remember_surface("full")
         try:
-            self.main.show()
-            if not self._safe(self.main.is_visible):
-                raise RuntimeError("the full window did not appear")
+            self._show_full_verified()
             self.tab.hide()
         except Exception:  # noqa: BLE001
             LOGGER.warning("Opening the full window failed; keeping the tab", exc_info=True)

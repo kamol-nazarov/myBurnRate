@@ -1992,6 +1992,69 @@ def test_fetch_usage_fetches_connections_in_non_demo_mode_and_passes_to_merge():
     assert "/api/connections" not in demo_calls
 
 
+def test_partial_quota_failure_keeps_only_current_scope_limits(tmp_path):
+    from types import SimpleNamespace
+
+    from spend_app.db import connect, initialize
+    from spend_app.setup_wizard import read_setup_state, write_setup_state
+
+    class QuotaClient(DemoClient):
+        hud_mode = "measured"
+
+        def request(self, path, body=None):
+            if path.startswith("/api/spend/hud?"):
+                if self.hud_mode == "failed":
+                    raise DesktopError("Temporary quota fetch failure.")
+                if self.hud_mode == "empty":
+                    return {"capacity": []}
+            return super().request(path, body)
+
+    db_path = tmp_path / "scope.db"
+    initialize(db_path)
+    client = QuotaClient()
+    client.settings = SimpleNamespace(database_path=db_path)
+    bridge = DesktopBridge(client)
+
+    measured = bridge.fetch_usage(machine="all")["report"]
+    assert measured["quotaStatus"] == "fresh"
+    original = bridge._tab_model.payload(dark=False)
+    assert len(original["segments"]) == 5
+    assert original["urgentCount"] >= 1
+
+    client.hud_mode = "failed"
+    retained = bridge.fetch_usage(period="week", machine="all")["report"]
+    assert retained["quotaStatus"] == "stale"
+    assert retained["period"] == "week"
+    tab = bridge._tab_model.payload(dark=False)
+    assert tab["stale"]
+    assert len(tab["segments"]) == len(original["segments"])
+    assert tab["urgentCount"] == original["urgentCount"]
+
+    other = bridge.fetch_usage(machine="example-laptop")["report"]
+    assert other["quotaStatus"] == "unavailable"
+    tab = bridge._tab_model.payload(dark=False)
+    assert tab["state"] == "error"
+    assert not tab["segments"]
+
+    with connect(db_path) as conn:
+        setup = read_setup_state(conn)
+        setup["role"] = "spoke"
+        setup["account"]["machineId"] = "new-pairing-machine"
+        setup["spokeConfig"]["credentialGeneration"] += 1
+        write_setup_state(conn, setup)
+    assert bridge.fetch_usage(machine="all")["report"]["quotaStatus"] == "unavailable"
+    assert not bridge._tab_model.payload(dark=False)["segments"]
+
+    client.hud_mode = "measured"
+    assert bridge.fetch_usage(machine="all")["report"]["quotaStatus"] == "fresh"
+    client.hud_mode = "empty"
+    assert bridge.fetch_usage(machine="all")["report"]["quotaStatus"] == "fresh"
+    assert bridge._tab_model.payload(dark=False)["state"] == "empty"
+    client.hud_mode = "failed"
+    assert bridge.fetch_usage(machine="all")["report"]["quotaStatus"] == "unavailable"
+    assert not bridge._tab_model.payload(dark=False)["segments"]
+
+
 class ServiceBridgeClient:
     """In-process client forwarding /api/connections directly to connections.Service."""
 

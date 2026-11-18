@@ -79,6 +79,46 @@ def test_a_failed_shrink_is_logged_with_its_reason_and_leaves_one_window(caplog)
     assert bridge.surface == "full"
 
 
+@pytest.mark.parametrize("raises", [False, True])
+def test_saved_tab_restore_falls_back_to_full_and_next_launch_recovers(tmp_path, raises):
+    bridge, _, tab, surfaces, main_win, tab_win, _ = make(tmp_path, surface="tab")
+    main_win.visible = False
+
+    def failed_show():
+        if raises:
+            raise OSError("tab show failed")
+
+    tab_win.show = failed_show
+    # Windows can report that a show request returned while the form remains hidden.
+    tab.is_shown = lambda: tab_win.visible
+    surfaces.restore_on_launch()
+    assert main_win.visible and not tab_win.visible and not tab.visible
+    assert bridge.surface == "full"
+
+    next_bridge, _, _, next_surfaces, next_main, next_tab, _ = make(tmp_path)
+    next_surfaces.restore_on_launch()
+    assert next_bridge.surface == "full"
+    assert next_main.visible and not next_tab.visible and next_tab.calls == []
+
+
+def test_invisible_full_fallback_never_commits_and_tray_can_retry(tmp_path):
+    bridge, _, tab, surfaces, main_win, tab_win, _ = make(tmp_path, surface="tab")
+    main_win.visible = False
+    show_main, show_tab = main_win.show, tab_win.show
+    main_win.show = tab_win.show = lambda: None
+    tab.is_shown = lambda: tab_win.visible
+
+    surfaces.restore_on_launch()
+    assert not main_win.visible and not tab_win.visible
+    assert bridge.surface == "tab"
+
+    main_win.show, tab_win.show = show_main, show_tab
+    surfaces.toggle()
+    assert tab_win.visible and not main_win.visible
+    surfaces.show_full()
+    assert main_win.visible and not tab_win.visible and bridge.surface == "full"
+
+
 def test_a_second_launch_is_logged_so_a_surprise_full_window_can_be_explained(caplog, monkeypatch):
     import sys
     import types

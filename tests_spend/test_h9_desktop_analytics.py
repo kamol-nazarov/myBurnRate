@@ -359,6 +359,31 @@ def test_bridge_fetch_entity_detail_validation_forwarding_and_errors(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+def test_bridge_model_detail_requires_echoed_profile(tmp_path):
+    class ScopedClient(RecordingClient):
+        echo_scope = True
+
+        def request(self, path, body=None):
+            response = super().request(path, body)
+            if self.echo_scope:
+                response["selectedTool"] = response["query"].get("tool", [None])[0]
+            return response
+
+    client = ScopedClient()
+    bridge = DesktopBridge(client, preferences=tmp_path / "prefs.json")
+    scoped = bridge.fetch_entity_detail("model", "gpt-5", "1d", "m2", "codex-work")
+    assert scoped["ok"]
+    assert scoped["entity"]["selectedTool"] == "codex-work"
+    assert scoped["entity"]["query"]["tool"] == ["codex-work"]
+
+    client.echo_scope = False
+    unsupported = bridge.fetch_entity_detail("model", "gpt-5", "1d", "m2", "codex-work")
+    assert unsupported == {"ok": False, "error": "Detail for this tool profile is unavailable."}
+    global_model = bridge.fetch_entity_detail("model", "gpt-5", "1d", "m2")
+    assert global_model["ok"]
+    assert "tool" not in global_model["entity"]["query"]
+
+
 def _build_h9_fixtures() -> dict:
     client = DemoClient()
     summaries_all = {
@@ -379,7 +404,11 @@ def _build_h9_fixtures() -> dict:
             ("tool", "claude-code"),
             ("tool", "codex"),
         ):
-            entities[f"{kind}:{key}:{win}"] = demo_entity(kind, key, win, "all")
+            entity = demo_entity(kind, key, win, "all")
+            entities[f"{kind}:{key}:{win}"] = entity
+            if kind == "model":
+                tool = entity["providerKey"]
+                entities[f"{kind}:{key}:{win}:{tool}"] = demo_entity(kind, key, win, "all", tool)
 
     return {
         "summariesAll": summaries_all,
@@ -406,13 +435,52 @@ def _h9_api_js(fixtures: dict | None = None, *, health: dict | None = None) -> s
         : (__H9.summariesAll[win] || __H9.summariesAll["1d"]);
       return {{ ok: true, summary: JSON.parse(JSON.stringify(source)), health: __H9_HEALTH }};
     }};
-    api.fetch_entity_detail = async function (kind, key, win, machine) {{
-      window.__calls.push(["fetch_entity_detail", kind, key, win, machine]);
-      var ent = (__H9.entities && (__H9.entities[kind + ":" + key + ":" + win] || __H9.entities[kind + ":" + key + ":1d"]))
+    api.fetch_entity_detail = async function (kind, key, win, machine, tool) {{
+      window.__calls.push(["fetch_entity_detail", kind, key, win, machine, tool]);
+      var ent = (__H9.entities && (__H9.entities[kind + ":" + key + ":" + win + ":" + tool]
+        || __H9.entities[kind + ":" + key + ":" + win] || __H9.entities[kind + ":" + key + ":1d"]))
         || Object.values(__H9.entities || {{}})[0];
       return {{ ok: true, entity: JSON.parse(JSON.stringify(ent)) }};
     }};
     """
+
+
+@browser
+@needs_chrome
+def test_model_click_keyboard_and_refresh_keep_profile(tmp_path):
+    fixtures = _build_h9_fixtures()
+    model = next(m for m in fixtures["summariesAll"]["1d"]["models"] if m["key"] == "claude-opus-4-6")
+    fixtures["summariesAll"]["1d"]["models"].append({**model, "toolKey": "claude-code-work", "tokens": 9000})
+    fixtures["entities"]["model:claude-opus-4-6:1d:claude-code-work"] = {
+        **fixtures["entities"]["model:claude-opus-4-6:1d"],
+        "tokens": 9000,
+        "providerName": "Claude Work",
+        "selectedTool": "claude-code-work",
+    }
+    html = build_page(
+        init={"analyticsWindow": "1d"},
+        api_js=_h9_api_js(fixtures),
+        extra_css=FAST,
+        probe="""
+const selector = '[data-h9-entity-key="claude-opus-4-6"][data-h9-entity-tool="claude-code-work"]';
+await until(() => document.querySelector('.h9-model-row' + selector));
+document.querySelector('.h9-model-row' + selector).dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true}));
+await until(() => state.h9EntityData?.selectedTool === 'claude-code-work');
+const keyboard = state.h9EntityData.tokens;
+const before = window.__calls.length;
+await loadUsage();
+await until(() => window.__calls.slice(before).some(c => c[0] === 'fetch_entity_detail'));
+const refresh = window.__calls.slice(before).find(c => c[0] === 'fetch_entity_detail');
+document.getElementById('h9DetailBack').click();
+await until(() => document.querySelector('.h9-model-card' + selector));
+document.querySelector('.h9-model-card' + selector).click();
+await until(() => state.h9EntityData?.selectedTool === 'claude-code-work');
+report({keyboard, refreshTool: refresh[5], click: state.h9EntityData.tokens});
+""",
+    )
+    assert probe(html, 960, tmp_path, height=700) == {
+        "keyboard": 9000, "refreshTool": "claude-code-work", "click": 9000,
+    }
 
 
 def _partial_coverage_fixture() -> dict:
@@ -1246,6 +1314,148 @@ def test_h9_ui_no_horizontal_overflow_at_narrow_widths(tmp_path, width):
     assert pop["popOpen"] is True
     assert pop["popLeft"] >= 0
     assert pop["popRight"] <= pop["innerWidth"]
+
+
+@needs_chrome
+@browser
+@pytest.mark.parametrize("legacy_summary", [False, True])
+def test_h9_hero_chart_scrub_respects_tool_filter(tmp_path, legacy_summary):
+    fixtures = _build_h9_fixtures()
+    if legacy_summary:
+        for bucket in fixtures["summariesClaude"]["1d"]["series"]:
+            bucket.pop("bucketUsd")
+            bucket.pop("bucketUsdComplete")
+    result = probe(
+        build_page(
+            init={"analyticsWindow": "1d"},
+            api_js=_h9_api_js(fixtures),
+            extra_css=FAST,
+            motion="reduce",
+            probe="""
+await until(() => state.h9Summary?.tools?.length > 1);
+const chart = document.getElementById('chartWrap');
+const snap = () => ({
+  value: document.getElementById('heroValue').textContent,
+  tokens: document.getElementById('heroTokens').textContent,
+  context: document.getElementById('heroTokensContext').textContent,
+  selected: document.querySelector('#h9ToolBar .h9-tool-pill.active')?.dataset.h9Tool,
+  point: chart._scrubIdx,
+});
+const key = name => chart.dispatchEvent(new KeyboardEvent('keydown', {key: name, bubbles: true}));
+const out = {all: snap()};
+document.querySelector('#h9ToolBar [data-h9-tool="claude-code"]').click();
+await until(() => state.h9Summary?.tools?.[0]?.key === 'claude-code' && state.h9Summary.tools.length === 1);
+out.filtered = snap();
+chart.focus({preventScroll: true});
+key('End');
+out.inspected = snap();
+key('Escape');
+out.escaped = snap();
+const rect = chart.getBoundingClientRect();
+chart.dispatchEvent(new MouseEvent('mousemove', {clientX: rect.right}));
+out.pointer = snap();
+chart.dispatchEvent(new MouseEvent('mouseleave'));
+out.left = snap();
+key('Home');
+chart.blur();
+out.blurred = snap();
+key('End');
+document.querySelector('#h9ToolBar [data-h9-tool="all"]').click();
+await until(() => state.h9Summary?.tools?.length > 1);
+out.restored = snap();
+report(out);
+""",
+        ),
+        960,
+        tmp_path,
+        height=900,
+    )
+    assert result["all"]["value"] == "$127.34"
+    assert result["all"]["tokens"] == "8.2M tokens"
+    assert result["filtered"] == {
+        "value": "$52.10",
+        "tokens": "2.9M tokens",
+        "context": "filtered to Claude Code",
+        "selected": "claude-code",
+        "point": None,
+    }
+    for step in ("inspected", "pointer"):
+        assert result[step]["value"] == ("Unpriced" if legacy_summary else "$52.10")
+        assert result[step]["tokens"] == "2.9M tokens"
+        assert result[step]["context"].startswith("through ")
+    assert result["escaped"] == result["left"] == result["blurred"] == result["filtered"]
+    assert result["restored"] == result["all"]
+
+
+@needs_chrome
+@browser
+def test_h9_detail_poll_preserves_scroll_focus_and_current_entity(tmp_path):
+    api_js = _h9_api_js() + """
+    const realInterval = window.setInterval;
+    window.setInterval = function (fn, delay, ...args) {
+      if (delay === 15000) { window.__usagePoll = fn; return 0; }
+      return realInterval.call(this, fn, delay, ...args);
+    };
+    """
+    result = probe(
+        build_page(
+            init={"analyticsWindow": "1d"},
+            api_js=api_js,
+            extra_css=FAST,
+            probe="""
+await until(() => state.h9Summary && window.__usagePoll);
+const scroll = document.getElementById('scrollBody');
+scroll.style.scrollBehavior = 'auto';
+document.querySelector('#h9LegendCards [data-h9-entity-key="claude-code"]').click();
+await until(() => state.h9EntityData?.key === 'claude-code');
+document.querySelector('#h9DetailHits [data-h9-detail-hit="2"]').focus({preventScroll: true});
+scroll.scrollTop = 200;
+const original = window.pywebview.api.fetch_entity_detail;
+let release;
+window.pywebview.api.fetch_entity_detail = async (...args) => {
+  const result = await original(...args);
+  if (args[1] !== 'claude-code') return result;
+  return new Promise(resolve => { release = () => resolve(result); });
+};
+const prior = state.h9EntityData;
+const out = {before: scroll.scrollTop};
+window.__usagePoll();
+await until(() => release);
+out.whileFetching = scroll.scrollTop;
+release();
+release = null;
+await until(() => state.h9EntityData !== prior);
+out.after = {
+  scroll: scroll.scrollTop,
+  focus: document.activeElement?.dataset.h9DetailHit,
+};
+scroll.scrollTop = 180;
+window.__usagePoll();
+await until(() => release);
+document.getElementById('h9DetailBack').click();
+document.querySelector('#h9LegendCards [data-h9-entity-key="codex"]').click();
+await until(() => state.h9EntityData?.key === 'codex');
+out.newView = scroll.scrollTop;
+release();
+await wait(40);
+out.afterLateResponse = {
+  key: state.h9EntityData?.key,
+  scroll: scroll.scrollTop,
+};
+report(out);
+""",
+        ),
+        960,
+        tmp_path,
+        height=420,
+    )
+    assert result == {
+        "before": 200,
+        "whileFetching": 200,
+        "after": {"scroll": 200, "focus": "2"},
+        "newView": 0,
+        "afterLateResponse": {"key": "codex", "scroll": 0},
+    }
 
 
 H9_H10_DIAGNOSTICS_ESCAPE_PROBE = """
