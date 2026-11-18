@@ -177,6 +177,216 @@ def test_stop_only_targets_public_listener() -> None:
     assert "not listening on port" in runtime
 
 
+LIFECYCLE_PROCESS_FIXTURE = r"""
+$script:fixtureProcessId = 4242
+$script:fixtureListening = $true
+function Get-ItemPropertyValue {
+    [CmdletBinding()]
+    param($LiteralPath, $Name)
+    if ($LiteralPath -ne 'HKCU:\Software\BURNRATE Native' -or $Name -ne 'InstallDir') {
+        throw 'Unexpected registry lookup'
+    }
+    return $env:BR42_INSTALL_DIRECTORY
+}
+function Get-NetTCPConnection {
+    [CmdletBinding()]
+    param($LocalPort, $State)
+    if ($LocalPort -ne [int]$env:BURNRATE_PORT -or $State -ne 'Listen') {
+        throw 'Unexpected listener lookup'
+    }
+    if ($script:fixtureListening) {
+        [pscustomobject]@{
+            OwningProcess = $script:fixtureProcessId
+            LocalAddress = $env:BR42_LISTEN_ADDRESS
+            LocalPort = [int]$env:BR42_LISTEN_PORT
+        }
+    }
+}
+function Get-CimInstance {
+    [CmdletBinding()]
+    param($ClassName, $Filter)
+    if ($ClassName -ne 'Win32_Process') {
+        throw 'Unexpected process lookup'
+    }
+    if ($script:fixtureListening -and $Filter -eq "ProcessId=$script:fixtureProcessId") {
+        [pscustomobject]@{
+            ProcessId = $script:fixtureProcessId
+            CreationDate = [datetime]'2025-01-01'
+            ExecutablePath = $env:BR42_PROCESS_EXE
+            CommandLine = $env:BR42_COMMAND_LINE
+        }
+    }
+}
+function Stop-Process {
+    [CmdletBinding()]
+    param([int]$Id, [switch]$PassThru)
+    Add-Content -LiteralPath $env:BR42_TRACE -Value "stop:$Id"
+    if ($Id -ne $script:fixtureProcessId) {
+        throw "Stopped an unexpected PID: $Id"
+    }
+    if ($PassThru) {
+        $process = [pscustomobject]@{Id = $Id}
+        $process | Add-Member ScriptMethod WaitForExit {
+            param([int]$Milliseconds)
+            $script:fixtureListening = $false
+            return $Milliseconds -gt 0
+        }
+        return $process
+    }
+}
+function Get-BurnrateScheduledTask {
+    throw 'This restart should not consult Task Scheduler'
+}
+function Resolve-BurnratePythonw {
+    if (-not $env:BR42_PYTHON) {
+        throw 'This packaged-only installation has no Python environment'
+    }
+    return $env:BR42_PYTHON
+}
+function Wait-BurnrateHealth {}
+function Start-BurnrateDashboardProcess {
+    param($Launch)
+    Add-Content -LiteralPath $env:BR42_TRACE -Value "start:$($Launch.FilePath)|$($Launch.ArgumentString)"
+    $script:fixtureProcessId = 4243
+    $script:fixtureListening = $true
+    [pscustomobject]@{Id = $script:fixtureProcessId}
+}
+"""
+
+
+def _lifecycle_wrapper_fixture(
+    tmp_path: Path, *, registered: bool = True
+) -> tuple[dict[str, str], Path, Path]:
+    local = tmp_path / "Local"
+    program = tmp_path / "Custom Program" if registered else local / "Programs" / "BURNRATE"
+    program.mkdir(parents=True)
+    installed = program / "BURNRATE.exe"
+    installed.touch()
+    (program / "BURNRATE.installed").write_text(
+        '{"installer":"nsis","version":"0.6.0"}', encoding="utf-8"
+    )
+    run = tmp_path / "data" / "run"
+    run.mkdir(parents=True)
+    (run / "burnrate.pid").write_text("4242\n", encoding="ascii")
+    trace = tmp_path / "actions"
+    trace.touch()
+    for script in ("stop-burnrate.ps1", "restart-burnrate.ps1"):
+        shutil.copyfile(SCRIPTS / script, tmp_path / script)
+    # Keep the wrappers and runtime code intact. Only the OS observations and
+    # process effects are synthetic, including a read-only HKCU lookup.
+    (tmp_path / "BurnrateRuntime.ps1").write_text(
+        _read("BurnrateRuntime.ps1") + "\n" + LIFECYCLE_PROCESS_FIXTURE, encoding="utf-8"
+    )
+    env = {
+        **os.environ,
+        "LOCALAPPDATA": str(local),
+        "BURNRATE_DATA_ROOT": str(run.parent),
+        "BURNRATE_PORT": "17425",
+        "BR42_INSTALL_DIRECTORY": str(program) if registered else "",
+        "BR42_PROCESS_EXE": str(installed),
+        "BR42_COMMAND_LINE": f'"{installed}" --service --port 17425',
+        "BR42_LISTEN_ADDRESS": "127.0.0.1",
+        "BR42_LISTEN_PORT": "17425",
+        "BR42_TRACE": str(trace),
+        "BR42_PYTHON": "",
+    }
+    return env, installed, run
+
+
+def _run_lifecycle_wrapper(tmp_path: Path, env: dict[str, str], verb: str) -> list[str]:
+    completed = subprocess.run(
+        [_powershell(), "-NoProfile", "-File", str(tmp_path / f"{verb}-burnrate.ps1")],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=30,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    return Path(env["BR42_TRACE"]).read_text(encoding="utf-8").splitlines()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the PowerShell lifecycle scripts are for Windows")
+@pytest.mark.parametrize("registered", [True, False], ids=["custom", "default"])
+@pytest.mark.parametrize("verb", ["stop", "restart"])
+def test_windows_lifecycle_targets_installed_native_collector(
+    tmp_path: Path, registered: bool, verb: str
+) -> None:
+    env, installed, run = _lifecycle_wrapper_fixture(tmp_path, registered=registered)
+    actions = _run_lifecycle_wrapper(tmp_path, env, verb)
+    assert actions[0] == "stop:4242"
+    if verb == "stop":
+        assert actions == ["stop:4242"]
+        assert not (run / "burnrate.pid").exists()
+        assert (run / "stopped").is_file()
+    else:
+        assert actions == ["stop:4242", f"start:{installed}|--service --port 17425"]
+        assert (run / "burnrate.pid").read_text().strip() == "4243"
+        assert not (run / "stopped").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the PowerShell lifecycle scripts are for Windows")
+@pytest.mark.parametrize(
+    "unowned",
+    [
+        "foreign-image",
+        "stale-pid",
+        "wrong-role",
+        "wrong-port-argument",
+        "wrong-listener-port",
+        "wildcard",
+        "unrelated-python",
+    ],
+)
+def test_windows_stop_leaves_unowned_process_running(tmp_path: Path, unowned: str) -> None:
+    env, installed, run = _lifecycle_wrapper_fixture(tmp_path)
+    if unowned == "foreign-image":
+        foreign = tmp_path / "Foreign BURNRATE" / "BURNRATE.exe"
+        foreign.parent.mkdir()
+        foreign.touch()
+        env["BR42_PROCESS_EXE"] = str(foreign)
+        env["BR42_COMMAND_LINE"] = f'"{foreign}" --service --port 17425'
+    elif unowned == "stale-pid":
+        (run / "burnrate.pid").write_text("4241\n", encoding="ascii")
+    elif unowned == "wrong-role":
+        env["BR42_COMMAND_LINE"] = f'"{installed}" --demo --port 17425'
+    elif unowned == "wrong-port-argument":
+        env["BR42_COMMAND_LINE"] = f'"{installed}" --service --port 17426'
+    elif unowned == "wrong-listener-port":
+        env["BR42_LISTEN_PORT"] = "17426"
+    elif unowned == "unrelated-python":
+        python = tmp_path / "Other Python" / "python.exe"
+        env["BR42_PROCESS_EXE"] = str(python)
+        env["BR42_COMMAND_LINE"] = f'"{python}" watch.py --check spend_app.api:app'
+    else:
+        env["BR42_LISTEN_ADDRESS"] = "0.0.0.0"
+    assert _run_lifecycle_wrapper(tmp_path, env, "stop") == []
+    assert (run / "burnrate.pid").is_file()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the PowerShell lifecycle scripts are for Windows")
+@pytest.mark.parametrize("verb", ["stop", "restart"])
+def test_windows_lifecycle_preserves_python_collector(tmp_path: Path, verb: str) -> None:
+    env, _, run = _lifecycle_wrapper_fixture(tmp_path)
+    python = tmp_path / "Synthetic Python" / "pythonw.exe"
+    env["BR42_PROCESS_EXE"] = env["BR42_PYTHON"] = str(python)
+    env["BR42_COMMAND_LINE"] = f'"{python}" -m spend_app.service --host 127.0.0.1 --port 17425'
+    # The synthetic Python installation has no sign-in task.
+    runtime = tmp_path / "BurnrateRuntime.ps1"
+    with runtime.open("a", encoding="utf-8") as stream:
+        stream.write("\nfunction Get-BurnrateScheduledTask { param($TaskName) }\n")
+    actions = _run_lifecycle_wrapper(tmp_path, env, verb)
+    if verb == "stop":
+        assert actions == ["stop:4242"]
+        assert not (run / "burnrate.pid").exists()
+    else:
+        assert actions == [
+            "stop:4242",
+            f"start:{python}|-m spend_app.service --host 127.0.0.1 --port 17425 --app spend_app.api:app",
+        ]
+        assert (run / "burnrate.pid").read_text().strip() == "4243"
+
+
 def test_powershell_scripts_parse() -> None:
     shell = _powershell()
     for name in PUBLIC_SCRIPTS:

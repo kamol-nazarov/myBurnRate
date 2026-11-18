@@ -4,9 +4,8 @@ param(
     [switch]$DryRun
 )
 
-# Restart the dashboard on 127.0.0.1:17331: stop only the owned listener, then
-# start it through the "BURNRATE Dashboard" sign-in task (or directly when the
-# task is not registered). The watchdog uses this; it is also safe to run by hand.
+# Restart the owned listener on the configured loopback port. Reuse the
+# installed native collector or the Python dashboard's sign-in task.
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'BurnrateRuntime.ps1')
