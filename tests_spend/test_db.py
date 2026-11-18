@@ -3,6 +3,7 @@ import os
 import shutil
 import subprocess
 import sys
+from dataclasses import replace
 from spend_app.db import SCHEMA_VERSION
 from pathlib import Path
 
@@ -637,8 +638,16 @@ def test_backup_database_round_trips_schema_and_row(tmp_path: Path) -> None:
     assert subscriptions == 0
 
 
-@pytest.mark.parametrize("failure", [None, "snapshot", "copy"])
-def test_docker_backup_recipe_copies_live_wal_snapshot(tmp_path, failure):
+@pytest.mark.parametrize(
+    ("use_override", "failure"),
+    [
+        pytest.param(False, None, id="default"),
+        pytest.param(True, None, id="dotenv-override"),
+        pytest.param(True, "snapshot", id="missing-source"),
+        pytest.param(True, "copy", id="failed-copy"),
+    ],
+)
+def test_docker_backup_recipe_copies_live_wal_snapshot(tmp_path, use_override, failure):
     shell = shutil.which("sh")
     if os.name == "nt":
         git = shutil.which("git")
@@ -678,11 +687,24 @@ docker() {
     esac
 }
 """
-    source = tmp_path / "live.db"
+    data_root = tmp_path / "data-volume"
+    default = data_root / "spend.db"
+    source = data_root / "live.db" if use_override else default
     initialize(source)
+    if use_override:
+        initialize(default)
+        with connect(default) as db:
+            stale = replace(sample_event(), raw_id="stale-default-file", input_tokens=800)
+            assert upsert_usage_event(db, stale)
+        configured = data_root / "missing.db" if failure == "snapshot" else source
+        (data_root / ".env").write_text(
+            f'SPEND_DATABASE_PATH="{configured.as_posix()}"\n', encoding="utf-8"
+        )
     env = dict(os.environ)
+    for key in ("PYTEST_CURRENT_TEST", "SPEND_DATABASE_PATH", "BURNRATE_DEV"):
+        env.pop(key, None)
     env.update(
-        SPEND_DATABASE_PATH=(tmp_path / "missing.db" if failure == "snapshot" else source).as_posix(),
+        BURNRATE_DATA_ROOT=data_root.as_posix(),
         BR_TEST_PYTHON=Path(sys.executable).as_posix(),
         BR_TEST_FAILURE=failure or "",
         PYTHONPATH=ROOT.as_posix(),
@@ -693,7 +715,7 @@ docker() {
         db.execute("PRAGMA wal_autocheckpoint=0")
         assert upsert_usage_event(db, sample_event())
         db.commit()
-        assert (tmp_path / "live.db-wal").stat().st_size > 32
+        assert source.with_suffix(".db-wal").stat().st_size > 32
         # A naive main-file copy misses the row even while integrity passes.
         main_file = tmp_path / "main-only.db"
         shutil.copyfile(source, main_file)

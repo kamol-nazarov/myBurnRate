@@ -115,13 +115,15 @@ from pathlib import Path
 import sqlite3
 from tempfile import NamedTemporaryFile
 
-from spend_app.config import load_settings
+from spend_app.config import load_settings, load_user_env
 from spend_app.db import backup_database
 
+load_user_env()
+source = load_settings().database_path
 with NamedTemporaryFile(prefix="burnrate-backup-", suffix=".db", delete=False) as temp:
     snapshot = Path(temp.name)
 try:
-    backup_database(load_settings().database_path, snapshot)
+    backup_database(source, snapshot)
     with closing(sqlite3.connect(snapshot.as_uri() + "?immutable=1", uri=True)) as db:
         if db.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
             raise RuntimeError("SQLite snapshot failed quick_check")
