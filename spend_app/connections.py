@@ -1003,7 +1003,7 @@ class Service:
                           "state": "awaiting_ingest", "detail": "Saved, awaiting first import." if checked["usableSample"] else checked["detail"], "capabilities": ["usage"]}
                 if target_profile != "default":
                     record["sourceIdentity"] = profile_store.source_identity(
-                        _profile_folder_for(spec.key, checked["location"])
+                        Path(checked["location"])
                     )
                 if op == "recheck" and previous and not previous["enabled"]:
                     record.update(enabled=False, state="disabled", detail="Location verified; connection remains disabled. Use Reconnect to collect again.")
@@ -1169,9 +1169,7 @@ class Service:
                 profile_store.assert_folder_free(effective_state, spec.key, checked["location"])
             self._assert_account_free(effective_state, spec.key, digest, use_cache=False)
 
-            source_identity = profile_store.source_identity(
-                _profile_folder_for(spec.key, checked["location"])
-            )
+            source_identity = profile_store.source_identity(Path(checked["location"]))
             historical_keys: set[str] = set()
             with self.store.transaction(historical_tool_keys=historical_keys) as current:
                 receipt = current["requests"].get(request_id)

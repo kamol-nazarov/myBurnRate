@@ -225,6 +225,73 @@ def test_setup_recognizes_configured_codex_and_reports_a_missing_location(
     assert check()["state"] == "bad"
 
 
+def test_setup_history_lookup_scales_with_harnesses_not_usage_rows(settings: Settings, monkeypatch) -> None:
+    from contextlib import contextmanager
+
+    from spend_app import setup_wizard
+
+    latest = "2026-10-26T04:00:01Z"
+    earlier = "2026-10-26T04:00:00Z"
+    with connect(settings.database_path) as connection:
+        # Model a populated database opened before the two additive indexes.
+        connection.execute("DROP INDEX IF EXISTS idx_usage_events_local_source_ingested")
+        connection.execute("DROP INDEX IF EXISTS idx_unpriced_usage_local_source_ingested")
+        connection.execute("""
+            WITH RECURSIVE numbers(n) AS (
+                SELECT 1 UNION ALL SELECT n+1 FROM numbers WHERE n<5000
+            )
+            INSERT INTO usage_events(
+                source, tool_key, model_key, occurred_at, input_tokens, output_tokens,
+                computed_cost_usd, raw_id, ingested_at
+            )
+            SELECT 'codex_local', 'codex', 'fixture', '2026-10-26T05:00:00Z', 10, 2,
+                   0, 'm:laptop:' || n, '2026-10-26T05:00:00Z' FROM numbers
+        """)
+        connection.execute("""
+            WITH RECURSIVE numbers(n) AS (
+                SELECT 1 UNION ALL SELECT n+1 FROM numbers WHERE n<5000
+            )
+            INSERT INTO unpriced_usage_events(
+                source, tool_key, model_key, occurred_at, input_tokens,
+                cached_input_tokens, cache_write_tokens, output_tokens, raw_id, ingested_at
+            )
+            SELECT 'unrelated', 'other', 'fixture', '2026-10-26T06:00:00Z', 10, 0, 0,
+                   2, 'other:' || n, '2026-10-26T06:00:00Z' FROM numbers
+        """)
+        connection.execute("""
+            INSERT INTO usage_events(
+                source, tool_key, model_key, occurred_at, input_tokens, output_tokens,
+                computed_cost_usd, raw_id, ingested_at
+            ) VALUES ('codex_local', 'codex', 'fixture', ?, 10, 2, 0, 'local-priced', ?)
+        """, (earlier, earlier))
+        connection.execute("""
+            INSERT INTO unpriced_usage_events(
+                source, tool_key, model_key, occurred_at, input_tokens,
+                cached_input_tokens, cache_write_tokens, output_tokens, raw_id, ingested_at
+            ) VALUES ('codex_local', 'codex', 'fixture', ?, 10, 0, 0, 2, 'local-unpriced', ?)
+        """, (latest, latest))
+    initialize(settings.database_path)
+
+    remaining_steps = 5_000
+
+    def track_progress() -> int:
+        nonlocal remaining_steps
+        remaining_steps -= 100
+        return int(remaining_steps <= 0)
+
+    @contextmanager
+    def budgeted_connect(path):
+        with connect(path) as connection:
+            connection.set_progress_handler(track_progress, 100)
+            yield connection
+
+    monkeypatch.setattr(setup_wizard, "connect", budgeted_connect)
+    monkeypatch.setattr(setup_wizard, "detect_local_sources", lambda _home: {})
+    by_source = {row["source"]: row for row in setup_wizard._build_harness_list(settings)}
+    assert by_source["codex_local"]["state"] == "stale"
+    assert by_source["codex_local"]["lastSuccess"] == latest
+
+
 def test_a_tracked_plan_is_not_suggested_again(client: TestClient, settings: Settings) -> None:
     now = datetime.now(UTC)
     with connect(settings.database_path) as connection:

@@ -23,6 +23,7 @@ import json
 import os
 import re
 import sqlite3
+import stat
 from collections.abc import Iterable
 from contextlib import closing
 from dataclasses import dataclass
@@ -115,7 +116,7 @@ def profile_key_for_folder(
 
 
 def source_identity(location: Path) -> str | None:
-    """Return durable evidence for reattaching a profile's physical root."""
+    """Identify the approved file or directory without widening its scope."""
     try:
         if location.is_symlink() or is_name_surrogate(location):
             return None
@@ -124,12 +125,18 @@ def source_identity(location: Path) -> str | None:
         return None
     if not info.st_ino:
         return None
+    if stat.S_ISREG(info.st_mode):
+        kind = "file"
+    elif stat.S_ISDIR(info.st_mode):
+        kind = "directory"
+    else:
+        return None
     birth = getattr(info, "st_birthtime_ns", None)
     if birth is None:
         # Without a creation time, a reused inode is ambiguous. Accept only
         # an unchanged stat identity, even if that rejects a legitimate move.
         birth = f"ctime:{info.st_ctime_ns}"
-    return hashlib.sha256(f"{info.st_dev}:{info.st_ino}:{birth}".encode()).hexdigest()
+    return hashlib.sha256(f"{kind}:{info.st_dev}:{info.st_ino}:{birth}".encode()).hexdigest()
 
 
 def _resolve_soft(raw: str | Path) -> Path:

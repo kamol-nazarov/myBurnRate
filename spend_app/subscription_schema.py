@@ -11,10 +11,13 @@ from pathlib import Path
 
 def upgrade_database(path: Path, initialize_base):
     from spend_app.db import (
+        LOCAL_USAGE_HISTORY_INDEXES,
         SCHEMA_VERSION,
         backfill_event_epochs,
         backup_database,
         connect,
+        ensure_local_usage_history_indexes,
+        ensure_quota_pace_table,
         migrate_release_a,
     )
 
@@ -23,6 +26,7 @@ def upgrade_database(path: Path, initialize_base):
     unknown_version = False
     current = False
     pace_ready = False
+    local_history_ready = False
     existing = path.is_file() and path.stat().st_size > 0
     if path.is_file():
         with closing(
@@ -65,6 +69,11 @@ def upgrade_database(path: Path, initialize_base):
                     ).fetchone()[0]
                     == 2
                 )
+                local_history_ready = source.execute(
+                    "SELECT COUNT(*) FROM sqlite_master "
+                    "WHERE type='index' AND name IN (?,?)",
+                    tuple(LOCAL_USAGE_HISTORY_INDEXES),
+                ).fetchone()[0] == len(LOCAL_USAGE_HISTORY_INDEXES)
                 current = (
                     version == SCHEMA_VERSION
                     and "plan_id" in columns
@@ -85,13 +94,13 @@ def upgrade_database(path: Path, initialize_base):
                 if tables - {"sqlite_sequence"} == {"quotas", "agent_runs"}:
                     unknown_version = False
         if current:
-            # Additive pace history. A current database must not take the
-            # subscription backup path just to gain this table.
-            if not pace_ready:
-                from spend_app.db import connect, ensure_quota_pace_table
-
+            # A current database needs only the missing additive objects.
+            if not (pace_ready and local_history_ready):
                 with connect(path) as connection:
-                    ensure_quota_pace_table(connection)
+                    if not pace_ready:
+                        ensure_quota_pace_table(connection)
+                    if not local_history_ready:
+                        ensure_local_usage_history_indexes(connection)
             return
         if existing:
             target = (

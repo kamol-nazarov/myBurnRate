@@ -814,6 +814,33 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
 SETUP_STALE_AFTER_SECONDS = 15 * 60
 
 
+def _local_harness_history(connection) -> dict[str, str]:
+    """Read the newest stored measurement for each local harness with two seeks."""
+    history = {}
+    for source in HARNESS_CATALOG:
+        (latest,) = connection.execute(
+            """
+            SELECT MAX(ingested_at) FROM (
+                SELECT (
+                    SELECT ingested_at FROM usage_events
+                    WHERE source=? AND raw_id NOT LIKE 'm:%'
+                    ORDER BY ingested_at DESC LIMIT 1
+                ) AS ingested_at
+                UNION ALL
+                SELECT (
+                    SELECT ingested_at FROM unpriced_usage_events
+                    WHERE source=? AND raw_id NOT LIKE 'm:%'
+                    ORDER BY ingested_at DESC LIMIT 1
+                )
+            )
+            """,
+            (source, source),
+        ).fetchone()
+        if latest is not None:
+            history[source] = latest
+    return history
+
+
 def _build_harness_list(settings) -> list[dict]:
     """Report local presence, measured history and collection status independently."""
     from spend_app.connections import default_location
@@ -838,12 +865,7 @@ def _build_harness_list(settings) -> list[dict]:
         successes = dict(connection.execute(
             "SELECT source, MAX(finished_at) FROM ingest_runs WHERE status IN ('success','partial') GROUP BY source"
         ).fetchall())
-        history = dict(connection.execute(
-            "SELECT source, MAX(ingested_at) FROM ("
-            "SELECT source, ingested_at FROM usage_events WHERE raw_id NOT LIKE 'm:%' "
-            "UNION ALL SELECT source, ingested_at FROM unpriced_usage_events WHERE raw_id NOT LIKE 'm:%'"
-            ") GROUP BY source"
-        ).fetchall())
+        history = _local_harness_history(connection)
         config = load_config_if_present(connection) or {}
 
     configured: dict[str, list] = {}

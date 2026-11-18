@@ -473,6 +473,20 @@ def ensure_quota_pace_table(connection: sqlite3.Connection) -> None:
     connection.executescript(PACE_SCHEMA_SQL)
 
 
+LOCAL_USAGE_HISTORY_INDEXES = {
+    "idx_usage_events_local_source_ingested": "usage_events",
+    "idx_unpriced_usage_local_source_ingested": "unpriced_usage_events",
+}
+
+
+def ensure_local_usage_history_indexes(connection: sqlite3.Connection) -> None:
+    for index, table in LOCAL_USAGE_HISTORY_INDEXES.items():
+        connection.execute(
+            f"CREATE INDEX IF NOT EXISTS {index} ON {table}(source, ingested_at DESC) "
+            "WHERE raw_id NOT LIKE 'm:%'"
+        )
+
+
 def ensure_activity_table_shapes(connection: sqlite3.Connection) -> None:
     quota_columns = {row[1] for row in connection.execute("PRAGMA table_info('quotas')")}
     agent_columns = {row[1] for row in connection.execute("PRAGMA table_info('agent_runs')")}
@@ -524,6 +538,7 @@ REQUIRED_SCHEMA_OBJECTS = frozenset(
         "idx_ingest_runs_started_at",
         "idx_usage_events_epoch",
         "idx_unpriced_usage_epoch",
+        *LOCAL_USAGE_HISTORY_INDEXES,
     }
 )
 
@@ -1525,6 +1540,7 @@ def migrate_release_a(connection: sqlite3.Connection) -> None:
     cost_columns = {row[1] for row in connection.execute("PRAGMA table_info('provider_cost_buckets')")}
     if cost_columns and "organization_scope" not in cost_columns:
         connection.execute("ALTER TABLE provider_cost_buckets ADD COLUMN organization_scope TEXT")
+    ensure_local_usage_history_indexes(connection)
     connection.executescript(
         """
         CREATE INDEX IF NOT EXISTS idx_usage_events_epoch ON usage_events(occurred_epoch_us);
