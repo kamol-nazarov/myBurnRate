@@ -18,6 +18,7 @@ from tests_spend.test_api import make_settings
 HUB_ORIGIN = "https://hub.test"
 VALUE_PATH = "/api/subscriptions/value"
 PERIOD = {"period": "last_month"}
+OWNER_SESSION = "br_s_synthetic_plan_value"
 
 
 def _client(database):
@@ -53,9 +54,7 @@ def valuation_pair(tmp_path, monkeypatch):
             state["spokeConfig"]["enabled"] = True
             state["spokeConfig"]["hubUrl"] = HUB_ORIGIN
 
-        publish_spoke_credentials(
-            spoke_database, owner_session="br_s_synthetic_plan_value", apply_state=pair
-        )
+        publish_spoke_credentials(spoke_database, owner_session=OWNER_SESSION, apply_state=pair)
         sync.clear_hub_proxy_cache()
         yield hub, hub_database, spoke, spoke_database
     sync.clear_hub_proxy_cache()
@@ -74,7 +73,7 @@ def test_spoke_displays_hub_valuation(valuation_pair, monkeypatch, hub_has_plan)
     def fetch(path, *, params, headers):
         assert path == VALUE_PATH
         assert params == PERIOD
-        assert headers["Authorization"] == "Bearer br_s_synthetic_plan_value"
+        assert headers["Authorization"] == f"Bearer {OWNER_SESSION}"
         response = hub.get(path, params=params, headers=headers)
         forwarded.append(response.json())
         return response
