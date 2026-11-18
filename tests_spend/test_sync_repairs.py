@@ -1,7 +1,7 @@
 """Usage repairs replicate transactionally without echoing imported history."""
 
 from dataclasses import asdict, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,7 +14,7 @@ from spend_app.db import (UsageEvent, UnpricedUsageEvent, backfill_event_epochs,
 from spend_app.pricing import PricingEngine
 from spend_app.sync import (
     apply_sync_push, export_sync_batch, list_machines, read_sync_cursor, register_machine,
-    register_or_reconnect_machine, rename_machine, rotate_machine_token, sync_once,
+    register_or_reconnect_machine, rename_machine, rotate_machine_token, sync_once, write_sync_cursor,
 )
 
 NOW = datetime(2026, 11, 9, 12, tzinfo=UTC)
@@ -364,6 +364,19 @@ def test_new_hub_legacy_spoke_retains_history_on_detectable_fork(pair):
     assert total(hub) == 150
 
 
+def test_quarantined_legacy_conflict_has_recovery_guidance_after_upgrade():
+    from spend_app.freshness import _sync_state
+
+    status, alerts = _sync_state({
+        "role": "spoke", "spokeConfig": {
+            "enabled": True, "lastSyncAt": STAMP, "usageChangesPending": True,
+            "usageLegacyConflicts": 1,
+        },
+    }, NOW, {"uptimeSeconds": 0})
+    assert status["usageLegacyConflicts"] == 1
+    assert [alert["key"] for alert in alerts] == ["hub-recovery"]
+
+
 def test_legacy_hub_delivers_batches_without_pruning_until_its_upgrade(pair):
     local, hub, pricing = pair
     with connect(local) as db:
@@ -388,13 +401,61 @@ def test_legacy_hub_delivers_batches_without_pruning_until_its_upgrade(pair):
     assert read_sync_cursor(local, "https://hub.test")["change_seq"] == 0
     with connect(local) as db:
         assert db.execute("SELECT COUNT(*) FROM usage_changes").fetchone()[0] == 1001
+        upsert_usage_event(db, event("legacy-0", 5))
     # The upgraded hub can verify the already stored rows rather than
     # trusting its old numeric acknowledgement for unconfirmed history.
     upgraded = sync_local(local, pricing, ReceiptHub(pair))
-    assert upgraded["usageChangeSeq"] == 1001
+    assert upgraded["usageChangeSeq"] == 1002
     assert not upgraded.get("usageChangesPending")
+    assert total(hub) == 1005
     with connect(local) as db:
         assert db.execute("SELECT COUNT(*) FROM usage_changes").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("legacy_count", (1, 3))
+def test_pre_checkpoint_backup_retains_conflicts_and_syncs_fresh_reused_positions(
+    pair, tmp_path, legacy_count,
+):
+    local, hub, pricing = pair
+    client = ReceiptHub(pair)
+    with connect(local) as db:
+        upsert_usage_event(db, event("shared", 20))
+        # A 0.6.0 spoke had the usage journal but no immutable checkpoints.
+        db.execute("DROP TRIGGER journal_usage_changes_checkpoint")
+        db.execute("DROP TABLE usage_change_marks")
+        db.execute("DELETE FROM app_meta WHERE key LIKE 'usage_changes.checkpoints.%'")
+    restored = backup_database(local, tmp_path / "before-legacy-ack.db")
+    initialize(local)
+    with connect(local) as db:
+        for i in range(1, legacy_count):
+            upsert_usage_event(db, event(f"accepted-{i}", 1))
+    old_payload, old_cursor = export_sync_batch(local)
+    old_payload.pop("usageContinuity")
+    apply_sync_push(hub, pricing, machine_id="laptop", body=old_payload, now=NOW)
+    # Simulate the numeric ACK persisted by the old spoke before the upgrade.
+    write_sync_cursor(local, "https://hub.test", {
+        key: value for key, value in old_cursor.items() if key != "usage_stream"
+    })
+    with connect(local) as db:
+        upsert_usage_event(db, event("shared", 60))
+    sync_local(local, pricing, client)
+
+    initialize(restored)
+    with connect(restored) as db:
+        upsert_usage_event(db, event("fork-new", 5))
+    for _ in range(2):
+        result = sync_local(restored, pricing, client)
+        assert result["usageLegacyConflicts"] == 1 and result["usageChangesPending"]
+        assert total(hub) == 65 + legacy_count - 1
+    with connect(hub) as db:
+        conflict = db.execute("SELECT raw_id,change FROM sync_usage_conflicts").fetchone()
+        assert conflict["raw_id"] == "shared"
+        assert json.loads(conflict["change"])["event"]["input_tokens"] == 20
+
+    with connect(restored) as db:
+        upsert_usage_event(db, event("shared", 61))
+    assert not sync_local(restored, pricing, client).get("usageChangesPending")
+    assert total(hub) == 66 + legacy_count - 1
 
 
 def test_hub_rechecks_machine_credential_under_acknowledgement_lock(pair):
@@ -435,6 +496,28 @@ def test_renamed_machine_heartbeat_and_reconnect_keep_owner_label(pair):
     assert names[first] == "Studio PC"
     assert names[second] == "Office PC"
     assert raw_id == f"m:{first}:new"
+
+
+def test_first_upgraded_heartbeat_preserves_evidenced_legacy_rename(pair):
+    from spend_app.auth_model import Principal, audit, ensure_schema
+    from spend_app.sync import _read_state, _write_state
+
+    _local, hub, pricing = pair
+    machine = register_machine(hub, name="Office PC", now=NOW)["machine"]["id"]
+    ensure_schema(hub)
+    with connect(hub) as db:
+        old_state = _read_state(db)
+        old_state.pop("owner_names_migrated", None)
+        old_state["machines"][machine]["name"] = "Studio PC"
+        _write_state(db, old_state)
+        audit(db, Principal(kind="owner"), "machine.rename", machine, now=NOW + timedelta(minutes=1))
+    apply_sync_push(hub, pricing, machine_id=machine, body={
+        "machine": {"name": "Office PC"}, "usageEvents": [asdict(event("new", 20))],
+    }, now=NOW + timedelta(minutes=2))
+    with connect(hub) as db:
+        record = _read_state(db)["machines"][machine]
+        assert record["reported_name"] == "Office PC"
+        assert record["name"] == record["owner_name"] == "Studio PC"
 
 
 def test_balance_disconnect_and_reconnect_preserve_other_origins(pair):

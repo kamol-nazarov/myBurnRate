@@ -1044,7 +1044,7 @@ def ensure_usage_change_journal(path: Path) -> None:
     Existing rows seed the first sequence so legacy ID cursors can be upgraded.
     """
     v1 = "usage_changes.initialized.v1"
-    marker = "usage_changes.checkpoints.v1"
+    marker = "usage_changes.checkpoints.v2"
     with connect(path) as connection:
         def migrated() -> bool:
             return connection.execute(
@@ -1063,8 +1063,12 @@ def ensure_usage_change_journal(path: Path) -> None:
         )
         connection.execute(
             "CREATE TABLE IF NOT EXISTS usage_change_marks ("
-            "seq INTEGER PRIMARY KEY, raw_id TEXT NOT NULL, mark TEXT NOT NULL)"
+            "seq INTEGER PRIMARY KEY, raw_id TEXT NOT NULL, mark TEXT NOT NULL, "
+            "legacy INTEGER NOT NULL DEFAULT 0)"
         )
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(usage_change_marks)")}
+        if "legacy" not in columns:
+            connection.execute("ALTER TABLE usage_change_marks ADD COLUMN legacy INTEGER NOT NULL DEFAULT 0")
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_usage_change_marks_raw ON usage_change_marks(raw_id, seq)"
         )
@@ -1072,11 +1076,19 @@ def ensure_usage_change_journal(path: Path) -> None:
             "CREATE TABLE IF NOT EXISTS sync_usage_receipts ("
             "machine_id TEXT NOT NULL, mark BLOB NOT NULL, PRIMARY KEY(machine_id, mark)) WITHOUT ROWID"
         )
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS sync_usage_conflicts ("
+            "machine_id TEXT NOT NULL, mark BLOB NOT NULL, raw_id TEXT NOT NULL, change TEXT NOT NULL, "
+            "PRIMARY KEY(machine_id,mark)) WITHOUT ROWID"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sync_usage_conflicts_raw ON sync_usage_conflicts(machine_id,raw_id)"
+        )
         if seed:
             connection.execute("DELETE FROM usage_change_marks")
         connection.execute(
-            "INSERT OR IGNORE INTO usage_change_marks(seq,raw_id,mark) "
-            "SELECT seq,raw_id,lower(hex(randomblob(16))) FROM usage_changes"
+            "INSERT OR IGNORE INTO usage_change_marks(seq,raw_id,mark,legacy) "
+            "SELECT seq,raw_id,lower(hex(randomblob(16))),1 FROM usage_changes"
         )
         connection.execute(
             "CREATE TRIGGER IF NOT EXISTS journal_usage_changes_checkpoint AFTER INSERT ON usage_changes "
@@ -1100,6 +1112,8 @@ def ensure_usage_change_journal(path: Path) -> None:
                     f"INSERT INTO usage_changes(raw_id) SELECT raw_id FROM {table} "
                     "WHERE raw_id NOT LIKE 'm:%' ORDER BY id"
                 )
+        if seed:
+            connection.execute("UPDATE usage_change_marks SET legacy=1")
         connection.executemany(
             "INSERT OR IGNORE INTO app_meta(key,value) VALUES(?, '1')", ((v1,), (marker,))
         )

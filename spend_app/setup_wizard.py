@@ -144,6 +144,7 @@ def default_setup_state() -> dict:
             "lastSyncAt": None,
             "lastSyncError": None,
             "usageChangesPending": False,
+            "usageLegacyConflicts": 0,
             "eventsPushed": 0,
             "tokenExpiresAt": None,
             "rotationRequired": False,
@@ -710,6 +711,11 @@ def rotate_spoke_machine_token(settings, *, client=None) -> dict | None:
     return {"ok": True, "expiresAt": replacement.get("expiresAt")}
 
 
+def _usage_legacy_conflicts(result: dict | None) -> int:
+    count = (result or {}).get("usageLegacyConflicts")
+    return count if type(count) is int and count > 0 else 0
+
+
 def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=None) -> dict | None:
     """Called by background scheduler or on-demand to push spoke telemetry when configured."""
     try:
@@ -777,6 +783,7 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
                     latest["spokeConfig"].get("rotationRequired")
                 ) or bool(result["rotationRequired"])
             latest["spokeConfig"]["usageChangesPending"] = bool(result.get("usageChangesPending"))
+            latest["spokeConfig"]["usageLegacyConflicts"] = _usage_legacy_conflicts(result)
             latest["spokeConfig"]["eventsPushed"] = int(
                 latest["spokeConfig"].get("eventsPushed") or 0
             ) + int(result.get("eventsWritten") or 0)
@@ -2217,6 +2224,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                         "lastSyncAt": utc_now() if sync_result and sync_result.get("ok") else (state.get("spokeConfig") or {}).get("lastSyncAt"),
                         "lastSyncError": normalize_spoke_sync_error(sync_result.get("error")) if sync_result and not sync_result.get("ok") else None,
                         "usageChangesPending": bool((sync_result or {}).get("usageChangesPending")),
+                        "usageLegacyConflicts": _usage_legacy_conflicts(sync_result),
                         "eventsPushed": int((sync_result or {}).get("eventsWritten") or 0),
                     }
                     local_subs = effective_terms(connection)

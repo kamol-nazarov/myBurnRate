@@ -272,7 +272,13 @@ def _sync_state(state: dict, now: datetime, heartbeat_state: dict) -> tuple[dict
     sync = {"role": "spoke", "lastSyncAt": spoke.get("lastSyncAt"), "ageSeconds": age, "failing": error}
     sync["usageChangesPending"] = bool(spoke.get("usageChangesPending"))
     issues = []
-    if sync["usageChangesPending"]:
+    conflicts = spoke.get("usageLegacyConflicts")
+    if type(conflicts) is int and conflicts > 0:
+        sync["usageLegacyConflicts"] = conflicts
+        issues.append({"kind": "sync", "key": "hub-recovery", "name": "Usage recovery", "short": "Usage recovery",
+                       "state": "stale", "severity": "warn", "ageSeconds": age,
+                       "detail": "The hub kept its accepted usage and retained conflicting legacy changes for recovery."})
+    elif sync["usageChangesPending"]:
         issues.append({"kind": "sync", "key": "hub-upgrade", "name": "Hub update", "short": "Hub update",
                        "state": "stale", "severity": "warn", "ageSeconds": age,
                        "detail": "Update the hub to receive usage corrections and deletions. They remain queued on this computer."})

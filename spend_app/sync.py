@@ -16,6 +16,7 @@ import sqlite3
 import sys
 import threading
 import time
+from dataclasses import fields
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -56,13 +57,14 @@ from spend_app.organization import ORGANIZATION_SOURCES, admin_event_metadata, a
 from spend_app.pricing import PricingEngine, UnpricedModelError
 from spend_app.provider_cost_sync import COST_SEQ, apply_provider_costs, cost_acknowledgement, export_provider_costs
 from spend_app.sync_continuity import (
-    UsageWindow,
     can_rebase,
     choose_usage_window,
+    clear_legacy_conflicts,
     commit_usage_window,
-    hub_usage_head,
+    count_legacy_conflicts,
     journal_mark,
     received_revision,
+    retain_legacy_conflict,
     verified_reply,
 )
 
@@ -74,6 +76,7 @@ SYNC_CURSOR_PREFIX = "sync.cursor.v1:"
 MACHINE_ONLINE_SECONDS = 90
 _MACHINE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 _DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}$")
+_USAGE_EVENT_FIELDS = {field.name for event in (UsageEvent, UnpricedUsageEvent) for field in fields(event)}
 
 
 def _clean_device_id(value: object) -> str | None:
@@ -174,6 +177,27 @@ def _write_state(connection: sqlite3.Connection, state: dict) -> None:
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         (MACHINES_META_KEY, json.dumps(state, ensure_ascii=False)),
     )
+
+
+def _preserve_audited_machine_names(connection, state: dict) -> None:
+    """Keep a legacy rename when no later heartbeat could have replaced it."""
+    if state.get("owner_names_migrated") or not connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='admin_audit'"
+    ).fetchone():
+        return
+    renames = connection.execute(
+        "SELECT target,timestamp FROM admin_audit WHERE id IN ("
+        "SELECT MAX(id) FROM admin_audit WHERE action='machine.rename' AND outcome='success' GROUP BY target)"
+    )
+    for machine_id, timestamp in renames:
+        record = state["machines"].get(machine_id)
+        if not record or record.get("owner_name") or not record.get("name"):
+            continue
+        renamed = _parse_iso(timestamp)
+        seen = _parse_iso(record.get("last_seen_at"))
+        if renamed and (seen is None or renamed > seen):
+            record["owner_name"] = record["name"]
+    state["owner_names_migrated"] = True
 
 
 def machines_fingerprint(connection: sqlite3.Connection) -> str:
@@ -305,6 +329,7 @@ def _register_in_connection(
         if not clean_device_id:
             raise ValueError("Invalid device ID.")
     state = _read_state(connection)
+    _preserve_audited_machine_names(connection, state)
     matched_id = machine_id
     matched_by_device_id = False
     if matched_id is not None and not allow_new_id and matched_id not in state["machines"]:
@@ -640,7 +665,6 @@ def _usage_change_batch(connection, machine_id: str, batch: object, proof: objec
     key = "sync.received.usage_changes.v1:" + machine_id
     row = connection.execute("SELECT value FROM app_meta WHERE key=?", (key,)).fetchone()
     acknowledged = int(row[0]) if row else 0
-    previous_ack = acknowledged
     window = choose_usage_window(connection, machine_id, acknowledged, batch, proof) if proof is not None else None
     if window is not None:
         if not window.accepted:
@@ -677,15 +701,31 @@ def _usage_change_batch(connection, machine_id: str, batch: object, proof: objec
                 raise ValueError("Usage change lacks its checkpoint.")
             if received_revision(connection, machine_id, window.marks[seq]):
                 continue
-            if seq in window.revisions and received_revision(connection, machine_id, window.revisions[seq]):
+            revision = window.revisions.get(seq)
+            if revision and received_revision(connection, machine_id, revision[1]):
                 continue
-            if seq <= window.legacy_through:
+            verify_legacy = (
+                seq <= window.legacy_verification_through
+                or (seq <= window.legacy_through and seq in window.imported_legacy)
+            )
+            if verify_legacy:
+                if revision:
+                    # The exported body is from a later mutation outside this
+                    # page. Leave it unacknowledged until its own turn.
+                    window.revisions.pop(seq)
+                    continue
                 if not _legacy_usage_matches(connection, machine_id, change):
-                    head = hub_usage_head(connection, machine_id) or {
-                        "stream": None, "through": previous_ack, "mark": None,
-                    }
-                    return [], [], [], key, previous_ack, 0, UsageWindow(False, head, {}, {})
+                    conflict = {"raw_id": raw_id, "seq": seq, "kind": kind}
+                    if kind in {"usage", "unpriced"}:
+                        conflict["event"] = {
+                            key: value for key, value in event.items()
+                            if key in _USAGE_EVENT_FIELDS
+                            and (value is None or isinstance(value, (str, int, float)))
+                        }
+                    retain_legacy_conflict(connection, machine_id, window.marks[seq], conflict)
                 continue
+            if kind != "skip":
+                clear_legacy_conflicts(connection, machine_id, raw_id)
         if seq <= acknowledged:
             if window is None and not _legacy_usage_matches(connection, machine_id, change):
                 raise ValueError("Legacy replay differs from accepted history; upgrade the spoke to recover.")
@@ -756,6 +796,7 @@ def apply_sync_push(
     cost_ack = None
     costs_changed = False
     skipped_changes = 0
+    legacy_conflicts = 0
     with connect(database_path) as connection:
         # Serialise acknowledgement with event writes. Retried or concurrent
         # pushes must never replay an older correction over a newer one.
@@ -779,6 +820,7 @@ def apply_sync_push(
                         "usageChangeSeq": change_ack,
                         "usageContinuity": usage_window.head,
                         "usageRetry": True,
+                        "usageLegacyConflicts": count_legacy_conflicts(connection, machine_id),
                     }
                 usage_changed = bool(usage_items or unpriced_items or deleted)
                 for identifier in deleted:
@@ -1025,6 +1067,7 @@ def apply_sync_push(
                 quotas_changed = True
 
             state = _read_state(connection)
+            _preserve_audited_machine_names(connection, state)
             candidate_name = str(machine_meta.get("name") or "").strip()[:64]
             current = state["machines"].get(machine_id) or {}
             if candidate_name and not current.get("owner_name"):
@@ -1080,6 +1123,7 @@ def apply_sync_push(
                 )
             if usage_window is not None:
                 commit_usage_window(connection, machine_id, usage_window)
+                legacy_conflicts = count_legacy_conflicts(connection, machine_id)
         except Exception:
             raise
 
@@ -1102,6 +1146,7 @@ def apply_sync_push(
         **({"providerCostsAck": cost_ack} if cost_ack is not None else {}),
         **({"usageChangeSeq": change_ack, "usageChangesSkipped": skipped_changes} if change_ack is not None else {}),
         **({"usageContinuity": usage_window.head} if usage_window is not None else {}),
+        **({"usageLegacyConflicts": legacy_conflicts} if legacy_conflicts else {}),
     }
 
 
@@ -1144,7 +1189,7 @@ def export_sync_batch(
         next_usage_id = max([last_usage_id, *[int(r["id"]) for r in usage_rows]])
         next_unpriced_id = max([last_unpriced_id, *[int(r["id"]) for r in unpriced_rows]])
         journal = connection.execute(
-            "SELECT seq,raw_id,mark FROM usage_change_marks WHERE seq>? ORDER BY seq LIMIT ?",
+            "SELECT seq,raw_id,mark,legacy FROM usage_change_marks WHERE seq>? ORDER BY seq LIMIT ?",
             (last_change_seq, int(limit)),
         ).fetchall()
         next_change_seq = journal[-1]["seq"] if journal else last_change_seq
@@ -1170,15 +1215,15 @@ def export_sync_batch(
                     break
             changes.append(change)
             revision = connection.execute(
-                "SELECT mark FROM usage_change_marks WHERE raw_id=? AND seq>? ORDER BY seq DESC LIMIT 1",
+                "SELECT seq,mark FROM usage_change_marks WHERE raw_id=? AND seq>? ORDER BY seq DESC LIMIT 1",
                 (raw_id, seq),
             ).fetchone()
             if revision:
-                revisions.append([seq, revision["mark"]])
+                revisions.append([seq, revision["seq"], revision["mark"]])
         usage_proof = {
             "stream": usage_stream,
             "afterMark": journal_mark(connection, last_change_seq),
-            "marks": [[row["seq"], row["mark"]] for row in journal],
+            "marks": [[row["seq"], row["mark"], bool(row["legacy"])] for row in journal],
             "revisions": revisions,
         }
         if cursor.get("usage_rebase"):
@@ -1577,6 +1622,11 @@ def sync_once(
             last_result = {
                 **last_result, "usageChangesPending": True,
                 "warning": "Usage synchronization is waiting for a compatible checkpoint.",
+            }
+        if last_result.get("usageLegacyConflicts"):
+            last_result = {
+                **last_result, "usageChangesPending": True,
+                "warning": "The hub preserved newer usage and retained conflicting legacy changes for recovery.",
             }
 
     if client is not None:
