@@ -2169,19 +2169,22 @@ def test_add_remove_add_dismiss_and_rename_against_real_service(tmp_path, monkey
         add1 = bridge.add_profile("claude_local", "", str(manual_dir), "Work")
         assert add1["ok"] is True
         work_key = add1["connection"]["key"]
+        initial_revision = add1["connection"]["revision"]
         assert any(p["key"] == work_key for p in _claude_row(service)["profiles"])
 
-        rem1 = bridge.remove_profile("claude_local", work_key, revision=1)
+        rem1 = bridge.remove_profile("claude_local", work_key, revision=initial_revision)
         assert rem1 == {"ok": True, "disabled": False, "removed": True}
         assert all(p["key"] != work_key for p in _claude_row(service)["profiles"])
 
         add2 = bridge.add_profile("claude_local", "", str(manual_dir), "Work")
         assert add2["ok"] is True
         assert add2["connection"]["key"] == work_key
+        reattached_revision = add2["connection"]["revision"]
+        assert reattached_revision > initial_revision
         assert any(p["key"] == work_key for p in _claude_row(service)["profiles"])
         assert client.posts[2]["requestId"] != client.posts[0]["requestId"]
 
-        rem2 = bridge.remove_profile("claude_local", work_key, revision=1)
+        rem2 = bridge.remove_profile("claude_local", work_key, revision=reattached_revision)
         assert rem2 == {"ok": True, "disabled": False, "removed": True}
         assert all(p["key"] != work_key for p in _claude_row(service)["profiles"])
         assert client.posts[3]["requestId"] != client.posts[1]["requestId"]
@@ -2201,7 +2204,8 @@ def test_add_remove_add_dismiss_and_rename_against_real_service(tmp_path, monkey
         cand_add = bridge.add_profile("claude_local", cid, "", "Side")
         assert cand_add["ok"] is True
         cand_key = cand_add["connection"]["key"]
-        assert bridge.remove_profile("claude_local", cand_key, revision=1)["removed"] is True
+        cand_revision = cand_add["connection"]["revision"]
+        assert bridge.remove_profile("claude_local", cand_key, revision=cand_revision)["removed"] is True
         assert any(d["candidateId"] == cid for d in _claude_row(service)["detected"])
 
         assert bridge.dismiss_candidate("claude_local", cid) == {
@@ -2216,18 +2220,30 @@ def test_add_remove_add_dismiss_and_rename_against_real_service(tmp_path, monkey
         ]
         assert len(dismiss_ids) == 2 and dismiss_ids[0] != dismiss_ids[1]
 
-        # 3. Rename -> Rename -> Stale 409 retry -> Rename back
+        # 3. Rename -> Stale 409 and retry -> Rename back
         readd = bridge.add_profile("claude_local", "", str(manual_dir), "Alpha")
+        assert readd["ok"] is True
         rkey = readd["connection"]["key"]
-        ren1 = bridge.rename_profile("claude_local", rkey, "Beta", revision=1)
-        assert ren1["ok"] is True and ren1["connection"]["revision"] == 2
-        # Stale revision=1 triggers 409 reload (rev=2) & retry once -> rev=3
-        ren2 = bridge.rename_profile("claude_local", rkey, "Gamma", revision=1)
-        assert ren2["ok"] is True and ren2["connection"]["revision"] == 3
-        ren3 = bridge.rename_profile("claude_local", rkey, "Beta", revision=3)
-        assert ren3["ok"] is True and ren3["connection"]["revision"] == 4
+        stale_revision = readd["connection"]["revision"]
+        ren1 = bridge.rename_profile("claude_local", rkey, "Beta", revision=stale_revision)
+        assert ren1["ok"] is True
+        beta_revision = ren1["connection"]["revision"]
+        assert beta_revision == stale_revision + 1
+
+        attempts_before_retry = len(client.posts)
+        ren2 = bridge.rename_profile("claude_local", rkey, "Gamma", revision=stale_revision)
+        assert ren2["ok"] is True
+        assert [post["revision"] for post in client.posts[attempts_before_retry:]] == [
+            stale_revision, beta_revision,
+        ]
+        gamma_revision = ren2["connection"]["revision"]
+        assert gamma_revision == beta_revision + 1
+
+        ren3 = bridge.rename_profile("claude_local", rkey, "Beta", revision=gamma_revision)
+        assert ren3["ok"] is True
         prof = next(p for p in _claude_row(service)["profiles"] if p["key"] == rkey)
-        assert prof["name"] == "Beta" and prof["revision"] == 4
+        assert prof["name"] == "Beta"
+        assert prof["revision"] == ren3["connection"]["revision"] == gamma_revision + 1
     finally:
         profile_detect.reset_cache()
 
@@ -2254,12 +2270,14 @@ def test_unresolved_timeout_reuses_request_id_until_confirmed_then_retires(
         second = bridge.add_profile("claude_local", "", str(manual_dir), "Work")
         assert second["ok"] is True
         work_key = second["connection"]["key"]
+        work_revision = second["connection"]["revision"]
         assert client.posts[1]["requestId"] == client.posts[0]["requestId"]
 
         # Once confirmed, mutation is retired -> Remove then Re-add gets a fresh requestId
-        assert bridge.remove_profile("claude_local", work_key, revision=1)["ok"] is True
+        assert bridge.remove_profile("claude_local", work_key, revision=work_revision)["ok"] is True
         third = bridge.add_profile("claude_local", "", str(manual_dir), "Work")
         assert third["ok"] is True
+        assert third["connection"]["revision"] > work_revision
         assert any(p["key"] == work_key for p in _claude_row(service)["profiles"])
         assert client.posts[3]["requestId"] != client.posts[0]["requestId"]
 
