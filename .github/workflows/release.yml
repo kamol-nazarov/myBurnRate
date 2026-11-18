@@ -187,7 +187,7 @@ jobs:
           test -n "$BURNRATE_BUILTIN_HUB_URL" || { echo "::error::Set the BURNRATE_BUILTIN_HUB_URL repository secret"; exit 1; }
           python -m pip install --require-hashes -r requirements-build.txt
           python -m build --no-isolation --outdir release
-      - uses: actions/setup-node@49933ea5288caeca8640d1d96e6e02f7c4563b1c # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "20"
       - name: Sign and verify the managed desktop wheel
