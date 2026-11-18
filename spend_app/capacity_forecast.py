@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Request
 
 from spend_app.db import UserFacingError, connect, initialize
+from spend_app.organization import ORGANIZATION_SOURCES
 from spend_app.timeutil import parse_utc
 
 KEY = "capacity_forecast.v1"
@@ -362,7 +363,8 @@ def balance_runway(points: list[tuple[datetime, float]], *, remaining: float) ->
     }
 
 
-def balance_points(connection, provider_key: str, *, now: datetime, local_only: bool = False) -> list[tuple[datetime, float]]:
+def balance_points(connection, provider_key: str, *, now: datetime, local_only: bool = False,
+                   source: str | None = None) -> list[tuple[datetime, float]]:
     """Recent dollar balances from one collector, oldest first.
 
     Merges the quotas change-points with the hourly samples; both are real
@@ -375,13 +377,15 @@ def balance_points(connection, provider_key: str, *, now: datetime, local_only: 
     where = "provider_key=? AND limit_key='balance' AND unit='usd' AND used IS NOT NULL"
     if local_only:
         where += " AND source NOT LIKE 'sync:%'"
-    latest = connection.execute(
-        f"SELECT source FROM quotas WHERE {where} ORDER BY polled_at DESC, id DESC LIMIT 1", (provider_key,)
-    ).fetchone()
-    if latest is None:
-        return []
+    if source is None:
+        latest = connection.execute(
+            f"SELECT source FROM quotas WHERE {where} ORDER BY polled_at DESC, id DESC LIMIT 1", (provider_key,)
+        ).fetchone()
+        if latest is None:
+            return []
+        source = latest[0]
     cutoff = now - RUNWAY_LOOKBACK
-    params = (provider_key, latest[0], _iso(cutoff))
+    params = (provider_key, source, _iso(cutoff))
     # The balance on entering the window, then every change inside it.
     baseline = connection.execute(
         f"SELECT polled_at, used FROM quotas WHERE {where} AND source=? AND polled_at<? "
@@ -413,7 +417,8 @@ def apply_balance_runway(cards: list[dict], connection, *, now: datetime, provid
             if row.get("limitKey") != "balance" or row.get("unit") != "usd" or row.get("used") is None:
                 continue
             try:
-                points = balance_points(connection, provider_key, now=now, local_only=local_only)
+                points = balance_points(connection, provider_key, now=now, local_only=local_only,
+                                        source=row.get("source"))
             except sqlite3.Error:
                 continue
             runway = balance_runway(points, remaining=float(row["used"]))
@@ -428,8 +433,9 @@ def active_provider_keys(connection, now: datetime) -> set[str]:
         if not _table_exists(connection, table):
             continue
         rows = connection.execute(
-            f"SELECT DISTINCT tool_key FROM {table} WHERE occurred_at >= ?",
-            (since,),
+            f"SELECT DISTINCT tool_key FROM {table} "
+            "WHERE occurred_at >= ? AND source NOT IN (?, ?)",
+            (since, *sorted(ORGANIZATION_SOURCES)),
         )
         keys.update(row[0] for row in rows if row[0])
     return keys
@@ -712,10 +718,10 @@ def majority_model_names(connection, now: datetime) -> dict[str, str]:
         """
         SELECT tool_key, model_key, COUNT(*) AS n
         FROM usage_events
-        WHERE occurred_at >= ?
+        WHERE occurred_at >= ? AND source NOT IN (?, ?)
         GROUP BY tool_key, model_key
         """,
-        (_iso(now - DAY),),
+        (_iso(now - DAY), *sorted(ORGANIZATION_SOURCES)),
     ).fetchall()
     grouped: dict[str, list[tuple[int, str]]] = {}
     for row in rows:

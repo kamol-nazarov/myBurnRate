@@ -96,9 +96,66 @@ HTTPS over your tailnet; do not put credentials in URLs or shell history.
   `BURNRATE_HUB_IMAGE` to the new `tag@sha256:...` from the release
   (`docker buildx imagetools inspect ghcr.io/kamol-nazarov/myburnrate-hub:0.5.9`
   prints it), then `docker compose pull && docker compose up -d`.
-- **Back up:** copy `spend.db` out of the `hub-data` volume, for example with
-  `docker compose cp hub:/data/spend.db ./spend-backup.db`.
 - **Logs:** `docker compose logs -f hub`.
+
+### Back up the running hub
+
+Run this from the Compose project directory. SQLite's online backup API
+includes committed writes still in the live database's write-ahead log.
+The backup becomes available at the printed host path after the snapshot
+passes a SQLite check and the copy completes.
+
+```sh
+(
+  set -eu
+  backup_dir=$(mktemp -d ./burnrate-backup.XXXXXXXX)
+  snapshot=$(docker compose exec -T hub python - <<'PY'
+from contextlib import closing
+from pathlib import Path
+import sqlite3
+from tempfile import NamedTemporaryFile
+
+from spend_app.config import load_settings, load_user_env
+from spend_app.db import backup_database
+
+load_user_env()
+source = load_settings().database_path
+with NamedTemporaryFile(prefix="burnrate-backup-", suffix=".db", delete=False) as temp:
+    snapshot = Path(temp.name)
+try:
+    backup_database(source, snapshot)
+    with closing(sqlite3.connect(snapshot.as_uri() + "?immutable=1", uri=True)) as db:
+        if db.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
+            raise RuntimeError("SQLite snapshot failed quick_check")
+except BaseException:
+    snapshot.unlink(missing_ok=True)
+    raise
+print(snapshot.as_posix(), end="")
+PY
+  )
+  trap 'docker compose exec -T hub rm -f -- "$snapshot"' EXIT
+  docker compose cp "hub:$snapshot" "$backup_dir/spend.db.partial"
+  mv "$backup_dir/spend.db.partial" "$backup_dir/spend.db"
+  printf 'Backup saved to %s/spend.db\n' "$backup_dir"
+)
+```
+
+Keep the backup in its private directory. To rehearse a restore, copy the
+finished `spend.db` to a separate test directory and open the copy read-only,
+for example with `sqlite3 -readonly ./restore-test/spend.db`. Run
+`PRAGMA integrity_check;` and confirm a known recent usage row is present with
+its expected values:
+
+```sql
+SELECT raw_id, occurred_at, input_tokens, output_tokens, cost_usd
+FROM usage_events
+ORDER BY occurred_at DESC
+LIMIT 10;
+```
+
+A failed copy may leave a `spend.db.partial` file. Use only a completed
+`spend.db`. For an offline backup, stop the hub and any other writers, then
+snapshot the entire data volume together with the hub configuration.
 
 ### With Tailscale Serve instead of Caddy
 

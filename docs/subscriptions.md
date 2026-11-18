@@ -96,3 +96,21 @@ The application does not blindly trust forwarded headers.
 The daily materialized table is a reconciled cache. `cost_decimal` preserves the
 Decimal daily result; the legacy `cost_usd` REAL field remains for compatibility.
 Canonical historical calculations use the effective terms with Decimal.
+
+## Signing in to a hub
+
+A supported hub imports each local plan once with its effective terms and
+inclusive end date. The hub owns the adopted plan. Signing in again preserves
+hub edits and refreshes local copies whose history remains linked to that hub.
+New plan selections have their own request fields.
+
+A desktop paired with an older hub keeps dated history on the desktop until
+the hub can receive it. It can still keep an offline copy of explicitly dated
+terms that the old hub returns. An older desktop's sign-in may group new
+selections and historical plans in one undated list. An updated hub defers that
+ambiguous list. Use the hub's plan manager for a new subscription, or update
+the desktop and sign in again to transfer its dated history.
+
+If an earlier release created an open-ended copy from an undated import, inspect
+the hub's dates before correcting the copy. The stored copy alone does not reveal
+the original end date or distinguish an import from an independently added plan.

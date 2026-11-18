@@ -1,10 +1,11 @@
 """Release A pricing refresh contract tests (A08)."""
 
 from __future__ import annotations
-from pathlib import Path
 
+import json
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 
 from spend_app.pricing_refresh import (
     draft_refresh,
@@ -14,6 +15,8 @@ from spend_app.pricing_refresh import (
 )
 
 OBSERVED = datetime(2026, 9, 6, 12, tzinfo=UTC)
+ROOT = Path(__file__).resolve().parents[1]
+OPENROUTER_SNAPSHOT = ROOT / "tests_spend" / "fixtures" / "openrouter_models_glm53.json"
 
 
 def _snapshot(pricing_overrides: dict | None = None, **row_over):
@@ -56,6 +59,91 @@ def test_invalid_negative_and_documented_zero_are_distinguished():
     assert len(rejections) == 2
     assert any("negative" in text for text in rejections)
     assert any("not a valid decimal" in text for text in rejections)
+
+
+def test_openrouter_fixture_preserves_rate_and_absence():
+    snapshot = json.loads(OPENROUTER_SNAPSHOT.read_text(encoding="utf-8"))
+    rates, rejections = parse_snapshot(snapshot, provider="openrouter", observed_at=OBSERVED)
+    assert rejections == []
+    assert rates[0].per_mtok == {
+        "input": Decimal("0.075"),
+        "output": Decimal("0.25"),
+        "cached_input": Decimal("0.015"),
+        "cache_write": None,
+        "cache_write_1h": None,
+    }
+    assert rates[0].documented_zero == ()
+
+
+def _run_openrouter_refresh(path, monkeypatch, capsys, *, pricing_path=None):
+    from spend_app.cli import main
+
+    monkeypatch.setenv("SPEND_PRICING_PATH", str(pricing_path or ROOT / "pricing"))
+    monkeypatch.setattr(
+        "sys.argv",
+        ["burnrate", "pricing-refresh", "--provider", "openrouter", "--snapshot", str(path)],
+    )
+    assert main() == 0
+    return json.loads(capsys.readouterr().out)
+
+
+def test_openrouter_cli_matches_approved_card_at_snapshot_time(monkeypatch, capsys):
+    result = _run_openrouter_refresh(OPENROUTER_SNAPSHOT, monkeypatch, capsys)
+    assert result["observedAt"] == "2026-09-01T00:00:00Z"
+    assert result["added"] == []
+    assert result["changed"] == []
+    assert result["unchanged"] == ["openrouter:glm-5.3-flash"]
+    assert not any("glm-5.3-flash" in item for item in result["coverageWarnings"])
+
+
+def test_openrouter_cli_distinguishes_missing_rate_from_documented_zero(tmp_path, monkeypatch, capsys):
+    snapshot = json.loads(OPENROUTER_SNAPSHOT.read_text(encoding="utf-8"))
+    snapshot["data"][0]["pricing"]["input_cache_read"] = "0.000000"
+    path = tmp_path / "snapshot.json"
+    path.write_text(json.dumps(snapshot), encoding="utf-8")
+    result = _run_openrouter_refresh(path, monkeypatch, capsys)
+    assert result["changed"] == [
+        {
+            "modelKey": "openrouter:glm-5.3-flash",
+            "fields": {"cached_input": {"from": "0.015", "to": "0"}},
+        }
+    ]
+
+
+def test_openrouter_cli_does_not_borrow_a_rate_across_a_card_gap(tmp_path, monkeypatch, capsys):
+    snapshot = json.loads(OPENROUTER_SNAPSHOT.read_text(encoding="utf-8"))
+    snapshot["captured_at"] = "2026-09-09T16:00:00Z"
+    path = tmp_path / "snapshot.json"
+    path.write_text(json.dumps(snapshot), encoding="utf-8")
+    result = _run_openrouter_refresh(path, monkeypatch, capsys)
+    assert result["changed"] == []
+    assert [row["modelKey"] for row in result["added"]] == ["openrouter:glm-5.3-flash"]
+    assert result["added"][0]["effectiveFrom"] is None
+
+
+def test_openrouter_cli_resolves_an_approved_alias(tmp_path, monkeypatch, capsys):
+    snapshot = _snapshot(id="supplier/model")
+    path = tmp_path / "snapshot.json"
+    path.write_text(json.dumps(snapshot), encoding="utf-8")
+    (tmp_path / "openrouter.yaml").write_text(
+        """
+provider: openrouter
+exactness: derived
+prices:
+  - model_key: openrouter:renamed-model
+    aliases: [openrouter:supplier/model]
+    input_per_mtok: 2
+    output_per_mtok: 8
+    cached_input_per_mtok: 0
+    cache_write_per_mtok: 0
+    effective_from: 2026-08-01T00:00:00Z
+    source_url: https://openrouter.ai/supplier/model
+""",
+        encoding="utf-8",
+    )
+    result = _run_openrouter_refresh(path, monkeypatch, capsys, pricing_path=tmp_path)
+    assert result["added"] == result["changed"] == []
+    assert result["unchanged"] == ["openrouter:renamed-model"]
 
 
 def test_diff_against_approved_cards_and_identical_rerun_is_empty():

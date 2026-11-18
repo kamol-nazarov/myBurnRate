@@ -88,11 +88,18 @@ for start during reverse reconciliation. Older records without sufficient start
 evidence report ambiguous overlap and defer the cumulative checkpoint, including
 its logical/path progress, until source replay provides the missing evidence.
 
-Claude field values retain their individual revisions across files, batches
-and saved state. Omissions preserve known fields and one-hour cache writes;
-explicit zeros and downward corrections remain effective. Equal-authority
-conflicts and invalid duration totals remain incomplete rather than being
-resolved by maximum counts. ZCode transcript totals (`total`, `totalTokens`,
+Claude field values, including the model, retain their individual revisions
+across files, batches and saved state. A transcript with a newly supplied
+request ID shares the existing charge when its scoped assistant envelope proves
+the match. A single reported provider can identify a copy that omits it.
+Different explicit requests remain separate. If later evidence makes the
+match ambiguous, copies without a request ID cannot revise either charge.
+Omissions preserve
+observed values. For cache writes, a measured total and a valid count for one
+duration can establish the other. An unknown or conflicting split preserves
+measured tokens with incomplete cost. Retained transcripts replay after a
+parser upgrade to repair historical records where the source proves a
+correction. ZCode transcript totals (`total`, `totalTokens`,
 `total_tokens`) constrain component attribution: a contradictory 15-token
 report remains 15 unclassified tokens, while an evidenced additive 21-token
 report remains 21. These changes use compatible optional metadata in `app_meta`,
@@ -152,8 +159,12 @@ Paths below use Windows conventions. `%USERPROFILE%` is `~`. `%APPDATA%` is typi
 | Traycer usage | `%USERPROFILE%\.traycer\host\epic-state\**\chat\chat.db` | none | none | Observed chat projections | `usage_events` `source=traycer_local` only harnesses `grok` and `openrouter`. Grok rows skipped when `occurred_at >= grok_local.coverage_start` | See OpenRouter / historical Grok. Claude/Codex via Traycer are **not** ingested here; Traycer runs launched in Cursor are always skipped. | SQLite `mode=ro` |
 | Traycer activity | same `chat.db` + `traycer.exe agent list` | none | Traycer epic/agent env | **Experimental** CLI, only while a turn looks live | `agent_runs` `id=traycer:<chatId>` `live` or `no_data` | Live = `turn.started` and CLI `active=true` (15 s cache). If CLI missing, fallback `lifecycle.state=active` within 90 s. `turn.stopped` without usage → `no_data`, not live. | Spawns CLI (12 s) only on potential activity. No Traycer file writes. |
 | Requesty | none | none | none | **Not connected; forbidden** | none | Must not appear in `pricing/*.yaml` | None |
-| OpenAI admin | none | `api.openai.com` `GET /v1/organization/usage/completions` and `/organization/costs` | `OPENAI_ADMIN_KEY` Bearer | Official Usage + Costs APIs | `usage_events` `source=openai_admin` `tool_key=codex`; `provider_cost_buckets` | Tokens exact; cost buckets exact USD; computed spend exact if YAML exact | Skip with no key. Errors redacted. |
-| Anthropic admin | none | `api.anthropic.com` `GET /v1/organizations/usage_report/messages` and `/v1/organizations/cost_report` | `ANTHROPIC_ADMIN_KEY` `x-api-key`; `anthropic-version: 2023-06-01` | Official org usage/cost | `usage_events` `source=anthropic_admin` `tool_key=claude-code`; cost buckets | Tokens exact (uncached + cache read, 5m/1h writes); cost cents → USD exact | Skip with no key. Does not touch `.credentials.json`. |
+| OpenAI admin | none | `api.openai.com` `GET /v1/organization/usage/completions` and `/organization/costs` | `OPENAI_ADMIN_KEY` Bearer | Official Usage + Costs APIs | Organization usage and cost buckets | Measured tokens and provider-reported USD charges. Reference value requires enough evidence to select a tier. | Skip with no key. Errors redacted. |
+| Anthropic admin | none | `api.anthropic.com` `GET /v1/organizations/usage_report/messages`, `/v1/organizations/cost_report`, and `/v1/organizations/me` | `ANTHROPIC_ADMIN_KEY` `x-api-key`; `anthropic-version: 2023-06-01` | Official org usage/cost and identity | Organization usage and cost buckets | Measured tokens preserve cache-write duration. Provider-reported cents convert to USD. Reference value requires enough evidence to select a tier. | Skip with no key. Leaves local credential files untouched. |
+
+Organization totals combine observations of the same provider bucket only when the collectors identified the same organization. The collector uses the organization reported by OpenAI in its response header or authenticated Anthropic API. Sync preserves the source computer for each observation and sends provider charges separately from reference usage value. Pre-upgrade records without organization evidence stay visible with an overlap warning. [OpenAI API reference](https://developers.openai.com/api/reference/overview#debugging-requests) · [Anthropic organization API](https://platform.claude.com/docs/en/api/python/organization)
+
+An hourly token bucket can span short and long requests. When the report cannot prove the tier, BURNRATE retains the measured tokens and leaves their reference value unavailable. It can still display an independently reported charge for the billing period. Anthropic's historical context-window labels may use earlier classifications, so a label alone cannot establish which rule applied to a historical bucket. [Anthropic usage report](https://platform.claude.com/docs/en/api/beta/organization/usage_report/retrieve_messages)
 
 HTTPS timeouts are 15–30 seconds depending on the client. Credential-bearing `httpx` clients use `trust_env=False` and `follow_redirects=False`.
 
@@ -168,12 +179,14 @@ HTTPS timeouts are 15–30 seconds depending on the client. Credential-bearing `
 | Reasoning ⊂ output | OpenCode (and any schema that says so) displays reasoning as detail; it is not added to processed total again. |
 | Direct xAI vs Grok Build | Direct xAI is not ingested. SuperGrok uses `supergrok:` model keys and derived xAI list rates. |
 
+Grok Build can record the same work as model calls in `unified.jsonl` and as a completed turn in `updates.jsonl`. BURNRATE folds calls into a turn only when its recorded elapsed time places those calls inside the turn and the measured token components add up. A newer hub retains older rows when that timing evidence is absent. Replaying retained logs can restore calls removed by an older BURNRATE build. Recovery of a missing call requires its original observation, so rows whose source entries have rotated away may remain missing. Update the hub before replaying retained Grok records from upgraded spokes.
+
 ## Network allowlist (opt-in or experimental)
 
 | Host | Paths | Who |
 | --- | --- | --- |
 | `https://api.openai.com` | `/v1/organization/usage/completions`, `/v1/organization/costs` | OpenAI admin |
-| `https://api.anthropic.com` | `/v1/organizations/usage_report/messages`, `/v1/organizations/cost_report` | Anthropic admin |
+| `https://api.anthropic.com` | `/v1/organizations/usage_report/messages`, `/v1/organizations/cost_report`, `/v1/organizations/me` | Anthropic admin |
 | `https://openrouter.ai` | `/api/v1/credits` | OpenRouter management key |
 | `https://api.z.ai` | `/api/monitor/usage/quota/limit` | Z.AI Coding Plan |
 | `https://127.0.0.1:<port>` | `/exa.language_server_pb.LanguageServerService/{GetAllCascadeTrajectories,GetCascadeTrajectory,RetrieveUserQuotaSummary}` | Antigravity **experimental** |

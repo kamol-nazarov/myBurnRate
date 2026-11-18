@@ -262,7 +262,6 @@ def test_r2_deferred_checkpoint_does_not_advance_logical_or_path_progress(monkey
     # Provider backfill has separate real-SQLite coverage; this boundary fake
     # isolates whether deferred reconciliation advances either checkpoint.
     monkeypatch.setattr("spend_app.adapters.opencode_granular.reattribute_cumulative", lambda *_: None)
-    from contextlib import nullcontext
     from pathlib import Path
     from unittest.mock import Mock
     from spend_app.adapters import opencode_local as adapter
@@ -276,10 +275,11 @@ def test_r2_deferred_checkpoint_does_not_advance_logical_or_path_progress(monkey
     snapshot = adapter.SessionSnapshot('s1', 'provider-a', 'model-a', None, 100, 0, 0, 0, None, None, stamp)
     monkeypatch.setattr(Path, 'resolve', lambda path, **kwargs:path)
     monkeypatch.setattr(Path, 'is_file', lambda path:True)
-    monkeypatch.setattr(adapter, 'initialize', Mock())
-    monkeypatch.setattr(adapter, 'connect', lambda path:nullcontext(db))
     monkeypatch.setattr(adapter, 'read_session_snapshots', lambda path:[snapshot])
-    monkeypatch.setattr(adapter, 'progress_for_location', lambda *args:None)
+    monkeypatch.setattr(adapter, 'progress_for_location', lambda *args:(None,{}))
+    monkeypatch.setattr("spend_app.adapters.opencode_cumulative_repair.repair_retained_provider_switches",
+                        lambda *_: (0, set(), 0, False))
+    monkeypatch.setattr("spend_app.adapters.traycer_local.reconcile_opencode_mirrors", lambda *_: None)
     progress = Mock()
     monkeypatch.setattr(adapter, 'write_opencode_progress', progress)
     monkeypatch.setattr(adapter, 'record_coverage_gap', Mock())

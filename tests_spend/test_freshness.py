@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-from spend_app import freshness
+from spend_app import freshness, watchdog
 from spend_app.api import create_app
 from spend_app.config import Settings
 from spend_app.db import connect, initialize, upsert_quota
@@ -69,7 +70,7 @@ def test_collection_resuming_after_long_idle_gets_watchdog_grace(monkeypatch):
     clock[0] += 7200
     assert freshness.heartbeat(NOW)["stalled"]
     freshness.collection_resumed()
-    freshness.pass_started(NOW)
+    freshness.pass_started()
     assert not freshness.heartbeat(NOW)["stalled"]
     clock[0] += freshness.FIRST_PASS_STALLED_AFTER_SECONDS + 1
     assert freshness.heartbeat(NOW)["stalled"]
@@ -136,7 +137,7 @@ def test_meter_holding_an_old_reading_is_reported_with_the_reason(tmp_path: Path
 
 
 def test_heartbeat_marks_a_stalled_collection_loop(monkeypatch) -> None:
-    freshness.pass_started(NOW - timedelta(minutes=30))
+    freshness.pass_started()
     freshness.pass_finished({"claude_local": 18.24, "codex_local": 0.1}, ["traycer_local"], 21.3, NOW - timedelta(minutes=29))
     beat = freshness.heartbeat(NOW)
     assert beat["lastPassSeconds"] == 21.3 and beat["slowest"] == [["claude_local", 18.2]]
@@ -151,6 +152,89 @@ def test_heartbeat_marks_a_stalled_collection_loop(monkeypatch) -> None:
     assert freshness.heartbeat(NOW)["stalled"] is False
     monkeypatch.setattr(freshness, "_STARTED_MONO", freshness.time.monotonic() - 3600)
     assert freshness.heartbeat(NOW)["stalled"] is True
+
+
+def test_watchdog_waits_for_configured_collection_interval(tmp_path: Path, monkeypatch) -> None:
+    settings = replace(_settings(tmp_path), local_ingest_interval_seconds=1800)
+    monkeypatch.setenv("BURNRATE_DATA_ROOT", str(tmp_path / "data"))
+    wall = NOW + timedelta(seconds=905)
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return wall.astimezone(tz or UTC)
+
+    monkeypatch.setattr(freshness, "datetime", Clock)
+    client = TestClient(create_app(settings, enable_scheduler=False))
+
+    def get(url, _timeout, _token=None):
+        response = client.get(url)
+        response.raise_for_status()
+        return response.json()
+
+    restarts = []
+
+    def restart():
+        restarts.append(wall)
+        return True, "Restarted"
+
+    def check():
+        return watchdog.check_once(
+            port=17331,
+            probe_fn=lambda port, token=None: watchdog.probe(port, get=get, token=token),
+            restart_fn=restart,
+            sleep=lambda _seconds: None,
+            now=wall,
+        )
+
+    assert check() == "ok"
+    assert restarts == []
+    wall = NOW + timedelta(seconds=2401)
+    assert watchdog.probe(get=get) == (False, "collection stalled (last pass 2401s ago)")
+    assert check() == "restarted"
+    assert restarts == [wall]
+
+
+def test_supervisor_health_uses_configured_collection_interval(tmp_path: Path) -> None:
+    settings = replace(_settings(tmp_path), local_ingest_interval_seconds=1800)
+    client = TestClient(create_app(settings, now=NOW + timedelta(seconds=905)))
+    response = client.get("/healthz", params={"supervisor": "1"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["collectorEnabled"]
+    assert payload["ingest"]["lastPassAgeSeconds"] == 905
+    assert not payload["ingest"]["stalled"]
+
+
+def test_long_interval_does_not_extend_an_active_pass_timeout(monkeypatch) -> None:
+    clock = [10000.0]
+    monkeypatch.setattr(freshness.time, "monotonic", lambda: clock[0])
+    # The scheduled pass starts after a long idle. Its deadline starts now.
+    started = NOW + timedelta(minutes=30)
+    freshness.pass_started()
+    assert not freshness.heartbeat(started, cadence_seconds=1800)["stalled"]
+
+    clock[0] += freshness.INGEST_STALLED_AFTER_SECONDS + 1
+    freshness.collection_resumed()
+    # A resume signal or a wall clock adjustment cannot hide a stuck pass.
+    beat = freshness.heartbeat(started - timedelta(hours=1), cadence_seconds=1800)
+    assert beat["running"] and beat["stalled"]
+    assert beat["runningSeconds"] == freshness.INGEST_STALLED_AFTER_SECONDS + 1
+
+
+def test_long_interval_collection_resume_resets_idle_grace(monkeypatch) -> None:
+    clock = [10000.0]
+    monkeypatch.setattr(freshness.time, "monotonic", lambda: clock[0])
+    wake = NOW + timedelta(hours=2)
+    assert freshness.heartbeat(wake, cadence_seconds=1800)["stalled"]
+    freshness.collection_resumed()
+    assert not freshness.heartbeat(wake, cadence_seconds=1800)["stalled"]
+
+    clock[0] += 1
+    freshness.pass_started()
+    freshness.pass_finished({}, [], 0.1, wake + timedelta(seconds=1))
+    clock[0] += 905
+    assert not freshness.heartbeat(wake + timedelta(seconds=906), cadence_seconds=1800)["stalled"]
 
 
 def test_spoke_reports_sync_and_hub_version(tmp_path: Path, monkeypatch) -> None:

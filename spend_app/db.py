@@ -19,7 +19,7 @@ from spend_app.subscriptions import (
 )
 
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 
 class UserFacingError(ValueError):
@@ -50,9 +50,13 @@ CREATE TABLE IF NOT EXISTS usage_events (
     cost_usd REAL,
     computed_cost_usd REAL NOT NULL CHECK (computed_cost_usd >= 0),
     is_exact INTEGER NOT NULL DEFAULT 0 CHECK (is_exact IN (0, 1)),
+    admin_request_count INTEGER,
+    admin_context_window TEXT,
+    organization_scope TEXT,
     occurred_epoch_us INTEGER,
     raw_id TEXT NOT NULL UNIQUE,
-    ingested_at TEXT NOT NULL
+    ingested_at TEXT NOT NULL,
+    grok_turn_elapsed_ms INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_usage_events_occurred_at ON usage_events(occurred_at);
@@ -134,6 +138,7 @@ CREATE TABLE IF NOT EXISTS provider_cost_buckets (
     line_item TEXT,
     model_key TEXT,
     cost_usd REAL NOT NULL CHECK (cost_usd >= 0),
+    organization_scope TEXT,
     raw_id TEXT NOT NULL UNIQUE,
     ingested_at TEXT NOT NULL
 );
@@ -170,10 +175,14 @@ CREATE TABLE IF NOT EXISTS unpriced_usage_events (
     reasoning_tokens INTEGER,
     unclassified_tokens INTEGER NOT NULL DEFAULT 0,
     telemetry_complete INTEGER NOT NULL DEFAULT 1,
+    admin_request_count INTEGER,
+    admin_context_window TEXT,
+    organization_scope TEXT,
     cost_usd REAL,
     occurred_epoch_us INTEGER,
     raw_id TEXT NOT NULL UNIQUE,
-    ingested_at TEXT NOT NULL
+    ingested_at TEXT NOT NULL,
+    grok_turn_elapsed_ms INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_unpriced_usage_time
@@ -206,7 +215,7 @@ CREATE TABLE IF NOT EXISTS opencode_session_progress (
 );
 """
 
-ACTIVITY_SCHEMA_SQL = """
+QUOTAS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS quotas (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     provider_key TEXT NOT NULL,
@@ -220,9 +229,11 @@ CREATE TABLE IF NOT EXISTS quotas (
     source TEXT NOT NULL,
     is_payg BOOLEAN CHECK (is_payg IS NULL OR is_payg IN (0, 1)),
     polled_at TEXT NOT NULL,
-    UNIQUE(provider_key, limit_key, polled_at)
+    UNIQUE(provider_key, limit_key, polled_at, source)
 );
+"""
 
+ACTIVITY_SCHEMA_SQL = QUOTAS_TABLE_SQL + """
 CREATE INDEX IF NOT EXISTS idx_quotas_provider ON quotas(provider_key, polled_at);
 CREATE INDEX IF NOT EXISTS idx_quotas_lane_id ON quotas(provider_key, limit_key, id);
 
@@ -285,6 +296,10 @@ class UsageEvent:
     raw_id: str
     ingested_at: str
     is_exact: bool = False
+    admin_request_count: int | None = None
+    admin_context_window: str | None = None
+    organization_scope: str | None = None
+    grok_turn_elapsed_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -298,6 +313,7 @@ class ProviderCostBucket:
     cost_usd: float
     raw_id: str
     ingested_at: str
+    organization_scope: str | None = None
 
 
 @dataclass(frozen=True)
@@ -319,6 +335,10 @@ class UnpricedUsageEvent:
     cost_usd: float | None
     raw_id: str
     ingested_at: str
+    admin_request_count: int | None = None
+    admin_context_window: str | None = None
+    organization_scope: str | None = None
+    grok_turn_elapsed_ms: int | None = None
 
 
 def utc_now() -> str:
@@ -453,6 +473,20 @@ def ensure_quota_pace_table(connection: sqlite3.Connection) -> None:
     connection.executescript(PACE_SCHEMA_SQL)
 
 
+LOCAL_USAGE_HISTORY_INDEXES = {
+    "idx_usage_events_local_source_ingested": "usage_events",
+    "idx_unpriced_usage_local_source_ingested": "unpriced_usage_events",
+}
+
+
+def ensure_local_usage_history_indexes(connection: sqlite3.Connection) -> None:
+    for index, table in LOCAL_USAGE_HISTORY_INDEXES.items():
+        connection.execute(
+            f"CREATE INDEX IF NOT EXISTS {index} ON {table}(source, ingested_at DESC) "
+            "WHERE raw_id NOT LIKE 'm:%'"
+        )
+
+
 def ensure_activity_table_shapes(connection: sqlite3.Connection) -> None:
     quota_columns = {row[1] for row in connection.execute("PRAGMA table_info('quotas')")}
     agent_columns = {row[1] for row in connection.execute("PRAGMA table_info('agent_runs')")}
@@ -504,6 +538,7 @@ REQUIRED_SCHEMA_OBJECTS = frozenset(
         "idx_ingest_runs_started_at",
         "idx_usage_events_epoch",
         "idx_unpriced_usage_epoch",
+        *LOCAL_USAGE_HISTORY_INDEXES,
     }
 )
 
@@ -677,6 +712,12 @@ def prune_usage_changes(
     if safe_seq is not None and safe_seq > 0:
         cur = connection.execute("DELETE FROM usage_changes WHERE seq <= ?", (safe_seq,))
         removed += int(cur.rowcount or 0)
+        # Keep the acknowledged checkpoint itself. Superseded unacknowledged
+        # mutations remain provable even after the lightweight journal folds them.
+        if connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='usage_change_marks'"
+        ).fetchone():
+            connection.execute("DELETE FROM usage_change_marks WHERE seq < ?", (safe_seq,))
     cur_dedup = connection.execute(
         """
         DELETE FROM usage_changes
@@ -954,7 +995,10 @@ def migrate_setup_hub_url(path: Path) -> bool:
 def initialize(path: Path) -> None:
     from spend_app.subscription_schema import upgrade_database
     upgrade_database(path, _initialize_base)
+    ensure_quota_origin_uniqueness(path)
     ensure_usage_change_journal(path)
+    from spend_app.provider_cost_sync import ensure_provider_cost_journal
+    ensure_provider_cost_journal(path)
     ensure_usage_cache_revisions(path)
     migrate_usage_keys(path)
     retire_cursor_usage(path)
@@ -968,6 +1012,29 @@ def initialize(path: Path) -> None:
     Store(path).bootstrap()
 
 
+def ensure_quota_origin_uniqueness(path: Path) -> None:
+    """Preserve quota observations from distinct sources at the same instant."""
+    marker = "quotas.origin_uniqueness.v1"
+    with connect(path) as connection:
+        if connection.execute("SELECT 1 FROM app_meta WHERE key=?", (marker,)).fetchone():
+            return
+        connection.execute("BEGIN IMMEDIATE")
+        if connection.execute("SELECT 1 FROM app_meta WHERE key=?", (marker,)).fetchone():
+            return
+        schema = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='quotas'"
+        ).fetchone()[0]
+        if "UNIQUE(provider_key, limit_key, polled_at, source)" not in schema:
+            columns = "id, provider_key, limit_key, label, used, allowance, unit, pct, resets_at, source, is_payg, polled_at"
+            connection.execute(QUOTAS_TABLE_SQL.replace("IF NOT EXISTS quotas", "quotas_with_origin"))
+            connection.execute(f"INSERT INTO quotas_with_origin({columns}) SELECT {columns} FROM quotas")
+            connection.execute("DROP TABLE quotas")
+            connection.execute("ALTER TABLE quotas_with_origin RENAME TO quotas")
+            connection.execute("CREATE INDEX idx_quotas_provider ON quotas(provider_key, polled_at)")
+            connection.execute("CREATE INDEX idx_quotas_lane_id ON quotas(provider_key, limit_key, id)")
+        connection.execute("INSERT INTO app_meta(key,value) VALUES(?, '1')", (marker,))
+
+
 def ensure_usage_change_journal(path: Path) -> None:
     """Capture every local usage mutation, including SQL-based parser repairs.
 
@@ -976,16 +1043,57 @@ def ensure_usage_change_journal(path: Path) -> None:
     the latest state in one read transaction. Imported machine rows never echo.
     Existing rows seed the first sequence so legacy ID cursors can be upgraded.
     """
-    marker = "usage_changes.initialized.v1"
+    v1 = "usage_changes.initialized.v1"
+    marker = "usage_changes.checkpoints.v2"
     with connect(path) as connection:
-        if connection.execute("SELECT 1 FROM app_meta WHERE key=?", (marker,)).fetchone():
+        def migrated() -> bool:
+            return connection.execute(
+                "SELECT COUNT(*) FROM app_meta WHERE key IN (?,?)", (v1, marker)
+            ).fetchone()[0] == 2
+
+        if migrated():
             return
         connection.execute("BEGIN IMMEDIATE")
-        if connection.execute("SELECT 1 FROM app_meta WHERE key=?", (marker,)).fetchone():
+        if migrated():
             return
+        seed = not connection.execute("SELECT 1 FROM app_meta WHERE key=?", (v1,)).fetchone()
         connection.execute(
             "CREATE TABLE IF NOT EXISTS usage_changes ("
             "seq INTEGER PRIMARY KEY AUTOINCREMENT, raw_id TEXT NOT NULL)"
+        )
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS usage_change_marks ("
+            "seq INTEGER PRIMARY KEY, raw_id TEXT NOT NULL, mark TEXT NOT NULL, "
+            "legacy INTEGER NOT NULL DEFAULT 0)"
+        )
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(usage_change_marks)")}
+        if "legacy" not in columns:
+            connection.execute("ALTER TABLE usage_change_marks ADD COLUMN legacy INTEGER NOT NULL DEFAULT 0")
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_usage_change_marks_raw ON usage_change_marks(raw_id, seq)"
+        )
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS sync_usage_receipts ("
+            "machine_id TEXT NOT NULL, mark BLOB NOT NULL, PRIMARY KEY(machine_id, mark)) WITHOUT ROWID"
+        )
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS sync_usage_conflicts ("
+            "machine_id TEXT NOT NULL, mark BLOB NOT NULL, raw_id TEXT NOT NULL, change TEXT NOT NULL, "
+            "PRIMARY KEY(machine_id,mark)) WITHOUT ROWID"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sync_usage_conflicts_raw ON sync_usage_conflicts(machine_id,raw_id)"
+        )
+        if seed:
+            connection.execute("DELETE FROM usage_change_marks")
+        connection.execute(
+            "INSERT OR IGNORE INTO usage_change_marks(seq,raw_id,mark,legacy) "
+            "SELECT seq,raw_id,lower(hex(randomblob(16))),1 FROM usage_changes"
+        )
+        connection.execute(
+            "CREATE TRIGGER IF NOT EXISTS journal_usage_changes_checkpoint AFTER INSERT ON usage_changes "
+            "BEGIN INSERT INTO usage_change_marks(seq,raw_id,mark) "
+            "VALUES(NEW.seq,NEW.raw_id,lower(hex(randomblob(16)))); END"
         )
         for table in ("usage_events", "unpriced_usage_events"):
             for action, reference in (("INSERT", "NEW"), ("UPDATE", "NEW"), ("DELETE", "OLD")):
@@ -999,11 +1107,16 @@ def ensure_usage_change_journal(path: Path) -> None:
                 "WHEN OLD.raw_id != NEW.raw_id AND OLD.raw_id NOT LIKE 'm:%' "
                 "BEGIN INSERT INTO usage_changes(raw_id) VALUES(OLD.raw_id); END"
             )
-            connection.execute(
-                f"INSERT INTO usage_changes(raw_id) SELECT raw_id FROM {table} "
-                "WHERE raw_id NOT LIKE 'm:%' ORDER BY id"
-            )
-        connection.execute("INSERT INTO app_meta(key,value) VALUES(?, '1')", (marker,))
+            if seed:
+                connection.execute(
+                    f"INSERT INTO usage_changes(raw_id) SELECT raw_id FROM {table} "
+                    "WHERE raw_id NOT LIKE 'm:%' ORDER BY id"
+                )
+        if seed:
+            connection.execute("UPDATE usage_change_marks SET legacy=1")
+        connection.executemany(
+            "INSERT OR IGNORE INTO app_meta(key,value) VALUES(?, '1')", ((v1,), (marker,))
+        )
 
 
 # Event identity and alias records (one or more per usage event) live in their
@@ -1218,8 +1331,8 @@ def dedupe_grok_calls(path: Path) -> int:
                 _GROK_DEDUPE_CHECKED.add(marker)
                 return 0
             recorded = connection.execute(
-                "SELECT EXISTS(SELECT 1 FROM unpriced_usage_events WHERE tool_key='grok') "
-                "OR EXISTS(SELECT 1 FROM usage_events WHERE tool_key='grok')"
+                "SELECT EXISTS(SELECT 1 FROM unpriced_usage_events WHERE grok_turn_elapsed_ms IS NOT NULL) "
+                "OR EXISTS(SELECT 1 FROM usage_events WHERE grok_turn_elapsed_ms IS NOT NULL)"
             ).fetchone()[0]
         if recorded:
             target = path.parent / "backups" / (
@@ -1430,6 +1543,18 @@ def migrate_release_a(connection: sqlite3.Connection) -> None:
             continue
         if "occurred_epoch_us" not in columns:
             connection.execute(f"ALTER TABLE {table} ADD COLUMN occurred_epoch_us INTEGER")
+        for key, sql_type in (
+            ("grok_turn_elapsed_ms", "INTEGER"),
+            ("admin_request_count", "INTEGER"),
+            ("admin_context_window", "TEXT"),
+            ("organization_scope", "TEXT"),
+        ):
+            if key not in columns:
+                connection.execute(f"ALTER TABLE {table} ADD COLUMN {key} {sql_type}")
+    cost_columns = {row[1] for row in connection.execute("PRAGMA table_info('provider_cost_buckets')")}
+    if cost_columns and "organization_scope" not in cost_columns:
+        connection.execute("ALTER TABLE provider_cost_buckets ADD COLUMN organization_scope TEXT")
+    ensure_local_usage_history_indexes(connection)
     connection.executescript(
         """
         CREATE INDEX IF NOT EXISTS idx_usage_events_epoch ON usage_events(occurred_epoch_us);
@@ -1528,11 +1653,24 @@ def upsert_usage_event(connection: sqlite3.Connection, event: UsageEvent) -> boo
 
 
 def upsert_cost_bucket(connection: sqlite3.Connection, bucket: ProviderCostBucket) -> bool:
-    existed = connection.execute(
-        "SELECT 1 FROM provider_cost_buckets WHERE raw_id = ?", (bucket.raw_id,)
-    ).fetchone() is not None
+    if not connection.in_transaction:
+        connection.execute("BEGIN IMMEDIATE")
     values = asdict(bucket)
     columns = tuple(values)
+    existing = connection.execute(
+        f"SELECT {','.join(columns)} FROM provider_cost_buckets WHERE raw_id = ?", (bucket.raw_id,)
+    ).fetchone()
+    if _same_content(existing, values):
+        return False
+    if existing is not None and not bucket.raw_id.startswith("m:"):
+        # Date-ordering protects the hub from stale replays. Preserve local
+        # correction order when the wall clock repeats or moves backward.
+        from spend_app.timeutil import iso_utc, parse_utc
+
+        observed = parse_utc(bucket.ingested_at)
+        previous = parse_utc(existing["ingested_at"])
+        if previous is not None and observed is not None and observed <= previous:
+            values["ingested_at"] = iso_utc(previous + timedelta(microseconds=1))
     placeholders = ",".join("?" for _ in columns)
     updates = ",".join(f"{column}=excluded.{column}" for column in columns if column != "raw_id")
     connection.execute(
@@ -1540,7 +1678,7 @@ def upsert_cost_bucket(connection: sqlite3.Connection, bucket: ProviderCostBucke
         f"ON CONFLICT(raw_id) DO UPDATE SET {updates}",
         tuple(values[column] for column in columns),
     )
-    return not existed
+    return existing is None
 
 
 def upsert_unpriced_event(connection: sqlite3.Connection, event: UnpricedUsageEvent) -> bool:
@@ -1581,8 +1719,8 @@ def upsert_quota(
     is_payg: bool | None = None,
 ) -> bool:
     existed = connection.execute(
-        "SELECT 1 FROM quotas WHERE provider_key=? AND limit_key=? AND polled_at=?",
-        (provider_key, limit_key, polled_at),
+        "SELECT 1 FROM quotas WHERE provider_key=? AND limit_key=? AND polled_at=? AND source=?",
+        (provider_key, limit_key, polled_at, source),
     ).fetchone() is not None
     connection.execute(
         """
@@ -1590,14 +1728,13 @@ def upsert_quota(
             provider_key, limit_key, label, used, allowance, unit, pct, resets_at,
             source, is_payg, polled_at
         ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(provider_key, limit_key, polled_at) DO UPDATE SET
+        ON CONFLICT(provider_key, limit_key, polled_at, source) DO UPDATE SET
             label=excluded.label,
             used=excluded.used,
             allowance=excluded.allowance,
             unit=excluded.unit,
             pct=excluded.pct,
             resets_at=excluded.resets_at,
-            source=excluded.source,
             is_payg=excluded.is_payg
         """,
         (

@@ -7,7 +7,6 @@ request runs on a worker; only the Tk thread reads or changes widgets.
 from __future__ import annotations
 
 import copy
-import json
 import math
 import os
 import queue
@@ -26,6 +25,7 @@ from spend_app import native_theme as theme
 from spend_app.config import Settings, load_settings, load_user_env
 from spend_app.error_codes import HUB_PROTOCOL_VERSION, format_error, map_http_error
 from spend_app.native_frame import NativeFrame
+from spend_app.native_prefs import store_for
 from spend_app.platform_paths import NO_WINDOW
 from spend_app.timeutil import parse_utc
 
@@ -98,6 +98,46 @@ class NativeClient:
         self._session_token = None
         self._auth_lock = threading.Lock()
 
+    def _recovery_session(self, client, token: str, headers: dict) -> str:
+        from spend_app.auth_model import extract_cookie
+
+        with self._auth_lock:
+            if self._session_token is not None:
+                return self._session_token
+            path = "/api/auth/bootstrap"
+            bootstrap = client.post(
+                self.base_url + path,
+                json={},
+                headers={**headers, "Authorization": "Bearer " + token},
+            )
+            if bootstrap.status_code != 200:
+                try:
+                    data = bootstrap.json()
+                except ValueError:
+                    data = None
+                mapped = map_http_error(
+                    bootstrap.status_code,
+                    data,
+                    headers=getattr(bootstrap, "headers", None),
+                    endpoint_path=path,
+                    has_machine_token=token.startswith("br_m_"),
+                    local_service=True,
+                )
+                raise DesktopError(
+                    format_error(mapped.code, retry_after=mapped.retry_after),
+                    bootstrap.status_code,
+                    code=mapped.code,
+                )
+            session_token = extract_cookie(bootstrap)
+            if not session_token:
+                raise DesktopError(
+                    "The tracker returned an invalid session response.",
+                    bootstrap.status_code,
+                    code="APP-901",
+                )
+            self._session_token = session_token
+            return session_token
+
     def request(self, path: str, body: dict | None = None) -> dict:
         if not path.startswith("/api/"):
             raise ValueError("Only local BURNRATE API paths are supported")
@@ -124,46 +164,25 @@ class NativeClient:
                 trust_env=False,
                 follow_redirects=False,
             ) as client:
-                if token:
-                    # Exchange recovery authority once; ordinary UI calls use
-                    # an independently expiring and revocable session.
-                    with self._auth_lock:
-                        if self._session_token is None:
-                            bootstrap = client.post(self.base_url + "/api/auth/bootstrap", json={},
-                                                    headers={**headers, "Authorization": "Bearer " + token})
-                            if bootstrap.status_code != 200:
-                                try:
-                                    boot_data = bootstrap.json()
-                                except ValueError:
-                                    boot_data = None
-                                mapped = map_http_error(
-                                    bootstrap.status_code,
-                                    boot_data,
-                                    headers=getattr(bootstrap, "headers", None),
-                                    endpoint_path="/api/auth/bootstrap",
-                                    has_machine_token=token.startswith("br_m_"),
-                                    local_service=True,
-                                )
-                                raise DesktopError(
-                                    format_error(mapped.code, retry_after=mapped.retry_after),
-                                    bootstrap.status_code,
-                                    code=mapped.code,
-                                )
-                            from spend_app.auth_model import extract_cookie
-                            session_token = extract_cookie(bootstrap)
-                            if not session_token:
-                                raise DesktopError(
-                                    "The tracker returned an invalid session response.",
-                                    bootstrap.status_code,
-                                    code="APP-901",
-                                )
-                            self._session_token = session_token
-                    headers["Authorization"] = "Bearer " + self._session_token
+                session = self._recovery_session(client, token, headers) if token else None
+                if session:
+                    headers["Authorization"] = "Bearer " + session
                 response = (
                     client.get(self.base_url + path, headers=headers)
                     if body is None
                     else client.post(self.base_url + path, json=body, headers=headers)
                 )
+                if response.status_code == 401 and session:
+                    with self._auth_lock:
+                        # An earlier response can arrive after another worker renewed.
+                        if self._session_token == session:
+                            self._session_token = None
+                    if body is None:
+                        session = self._recovery_session(client, token, headers)
+                        response = client.get(
+                            self.base_url + path,
+                            headers={**headers, "Authorization": "Bearer " + session},
+                        )
                 try:
                     data = response.json()
                 except ValueError:
@@ -794,6 +813,9 @@ def demo_summary(window_key: str = "1d", tool: str = "all", machine: str = "all"
     series = []
     weights = [((i * 5 + 3) % 11) + 2 for i in range(bucket_count)]
     w_sum = max(1, sum(weights))
+    running_weight = 0
+    running_usd = 0.0
+    running_tokens = 0
     for i, w in enumerate(weights):
         end = now - timedelta(hours=max(1, bucket_count - i - 1))
         label = (
@@ -807,6 +829,19 @@ def demo_summary(window_key: str = "1d", tool: str = "all", machine: str = "all"
             part = int(round(row["tokens"] * w / w_sum))
             by_tool[row["key"]] = part
             b_total += part
+        bucket_value = {}
+        if use_tool != "all":
+            running_weight += w
+            next_usd = round(tracked_val * running_weight / w_sum, 2)
+            next_tokens = round(total_tokens * running_weight / w_sum)
+            b_total = next_tokens - running_tokens
+            by_tool = {use_tool: b_total} if tool_rows else {}
+            bucket_value = {
+                "bucketUsd": round(next_usd - running_usd, 2),
+                "bucketUsdComplete": True,
+            }
+            running_usd = next_usd
+            running_tokens = next_tokens
         series.append(
             {
                 "bucketStart": end.isoformat().replace("+00:00", "Z"),
@@ -814,6 +849,7 @@ def demo_summary(window_key: str = "1d", tool: str = "all", machine: str = "all"
                 "label": label,
                 "total": b_total,
                 "byTool": by_tool,
+                **bucket_value,
             }
         )
 
@@ -912,11 +948,24 @@ def demo_summary(window_key: str = "1d", tool: str = "all", machine: str = "all"
     }
 
 
-def demo_entity(kind: str, key: str, window_key: str = "1d", machine: str = "all") -> dict:
+def demo_entity(
+    kind: str, key: str, window_key: str = "1d", machine: str = "all", tool: str = ""
+) -> dict:
     summary = demo_summary(window_key, "all", machine)
     totals = summary["totals"]
+    selected_tool = tool if kind == "model" and tool != "all" else ""
     if kind == "model":
-        match = next((m for m in summary["models"] if m["key"] == key), summary["models"][0])
+        match = next(
+            (
+                m for m in summary["models"]
+                if m["key"] == key and (not selected_tool or m["toolKey"] == selected_tool)
+            ),
+            None,
+        )
+        if match is None and selected_tool:
+            raise DesktopError("Detail for this tool profile is unavailable.")
+        if match is None:
+            match = summary["models"][0]
         tool_key = match["toolKey"]
         tool_row = next((t for t in summary["tools"] if t["key"] == tool_key), summary["tools"][0])
         name = match["name"]
@@ -973,6 +1022,7 @@ def demo_entity(kind: str, key: str, window_key: str = "1d", machine: str = "all
         "name": name,
         "providerKey": tool_key,
         "providerName": tool_row["name"],
+        **({"selectedTool": selected_tool} if selected_tool else {}),
         "plan": tool_row.get("plan", "Usage"),
         "isExact": is_exact,
         "valueMarker": "" if is_exact else "≈",
@@ -1038,6 +1088,7 @@ class DemoClient:
                     (qs.get("key") or ["claude-code"])[0],
                     (qs.get("window") or ["1d"])[0],
                     (qs.get("machine") or ["all"])[0],
+                    (qs.get("tool") or [""])[0],
                 )
             )
         if path.startswith("/api/spend/health"):
@@ -1369,15 +1420,7 @@ class UsageWindow:
         root.after(15_000, self._poll)
 
     def _read_preferences(self):
-        try:
-            data = (
-                json.loads(self.preferences.read_text(encoding="utf-8"))
-                if self.preferences
-                else {}
-            )
-            return data if isinstance(data, dict) else {}
-        except (OSError, ValueError):
-            return {}
+        return store_for(self.preferences).read()
 
     def _adapt_layout(self, height):
         compact = height < round(760 * theme.ui_scale(self.root))
@@ -1475,20 +1518,10 @@ class UsageWindow:
         )
 
     def save_preferences(self):
-        if self.preferences is None:
-            return
-        try:
-            self.preferences.parent.mkdir(parents=True, exist_ok=True)
-            temporary = self.preferences.with_suffix(".tmp")
-            temporary.write_text(
-                json.dumps(
-                    {"period": self.period.get(), "topmost": self.topmost.get()}
-                ),
-                encoding="utf-8",
+        if self.preferences is not None:
+            store_for(self.preferences).update(
+                {"period": self.period.get(), "topmost": self.topmost.get()}
             )
-            temporary.replace(self.preferences)
-        except OSError:
-            pass
 
     def submit(self, work, done, failed=None):
         if self.closed:

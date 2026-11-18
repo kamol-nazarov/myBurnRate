@@ -83,6 +83,7 @@ def reconcile_messages(connection, messages, issues):
         records = []
         for table in ("usage_events", "unpriced_usage_events"):
             records.extend(dict(row) for row in connection.execute(f"SELECT e.* FROM {table} e LEFT JOIN coverage_gap_events g ON g.raw_id=e.raw_id WHERE e.source='opencode_local' AND e.session_id=? AND (e.raw_id=? OR g.issue IN (?,?))", (session, legacy_id, BASELINE_ISSUE, DELTA_ISSUE)))
+        records = [row for row in records if not row["raw_id"].startswith("opencode-source-") or row["tool_key"] == tool]
         if records and providers != [provider] and any(row["raw_id"] != legacy_id for row in records):
             issues.append("opencode_coarse_provider_scope_ambiguous")
             # Preserve the existing coarse history; only clearly later usage
@@ -185,13 +186,15 @@ def reconcile_cumulative(connection, rows, snapshots, issues=None, deferred=None
     outputs = []
     for coarse in rows:
         provider = providers.get(coarse.session_id)
+        profile_tool = (TOOL_KEY_OVERRIDES.get() or {}).get(coarse.tool_key)
         key = "opencode.granular.v1:" + stable_id(coarse.session_id, provider)
         state = read_meta(connection, key, {"revisions": {}, "allocations": {}})
         messages = []
         unknown_overlap = False
         for raw_id in state["revisions"]:
             record = stored_event(connection, raw_id)
-            if record and record["source"] == "opencode_local" and record["session_id"] == coarse.session_id:
+            if (record and record["source"] == "opencode_local" and record["session_id"] == coarse.session_id
+                    and (profile_tool is None or record["tool_key"] == profile_tool)):
                 row = row_from_record(record)
                 started = parse_iso_time(state.get("starts", {}).get(raw_id))
                 if started is None and row.occurred_at > coarse.occurred_at:
@@ -213,13 +216,19 @@ def combine_results(results, *, issues=(), formats=()):
     result = dict(results[0]) if len(results) == 1 else {"source": "opencode_local"}
     result.setdefault("source", "opencode_local")
     counters = ("eventsSeen", "eventsAccepted", "eventsWritten", "unpricedEventsWritten", "coverageGapsWritten",
-                "costBucketsSeen", "costBucketsWritten", "quarantined", "files")
+                "costBucketsSeen", "costBucketsWritten", "quarantined", "files",
+                "historicalCorrections", "historicalUnresolved")
     if len(results) != 1:
         for name in counters:
             if any(name in child for child in results):
                 result[name] = sum(child.get(name, 0) for child in results)
     for name in ("unpricedModels", "issues"):
         result[name] = sorted(set(item for child in results for item in child.get(name, [])) | (set(issues) if name == "issues" else set()))
+    retained = max((child.get("retainedHistoricalUnresolved", 0) for child in results), default=0)
+    if retained:
+        result["retainedHistoricalUnresolved"] = retained
+    if any(child.get("historicalRepairPending") for child in results):
+        result["historicalRepairPending"] = True
     statuses = {child.get("status", "failed") for child in results}
     if statuses & {"success", "partial"}:
         result["status"] = "partial" if statuses - {"success"} or result["issues"] or result["unpricedModels"] else "success"
@@ -300,9 +309,12 @@ def ingest(*, database_path, pricing, source_database):
     cache_key, current, replayed = unchanged.check(
         database_path, "opencode_local", path, lambda: list(opencode_files(path)), pricing)
     if replayed is not None:
+        if "historicalCorrections" in replayed:
+            replayed["historicalCorrections"] = 0
         return replayed
     result = _collect(database_path=database_path, pricing=pricing, path=path)
-    unchanged.remember(database_path, "opencode_local", cache_key, current, result)
+    if not result.get("historicalRepairPending"):
+        unchanged.remember(database_path, "opencode_local", cache_key, current, result)
     return result
 
 
@@ -350,8 +362,23 @@ def _collect(*, database_path, pricing, path):
         issues.extend(records[session][1])
     changed = [message for message in messages if message.row.session_id not in unchanged]
     session_issues: dict = {}
+    historical = {}
+    repaired_sessions = set()
 
     def prepare(connection, rows):
+        from spend_app.adapters.opencode_cumulative_repair import repair_retained_provider_switches
+
+        # A source can now be granular-only even though this database still
+        # has pre-upgrade cumulative history recorded for closed sessions.
+        if not cumulative:
+            corrected, repaired, unresolved, pending = repair_retained_provider_switches(connection, pricing)
+            repaired_sessions.update(repaired)
+            historical["historicalCorrections"] = corrected
+            if unresolved:
+                issues.append("opencode_retained_provider_switches_could_not_be_verified")
+                historical["retainedHistoricalUnresolved"] = unresolved
+            if pending:
+                historical["historicalRepairPending"] = True
         outputs = []
         by_session = {}
         for message in changed:
@@ -363,13 +390,19 @@ def _collect(*, database_path, pricing, path):
         return outputs
 
     def finalize(connection):
+        from spend_app.adapters.traycer_local import reconcile_opencode_mirrors
+
+        sessions = {message.row.session_id for message in changed}
         connection.executemany(
             "INSERT OR REPLACE INTO ingest_file_cache(source, cache_key, signature, events, quarantined) VALUES(?,?,?,?,0)",
             [(SESSION_RECORD, session, json.dumps([fingerprints[session][0], sorted(set(session_issues.get(session, [])))]),
-              fingerprints[session][1]) for session in {message.row.session_id for message in changed}])
+              fingerprints[session][1]) for session in sessions])
+        if sessions or repaired_sessions:
+            reconcile_opencode_mirrors(connection, sessions | repaired_sessions)
 
     result = persist_rows(database_path=database_path, pricing=pricing, source="opencode_local", usage_rows=[m.row for m in changed],
                           prepare=prepare, finalize=finalize, issues=issues)
+    result.update(historical)
     if skipped_messages:
         result = {**result, "eventsSeen": result.get("eventsSeen", 0) + skipped_messages,
                   "eventsAccepted": result.get("eventsAccepted", 0) + skipped_messages,

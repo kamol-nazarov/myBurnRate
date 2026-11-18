@@ -2032,6 +2032,69 @@ def test_codex_configured_speed_only_applies_to_the_local_scope(tmp_path, monkey
     assert provider("all")["configuredSpeed"] == "fast"
 
 
+def test_partial_quota_failure_keeps_only_current_scope_limits(tmp_path):
+    from types import SimpleNamespace
+
+    from spend_app.db import connect, initialize
+    from spend_app.setup_wizard import read_setup_state, write_setup_state
+
+    class QuotaClient(DemoClient):
+        hud_mode = "measured"
+
+        def request(self, path, body=None):
+            if path.startswith("/api/spend/hud?"):
+                if self.hud_mode == "failed":
+                    raise DesktopError("Temporary quota fetch failure.")
+                if self.hud_mode == "empty":
+                    return {"capacity": []}
+            return super().request(path, body)
+
+    db_path = tmp_path / "scope.db"
+    initialize(db_path)
+    client = QuotaClient()
+    client.settings = SimpleNamespace(database_path=db_path)
+    bridge = DesktopBridge(client)
+
+    measured = bridge.fetch_usage(machine="all")["report"]
+    assert measured["quotaStatus"] == "fresh"
+    original = bridge._tab_model.payload(dark=False)
+    assert len(original["segments"]) == 5
+    assert original["urgentCount"] >= 1
+
+    client.hud_mode = "failed"
+    retained = bridge.fetch_usage(period="week", machine="all")["report"]
+    assert retained["quotaStatus"] == "stale"
+    assert retained["period"] == "week"
+    tab = bridge._tab_model.payload(dark=False)
+    assert tab["stale"]
+    assert len(tab["segments"]) == len(original["segments"])
+    assert tab["urgentCount"] == original["urgentCount"]
+
+    other = bridge.fetch_usage(machine="example-laptop")["report"]
+    assert other["quotaStatus"] == "unavailable"
+    tab = bridge._tab_model.payload(dark=False)
+    assert tab["state"] == "error"
+    assert not tab["segments"]
+
+    with connect(db_path) as conn:
+        setup = read_setup_state(conn)
+        setup["role"] = "spoke"
+        setup["account"]["machineId"] = "new-pairing-machine"
+        setup["spokeConfig"]["credentialGeneration"] += 1
+        write_setup_state(conn, setup)
+    assert bridge.fetch_usage(machine="all")["report"]["quotaStatus"] == "unavailable"
+    assert not bridge._tab_model.payload(dark=False)["segments"]
+
+    client.hud_mode = "measured"
+    assert bridge.fetch_usage(machine="all")["report"]["quotaStatus"] == "fresh"
+    client.hud_mode = "empty"
+    assert bridge.fetch_usage(machine="all")["report"]["quotaStatus"] == "fresh"
+    assert bridge._tab_model.payload(dark=False)["state"] == "empty"
+    client.hud_mode = "failed"
+    assert bridge.fetch_usage(machine="all")["report"]["quotaStatus"] == "unavailable"
+    assert not bridge._tab_model.payload(dark=False)["segments"]
+
+
 class ServiceBridgeClient:
     """In-process client forwarding /api/connections directly to connections.Service."""
 
@@ -2196,15 +2259,16 @@ def test_add_remove_add_dismiss_and_rename_against_real_service(tmp_path, monkey
         # 3. Rename -> Rename -> Stale 409 retry -> Rename back
         readd = bridge.add_profile("claude_local", "", str(manual_dir), "Alpha")
         rkey = readd["connection"]["key"]
-        ren1 = bridge.rename_profile("claude_local", rkey, "Beta", revision=1)
-        assert ren1["ok"] is True and ren1["connection"]["revision"] == 2
-        # Stale revision=1 triggers 409 reload (rev=2) & retry once -> rev=3
-        ren2 = bridge.rename_profile("claude_local", rkey, "Gamma", revision=1)
-        assert ren2["ok"] is True and ren2["connection"]["revision"] == 3
-        ren3 = bridge.rename_profile("claude_local", rkey, "Beta", revision=3)
-        assert ren3["ok"] is True and ren3["connection"]["revision"] == 4
+        rrev = readd["connection"]["revision"]
+        ren1 = bridge.rename_profile("claude_local", rkey, "Beta", revision=rrev)
+        assert ren1["ok"] is True and ren1["connection"]["revision"] == rrev + 1
+        # Stale revision triggers 409 reload & retry once -> rrev + 2
+        ren2 = bridge.rename_profile("claude_local", rkey, "Gamma", revision=rrev)
+        assert ren2["ok"] is True and ren2["connection"]["revision"] == rrev + 2
+        ren3 = bridge.rename_profile("claude_local", rkey, "Beta", revision=rrev + 2)
+        assert ren3["ok"] is True and ren3["connection"]["revision"] == rrev + 3
         prof = next(p for p in _claude_row(service)["profiles"] if p["key"] == rkey)
-        assert prof["name"] == "Beta" and prof["revision"] == 4
+        assert prof["name"] == "Beta" and prof["revision"] == rrev + 3
     finally:
         profile_detect.reset_cache()
 

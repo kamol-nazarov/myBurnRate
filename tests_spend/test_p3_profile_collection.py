@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import NAMESPACE_URL, uuid5
 
 import pytest
 
@@ -1071,6 +1073,241 @@ def test_grok_muse_and_antigravity_non_default_profiles_tag_rows_and_sessions(
 # ---------------------------------------------------------------------------
 # 9. MissingLocation skipped cleanly & broken profile fails without blocking valid ones
 # ---------------------------------------------------------------------------
+
+
+def _add_profile(service, location: Path, request_id: str, *, source="codex_local") -> dict:
+    return service.mutate({
+        "source": source,
+        "operation": "add_profile",
+        "location": str(location),
+        "requestId": str(uuid5(NAMESPACE_URL, request_id)),
+    })["connection"]
+
+
+def _remove_profile(service, profile: dict, request_id: str) -> None:
+    service.mutate({
+        "source": profile["source"],
+        "operation": "remove_profile",
+        "profile": profile["key"],
+        "revision": profile["revision"],
+        "requestId": str(uuid5(NAMESPACE_URL, request_id)),
+    })
+
+
+def _codex_status(service, key: str) -> str:
+    row = next(r for r in service.list()["connections"] if r["source"] == "codex_local")
+    return next(p["state"] for p in row["profiles"] if p["key"] == key)
+
+
+def test_removed_profile_keeps_history_separate_from_different_folder(tmp_path: Path) -> None:
+    settings = _make_settings(tmp_path)
+    pricing = PricingEngine.load(settings.pricing_path)
+    service = connections.Service(settings)
+    old_root = tmp_path / "old-client" / ".codex-work"
+    new_root = tmp_path / "new-client" / ".codex-work"
+    _write_codex_rollout(old_root / "sessions" / "history.jsonl", session_id="old-session")
+    _write_codex_rollout(new_root / "sessions" / "new.jsonl", session_id="new-session")
+
+    old = _add_profile(service, old_root, "add-old-profile")
+    profiles_local.ingest(database_path=settings.database_path, pricing=pricing)
+    assert _codex_status(service, old["key"]) == "receiving"
+    _remove_profile(service, old, "remove-old-profile")
+
+    # Reopen state before adding a different folder with the same basename.
+    service = connections.Service(settings)
+    new = _add_profile(service, new_root, "add-new-profile")
+    assert new["toolKey"] != old["toolKey"]
+    assert _codex_status(service, new["key"]) == "added"
+    profiles_local.ingest(database_path=settings.database_path, pricing=pricing)
+    with spend_db.connect(settings.database_path) as conn:
+        rows = conn.execute(
+            "SELECT session_id, tool_key FROM usage_events ORDER BY session_id"
+        ).fetchall()
+    assert [tuple(row) for row in rows] == [
+        ("new-session", new["toolKey"]), ("old-session", old["toolKey"]),
+    ]
+
+
+def test_legacy_orphan_tool_key_remains_reserved(tmp_path: Path) -> None:
+    settings = _make_settings(tmp_path)
+    pricing = PricingEngine.load(settings.pricing_path)
+    service = connections.Service(settings)
+    old_root = tmp_path / "prior" / ".codex-team"
+    new_root = tmp_path / "current" / ".codex-team"
+    _write_codex_rollout(old_root / "sessions" / "prior.jsonl", session_id="prior")
+    _write_codex_rollout(new_root / "sessions" / "current.jsonl", session_id="current")
+    old = _add_profile(service, old_root, "add-prior-profile")
+    profiles_local.ingest(database_path=settings.database_path, pricing=pricing)
+
+    # The audited v2 writer removed records without writing a retirement entry.
+    with service.store.transaction() as state:
+        del state["profiles"]["codex_local"][old["key"]]
+        state.pop("retiredProfiles", None)
+
+    reopened = connections.Service(settings)
+    new = _add_profile(reopened, new_root, "add-current-profile")
+    assert new["toolKey"] != old["toolKey"]
+    assert _codex_status(reopened, new["key"]) == "added"
+    with spend_db.connect(settings.database_path) as conn:
+        assert tuple(conn.execute("SELECT session_id, tool_key FROM usage_events").fetchone()) == (
+            "prior", old["toolKey"],
+        )
+
+
+def test_retired_opencode_file_key_is_bound_to_the_selected_database(tmp_path: Path) -> None:
+    settings = _make_settings(tmp_path)
+    pricing = PricingEngine.load(settings.pricing_path)
+    service = connections.Service(settings)
+    shared_root = tmp_path / "databases"
+    old_db = _write_opencode_db(
+        shared_root / "old.db",
+        cumulative_sessions=[{"id": "old", "providerID": "opencode-go", "modelID": "glm-5.3"}],
+    )
+    new_db = _write_opencode_db(
+        shared_root / "new.db",
+        cumulative_sessions=[{"id": "new", "providerID": "opencode-go", "modelID": "glm-5.3"}],
+    )
+
+    old = _add_profile(service, old_db, "add-old-database", source="opencode_local")
+    profiles_local.ingest(database_path=settings.database_path, pricing=pricing)
+    _remove_profile(service, old, "retire-old-database")
+
+    new = _add_profile(service, new_db, "add-new-database", source="opencode_local")
+    assert new["toolKey"] != old["toolKey"]
+    profiles_local.ingest(database_path=settings.database_path, pricing=pricing)
+    with spend_db.connect(settings.database_path) as conn:
+        rows = conn.execute("SELECT session_id, tool_key FROM usage_events ORDER BY session_id").fetchall()
+    assert [tuple(row) for row in rows] == [("new", new["toolKey"]), ("old", old["toolKey"])]
+    _remove_profile(service, new, "retire-new-database")
+
+    # The same physical database can still reconnect under its original key.
+    if getattr(old_db.stat(), "st_birthtime_ns", None) is not None:
+        # SQLite connection context managers commit without closing. Release
+        # unreachable fixture and reader handles before renaming on Windows.
+        gc.collect()
+        relocated = shared_root / "relocated.db"
+        old_db.rename(relocated)
+        old_db = relocated
+    restored = _add_profile(service, old_db, "restore-old-database", source="opencode_local")
+    assert restored["toolKey"] == old["toolKey"]
+    assert restored["revision"] > old["revision"]
+
+
+def test_imported_history_does_not_reserve_a_local_profile_key(tmp_path: Path) -> None:
+    settings = _make_settings(tmp_path)
+    service = connections.Service(settings)
+    root = tmp_path / ".codex-work"
+    _write_codex_rollout(root / "sessions" / "local.jsonl", session_id="local")
+    with spend_db.connect(settings.database_path) as conn:
+        spend_db.upsert_usage_event(
+            conn,
+            spend_db.UsageEvent(
+                source="codex_local", tool_key="codex-work", model_key="gpt-5.4-mini",
+                occurred_at=TS_ISO, session_id="m:spoke:work", project=None,
+                input_tokens=500, cached_input_tokens=0, cache_write_tokens=0,
+                cache_write_1h_tokens=0, output_tokens=20, reasoning_tokens=None,
+                cost_usd=None, computed_cost_usd=0.01, raw_id="m:spoke:remote",
+                ingested_at=spend_db.utc_now(),
+            ),
+        )
+
+    profile = _add_profile(service, root, "add-local-work-profile")
+    assert profile["toolKey"] == "codex-work"
+    assert _codex_status(service, profile["key"]) == "added"
+
+
+def test_retired_key_requires_same_physical_source_and_fences_late_results(tmp_path: Path) -> None:
+    settings = _make_settings(tmp_path)
+    service = connections.Service(settings)
+    root = tmp_path / "original" / ".codex-team"
+    _write_codex_rollout(root / "sessions" / "prior.jsonl", session_id="prior")
+
+    original = _add_profile(service, root, "add-original-profile")
+    _remove_profile(service, original, "remove-original-profile")
+    restored = _add_profile(service, root, "reattach-original-profile")
+    assert restored["toolKey"] == original["toolKey"]
+    assert restored["revision"] > original["revision"]
+    service.completion(
+        "codex_local", original["revision"], {"status": "failed"}, profile=original["key"],
+    )
+    assert _codex_status(service, restored["key"]) == "added"
+
+    _remove_profile(service, restored, "remove-reattached-profile")
+    relocated = root.with_name(".codex-relocated")
+    root.rename(relocated)
+    _write_codex_rollout(root / "sessions" / "other.jsonl", session_id="other")
+
+    replacement = _add_profile(service, root, "replace-directory")
+    assert replacement["toolKey"] != original["toolKey"]
+    if getattr(relocated.stat(), "st_birthtime_ns", None) is not None:
+        moved = _add_profile(service, relocated, "reattach-relocated-profile")
+        assert moved["toolKey"] == original["toolKey"]
+
+
+def test_scheduled_profile_pass_reports_missing_location_and_recovers(tmp_path: Path) -> None:
+    settings = _make_settings(tmp_path)
+    pricing = PricingEngine.load(settings.pricing_path)
+    service = connections.Service(settings)
+    root = tmp_path / ".codex-moved"
+    sibling = tmp_path / ".codex-sibling"
+    _write_codex_rollout(root / "sessions" / "moved.jsonl", session_id="moved")
+    _write_codex_rollout(sibling / "sessions" / "sibling.jsonl", session_id="sibling")
+    first = _add_profile(service, root, "add-moved-profile")
+    second = _add_profile(service, sibling, "add-sibling-profile")
+    collector.run_profile_pass(settings, pricing, {}, {}, [])
+    assert _codex_status(service, first["key"]) == "receiving"
+    assert _codex_status(service, second["key"]) == "receiving"
+
+    moved = root.with_name("temporarily-relocated")
+    root.rename(moved)
+    collector.run_profile_pass(settings, pricing, {}, {}, [])
+    assert _codex_status(service, first["key"]) == "error"
+    assert _codex_status(service, second["key"]) == "receiving"
+    saved = service.store.read()["profiles"]["codex_local"][first["key"]]
+    assert "Saved location is missing" in saved["detail"]
+
+    moved.rename(root)
+    collector.run_profile_pass(settings, pricing, {}, {}, [])
+    assert _codex_status(service, first["key"]) == "receiving"
+    saved = service.store.read()["profiles"]["codex_local"][first["key"]]
+    assert saved["state"] != "needs_attention"
+
+
+def test_delayed_missing_location_cannot_override_profile_rebind(tmp_path: Path, monkeypatch) -> None:
+    settings = _make_settings(tmp_path)
+    pricing = PricingEngine.load(settings.pricing_path)
+    service = connections.Service(settings)
+    obsolete = tmp_path / ".codex-prior"
+    replacement = tmp_path / ".codex-replacement"
+    _write_codex_rollout(obsolete / "sessions" / "prior.jsonl", session_id="prior")
+    _write_codex_rollout(replacement / "sessions" / "new.jsonl", session_id="new")
+    profile = _add_profile(service, obsolete, "add-obsolete-location")
+    real_normalize = connection_paths.normalize
+    outcomes = []
+
+    def normalize(location, metadata):
+        if Path(location) == obsolete:
+            rebound = service.mutate({
+                "source": "codex_local",
+                "operation": "connect",
+                "profile": profile["key"],
+                "location": str(replacement),
+                "revision": profile["revision"],
+                "requestId": str(uuid5(NAMESPACE_URL, "rebind-profile")),
+            })
+            outcomes.append(rebound["connection"])
+            raise connection_paths.MissingLocation("The previous location is gone.")
+        return real_normalize(location, metadata)
+
+    monkeypatch.setattr(connection_paths, "normalize", normalize)
+    collector.run_profile_pass(settings, pricing, {}, {}, [])
+    assert len(outcomes) == 1
+    assert _codex_status(service, profile["key"]) == "added"
+    current = service.store.read()["profiles"]["codex_local"][profile["key"]]
+    assert current["revision"] == profile["revision"] + 1
+    assert Path(current["location"]) == replacement
+    collector.run_profile_pass(settings, pricing, {}, {}, [])
+    assert _codex_status(service, profile["key"]) == "receiving"
 
 
 def test_missing_location_skipped_cleanly_without_failing_pass(

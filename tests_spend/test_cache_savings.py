@@ -1,12 +1,17 @@
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
-from spend_app.aggregate import _cache_savings, aggregate_summary
+from spend_app.aggregate import (
+    _cache_savings,
+    _cache_target_savings,
+    aggregate_entity,
+    aggregate_summary,
+)
 from spend_app.db import UnpricedUsageEvent, connect, initialize, upsert_unpriced_event
 from spend_app.pricing import PricingEngine
 from tests_spend.test_aggregation import TZ, add_event
-
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -139,3 +144,82 @@ def test_summary_cache_savings_is_complete_when_every_cached_row_is_priced(tmp_p
     expected = Decimal(40_000) * (Decimal("2.00") - Decimal("0.50")) / Decimal(1_000_000)
     assert summary["cacheSavings"] is not None
     assert Decimal(str(summary["cacheSavings"])) == expected
+
+
+def test_summary_and_model_detail_reprice_cache_opportunity(tmp_path: Path) -> None:
+    database = tmp_path / "target-cache.db"
+    initialize(database)
+    pricing = PricingEngine.load(ROOT / "pricing")
+    occurred = datetime(2026, 8, 30, 18, tzinfo=UTC)
+    now = datetime(2026, 8, 30, 23, tzinfo=UTC)
+    model = "claude-sonnet-4-6"
+    for i in range(10):
+        add_event(
+            database,
+            pricing,
+            raw_id=f"sonnet-{i}",
+            tool="claude-code",
+            model=model,
+            session="synthetic-session",
+            occurred=occurred,
+            input_tokens=100_000,
+            cached=0,
+            writes=0,
+            output=1_000,
+        )
+    args = {
+        "database_path": database,
+        "pricing": pricing,
+        "window_key": "1d",
+        "timezone": TZ,
+        "cache_threshold": 0.75,
+        "now": now,
+        "quotas": [],
+    }
+    summary = aggregate_summary(tool="all", **args)
+    detail = aggregate_entity(kind="model", key=model, **args)
+    gap = next(item for item in summary["waste"]["items"] if item["key"] == "cache_gap")
+    assert detail["value"] == 3.15
+    assert detail["opportunity"]["amount"] == 2.025
+    assert gap["perDay"] == 2.03
+    assert summary["cacheSavings"] == detail["opportunity"]["alreadySaved"] == 0
+
+
+def test_cache_opportunity_keeps_the_tier_writes_and_output() -> None:
+    pricing = PricingEngine.load(ROOT / "pricing")
+    occurred = datetime(2026, 11, 1, tzinfo=UTC)
+    model = "claude-sonnet-4-6"
+    price = replace(
+        pricing.resolve(model, occurred),
+        long_context_threshold=100_000,
+        long_context_includes_cache_writes=True,
+        long_input_multiplier=Decimal(2),
+        long_output_multiplier=Decimal(3),
+    )
+    pricing = PricingEngine([price])
+    event = _cached_event(
+        model_key=model,
+        when=occurred,
+        input_tokens=90_000,
+        cached_input_tokens=10_000,
+        cache_write_tokens=10_000,
+        cache_write_1h_tokens=5_000,
+        output_tokens=1_000,
+    )
+    # At the exclusivity boundary, 65,000 more reads use standard rates. Above
+    # it, 65,001 more reads use double input rates; writes/output never change.
+    discount = Decimal("2.7") / 1_000_000
+    assert _cache_target_savings([event], pricing, 0.75) == 65_000 * discount
+    above_boundary = {**event, "cache_write_tokens": 10_001}
+    assert _cache_target_savings([above_boundary], pricing, 0.75) == 65_001 * discount * 2
+
+
+def test_cache_opportunity_has_zero_savings_at_equal_rates_and_withholds_unknown_prices() -> None:
+    pricing = PricingEngine.load(ROOT / "pricing")
+    occurred = datetime(2026, 11, 1, tzinfo=UTC)
+    model = "claude-sonnet-4-6"
+    price = pricing.resolve(model, occurred)
+    pricing = PricingEngine([replace(price, cached_input_per_mtok=price.input_per_mtok)])
+    event = _cached_event(model_key=model, when=occurred, cached_input_tokens=0)
+    assert _cache_target_savings([event], pricing, 0.75) == 0
+    assert _cache_target_savings([{**event, "model_key": "unknown:model"}], pricing, 0.75) is None

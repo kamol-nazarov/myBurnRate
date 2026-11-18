@@ -34,10 +34,18 @@ from spend_app.diagnostics import detect_local_sources
 from spend_app.plan_service import PlanConflict, PlanError, apply_mutation, effective_terms, list_plans
 from spend_app.pricing import PricingEngine
 from spend_app.setup_checks import collection_progress, consent_state, lane_rows, plan_issues, plan_suggestions, write_consent
+from spend_app.subscription_transfer import (
+    attach_sign_in_history,
+    deferred_uploads,
+    export_history,
+    import_history,
+    import_legacy_history,
+)
 from spend_app.subscriptions import add_subscription, materialize_subscription_days
 from spend_app.sync import (
     STREAM_BROKER,
     _HUB_TEST_CLIENTS,
+    HubMutationError,
     clear_hub_proxy_cache,
     expire_hub_proxy_cache,
     list_machines,
@@ -52,6 +60,8 @@ ACCOUNTS_META_KEY = "accounts.v1"
 SETUP_TOKEN_ENV = "BURNRATE_SETUP_TOKEN"
 PBKDF2_ITERATIONS = 600_000
 LEGACY_PBKDF2_ITERATIONS = 120_000
+_PLAN_ISSUE_KEY = secrets.token_bytes(32)
+PLAN_HISTORY_PENDING = "Some subscription history is still on this computer. Reconnect to an updated hub to finish transferring it."
 
 # A hub that already has an account accepts no new ones (one owner, many
 # computers); computers join by signing in. Opt out deliberately.
@@ -134,6 +144,7 @@ def default_setup_state() -> dict:
             "lastSyncAt": None,
             "lastSyncError": None,
             "usageChangesPending": False,
+            "usageLegacyConflicts": 0,
             "eventsPushed": 0,
             "tokenExpiresAt": None,
             "rotationRequired": False,
@@ -501,45 +512,67 @@ def _apply_subscription_presets_and_custom(
     return added_plans
 
 
-def _sync_plans_into_local_db(connection, timezone_name: str, remote_plans: list[dict]) -> int:
-    if not isinstance(remote_plans, list) or not remote_plans:
-        return 0
+def _materialize_transferred_plans(connection, timezone_name: str) -> None:
     now_local = datetime.now(UTC).astimezone(ZoneInfo(timezone_name)).date()
-    month_first = date(now_local.year, now_local.month, 1).isoformat()
-    existing = effective_terms(connection)
-    existing_pairs = {(row["tool_key"], row["name"].lower()) for row in existing}
-    added = 0
-    for item in remote_plans:
-        if not isinstance(item, dict):
-            continue
-        t_key = str(item.get("tool_key") or "custom").strip()
-        p_name = str(item.get("name") or "").strip()
-        amt = float(item.get("amount_usd") or 0)
-        cad = str(item.get("cadence") or "monthly").strip()
-        start_d = str(item.get("start_date") or month_first).strip()
-        if not p_name or amt <= 0:
-            continue
-        pair = (t_key, p_name.lower())
-        if pair in existing_pairs:
-            continue
-        add_subscription(
-            connection,
-            tool_key=t_key,
-            name=p_name,
-            amount_usd=amt,
-            cadence=cad,
-            start_date=start_d,
-            end_date=item.get("end_date"),
+    materialize_subscription_days(
+        connection, start=now_local.replace(day=1), end=now_local + timedelta(days=40)
+    )
+
+
+def receive_sign_in_history(connection, timezone_name: str, hub_url: str, history, legacy_terms=None) -> None:
+    changed = (
+        import_history(connection, history, from_hub=True, hub_url=hub_url)
+        if history is not None else import_legacy_history(connection, hub_url, legacy_terms)
+    )
+    if changed:
+        _materialize_transferred_plans(connection, timezone_name)
+
+
+def complete_deferred_history(settings, saved: dict, hub_url: str, history: dict, hub_store: str) -> dict:
+    """Retryable post-login upload. The returned state only advances after commit."""
+    from spend_app.sync import hub_write_scope
+
+    scope = hub_write_scope(saved, hub_url)
+    latest = {}
+    for batch in deferred_uploads(history):
+        latest = post_to_configured_hub(
+            settings,
+            "/api/account/subscriptions",
+            {"action": "import-history", "expectedStore": hub_store, "subscriptionHistory": batch},
+            strict=True,
+            expected_scope=scope,
         )
-        existing_pairs.add(pair)
-        added += 1
-    if added > 0:
-        materialize_subscription_days(
-            connection,
-            start=date.fromisoformat(month_first),
-            end=now_local + timedelta(days=40),
-        )
-    return added
+        if not isinstance(latest, dict) or not isinstance(latest.get("subscriptionHistory"), dict):
+            raise PlanError("The hub did not confirm the subscription transfer.")
+        if latest["subscriptionHistory"].get("store") != hub_store:
+            raise PlanConflict("The subscription history source changed. Reconnect to the hub.")
+        with connect(settings.database_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = read_setup_state(connection)
+            if current.get("role") != "spoke" or hub_write_scope(current, hub_url) != scope:
+                raise PlanConflict("The hub connection changed. Reconnect to the hub.")
+            receive_sign_in_history(connection, settings.timezone, hub_url, latest["subscriptionHistory"])
+    return latest
+
+
+def _sign_in_subscriptions(connection, timezone_name: str, body: dict) -> tuple[int, dict]:
+    history = body.get("subscriptionHistory")
+    added = import_history(connection, history) if history is not None else 0
+    if added:
+        _materialize_transferred_plans(connection, timezone_name)
+    preset_keys = [str(key) for key in (body.get("presetKeys") or []) if key]
+    new_plans = body.get("newCustomPlans")
+    # Older desktops put both local history and new selections in customPlans.
+    # Its undated entries are ambiguous. Those clients can create explicit
+    # plans through setup completion or the authenticated subscription API.
+    added += _apply_subscription_presets_and_custom(
+        connection, timezone_name, preset_keys, new_plans if isinstance(new_plans, list) else []
+    )
+    response = {"subscriptions": effective_terms(connection)}
+    if history is not None:
+        today = datetime.now(UTC).astimezone(ZoneInfo(timezone_name)).date()
+        response["subscriptionHistory"] = export_history(connection, today)
+    return added, response
 
 
 
@@ -678,6 +711,11 @@ def rotate_spoke_machine_token(settings, *, client=None) -> dict | None:
     return {"ok": True, "expiresAt": replacement.get("expiresAt")}
 
 
+def _usage_legacy_conflicts(result: dict | None) -> int:
+    count = (result or {}).get("usageLegacyConflicts")
+    return count if type(count) is int and count > 0 else 0
+
+
 def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=None) -> dict | None:
     """Called by background scheduler or on-demand to push spoke telemetry when configured."""
     try:
@@ -745,6 +783,7 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
                     latest["spokeConfig"].get("rotationRequired")
                 ) or bool(result["rotationRequired"])
             latest["spokeConfig"]["usageChangesPending"] = bool(result.get("usageChangesPending"))
+            latest["spokeConfig"]["usageLegacyConflicts"] = _usage_legacy_conflicts(result)
             latest["spokeConfig"]["eventsPushed"] = int(
                 latest["spokeConfig"].get("eventsPushed") or 0
             ) + int(result.get("eventsWritten") or 0)
@@ -792,14 +831,39 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
 SETUP_STALE_AFTER_SECONDS = 15 * 60
 
 
-def _build_harness_list(settings) -> list[dict]:
-    """Each known tool: is it installed, and how did its latest collection go.
+def _local_harness_history(connection) -> dict[str, str]:
+    """Read the newest stored measurement for each local harness with two seeks."""
+    history = {}
+    for source in HARNESS_CATALOG:
+        (latest,) = connection.execute(
+            """
+            SELECT MAX(ingested_at) FROM (
+                SELECT (
+                    SELECT ingested_at FROM usage_events
+                    WHERE source=? AND raw_id NOT LIKE 'm:%'
+                    ORDER BY ingested_at DESC LIMIT 1
+                ) AS ingested_at
+                UNION ALL
+                SELECT (
+                    SELECT ingested_at FROM unpriced_usage_events
+                    WHERE source=? AND raw_id NOT LIKE 'm:%'
+                    ORDER BY ingested_at DESC LIMIT 1
+                )
+            )
+            """,
+            (source, source),
+        ).fetchone()
+        if latest is not None:
+            history[source] = latest
+    return history
 
-    Built from the presence check and the ingest log only, so it answers in
-    milliseconds even while a collection pass is running (the dashboard's full
-    source diagnostics take seconds).
-    """
+
+def _build_harness_list(settings) -> list[dict]:
+    """Report local presence, measured history and collection status independently."""
+    from spend_app.connections import default_location
     from spend_app.diagnostics import source_path_hint
+    from spend_app.profile_store import load_config_if_present, location_unchanged, profiles
+    from spend_app.providers import REGISTRY
     from spend_app.setup_checks import _parse
 
     try:
@@ -818,18 +882,39 @@ def _build_harness_list(settings) -> list[dict]:
         successes = dict(connection.execute(
             "SELECT source, MAX(finished_at) FROM ingest_runs WHERE status IN ('success','partial') GROUP BY source"
         ).fetchall())
+        history = _local_harness_history(connection)
+        config = load_config_if_present(connection) or {}
+
+    configured: dict[str, list] = {}
+    for profile in profiles(config):
+        if profile.enabled and profile.location:
+            configured.setdefault(profile.provider, []).append(profile)
+
     result: list[dict] = []
     for source, meta in HARNESS_CATALOG.items():
+        spec = REGISTRY.get(source)
         installed = bool(presence.get(source))
-        last_ok = successes.get(source)
+        if spec and spec.connection and spec.connection.location_env and os.getenv(spec.connection.location_env):
+            try:
+                installed = Path(default_location(spec, settings)).exists()
+            except OSError:
+                installed = False
+        saved = configured.get(source, ())
+        if any(profile.key == "default" for profile in saved):
+            installed = False
+        available = installed or any(location_unchanged(profile, spec) for profile in saved)
+        has_history = source in history
+        last_ok = (successes.get(source) or history.get(source)) if available else history.get(source)
         read_at = _parse(last_ok)
-        if latest.get(source) == "failed":
+        if not available:
+            state = "failed" if saved else "stale" if has_history else "not_detected"
+        elif latest.get(source) == "failed":
             state = "failed"
         elif latest.get(source) == "running":
             state = "reading"
-        elif read_at is None:
-            state = "detected_without_history" if installed else "not_detected"
-        elif (now - read_at).total_seconds() > SETUP_STALE_AFTER_SECONDS:
+        elif not has_history:
+            state = "detected_without_history"
+        elif read_at is None or (now - read_at).total_seconds() > SETUP_STALE_AFTER_SECONDS:
             state = "stale"
         else:
             state = "healthy"
@@ -840,7 +925,7 @@ def _build_harness_list(settings) -> list[dict]:
                 "tool": meta["tool"],
                 "description": meta["desc"],
                 "state": state,
-                "detected": installed or read_at is not None,
+                "detected": available or bool(saved) or has_history,
                 "path": source_path_hint(source) or "",
                 "lastSuccess": last_ok,
             }
@@ -1108,22 +1193,56 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             headers={"Cache-Control": "no-store"},
         )
 
-    def plans_payload() -> tuple[dict | None, str]:
-        """The plans setup should show: the Hub's for a spoke (plans live there), else this computer's."""
+    def plan_authority(state: dict):
+        from spend_app.hub_origin import hub_origin
+        from spend_app.sync import hub_write_scope
+
+        spoke = state["spokeConfig"]
+        paired = state.get("role") == "spoke" and bool(spoke.get("enabled"))
+        url = _safe_resolve_hub_url() or str(spoke.get("hubUrl") or "")
+        try:
+            origin = hub_origin(url) if paired and url else ""
+        except ValueError:
+            origin = ""
+        return ("hub" if paired else "local"), hub_write_scope(state, origin)
+
+    def plans_payload():
         from spend_app.sync import fetch_from_configured_hub
 
-        hub = fetch_from_configured_hub(settings, "/api/subscriptions", ttl_seconds=20)
-        if isinstance(hub, dict) and isinstance(hub.get("plans"), list):
-            return hub, "hub"
-        now_local = datetime.now(UTC).astimezone(ZoneInfo(settings.timezone)).date()
         with connect(settings.database_path) as connection:
-            return list_plans(connection, now_local), "local"
+            authority = plan_authority(read_setup_state(connection))
+            if authority[0] == "local":
+                today = datetime.now(UTC).astimezone(ZoneInfo(settings.timezone)).date()
+                return list_plans(connection, today), authority
+
+        hub = fetch_from_configured_hub(settings, "/api/subscriptions", ttl_seconds=20)
+        with connect(settings.database_path) as connection:
+            if plan_authority(read_setup_state(connection)) != authority:
+                return None, authority
+        if isinstance(hub, dict) and isinstance(hub.get("plans"), list):
+            return hub, authority
+        return None, authority
+
+    def issue_confirmation(issue: dict, authority: tuple) -> str:
+        data = json.dumps(
+            [str(settings.database_path.resolve()), authority, issue],
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        return hmac.new(_PLAN_ISSUE_KEY, data, hashlib.sha256).hexdigest()
 
     @router.get("/api/setup/plan-issues")
     def setup_plan_issues():
         initialize(settings.database_path)
-        payload, where = plans_payload()
-        return JSONResponse({"issues": plan_issues(payload), "where": where}, headers={"Cache-Control": "no-store"})
+        payload, authority = plans_payload()
+        issues = [
+            {**issue, "confirmation": issue_confirmation(issue, authority)}
+            for issue in plan_issues(payload)
+        ]
+        return JSONResponse(
+            {"issues": issues, "where": authority[0], "available": payload is not None},
+            headers={"Cache-Control": "no-store"},
+        )
 
     @router.post("/api/setup/plans/fix")
     async def setup_fix_plan(request: Request):
@@ -1135,12 +1254,30 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
         try:
             body = await _bounded_json(request)
             plan_id, version, fix = body.get("planId"), body.get("version"), body.get("fix")
-            if type(plan_id) is not int or type(version) is not int or fix not in {"end", "link"}:
+            term_id = body.get("termId")
+            confirmation = body.get("confirmation")
+            if (
+                type(plan_id) is not int
+                or type(version) is not int
+                or type(term_id) is not int
+                or fix not in ("end", "link")
+                or not isinstance(confirmation, str)
+                or not re.fullmatch(r"[a-f0-9]{64}", confirmation)
+            ):
                 raise ValueError("Choose a plan and a fix.")
-            payload, where = plans_payload()
-            issue = next((item for item in plan_issues(payload) if item["planId"] == plan_id and item["fix"] == fix), None)
-            if issue is None:
-                raise ValueError("That plan no longer needs this fix. Reload setup.")
+            payload, authority = plans_payload()
+            if payload is None:
+                raise PlanConflict("The selected hub is unavailable. Reconnect and reload setup.")
+            issue = next(
+                (
+                    item for item in plan_issues(payload)
+                    if (item["planId"], item["version"], item["termId"], item["fix"])
+                    == (plan_id, version, term_id, fix)
+                ),
+                None,
+            )
+            if issue is None or not hmac.compare_digest(confirmation, issue_confirmation(issue, authority)):
+                raise PlanConflict("The plan or its connection changed. Reload setup before applying a fix.")
             today = datetime.now(UTC).astimezone(ZoneInfo(settings.timezone)).date().isoformat()
             request_id = lambda: "setup-" + _uuid.uuid4().hex  # noqa: E731
             if fix == "end":
@@ -1155,15 +1292,20 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                           "term_id": issue["termId"], "values": values, "preview": True}]
 
             def apply(step: dict) -> dict:
-                if where == "hub":
+                if authority[0] == "hub":
                     from spend_app.sync import post_to_configured_hub
 
-                    result = post_to_configured_hub(settings, "/api/account/subscriptions", {"action": "plan", **step})
+                    result = post_to_configured_hub(
+                        settings, "/api/account/subscriptions", {"action": "plan", **step},
+                        strict=True, expected_scope=authority[1],
+                    )
                     if not isinstance(result, dict):
-                        raise ValueError("Your hub did not accept the change. It may need the latest BURNRATE.")
+                        raise PlanConflict("The hub connection changed. Reload setup before changing plans.")
                     return result
                 with connect(settings.database_path) as connection:
                     connection.execute("BEGIN IMMEDIATE")
+                    if plan_authority(read_setup_state(connection)) != authority:
+                        raise PlanConflict("The plan connection changed. Reload setup.")
                     return apply_mutation(connection, step, datetime.now(UTC).astimezone(ZoneInfo(settings.timezone)).date())
 
             result = apply(steps[0])
@@ -1176,7 +1318,11 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 result = apply(confirm)
             aggregate.reset_memo()
             return JSONResponse({"ok": True, "result": result}, headers={"Cache-Control": "no-store"})
-        except (PlanConflict, PlanError, ValueError, KeyError, StopIteration) as exc:
+        except HubMutationError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=exc.status_code)
+        except PlanConflict as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        except (PlanError, ValueError, KeyError, StopIteration) as exc:
             return JSONResponse({"error": str(exc) or "The plan could not be changed."}, status_code=422)
 
     @router.get("/api/setup/progress")
@@ -1289,9 +1435,6 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             username = normalize_email(body.get("username"))
             password = str(body.get("password") or "")
             computer_name = str(body.get("computerName") or "").strip() or "Connected Computer"
-            preset_keys = [str(k) for k in (body.get("presetKeys") or []) if k]
-            custom_plans = body.get("customPlans") if isinstance(body.get("customPlans"), list) else []
-
             if username is None:
                 return error_response("AUTH-106", status_code=422)
             if len(password) < MIN_PASSWORD_LENGTH:
@@ -1364,13 +1507,9 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     _write_accounts(connection, accounts)
                     auth_throttle.succeed(key)
                     auth_throttle.succeed(reg_ip_key)
-                    added_plans = _apply_subscription_presets_and_custom(
-                        connection,
-                        settings.timezone,
-                        preset_keys,
-                        custom_plans,
+                    added_plans, plan_response = _sign_in_subscriptions(
+                        connection, settings.timezone, body
                     )
-                    plans_out = effective_terms(connection)
                     actor = Principal("owner", account_id, "owner")
                     session = create_session(connection, actor, device_label)
                     audit(connection, actor, "account.register", account_id)
@@ -1378,7 +1517,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                         "actor": actor,
                         "session": session,
                         "addedPlans": added_plans,
-                        "subscriptions": plans_out,
+                        **plan_response,
                     }, None
 
             tx_out, err_resp = await run_in_threadpool(_register_tx)
@@ -1391,8 +1530,12 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
 
             public_session = {"sessionId": session["sessionId"], "expiresAt": session["expiresAt"]}
             if body.get("sessionOnly"):
+                plan_response = (
+                    {"subscriptionHistory": tx_out["subscriptionHistory"], "subscriptions": tx_out["subscriptions"]}
+                    if "subscriptionHistory" in tx_out else {}
+                )
                 return set_session_cookie(
-                    JSONResponse({"ok": True, **public_session}, headers={"Cache-Control": "no-store"}),
+                    JSONResponse({"ok": True, **public_session, **plan_response}, headers={"Cache-Control": "no-store"}),
                     request,
                     session,
                 )
@@ -1404,6 +1547,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     "account": {"username": username, "email": username, "needsEmail": False},
                     "addedPlans": tx_out["addedPlans"],
                     "subscriptions": tx_out["subscriptions"],
+                    **({"subscriptionHistory": tx_out["subscriptionHistory"]} if "subscriptionHistory" in tx_out else {}),
                 },
                 headers={"Cache-Control": "no-store"},
             ), request, session)
@@ -1434,9 +1578,6 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             username = str(body.get("username") or "").strip()
             password = str(body.get("password") or "")
             computer_name = str(body.get("computerName") or "").strip() or "Connected Computer"
-            preset_keys = [str(k) for k in (body.get("presetKeys") or []) if k]
-            custom_plans = body.get("customPlans") if isinstance(body.get("customPlans"), list) else []
-
             if not username:
                 return error_response("AUTH-106", status_code=422)
             if not password:
@@ -1508,16 +1649,9 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     if needs_write:
                         _write_accounts(connection, accounts)
                     auth_throttle.succeed(key)
-                    if preset_keys or custom_plans:
-                        _apply_subscription_presets_and_custom(
-                            connection,
-                            settings.timezone,
-                            preset_keys,
-                            custom_plans,
-                        )
-                    plans_out = effective_terms(connection)
                     if user_rec.get("role", "owner") != "owner":
                         return None, error_response("AUTH-103", status_code=403)
+                    _, plan_response = _sign_in_subscriptions(connection, settings.timezone, body)
                     actor = Principal("owner", user_rec["id"], "owner")
                     session = create_session(connection, actor, device_label)
                     audit(connection, actor, "login", user_rec["id"])
@@ -1531,7 +1665,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                         "actor": actor,
                         "session": session,
                         "account": acct_out,
-                        "subscriptions": plans_out,
+                        **plan_response,
                     }, None
 
             tx_out, err_resp = await run_in_threadpool(_login_tx)
@@ -1544,8 +1678,12 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
 
             public_session = {"sessionId": session["sessionId"], "expiresAt": session["expiresAt"]}
             if body.get("sessionOnly"):
+                plan_response = (
+                    {"subscriptionHistory": tx_out["subscriptionHistory"], "subscriptions": tx_out["subscriptions"]}
+                    if "subscriptionHistory" in tx_out else {}
+                )
                 return set_session_cookie(
-                    JSONResponse({"ok": True, **public_session}, headers={"Cache-Control": "no-store"}),
+                    JSONResponse({"ok": True, **public_session, **plan_response}, headers={"Cache-Control": "no-store"}),
                     request,
                     session,
                 )
@@ -1556,6 +1694,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     **public_session,
                     "account": tx_out["account"],
                     "subscriptions": tx_out["subscriptions"],
+                    **({"subscriptionHistory": tx_out["subscriptionHistory"]} if "subscriptionHistory" in tx_out else {}),
                 },
                 headers={"Cache-Control": "no-store"},
             ), request, session)
@@ -1790,6 +1929,19 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             now_local = datetime.now(UTC).astimezone(ZoneInfo(settings.timezone)).date()
             initialize(settings.database_path)
             with connect(settings.database_path) as connection:
+                if body.get("action") == "import-history":
+                    expected_store = body.get("expectedStore")
+                    if not isinstance(expected_store, str) or not re.fullmatch(r"[a-f0-9]{32}", expected_store):
+                        raise PlanError("The subscription history source is required.")
+                    connection.execute("BEGIN IMMEDIATE")
+                    if import_history(connection, body.get("subscriptionHistory"), expected_store=expected_store):
+                        _materialize_transferred_plans(connection, settings.timezone)
+                    result = {
+                        "subscriptionHistory": export_history(connection, now_local),
+                        "subscriptions": effective_terms(connection),
+                    }
+                    aggregate.reset_memo()
+                    return JSONResponse(result, headers={"Cache-Control": "no-store"})
                 if "action" in body or "operation" in body:
                     connection.execute("BEGIN IMMEDIATE")
                     result = apply_mutation(connection, {key: value for key, value in body.items() if key != "action"}, now_local)
@@ -1868,15 +2020,9 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
 
             initialize(settings.database_path)
             with connect(settings.database_path) as connection:
-                for local_plan in effective_terms(connection):
-                    custom_plans.append(
-                        {
-                            "tool_key": local_plan["tool_key"],
-                            "name": local_plan["name"],
-                            "amount_usd": float(local_plan["amount_usd"]),
-                            "cadence": local_plan["cadence"],
-                        }
-                    )
+                connection.execute("BEGIN IMMEDIATE")
+                local_today = datetime.now(UTC).astimezone(ZoneInfo(settings.timezone)).date()
+                local_history = export_history(connection, local_today, native_only=True)
 
             endpoint = "/api/account/register" if mode == "register" else "/api/account/login"
             remote_payload = {
@@ -1886,7 +2032,9 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 "os": sys.platform,
                 "presetKeys": preset_keys,
                 "customPlans": custom_plans,
+                "newCustomPlans": custom_plans,
             }
+            deferred_history = attach_sign_in_history(remote_payload, local_history)
             from spend_app.connection_secrets import (
                 MACHINE_TOKEN_VAULT_REF,
                 publish_spoke_credentials,
@@ -1987,6 +2135,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 machine = reg_data.get("machine") or {}
                 machines_list = reg_data.get("machines") or []
             remote_subs = remote_data.get("subscriptions") if isinstance(remote_data.get("subscriptions"), list) else []
+            remote_history = remote_data.get("subscriptionHistory")
             account_info = remote_data.get("account") if isinstance(remote_data.get("account"), dict) else {"username": username}
 
             account_out = {}
@@ -2039,7 +2188,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
 
                 def _apply_account(connection, state):
                     nonlocal account_out, local_subs
-                    _sync_plans_into_local_db(connection, settings.timezone, remote_subs)
+                    receive_sign_in_history(connection, settings.timezone, working_url, remote_history, remote_subs)
                     state["role"] = "spoke"
                     state["computerName"] = computer_name
                     account_username = str(account_info.get("username") or username)
@@ -2075,6 +2224,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                         "lastSyncAt": utc_now() if sync_result and sync_result.get("ok") else (state.get("spokeConfig") or {}).get("lastSyncAt"),
                         "lastSyncError": normalize_spoke_sync_error(sync_result.get("error")) if sync_result and not sync_result.get("ok") else None,
                         "usageChangesPending": bool((sync_result or {}).get("usageChangesPending")),
+                        "usageLegacyConflicts": _usage_legacy_conflicts(sync_result),
                         "eventsPushed": int((sync_result or {}).get("eventsWritten") or 0),
                     }
                     local_subs = effective_terms(connection)
@@ -2113,6 +2263,18 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 raise
 
             rename_machine(settings.database_path, machine_id="local", name=computer_name)
+            pending_history = bool(local_history["plans"]) and (remote_history is None or deferred_history)
+            if deferred_history and remote_history is not None:
+                try:
+                    latest = complete_deferred_history(
+                        settings, saved, working_url, local_history, remote_history["store"]
+                    )
+                    remote_subs = latest["subscriptions"]
+                    pending_history = False
+                except (PlanError, HubMutationError, KeyError, OSError):
+                    # Authentication succeeded. Keep unconfirmed history
+                    # eligible for the next sign-in rather than discarding it.
+                    pass
             clear_hub_proxy_cache()
             aggregate.reset_memo()
             return JSONResponse(
@@ -2120,7 +2282,8 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     "ok": True,
                     "account": account_out,
                     "setup": public_setup_state(saved, database_path=settings.database_path),
-                    "subscriptions": remote_subs or local_subs,
+                    "subscriptions": remote_subs if remote_history is not None or remote_subs else local_subs,
+                    "subscriptionHistoryPending": pending_history,
                     "machines": machines_list,
                     "syncResult": sync_result,
                 },

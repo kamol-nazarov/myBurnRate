@@ -1,6 +1,13 @@
 import sqlite3
+import os
+import shutil
+import subprocess
+import sys
+from dataclasses import replace
 from spend_app.db import SCHEMA_VERSION
 from pathlib import Path
+
+import pytest
 
 from spend_app.config import ROOT, load_settings
 from spend_app.db import (
@@ -629,6 +636,122 @@ def test_backup_database_round_trips_schema_and_row(tmp_path: Path) -> None:
     assert {"usage_events", "subscriptions", "app_meta"}.issubset(tables)
     assert integrity == "ok"
     assert subscriptions == 0
+
+
+@pytest.mark.parametrize(
+    ("use_override", "failure"),
+    [
+        pytest.param(False, None, id="default"),
+        pytest.param(True, None, id="dotenv-override"),
+        pytest.param(True, "snapshot", id="missing-source"),
+        pytest.param(True, "copy", id="failed-copy"),
+    ],
+)
+def test_docker_backup_recipe_copies_live_wal_snapshot(tmp_path, use_override, failure):
+    shell = shutil.which("sh")
+    if os.name == "nt":
+        git = shutil.which("git")
+        bash = Path(git).parent.parent / "bin" / "bash.exe" if git else None
+        shell = str(bash) if bash and bash.is_file() else None
+    if shell is None:
+        pytest.skip("a POSIX shell is required to rehearse the Compose recipe")
+
+    # Execute the published recipe with a local transport substituting for the
+    # disposable container, leaving the actual helper and file promotion intact.
+    text = (ROOT / "docs/self-hosting.md").read_text(encoding="utf-8")
+    section = text.split("### Back up the running hub", 1)[1]
+    recipe = section.split("```sh\n", 1)[1].split("```", 1)[0]
+    compose = """
+docker() {
+    [ "$1" = compose ] || return 10
+    shift
+    case "$1" in
+      exec)
+        [ "$2" = -T ] && [ "$3" = hub ] || return 11
+        shift 3
+        if [ "$1" = python ]; then
+          shift
+          "$BR_TEST_PYTHON" "$@"
+        else
+          "$@"
+        fi
+        ;;
+      cp)
+        if [ "$BR_TEST_FAILURE" = copy ]; then
+          printf incomplete > "$3"
+          return 19
+        fi
+        cp -- "${2#hub:}" "$3"
+        ;;
+      *) return 12 ;;
+    esac
+}
+"""
+    data_root = tmp_path / "data-volume"
+    default = data_root / "spend.db"
+    source = data_root / "live.db" if use_override else default
+    initialize(source)
+    if use_override:
+        initialize(default)
+        with connect(default) as db:
+            stale = replace(sample_event(), raw_id="stale-default-file", input_tokens=800)
+            assert upsert_usage_event(db, stale)
+        configured = data_root / "missing.db" if failure == "snapshot" else source
+        (data_root / ".env").write_text(
+            f'SPEND_DATABASE_PATH="{configured.as_posix()}"\n', encoding="utf-8"
+        )
+    env = dict(os.environ)
+    for key in ("PYTEST_CURRENT_TEST", "SPEND_DATABASE_PATH", "BURNRATE_DEV"):
+        env.pop(key, None)
+    env.update(
+        BURNRATE_DATA_ROOT=data_root.as_posix(),
+        BR_TEST_PYTHON=Path(sys.executable).as_posix(),
+        BR_TEST_FAILURE=failure or "",
+        PYTHONPATH=ROOT.as_posix(),
+        TMPDIR=tmp_path.as_posix(),
+        TEMP=tmp_path.as_posix(),
+    )
+    with connect(source) as db:
+        db.execute("PRAGMA wal_autocheckpoint=0")
+        assert upsert_usage_event(db, sample_event())
+        db.commit()
+        assert source.with_suffix(".db-wal").stat().st_size > 32
+        # A naive main-file copy misses the row even while integrity passes.
+        main_file = tmp_path / "main-only.db"
+        shutil.copyfile(source, main_file)
+        with sqlite3.connect(main_file) as incomplete:
+            assert incomplete.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+            assert incomplete.execute("SELECT COUNT(*) FROM usage_events").fetchone() == (0,)
+        result = subprocess.run(
+            [shell, "-c", compose + recipe],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    backup_dir, = tmp_path.glob("burnrate-backup.*")
+    snapshot = backup_dir / "spend.db"
+    assert not list(tmp_path.glob("burnrate-backup-*.db"))
+    if failure:
+        assert result.returncode != 0
+        assert "Backup saved" not in result.stdout
+        assert not snapshot.exists()
+        assert (backup_dir / "spend.db.partial").exists() == (failure == "copy")
+        return
+
+    assert result.returncode == 0, result.stderr
+    assert "Backup saved" in result.stdout
+    assert not (backup_dir / "spend.db.partial").exists()
+    restored = tmp_path / "restore-test" / "spend.db"
+    restored.parent.mkdir()
+    shutil.copyfile(snapshot, restored)
+    with connect(restored) as db:
+        assert db.execute("PRAGMA integrity_check").fetchall()[0][0] == "ok"
+        row = db.execute("SELECT raw_id, input_tokens, output_tokens, cost_usd FROM usage_events").fetchone()
+        event = sample_event()
+        assert tuple(row) == (event.raw_id, event.input_tokens, event.output_tokens, event.cost_usd)
 
 
 def test_installed_defaults_use_localappdata_and_local_timezone(monkeypatch, tmp_path: Path) -> None:

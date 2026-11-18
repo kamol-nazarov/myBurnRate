@@ -127,6 +127,171 @@ def test_check_says_which_meters_are_current_held_or_missing(client: TestClient,
     assert {"codex", "antigravity"} <= suggested and "muse" not in suggested
 
 
+def test_setup_uses_presence_and_local_usage_instead_of_empty_codex_scan(
+    client: TestClient, settings: Settings, tmp_path: Path, monkeypatch
+) -> None:
+    from dataclasses import replace
+
+    from spend_app.adapters.codex_local import ingest
+    from spend_app.db import UnpricedUsageEvent, upsert_unpriced_event
+
+    home = tmp_path / "isolated-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    sessions = home / ".codex" / "sessions"
+    pricing = PricingEngine.load(settings.pricing_path)
+
+    def scan_empty() -> None:
+        result = ingest(
+            database_path=settings.database_path,
+            pricing=pricing,
+            session_glob=str(sessions / "**" / "*.jsonl"),
+        )
+        assert result["status"] == "success"
+        assert result["files"] == result["eventsAccepted"] == 0
+
+    def check():
+        data = client.get("/api/setup/check").json()
+        codex = next(row for row in data["lanes"] if row["key"] == "codex")
+        return codex["usage"], data["notFound"]
+
+    history_time = iso(datetime.now(UTC) - timedelta(hours=2))
+    event = UnpricedUsageEvent(
+        source="codex_local", tool_key="codex", model_key="fixture",
+        occurred_at=history_time, session_id=None, project=None,
+        input_tokens=0, cached_input_tokens=0, cache_write_tokens=0,
+        cache_write_1h_tokens=0, output_tokens=0, reasoning_tokens=None,
+        unclassified_tokens=123, telemetry_complete=False, cost_usd=None,
+        raw_id="codex-fixture-local", ingested_at=history_time,
+    )
+    scan_empty()
+    usage, not_found = check()
+    assert (usage["state"], usage["text"]) == ("missing", "Not installed")
+    assert "OpenAI Codex CLI" in not_found
+
+    with connect(settings.database_path) as connection:
+        assert upsert_unpriced_event(connection, replace(event, raw_id="m:laptop:codex-fixture"))
+    assert check()[0]["state"] == "missing"
+
+    sessions.mkdir(parents=True)
+    scan_empty()
+    usage, not_found = check()
+    assert (usage["state"], usage["text"]) == ("waiting", "Found · no usage yet")
+    assert "OpenAI Codex CLI" not in not_found
+
+    with connect(settings.database_path) as connection:
+        assert upsert_unpriced_event(connection, event)
+    assert check()[0]["state"] == "ok"
+
+    sessions.rmdir()
+    scan_empty()
+    usage, not_found = check()
+    assert usage["state"] == "warn"
+    assert "last read 2 h ago" in usage["text"]
+    assert "OpenAI Codex CLI" not in not_found
+
+
+def test_setup_recognizes_configured_codex_and_reports_a_missing_location(
+    client: TestClient, settings: Settings, tmp_path: Path, monkeypatch
+) -> None:
+    from spend_app import profile_store
+
+    home = tmp_path / "isolated-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    chosen = tmp_path / "work-sessions"
+    chosen.mkdir()
+    config = profile_store.empty_state()
+    config["profiles"]["codex_local"] = {
+        "work": {"enabled": True, "location": str(chosen), "name": "Work", "revision": 1}
+    }
+    with connect(settings.database_path) as connection:
+        connection.execute(
+            "INSERT INTO app_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (profile_store.KEY, profile_store.encode(config)),
+        )
+
+    def check():
+        data = client.get("/api/setup/check").json()
+        assert "OpenAI Codex CLI" not in data["notFound"]
+        return next(row["usage"] for row in data["lanes"] if row["key"] == "codex")
+
+    assert check()["state"] == "waiting"
+    chosen.rmdir()
+    assert check()["state"] == "bad"
+
+
+def test_setup_history_lookup_scales_with_harnesses_not_usage_rows(settings: Settings, monkeypatch) -> None:
+    from contextlib import contextmanager
+
+    from spend_app import setup_wizard
+
+    latest = "2026-10-26T04:00:01Z"
+    earlier = "2026-10-26T04:00:00Z"
+    with connect(settings.database_path) as connection:
+        # Model a populated database opened before the two additive indexes.
+        connection.execute("DROP INDEX IF EXISTS idx_usage_events_local_source_ingested")
+        connection.execute("DROP INDEX IF EXISTS idx_unpriced_usage_local_source_ingested")
+        connection.execute("""
+            WITH RECURSIVE numbers(n) AS (
+                SELECT 1 UNION ALL SELECT n+1 FROM numbers WHERE n<5000
+            )
+            INSERT INTO usage_events(
+                source, tool_key, model_key, occurred_at, input_tokens, output_tokens,
+                computed_cost_usd, raw_id, ingested_at
+            )
+            SELECT 'codex_local', 'codex', 'fixture', '2026-10-26T05:00:00Z', 10, 2,
+                   0, 'm:laptop:' || n, '2026-10-26T05:00:00Z' FROM numbers
+        """)
+        connection.execute("""
+            WITH RECURSIVE numbers(n) AS (
+                SELECT 1 UNION ALL SELECT n+1 FROM numbers WHERE n<5000
+            )
+            INSERT INTO unpriced_usage_events(
+                source, tool_key, model_key, occurred_at, input_tokens,
+                cached_input_tokens, cache_write_tokens, output_tokens, raw_id, ingested_at
+            )
+            SELECT 'unrelated', 'other', 'fixture', '2026-10-26T06:00:00Z', 10, 0, 0,
+                   2, 'other:' || n, '2026-10-26T06:00:00Z' FROM numbers
+        """)
+        connection.execute("""
+            INSERT INTO usage_events(
+                source, tool_key, model_key, occurred_at, input_tokens, output_tokens,
+                computed_cost_usd, raw_id, ingested_at
+            ) VALUES ('codex_local', 'codex', 'fixture', ?, 10, 2, 0, 'local-priced', ?)
+        """, (earlier, earlier))
+        connection.execute("""
+            INSERT INTO unpriced_usage_events(
+                source, tool_key, model_key, occurred_at, input_tokens,
+                cached_input_tokens, cache_write_tokens, output_tokens, raw_id, ingested_at
+            ) VALUES ('codex_local', 'codex', 'fixture', ?, 10, 0, 0, 2, 'local-unpriced', ?)
+        """, (latest, latest))
+    initialize(settings.database_path)
+
+    remaining_steps = 5_000
+
+    def track_progress() -> int:
+        nonlocal remaining_steps
+        remaining_steps -= 100
+        return int(remaining_steps <= 0)
+
+    @contextmanager
+    def budgeted_connect(path):
+        with connect(path) as connection:
+            connection.set_progress_handler(track_progress, 100)
+            yield connection
+
+    monkeypatch.setattr(setup_wizard, "connect", budgeted_connect)
+    monkeypatch.setattr(setup_wizard, "detect_local_sources", lambda _home: {})
+    by_source = {row["source"]: row for row in setup_wizard._build_harness_list(settings)}
+    assert by_source["codex_local"]["state"] == "stale"
+    assert by_source["codex_local"]["lastSuccess"] == latest
+
+
 def test_a_tracked_plan_is_not_suggested_again(client: TestClient, settings: Settings) -> None:
     now = datetime.now(UTC)
     with connect(settings.database_path) as connection:
@@ -203,7 +368,7 @@ def test_plan_cleanup_ends_retired_plans_and_links_custom_ones(client: TestClien
     for name in ("Curso Ultra", "Antigravity Ultra 200"):
         item = issues[name]
         response = client.post("/api/setup/plans/fix", headers=SETUP,
-                               json={"planId": item["planId"], "version": item["version"], "fix": item["fix"]})
+                               json={key: item[key] for key in ("planId", "version", "termId", "fix", "confirmation")})
         assert response.status_code == 200, response.text
     assert client.get("/api/setup/plan-issues").json()["issues"] == []
     with connect(settings.database_path) as connection:
@@ -269,8 +434,10 @@ def test_hub_update_runs_the_deploy_steps_and_refuses_odd_arguments() -> None:
                       run=lambda step, **kwargs: calls.append(step) or Done(), echo=lines.append) == 0
     assert calls[0][:2] == ["ssh", "my-hub"]
     command = calls[0][2]
-    assert 'test -z "$(git status --porcelain)"' in command
-    assert "git merge --ff-only origin/main" in command
+    dirty_guard = 'worktree_status=$(git status --porcelain) && test -z "$worktree_status"'
+    fast_forward = "git merge --ff-only refs/remotes/origin/main"
+    assert command.index("flock -n 9") < command.index(dirty_guard) < command.index("git fetch origin")
+    assert command.index(fast_forward) < command.index("pip install --require-hashes")
     assert command.index("pip install --require-hashes") < command.index("scripts/verify-runtime.py") < command.index("systemctl restart")
     assert "pip check" in command
     assert "tk-security-preflight burnrate" in command

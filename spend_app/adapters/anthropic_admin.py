@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from spend_app.adapters.common import (
     skipped_result,
     stable_id,
 )
+from spend_app.organization import clean_context_window, clean_request_count, organization_scope, scoped_raw_id
 from spend_app.pricing import PricingEngine
 
 
@@ -100,6 +102,8 @@ def parse_usage(payload: dict) -> list[UsageRow]:
                     reasoning_tokens=None,
                     cost_usd=None,
                     raw_id=raw_id,
+                    admin_request_count=clean_request_count(result.get("num_model_requests")),
+                    admin_context_window=clean_context_window(SOURCE, result.get("context_window")),
                 )
             )
     return rows
@@ -161,6 +165,19 @@ def make_client(admin_key: str) -> httpx.Client:
     )
 
 
+def _fetch_organization_scope(client: httpx.Client) -> str | None:
+    """Optional identity lookup. Reporting remains available when identity is unknown."""
+    try:
+        response = client.get(f"{BASE_URL}/v1/organizations/me", timeout=5)
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError):
+        return None
+    if not isinstance(payload, dict) or payload.get("type") != "organization":
+        return None
+    return organization_scope(SOURCE, payload.get("id"))
+
+
 def ingest(
     *,
     database_path: Path,
@@ -209,9 +226,11 @@ def ingest(
 
     try:
         if client is not None:
+            scope = _fetch_organization_scope(client)
             collect(client)
         else:
             with make_client(admin_key) as owned:
+                scope = _fetch_organization_scope(owned)
                 collect(owned)
     except Exception as exc:
         return failed_result(
@@ -219,6 +238,15 @@ def ingest(
             source=SOURCE,
             reason=public_error(exc),
         )
+    if scope:
+        usage_rows = [
+            replace(row, raw_id=scoped_raw_id(row.raw_id, scope), organization_scope=scope)
+            for row in usage_rows
+        ]
+        cost_rows = [
+            replace(row, raw_id=scoped_raw_id(row.raw_id, scope), organization_scope=scope)
+            for row in cost_rows
+        ]
     return persist_rows(
         database_path=database_path,
         pricing=pricing,

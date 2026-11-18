@@ -121,10 +121,11 @@ def test_a_turn_record_carries_grok_builds_charge() -> None:
     assert not issues
     assert rows[0].cost_usd == pytest.approx(1.318832)
     assert rows[0].model_key == "supergrok:grok-4.7-build"
+    assert rows[0].grok_turn_elapsed_ms == 60_000
 
 
-def _call(name: str, when: datetime, prompt: int, out: int) -> tuple:
-    return (name, when, prompt, out)
+def _call(name: str, when: datetime, prompt: int, out: int, elapsed: int | None = None) -> grok_native.GrokUsage:
+    return grok_native.GrokUsage(name, when, (prompt, 0, 0, out), elapsed)
 
 
 def test_a_turn_covers_exactly_the_calls_that_add_up_to_it() -> None:
@@ -136,9 +137,28 @@ def test_a_turn_covers_exactly_the_calls_that_add_up_to_it() -> None:
         _call("c1", t + timedelta(minutes=60), 300, 30), _call("c2", t + timedelta(minutes=61), 600, 60),  # turn C
         _call("d1", t + timedelta(minutes=90), 700, 70),                                   # still running
     ]
-    turns = [("A", t + timedelta(minutes=2), 300, 30), ("C", t + timedelta(minutes=62), 900, 90)]
+    turns = [_call("A", t + timedelta(minutes=2), 300, 30, 120_000),
+             _call("C", t + timedelta(minutes=62), 900, 90, 120_000)]
     assert grok_native.covered_calls(calls, turns) == {"a1", "a2", "c1", "c2"}
     assert grok_native.covered_calls(calls, []) == set()
+
+
+def test_overlapping_grok_turn_intervals_do_not_claim_the_same_call() -> None:
+    end = MONDAY.replace(hour=13)
+    calls = [_call("first", end - timedelta(seconds=15), 100, 10),
+             _call("second", end + timedelta(seconds=5), 200, 20)]
+    turns = [_call("A", end, 100, 10, 60_000),
+             _call("B", end + timedelta(seconds=10), 300, 30, 60_000)]
+    assert grok_native.covered_calls(calls, turns) == set()
+
+
+def test_grok_turn_must_match_all_observed_components_and_calls() -> None:
+    end = MONDAY.replace(hour=13)
+    calls = [_call("A", end - timedelta(seconds=15), 100, 10),
+             _call("B", end - timedelta(seconds=5), 200, 20)]
+    assert not grok_native.covered_calls(calls, [_call("partial", end, 200, 20, 60_000)])
+    different_cache = grok_native.GrokUsage("cache_diff", end, (300, 30, 0, 30), 60_000)
+    assert not grok_native.covered_calls(calls, [different_cache])
 
 
 def test_ingest_keeps_each_turn_once_and_the_calls_no_turn_counts(tmp_path: Path) -> None:
@@ -185,12 +205,75 @@ def test_ingest_keeps_each_turn_once_and_the_calls_no_turn_counts(tmp_path: Path
     assert parts.complete
 
 
-def _stored(raw_id: str, sid: str, when: datetime, prompt: int, out: int, model="supergrok:grok-4.7") -> UnpricedUsageEvent:
+def _stored(
+    raw_id: str, sid: str, when: datetime, prompt: int, out: int,
+    model="supergrok:grok-4.7", elapsed: int | None = None,
+) -> UnpricedUsageEvent:
     return UnpricedUsageEvent(source="grok_local", tool_key="grok", model_key=model,
                               occurred_at=when.isoformat().replace("+00:00", "Z"), session_id=sid, project=None,
                               input_tokens=prompt, cached_input_tokens=0, cache_write_tokens=0, cache_write_1h_tokens=0,
                               output_tokens=out, reasoning_tokens=None, unclassified_tokens=0, telemetry_complete=True,
-                              cost_usd=None, raw_id=raw_id, ingested_at="2026-10-26T06:00:00Z")
+                              cost_usd=None, raw_id=raw_id, ingested_at="2026-10-26T06:00:00Z",
+                              grok_turn_elapsed_ms=elapsed)
+
+
+@pytest.mark.parametrize("completed_prompt,completed_output", [(1000, 150), (100, 10)])
+def test_later_grok_turn_never_consumes_a_retained_interrupted_call(
+    tmp_path: Path, completed_prompt: int, completed_output: int
+) -> None:
+    from spend_app.adapters import unchanged
+    from spend_app.adapters.usage_repair import delete_event
+    from spend_app.sync import apply_sync_push, export_sync_batch
+
+    root = tmp_path / ".grok"
+    log = root / "logs" / "unified.jsonl"
+    log.parent.mkdir(parents=True)
+    at = MONDAY.replace(hour=10)
+    log.write_text(
+        _grok_line(at, "model changed", {"model": "grok-4.7"}) + "\n"
+        + _grok_call(at + timedelta(seconds=10), 100, 0, 10) + "\n",
+        encoding="utf-8",
+    )
+    spoke, hub = tmp_path / "spoke.db", tmp_path / "hub.db"
+    pricing = _engine()
+    grok_local.ingest(database_path=spoke, pricing=pricing, log_path=root)
+    with connect(spoke) as connection:
+        call_id = connection.execute("SELECT raw_id FROM usage_events WHERE tool_key='grok'").fetchone()[0]
+    updates = root / "sessions" / "project" / SID / "updates.jsonl"
+    updates.parent.mkdir(parents=True)
+    end = at + timedelta(hours=3)
+    updates.write_text(
+        json.dumps(_usage_record(SID, end, "e1", [(completed_prompt, 0, completed_output)], 1_000))
+        + "\n",
+        encoding="utf-8",
+    )
+    grok_local.ingest(database_path=spoke, pricing=pricing, log_path=root)
+    # Re-create the historical missing-row state, then replay the retained source.
+    with connect(spoke) as connection:
+        delete_event(connection, call_id)
+    batch, cursor = export_sync_batch(spoke, cursor=None, limit=1000)
+    apply_sync_push(hub, pricing, machine_id="laptop-1", body=batch)
+    with connect(spoke) as connection:
+        connection.execute("ALTER TABLE usage_events DROP COLUMN grok_turn_elapsed_ms")
+        connection.execute("ALTER TABLE unpriced_usage_events DROP COLUMN grok_turn_elapsed_ms")
+        connection.execute("UPDATE app_meta SET value='12' WHERE key='schema_version'")
+    grok_local.reset_state()
+    unchanged.reset_state()
+    grok_local.ingest(database_path=spoke, pricing=pricing, log_path=root)
+    for _ in range(2):
+        batch, cursor = export_sync_batch(spoke, cursor=cursor, limit=1000)
+        apply_sync_push(hub, pricing, machine_id="laptop-1", body=batch)
+    for database in (spoke, hub):
+        with connect(database) as connection:
+            parts = aggregate._tracked_value(
+                connection, pricing, at, end + timedelta(seconds=1), "all", "UTC"
+            )
+            elapsed = connection.execute(
+                "SELECT grok_turn_elapsed_ms FROM usage_events WHERE raw_id LIKE '%grok-native-usage:%'"
+            ).fetchone()[0]
+        assert elapsed == 60_000
+        assert parts.tokens == 110 + completed_prompt + completed_output
+        assert parts.records == 2
 
 
 def test_the_one_time_repair_dedupes_a_hub_and_keeps_a_backup(tmp_path: Path) -> None:
@@ -204,7 +287,7 @@ def test_the_one_time_repair_dedupes_a_hub_and_keeps_a_backup(tmp_path: Path) ->
         for event in (_stored("m:laptop-1:grok-local:1", sid, t, 100, 10),
                       _stored("m:laptop-1:grok-local:2", sid, t + timedelta(seconds=5), 200, 20),
                       _stored("m:laptop-1:grok-native-usage:1", sid, t + timedelta(seconds=6), 300, 30,
-                              model="supergrok:grok-4.7-build")):
+                              model="supergrok:grok-4.7-build", elapsed=60_000)):
             upsert_unpriced_event(connection, event)
     from spend_app import db
 
@@ -217,7 +300,8 @@ def test_the_one_time_repair_dedupes_a_hub_and_keeps_a_backup(tmp_path: Path) ->
     assert list((database.parent / "backups").glob("pre-grok-dedupe-*.db"))
 
 
-def test_a_hub_drops_calls_an_older_computer_pushes_with_their_turn(tmp_path: Path) -> None:
+@pytest.mark.parametrize("elapsed", [60_000, None, -100, True, 10**27])
+def test_a_hub_drops_calls_only_with_a_proven_turn_interval(tmp_path: Path, elapsed: int | None) -> None:
     from spend_app.sync import apply_sync_push
 
     database = tmp_path / "spend.db"
@@ -231,10 +315,56 @@ def test_a_hub_drops_calls_an_older_computer_pushes_with_their_turn(tmp_path: Pa
     apply_sync_push(database, _engine(), machine_id="laptop-1", body={"unpricedEvents": [
         item("grok-local:1", t, 100, 10), item("grok-local:2", t + timedelta(seconds=5), 200, 20)]})
     apply_sync_push(database, _engine(), machine_id="laptop-1", body={"unpricedEvents": [
-        item("grok-native-usage:1", t + timedelta(seconds=6), 300, 30, model="supergrok:grok-4.7-build")]})
+        {**item("grok-native-usage:1", t + timedelta(seconds=6), 300, 30, model="supergrok:grok-4.7-build"),
+         "grok_turn_elapsed_ms": elapsed}]})
     with connect(database) as connection:
         left = [row[0] for row in connection.execute("SELECT raw_id FROM unpriced_usage_events WHERE tool_key='grok'")]
-    assert left == ["m:laptop-1:grok-native-usage:1"]
+    expected = {"m:laptop-1:grok-native-usage:1"}
+    if elapsed != 60_000:
+        expected.update({"m:laptop-1:grok-local:1", "m:laptop-1:grok-local:2"})
+    assert set(left) == expected
+
+
+def test_grok_turn_boundary_survives_a_late_legacy_payload(tmp_path: Path) -> None:
+    from spend_app.sync import apply_sync_push
+
+    database = tmp_path / "hub.db"
+    t = MONDAY.replace(hour=6)
+    pricing = _engine()
+    call = {
+        "source": "grok_local", "tool_key": "grok", "model_key": "supergrok:grok-4.7",
+        "session_id": SID, "raw_id": "grok-local:before-turn",
+        "occurred_at": t.isoformat(), "input_tokens": 200, "output_tokens": 20,
+    }
+    turn = {**call, "raw_id": "grok-native-usage:turn", "occurred_at": (t + timedelta(seconds=30)).isoformat()}
+    apply_sync_push(database, pricing, machine_id="laptop-1", body={
+        "unpricedEvents": [{**turn, "grok_turn_elapsed_ms": 60_000}],
+    })
+    apply_sync_push(database, pricing, machine_id="laptop-1", body={"unpricedEvents": [call, turn]})
+    with connect(database) as connection:
+        assert [tuple(row) for row in connection.execute(
+            "SELECT raw_id, grok_turn_elapsed_ms FROM unpriced_usage_events"
+        )] == [("m:laptop-1:grok-native-usage:turn", 60_000)]
+
+
+def test_grok_cleanup_keeps_calls_from_another_machine_with_the_same_session_id(tmp_path: Path) -> None:
+    database = tmp_path / "spend.db"
+    initialize(database)
+    t = MONDAY.replace(hour=6)
+    events = [
+        _stored("m:home:grok-local:1", SID, t, 100, 10),
+        _stored("m:work:grok-local:1", SID, t, 200, 20),
+        _stored("m:work:grok-native-usage:1", SID, t + timedelta(seconds=10), 300, 30, elapsed=60_000),
+    ]
+    with connect(database) as connection:
+        for event in events:
+            upsert_unpriced_event(connection, event)
+        assert grok_native.drop_covered_calls(connection, {f"m:work:{SID}"}) == 0
+        upsert_unpriced_event(connection, replace(events[2], input_tokens=200, output_tokens=20))
+        assert grok_native.drop_covered_calls(connection, {f"m:work:{SID}"}) == 1
+        assert {row[0] for row in connection.execute("SELECT raw_id FROM unpriced_usage_events")} == {
+            events[0].raw_id, events[2].raw_id,
+        }
 
 
 # Grok calls whose model line the CLI trimmed ------------------------------------

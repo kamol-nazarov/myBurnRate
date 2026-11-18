@@ -34,6 +34,10 @@ class UnpricedModelError(LookupError):
     pass
 
 
+class UncertainAggregatePriceError(UnpricedModelError):
+    """The card is available, but the bucket cannot prove a request tier."""
+
+
 @dataclass(frozen=True)
 class Price:
     model_key: str
@@ -319,6 +323,8 @@ class PricingEngine:
         cache_write_tokens: int,
         output_tokens: int,
         cache_write_1h_tokens: int = 0,
+        request_bucket: bool = False,
+        request_count: int | None = None,
     ) -> Decimal:
         return sum(
             self.components(
@@ -329,6 +335,8 @@ class PricingEngine:
                 cache_write_tokens=cache_write_tokens,
                 output_tokens=output_tokens,
                 cache_write_1h_tokens=cache_write_1h_tokens,
+                request_bucket=request_bucket,
+                request_count=request_count,
             ).values(),
             Decimal(0),
         )
@@ -343,6 +351,8 @@ class PricingEngine:
         cache_write_tokens: int,
         output_tokens: int,
         cache_write_1h_tokens: int = 0,
+        request_bucket: bool = False,
+        request_count: int | None = None,
     ) -> dict[str, Decimal]:
         for name, value in (
             ("input_tokens", input_tokens),
@@ -362,14 +372,18 @@ class PricingEngine:
         prompt_tokens = input_tokens + (
             cache_write_tokens if price.long_context_includes_cache_writes else 0
         )
-        is_long = (
-            price.long_context_threshold is not None
-            and (
-                prompt_tokens >= price.long_context_threshold
-                if price.long_context_inclusive
-                else prompt_tokens > price.long_context_threshold
-            )
-        )
+        # The total bounds every request above, but it does not establish its
+        # request-length distribution. The aggregate can only select a tier
+        # if all possible request lengths have the same effective price.
+        first_long = price.long_context_threshold
+        if first_long is not None and not price.long_context_inclusive:
+            first_long += 1
+        is_long = first_long is not None and prompt_tokens >= first_long
+        if (
+            is_long and request_bucket and request_count != 1
+            and (price.long_input_multiplier != 1 or price.long_output_multiplier != 1)
+        ):
+            raise UncertainAggregatePriceError("Reporting bucket does not determine a request pricing tier.")
         input_multiplier = price.long_input_multiplier if is_long else Decimal(1)
         output_multiplier = price.long_output_multiplier if is_long else Decimal(1)
         if price.is_peak(occurred_at):

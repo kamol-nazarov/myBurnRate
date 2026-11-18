@@ -91,7 +91,12 @@ def product_router(settings, pricing=None):
         hub_data = fetch_from_configured_hub(
             settings, "/api/subscriptions/value", {"period": period}
         )
-        if hub_data is not None and isinstance(hub_data.get("plans"), list):
+        if (
+            hub_data is not None
+            and hub_data.get("period") == period
+            and isinstance(hub_data.get("groups"), list)
+            and isinstance(hub_data.get("unassigned"), dict)
+        ):
             return JSONResponse(hub_data, headers={"Cache-Control": "no-store"})
         resolved_pricing = pricing
         if resolved_pricing is None:

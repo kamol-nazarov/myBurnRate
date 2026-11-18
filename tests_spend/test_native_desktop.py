@@ -160,6 +160,132 @@ def test_native_client_rejects_non_api_paths_without_network(tmp_path, monkeypat
         _client(tmp_path).request("https://example.invalid/api/spend/usage")
 
 
+def test_native_client_renews_expired_local_recovery_session(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    import spend_app.native_desktop as desktop
+    from spend_app.api import create_app
+    from spend_app.auth_model import digest
+    from spend_app.db import connect
+
+    monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "synthetic-local-recovery-authority")
+    monkeypatch.delenv("BURNRATE_ALLOW_ADMIN_BEARER", raising=False)
+    client = _client(tmp_path)
+    app = create_app(client.settings, enable_scheduler=False)
+    with TestClient(app, base_url=client.base_url) as application:
+        calls = []
+
+        class LocalClient:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def get(self, url, **kwargs):
+                response = application.get(url, **kwargs)
+                calls.append(("GET", response.status_code))
+                return response
+
+            def post(self, url, **kwargs):
+                assert url.endswith("/api/auth/bootstrap")
+                response = application.post(url, **kwargs)
+                calls.append(("bootstrap", response.status_code))
+                return response
+
+        monkeypatch.setattr(desktop.httpx, "Client", lambda **kwargs: LocalClient())
+        assert client.snapshot("today", "all")["tools"] == []
+        with connect(client.settings.database_path) as db:
+            db.execute("UPDATE owner_sessions SET expires_at='2000-01-01T00:00:00Z'")
+
+        assert client.snapshot("today", "all")["tools"] == []
+        assert calls == [
+            ("bootstrap", 200),
+            ("GET", 200),
+            ("GET", 401),
+            ("bootstrap", 200),
+            ("GET", 200),
+        ]
+        with connect(client.settings.database_path) as db:
+            assert db.execute("SELECT count(*) FROM owner_sessions").fetchone()[0] == 2
+            db.execute("UPDATE owner_sessions SET expires_at='2000-01-01T00:00:00Z'")
+            db.execute(
+                "INSERT INTO app_meta(key, value) VALUES ('auth.break_glass.v1', ?)",
+                (digest("rotated-synthetic-authority"),),
+            )
+
+        calls.clear()
+        with pytest.raises(DesktopError, match="Error AUTH-107"):
+            client.snapshot("today", "all")
+        assert calls == [("GET", 401), ("bootstrap", 401)]
+
+
+def test_late_unauthorized_read_does_not_invalidate_renewed_session(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier, Event
+
+    import spend_app.native_desktop as desktop
+
+    old_requests = Barrier(2)
+    renewed_read = Event()
+    bootstraps = []
+    success = Response(payload={"total": {}, "tools": []})
+
+    class ConcurrentClient(FakeHttpClient):
+        def post(self, url, **kwargs):
+            assert url.endswith("/api/auth/bootstrap")
+            session = f"synthetic-owner-{len(bootstraps) + 1}"
+            bootstraps.append(session)
+            return Response(cookies={"burnrate_access": session})
+
+        def get(self, url, *, headers):
+            session = headers["Authorization"]
+            if "period=today" in url:
+                return success
+            if session == "Bearer synthetic-owner-1":
+                old_requests.wait(timeout=5)
+                if "period=all" in url:
+                    assert renewed_read.wait(timeout=5)
+                return Response(status=401, payload={})
+            assert session == "Bearer synthetic-owner-2"
+            renewed_read.set()
+            return success
+
+    monkeypatch.setattr(desktop.httpx, "Client", ConcurrentClient)
+    monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "synthetic-local-recovery-authority")
+    client = _client(tmp_path)
+    client.snapshot("today", "all")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(client.snapshot, "week", "all")
+        late = pool.submit(client.snapshot, "all", "all")
+        assert first.result(timeout=10)["tools"] == []
+        assert late.result(timeout=10)["tools"] == []
+
+    assert bootstraps == ["synthetic-owner-1", "synthetic-owner-2"]
+
+
+def test_native_client_does_not_replay_unauthorized_mutation(tmp_path, monkeypatch):
+    import spend_app.native_desktop as desktop
+
+    FakeHttpClient.instances.clear()
+    monkeypatch.setattr(FakeHttpClient, "response", Response(status=401, payload={}))
+    monkeypatch.setattr(desktop.httpx, "Client", FakeHttpClient)
+    monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "synthetic-local-recovery-authority")
+    client = _client(tmp_path)
+
+    with pytest.raises(DesktopError, match="Error AUTH-107"):
+        client.request("/api/auth/logout", {})
+
+    requests = [
+        (method, url.removeprefix(client.base_url))
+        for method, url, _ in FakeHttpClient.instances[0].calls
+    ]
+    assert requests == [
+        ("POST", "/api/auth/bootstrap"),
+        ("POST", "/api/auth/logout"),
+    ]
+
+
 def test_machine_bearer_must_be_valid_for_native_usage_endpoint(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
@@ -326,6 +452,41 @@ class StringVar:
 
     def set(self, value):
         self.value = value
+
+
+def test_tk_close_preserves_shared_desktop_preferences(tmp_path):
+    from types import SimpleNamespace
+
+    from spend_app.native_prefs import store_for
+    from spend_app.wealthfront_window import DesktopBridge
+
+    preferences = tmp_path / "native-window.json"
+    saved = {
+        "period": "today",
+        "topmost": False,
+        "theme": "dark",
+        "window": {"x": 10, "y": 20, "width": 480, "height": 700},
+        "surface": "tab",
+        "closeToTray": False,
+        "lowQuotaAlerts": False,
+        "futurePreference": {"enabled": True},
+    }
+    store = store_for(preferences)
+    store.update(saved)
+    app = UsageWindow.__new__(UsageWindow)
+    app.preferences = preferences
+    app.period = StringVar("week")
+    app.topmost = StringVar(True)
+    app.worker = SimpleNamespace(shutdown=lambda **kwargs: None)
+    app.root = SimpleNamespace(destroy=lambda: None)
+
+    app.close()
+
+    assert store.read() == {**saved, "period": "week", "topmost": True}
+    state = DesktopBridge(DemoClient(), preferences=preferences, demo=True).get_initial_state()
+    assert state["theme"] == "dark"
+    assert state["surface"] == "tab"
+    assert state["lowQuotaAlerts"] is False
 
 
 def test_usage_window_renders_local_totals_and_selected_reasoning_without_tk_root():

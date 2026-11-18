@@ -408,10 +408,10 @@ def test_source_walk_reads_a_file_past_the_windows_max_path(tmp_path):
     assert paths.file_signature(found[0])[0] > 0
 
 
-def test_cache_scope_and_reconnect_keep_event_identity(monkeypatch):
+def test_cache_scope_and_reconnect_keep_event_identity(monkeypatch, tmp_path):
     from spend_app.connection_paths import approved, cache_identity
     from spend_app.adapters.opencode_local import progress_for_location
-    from spend_app.adapters import opencode_local
+    from spend_app.db import connect, initialize, write_opencode_progress
     monkeypatch.setattr(Path, "resolve", lambda self, **kwargs: self)
     with approved("C:/B", 1):
         first = cache_identity("C:/one.db", "C:/B/log.jsonl")
@@ -419,11 +419,17 @@ def test_cache_scope_and_reconnect_keep_event_identity(monkeypatch):
     with approved("C:/B", 2):
         assert first != cache_identity("C:/one.db", "C:/B/log.jsonl")
     assert first != other
-    reader = Mock(return_value={"input_tokens": 5})
-    monkeypatch.setattr(opencode_local, "read_opencode_progress", reader)
-    assert progress_for_location(object(), Path("C:/B/db"), "scopeB", "session", "provider") == {"input_tokens": 5}
-    assert reader.call_args_list[0].kwargs == {"session_id": "scopeB:session", "provider_id": "provider"}
-    assert reader.call_args_list[1].kwargs == {"session_id": "session", "provider_id": "provider"}
+    dest = tmp_path / "history.db"
+    initialize(dest)
+    with connect(dest) as db:
+        write_opencode_progress(db, session_id="scopeB:session", provider_id="old-provider",
+                                input_tokens=5, cached_input_tokens=0, cache_write_tokens=0,
+                                output_tokens=2, reasoning_tokens=None, cost_usd=None,
+                                model_id="model", observed_at="2026-09-07T00:00:00Z")
+        latest, logical = progress_for_location(db, "scopeB", "session")
+        assert latest["input_tokens"] == 5
+        assert logical == {}
+        assert progress_for_location(db, "scopeC", "session") == (None, {})
 
 
 def test_managed_activity_never_calls_default_profile(service, monkeypatch):
@@ -515,17 +521,15 @@ def test_opencode_replay_event_ids_do_not_include_binding_revision():
     assert replay == []
 
 
-def test_moved_opencode_session_uses_accounted_delta_not_second_baseline(monkeypatch):
+def test_moved_opencode_session_uses_accounted_delta_not_second_baseline():
     from dataclasses import replace
     from datetime import UTC, datetime
     from spend_app.adapters import opencode_local as adapter
     first = adapter.SessionSnapshot("session", "provider", "model", None, 10, 2, 0, 3, None, None, datetime(2026, 9, 7, tzinfo=UTC))
     _, progress, _ = adapter.plan_rows([first], {})
     accounted = progress["session\x1fprovider"]
-    reader = Mock(side_effect=[None, accounted])
-    monkeypatch.setattr(adapter, "read_opencode_progress", reader)
-    previous = adapter.progress_for_location(object(), Path("C:/new/store.db"), "new-location", "session", "provider")
-    rows, _, _ = adapter.plan_rows([replace(first, input_tokens=15)], {"session\x1fprovider": previous})
+    rows, _, _ = adapter.plan_rows([replace(first, provider_id="different", input_tokens=15)],
+                                   {"session\x1fdifferent": accounted})
     assert len(rows) == 1
     assert rows[0].input_tokens == 5
 

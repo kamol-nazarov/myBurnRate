@@ -91,6 +91,144 @@ def _ps_quote(value: str | Path) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
+def _installer_guard(shell, program, data, registered, action):
+    env = dict(os.environ)
+    env.update(
+        BURNRATE_NSIS_PROGRAM_DIR=str(program),
+        BURNRATE_NSIS_DATA_DIR=str(data),
+        BR_TEST_REGISTERED_DIR=str(registered),
+    )
+    helper = _ps_quote(ROOT / "packaging" / "native-install-guard.ps1")
+    script = rf"""
+function Get-ItemProperty {{
+    param([string]$LiteralPath)
+    if ($LiteralPath.EndsWith('\BURNRATE Native')) {{
+        return @{{ InstallDir=$env:BR_TEST_REGISTERED_DIR; Version='0.5.9' }}
+    }}
+    if ($LiteralPath.EndsWith('\BURNRATENative')) {{
+        return @{{ InstallLocation=$env:BR_TEST_REGISTERED_DIR; DisplayVersion='0.5.9' }}
+    }}
+    throw "Unexpected registry lookup"
+}}
+& {helper} -Action {_ps_quote(action)}
+exit $LASTEXITCODE
+"""
+    return _ps_run(shell, script, env=env)
+
+
+def _mark_installed(directory, version="0.5.9"):
+    directory.mkdir(exist_ok=True)
+    for name in ("BURNRATE.exe", "uninstall.exe"):
+        (directory / name).touch()
+    (directory / "BURNRATE.installed").write_text(
+        f'{{"installer":"nsis","version":"{version}"}}', encoding="utf-8"
+    )
+
+
+def test_nsis_guard_checks_ownership_before_program_file_changes():
+    nsi = (ROOT / "packaging" / "burnrate-native.nsi").read_text(encoding="utf-8")
+    install = nsi.split('Section "Install"', 1)[1].split("SectionEnd", 1)[0]
+    assert install.index("Call RunInstallGuard") < install.index(r'SetOutPath "$INSTDIR"')
+    assert install.index('$GuardResult == 2') < install.index(r'RMDir /r "$INSTDIR\_internal"')
+    assert install.index("SetErrorLevel 1") < install.index(r'File /r')
+    uninstall = nsi.split('Section "Uninstall"', 1)[1]
+    assert uninstall.index("Call un.RunInstallGuard") < uninstall.index(r'RMDir /r "$INSTDIR\_internal"')
+    assert uninstall.index("SetErrorLevel 1") < uninstall.index(r'RMDir /r "$INSTDIR\_internal"')
+    assert "taskkill.exe" not in nsi
+
+
+def test_nsis_guard_fresh_registered_and_foreign_paths(tmp_path):
+    ps = _require_ps5()
+    program = tmp_path / "BURNRATE Custom Install"
+    data = tmp_path / "Data"
+    result = _installer_guard(ps, program, data, program, "Install")
+    assert result.returncode == 0, result.stderr
+    assert not program.exists()
+    result = _installer_guard(ps, program, data, program, "Update")
+    assert result.returncode == 1
+    program.mkdir()
+    result = _installer_guard(ps, program, data, program, "Install")
+    assert result.returncode == 0, result.stderr
+    _mark_installed(program)
+    for action in ("Install", "Update", "Uninstall"):
+        result = _installer_guard(ps, program, data, program, action)
+        assert result.returncode == 2, result.stderr
+
+    foreign = tmp_path / "Foreign"
+    (foreign / "_internal").mkdir(parents=True)
+    sentinel = foreign / "_internal" / "other-program.dll"
+    sentinel.write_bytes(b"unchanged")
+    for action in ("Install", "Update"):
+        result = _installer_guard(ps, foreign, data, program, action)
+        assert result.returncode == 1
+        assert sentinel.read_bytes() == b"unchanged"
+    _mark_installed(foreign)
+    result = _installer_guard(ps, foreign, data, program, "Uninstall")
+    assert result.returncode == 1
+    assert sentinel.read_bytes() == b"unchanged"
+    _mark_installed(program, version="0.5.8")
+    result = _installer_guard(ps, program, data, program, "Update")
+    assert result.returncode == 1
+    assert "marker" in result.stderr
+
+
+def test_nsis_guard_rejects_data_alias_and_nested_reparse_points(tmp_path):
+    ps = _require_ps5()
+    import _winapi
+
+    program = tmp_path / "Programs" / "BURNRATE"
+    program.parent.mkdir()
+    _mark_installed(program)
+    data = tmp_path / "Data"
+    data.mkdir()
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    sentinel = foreign / "sentinel"
+    sentinel.write_bytes(b"keep")
+    alias = tmp_path / "data-alias"
+    _winapi.CreateJunction(str(data), str(alias))
+    for target in (data, data / "nested", alias, alias / "nested"):
+        result = _installer_guard(ps, target, data, program, "Install")
+        assert result.returncode == 1
+    _winapi.CreateJunction(str(foreign), str(program / "_internal"))
+    for action in ("Update", "Uninstall"):
+        result = _installer_guard(ps, program, data, program, action)
+        assert result.returncode == 1
+        assert "junction" in result.stderr
+    assert sentinel.read_bytes() == b"keep"
+
+
+def test_nsis_guard_stops_only_the_installed_image(tmp_path):
+    ps = _require_ps5()
+    program = tmp_path / "registered"
+    _mark_installed(program)
+    other = tmp_path / "other"
+    other.mkdir()
+    ping = Path(os.environ["SystemRoot"]) / "System32" / "PING.EXE"
+    installed = program / "BURNRATE.exe"
+    foreign = other / "BURNRATE.exe"
+    shutil.copyfile(ping, installed)
+    shutil.copyfile(ping, foreign)
+    children = []
+    try:
+        for executable in (installed, foreign):
+            children.append(subprocess.Popen(
+                [str(executable), "-t", "127.0.0.1"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            ))
+        result = _installer_guard(ps, program, tmp_path / "Data", program, "Install")
+        assert result.returncode == 2, result.stderr
+        assert children[0].wait(timeout=5) == 0
+        assert children[1].poll() is None
+    finally:
+        for child in children:
+            if child.poll() is None:
+                child.terminate()
+                child.wait(timeout=5)
+
+
 # ---------------------------------------------------------------------------------------
 # native_update._httpx_fetch
 # ---------------------------------------------------------------------------------------

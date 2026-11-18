@@ -10,7 +10,8 @@ from spend_app.native_geometry import Monitor, Rect, SavedGeometry
 from spend_app.tab_window import TabModel, build_segment, short_error, split_overflow
 from spend_app.wealthfront_window import merge_provider_entries
 
-NOW = datetime(2026, 11, 17, 12, 0, tzinfo=UTC)
+# Some host/browser tests consume these fixtures with the live render clock.
+NOW = datetime.now(UTC)
 
 
 def iso(hours):
@@ -146,6 +147,24 @@ def test_a_new_report_clears_the_error():
     model.publish_error("Can't reach your hub.", "NET-001")
     model.publish_report({"providers": providers(card("grok", 12.0))})
     assert model.payload(dark=False)["error"] is None
+
+
+def test_failed_quota_report_keeps_supplied_stale_values_and_fresh_empty_is_empty():
+    model = TabModel()
+    limits = providers(card("claude-code", 100.0))
+    model.publish_report({"providers": [], "quotaStatus": "unavailable"})
+    assert model.payload(dark=False, now=NOW)["state"] == "error"
+
+    model.publish_report({"providers": limits, "quotaStatus": "fresh"})
+    model.publish_report({"providers": limits, "quotaStatus": "stale"})
+    stale = model.payload(dark=False, now=NOW)
+    assert stale["state"] == "ready" and stale["stale"] is True
+    assert stale["segments"][0]["big"] == "0%" and stale["urgentCount"] == 1
+    assert stale["error"]["text"] == "Quota refresh failed"
+
+    model.publish_report({"providers": [], "quotaStatus": "fresh"})
+    fresh = model.payload(dark=False, now=NOW)
+    assert fresh["state"] == "empty" and fresh["stale"] is False and fresh["error"] is None
 
 
 def test_error_text_helper():
@@ -497,6 +516,12 @@ def test_a_refresh_that_widens_the_tab_widens_an_open_card_window_too(host):
 
 
 # ---- the window region: only the strip and the card are visible --------------
+
+def test_a_delayed_push_cannot_resize_the_host_for_an_older_payload(host):
+    host.set_base(520, revision=2)
+    host.set_base(360, revision=1)
+    assert host._base == (520, tab_window.TAB_HEIGHT)
+
 
 def test_collapsed_tab_is_one_rounded_rectangle():
     assert tab_window.shape_rects((900, 60), 1.0) == [(0, 0, 900, 60, 14)]

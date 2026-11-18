@@ -1,9 +1,12 @@
 """Observed Grok session updates/signals, reduced without conversation content."""
 import json
 import os
+from bisect import bisect_left, bisect_right
+from collections import Counter
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import NamedTuple
 
 from spend_app.adapters.common import UsageRow, stable_id
 from spend_app.adapters.local_common import parse_millis
@@ -57,9 +60,13 @@ def reduce_updates(records):
         key = (sid, stamp.isoformat(), meta.get("eventId"))
         ordinal = positions.get(key, 0)
         positions[key] = ordinal + 1
+        elapsed = update.get("elapsed_ms") if update.get("sessionUpdate") == "turn_completed" else None
+        if _turn_start(stamp, elapsed) is None:
+            elapsed = None
         rows.append(UsageRow("grok_local", "grok", "supergrok:" + model.lower(), stamp, sid, None,
                              inp, cached, writes, 0, out, reasoning, turn_charge(usage),
-                             stable_id("grok-native-usage", *key, ordinal), unsplit, complete))
+                             stable_id("grok-native-usage", *key, ordinal), unsplit, complete,
+                             grok_turn_elapsed_ms=elapsed))
     return rows, issues
 
 
@@ -105,64 +112,110 @@ def turn_charge(usage):
 CALL_PREFIX = "grok-local:"
 TURN_PREFIX = "grok-native-usage:"
 UNKNOWN = "supergrok:unknown"
-CLOCK_SLACK = timedelta(seconds=2)
 
 
-def covered_calls(calls, turns):
+def _turn_start(end: datetime | None, elapsed_ms: object) -> datetime | None:
+    if end is None or type(elapsed_ms) is not int or elapsed_ms <= 0:
+        return None
+    try:
+        return end - timedelta(milliseconds=elapsed_ms)
+    except OverflowError:
+        return None
+
+
+def pushed_turn_elapsed_ms(connection, item: dict, raw_id: str) -> int | None:
+    """Validate completion evidence and retain it across legacy replays."""
+    from spend_app.sync import strip_machine_prefix
+    from spend_app.timeutil import parse_utc
+
+    if item.get("source") != "grok_local" or not strip_machine_prefix(raw_id).startswith(TURN_PREFIX):
+        return None
+    end = parse_utc(item.get("occurred_at"))
+    elapsed = item.get("grok_turn_elapsed_ms")
+    if _turn_start(end, elapsed) is not None:
+        return elapsed
+    for table in ("usage_events", "unpriced_usage_events"):
+        existing = connection.execute(
+            f"SELECT occurred_at, grok_turn_elapsed_ms FROM {table} WHERE raw_id=? AND source='grok_local'",
+            (raw_id,),
+        ).fetchone()
+        if existing is not None and parse_utc(existing[0]) == end and _turn_start(end, existing[1]) is not None:
+            return existing[1]
+    return None
+
+
+class GrokUsage(NamedTuple):
+    raw_id: str
+    when: datetime
+    tokens: tuple[int, int, int, int]
+    elapsed_ms: int | None = None
+    complete: bool = True
+
+
+def covered_calls(calls: list[GrokUsage], turns: list[GrokUsage]) -> set[str]:
     """IDs of per-call rows that a completed turn record already counts.
 
-    calls and turns are (id, when, input_tokens, output_tokens) for one
-    session. unified.jsonl logs every model call; updates.jsonl logs one
-    total per completed turn. A turn covers the run of calls that ends at the
-    turn and, walking back, adds up to its input and output; it never reaches
-    back past the previous turn. Calls of a turn that never completed (the
-    CLI was stopped, or the turn is still running) stay counted.
+    The completion's elapsed time bounds membership in the turn. Compare
+    all calls in that interval, and preserve any that fit more than one
+    recorded interval. Totals alone cannot establish which turn used a call.
     """
-    pending = sorted(calls, key=lambda call: call[1])
-    covered = set()
-    previous_end = None
-    for _turn_id, end, turn_input, turn_output in sorted(turns, key=lambda turn: turn[1]):
-        candidates = [call for call in pending if call[0] not in covered and call[1] <= end + CLOCK_SLACK
-                      and (previous_end is None or call[1] > previous_end + CLOCK_SLACK)]
-        total_input = total_output = 0
-        for call_id, _when, call_input, call_output in reversed(candidates):
-            if total_input + call_input > turn_input or total_output + call_output > turn_output:
-                break
-            total_input += call_input
-            total_output += call_output
-            covered.add(call_id)
-            if total_input == turn_input and total_output == turn_output:
-                break
-        previous_end = end
-    return covered
+    ordered = sorted(calls, key=lambda call: call.when)
+    timestamps = [call.when for call in ordered]
+    membership: Counter[str] = Counter()
+    matches = []
+    for turn in turns:
+        start = _turn_start(turn.when, turn.elapsed_ms)
+        if start is None:
+            continue
+        candidates = ordered[bisect_left(timestamps, start):bisect_right(timestamps, turn.when)]
+        if not candidates:
+            continue
+        identifiers = [call.raw_id for call in candidates]
+        membership.update(identifiers)
+        if not turn.complete or any(not call.complete for call in candidates):
+            continue
+        if tuple(map(sum, zip(*(call.tokens for call in candidates)))) == turn.tokens:
+            matches.append(identifiers)
+    return {raw_id for match in matches if all(membership[key] == 1 for key in match) for raw_id in match}
 
 
 def drop_covered_calls(connection, session_ids=None) -> int:
     """Delete stored per-call Grok rows that a turn row in the same session counts.
 
-    Works on any database, including a hub holding rows pushed by computers
-    on older versions (ids prefixed ``m:<machine>:``). Returns rows deleted.
+    A hub can hold identical session IDs from independent machines. Old
+    rows without completion boundaries remain untouched. Returns rows deleted.
     """
-    from spend_app.sync import strip_machine_prefix
+    from spend_app.sync import row_machine_id, strip_machine_prefix
     from spend_app.timeutil import parse_utc
 
-    query = ("SELECT raw_id, session_id, occurred_at, input_tokens, output_tokens FROM {table} "
-             "WHERE tool_key='grok' AND session_id IS NOT NULL")
+    query = ("SELECT raw_id, session_id, occurred_at, input_tokens, cached_input_tokens, "
+             "cache_write_tokens, output_tokens, grok_turn_elapsed_ms, {complete} FROM {table} "
+             "WHERE source='grok_local' AND session_id IS NOT NULL")
     params: tuple = ()
+    scopes = None
     if session_ids is not None:
         sessions = sorted({sid for sid in session_ids if sid})
         if not sessions:
             return 0
-        query += f" AND session_id IN ({','.join('?' for _ in sessions)})"
-        params = tuple(sessions)
+        scopes = {(row_machine_id(sid), strip_machine_prefix(sid)) for sid in sessions}
+        params = tuple(sorted(set(sessions) | {sid for _, sid in scopes}))
+        query += f" AND session_id IN ({','.join('?' for _ in params)})"
     by_session: dict = {}
-    for table in ("usage_events", "unpriced_usage_events"):
-        for raw_id, sid, at, tokens_in, tokens_out in connection.execute(query.format(table=table), params):
+    tables = (("usage_events", "1"), ("unpriced_usage_events", "telemetry_complete AND unclassified_tokens=0"))
+    for table, complete in tables:
+        for raw_id, sid, at, inp, cached, writes, out, elapsed, known in connection.execute(
+            query.format(table=table, complete=complete), params
+        ):
             local_id = strip_machine_prefix(raw_id)
             kind = "calls" if local_id.startswith(CALL_PREFIX) else "turns" if local_id.startswith(TURN_PREFIX) else None
             when = parse_utc(at)
             if kind and when is not None:
-                by_session.setdefault(sid, {"calls": [], "turns": []})[kind].append((raw_id, when, tokens_in, tokens_out))
+                scope = (row_machine_id(raw_id), strip_machine_prefix(sid))
+                if scopes is not None and scope not in scopes:
+                    continue
+                by_session.setdefault(scope, {"calls": [], "turns": []})[kind].append(
+                    GrokUsage(raw_id, when, (inp, cached, writes, out), elapsed, bool(known))
+                )
     removed = 0
     for groups in by_session.values():
         if not groups["calls"] or not groups["turns"]:
@@ -359,7 +412,10 @@ def _reconcile_session(connection, sid, incoming, issues, recorded=frozenset()):
     state = read_meta(connection, key, {})
     existing = {}
     for table in ("usage_events", "unpriced_usage_events"):
-        for record in connection.execute(f"SELECT * FROM {table} WHERE source=? AND session_id=?", ("grok_local", sid)):
+        for record in connection.execute(
+            f"SELECT * FROM {table} WHERE source=? AND session_id=? AND raw_id NOT LIKE 'm:%'",
+            ("grok_local", sid),
+        ):
             row = row_from_record(dict(record))
             existing[row.raw_id] = row
     rows = dict(existing)
@@ -370,13 +426,24 @@ def _reconcile_session(connection, sid, incoming, issues, recorded=frozenset()):
             # after its "model changed" line was cut keeps its stored model.
             if row.model_key == UNKNOWN and stored is not None and stored.model_key != UNKNOWN:
                 row = replace(row, model_key=stored.model_key)
+            if stored is not None and row.grok_turn_elapsed_ms is None and row.occurred_at == stored.occurred_at:
+                row = replace(row, grok_turn_elapsed_ms=stored.grok_turn_elapsed_ms)
             rows[row.raw_id] = row
     # updates.jsonl is the per-turn ledger and carries Grok Build's own charge;
     # a per-call row from unified.jsonl that a turn already counts is dropped.
-    calls = [(row.raw_id, row.occurred_at, row.input_tokens, row.output_tokens)
-             for row in rows.values() if row.raw_id.startswith(CALL_PREFIX)]
-    turns = [(row.raw_id, row.occurred_at, row.input_tokens, row.output_tokens)
-             for row in rows.values() if row.raw_id.startswith(TURN_PREFIX)]
+    calls, turns = [], []
+    for row in rows.values():
+        if row.raw_id.startswith(CALL_PREFIX):
+            output = calls
+        elif row.raw_id.startswith(TURN_PREFIX):
+            output = turns
+        else:
+            continue
+        output.append(GrokUsage(
+            row.raw_id, row.occurred_at,
+            (row.input_tokens, row.cached_input_tokens, row.cache_write_tokens, row.output_tokens),
+            row.grok_turn_elapsed_ms, bool(row.telemetry_complete and not row.unclassified_tokens),
+        ))
     for raw_id in covered_calls(calls, turns):
         if raw_id in existing:
             delete_event(connection, raw_id)

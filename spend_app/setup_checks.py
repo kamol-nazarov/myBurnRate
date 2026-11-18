@@ -482,4 +482,4 @@ def collection_progress(settings) -> dict:
         for row in latest if row["source"] in local and row["source"] not in RETIRED_SOURCES
     ]
     sources.sort(key=lambda item: item["name"].lower())
-    return {"heartbeat": heartbeat(), "sources": sources}
+    return {"heartbeat": heartbeat(cadence_seconds=settings.local_ingest_interval_seconds), "sources": sources}

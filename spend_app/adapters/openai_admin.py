@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from spend_app.adapters.common import (
     skipped_result,
     stable_id,
 )
+from spend_app.organization import clean_request_count, organization_scope, scoped_raw_id
 from spend_app.pricing import PricingEngine
 
 
@@ -82,6 +84,7 @@ def parse_usage(payload: dict) -> list[UsageRow]:
                     reasoning_tokens=None,
                     cost_usd=None,
                     raw_id=raw_id,
+                    admin_request_count=clean_request_count(result.get("num_model_requests")),
                 )
             )
     return rows
@@ -134,9 +137,10 @@ def fetch_pages(
     *,
     path: str,
     params: dict,
+    observe_response=None,
 ) -> list[dict]:
     from spend_app.adapters.report_pages import fetch
-    return fetch(client, url=f"{BASE_URL}{path}", params=params)
+    return fetch(client, url=f"{BASE_URL}{path}", params=params, observe_response=observe_response)
 
 
 def make_client(admin_key: str) -> httpx.Client:
@@ -165,6 +169,14 @@ def ingest(
         )
     usage_rows: list[UsageRow] = []
     cost_rows: list[CostRow] = []
+    observed_scopes: set[str] = set()
+
+    def observe_response(response: httpx.Response) -> None:
+        scope = organization_scope(SOURCE, response.headers.get("openai-organization"))
+        if scope is not None:
+            observed_scopes.add(scope)
+        if len(observed_scopes) > 1:
+            raise ValueError("OpenAI reported different organizations within one ingest run.")
 
     def collect(http_client: httpx.Client) -> None:
         for payload in fetch_pages(
@@ -177,6 +189,7 @@ def ingest(
                 "group_by": ["model", "project_id", "service_tier", "batch"],
                 "limit": 168,
             },
+            observe_response=observe_response,
         ):
             usage_rows.extend(parse_usage(payload))
         if end.replace(hour=0, minute=0, second=0, microsecond=0) <= start.replace(hour=0, minute=0, second=0, microsecond=0):
@@ -191,6 +204,7 @@ def ingest(
                 "group_by": ["project_id", "line_item"],
                 "limit": 180,
             },
+            observe_response=observe_response,
         ):
             cost_rows.extend(parse_costs(payload))
 
@@ -206,6 +220,16 @@ def ingest(
             source=SOURCE,
             reason=public_error(exc),
         )
+    scope = next(iter(observed_scopes), None)
+    if scope:
+        usage_rows = [
+            replace(row, raw_id=scoped_raw_id(row.raw_id, scope), organization_scope=scope)
+            for row in usage_rows
+        ]
+        cost_rows = [
+            replace(row, raw_id=scoped_raw_id(row.raw_id, scope), organization_scope=scope)
+            for row in cost_rows
+        ]
     return persist_rows(
         database_path=database_path,
         pricing=pricing,

@@ -385,8 +385,9 @@ def test_spoke_fallback_uses_own_id_and_excludes_stale_hub_rows(
     spoke_settings = make_settings(tmp_path / "pair-spoke.db")
     initialize(hub_settings.database_path)
     initialize(spoke_settings.database_path)
-    hub_app = create_app(hub_settings, enable_scheduler=False)
-    spoke_app = create_app(spoke_settings, enable_scheduler=False)
+    now = datetime(2026, 11, 13, 15, tzinfo=UTC)
+    hub_app = create_app(hub_settings, enable_scheduler=False, now=now)
+    spoke_app = create_app(spoke_settings, enable_scheduler=False, now=now)
     hub_client = TestClient(hub_app, base_url=hub_url)
     spoke_client = TestClient(spoke_app)
     headers = {"X-BURNRATE-Request": "1"}
@@ -394,7 +395,6 @@ def test_spoke_fallback_uses_own_id_and_excludes_stale_hub_rows(
         monkeypatch.setenv("BURNRATE_HUB_URL", hub_url)
         monkeypatch.setitem(sync._HUB_TEST_CLIENTS, hub_url, hub_client)
 
-        now = datetime.now(UTC)
         with connect(spoke_settings.database_path) as connection:
             _priced(
                 connection,
@@ -414,7 +414,7 @@ def test_spoke_fallback_uses_own_id_and_excludes_stale_hub_rows(
                         "source": "codex_local",
                         "tool_key": "codex",
                         "model_key": "gpt-5.6-sol",
-                        "occurred_at": _stamp(now - timedelta(minutes=8)),
+                        "occurred_at": _stamp(now - timedelta(days=2, minutes=8)),
                         "input_tokens": 2_000,
                         "cached_input_tokens": 0,
                         "cache_write_tokens": 0,
@@ -481,6 +481,47 @@ def test_spoke_fallback_uses_own_id_and_excludes_stale_hub_rows(
         assert stale_remote.status_code == 200, stale_remote.text
         assert stale_remote.json()["scope"] == "unavailable"
         assert stale_remote.json()["total"]["events"] == 0
+
+        for machine in ("local", "old-paired-machine", "all", paired_id):
+            own_history = machine in {"all", paired_id}
+            expected_scope = "local-fallback" if own_history else "unavailable"
+            expected_tokens = 1_150 if own_history else 0
+            query = {"machine": machine}
+            summary = spoke_client.get("/api/spend/summary", params={**query, "window": "all"}).json()
+            entity = spoke_client.get(
+                "/api/spend/entity", params={**query, "window": "all", "kind": "tool", "key": "codex"},
+            ).json()
+            hud = spoke_client.get("/api/spend/hud", params=query).json()
+            hud_usage = spoke_client.get("/api/spend/hud/usage", params=query).json()
+            week = spoke_client.get("/api/spend/share/week", params=query).json()
+            assert all(view["scope"] == expected_scope for view in (summary, entity, hud, hud_usage, week))
+            assert summary["selectedMachine"] == hud["selectedMachine"] == (
+                "local" if own_history else "_unavailable"
+            )
+            assert summary["totals"]["tokens"] == entity["tokens"] == week["tokens"] == expected_tokens
+            assert hud_usage["navigation"]["todayTokens"] == expected_tokens
+            if not own_history:
+                assert hud["capacity"] == summary["capacity"] == entity["providerLimits"] == []
+                assert summary["navigation"]["dayCoverage"] == []
+                for view in (summary, entity):
+                    assert view["window"]["from"] == view["window"]["to"]
+                    assert view["window"]["buckets"] == 0
+                    assert view["series"] == []
+
+        with connect(hub_settings.database_path) as connection:
+            _priced(connection, raw_id="hub-event", occurred_at=now - timedelta(minutes=5), input_tokens=3_000)
+        monkeypatch.setattr(sync, "_HUB_TEST_CLIENTS", {hub_url: hub_client})
+        sync.clear_hub_proxy_cache()
+        # Run the cold HUD cache fill deterministically, then read the copy
+        # on the next GET as the desktop polling loop normally does.
+        monkeypatch.setattr(sync, "_renew_hub_copy_in_background", lambda _key, read: read())
+        hub_summary = spoke_client.get("/api/spend/summary", params={"machine": "local", "window": "all"}).json()
+        assert hub_summary["totals"]["tokens"] == 3_150
+        assert hub_summary["window"]["from"] < hub_summary["window"]["to"]
+        assert hub_summary["window"]["buckets"] == len(hub_summary["series"]) > 0
+        spoke_client.get("/api/spend/hud", params={"machine": "local"})
+        hub_hud = spoke_client.get("/api/spend/hud", params={"machine": "local"}).json()
+        assert hub_hud["scope"] == "computer"
     finally:
         sync.clear_hub_proxy_cache()
         hub_client.close()

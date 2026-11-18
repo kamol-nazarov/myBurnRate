@@ -3,8 +3,8 @@ param(
     [switch]$DryRun
 )
 
-# Stop only the public dashboard identified by PID file / command line
-# containing spend_app.api or burnrate serve AND listening on 17331.
+# Stop the owned Python dashboard or installed native collector on the
+# configured loopback port (17331 by default).
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'BurnrateRuntime.ps1')

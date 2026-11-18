@@ -6,6 +6,7 @@ import pytest
 
 from spend_app import provider_urgency as pu
 from spend_app.native_desktop import DemoClient, demo_hud, demo_hud_usage
+from spend_app.tab_window import TabModel
 from spend_app.wealthfront_window import merge_provider_entries
 
 NOW = datetime(2026, 11, 17, 12, 0, tzinfo=UTC)
@@ -41,7 +42,7 @@ def row(limit="5h", pct=50.0, fc=None, resets=3.0, **extra):
 def merged(*cards, **kw):
     hud = {"capacity": [dict({"plan": "Max"}, **c) for c in cards]}
     report = {"tools": []}
-    return merge_provider_entries(report, hud=hud, **kw)
+    return merge_provider_entries(report, hud=hud, now=NOW, **kw)
 
 
 def provider(key="claude-code", rows=(), **card):
@@ -186,6 +187,35 @@ def test_level_out_when_the_window_is_empty():
     assert urgency(p) == {"level": "out", "limitKey": "5h", "text": "out · resets in 2h"}
 
 
+def test_tab_prioritizes_exhausted_quota_until_its_reset():
+    p = provider(rows=[row("weekly", 60.0, forecast("dry", 8.0), resets=24.0), row("5h", 100.0)])
+    assert p["urgency"] == {"level": "out", "limitKey": "5h", "text": "out · resets in 3h"}
+
+    model = TabModel()
+    model.publish_report({"providers": [p]})
+    current = model.payload(dark=True, now=NOW)
+    (segment,) = current["segments"]
+    assert (segment["limitKey"], segment["big"], segment["level"]) == ("5h", "0%", "out")
+    assert current["urgentCount"] == 1
+
+    reset = model.payload(dark=True, now=NOW + timedelta(hours=3))
+    (segment,) = reset["segments"]
+    assert (segment["limitKey"], segment["big"], segment["level"]) == ("weekly", "40%", "warn")
+    assert segment["card"]["rows"][1]["muted"]
+    assert reset["urgentCount"] == 0
+
+
+@pytest.mark.parametrize("status", [{"stale": True}, {"unavailable": True}])
+def test_stale_or_unavailable_exhausted_window_does_not_raise_urgency(status):
+    p = provider(rows=[row("5h", 100.0, **status), row("weekly", 60.0, forecast("dry", 8.0), resets=24.0)])
+    assert p["urgency"] == {"level": "warn", "limitKey": "weekly", "text": "dry in ~8h"}
+
+
+def test_rounding_a_tiny_remainder_does_not_claim_exhaustion():
+    p = provider(rows=[row("5h", 99.99), row("weekly", 60.0, forecast("dry", 8.0), resets=24.0)])
+    assert p["urgency"] == {"level": "warn", "limitKey": "weekly", "text": "dry in ~8h"}
+
+
 def test_level_out_for_an_empty_balance():
     p = provider("openrouter", isPayg=True, fundsRemainingUsd=0.0, rows=[])
     assert urgency(p) == {"level": "out", "limitKey": None, "text": "$0.00 balance"}
@@ -272,7 +302,7 @@ def test_sort_key_orders_levels_then_pace_then_remaining():
         {"providerKey": "antigravity", "title": "AG", "rows": [row("weekly", 40.0, None)]},
         {"providerKey": "opencode-go", "title": "OG", "rows": [row("weekly", 44.0, forecast("dry", 32.0, 60.0))]},
     ]
-    ordered = sorted(merged(*cards), key=pu.sort_key)
+    ordered = sorted(merged(*cards), key=lambda provider: pu.sort_key(provider, NOW))
     assert [p["key"] for p in ordered] == [
         "claude-code",  # soon, dry in 1h
         "zcode",  # soon, 1% left with no pace
@@ -289,8 +319,8 @@ def test_sort_key_orders_levels_then_pace_then_remaining():
 def test_sort_key_breaks_ties_inside_a_level_by_remaining():
     first = provider("a", rows=[row("weekly", 60.0)])
     second = provider("b", rows=[row("weekly", 20.0)])
-    assert pu.sort_key(first)[0] == pu.sort_key(second)[0] == pu.LEVEL_RANK["ok"]
-    assert pu.sort_key(first) < pu.sort_key(second)  # 40% left sorts before 80% left
+    assert pu.sort_key(first, NOW)[0] == pu.sort_key(second, NOW)[0] == pu.LEVEL_RANK["ok"]
+    assert pu.sort_key(first, NOW) < pu.sort_key(second, NOW)  # 40% left sorts before 80% left
 
 
 # ---- formatting -------------------------------------------------------

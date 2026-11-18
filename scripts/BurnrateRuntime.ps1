@@ -9,6 +9,13 @@ $ErrorActionPreference = 'Stop'
 $script:BurnrateTaskName = 'BURNRATE Dashboard'
 $script:BurnrateHost = '127.0.0.1'
 $script:BurnratePort = 17331
+if (-not [string]::IsNullOrWhiteSpace($env:BURNRATE_PORT)) {
+    $configuredPort = 0
+    if (-not [int]::TryParse($env:BURNRATE_PORT, [ref]$configuredPort) -or $configuredPort -lt 1 -or $configuredPort -gt 65535) {
+        throw 'BURNRATE_PORT must be an integer between 1 and 65535.'
+    }
+    $script:BurnratePort = $configuredPort
+}
 $script:BurnrateMutexName = 'Local\BURNRATE-Dashboard'
 $script:BurnrateAppSpec = 'spend_app.api:app'
 $script:BurnrateLaunchModule = 'spend_app.service'
@@ -208,23 +215,88 @@ function Get-BurnrateLaunchSpec {
     }
 }
 
+function ConvertTo-BurnrateLocalFilePath {
+    param([string]$Path)
+    if ($Path -match '^[A-Z]:[\\/]') {
+        try {
+            return [IO.Path]::GetFullPath($Path)
+        } catch {
+            return $null
+        }
+    }
+}
+
+function Resolve-InstalledBurnrateExecutable {
+    # Read the installer registration without invoking the desktop download helper.
+    $registered = Get-ItemPropertyValue -LiteralPath 'HKCU:\Software\BURNRATE Native' -Name 'InstallDir' -ErrorAction SilentlyContinue
+    $folders = @($registered)
+    if ($env:LOCALAPPDATA) {
+        $folders += Join-Path $env:LOCALAPPDATA 'Programs\BURNRATE'
+    }
+    foreach ($folder in $folders) {
+        $root = ConvertTo-BurnrateLocalFilePath -Path $folder
+        if (-not $root) {
+            continue
+        }
+        $exe = Join-Path $root 'BURNRATE.exe'
+        $marker = Join-Path $root 'BURNRATE.installed'
+        if (-not (Test-Path -LiteralPath $exe -PathType Leaf) -or -not (Test-Path -LiteralPath $marker -PathType Leaf)) {
+            continue
+        }
+        try {
+            $install = Get-Content -LiteralPath $marker -Raw | ConvertFrom-Json -ErrorAction Stop
+            if ($install.installer -ceq 'nsis') {
+                return (Resolve-Path -LiteralPath $exe).ProviderPath
+            }
+        } catch {
+            continue
+        }
+    }
+}
+
+function Get-BurnrateNativeLaunchSpec {
+    param([Parameter(Mandatory = $true)][string]$FilePath)
+    [pscustomobject]@{
+        FilePath         = $FilePath
+        ArgumentString   = "--service --port $($script:BurnratePort)"
+        WorkingDirectory = Split-Path -Parent $FilePath
+        PidFile          = Get-BurnratePidFile
+        IsNative         = $true
+    }
+}
+
+function Test-BurnrateNativeService {
+    param($Process, [string]$InstalledExecutable)
+    if (-not $Process -or -not $InstalledExecutable) {
+        return $false
+    }
+    $image = ConvertTo-BurnrateLocalFilePath -Path $Process.ExecutablePath
+    if ($image -ine $InstalledExecutable) {
+        return $false
+    }
+    # The frozen entry point recognizes the service only as its first argument.
+    # Accept the exact command produced by NativeClient.ensure_service.
+    if ([string]$Process.CommandLine -cnotmatch '^(?:"(?<image>[^"]+)"|(?<image>[^"\s]+))\s+--service\s+--port\s+(?<port>[0-9]+)\s*$') {
+        return $false
+    }
+    $commandImage = ConvertTo-BurnrateLocalFilePath -Path $Matches.image
+    $commandPort = 0
+    return ($commandImage -ieq $image) -and [int]::TryParse($Matches.port, [ref]$commandPort) -and
+        ($commandPort -eq $script:BurnratePort)
+}
+
 function Test-BurnrateCommandLine {
     param([string]$CommandLine)
     if ([string]::IsNullOrWhiteSpace($CommandLine)) {
         return $false
     }
-    $markers = @(
-        'spend_app.api',
-        'burnrate serve',
-        'spend_app.service',
-        '-m spend_app'
-    )
-    foreach ($marker in $markers) {
-        if ($CommandLine.IndexOf($marker, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
-            return $true
-        }
-    }
-    return $false
+    $prefix = '^(?:"[^"]+"|[^"\s]+)\s+'
+    $python = $prefix + '(?:-[A-Z]+\s+)*'
+    return ($CommandLine -match ($python + '-m\s+spend_app\.service(?:\s|$)')) -or
+        ($CommandLine -match ($python + '-m\s+spend_app(?:\.cli)?\s+serve(?:\s|$)')) -or
+        ($CommandLine -match ($python + '-m\s+uvicorn\s+spend_app\.api:app(?:\s|$)')) -or
+        ($CommandLine -match ($python + '(?:"[^"]*\\burnrate\.exe"|[^"\s]*\\burnrate\.exe)\s+serve(?:\s|$)')) -or
+        ($CommandLine -match '^(?:"[^"]*uvicorn\.exe"|[^"\s]*uvicorn\.exe)\s+spend_app\.api:app(?:\s|$)')
 }
 
 function Get-BurnrateListeners {
@@ -245,10 +317,43 @@ function Get-BurnrateProcessById {
 
 function Test-BurnrateOwnedProcess {
     param($Process)
-    if (-not $Process) {
+    if (-not $Process -or -not $Process.ExecutablePath -or -not $Process.CommandLine) {
         return $false
     }
-    return Test-BurnrateCommandLine -CommandLine $Process.CommandLine
+    $name = Split-Path -Leaf $Process.ExecutablePath
+    if ($name -in @('python.exe', 'pythonw.exe', 'uvicorn.exe') -or
+        ($env:BURNRATE_PYTHON -and $Process.ExecutablePath -ieq $env:BURNRATE_PYTHON)) {
+        return Test-BurnrateCommandLine -CommandLine $Process.CommandLine
+    }
+    # A direct wheel launcher is normally represented by its Python child at
+    # the socket. If a venv console launcher owns it, accept only our venvs.
+    if ($name -ieq 'burnrate.exe') {
+        $image = ConvertTo-BurnrateLocalFilePath -Path $Process.ExecutablePath
+        $repositoryLauncher = Join-Path (Get-BurnrateRepoRoot) '.venv\Scripts\burnrate.exe'
+        $dataLauncher = Join-Path (Get-BurnrateDataRoot) 'venv\Scripts\burnrate.exe'
+        return ($image -in @($repositoryLauncher, $dataLauncher)) -and
+            ([string]$Process.CommandLine -match '^(?:"[^"]+"|[^"\s]+)\s+serve(?:\s|$)')
+    }
+    return $false
+}
+
+function Get-BurnrateListenerOwner {
+    param($Listener, [int]$RecordedPid, [string]$InstalledExecutable)
+    $processId = [int]$Listener.OwningProcess
+    if ($processId -le 0 -or $Listener.LocalPort -ne $script:BurnratePort -or
+        $Listener.LocalAddress -notin @('127.0.0.1', '::1')) {
+        return
+    }
+    $process = Get-BurnrateProcessById -ProcessId $processId
+    if (-not $process -or $process.ProcessId -ne $processId) {
+        return
+    }
+    if ($processId -eq $RecordedPid -and (Test-BurnrateNativeService -Process $process -InstalledExecutable $InstalledExecutable)) {
+        return [pscustomobject]@{ Process = $process; NativeExecutable = $InstalledExecutable }
+    }
+    if (Test-BurnrateOwnedProcess -Process $process) {
+        return [pscustomobject]@{ Process = $process; NativeExecutable = $null }
+    }
 }
 
 function Read-BurnratePidFile {
@@ -261,10 +366,11 @@ function Read-BurnratePidFile {
         return $null
     }
     $raw = $raw.Trim()
-    if ($raw -notmatch '^\d+$') {
+    $processId = 0
+    if ($raw -notmatch '^\d+$' -or -not [int]::TryParse($raw, [ref]$processId) -or $processId -le 0) {
         return $null
     }
-    return [int]$raw
+    return $processId
 }
 
 function Write-BurnratePidFile {
@@ -336,13 +442,13 @@ function Test-BurnrateTaskPayload {
     if ($execute.IndexOf('pythonw', [StringComparison]::OrdinalIgnoreCase) -lt 0) {
         return $false
     }
-    if ($arguments.IndexOf([string]$script:BurnratePort, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+    if ($arguments -notmatch "(?:^|\s)--port(?:\s+|=)$($script:BurnratePort)(?:\s|$)") {
         return $false
     }
-    if ($arguments.IndexOf($script:BurnrateHost, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+    if ($arguments -notmatch "(?:^|\s)--host(?:\s+|=)$([regex]::Escape($script:BurnrateHost))(?:\s|$)") {
         return $false
     }
-    return Test-BurnrateCommandLine -CommandLine "$execute $arguments"
+    return Test-BurnrateCommandLine -CommandLine ('"' + $execute.Trim('"') + '" ' + $arguments)
 }
 
 function Register-BurnrateDashboardTask {
@@ -480,40 +586,75 @@ function Unregister-BurnrateWatchdogTask {
 }
 
 function Start-BurnrateDashboard {
-    param([switch]$DryRun)
+    param([switch]$DryRun, [string]$NativeExecutable)
 
-    if (-not $DryRun) {
-        Initialize-BurnrateDirectories
+    $installedExecutable = Resolve-InstalledBurnrateExecutable
+    $recordedPid = Read-BurnratePidFile
+    $listeners = @(Get-BurnrateListeners)
+    foreach ($listener in $listeners) {
+        $owner = Get-BurnrateListenerOwner -Listener $listener -RecordedPid $recordedPid -InstalledExecutable $installedExecutable
+        if ($owner -and -not $DryRun -and (-not $NativeExecutable -or $owner.NativeExecutable -ieq $NativeExecutable)) {
+            Clear-BurnrateStopMarker
+            Write-BurnratePidFile -ProcessId $owner.Process.ProcessId
+            Write-Host "BURNRATE dashboard already listening on $($script:BurnrateHost):$($script:BurnratePort) (PID $($owner.Process.ProcessId))"
+            return
+        }
+        if ($owner.NativeExecutable -and -not $NativeExecutable) {
+            $NativeExecutable = $owner.NativeExecutable
+        }
     }
-    $launch = Get-BurnrateLaunchSpec -AllowMissingPython:$DryRun
+    if ($listeners.Count -gt 0 -and -not $DryRun) {
+        throw "Port $($script:BurnratePort) is already owned by PID $($listeners[0].OwningProcess). Not stealing it."
+    }
+
+    if ($NativeExecutable) {
+        if ($NativeExecutable -ine $installedExecutable) {
+            throw 'BURNRATE native installation changed while restarting.'
+        }
+        $launch = Get-BurnrateNativeLaunchSpec -FilePath $NativeExecutable
+    } else {
+        try {
+            $launch = Get-BurnrateLaunchSpec
+        } catch {
+            if ($installedExecutable) {
+                $launch = Get-BurnrateNativeLaunchSpec -FilePath $installedExecutable
+            } elseif ($DryRun) {
+                $launch = Get-BurnrateLaunchSpec -AllowMissingPython
+            } else {
+                throw
+            }
+        }
+    }
 
     if ($DryRun) {
-        Write-Host "DryRun: would start pythonw -m spend_app ($($launch.FilePath) $($launch.ArgumentString))"
+        Write-Host "DryRun: would start $($launch.FilePath) $($launch.ArgumentString)"
         Write-Host "DryRun: working directory $($launch.WorkingDirectory)"
         Write-Host "DryRun: mutex $($script:BurnrateMutexName); pid file $($launch.PidFile)"
         return
     }
 
+    Initialize-BurnrateDirectories
     Clear-BurnrateStopMarker
-    $listeners = @(Get-BurnrateListeners)
+    $started = Start-BurnrateDashboardProcess -Launch $launch
+    Write-BurnratePidFile -ProcessId $started.Id
+    Wait-BurnrateHealth
+    Assert-BurnrateLoopbackBind
+    Write-Host "BURNRATE dashboard listening on $($script:BurnrateHost):$($script:BurnratePort) (PID $($started.Id))"
+}
 
-    if ($listeners.Count -gt 0) {
-        $foreign = $false
-        foreach ($listener in $listeners) {
-            $process = Get-BurnrateProcessById -ProcessId ([int]$listener.OwningProcess)
-            if (Test-BurnrateOwnedProcess -Process $process) {
-                Write-BurnratePidFile -ProcessId ([int]$listener.OwningProcess)
-                Write-Host "BURNRATE dashboard already listening on $($script:BurnrateHost):$($script:BurnratePort) (PID $($listener.OwningProcess))"
-                return
-            }
-            $foreign = $true
-        }
-        if ($foreign) {
-            $owner = $listeners[0]
-            throw "Port $($script:BurnratePort) is already owned by PID $($owner.OwningProcess). Not stealing it."
+function Start-BurnrateDashboardProcess {
+    param([Parameter(Mandatory = $true)]$Launch)
+    if ($Launch.IsNative) {
+        # The windowless collector outlives this wrapper. The Windows shell
+        # launcher keeps a caller's captured console pipes out of the child.
+        $previousHost = $env:BURNRATE_HOST
+        try {
+            $env:BURNRATE_HOST = $script:BurnrateHost
+            return Start-Process -FilePath $Launch.FilePath -ArgumentList $Launch.ArgumentString -WorkingDirectory $Launch.WorkingDirectory -WindowStyle Hidden -PassThru
+        } finally {
+            $env:BURNRATE_HOST = $previousHost
         }
     }
-
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $launch.FilePath
     $psi.Arguments = $launch.ArgumentString
@@ -525,62 +666,53 @@ function Start-BurnrateDashboard {
     if (-not $started) {
         throw "Failed to start $($launch.FilePath)"
     }
-    Write-BurnratePidFile -ProcessId $started.Id
-    try {
-        Wait-BurnrateHealth
-        Assert-BurnrateLoopbackBind
-    } catch {
-        throw
-    }
-    Write-Host "BURNRATE dashboard listening on $($script:BurnrateHost):$($script:BurnratePort) (PID $($started.Id))"
+    return $started
 }
 
 function Stop-BurnrateDashboard {
     param([switch]$DryRun)
 
-    $targets = @()
+    $targets = @{}
     $pidValue = Read-BurnratePidFile
-    if ($pidValue) {
-        $fromFile = Get-BurnrateProcessById -ProcessId $pidValue
-        if (Test-BurnrateOwnedProcess -Process $fromFile) {
-            $ownsPort = @(Get-BurnrateListeners | Where-Object { [int]$_.OwningProcess -eq $pidValue }).Count -gt 0
-            if ($ownsPort) {
-                $targets += $pidValue
-            } else {
-                Write-Host "PID file $pidValue looks like BURNRATE but is not listening on port $($script:BurnratePort); leaving it running."
-            }
-        } elseif ($fromFile -and -not $fromFile.CommandLine) {
-            Write-Host "Refusing to stop PID $pidValue because the command line is unreadable."
-        } elseif ($fromFile) {
-            Write-Host "PID file $pidValue is not a BURNRATE dashboard process; leaving it running."
-        }
-    }
-
+    $installedExecutable = Resolve-InstalledBurnrateExecutable
     foreach ($listener in @(Get-BurnrateListeners)) {
-        $processId = [int]$listener.OwningProcess
-        $process = Get-BurnrateProcessById -ProcessId $processId
-        if ((Test-BurnrateOwnedProcess -Process $process) -and ($targets -notcontains $processId)) {
-            $targets += $processId
+        $owner = Get-BurnrateListenerOwner -Listener $listener -RecordedPid $pidValue -InstalledExecutable $installedExecutable
+        if ($owner) {
+            $targets[[int]$listener.OwningProcess] = $owner.Process
         }
     }
 
+    if ($pidValue -and -not $targets.ContainsKey($pidValue)) {
+        Write-Host "PID file $pidValue is not listening on port $($script:BurnratePort) as an owned BURNRATE dashboard; leaving it running."
+    }
     if ($targets.Count -eq 0) {
-        if (-not $DryRun) {
-            Remove-BurnratePidFile
-        }
-        Write-Host 'BURNRATE dashboard is not running.'
+        Write-Host "No owned BURNRATE dashboard is listening on port $($script:BurnratePort)."
         return
     }
 
-    foreach ($processId in $targets) {
+    foreach ($processId in $targets.Keys) {
         if ($DryRun) {
             Write-Host "DryRun: would stop BURNRATE dashboard PID $processId (port $($script:BurnratePort) only)"
             continue
         }
-        Stop-Process -Id $processId -ErrorAction SilentlyContinue
+        $observed = $targets[$processId]
+        $listener = Get-BurnrateListeners | Where-Object { $_.OwningProcess -eq $processId } | Select-Object -First 1
+        $owner = Get-BurnrateListenerOwner -Listener $listener -RecordedPid (Read-BurnratePidFile) -InstalledExecutable $installedExecutable
+        if (-not $owner -or $owner.Process.CreationDate -ne $observed.CreationDate) {
+            continue
+        }
+        Stop-BurnrateProcessAndWait -ProcessId $processId
         Write-Host "Stopped BURNRATE dashboard (PID $processId)"
     }
-    if (-not $DryRun) {
+}
+
+function Stop-BurnrateProcessAndWait {
+    param([int]$ProcessId)
+    $stopped = Stop-Process -Id $ProcessId -PassThru -ErrorAction Stop
+    if (-not $stopped.WaitForExit(10000)) {
+        throw "Timed out stopping BURNRATE dashboard PID $ProcessId."
+    }
+    if ((Read-BurnratePidFile) -eq $ProcessId) {
         Remove-BurnratePidFile
     }
 }
@@ -591,19 +723,22 @@ function Stop-BurnrateStartingInstance {
     # the listener is gone; it matches the service launch line on this port and
     # never the watchdog (spend_app.watchdog) or other spend_app commands.
     param([switch]$DryRun)
-    $port = [string]$script:BurnratePort
-    $stuck = @(Get-CimInstance -ClassName Win32_Process -Filter "CommandLine like '%$($script:BurnrateLaunchModule)%'" -ErrorAction SilentlyContinue | Where-Object {
-        $line = [string]$_.CommandLine
-        $_.ProcessId -ne $PID -and $line.IndexOf("--port $port", [StringComparison]::OrdinalIgnoreCase) -ge 0
-    })
-    foreach ($process in $stuck) {
-        if ($DryRun) {
-            Write-Host "DryRun: would stop unresponsive BURNRATE dashboard PID $($process.ProcessId)"
-            continue
-        }
-        Stop-Process -Id $process.ProcessId -ErrorAction SilentlyContinue
-        Write-Host "Stopped unresponsive BURNRATE dashboard (PID $($process.ProcessId))"
+    $processId = Read-BurnratePidFile
+    if (-not $processId -or @(Get-BurnrateListeners).Count -gt 0) {
+        return
     }
+    $process = Get-BurnrateProcessById -ProcessId $processId
+    if (-not (Test-BurnrateOwnedProcess -Process $process) -or $process.ProcessId -ne $processId -or
+        $process.CommandLine -notmatch '\s-m\s+spend_app\.service(?:\s|$)' -or
+        $process.CommandLine -notmatch "\s--port(?:\s+|=)$($script:BurnratePort)(?:\s|$)") {
+        return
+    }
+    if ($DryRun) {
+        Write-Host "DryRun: would stop unresponsive BURNRATE dashboard PID $processId"
+        return
+    }
+    Stop-BurnrateProcessAndWait -ProcessId $processId
+    Write-Host "Stopped unresponsive BURNRATE dashboard (PID $processId)"
 }
 
 function Restart-BurnrateDashboard {
@@ -611,7 +746,19 @@ function Restart-BurnrateDashboard {
         [string]$TaskName = $script:BurnrateTaskName,
         [switch]$DryRun
     )
+    $recordedPid = Read-BurnratePidFile
+    $installedExecutable = Resolve-InstalledBurnrateExecutable
+    $nativeExecutable = $null
+    if ($recordedPid -and $installedExecutable) {
+        $listener = Get-BurnrateListeners | Where-Object { $_.OwningProcess -eq $recordedPid } | Select-Object -First 1
+        $owner = Get-BurnrateListenerOwner -Listener $listener -RecordedPid $recordedPid -InstalledExecutable $installedExecutable
+        $nativeExecutable = $owner.NativeExecutable
+    }
     Stop-BurnrateDashboard -DryRun:$DryRun
+    if ($nativeExecutable) {
+        Start-BurnrateDashboard -DryRun:$DryRun -NativeExecutable $nativeExecutable
+        return
+    }
     Stop-BurnrateStartingInstance -DryRun:$DryRun
     $task = Get-BurnrateScheduledTask -TaskName $TaskName
     $viaTask = $task -and (Test-BurnrateTaskPayload -Task $task)

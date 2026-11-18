@@ -19,6 +19,7 @@ import subprocess
 from pathlib import Path
 
 _SAFE = re.compile(r"[A-Za-z0-9_.@:/+-]+")
+_GIT_OID = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 
 _VERIFY_HEALTH = """import json
 import sys
@@ -124,22 +125,102 @@ def reset_hub_password(
     return 0
 
 
+def _update_failed(step: list[str], completed: subprocess.CompletedProcess, echo) -> int:
+    echo((completed.stderr or completed.stdout or "").strip()[-2000:])
+    echo(f"Hub update stopped: {step[0]} exited with {completed.returncode}.")
+    return completed.returncode
+
+
+def _try_staging_cleanup(ssh: str, checkout: str, cleanup: str, run) -> None:
+    try:
+        run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", ssh, f"{checkout} && {cleanup}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
 def update_hub(*, ssh: str, path: str, service: str, branch: str, push_local: bool = False,
                dry_run: bool = False, port: int = 17331, run=subprocess.run, echo=print) -> int:
     if not ssh:
         echo("Name the hub's ssh host with --ssh or BURNRATE_HUB_SSH (for example: --ssh my-hub).")
         return 2
     for label, value in (("ssh host", ssh), ("path", path), ("service", service), ("branch", branch)):
-        if not _SAFE.fullmatch(value or ""):
+        if not _SAFE.fullmatch(value or "") or value.startswith("-"):
             echo(f"Refusing an unusual {label}: {value!r}")
             return 2
-    steps: list[list[str]] = []
+
+    def execute(step: list[str]) -> subprocess.CompletedProcess:
+        echo("$ " + " ".join(shlex.quote(part) for part in step))
+        if dry_run:
+            return subprocess.CompletedProcess(step, 0, "", "")
+        return run(step, capture_output=True, text=True)
+
+    checkout = f"cd -- {shlex.quote(path)}"
+    branch_name = shlex.quote(branch)
+    branch_ref = shlex.quote(f"refs/heads/{branch}")
+    cleanup = ""
+    remote = checkout
+    # Serialize source changes, installs and restart against other updater runs.
+    # The kernel releases the lock when the shell closes the descriptor.
+    lock = (
+        'git_dir=$(git rev-parse --git-common-dir)'
+        ' && exec 9>"$git_dir/burnrate-update.lock"'
+        ' && { flock -n 9 || { echo "Could not lock the hub checkout for update." >&2; exit 1; }; }'
+    )
+    clean_worktree = 'worktree_status=$(git status --porcelain) && test -z "$worktree_status"'
     if push_local:
-        # Unpublished work: push this commit to its own branch, then check it out there.
-        steps.append(["git", "push", f"{ssh}:{path}", f"HEAD:refs/heads/{branch}"])
-        remote = f'cd {path} && test -z "$(git status --porcelain)" && git checkout {branch}'
+        resolve = ["git", "rev-parse", "--verify", "HEAD^{commit}"]
+        completed = execute(resolve)
+        if completed.returncode:
+            return _update_failed(resolve, completed, echo)
+        oid = (completed.stdout or "").strip()
+        if not dry_run and not _GIT_OID.fullmatch(oid):
+            echo("Hub update stopped: could not determine the local commit.")
+            return 2
+        oid = oid or "<local-head-commit>"
+        staging_ref = f"refs/burnrate/update/{secrets.token_hex(16)}"
+        expected = shlex.quote(oid)
+        # Compare-and-delete prevents cleanup from dropping a replaced ref.
+        cleanup = f"git update-ref -d {staging_ref} {expected}"
+        push = [
+            "git",
+            "push",
+            "--no-follow-tags",
+            "--no-recurse-submodules",
+            f"--force-with-lease={staging_ref}:",
+            f"{ssh}:{path}",
+            f"{oid}:{staging_ref}",
+        ]
+        push_confirmed = False
+        try:
+            completed = execute(push)
+            push_confirmed = completed.returncode == 0
+        finally:
+            if not push_confirmed:
+                # The ref may have been created before the push lost its reply.
+                _try_staging_cleanup(ssh, checkout, cleanup, run)
+        if completed.returncode:
+            return _update_failed(push, completed, echo)
+
+        cleanup_trap = shlex.quote(f"{cleanup} >/dev/null 2>&1 || :")
+        remote += (
+            f" && trap {cleanup_trap} 0 && {lock} && {clean_worktree}"
+            f" && staged=$(git show-ref --verify --hash {staging_ref})"
+            f' && test "$staged" = {expected}'
+            f" && git show-ref --verify --quiet {branch_ref}"
+            f" && git merge-base --is-ancestor {branch_ref} {expected}"
+            f" && git checkout {branch_name}"
+            f" && current_branch=$(git symbolic-ref --quiet HEAD) && test \"$current_branch\" = {branch_ref}"
+            f" && git merge --ff-only {expected}"
+            f" && current_commit=$(git rev-parse --verify HEAD) && test \"$current_commit\" = {expected}"
+        )
     else:
-        remote = f'cd {path} && test -z "$(git status --porcelain)" && git fetch origin && git checkout {branch} && git merge --ff-only origin/{branch}'
+        upstream = shlex.quote(f"refs/remotes/origin/{branch}")
+        remote += f" && {lock} && {clean_worktree} && git fetch origin && git checkout {branch_name} && git merge --ff-only {upstream}"
     # Updating source alone leaves the old dependency/trust bundle installed.
     # Stop before restart unless both the installed package and host guard pass.
     remote += " && .venv/bin/python -m pip install --require-hashes -r requirements-build.txt && .venv/bin/python -m pip install --no-deps --no-build-isolation . && .venv/bin/python -m pip check"
@@ -151,22 +232,22 @@ def update_hub(*, ssh: str, path: str, service: str, branch: str, push_local: bo
     remote += f" && sudo systemctl restart {service} && sleep 4"
     remote += f" && health_json=$(curl --fail --silent --show-error --max-time 10 {health_url})"
     remote += f' && .venv/bin/python -I -B -c {shlex.quote(_VERIFY_HEALTH)} "$health_json"'
-    steps.append(["ssh", ssh, remote])
-    output = ""
-    for step in steps:
-        echo("$ " + " ".join(shlex.quote(part) for part in step))
-        if dry_run:
-            continue
-        completed = run(step, capture_output=True, text=True)
-        if completed.returncode != 0:
-            echo((completed.stderr or completed.stdout or "").strip()[-2000:])
-            echo(f"Hub update stopped: {step[0]} exited with {completed.returncode}.")
-            return completed.returncode
-        output = completed.stdout or ""
+    step = ["ssh", ssh, remote]
+    transport_finished = False
+    try:
+        completed = execute(step)
+        transport_finished = completed.returncode != 255
+    finally:
+        if cleanup and not transport_finished:
+            # SSH may have failed before the remote shell could install its trap.
+            # A retry uses a new ref even if the hub is currently unreachable.
+            _try_staging_cleanup(ssh, checkout, cleanup, run)
+    if completed.returncode:
+        return _update_failed(step, completed, echo)
     if dry_run:
         return 0
     try:
-        reported = json.loads(output.strip().splitlines()[-1])
+        reported = json.loads((completed.stdout or "").strip().splitlines()[-1])
         echo(f"Hub is healthy; installed build {reported.get('build') or reported.get('version')}.")
     except (ValueError, IndexError, AttributeError):
         echo("Hub restarted; it did not report its build yet. Check it again in a minute.")

@@ -3733,6 +3733,9 @@ html.is-comfortable .quick-plan-banner { padding: 11px 12px; }
   justify-content: space-between;
   gap: 6px;
 }
+.h9-detail-view[data-unavailable] > :not(.h9-detail-topbar, #h9DetailStatus) {
+  display: none;
+}
 .h9-detail-share-track {
   height: 7px;
   border-radius: 999px;
@@ -4549,6 +4552,7 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
         </button>
       </div>
 
+      <p class="h9-empty" id="h9DetailStatus" role="status" hidden></p>
       <article class="h9-card">
         <div class="h9-card-head">
           <div>
@@ -4813,6 +4817,7 @@ const state = {
   h9View: "overview",
   h9Entity: null,
   h9Summary: null,
+  h9SummaryScope: null,
   h9EntityData: null,
   h9Health: null,
   h9SortKey: "value",
@@ -4824,6 +4829,7 @@ const state = {
   h9DetailHover: null,
   h9DetailPinned: null,
   h9Request: 0,
+  h9DetailRequest: 0,
   h9DetailReturnFocus: null,
   h9SavedScrollTop: 0,
   h9RangeAnchorId: null,
@@ -4986,6 +4992,43 @@ function getSeriesPoints(report) {
   return [];
 }
 
+function h9ScopeKey(tool = state.tool) {
+  return JSON.stringify([state.analyticsWindow, state.machine, tool || "all"]);
+}
+
+function filteredHeroSummary() {
+  return state.tool !== "all" && state.h9SummaryScope === h9ScopeKey()
+    ? state.h9Summary
+    : null;
+}
+
+function filteredHeroSeries(summary) {
+  let tokens = 0;
+  let value = 0;
+  let hasPricedUsage = false;
+  let complete = true;
+  const buckets = summary?.series || [];
+  const hasPricing = buckets.some(bucket => Object.hasOwn(bucket, "bucketUsd"));
+  return buckets.map(bucket => {
+    const bucketTokens = Number(bucket.total || 0);
+    const bucketUsd = h9Finite(bucket.bucketUsd);
+    tokens += bucketTokens;
+    if (bucketUsd != null) {
+      value += bucketUsd;
+      hasPricedUsage ||= bucketTokens > 0 || bucketUsd !== 0;
+    }
+    complete &&= bucket.bucketUsdComplete !== false && bucketUsd != null;
+    return {
+      label: bucket.label,
+      tokens: bucketTokens,
+      cumulativeTokens: tokens,
+      bucketUsd,
+      cumulativeUsd: hasPricing && (!tokens || hasPricedUsage) ? value : null,
+      cumulativeUsdComplete: complete
+    };
+  });
+}
+
 /* No recorded usage at all: nothing to plot, so draw an honest flat baseline instead of a synthetic climb. */
 function reportIsEmpty(data) {
   if (!data || data.scope === "unavailable") return false;
@@ -5000,11 +5043,23 @@ function renderChart(animate = false) {
   const h = Math.max(38, wrap.clientHeight || 44);
   svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
 
-  const flat = reportIsEmpty(state.report);
-  const measured = flat ? [] : getSeriesPoints(state.report);
+  const scope = JSON.stringify([state.period, h9ScopeKey()]);
+  if (wrap._chartScope !== scope) {
+    wrap._chartScope = scope;
+    wrap._scrubIdx = null;
+  }
+  const filtered = state.tool !== "all";
+  const summary = filteredHeroSummary();
+  const flat = filtered
+    ? !!summary?.totals && Number(summary.totals.records || 0) === 0
+    : reportIsEmpty(state.report);
+  const measured = flat ? [] : filtered ? filteredHeroSeries(summary) : getSeriesPoints(state.report);
   const noSeries = !flat && !!state.report && state.report.scope !== "unavailable" && measured.length < 2;
   wrap.classList.toggle("no-series", noSeries);
-  paintChartAxis(measured);
+  const hasUsd = !filtered || flat || measured.some(point =>
+    point.cumulativeUsd != null && (point.cumulativeTokens > 0 || point.cumulativeUsd !== 0)
+  );
+  paintChartAxis(measured, summary);
   if (!flat && measured.length < 2) {
     svg.innerHTML = `
       <line x1="5" y1="${h - 3}" x2="${w - 5}" y2="${h - 3}" class="ch-grid" stroke-width="1" stroke-dasharray="2.5 2.5"/>
@@ -5012,6 +5067,7 @@ function renderChart(animate = false) {
       <circle id="scrubDot" cx="0" cy="0" r="0" style="display:none"/>
     `;
     wrap._coords = [];
+    wrap._scrubIdx = null;
     return;
   }
   const series = flat ? [{ cumulativeUsd: 0 }, { cumulativeUsd: 0 }] : measured;
@@ -5021,7 +5077,7 @@ function renderChart(animate = false) {
   const plotW = w - padX * 2;
   const plotH = h - padTop - padBot;
 
-  const vals = series.map(p => Number(p.cumulativeUsd || 0));
+  const vals = series.map(p => Number((hasUsd ? p.cumulativeUsd : p.cumulativeTokens) || 0));
   const maxV = Math.max(...vals, 0.01);
   const minV = 0;
 
@@ -5029,7 +5085,7 @@ function renderChart(animate = false) {
   const slot = plotW / series.length;
   const coords = series.map((p, i) => {
     const x = padX + slot * (i + 0.5);
-    const norm = maxV > minV ? (Number(p.cumulativeUsd || 0) - minV) / (maxV - minV) : 0;
+    const norm = (vals[i] - minV) / (maxV - minV);
     const y = padTop + plotH * (1 - norm * 0.92);
     return [x, y, p, i];
   });
@@ -5038,7 +5094,7 @@ function renderChart(animate = false) {
   const first = coords[0];
   const last = coords[coords.length - 1];
   const areaD = `${lineD} L ${last[0].toFixed(1)} ${(h - 3).toFixed(1)} L ${first[0].toFixed(1)} ${(h - 3).toFixed(1)} Z`;
-  const buckets = series.map(p => Math.max(0, Number(p.bucketUsd || 0)));
+  const buckets = series.map(p => Math.max(0, Number((hasUsd ? p.bucketUsd : p.tokens) || 0)));
   const maxB = Math.max(...buckets, 0);
   const barW = Math.max(1.5, slot * 0.58);
   const bars = maxB > 0 ? buckets.map((v, i) => {
@@ -5055,6 +5111,7 @@ function renderChart(animate = false) {
       <circle id="scrubDot" cx="0" cy="0" r="0" style="display:none"/>
     `;
     wrap._coords = [];
+    wrap._scrubIdx = null;
     return;
   }
 
@@ -5081,13 +5138,14 @@ function renderChart(animate = false) {
   if (wrap._scrubIdx !== null && wrap._scrubIdx !== undefined) scrubTo(wrap._scrubIdx);
 }
 
-function axisStartLabel(report, series) {
-  const iso = report?.activeFrom || (state.period !== "all" ? report?.from : null);
+function axisStartLabel(report, series, summary) {
+  const iso = summary?.window?.from || report?.activeFrom || (state.period !== "all" ? report?.from : null);
   const t = iso ? Date.parse(iso) : NaN;
   if (Number.isFinite(t) && new Date(t).getUTCFullYear() >= 2000) {
-    const opts = state.period === "today" ? { hour: "numeric", minute: "2-digit" } : { month: "short", day: "numeric" };
+    const shortWindow = summary ? H9_SHORT_WINDOWS.has(summary.window?.key) : state.period === "today";
+    const opts = shortWindow ? { hour: "numeric", minute: "2-digit" } : { month: "short", day: "numeric" };
     try {
-      return new Date(t).toLocaleString([], { ...opts, timeZone: report.timezone || undefined });
+      return new Date(t).toLocaleString([], { ...opts, timeZone: summary?.displayTimezone || report?.timezone || undefined });
     } catch (e) {
       return new Date(t).toLocaleString([], opts);
     }
@@ -5095,12 +5153,12 @@ function axisStartLabel(report, series) {
   return series.length ? String(series[0].label || "") : "";
 }
 
-function paintChartAxis(series) {
+function paintChartAxis(series, summary) {
   const start = document.getElementById("chartAxisStart");
   const end = document.getElementById("chartAxisEnd");
   if (!start || !end) return;
   const show = series.length >= 2;
-  start.textContent = show ? axisStartLabel(state.report, series) : "";
+  start.textContent = show ? axisStartLabel(state.report, series, summary) : "";
   end.textContent = show ? "Now" : "";
 }
 
@@ -5125,7 +5183,9 @@ function scrubTo(idx) {
   document.querySelectorAll("#chartSvg .ch-bar").forEach((b, i) => b.classList.toggle("on", i === idx));
   const pt = best[2];
   cancelAnimationFrame(heroAnimId);
-  document.getElementById("heroValue").textContent = fmtMoney(pt.cumulativeUsd, true, true);
+  const value = fmtMoney(pt.cumulativeUsd, true, true);
+  const partial = pt.cumulativeUsd != null && pt.cumulativeUsdComplete === false;
+  document.getElementById("heroValue").textContent = partial ? "≈" + value : value;
   document.getElementById("heroTokens").textContent = `${fmtTokens(pt.cumulativeTokens)} tokens`;
   const added = pt.bucketUsd === null || pt.bucketUsd === undefined ? "" : ` (+${fmtMoney(Math.max(0, Number(pt.bucketUsd)), true, true)})`;
   document.getElementById("heroTokensContext").textContent = `through ${pt.label}${added}`;
@@ -5141,7 +5201,7 @@ function endScrub() {
   if (line) line.style.display = "none";
   if (dot) dot.style.display = "none";
   document.querySelectorAll("#chartSvg .ch-bar.on").forEach(b => b.classList.remove("on"));
-  if (state.report) paintHeroText(state.report, false);
+  h9SyncHeroFromFilter(false);
   return true;
 }
 
@@ -5160,7 +5220,7 @@ function bindChartScrub() {
     });
     scrubTo(bestIdx);
   });
-  wrap.addEventListener("mouseleave", () => { if (document.activeElement !== wrap) endScrub(); });
+  wrap.addEventListener("mouseleave", endScrub);
   wrap.addEventListener("blur", endScrub);
   wrap.addEventListener("keydown", (e) => {
     const coords = wrap._coords;
@@ -5847,6 +5907,9 @@ function renderReport(data, animateChart = false) {
 
   const notices = [];
   if (data.warning) notices.push(data.warning);
+  if (data.organizationWarning) notices.push(data.organizationWarning);
+  if (data.quotaStatus === "stale") notices.push("Could not refresh limits. Showing the last known readings.");
+  if (data.quotaStatus === "unavailable") notices.push("Limits are unavailable.");
   if (providers.some(t => t.organization)) {
     notices.push("Organization API feeds carry an Org API tag because they can overlap local tool sessions.");
   }
@@ -5866,13 +5929,13 @@ function renderReport(data, animateChart = false) {
 
   setOnboardingChrome(!providers.length);
   renderPlans(data, ordinary);
+  if (typeof h9SyncHeroFromFilter === "function" && state.tool && state.tool !== "all") h9SyncHeroFromFilter();
   if (!providers.length) {
     renderOnboarding();
     return;
   }
 
   renderLimits(providers);
-  if (typeof h9SyncHeroFromFilter === "function" && state.tool && state.tool !== "all") h9SyncHeroFromFilter();
 }
 
 /* ---------- Guided first run: shown instead of the provider list when nothing is connected ---------- */
@@ -6461,19 +6524,23 @@ function showFirstLoadFailure() {
   document.getElementById("heroMeta").textContent = "Press refresh to try again";
 }
 
+let usageRequest = 0;
+
 async function loadUsage(restart = false, animateChart = false) {
+  const request = ++usageRequest;
   const btn = document.getElementById("refreshBtn");
   btn.classList.add("spinning");
   try {
     if (apiAvailable()) {
       const res = await window.pywebview.api.fetch_usage(state.period, state.machine, restart);
+      if (request !== usageRequest) return;
       if (res && res.ok) {
         renderReport(res.report, animateChart);
         if (typeof checkSuggestedPlan === "function") checkSuggestedPlan();
         if (state.diagnosticsOpen && typeof loadDiagnostics === "function") loadDiagnostics(true);
         if (typeof loadH9Analytics === "function") {
-          if (state.h9View === "detail" && state.h9Entity && !restart) {
-            if (!state.diagnosticsOpen) openH9Detail(state.h9Entity.kind, state.h9Entity.key, { preserveFocus: true });
+          if (state.h9View === "detail" && state.h9Entity) {
+            if (!state.diagnosticsOpen) loadH9Detail(restart);
           } else {
             loadH9Analytics(false);
           }
@@ -6488,11 +6555,12 @@ async function loadUsage(restart = false, animateChart = false) {
       }
     }
   } catch (err) {
+    if (request !== usageRequest) return;
     showToast("Refresh failed");
     showLoadError(null, "Could not refresh usage");
     showFirstLoadFailure();
   } finally {
-    btn.classList.remove("spinning");
+    if (request === usageRequest) btn.classList.remove("spinning");
   }
 }
 
@@ -6574,6 +6642,7 @@ document.getElementById("scopePopover").addEventListener("keydown", (e) => {
 });
 
 window.selectScope = function(machineId) {
+  if (machineId !== state.machine && state.h9View === "detail") resetH9DetailData();
   state.machine = machineId;
   closeScopePopover(true);
   loadUsage(false, true);
@@ -9142,7 +9211,7 @@ function h9MatchToolKey(providerKey, toolKey) {
   return pk.startsWith(tk + "-");
 }
 
-function h9SyncHeroFromFilter() {
+function h9SyncHeroFromFilter(redrawChart = true) {
   const report = state.report;
   const list = document.getElementById("providerList");
   if (!report || !list) return;
@@ -9153,24 +9222,23 @@ function h9SyncHeroFromFilter() {
   if (!activeTool) {
     paintHeroText(report, false);
     paintSummary(report);
-    return;
-  }
-  const summary = state.h9Summary;
-  const totals = summary && summary.totals ? summary.totals : null;
-  if (totals) {
+  } else {
+    const summary = filteredHeroSummary();
+    const totals = summary?.totals;
     if (heroAnimId) { cancelAnimationFrame(heroAnimId); heroAnimId = 0; }
-    const val = h9Finite(totals.trackedValue) ?? h9Finite(totals.knownValue);
+    const val = h9Finite(totals?.trackedValue) ?? h9Finite(totals?.knownValue);
     if (val != null) state.displayedUsd = val;
-    const valEl = document.getElementById("heroValue");
-    if (valEl) valEl.textContent = val == null ? "—" : h9Usd(val);
-    const tokEl = document.getElementById("heroTokens");
-    const ctxEl = document.getElementById("heroTokensContext");
-    const toolObj = (summary.tools || []).find(t => t.key === activeTool);
-    if (tokEl) tokEl.textContent = `${fmtTokens(totals.tokens || 0)} tokens`;
-    if (ctxEl) ctxEl.textContent = `filtered to ${toolObj?.name || activeTool}`;
-    const cacheEl = document.getElementById("metricCache");
-    if (cacheEl) cacheEl.textContent = totals.cacheReusePct == null ? "—" : `${Math.round(Number(totals.cacheReusePct))}%`;
+    document.getElementById("heroValue").textContent = h9Usd(val);
+    document.getElementById("subtotalPill").style.display =
+      totals?.trackedValue == null && val != null ? "" : "none";
+    document.getElementById("heroTokens").textContent = totals ? `${fmtTokens(totals.tokens || 0)} tokens` : "—";
+    const toolObj = state.h9KnownTools.find(t => t.key === activeTool);
+    document.getElementById("heroTokensContext").textContent = `filtered to ${toolObj?.name || activeTool}`;
+    document.getElementById("metricCache").textContent = totals?.cacheReusePct == null
+      ? "—"
+      : `${Math.round(Number(totals.cacheReusePct))}%`;
   }
+  if (redrawChart) renderChart(false);
 }
 
 const H9_MAIN_WINDOWS = new Set(["1d", "1w", "mtd", "all"]);
@@ -9714,7 +9782,7 @@ function renderH9Models(data) {
     const cacheStr = h9Pct(m.cachePct);
     const runsStr = h9Num(m.runs);
     const label = `${m.name || m.key} (${toolName}): ${valStr}, ${tokStr} tokens, ${cacheStr} cache`;
-    return `<div class="h9-model-row" tabindex="0" role="button" data-h9-entity-kind="model" data-h9-entity-key="${esc(m.key)}" aria-label="${esc(label)}">
+    return `<div class="h9-model-row" tabindex="0" role="button" data-h9-entity-kind="model" data-h9-entity-key="${esc(m.key)}" data-h9-entity-tool="${esc(m.toolKey || "")}" aria-label="${esc(label)}">
         <strong>${logoHtml(m.toolKey, "logo-badge logo-mini")}${esc(m.name || m.key)}</strong>
         <span class="h9-card-sub">${esc(toolName)}</span>
         <span class="h9-num">${esc(valStr)}</span>
@@ -9722,7 +9790,7 @@ function renderH9Models(data) {
         <span class="h9-num">${esc(cacheStr)}</span>
         <span class="h9-num">${esc(runsStr)}</span>
       </div>
-      <button type="button" class="h9-model-card" data-h9-entity-kind="model" data-h9-entity-key="${esc(m.key)}">
+      <button type="button" class="h9-model-card" data-h9-entity-kind="model" data-h9-entity-key="${esc(m.key)}" data-h9-entity-tool="${esc(m.toolKey || "")}">
         ${logoHtml(m.toolKey, "logo-badge logo-mini")}
         <span class="h9-model-main">
           <strong>${esc(m.name || m.key)}</strong>
@@ -9834,7 +9902,23 @@ function renderH9DetailHover(data) {
   document.getElementById("h9DetailHoverVal").textContent = bucket ? fmtTokens(bucket.tokens) : fmtTokens(data.tokens);
 }
 
+function setH9DetailStatus(message) {
+  const view = document.getElementById("h9DetailView");
+  const status = document.getElementById("h9DetailStatus");
+  view.toggleAttribute("data-unavailable", !!message);
+  status.textContent = message;
+  status.hidden = !message;
+}
+
+function resetH9DetailData() {
+  state.h9EntityData = null;
+  state.h9DetailHover = null;
+  state.h9DetailPinned = null;
+  setH9DetailStatus("Loading detail…");
+}
+
 function renderH9Detail(data) {
+  setH9DetailStatus("");
   state.h9EntityData = data;
   renderH9Ranges();
   const exact = data.isExact !== false;
@@ -9977,11 +10061,13 @@ async function loadH9Analytics(showErrors = false) {
   const ctrls = document.getElementById("h9Controls");
   if (ctrls) ctrls.hidden = false;
   renderH9Ranges();
+  const requestScope = h9ScopeKey();
   const reqId = ++state.h9Request;
   try {
     const res = await window.pywebview.api.fetch_analytics_summary(state.analyticsWindow, state.tool || "all", state.machine || "all");
-    if (reqId !== state.h9Request) return;
+    if (reqId !== state.h9Request || requestScope !== h9ScopeKey()) return;
     if (res && res.ok && res.summary) {
+      state.h9SummaryScope = requestScope;
       if (res.health) state.h9Health = res.health;
       renderH9Summary(res.summary);
     } else if (showErrors && res && res.error) {
@@ -10011,10 +10097,9 @@ async function openH9Detail(kind, key, opts = {}) {
   if (state.h9View !== "detail" && scrollEl) {
     state.h9SavedScrollTop = scrollEl.scrollTop || 0;
   }
-  state.h9Entity = { kind, key };
+  state.h9Entity = { kind, key, tool: kind === "model" ? opts.tool || null : null };
   state.h9View = "detail";
-  state.h9DetailHover = null;
-  state.h9DetailPinned = null;
+  resetH9DetailData();
   if (opts.triggerEl) state.h9DetailReturnFocus = opts.triggerEl;
   document.getElementById("sectionStack").hidden = true;
   const dv = document.getElementById("h9DetailView");
@@ -10022,17 +10107,48 @@ async function openH9Detail(kind, key, opts = {}) {
   h9JumpScroll(scrollEl, 0);
   renderH9Ranges();
   if (!opts.preserveFocus) document.getElementById("h9DetailBack")?.focus({ preventScroll: true });
-  const reqId = ++state.h9Request;
+  return loadH9Detail(true);
+}
+
+async function loadH9Detail(showErrors = false) {
+  const entity = state.h9Entity;
+  if (!entity || state.h9View !== "detail" || !apiHas("fetch_entity_detail")) return;
+  const { kind, key, tool } = entity;
+  const win = state.analyticsWindow;
+  const machine = state.machine || "all";
+  const reqId = ++state.h9DetailRequest;
+  const isCurrent = () => reqId === state.h9DetailRequest && state.h9Entity === entity
+    && state.analyticsWindow === win && (state.machine || "all") === machine;
+  function showFailure(message) {
+    if (!state.h9EntityData) setH9DetailStatus(message);
+    if (showErrors) showToast(message);
+  }
+
   try {
-    const res = await window.pywebview.api.fetch_entity_detail(kind, key, state.analyticsWindow, state.machine || "all");
-    if (reqId !== state.h9Request) return;
-    if (res && res.ok && res.entity) {
-      renderH9Detail(res.entity);
-    } else if (res && res.error) {
-      showToast(res.error);
+    const args = [kind, key, win, machine];
+    if (tool) args.push(tool);
+    const res = await window.pywebview.api.fetch_entity_detail(...args);
+    if (!isCurrent()) return;
+    if (!res?.ok || !res.entity) {
+      showFailure(res?.error || "Detail view could not be loaded");
+      return;
     }
+    if (tool && res.entity.selectedTool !== tool) {
+      showFailure("Profile detail is unavailable on this hub");
+      return;
+    }
+
+    const scrollEl = document.getElementById("scrollBody");
+    const top = scrollEl.scrollTop;
+    const focusedHit = document.activeElement?.dataset.h9DetailHit;
+    renderH9Detail(res.entity);
+    if (focusedHit !== undefined) {
+      const hit = document.querySelectorAll("#h9DetailHits [data-h9-detail-hit]")[Number(focusedHit)];
+      (hit || document.getElementById("h9DetailBack"))?.focus({ preventScroll: true });
+    }
+    h9JumpScroll(scrollEl, top);
   } catch (err) {
-    showToast("Detail view could not be loaded");
+    if (isCurrent()) showFailure("Detail view could not be loaded");
   }
 }
 
@@ -10077,7 +10193,8 @@ function setH9Window(winKey) {
     window.pywebview.api.save_period(state.period);
   }
   if (state.h9View === "detail" && state.h9Entity) {
-    openH9Detail(state.h9Entity.kind, state.h9Entity.key, { preserveFocus: true });
+    const { kind, key, tool } = state.h9Entity;
+    openH9Detail(kind, key, { preserveFocus: true, tool });
   } else {
     loadUsage(false, false);
   }
@@ -10203,7 +10320,7 @@ function bindH9Events() {
   const handleEntityTrigger = (e) => {
     const el = e.target.closest("[data-h9-entity-kind]");
     if (!el) return;
-    openH9Detail(el.dataset.h9EntityKind, el.dataset.h9EntityKey, { triggerEl: el });
+    openH9Detail(el.dataset.h9EntityKind, el.dataset.h9EntityKey, { triggerEl: el, tool: el.dataset.h9EntityTool });
   };
   document.getElementById("h9LegendCards")?.addEventListener("click", handleEntityTrigger);
   document.getElementById("h9ModelBody")?.addEventListener("click", handleEntityTrigger);
@@ -10212,7 +10329,7 @@ function bindH9Events() {
     const el = e.target.closest("[data-h9-entity-kind]");
     if (!el) return;
     e.preventDefault();
-    openH9Detail(el.dataset.h9EntityKind, el.dataset.h9EntityKey, { triggerEl: el });
+    openH9Detail(el.dataset.h9EntityKind, el.dataset.h9EntityKey, { triggerEl: el, tool: el.dataset.h9EntityTool });
   });
 
   const heat = document.getElementById("h9Heatmap");

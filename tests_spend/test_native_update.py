@@ -1717,18 +1717,18 @@ def test_release_verifier_requires_the_pinned_key_and_a_matching_name(
 
 def test_nsis_update_gives_the_window_a_grace_period_before_the_force_kill():
     text = (ROOT / "packaging" / "burnrate-native.nsi").read_text(encoding="utf-8")
+    guard = (ROOT / "packaging" / "native-install-guard.ps1").read_text(encoding="utf-8")
     install = text[text.index('Section "Install"') : text.index("SectionEnd")]
-    wait = install.index("Call WaitForWindowExit")
-    kill = install.index("Call StopBurnrate")
     gate = install.index("${If} ${Silent}")
-    assert (
-        gate < install.index('"/UPDATE"') < wait < kill
-    )  # /S /UPDATE only, and before the kill
+    assert gate < install.index('"/UPDATE"') < install.index("StrCpy $GuardAction Update")
+    assert install.index("StrCpy $GuardAction Update") < install.index("Call RunInstallGuard")
+    upgrade = guard.index("if ($Action -eq 'Update') {")
+    wait = guard.index("Start-Sleep -Milliseconds 250", upgrade)
+    stop = guard.index("MatchingProcesses($executable, $true)", wait)
+    assert upgrade < guard.index("$i -lt 12", upgrade) < wait < stop
     uninstall = text[text.index('Section "Uninstall"') :]
-    assert "WaitForWindowExit" not in uninstall and "Call un.StopBurnrate" in uninstall
-    assert (
-        "${If} $R7 < 12" in text and "Sleep 250" in text
-    )  # about three seconds in all
+    assert 'StrCpy $GuardAction Uninstall' in uninstall and "Call un.RunInstallGuard" in uninstall
+    assert 'StrCpy $GuardAction Update' not in uninstall
 
 
 # ---------------------------------------------------------------------------------------

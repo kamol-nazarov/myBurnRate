@@ -1437,11 +1437,13 @@ def poll_quotas(
                         if sample.limit_key == "balance" and sample.unit == "usd" and sample.used is not None:
                             record_balance_sample(connection, provider_key=sample.provider_key, source=sample.source,
                                                   usd=sample.used, sampled_at=polled_at)
+                        same_origin = " AND source=?" if sample.limit_key == "balance" else ""
+                        origin_arg = (sample.source,) if same_origin else ()
                         latest = connection.execute(
                             "SELECT id, label, used, allowance, unit, pct, resets_at, source, is_payg "
-                            "FROM quotas WHERE provider_key=? AND limit_key=? "
+                            f"FROM quotas WHERE provider_key=? AND limit_key=?{same_origin} "
                             "ORDER BY polled_at DESC, id DESC LIMIT 1",
-                            (sample.provider_key, sample.limit_key),
+                            (sample.provider_key, sample.limit_key, *origin_arg),
                         ).fetchone()
                         if sample.pct is not None and not sample.is_payg:
                             paced.append(sample)

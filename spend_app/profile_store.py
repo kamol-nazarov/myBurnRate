@@ -8,6 +8,7 @@ Persists v2 connection state under ``app_meta["connections.v2"]``:
         "requests": {...},
         "legacy": [...],
         "cleanup": [...],
+        "retiredProfiles": {provider: {profileKey: {...identity and revision...}}},
     }
 
 ``connections.v1`` is left untouched in ``app_meta`` for rollback. Read-only
@@ -22,6 +23,7 @@ import json
 import os
 import re
 import sqlite3
+import stat
 from collections.abc import Iterable
 from contextlib import closing
 from dataclasses import dataclass
@@ -29,7 +31,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from spend_app import claude_accounts, opencode_profiles
-from spend_app.connection_paths import LocationError, _resolve, identity, is_name_surrogate, normalize
+from spend_app.connection_paths import (
+    LocationError,
+    _resolve,
+    identity,
+    is_name_surrogate,
+    normalize,
+    stat_path,
+)
 
 KEY = "connections.v2"
 V1_KEY = "connections.v1"
@@ -104,6 +113,30 @@ def profile_key_for_folder(
     while f"{base}-{counter}" in used:
         counter += 1
     return f"{base}-{counter}"
+
+
+def source_identity(location: Path) -> str | None:
+    """Identify the approved file or directory without widening its scope."""
+    try:
+        if location.is_symlink() or is_name_surrogate(location):
+            return None
+        info = stat_path(location)
+    except OSError:
+        return None
+    if not info.st_ino:
+        return None
+    if stat.S_ISREG(info.st_mode):
+        kind = "file"
+    elif stat.S_ISDIR(info.st_mode):
+        kind = "directory"
+    else:
+        return None
+    birth = getattr(info, "st_birthtime_ns", None)
+    if birth is None:
+        # Without a creation time, a reused inode is ambiguous. Accept only
+        # an unchanged stat identity, even if that rejects a legitimate move.
+        birth = f"ctime:{info.st_ctime_ns}"
+    return hashlib.sha256(f"{kind}:{info.st_dev}:{info.st_ino}:{birth}".encode()).hexdigest()
 
 
 def _resolve_soft(raw: str | Path) -> Path:
@@ -191,6 +224,7 @@ def empty_state() -> dict:
         "requests": {},
         "legacy": [],
         "cleanup": [],
+        "retiredProfiles": {},
     }
 
 
@@ -226,6 +260,18 @@ def decode(raw: str | None) -> dict:
             )
         for record in provider_profiles.values():
             _validate_binding_record(record)
+    retired = state.setdefault("retiredProfiles", {})
+    if not isinstance(retired, dict) or any(
+        not isinstance(reservations, dict) or any(
+            not isinstance(record, dict)
+            or type(record.get("revision")) is not int
+            or not isinstance(record.get("toolKey"), str)
+            or not (record.get("sourceIdentity") is None or isinstance(record["sourceIdentity"], str))
+            for record in reservations.values()
+        )
+        for reservations in retired.values()
+    ):
+        raise LocationError("Profile history metadata is corrupted.")
     if "bindings" in state:
         if not isinstance(state["bindings"], dict):
             raise LocationError(

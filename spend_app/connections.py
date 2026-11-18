@@ -104,10 +104,12 @@ class Store:
             return profile_store.with_bindings_view(profile_store.load(db))
 
     @contextmanager
-    def transaction(self):
+    def transaction(self, *, historical_tool_keys: set[str] | None = None):
         with connect(self.path) as db:
             db.execute("BEGIN IMMEDIATE")
             v2_state = profile_store.ensure_migrated(db)
+            if historical_tool_keys is not None:
+                historical_tool_keys.update(profile_store._read_existing_tool_keys(db))
             state = profile_store.with_bindings_view(v2_state)
             initial_bindings = copy.deepcopy(state["bindings"])
             yield state
@@ -429,9 +431,11 @@ def _recent_ingest_tool_keys(database_path, *, hours: int = 24) -> set[str]:
         with closing(sqlite3.connect(db_path.absolute().as_uri() + "?mode=ro", uri=True)) as db:
             rows = db.execute(
                 "SELECT tool_key, MAX(ingested_at) FROM ("
-                "SELECT tool_key, ingested_at FROM usage_events WHERE ingested_at >= ? "
+                "SELECT tool_key, ingested_at FROM usage_events "
+                "WHERE ingested_at >= ? AND raw_id NOT LIKE 'm:%' "
                 "UNION ALL "
-                "SELECT tool_key, ingested_at FROM unpriced_usage_events WHERE ingested_at >= ?"
+                "SELECT tool_key, ingested_at FROM unpriced_usage_events "
+                "WHERE ingested_at >= ? AND raw_id NOT LIKE 'm:%'"
                 ") GROUP BY tool_key",
                 (sql_cutoff, sql_cutoff),
             ).fetchall()
@@ -448,7 +452,59 @@ def _recent_ingest_tool_keys(database_path, *, hours: int = 24) -> set[str]:
 
 
 def _public_record(record: dict) -> dict:
-    return {k: v for k, v in record.items() if k not in {"credentialRef", "accountDigest"}}
+    return {
+        key: value for key, value in record.items()
+        if key not in {"credentialRef", "accountDigest", "sourceIdentity"}
+    }
+
+
+def record_completion(store, source, revision, result, profile="default"):
+    """Record a collection outcome only for the binding that was collected."""
+    with store.transaction() as state:
+        record = _profile_record(state, source, profile)
+        if not record or not record["enabled"] or record["revision"] != revision:
+            return
+        status = result.get("status")
+        if status in {"success", "partial"}:
+            accepted = result.get("eventsAccepted", result.get("eventsSeen", 0))
+            if not accepted and result.get("issues"):
+                detail = "Source metadata was read, but usage could not be accepted safely: "
+                record.update(state="needs_attention", detail=redact(
+                    detail + ", ".join(str(issue) for issue in result["issues"]), 1000
+                ))
+                _set_profile_record(state, source, profile, record)
+                return
+            seen = accepted > 0 or record.get("state") == "receiving_usage"
+            if source in BALANCE_SOURCES:
+                current = "balance_available"
+                detail = "Balance updated; usage events are a separate connection."
+            elif seen:
+                current = "receiving_usage"
+                detail = "Import completed. Missing pricing and quota do not disconnect usage."
+            else:
+                current = "waiting_activity"
+                detail = "Readable; waiting for usage. No paid turn is required to finish setup."
+            if result.get("issues"):
+                issues = "; ".join(
+                    redact(str(issue)).replace("_", " ") for issue in sorted(set(result["issues"]))[:3]
+                )
+                detail = redact(
+                    f"{detail} Some records need attention: {issues}. "
+                    "Review the provider compatibility guidance before changing the source.", 1000
+                )
+            record.update(lastImport=now(), importRevision=revision, state=current, detail=detail)
+        elif result.get("reason") == "location_missing":
+            record.update(
+                state="needs_attention",
+                detail="Saved location is missing. Restore it or choose its current location.",
+            )
+        else:
+            record.update(
+                state="needs_attention",
+                detail="Import unavailable. Recheck location, permissions or provider access; "
+                       "collection will retry on its normal cadence.",
+            )
+        _set_profile_record(state, source, profile, record)
 
 
 class Service:
@@ -945,6 +1001,10 @@ class Service:
                 )
                 record = {**checked, "mode": body.get("mode", "manual"), "enabled": True,
                           "state": "awaiting_ingest", "detail": "Saved, awaiting first import." if checked["usableSample"] else checked["detail"], "capabilities": ["usage"]}
+                if target_profile != "default":
+                    record["sourceIdentity"] = profile_store.source_identity(
+                        Path(checked["location"])
+                    )
                 if op == "recheck" and previous and not previous["enabled"]:
                     record.update(enabled=False, state="disabled", detail="Location verified; connection remains disabled. Use Reconnect to collect again.")
                 # No new authority engine: custom Grok/Traycer combinations cannot
@@ -974,7 +1034,7 @@ class Service:
                 name=name,
                 origin=origin,
                 accountDigest=computed_digest,
-                toolKey=profile_store.profile_tool_key(spec.key, target_profile),
+                toolKey=(previous or {}).get("toolKey") or profile_store.profile_tool_key(spec.key, target_profile),
                 lastImport=None,
                 importRevision=None,
             )
@@ -1109,7 +1169,14 @@ class Service:
                 profile_store.assert_folder_free(effective_state, spec.key, checked["location"])
             self._assert_account_free(effective_state, spec.key, digest, use_cache=False)
 
-            with self.store.transaction() as current:
+            source_identity = profile_store.source_identity(Path(checked["location"]))
+            historical_keys: set[str] = set()
+            with self.store.transaction(historical_tool_keys=historical_keys) as current:
+                receipt = current["requests"].get(request_id)
+                if receipt:
+                    if receipt["fingerprint"] != fingerprint:
+                        raise Conflict("Request identifier already used. Reload connections.")
+                    return receipt["result"]
                 current_effective = _with_virtual_defaults(current, self.settings, cands_by_prov)
                 profile_store.assert_folder_free(current_effective, spec.key, folder_path)
                 if identity(folder_path) != identity(checked["location"]):
@@ -1127,10 +1194,32 @@ class Service:
                     raise LocationError("Profile key is reserved or belongs to another provider.")
 
                 prov_profiles = current.setdefault("profiles", {}).setdefault(spec.key, {})
-                existing_keys = set(prov_profiles.keys()) | reserved_keys | other_provider_keys
-                new_key = profile_store.profile_key_for_folder(
-                    spec.key, folder_path, existing=existing_keys
-                )
+                active_tools = {profile.tool_key for profile in profile_store.profiles(current)}
+                existing_keys = set(prov_profiles) | reserved_keys | other_provider_keys | active_tools
+                retired = current["retiredProfiles"]
+                own_retired = retired.setdefault(spec.key, {})
+                matches = [
+                    key for key, record in own_retired.items()
+                    if source_identity and record.get("sourceIdentity") == source_identity
+                    and key not in existing_keys and record["toolKey"] not in existing_keys
+                ]
+                reservation = None
+                if len(matches) == 1:
+                    new_key = matches[0]
+                    reservation = own_retired.pop(new_key)
+                    revision = reservation["revision"] + 1
+                    tool_key = reservation["toolKey"]
+                else:
+                    retired_keys = {
+                        identifier for reservations in retired.values()
+                        for key, record in reservations.items()
+                        for identifier in (key, record["toolKey"])
+                    }
+                    new_key = profile_store.profile_key_for_folder(
+                        spec.key, folder_path, existing=existing_keys | historical_keys | retired_keys
+                    )
+                    revision = 1
+                    tool_key = profile_store.profile_tool_key(spec.key, new_key)
                 if (
                     new_key in reserved_keys
                     or new_key.startswith(other_prefixes)
@@ -1146,7 +1235,7 @@ class Service:
                     "origin": origin,
                     "mode": "detected" if candidate is not None else body.get("mode", "manual"),
                     "enabled": True,
-                    "revision": 1,
+                    "revision": revision,
                     "state": "awaiting_ingest",
                     "detail": (
                         "Saved, awaiting first import."
@@ -1157,10 +1246,13 @@ class Service:
                     "importRevision": None,
                     "capabilities": ["usage"],
                     "accountDigest": digest,
-                    "toolKey": profile_store.profile_tool_key(spec.key, new_key),
+                    "toolKey": tool_key,
+                    "sourceIdentity": source_identity,
                 }
                 if plan:
                     record["plan"] = plan
+                if reservation and reservation.get("cutoverAt"):
+                    record["cutoverAt"] = reservation["cutoverAt"]
                 _set_profile_record(current, spec.key, new_key, record)
                 if candidate_id is not None:
                     dismissed = (current.get("dismissed") or {}).get(spec.key)
@@ -1324,6 +1416,13 @@ class Service:
                 old_ref = current_rec.get("credentialRef")
                 if old_ref:
                     current["cleanup"].append(old_ref)
+                reservations = current["retiredProfiles"].setdefault(spec.key, {})
+                reservations[target_profile] = {
+                    "sourceIdentity": current_rec.get("sourceIdentity"),
+                    "toolKey": current_rec.get("toolKey") or target_profile,
+                    "revision": revision,
+                    "cutoverAt": current_rec.get("cutoverAt"),
+                }
                 prov_profiles = (current.get("profiles") or {}).get(spec.key)
                 if isinstance(prov_profiles, dict):
                     prov_profiles.pop(target_profile, None)
@@ -1403,26 +1502,7 @@ class Service:
                 state["cleanup"] = [r for r in state["cleanup"] if r != ref]
 
     def completion(self, source, revision, result, profile="default"):
-        with self.store.transaction() as state:
-            record = _profile_record(state, source, profile)
-            if not record or not record["enabled"] or record["revision"] != revision:
-                return
-            status = result.get("status")
-            if status in {"success", "partial"}:
-                accepted = result.get("eventsAccepted", result.get("eventsSeen", 0))
-                if not accepted and result.get("issues"):
-                    record.update(state="needs_attention", detail=redact("Source metadata was read, but usage could not be accepted safely: " + ", ".join(str(i) for i in result["issues"]), 1000))
-                    _set_profile_record(state, source, profile, record)
-                    return
-                seen = accepted > 0 or record["state"] == "receiving_usage"
-                record.update(lastImport=now(), importRevision=revision,
-                              state=("balance_available" if source in BALANCE_SOURCES else "receiving_usage") if (seen or source in BALANCE_SOURCES) else "waiting_activity",
-                              detail=("Balance updated; usage events are a separate connection." if source in BALANCE_SOURCES else "Import completed. Missing pricing and quota do not disconnect usage.") if (seen or source in BALANCE_SOURCES) else "Readable; waiting for usage. No paid turn is required to finish setup.")
-                if result.get("issues"):
-                    record["detail"] = redact(record["detail"] + " Some records need attention: " + "; ".join(redact(str(issue)).replace("_", " ") for issue in sorted(set(result["issues"]))[:3]) + ". Review the provider compatibility guidance before changing the source.", 1000)
-            else:
-                record.update(state="needs_attention", detail="Import unavailable. Recheck location, permissions or provider access; collection will retry on its normal cadence.")
-            _set_profile_record(state, source, profile, record)
+        record_completion(self.store, source, revision, result, profile=profile)
 
 
 def managed_job(settings, pricing, spec, window=None, profile="default"):

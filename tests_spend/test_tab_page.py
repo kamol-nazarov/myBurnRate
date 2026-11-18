@@ -135,6 +135,72 @@ def test_a_provider_that_disappears_does_not_leave_a_dead_card(tmp_path):
     assert out["cardHidden"] is True
 
 
+def test_an_old_poll_cannot_overwrite_a_new_push_or_current_scope(tmp_path):
+    out = run_page(tmp_path, f"""
+      var old = {demo_payload_json()};
+      old.revision = 1;
+      var depleted = JSON.parse(JSON.stringify(old));
+      depleted.revision = 2;
+      depleted.segments[0].big = '0%';
+      depleted.segments[0].level = 'out';
+      depleted.urgentCount = 2;
+      var scope = JSON.parse(JSON.stringify(old));
+      scope.revision = 3;
+      scope.segments[0].big = '70%';
+      scope.urgentCount = 0;
+      var fresh = JSON.parse(JSON.stringify(scope));
+      fresh.revision = 4;
+      fresh.segments[0].big = '80%';
+
+      var replies = [];
+      window.pywebview = {{ api: {{ get_state: function () {{
+        return new Promise(function (resolve) {{ replies.push(resolve); }});
+      }} }} }};
+      var poll = function () {{ window.dispatchEvent(new Event('pywebviewready')); }};
+      var read = function () {{
+        var badge = document.getElementById('badge');
+        return [document.querySelector('.seg .top b').textContent, badge.hidden ? null : badge.textContent];
+      }};
+
+      // Each page boot starts at the first revision of its own bridge.
+      window.burnrateTab.update(old);
+      report.onLaunch = read();
+      poll();
+      window.burnrateTab.update(depleted);
+      replies.shift()(old);
+      await tick();
+      report.afterOldPoll = read();
+
+      var duplicate = JSON.parse(JSON.stringify(depleted));
+      duplicate.segments[0].big = '54%';
+      window.burnrateTab.update(duplicate);
+      report.afterDuplicate = read();
+
+      poll();
+      window.burnrateTab.update(scope);
+      replies.shift()(depleted);
+      await tick();
+      report.afterScopeChange = read();
+
+      poll();
+      replies.shift()(fresh);
+      await tick();
+      report.afterNewPoll = read();
+
+      var headline = document.querySelector('.seg .top b');
+      var unchanged = JSON.parse(JSON.stringify(fresh));
+      unchanged.revision = 5;
+      window.burnrateTab.update(unchanged);
+      report.unchangedHeadline = headline === document.querySelector('.seg .top b');
+      """)
+    assert "error" not in out, out.get("error")
+    assert out["onLaunch"] == ["54%", "1"]
+    assert out["afterOldPoll"] == out["afterDuplicate"] == ["0%", "2"]
+    assert out["afterScopeChange"] == ["70%", None]
+    assert out["afterNewPoll"] == ["80%", None]
+    assert out["unchangedHeadline"] is True
+
+
 CONTRAST = """
 function parse(c) {
   var m = String(c).match(/rgba?\\(([^)]+)\\)/); var v = m[1].split(',').map(parseFloat);

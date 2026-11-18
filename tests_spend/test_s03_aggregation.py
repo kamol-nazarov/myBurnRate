@@ -6,6 +6,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+import pytest
 
 from spend_app.adapters.common import UsageRow, persist_rows
 from spend_app.adapters.openai_admin import ingest as ingest_openai_admin
@@ -162,6 +163,180 @@ def _persist(database: Path, rows: list[UsageRow], source: str = "codex_local") 
         source=source,
         usage_rows=rows,
     )
+
+
+@pytest.mark.parametrize("unknown_first", (True, False))
+def test_entity_with_mixed_known_and_unknown_session_cost(tmp_path, unknown_first):
+    database = tmp_path / "mixed-session.db"
+    common = {
+        "source": "opencode_local", "tool_key": "opencode", "model_key": "no-card",
+        "input_tokens": 1_000, "cached_input_tokens": 0, "cache_write_tokens": 0,
+        "output_tokens": 0,
+    }
+    first = NOW - timedelta(minutes=10)
+    charged_at = NOW - timedelta(minutes=5) if unknown_first else first
+    unknown_at = first if unknown_first else NOW - timedelta(minutes=5)
+    _persist(database, [
+        _usage(**common, raw_id="charged", occurred_at=charged_at, cost_usd=0.02),
+        _usage(**common, raw_id="unknown", occurred_at=unknown_at),
+        _usage(**common, raw_id="known", session_id="session-b", cost_usd=0.07),
+    ], source="opencode_local")
+    with client_for(database) as client:
+        response = client.get("/api/spend/entity", params={"kind": "tool", "key": "opencode"})
+        summary = client.get("/api/spend/summary", params={"tool": "opencode"}).json()
+    assert response.status_code == 200
+    entity = response.json()
+    assert entity["tokens"] == 3_000
+    assert entity["value"] is None
+    sessions = {row["id"]: row for row in entity["sessions"]["rows"]}
+    assert sessions["session-a"]["value"] is None
+    assert sessions["session-a"]["tokens"] == 2_000
+    assert sessions["session-b"]["value"] == 0.07
+    assert summary["totals"]["trackedValue"] is None
+    assert summary["totals"]["knownValue"] == 0.09
+    priced_buckets = [row for row in summary["series"] if row["total"]]
+    assert any(row["bucketUsd"] is not None and not row["bucketUsdComplete"] for row in priced_buckets)
+    assert sum(row["bucketUsd"] or 0 for row in priced_buckets) == pytest.approx(0.09)
+
+
+def test_summary_and_entity_count_unclassified_tokens_and_preserve_unknown_cost(tmp_path):
+    database = tmp_path / "unclassified.db"
+    _persist(database, [
+        _usage(
+            raw_id="total-only", input_tokens=0, cached_input_tokens=0, cache_write_tokens=0,
+            output_tokens=0, reasoning_tokens=None, telemetry_complete=False,
+            unclassified_tokens=123_456,
+        ),
+        _usage(
+            raw_id="partly-classified", input_tokens=100, cached_input_tokens=0,
+            cache_write_tokens=0, output_tokens=5, reasoning_tokens=None, telemetry_complete=False,
+            unclassified_tokens=9_895,
+        ),
+    ])
+    with client_for(database) as client:
+        summary = client.get("/api/spend/summary", params={"tool": "codex"}).json()
+        entity = client.get("/api/spend/entity", params={"kind": "tool", "key": "codex"}).json()
+        native = client.get("/api/spend/usage").json()
+    total = 133_456
+    assert summary["totals"]["tokens"] == summary["totals"]["unpricedTokens"] == total
+    assert summary["totals"]["trackedValue"] is None
+    assert sum(row["tokens"] for row in summary["mix"]) == total
+    assert sum(row["total"] for row in summary["series"]) == total
+    assert all(row["bucketUsd"] is None and not row["bucketUsdComplete"]
+               for row in summary["series"] if row["total"])
+    assert entity["tokens"] == native["total"]["tokens"] == total
+    assert sum(row["tokens"] for row in entity["series"]) == total
+    assert entity["value"] is None
+
+
+def test_summary_and_entity_count_a_legacy_cross_table_copy_once(tmp_path):
+    database = tmp_path / "legacy-copy.db"
+    _persist(database, [_usage(
+        raw_id="legacy-copy", input_tokens=10, cached_input_tokens=0,
+        cache_write_tokens=0, output_tokens=0,
+    )])
+    with connect(database) as connection:
+        # Current upserts enforce one storage row. Model a database that
+        # still contains a staging copy from before that invariant.
+        connection.execute(
+            """INSERT INTO unpriced_usage_events
+               (source, tool_key, model_key, occurred_at, occurred_epoch_us, input_tokens,
+                cached_input_tokens, cache_write_tokens, output_tokens, unclassified_tokens,
+                telemetry_complete, raw_id, ingested_at)
+               SELECT source, tool_key, model_key, occurred_at, occurred_epoch_us, 0,
+                      0, 0, 0, 10, 0, raw_id, ingested_at
+               FROM usage_events WHERE raw_id = 'legacy-copy'"""
+        )
+    with client_for(database) as client:
+        summary = client.get("/api/spend/summary", params={"machine": "local"}).json()
+        entity = client.get(
+            "/api/spend/entity", params={"machine": "local", "kind": "tool", "key": "codex"},
+        ).json()
+    assert summary["totals"]["tokens"] == entity["tokens"] == 10
+    assert summary["totals"]["unpricedTokens"] == 0
+    assert summary["totals"]["records"] == 1
+    assert summary["selectedMachine"] == "local"
+
+
+def test_machine_month_value_and_entity_shares_follow_selected_machine(tmp_path):
+    database = tmp_path / "scope.db"
+    common = {
+        "source": "opencode_local", "tool_key": "opencode", "model_key": "no-card",
+        "input_tokens": 1_000_000, "cached_input_tokens": 0, "cache_write_tokens": 0,
+        "output_tokens": 0,
+    }
+    _persist(database, [
+        _usage(**common, raw_id="m:office:a", cost_usd=8.0),
+        _usage(**common, raw_id="m:laptop:b", cost_usd=72.0),
+    ], source="opencode_local")
+    with connect(database) as connection:
+        add_subscription(connection, tool_key="opencode", name="Shared plan", amount_usd=31,
+                         cadence="monthly", start_date="2026-08-01", end_date=None)
+    with client_for(database) as client:
+        for machine, cost in (("office", 8), ("laptop", 72), ("all", 80), ("office", 8)):
+            summary = client.get("/api/spend/summary", params={"tool": "opencode", "machine": machine}).json()
+            assert summary["projected"]["value"] == summary["totals"]["trackedValue"] == cost
+            assert sum(row["bucketUsd"] for row in summary["series"]) == cost
+            assert all(row["bucketUsdComplete"] for row in summary["series"])
+            assert sum(row["total"] for row in summary["series"]) == (2_000_000 if machine == "all" else 1_000_000)
+            if machine == "all":
+                assert summary["projected"]["planCost"] > 0
+            else:
+                assert summary["projected"]["planCost"] is None
+                assert summary["projected"]["multiple"] is None
+                assert summary["totals"]["subscriptionUsd"] is None
+                entity = client.get(
+                    "/api/spend/entity",
+                    params={"kind": "tool", "key": "opencode", "machine": machine},
+                ).json()
+                assert entity["shareOfTrackedValue"] == entity["shareOfTokens"] == 100
+        _persist(database, [_usage(
+            **{**common, "tool_key": "opencode-go", "input_tokens": 2_000_000},
+            raw_id="m:laptop:c", cost_usd=24.0,
+        )], source="opencode_local")
+        share = client.get(
+            "/api/spend/entity",
+            params={"kind": "tool", "key": "opencode", "machine": "laptop"},
+        ).json()
+        assert share["shareOfTrackedValue"] == 75
+        assert share["shareOfTokens"] == pytest.approx(100 / 3)
+
+
+def test_model_entity_tool_scope_and_legacy_hub_response(tmp_path, monkeypatch):
+    from spend_app import sync
+
+    database = tmp_path / "model-profiles.db"
+    common = {"cached_input_tokens": 0, "cache_write_tokens": 0, "output_tokens": 0}
+    _persist(database, [
+        _usage(**common, raw_id="base", input_tokens=1_000),
+        _usage(**common, raw_id="work", tool_key="codex-work", input_tokens=9_000),
+    ])
+    params = {"kind": "model", "key": "gpt-5.6-sol"}
+    with client_for(database) as client:
+        assert client.get("/api/spend/entity", params=params).json()["tokens"] == 10_000
+        work = client.get("/api/spend/entity", params={**params, "tool": "codex-work"}).json()
+        assert work["tokens"] == 9_000
+        assert work["selectedTool"] == work["providerKey"] == "codex-work"
+        empty = client.get("/api/spend/entity", params={**params, "tool": "codex-other"}).json()
+        assert empty["tokens"] == 0
+        assert empty["selectedTool"] == empty["providerKey"] == "codex-other"
+
+        def old_hub(_settings, path, query):
+            assert path == "/api/spend/entity"
+            assert query["tool"] == "codex-work"
+            return {"tokens": 10_000, "providerKey": "codex"}
+
+        monkeypatch.setattr(sync, "fetch_from_configured_hub", old_hub)
+        result = client.get("/api/spend/entity", params={**params, "tool": "codex-work"}).json()
+        assert result["scope"] == "unavailable"
+        assert "tokens" not in result and "selectedTool" not in result
+
+        def updated_hub(_settings, _path, query):
+            assert query["tool"] == "codex-work"
+            return work
+
+        monkeypatch.setattr(sync, "fetch_from_configured_hub", updated_hub)
+        assert client.get("/api/spend/entity", params={**params, "tool": "codex-work"}).json() == work
 
 
 def mixed_database(tmp_path: Path) -> Path:

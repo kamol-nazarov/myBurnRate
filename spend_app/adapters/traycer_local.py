@@ -8,10 +8,10 @@ in ``spend_app.limits`` and are experimental undocumented interfaces.
 
 from __future__ import annotations
 
-import glob
-from spend_app.connection_paths import adapter_files
 import json
+import math
 import sqlite3
+from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -23,6 +23,8 @@ from spend_app.adapters.local_common import (
     sqlite_read_only,
     store_read_only,
 )
+from spend_app.adapters.usage_repair import delete_event, read_meta, write_meta
+from spend_app.connection_paths import adapter_files
 from spend_app.pricing import PricingEngine
 
 
@@ -71,8 +73,8 @@ HARNESS_TOOLS = {
     "openrouter": "openrouter",
     "antigravity": "antigravity",
 }
-# OpenCode's own database is the authority for that CLI. OpenRouter has no
-# local session ledger, so those Traycer facts stay.
+# OpenCode is reconciled separately at event granularity. Traycer remains the
+# authority for OpenRouter, which has no separate local session ledger.
 NATIVE_SOURCES = {
     "claude-code": ("claude_local",),
     "codex": ("codex_local",),
@@ -205,12 +207,110 @@ def drop_native_duplicates(connection: sqlite3.Connection) -> None:
                      AND native.tool_key = traycer.tool_key
                      AND native.session_id = traycer.session_id
                     WHERE traycer.source=? AND traycer.session_id IS NOT NULL
+                      AND traycer.tool_key != 'opencode'
                 )
                 """,
                 (SOURCE, SOURCE),
             )
         except sqlite3.OperationalError:
             continue
+
+
+def _opencode_observations(connection, session_ids, source: str) -> dict[str, UsageRow]:
+    from spend_app.adapters.opencode_granular import row_from_record
+
+    rows = {}
+    # Knowledge of a session is a search scope. It does not prove that every
+    # Traycer fact in the session was captured by OpenCode.
+    sessions = sorted(set(session_ids))
+    for start in range(0, len(sessions), 500):
+        batch = sessions[start : start + 500]
+        placeholders = ",".join("?" for _ in batch)
+        traycer_only = " AND tool_key='opencode'" if source == SOURCE else ""
+        for table in ("unpriced_usage_events", "usage_events"):
+            records = connection.execute(
+                f"SELECT * FROM {table} WHERE source=? AND session_id IN ({placeholders})"
+                " AND raw_id NOT LIKE 'm:%'" + traycer_only,
+                (source, *batch),
+            )
+            for record in records:
+                row = row_from_record(dict(record))
+                rows[row.raw_id] = row
+    return rows
+
+
+def _opencode_measurement(row: UsageRow) -> tuple | None:
+    if not row.session_id or row.session_id.startswith("traycer:") or not row.telemetry_complete:
+        return None
+    model = row.model_key.removeprefix("opencode:").removeprefix("opencode-go:")
+    if model == "unknown" or not row.occurred_at:
+        return None
+    return (
+        row.session_id,
+        row.occurred_at,
+        model,
+        row.input_tokens,
+        row.cached_input_tokens,
+        row.cache_write_tokens,
+        row.cache_write_1h_tokens,
+        row.output_tokens,
+        row.reasoning_tokens or 0,
+        row.unclassified_tokens,
+    )
+
+
+def _measurements(rows) -> dict[tuple, dict[str, UsageRow]]:
+    measurements = defaultdict(dict)
+    for row in rows:
+        key = _opencode_measurement(row)
+        if key is not None:
+            measurements[key][row.raw_id] = row
+    return measurements
+
+
+def _native_covers_cost(native: UsageRow, traycer: UsageRow) -> bool:
+    # Do not discard a provider-reported charge when the native copy contains
+    # no matching charge. Cumulative differences may have floating drift.
+    return traycer.cost_usd is None or (
+        native.cost_usd is not None
+        and math.isclose(native.cost_usd, traycer.cost_usd, rel_tol=1e-12, abs_tol=1e-12)
+    )
+
+
+def reconcile_opencode_mirrors(connection, session_ids, incoming=()) -> set[str]:
+    """Suppress only corresponding local OpenCode facts, in the write transaction."""
+    traycer = _opencode_observations(connection, session_ids, SOURCE)
+    traycer.update((row.raw_id, row) for row in incoming)
+    mirrors = _measurements(traycer.values())
+    if not mirrors:
+        return set()
+    native = _opencode_observations(connection, session_ids, "opencode_local")
+    natives = _measurements(native.values())
+    duplicates = set()
+    for key in mirrors.keys() & natives.keys():
+        candidates = mirrors[key].copy()
+        unclaimed = []
+        for native_id, observation in natives[key].items():
+            claim_key = "traycer.opencode.mirror:v1:" + native_id
+            matched = read_meta(connection, claim_key, None)
+            if matched is None:
+                unclaimed.append((claim_key, observation))
+                continue
+            prior = candidates.pop(matched, None)
+            if prior is not None and _native_covers_cost(observation, prior):
+                duplicates.add(prior.raw_id)
+        # Equal clocks/components can also occur on separate requests. Match
+        # only unambiguous pairs and reserve both stable identities so a
+        # later scan cannot spend the same native observation on another fact.
+        if len(unclaimed) == len(candidates) == 1:
+            claim_key, observation = unclaimed[0]
+            candidate = next(iter(candidates.values()))
+            if _native_covers_cost(observation, candidate):
+                write_meta(connection, claim_key, candidate.raw_id)
+                duplicates.add(candidate.raw_id)
+    for raw_id in sorted(duplicates):
+        delete_event(connection, raw_id)
+    return duplicates
 
 
 def iter_databases(database_glob: str) -> list[Path]:
@@ -424,13 +524,6 @@ def ingest(
     mirrored = 0
     issues, observations = [], []
     already = covered_sessions(database_path)
-    opencode_db = Path.home() / ".local" / "share" / "opencode" / "opencode.db"
-    try:
-        from spend_app.providers import default_opencode_database
-        opencode_db = default_opencode_database()
-    except Exception:
-        pass
-    opencode_present = opencode_db.is_file()
     for path in iter_databases(database_glob):
         if not path.is_file():
             continue
@@ -448,9 +541,6 @@ def ingest(
             if row.tool_key == "grok" and grok_covered_from is not None and row.occurred_at >= grok_covered_from:
                 mirrored += 1
                 continue
-            if row.tool_key == "opencode" and opencode_present:
-                mirrored += 1
-                continue
             # BURNRATE no longer tracks Cursor, including runs Traycer launches.
             if row.tool_key == "cursor":
                 continue
@@ -462,8 +552,15 @@ def ingest(
     from spend_app.adapters.event_identity import reconcile
 
     def prepare(connection, _rows):
+        nonlocal mirrored
         drop_native_duplicates(connection)
-        return reconcile(connection, observations, issues)
+        rows = reconcile(connection, observations, issues)
+        opencode = [row for row in rows if row.tool_key == "opencode" and row.session_id]
+        duplicated = reconcile_opencode_mirrors(
+            connection, {row.session_id for row in opencode}, opencode
+        )
+        mirrored += sum(row.raw_id in duplicated for row in opencode)
+        return [row for row in rows if row.raw_id not in duplicated]
 
     result = persist_rows(
         database_path=database_path,

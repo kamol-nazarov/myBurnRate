@@ -17,6 +17,7 @@ import time
 from datetime import UTC, datetime
 
 from spend_app import __version__
+from spend_app.config import LOCAL_INGEST_INTERVAL_SECONDS
 
 LOG = logging.getLogger("burnrate.ingest")
 
@@ -24,7 +25,7 @@ LOG = logging.getLogger("burnrate.ingest")
 # lane has not confirmed recently (429 back-off, endpoint answering without
 # usage, collector failing). The slowest healthy idle cadence is 5 minutes.
 LANE_HELD_AFTER_SECONDS = 15 * 60
-# No finished local ingest pass for this long means collection has stalled.
+# Steady-pass runtime limit and the idle deadline at the default cadence.
 INGEST_STALLED_AFTER_SECONDS = 10 * 60
 # The first pass after a start re-reads every store (about 5 minutes on a busy
 # machine); it gets longer so the watchdog never restarts a slow cold start.
@@ -66,7 +67,7 @@ LANE_NAMES = {
 _STARTED_MONO = time.monotonic()
 _COLLECTION_RESUMED_MONO: float | None = None
 _LOCK = threading.Lock()
-_HEARTBEAT: dict = {"startedAt": None, "finishedAt": None, "seconds": None, "slowest": [], "failed": [], "passes": 0}
+_HEARTBEAT: dict = {"startedMono": None, "finishedAt": None, "seconds": None, "slowest": [], "failed": [], "passes": 0}
 _HUB_VERSION: dict = {"checkedMono": None, "version": None, "build": None, "refreshing": False}
 
 
@@ -75,7 +76,7 @@ def reset_state() -> None:
     with _LOCK:
         _STARTED_MONO = time.monotonic()
         _COLLECTION_RESUMED_MONO = None
-        _HEARTBEAT.update(startedAt=None, finishedAt=None, seconds=None, slowest=[], failed=[], passes=0)
+        _HEARTBEAT.update(startedMono=None, finishedAt=None, seconds=None, slowest=[], failed=[], passes=0)
         _HUB_VERSION.update(checkedMono=None, version=None, build=None, refreshing=False)
 
 
@@ -93,28 +94,28 @@ def _parse(value) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
-def pass_started(now: datetime | None = None) -> None:
+def pass_started() -> None:
     with _LOCK:
-        _HEARTBEAT["startedAt"] = _iso(now or datetime.now(UTC))
+        _HEARTBEAT["startedMono"] = time.monotonic()
 
 
 def collection_resumed() -> None:
     """Start the watchdog grace period when a viewer resumes idle collection."""
     global _COLLECTION_RESUMED_MONO
     with _LOCK:
-        started = _parse(_HEARTBEAT["startedAt"])
-        finished = _parse(_HEARTBEAT["finishedAt"])
         # Renewed demand must never excuse a pass that is already stuck.
-        if started and (finished is None or started > finished):
+        if _HEARTBEAT["startedMono"] is not None:
             return
         _COLLECTION_RESUMED_MONO = time.monotonic()
 
 
 def pass_finished(timings: dict[str, float], failed: list[str], seconds: float, now: datetime | None = None) -> None:
     """Record a finished local ingest pass and log one compact timing line."""
+    global _COLLECTION_RESUMED_MONO
     slowest = sorted(((key, round(value, 1)) for key, value in timings.items() if value >= 0.5), key=lambda item: -item[1])[:4]
     with _LOCK:
-        _HEARTBEAT.update(finishedAt=_iso(now or datetime.now(UTC)), seconds=round(seconds, 1),
+        _COLLECTION_RESUMED_MONO = None
+        _HEARTBEAT.update(startedMono=None, finishedAt=_iso(now or datetime.now(UTC)), seconds=round(seconds, 1),
                           slowest=[list(item) for item in slowest], failed=sorted(failed),
                           passes=_HEARTBEAT["passes"] + 1)
     detail = ", ".join(f"{key} {value}s" for key, value in slowest) or "all sources under 0.5s"
@@ -123,33 +124,42 @@ def pass_finished(timings: dict[str, float], failed: list[str], seconds: float, 
     LOG.info("local ingest pass %.1fs (%s)", seconds, detail)
 
 
-def heartbeat(now: datetime | None = None) -> dict:
+def heartbeat(
+    now: datetime | None = None, *, cadence_seconds: int = LOCAL_INGEST_INTERVAL_SECONDS
+) -> dict:
     now = now or datetime.now(UTC)
     with _LOCK:
         beat = dict(_HEARTBEAT)
-        uptime = time.monotonic() - _STARTED_MONO
+        clock = time.monotonic()
+        uptime = clock - _STARTED_MONO
         resumed = _COLLECTION_RESUMED_MONO
-    started, finished = _parse(beat["startedAt"]), _parse(beat["finishedAt"])
-    running = bool(started and (finished is None or started > finished))
-    reference = finished or None
-    age = (now - reference).total_seconds() if reference else None
-    # Measure from the last finish or process start, allowing a new grace
-    # period when a viewer resumes collection after it was deferred.
-    quiet_for = age if age is not None else uptime
-    if resumed is not None:
-        quiet_for = min(quiet_for, max(0, time.monotonic() - resumed))
+    finished = _parse(beat["finishedAt"])
+    age = (now - finished).total_seconds() if finished is not None else None
+    started = beat["startedMono"]
+    running_for = clock - started if started is not None else None
     limit = INGEST_STALLED_AFTER_SECONDS if beat["passes"] else FIRST_PASS_STALLED_AFTER_SECONDS
+    if running_for is not None:
+        stalled = running_for > limit
+    else:
+        idle_for = age if age is not None else uptime
+        if resumed is not None:
+            idle_for = min(idle_for, clock - resumed)
+        if beat["passes"] and resumed is None:
+            # Keep the default grace and wait longer when the next scheduled
+            # pass is farther away. Startup and an explicit resume run promptly.
+            limit += max(0, cadence_seconds - LOCAL_INGEST_INTERVAL_SECONDS)
+        stalled = idle_for > limit
     return {
         "lastPassAt": beat["finishedAt"],
         "lastPassAgeSeconds": None if age is None else max(0, int(age)),
         "lastPassSeconds": beat["seconds"],
-        "running": running,
-        "runningSeconds": int((now - started).total_seconds()) if running and started else None,
+        "running": running_for is not None,
+        "runningSeconds": int(running_for) if running_for is not None else None,
         "slowest": beat["slowest"],
         "failed": beat["failed"],
         "uptimeSeconds": int(uptime),
         "passes": beat["passes"],
-        "stalled": quiet_for > limit,
+        "stalled": stalled,
     }
 
 
@@ -262,7 +272,13 @@ def _sync_state(state: dict, now: datetime, heartbeat_state: dict) -> tuple[dict
     sync = {"role": "spoke", "lastSyncAt": spoke.get("lastSyncAt"), "ageSeconds": age, "failing": error}
     sync["usageChangesPending"] = bool(spoke.get("usageChangesPending"))
     issues = []
-    if sync["usageChangesPending"]:
+    conflicts = spoke.get("usageLegacyConflicts")
+    if type(conflicts) is int and conflicts > 0:
+        sync["usageLegacyConflicts"] = conflicts
+        issues.append({"kind": "sync", "key": "hub-recovery", "name": "Usage recovery", "short": "Usage recovery",
+                       "state": "stale", "severity": "warn", "ageSeconds": age,
+                       "detail": "The hub kept its accepted usage and retained conflicting legacy changes for recovery."})
+    elif sync["usageChangesPending"]:
         issues.append({"kind": "sync", "key": "hub-upgrade", "name": "Hub update", "short": "Hub update",
                        "state": "stale", "severity": "warn", "ageSeconds": age,
                        "detail": "Update the hub to receive usage corrections and deletions. They remain queued on this computer."})
@@ -322,7 +338,7 @@ def report(settings, now: datetime | None = None, *, background: bool = True,
     from spend_app.setup_wizard import read_setup_state
 
     now = now or datetime.now(UTC)
-    beat = heartbeat(now)
+    beat = heartbeat(now, cadence_seconds=settings.local_ingest_interval_seconds)
     initialize(settings.database_path)
     with connect(settings.database_path) as connection:
         sources = _source_issues(connection, now) if include_history else []
