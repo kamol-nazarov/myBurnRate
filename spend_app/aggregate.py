@@ -6,7 +6,7 @@ import time as time_module
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 from pathlib import Path
 from functools import lru_cache
 from zoneinfo import ZoneInfo
@@ -516,7 +516,7 @@ class TokenMix:
 
     @property
     def measured(self) -> int:
-        return self.cached + self.fresh + self.writes + self.output
+        return self.cached + self.fresh + self.writes + self.output + self.unclassified
 
     def add_event(self, event: dict) -> None:
         self.cached += int(event.get("cached_input_tokens") or 0)
@@ -649,6 +649,7 @@ def _measured(event: dict) -> int:
         + _fresh(event)
         + int(event.get("cache_write_tokens") or 0)
         + int(event.get("output_tokens") or 0)
+        + int(event.get("unclassified_tokens") or 0)
     )
 
 
@@ -836,9 +837,12 @@ def _load_unpriced_events(connection, start: datetime, end: datetime, tool: str,
     rows = [
         dict(row)
         for row in connection.execute(
-            "SELECT * FROM unpriced_usage_events "
+            "SELECT * FROM unpriced_usage_events AS staged "
             "WHERE occurred_epoch_us IS NOT NULL AND occurred_epoch_us >= ? AND occurred_epoch_us < ?"
             + (" AND tool_key = ?" if tool != "all" else "")
+            # Current upserts keep the tables mutually exclusive. The priced
+            # copy takes precedence if a historical database still has both.
+            + " AND NOT EXISTS (SELECT 1 FROM usage_events AS priced WHERE priced.raw_id = staged.raw_id)"
             + " ORDER BY occurred_epoch_us",
             _epoch_params(start, end, tool),
         )
@@ -849,7 +853,7 @@ def _load_unpriced_events(connection, start: datetime, end: datetime, tool: str,
     for row in rows:
         row["when"] = from_epoch_micros(row["occurred_epoch_us"])
         row["cost_usd"] = Decimal(str(row["cost_usd"])) if row["cost_usd"] is not None else None
-        row["telemetry_complete"] = bool(row.get("telemetry_complete", 1))
+        row["telemetry_complete"] = bool(row.get("telemetry_complete", 1)) and not row["unclassified_tokens"]
         output.append(row)
     return output
 
@@ -1157,7 +1161,7 @@ def _try_price_event(pricing: PricingEngine, event: dict) -> tuple[Decimal | Non
     # Older incomplete rows store unavailable components as zero. Their
     # availability cannot be reconstructed, so pricing the other fields can
     # charge unknown cached input as fresh input and invent a lower bound.
-    if not event.get("telemetry_complete", True):
+    if not event.get("telemetry_complete", True) or event.get("unclassified_tokens"):
         return None, None
     try:
         when = event["when"] if isinstance(event.get("when"), datetime) else _parse(event["occurred_at"])
@@ -1320,9 +1324,11 @@ def _mix_payload(mix: TokenMix) -> list[dict]:
         "cached_input": mix.cached,
         "fresh_input": mix.fresh + mix.writes,
         "output": mix.output,
+        "unclassified": mix.unclassified,
     }
     output = []
-    for key, label in MIX_KEYS:
+    keys = (*MIX_KEYS, ("unclassified", "Unclassified")) if mix.unclassified else MIX_KEYS
+    for key, label in keys:
         tokens = cards[key]
         output.append(
             {
@@ -1333,18 +1339,6 @@ def _mix_payload(mix: TokenMix) -> list[dict]:
             }
         )
     return output
-
-
-def _input_share(components: dict[str, Decimal]) -> Decimal | None:
-    input_cost = (
-        components.get("fresh_input", Decimal(0))
-        + components.get("cached_input", Decimal(0))
-        + components.get("cache_write", Decimal(0))
-    )
-    total = input_cost + components.get("output", Decimal(0))
-    if total <= 0:
-        return None
-    return input_cost / total
 
 
 def _cached_to_fresh_ratio(price) -> Decimal | None:
@@ -1404,6 +1398,52 @@ def _cache_savings(*, events: list[dict], pricing: PricingEngine) -> float | Non
     if cached_rows != priced_cached_rows:
         return None
     return float(saved)
+
+
+def _cache_target_savings(
+    events: list[dict], pricing: PricingEngine, threshold: float
+) -> Decimal | None:
+    """Reprice the fresh input needed to reach a scope's cache-hit target."""
+    target = Decimal(str(threshold))
+    if not target.is_finite() or any(not row.get("telemetry_complete", True) for row in events):
+        return None
+    cached = sum(int(row.get("cached_input_tokens") or 0) for row in events)
+    fresh = sum(_fresh(row) for row in events)
+    writes = sum(int(row.get("cache_write_tokens") or 0) for row in events)
+    prompt = _prompt_tokens(cached, fresh, writes)
+    if prompt <= 0:
+        return None
+    target_tokens = int((prompt * target).to_integral_value(rounding=ROUND_CEILING))
+    additional_reads = min(fresh, max(0, target_tokens - cached))
+    if not additional_reads:
+        return Decimal(0)
+
+    savings = Decimal(0)
+    seen_fresh = allocated = 0
+    for row in events:
+        fresh_input = _fresh(row)
+        if not fresh_input:
+            continue
+        # Allocate proportionally to fresh input. Cumulative integer division
+        # puts exactly the target number of reads across whole-token events.
+        seen_fresh += fresh_input
+        next_allocated = seen_fresh * additional_reads // fresh
+        delta = next_allocated - allocated
+        allocated = next_allocated
+        actual = (
+            row["computed_total"] if "computed_total" in row else _try_price_event(pricing, row)[0]
+        )
+        if actual is None:
+            return None
+        if not delta:
+            continue
+        hypothetical, _ = _try_price_event(
+            pricing, {**row, "cached_input_tokens": int(row.get("cached_input_tokens") or 0) + delta}
+        )
+        if hypothetical is None:
+            return None
+        savings += actual - hypothetical
+    return max(Decimal(0), savings)
 
 
 def _finalize_series(series: list[dict]) -> None:
@@ -1935,15 +1975,15 @@ def _session_subset(session_rows: list[dict], entity_value: Decimal | None, runs
     ordered = sorted(
         session_rows,
         key=lambda row: (
-            row["value"] is None,
-            -(row["value"] or Decimal(0)),
+            not row["complete"],
+            -row["value"] if row["complete"] else Decimal(0),
             -row["tokens"],
         ),
     )
     chosen = ordered[:take]
     if not chosen:
         return {"shownShare": None, "shownTotal": 0.0, "rows": []}
-    display: list[Decimal | None] = [row["value"] for row in chosen]
+    display: list[Decimal | None] = [row["value"] if row["complete"] else None for row in chosen]
     priced = [value for value in display if value is not None]
     if not priced:
         rows = []
@@ -1961,7 +2001,6 @@ def _session_subset(session_rows: list[dict], entity_value: Decimal | None, runs
                 }
             )
         return {"shownShare": None, "shownTotal": None, "rows": rows}
-    raw_total = sum(priced, Decimal(0))
     # Real session values only: presentation never rescales money (contract
     # 4.1/N02). When the shown sessions cover the whole entity KPI the footer
     # legitimately reads $X of $X — 100% coverage is a valid state.
@@ -2025,8 +2064,6 @@ def _accumulate_session(store: dict[str, dict], event: dict, *, value: Decimal |
     else:
         row["value"] += value
     row["cachePct"] = _cache_hit_pct(row["cached"], row["fresh"], row["writes"])
-    if not row["complete"]:
-        row["value"] = None
 
 
 def aggregate_nav(
@@ -2078,7 +2115,8 @@ def aggregate_nav(
 
 
 def _month_usage(
-    connection, pricing: PricingEngine, start: datetime, end: datetime, tool: str
+    connection, pricing: PricingEngine, start: datetime, end: datetime, tool: str,
+    machine: str = "all",
 ) -> tuple[TrackedParts, dict[str, Decimal], dict[str, bool]]:
     """Month-to-date usage value per tool plus completeness, loaded once.
 
@@ -2091,8 +2129,8 @@ def _month_usage(
     """
 
     def compute() -> tuple[TrackedParts, dict[str, Decimal], dict[str, bool]]:
-        events = _load_events(connection, start, end, tool)
-        unpriced = _load_unpriced_events(connection, start, end, tool)
+        events = _load_events(connection, start, end, tool, machine)
+        unpriced = _load_unpriced_events(connection, start, end, tool, machine)
         enriched = _enrich(events, pricing)
         parts = _tracked_from_loaded(
             events=events,
@@ -2123,6 +2161,7 @@ def _month_usage(
         _connection_identity(connection),
         id(pricing),
         tool,
+        machine,
         _iso(start),
         _range_fingerprint(connection, start, end, tool),
     )
@@ -2171,10 +2210,8 @@ def _heatmap_cells(
 
 def _waste_bundle(
     *,
-    models: list[dict],
+    cache_opportunities: list[tuple[str, Decimal]],
     cache_threshold: float,
-    input_share: Decimal | None,
-    mix_complete: bool,
     month_usage: dict[str, Decimal],
     monthly_plans: dict[str, tuple[str, Decimal]],
     capacity: list[dict],
@@ -2191,31 +2228,15 @@ def _waste_bundle(
     never advises downgrades or manufacturing usage.
     """
     items: list[dict] = []
-    gap = Decimal(0)
-    titles = []
-    for model in models:
-        cache_pct = model.get("cachePct")
-        value = model.get("value")
-        model_share = model.get("inputShare")
-        share = Decimal(str(model_share)) if model_share is not None else input_share
-        if cache_pct is None or value is None or share is None:
-            continue
-        actual = Decimal(str(cache_pct)) / Decimal(100)
-        target = Decimal(str(cache_threshold))
-        if actual < target:
-            gap += Decimal(str(value)) * (target - actual) * share
-            titles.append(model["name"])
+    gap = sum((savings for _, savings in cache_opportunities), Decimal(0))
     if gap > 0:
+        titles = list(dict.fromkeys(name for name, _ in cache_opportunities))
         daily_gap = gap / window_days if window_days > 0 else gap
         items.append(
             {
                 "key": "cache_gap",
                 "title": "Cache reuse below target",
-                "detail": (
-                    f"{', '.join(titles)} below the {cache_threshold * 100:.0f}% cache target"
-                    if titles
-                    else f"Cache reuse below the {cache_threshold * 100:.0f}% target"
-                ),
+                "detail": f"{', '.join(titles)} below the {cache_threshold * 100:.0f}% cache target",
                 "fix": "Hypothetical reference-value difference if the target were met; enable context reuse where practical. Not recoverable money.",
                 "perDay": float(_round_cents(daily_gap)),
             }
@@ -2313,8 +2334,10 @@ def aggregate_summary(
         authority = _cost_buckets(connection, window.start, window.end)
         enriched = _enrich(events, pricing, authority)
         local_now = now.astimezone(zone)
-        subscription_total, subscription_by_tool = _subscription_cost(
-            connection, window.start, window.end, timezone, cap_date=local_now.date()
+        account_view = machine == "all"
+        subscription_total, subscription_by_tool = (
+            _subscription_cost(connection, window.start, window.end, timezone, cap_date=local_now.date())
+            if account_view else (Decimal(0), {})
         )
         if tool != "all":
             subscription_tool = _subscription_tool_key(tool)
@@ -2328,15 +2351,24 @@ def aggregate_summary(
             pricing=pricing,
         )
         buckets = _bucket_plan(window, zone)
+        bucket_usd = [Decimal(0) for _ in buckets]
+        bucket_has_value = [False] * len(buckets)
+        bucket_complete = [True] * len(buckets)
         model_stats: dict[tuple[str, str], dict] = {}
         tool_stats: dict[str, dict] = {}
         mix = TokenMix()
-        component_totals: dict[str, Decimal] = defaultdict(Decimal)
         ratio_weight = Decimal(0)
         ratio_acc = Decimal(0)
         api_equivalent_value = Decimal(0)
         api_equivalent_tokens = 0
         api_equivalent_complete = True
+
+        def add_bucket_value(index: int, value: Decimal | None) -> None:
+            if value is None:
+                bucket_complete[index] = False
+            else:
+                bucket_usd[index] += value
+                bucket_has_value[index] = True
 
         def ensure_model(model_key: str, tool_key: str) -> dict:
             model_key = reporting_model_key(model_key)
@@ -2354,8 +2386,7 @@ def aggregate_summary(
                     "runs": set(),
                     "complete": True,
                     "telemetry": True,
-                    "inputCost": Decimal(0),
-                    "outputCost": Decimal(0),
+                    "events": [],
                     "exactEvents": 0,
                     "derivedEvents": 0,
                 },
@@ -2382,6 +2413,7 @@ def aggregate_summary(
 
         for event in enriched:
             model = ensure_model(event["model_key"], event["tool_key"])
+            model["events"].append(event)
             tool_stat = ensure_tool(event["tool_key"])
             measured = _measured(event)
             computed = event["computed_total"]
@@ -2409,17 +2441,9 @@ def aggregate_summary(
             tool_stat["writes"] += int(event.get("cache_write_tokens") or 0)
             index = _bucket_index(event["when"], window, zone=zone, buckets=buckets)
             tool_stat["series"][index] += measured
+            if tool != "all":
+                add_bucket_value(index, event["spend"])
             mix.add_event(event)
-            components = event["components"] or {}
-            model["inputCost"] += (
-                components.get("fresh_input", Decimal(0))
-                + components.get("cached_input", Decimal(0))
-                + components.get("cache_write", Decimal(0))
-            )
-            model["outputCost"] += components.get("output", Decimal(0))
-            for key, amount in components.items():
-                if amount is not None:
-                    component_totals[key] += amount
             if _event_is_exact(event):
                 model["exactEvents"] += 1
                 tool_stat["exactEvents"] += 1
@@ -2434,9 +2458,10 @@ def aggregate_summary(
 
         for event in unpriced_events:
             model = ensure_model(event["model_key"], event["tool_key"])
+            model["events"].append(event)
             tool_stat = ensure_tool(event["tool_key"])
             measured = _measured(event)
-            published_price, published_components = _try_price_event(pricing, event)
+            published_price, _ = _try_price_event(pricing, event)
             if published_price is None:
                 api_equivalent_complete = False
             else:
@@ -2460,24 +2485,16 @@ def aggregate_summary(
                 model["value"] += event["cost_usd"]
                 tool_stat["value"] += event["cost_usd"]
             else:
-                priced, components = published_price, published_components
-                if priced is None:
+                if published_price is None:
                     model["complete"] = False
                     tool_stat["complete"] = False
                 else:
-                    model["value"] += priced
-                    tool_stat["value"] += priced
-                    if components:
-                        model["inputCost"] += (
-                            components["fresh_input"]
-                            + components["cached_input"]
-                            + components["cache_write"]
-                        )
-                        model["outputCost"] += components["output"]
-                        for key, amount in components.items():
-                            component_totals[key] += amount
+                    model["value"] += published_price
+                    tool_stat["value"] += published_price
             index = _bucket_index(event["when"], window, zone=zone, buckets=buckets)
             tool_stat["series"][index] += measured
+            if tool != "all":
+                add_bucket_value(index, _reported_value(event, published_price))
             mix.add_event(event)
 
         for tool_key, amount in subscription_by_tool.items():
@@ -2485,7 +2502,9 @@ def aggregate_summary(
 
         local_now = now.astimezone(zone)
         month_start = datetime(local_now.year, local_now.month, 1, tzinfo=zone).astimezone(UTC)
-        month_parts, month_usage, month_usage_complete = _month_usage(connection, pricing, month_start, now, tool)
+        month_parts, month_usage, month_usage_complete = _month_usage(
+            connection, pricing, month_start, now, tool, machine
+        )
         # OpenCode and ZCode use different plan keys but the provider returns
         # identical quota counters: they consume one shared Z.AI subscription.
         # Attribute both harnesses' published-rate value to that single plan.
@@ -2495,7 +2514,8 @@ def aggregate_summary(
         )
         monthly_plans: dict[str, tuple[str, Decimal]] = {}
         subscription_rows = []
-        for row in effective_terms(connection):
+        plan_terms = effective_terms(connection) if account_view else ()
+        for row in plan_terms:
             if row["start_date"] > local_now.date().isoformat() or (row["end_date"] and row["end_date"] < local_now.date().isoformat()):
                 continue
             amount = Decimal(str(row["amount_usd"]))
@@ -2575,6 +2595,11 @@ def aggregate_summary(
             for index, tokens in enumerate(stat["series"]):
                 series[index]["byTool"][tool_key] = float(tokens)
         _finalize_series(series)
+        if tool != "all":
+            for index, bucket in enumerate(series):
+                complete = bucket_complete[index]
+                bucket["bucketUsd"] = float(bucket_usd[index]) if complete or bucket_has_value[index] else None
+                bucket["bucketUsdComplete"] = complete
 
         tracked_value = parts.known if parts.complete else None
         effective_cost_per_million = (
@@ -2587,20 +2612,12 @@ def aggregate_summary(
             if parts.tokens
             else None
         )
-        input_share = _input_share(component_totals)
         ratio = (ratio_acc / ratio_weight) if ratio_weight > 0 else None
         models = []
-        waste_models = []
+        cache_opportunities = []
         for stat in model_stats.values():
             cache_pct = _cache_hit_pct(
                 stat["cached"], stat["fresh"], stat["writes"], complete=stat["telemetry"]
-            )
-            input_cost = stat["inputCost"]
-            output_cost = stat["outputCost"]
-            model_share = (
-                float(input_cost / (input_cost + output_cost))
-                if input_cost + output_cost
-                else None
             )
             value = _money(stat["value"]) if stat["complete"] else None
             exact = stat["exactEvents"] > 0 and stat["derivedEvents"] == 0
@@ -2616,7 +2633,10 @@ def aggregate_summary(
                 "valueMarker": _value_marker(exact, value),
             }
             models.append(public)
-            waste_models.append({**public, "inputShare": model_share})
+            if stat["complete"]:
+                saving = _cache_target_savings(stat["events"], pricing, cache_threshold)
+                if saving is not None and saving > 0:
+                    cache_opportunities.append((stat["name"], saving))
         models.sort(key=lambda row: (row["value"] is None, -(row["value"] or 0), -row["tokens"]))
         tools = []
         for stat in tool_stats.values():
@@ -2645,14 +2665,13 @@ def aggregate_summary(
         window_days = Decimal(str(max((window.end - window.start).total_seconds() / 86400, 1 / 24)))
         # Configured accrual month-to-date per tool over the SAME interval as
         # month_usage — the plan-underuse comparison never mixes periods.
-        month_accrual_total, month_accrual = _subscription_cost(
-            connection, month_start, now, timezone, cap_date=local_now.date()
+        month_accrual_total, month_accrual = (
+            _subscription_cost(connection, month_start, now, timezone, cap_date=local_now.date())
+            if account_view else (Decimal(0), {})
         )
         waste = _waste_bundle(
-            models=waste_models,
+            cache_opportunities=cache_opportunities,
             cache_threshold=cache_threshold,
-            input_share=input_share,
-            mix_complete=mix.telemetry_complete,
             month_usage=month_usage,
             monthly_plans=monthly_plans,
             capacity=capacity,
@@ -2661,7 +2680,10 @@ def aggregate_summary(
             month_usage_complete=month_usage_complete,
         )
         next_month = _next_month_start_utc(now, zone)
-        all_plan_cost, plan_costs = _subscription_cost(connection, month_start, next_month.astimezone(UTC), timezone)
+        all_plan_cost, plan_costs = (
+            _subscription_cost(connection, month_start, next_month.astimezone(UTC), timezone)
+            if account_view else (Decimal(0), {})
+        )
         plan_cost = all_plan_cost if tool == "all" else plan_costs.get(_subscription_tool_key(tool), Decimal(0))
         # Same-period comparison (C02): month-to-date reference usage versus
         # configured accrual for the identical elapsed interval. The full
@@ -2681,13 +2703,14 @@ def aggregate_summary(
         projected = {
             "value": _money(projected_value),
             "valueBasis": "reference usage, month to date",
-            "planCost": float(accrual_to_date),
-            "fullMonthPlanCost": float(plan_cost),
+            "planCost": float(accrual_to_date) if account_view else None,
+            "fullMonthPlanCost": float(plan_cost) if account_view else None,
             "multiple": multiple,
             "multipleBasis": multiple_basis,
             "method": (
                 "Month-to-date reference usage versus configured accrual over the same elapsed days. "
                 "A comparison at published rates, not a bill."
+                if account_view else "Month-to-date reference usage on this computer. Plans are account-wide."
             ),
         }
         mean_session = (
@@ -2734,7 +2757,7 @@ def aggregate_summary(
                 # Token-card published-rate equivalent only. Subscription
                 # proration is subscriptionUsd, never this field.
                 "publishedRate": float(parts.published),
-                "subscriptionUsd": float(parts.subscriptions),
+                "subscriptionUsd": float(parts.subscriptions) if account_view else None,
                 "reportedChargesUsd": float(sum(authority.values(), Decimal(0))) if authority and tool == "all" else (float(authority[tool]) if tool in authority else None),
                 "unpricedTokens": parts.unpriced_tokens,
                 "effectiveCostPerMillionTokens": (
@@ -2796,6 +2819,7 @@ def aggregate_entity(
     now: datetime | None = None,
     quotas: list[dict] | None = None,
     machine: str = "all",
+    tool: str | None = None,
 ) -> dict:
     if kind not in {"model", "tool"}:
         raise ValueError("kind must be model or tool")
@@ -2804,7 +2828,8 @@ def aggregate_entity(
     zone = ZoneInfo(timezone)
     with connect(database_path) as connection:
         window = _actualize_all_window(connection, window, timezone)
-        tool_filter = key if kind == "tool" else "all"
+        selected_tool = tool if kind == "model" and tool and tool != "all" else None
+        tool_filter = key if kind == "tool" else selected_tool or "all"
         events = _load_events(connection, window.start, window.end, tool_filter, machine)
         unpriced_events = _load_unpriced_events(connection, window.start, window.end, tool_filter, machine)
         if kind == "model":
@@ -2828,7 +2853,7 @@ def aggregate_entity(
             subscriptions=subscriptions,
             pricing=pricing,
         )
-        global_parts = _tracked_value(
+        scope_parts = _tracked_value(
             connection,
             pricing,
             window.start,
@@ -2836,20 +2861,18 @@ def aggregate_entity(
             "all",
             timezone,
             cap_date=cap_date,
+            machine=machine,
         )
         mix = TokenMix()
-        component_totals: dict[str, Decimal] = defaultdict(Decimal)
         ratio_weight = Decimal(0)
         ratio_acc = Decimal(0)
         buckets = _bucket_plan(window, zone)
         token_series = [0] * len(buckets)
         session_store: dict[str, dict] = {}
-        entity_tool = key if kind == "tool" else None
+        entity_tool = key if kind == "tool" else selected_tool
         for event in enriched:
             mix.add_event(event)
             token_series[_bucket_index(event["when"], window, zone=zone, buckets=buckets)] += _measured(event)
-            for comp_key, amount in event["components"].items():
-                component_totals[comp_key] += amount
             ratio = _cached_to_fresh_ratio(event["price"])
             weight = Decimal(event["cached_input_tokens"] + _fresh(event))
             if ratio is not None and weight > 0:
@@ -2861,20 +2884,16 @@ def aggregate_entity(
             mix.add_event(event)
             token_series[_bucket_index(event["when"], window, zone=zone, buckets=buckets)] += _measured(event)
             entity_tool = entity_tool or event["tool_key"]
-            priced, components = _try_price_event(pricing, event)
+            priced, _ = _try_price_event(pricing, event)
             if _uses_reported(event, priced):
                 _accumulate_session(session_store, event, value=event["cost_usd"], complete=True)
             else:
                 if priced is None:
                     _accumulate_session(session_store, event, value=None, complete=False)
                 else:
-                    if components:
-                        for comp_key, amount in components.items():
-                            component_totals[comp_key] += amount
                     _accumulate_session(session_store, event, value=priced, complete=True)
         entity_value = parts.usage_value if parts.complete else None
-        global_value = global_parts.usage_value if global_parts.complete else None
-        input_share = _input_share(component_totals)
+        scope_value = scope_parts.usage_value if scope_parts.complete else None
         ratio = (ratio_acc / ratio_weight) if ratio_weight > 0 else None
         already_saved = _cache_savings(
             events=[*events, *unpriced_events],
@@ -2885,12 +2904,13 @@ def aggregate_entity(
         opportunity_kind = None
         opportunity_detail = "Cost optimization is unavailable until this usage has complete priced token components."
         opportunity_fix = "Wait for priced telemetry before acting on cache opportunity."
-        if entity_value is not None and cache_pct is not None and input_share is not None:
+        target_savings = _cache_target_savings([*enriched, *unpriced_events], pricing, cache_threshold)
+        if entity_value is not None and cache_pct is not None and target_savings is not None:
             actual = Decimal(str(cache_pct)) / Decimal(100)
             target = Decimal(str(cache_threshold))
             if actual < target:
                 opportunity_kind = "cache_gap"
-                opportunity_amount = float(entity_value * (target - actual) * input_share)
+                opportunity_amount = float(target_savings)
                 opportunity_detail = (
                     f"Cache reuse is {cache_pct:.1f}% versus the {cache_threshold * 100:.0f}% target."
                 )
@@ -2919,15 +2939,11 @@ def aggregate_entity(
         provider_key = entity_tool or key
         provider_card = next((card for card in capacity if card["providerKey"] == provider_key), None)
         if provider_card is None:
-            meta = PROVIDER_META.get(
-                provider_key,
-                {
-                    "providerKey": provider_key,
-                    "providerName": TOOL_NAMES.get(provider_key, provider_key),
-                    "plan": None,
-                    "isPayg": False,
-                },
-            )
+            meta = provider_meta(provider_key) or {
+                "providerName": tool_name(provider_key),
+                "plan": None,
+                "isPayg": False,
+            }
             provider_limits = []
             plan = meta.get("plan")
             provider_name = meta["providerName"]
@@ -2940,18 +2956,19 @@ def aggregate_entity(
         name = display_model(reporting_model_key(key)) if kind == "model" else tool_name(key)
         value_float = _money(entity_value)
         share_of_tracked = (
-            float(entity_value / global_value * 100)
-            if entity_value is not None and global_value
+            float(entity_value / scope_value * 100)
+            if entity_value is not None and scope_value
             else None
         )
         share_of_tokens = (
-            parts.tokens / global_parts.tokens * 100 if global_parts.tokens else None
+            parts.tokens / scope_parts.tokens * 100 if scope_parts.tokens else None
         )
         return {
             "window": _window_payload(window, len(buckets)),
             "generatedAt": _iso(now),
             "name": name,
             "kind": kind,
+            **({"selectedTool": selected_tool} if selected_tool else {}),
             "providerKey": provider_key,
             "providerName": provider_name,
             "plan": plan,

@@ -411,8 +411,8 @@ def create_app(
         )
         if hub_data is not None:
             return hub_data
-        local_machine, scope = _hud_fallback_scope(machine)
-        return {**aggregate_summary_cached(
+        local_machine, scope, _own = _spoke_fallback_scope(machine)
+        report = aggregate_summary_cached(
             database_path=settings.database_path,
             pricing=pricing,
             window_key=resolved,
@@ -422,7 +422,17 @@ def create_app(
             cadence_seconds=settings.local_ingest_interval_seconds,
             now=slot_now(),
             machine=local_machine,
-        ), **scope}
+        )
+        if scope.get("scope") == "unavailable":
+            report = {
+                **report,
+                "capacity": [],
+                "activity": [],
+                "capacityForecast": None,
+                "totals": {**report["totals"], "reportedChargesUsd": None, "trackedValue": None},
+                "projected": {**report["projected"], "value": None},
+            }
+        return {**report, **scope}
 
 
     @app.get("/api/spend/summary")
@@ -451,7 +461,6 @@ def create_app(
 
     def _native_usage_sync(period: str, machine: str) -> dict:
         from spend_app.native_usage import usage_report
-        from spend_app.setup_wizard import read_setup_state
         from spend_app.sync import fetch_from_configured_hub
 
         request_collection()
@@ -459,25 +468,13 @@ def create_app(
                                         {"period": period, "machine": machine}, read_timeout=20.0)
         if hub is not None and isinstance(hub.get("total"), dict):
             return {**hub, "scope": "all-computers" if machine == "all" else "computer"}
-        with connect(settings.database_path) as connection:
-            setup = read_setup_state(connection)
-        if setup.get("role") == "spoke" and setup.get("spokeConfig", {}).get("enabled"):
-            own_id = str(setup.get("account", {}).get("machineId") or "")
-            own_selected = machine == "all" or bool(own_id and machine == own_id)
-            # On the Hub, 'local' means the Hub itself, never this Spoke.
-            # A cold/offline cache must not put this machine's totals under
-            # another machine's name, or count imports left from a former Hub.
-            report = usage_report(settings, pricing, now=slot_now(), period=period,
-                                  machine="local" if own_selected else "_unavailable")
+        local_machine, scope, own_id = _spoke_fallback_scope(machine)
+        report = usage_report(settings, pricing, now=slot_now(), period=period, machine=local_machine)
+        if scope:
             own = next((row for row in report["machines"] if row["id"] == "local"), None)
             machines = [{**own, "id": own_id}] if own and own_id else []
-            return {**report, "machine": machine, "machines": machines,
-                    "scope": "local-fallback" if own_selected else "unavailable",
-                    "warning": (
-                        "Showing this computer's recorded usage only. Sign in from Settings for All computers; your hub may also be offline."
-                        if own_selected else "This computer's history is unavailable until the hub reconnects."
-                    )}
-        return usage_report(settings, pricing, now=slot_now(), period=period, machine=machine)
+            return {**report, "machine": machine, "machines": machines, **scope}
+        return report
 
     @app.get("/api/spend/usage")
     async def native_usage(period: str = Query(default="today", pattern="^(today|week|month|all)$"),
@@ -491,19 +488,26 @@ def create_app(
         key: str = Query(..., min_length=1),
         window: str = Query(default="1d"),
         machine: str = Query(default="all"),
+        tool: str | None = Query(default=None, min_length=1),
     ) -> dict:
         resolved = _window_or_400(window)
         request_history(request)
         from spend_app.sync import fetch_from_configured_hub
+        selected_tool = tool if kind == "model" and tool != "all" else None
+        params = {"kind": kind, "key": key, "window": resolved, "machine": machine}
+        if selected_tool:
+            params["tool"] = selected_tool
         hub_data = fetch_from_configured_hub(
             settings,
             "/api/spend/entity",
-            {"kind": kind, "key": key, "window": resolved, "machine": machine},
+            params,
         )
         if hub_data is not None:
+            if selected_tool and hub_data.get("selectedTool") != selected_tool:
+                return {"scope": "unavailable", "warning": "The hub could not provide this profile's model history."}
             return hub_data
-        local_machine, scope = _hud_fallback_scope(machine)
-        return {**aggregate_entity(
+        local_machine, scope, _own = _spoke_fallback_scope(machine)
+        report = aggregate_entity(
             database_path=settings.database_path,
             pricing=pricing,
             kind=kind,
@@ -513,7 +517,11 @@ def create_app(
             cache_threshold=settings.cache_hit_threshold,
             now=slot_now(),
             machine=local_machine,
-        ), **scope}
+            tool=selected_tool,
+        )
+        if scope.get("scope") == "unavailable":
+            report.update(providerLimits=[], value=None)
+        return {**report, **scope}
 
     @app.get("/api/spend/health")
     def spend_health(request: Request) -> dict:
@@ -537,18 +545,24 @@ def create_app(
         return report(settings, history_active=collecting if scheduler else True,
                       include_history=view != "hud" or collecting)
 
-    def _hud_fallback_scope(machine):
+    def _spoke_fallback_scope(machine: str) -> tuple[str, dict, str | None]:
         from spend_app.setup_wizard import read_setup_state
         with connect(settings.database_path) as connection:
             setup = read_setup_state(connection)
-        if setup.get("role") != "spoke" or not setup["spokeConfig"].get("enabled"):
-            return machine, {}
-        own = str(setup.get("account", {}).get("machineId") or "")
-        own_selected = machine in {"", "all", "local", own}
-        return ("local" if own_selected else "_unavailable"), {
-            "scope": "local-fallback" if own_selected else "unavailable",
-            "warning": "Showing this computer only. Sign in from Settings for All computers, or reconnect your hub.",
-        }
+        if setup.get("role") != "spoke" or not setup.get("spokeConfig", {}).get("enabled"):
+            return machine, {}, None
+        own_id = str(setup.get("account", {}).get("machineId") or "")
+        # Hub 'local' denotes the hub computer. The only safe fallback is
+        # this spoke's own unprefixed history, omitting any old hub imports.
+        if machine == "all" or (own_id and machine == own_id):
+            return "local", {
+                "scope": "local-fallback",
+                "warning": "Showing this computer's recorded usage only. Sign in from Settings for All computers, or reconnect your hub.",
+            }, own_id
+        return "_unavailable", {
+            "scope": "unavailable",
+            "warning": "This computer's history is unavailable until the hub reconnects.",
+        }, own_id
 
     def _spend_hud_live_sync(machine: str = Query(default="all")) -> dict:
         from spend_app.hud_data import live_snapshot
@@ -559,9 +573,13 @@ def create_app(
         hub = fetch_from_configured_hub(settings, "/api/spend/hud", {"machine": machine},
                                         stale_seconds=HUD_HUB_STALE_SECONDS)
         if hub is not None:
-            return _stamp_hub_age(hub, now=current_now())
-        local_machine, scope = _hud_fallback_scope(machine)
-        return {**live_snapshot(settings, now=current_now(), machine=local_machine), **scope}
+            scoped = {"scope": "all-computers" if machine == "all" else "computer", **hub}
+            return _stamp_hub_age(scoped, now=current_now())
+        local_machine, scope, _own = _spoke_fallback_scope(machine)
+        report = live_snapshot(settings, now=current_now(), machine=local_machine)
+        if scope.get("scope") == "unavailable":
+            report.update(status="unavailable", capacity=[], activity=[])
+        return {**report, **scope}
 
 
     @app.get("/api/spend/hud")
@@ -569,7 +587,7 @@ def create_app(
         return await _run_bounded_read(_spend_hud_live_sync, machine)
 
     def _spend_hud_usage_sync(machine: str = Query(default="all")) -> dict:
-        from spend_app.hud_data import local_usage_machine, recorded_usage
+        from spend_app.hud_data import recorded_usage
         from spend_app.sync import fetch_from_configured_hub
 
         # Renew on every poll, including on paired spokes before the hub
@@ -580,9 +598,11 @@ def create_app(
                                         read_timeout=HUD_USAGE_HUB_READ_TIMEOUT)
         if hub is not None:
             return _stamp_hub_age(hub, now=current_now(), stamp=hub.get("historyUpdatedAt"))
-        local_machine, scope = _hud_fallback_scope(machine)
-        return {**recorded_usage(settings, pricing, now=current_now(),
-                                machine=local_usage_machine(settings, local_machine)), **scope}
+        local_machine, scope, _own = _spoke_fallback_scope(machine)
+        report = recorded_usage(settings, pricing, now=current_now(), machine=local_machine)
+        if scope.get("scope") == "unavailable":
+            report["windowTokens"] = {}
+        return {**report, **scope}
 
 
     @app.get("/api/spend/hud/usage")
@@ -591,14 +611,19 @@ def create_app(
 
     @app.get("/api/spend/share/week")
     def spend_share_week(machine: str = Query(default="all")) -> dict:
-        from spend_app.hud_data import local_usage_machine, week_card
+        from spend_app.hud_data import week_card
         from spend_app.sync import fetch_from_configured_hub
 
         hub = fetch_from_configured_hub(settings, "/api/spend/share/week", {"machine": machine})
         if hub is not None and "usd" in hub:
             return hub
-        local_machine, scope = _hud_fallback_scope(machine)
-        return {**week_card(settings, pricing, now=current_now(), machine=local_usage_machine(settings, local_machine)), **scope}
+        local_machine, scope, _own = _spoke_fallback_scope(machine)
+        report = week_card(settings, pricing, now=current_now(), machine=local_machine)
+        if scope.get("scope") == "unavailable":
+            report.update(usd=None, complete=False)
+        if scope:
+            report["planUsd"] = None
+        return {**report, **scope}
 
     @app.get("/api/onboarding")
     def onboarding():
