@@ -493,6 +493,7 @@ def test_the_second_launch_puts_the_tab_away(monkeypatch):
     import ctypes
 
     hidden = []
+    tab_is_proxy = False
 
     class User32:
         @staticmethod
@@ -504,9 +505,22 @@ def test_the_second_launch_puts_the_tab_away(monkeypatch):
         SetForegroundWindow = staticmethod(lambda _h: 1)
 
         @staticmethod
+        def GetClassNameW(handle, buffer, _size):
+            buffer.value = (
+                "Windows.Internal.Shell.TabProxyWindow"
+                if handle == 7 and tab_is_proxy else "WindowsForms10.Window.8.app.0"
+            )
+            return len(buffer.value)
+
+        @staticmethod
         def ShowWindow(handle, command):
             hidden.append((handle, command))
 
     monkeypatch.setattr(ctypes, "windll", type("W", (), {"user32": User32})())
     assert ww._focus_existing_window("BURNRATE") is True
     assert hidden == [(7, 0)]
+
+    tab_is_proxy = True
+    hidden.clear()
+    assert ww._focus_existing_window("BURNRATE") is True
+    assert hidden == []
