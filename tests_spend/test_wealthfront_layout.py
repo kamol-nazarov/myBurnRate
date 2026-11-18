@@ -10,9 +10,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from spend_app.native_desktop import DemoClient
+from spend_app.native_onboarding import demo_setup_scan_data
 from spend_app.wealthfront_window import load_ui_html, merge_provider_entries
 from tests_spend.browser_runtime import CHROME, _chrome_dump, _probe
-from tests_spend.test_wealthfront_ui import build_page, probe
+from tests_spend.test_wealthfront_ui import FAST, build_page, needs_chrome, probe
 
 pytestmark = pytest.mark.browser
 
@@ -248,3 +249,54 @@ def test_native_rows_hero_and_summary_fit_at_compact_widths(tmp_path, pref):
     for case in report["out"]:
         assert case["actual"] == case["width"], case
         assert case["issues"] == [], case
+
+
+SETTINGS_SCROLL_PROBE = """
+document.getElementById('settingsBtn').click();
+const body = document.getElementById('sheetBody');
+const tabs = document.querySelector('.sheet-tabs');
+await until(() => body.querySelector('.source-row') && document.getElementById('src_consent_opencode_go'));
+const [sources, scan] = body.children;
+const configureButtons = [...sources.querySelectorAll('[id^="cfg_"]')];
+const firstConfigure = configureButtons[0];
+const lastConfigure = configureButtons.at(-1);
+const tabsTop = tabs.getBoundingClientRect().top;
+const viewportTop = body.getBoundingClientRect().top;
+body.scrollTop = lastConfigure.getBoundingClientRect().top - viewportTop - 12;
+const button = lastConfigure.getBoundingClientRect();
+const configureHit = document.elementFromPoint(button.left + button.width / 2, button.top + button.height / 2);
+firstConfigure.focus();
+body.scrollTop = body.scrollHeight;
+const out = {
+  scrollTop: body.scrollTop,
+  cardOverflow: [sources, scan].map(card => card.scrollHeight - card.clientHeight),
+  configureReachable: lastConfigure.contains(configureHit),
+  scanBottomVisible: scan.getBoundingClientRect().bottom <= body.getBoundingClientRect().bottom,
+  tabsPinned: tabs.getBoundingClientRect().top === tabsTop,
+};
+await h11RefreshSetupScan(true);
+out.refreshedScrollTop = body.scrollTop;
+out.focusRestored = document.activeElement.id === firstConfigure.id;
+report(out);
+"""
+
+
+@needs_chrome
+def test_sources_settings_scrolls_to_both_cards_at_minimum_window_size(tmp_path):
+    scan = json.dumps(demo_setup_scan_data())
+    html = build_page(
+        pref="dark",
+        init={"demo": False},
+        settings={"ok": True, **DemoClient().request("/api/connections")},
+        api_js=f"api.get_setup_scan = async () => ({scan});",
+        probe=SETTINGS_SCROLL_PROBE,
+        extra_css=FAST,
+    )
+    result = probe(html, 380, tmp_path, height=520)
+    assert result["scrollTop"] > 0, result
+    assert result["cardOverflow"] == [0, 0], result
+    assert result["configureReachable"], result
+    assert result["scanBottomVisible"], result
+    assert result["tabsPinned"], result
+    assert result["refreshedScrollTop"] == result["scrollTop"], result
+    assert result["focusRestored"], result

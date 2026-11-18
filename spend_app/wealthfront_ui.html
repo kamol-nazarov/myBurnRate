@@ -1558,6 +1558,8 @@ body:not(.dragging-active) .provider-row:hover .logo-badge {
   overflow-y: auto;
   padding: 8px 10px 16px;
   display: grid;
+  /* Keep cards at their content height so the sheet can scroll. */
+  grid-auto-rows: max-content;
   gap: 8px;
   align-content: start;
 }
@@ -6625,7 +6627,7 @@ function renderSettingsBody() {
   let target = null;
   if (focusId) target = document.getElementById(focusId);
   else if (focusIdx >= 0) target = body.querySelectorAll("button, input, a")[focusIdx];
-  if (target && state.settingsOpen) target.focus();
+  if (target && state.settingsOpen) target.focus({ preventScroll: true });
 }
 
 function switchRow(id, title, desc, on, action) {

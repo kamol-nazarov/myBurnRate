@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 This project is licensed under Apache-2.0.
 
+## [0.6.1] - Unreleased
+
+### Fixed
+
+- **Settings → Sources scrolls through the complete provider list and tool scan status.**
+  The Settings header and tabs stay in view, and refreshing the scan keeps your place.
+
 ## [0.6.0] - 2026-11-17
 
 ### Added
