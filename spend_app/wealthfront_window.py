@@ -2292,6 +2292,10 @@ class DesktopBridge:
                 out["warningCode"] = warn_code
                 out["warning"] = format_error(warn_code)
                 out["syncResult"] = sync_res
+            if res.get("subscriptionHistoryPending"):
+                from spend_app.setup_wizard import PLAN_HISTORY_PENDING
+
+                out["warning"] = PLAN_HISTORY_PENDING
             return out
         except DesktopError as exc:
             code = getattr(exc, "code", None)
@@ -2957,7 +2961,15 @@ class DesktopBridge:
         if self._demo:
             return self._h5_err("HUB-501", message="Account actions are disabled in demo mode.")
 
-        from spend_app.setup_wizard import MIN_PASSWORD_LENGTH, normalize_email
+        from spend_app.plan_service import PlanError
+        from spend_app.setup_wizard import (
+            MIN_PASSWORD_LENGTH,
+            PLAN_HISTORY_PENDING,
+            complete_deferred_history,
+            normalize_email,
+            receive_sign_in_history,
+        )
+        from spend_app.subscription_transfer import attach_sign_in_history, export_history
 
         raw_email = (email or "").strip()
         if endpoint == "/api/account/register":
@@ -2988,44 +3000,52 @@ class DesktopBridge:
         initial_gen: int | None = None
         initial_signed_out = False
         mem_initial_gen = self._owner_session_gen
+        local_history = None
+        settings = getattr(self._client, "settings", None)
         if db_path is not None:
-            if db_path.is_file():
-                try:
-                    from spend_app.db import connect
-                    from spend_app.setup_wizard import read_setup_state
+            try:
+                from zoneinfo import ZoneInfo
 
-                    with connect(db_path) as conn:
-                        sp_init = read_setup_state(conn).get("spokeConfig") or {}
-                    initial_gen = int(sp_init.get("credentialGeneration") or 0)
-                    initial_signed_out = bool(sp_init.get("signedOut"))
-                except Exception:
-                    LOGGER.debug("Could not read setup state snapshot before sign-in", exc_info=True)
-                    return self._h5_err("APP-903")
-            else:
-                initial_gen = 0
+                from spend_app.db import connect, initialize
+                from spend_app.setup_wizard import read_setup_state
+
+                initialize(db_path)
+                with connect(db_path) as conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                    sp_init = read_setup_state(conn)["spokeConfig"]
+                    today = datetime.now(UTC).astimezone(ZoneInfo(settings.timezone)).date()
+                    local_history = export_history(conn, today, native_only=True)
+                initial_gen = int(sp_init.get("credentialGeneration") or 0)
+                initial_signed_out = bool(sp_init.get("signedOut"))
+            except Exception:
+                LOGGER.debug("Could not read setup state snapshot before sign-in", exc_info=True)
+                return self._h5_err("APP-903")
 
         clean_comp = (computer_name or "").strip() or self._default_computer_name()
+        auth_body = {
+            "username": clean_user,
+            "password": password,
+            "computerName": clean_comp,
+            "deviceLabel": clean_comp,
+        }
+        deferred_history = attach_sign_in_history(auth_body, local_history) if local_history is not None else False
         auth_data, auth_res, call_err = self._call_hub(
             hub_url,
             "POST",
             endpoint,
-            json_body={
-                "username": clean_user,
-                "password": password,
-                "computerName": clean_comp,
-                "deviceLabel": clean_comp,
-            },
+            json_body=auth_body,
             handshake=True,
         )
         if call_err is not None:
             return self._h5_err_from_call(call_err)
+        remote_history = auth_data.get("subscriptionHistory")
 
         from spend_app.auth_model import extract_cookie
         from spend_app.connection_secrets import (
             revoke_or_queue_machine_token,
             revoke_or_queue_owner_session,
         )
-        from spend_app.sync import _HUB_TEST_CLIENTS
+        from spend_app.sync import _HUB_TEST_CLIENTS, HubMutationError
 
         session_token = extract_cookie(auth_res)
         if not session_token:
@@ -3139,6 +3159,8 @@ class DesktopBridge:
                             raise _StaleOwnerLifecycle()
 
                     def _apply_auth_state(conn, state):
+                        if remote_history is not None:
+                            receive_sign_in_history(conn, settings.timezone, remote_history)
                         state["role"] = "spoke"
                         state["computerName"] = clean_comp
                         state["account"] = account_meta
@@ -3205,6 +3227,14 @@ class DesktopBridge:
             self._machine_token_gen = saved_gen
 
         self._clear_quota_cache()
+        pending_history = bool(local_history and local_history["plans"]) and (remote_history is None or deferred_history)
+        if deferred_history and remote_history is not None:
+            try:
+                complete_deferred_history(settings, saved_auth, hub_url, local_history, remote_history["store"])
+                pending_history = False
+            except (PlanError, HubMutationError, KeyError, OSError):
+                pass
+
         with self._owner_session_lock:
             self._sync_gen += 1
             sync_gen = self._sync_gen
@@ -3226,7 +3256,7 @@ class DesktopBridge:
         ).start()
 
         safe_machines = self._annotate_machines(reg_data.get("machines") or [], machine_id)
-        return {
+        result = {
             "ok": True,
             "account": account_meta,
             "computerName": clean_comp,
@@ -3238,6 +3268,9 @@ class DesktopBridge:
                 "message": None,
             },
         }
+        if pending_history:
+            result["warning"] = PLAN_HISTORY_PENDING
+        return result
 
     def sign_in(
         self,

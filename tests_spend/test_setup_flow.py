@@ -301,7 +301,7 @@ def test_plan_cleanup_ends_retired_plans_and_links_custom_ones(client: TestClien
     for name in ("Curso Ultra", "Antigravity Ultra 200"):
         item = issues[name]
         response = client.post("/api/setup/plans/fix", headers=SETUP,
-                               json={"planId": item["planId"], "version": item["version"], "fix": item["fix"]})
+                               json={key: item[key] for key in ("planId", "version", "termId", "fix", "confirmation")})
         assert response.status_code == 200, response.text
     assert client.get("/api/setup/plan-issues").json()["issues"] == []
     with connect(settings.database_path) as connection:

@@ -1769,6 +1769,18 @@ class HubMutationError(RuntimeError):
         self.retry_after = retry_after
 
 
+def hub_write_scope(state: dict, hub_url: str) -> tuple[str, str, int, str | None]:
+    """Identify the destination captured by a setup confirmation."""
+    account = state.get("account") or {}
+    spoke = state.get("spokeConfig") or {}
+    return (
+        hub_url,
+        str(account.get("machineId") or ""),
+        int(spoke.get("credentialGeneration") or 0),
+        account.get("connectedAt"),
+    )
+
+
 def post_to_configured_hub(
     settings,
     path: str,
@@ -1776,6 +1788,7 @@ def post_to_configured_hub(
     *,
     strict: bool = False,
     cookie_out: dict | None = None,
+    expected_scope: tuple[str, str, int, str | None] | None = None,
 ) -> dict | None:
     """Forward a write mutation from a paired Spoke to the central Hub.
 
@@ -1806,6 +1819,9 @@ def post_to_configured_hub(
         if strict:
             raise HubMutationError(str(exc), 422) from exc
         return None
+    scope_changed = "The hub connection changed. Reload setup before changing plans."
+    if expected_scope is not None and hub_write_scope(state, hub_url) != expected_scope:
+        raise HubMutationError(scope_changed, 409)
     owner_tok = str(spoke.get("ownerSession") or "").strip() or (
         _vault_get_secret(settings.database_path, "burnrate-owner-session") or ""
     )
@@ -1834,6 +1850,28 @@ def post_to_configured_hub(
                 err_status = getattr(exc, "status_code", 401)
                 raise HubMutationError(format_error(err_code), err_status, code=err_code) from exc
             return None
+    if expected_scope is not None:
+        from spend_app.connection_secrets import db_secret_lock
+
+        with db_secret_lock(settings.database_path):
+            with connect(settings.database_path) as connection:
+                current = read_setup_state(connection)
+            current_spoke = current["spokeConfig"]
+            try:
+                raw_url = resolve_hub_url() or str(current_spoke.get("hubUrl") or "").strip()
+                current_url = hub_origin(raw_url) if raw_url else ""
+            except ValueError as exc:
+                raise HubMutationError(scope_changed, 409) from exc
+            current_owner = str(current_spoke.get("ownerSession") or "").strip() or (
+                _vault_get_secret(settings.database_path, "burnrate-owner-session") or ""
+            )
+            if (
+                current.get("role") != "spoke"
+                or not current_spoke.get("enabled")
+                or hub_write_scope(current, current_url) != expected_scope
+                or current_owner != token
+            ):
+                raise HubMutationError(scope_changed, 409)
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
