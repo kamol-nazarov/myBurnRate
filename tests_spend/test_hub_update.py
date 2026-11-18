@@ -59,10 +59,21 @@ def test_generated_verifier_process(payload, valid):
     result = subprocess.run([sys.executable, "-I", "-B", "-c", verifier, payload],
                             capture_output=True, text=True, check=False, timeout=10)
     if valid:
-        from spend_app import __version__
-        from spend_app.build import build_id
+        # The isolated process imports the installed package. A developer's
+        # worktree can be at a different commit than that installation.
+        installed_metadata = (
+            "from spend_app import __version__\n"
+            "from spend_app.build import build_id\n"
+            "print(__version__)\n"
+            "print(build_id())\n"
+        )
+        installed = subprocess.run(
+            [sys.executable, "-I", "-B", "-c", installed_metadata],
+            capture_output=True, text=True, check=True, timeout=10,
+        )
+        version, build = installed.stdout.splitlines()
         assert result.returncode == 0, result.stderr
-        assert json.loads(result.stdout) == {"version": __version__, "build": build_id()}
+        assert json.loads(result.stdout) == {"version": version, "build": build}
     else:
         assert result.returncode != 0
         assert not result.stdout.strip()
@@ -114,14 +125,20 @@ def test_push_local_precedes_remote_update_and_stops_on_failure():
     assert calls[1][-1].startswith(f"{oid}:refs/burnrate/update/")
     assert f"git merge --ff-only {oid}" in calls[2][2]
     calls.clear()
+    lines = []
     failure = subprocess.CompletedProcess([], 1, "", "push failed")
 
     def fail_push(step, **kwargs):
         calls.append(step)
+        if step[0] == "ssh":
+            raise OSError("cleanup transport unavailable")
         return resolved if step[1] == "rev-parse" else failure
 
-    assert update(push_local=True, run=fail_push, echo=lambda _: None) == 1
-    assert [step[0] for step in calls] == ["git", "git"]
+    assert update(push_local=True, run=fail_push, echo=lines.append) == 1
+    assert [step[0] for step in calls] == ["git", "git", "ssh"]
+    stage_ref = calls[1][-1].split(":", 1)[1]
+    assert calls[2][-1].endswith(f"git update-ref -d {stage_ref} {oid}")
+    assert "push failed" in lines
 
 
 class _DisposableHub:
@@ -270,6 +287,35 @@ def test_push_local_retries_after_interruption_without_reusing_staging_ref(dispo
     assert pair.staged[0] != pair.staged[1]
     assert pair.stage_refs() == [abandoned]
     assert pair.runtime_invocations == 1
+
+
+@pytest.mark.parametrize("push_error", ["lost_ack", "exception"])
+def test_failed_push_cleans_ref_when_remote_already_created_it(disposable_hub, monkeypatch, push_error):
+    pair = disposable_hub
+    other_ref = "refs/burnrate/update/earlier"
+    pair.git(pair.hub, "update-ref", other_ref, pair.base)
+    actual_git = pair.git
+
+    def interrupted_git(repo, *args, **kwargs):
+        result = actual_git(repo, *args, **kwargs)
+        if args[0] != "push":
+            return result
+        assert result.returncode == 0, result.stderr
+        assert pair.staged[-1] in pair.stage_refs()
+        if push_error == "exception":
+            raise OSError("push transport interrupted")
+        return subprocess.CompletedProcess(args, 128, "", "push acknowledgement lost")
+
+    monkeypatch.setattr(pair, "git", interrupted_git)
+    if push_error == "exception":
+        with pytest.raises(OSError, match="push transport interrupted"):
+            pair.update()
+    else:
+        assert pair.update() == 128
+        assert "push acknowledgement lost" in pair.messages
+    assert pair.stage_refs() == [other_ref]
+    assert pair.head() == pair.base
+    assert pair.runtime_invocations == 0
 
 
 def test_concurrent_updates_respect_shared_repository_lock(disposable_hub):

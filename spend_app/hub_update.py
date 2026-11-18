@@ -131,6 +131,18 @@ def _update_failed(step: list[str], completed: subprocess.CompletedProcess, echo
     return completed.returncode
 
 
+def _try_staging_cleanup(ssh: str, checkout: str, cleanup: str, run) -> None:
+    try:
+        run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", ssh, f"{checkout} && {cleanup}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
 def update_hub(*, ssh: str, path: str, service: str, branch: str, push_local: bool = False,
                dry_run: bool = False, port: int = 17331, run=subprocess.run, echo=print) -> int:
     if not ssh:
@@ -171,6 +183,9 @@ def update_hub(*, ssh: str, path: str, service: str, branch: str, push_local: bo
             return 2
         oid = oid or "<local-head-commit>"
         staging_ref = f"refs/burnrate/update/{secrets.token_hex(16)}"
+        expected = shlex.quote(oid)
+        # Compare-and-delete prevents cleanup from dropping a replaced ref.
+        cleanup = f"git update-ref -d {staging_ref} {expected}"
         push = [
             "git",
             "push",
@@ -180,13 +195,17 @@ def update_hub(*, ssh: str, path: str, service: str, branch: str, push_local: bo
             f"{ssh}:{path}",
             f"{oid}:{staging_ref}",
         ]
-        completed = execute(push)
+        push_confirmed = False
+        try:
+            completed = execute(push)
+            push_confirmed = completed.returncode == 0
+        finally:
+            if not push_confirmed:
+                # The ref may have been created before the push lost its reply.
+                _try_staging_cleanup(ssh, checkout, cleanup, run)
         if completed.returncode:
             return _update_failed(push, completed, echo)
 
-        expected = shlex.quote(oid)
-        # Compare-and-delete prevents cleanup from dropping a replaced ref.
-        cleanup = f"git update-ref -d {staging_ref} {expected}"
         cleanup_trap = shlex.quote(f"{cleanup} >/dev/null 2>&1 || :")
         remote += (
             f" && trap {cleanup_trap} 0 && {lock} && {clean_worktree}"
@@ -222,15 +241,7 @@ def update_hub(*, ssh: str, path: str, service: str, branch: str, push_local: bo
         if cleanup and not transport_finished:
             # SSH may have failed before the remote shell could install its trap.
             # A retry uses a new ref even if the hub is currently unreachable.
-            try:
-                run(
-                    ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", ssh, f"{checkout} && {cleanup}"],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                )
-            except (OSError, subprocess.TimeoutExpired):
-                pass
+            _try_staging_cleanup(ssh, checkout, cleanup, run)
     if completed.returncode:
         return _update_failed(step, completed, echo)
     if dry_run:

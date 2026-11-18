@@ -367,8 +367,10 @@ def test_hub_update_runs_the_deploy_steps_and_refuses_odd_arguments() -> None:
                       run=lambda step, **kwargs: calls.append(step) or Done(), echo=lines.append) == 0
     assert calls[0][:2] == ["ssh", "my-hub"]
     command = calls[0][2]
-    assert 'test -z "$(git status --porcelain)"' in command
-    assert "git merge --ff-only origin/main" in command
+    dirty_guard = 'worktree_status=$(git status --porcelain) && test -z "$worktree_status"'
+    fast_forward = "git merge --ff-only refs/remotes/origin/main"
+    assert command.index("flock -n 9") < command.index(dirty_guard) < command.index("git fetch origin")
+    assert command.index(fast_forward) < command.index("pip install --require-hashes")
     assert command.index("pip install --require-hashes") < command.index("scripts/verify-runtime.py") < command.index("systemctl restart")
     assert "pip check" in command
     assert "tk-security-preflight burnrate" in command
