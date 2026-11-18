@@ -52,17 +52,6 @@ _RUNTIME_IMPORTS = (
 _DESKTOP_ASSETS = ("wealthfront_ui.html", "tab_ui.html")
 
 
-def _decimal_or_none(value: object):
-    from decimal import Decimal, InvalidOperation
-
-    if value is None:
-        return None
-    try:
-        return Decimal(str(value))
-    except (InvalidOperation, ValueError):
-        return None
-
-
 def _parse_utc(value: str | None, default: datetime) -> datetime:
     if not value:
         return default
@@ -382,7 +371,13 @@ def _main() -> int:
 
     settings = load_settings()
     if args.command == "pricing-refresh":
-        from spend_app.pricing_refresh import draft_refresh, load_card_expiries
+        from spend_app.pricing_refresh import (
+            approved_rates_at,
+            draft_refresh,
+            expiring_cards,
+            load_card_expiries,
+            snapshot_observed_at,
+        )
 
         snapshot_path = Path(args.snapshot)
         if not snapshot_path.is_file():
@@ -393,34 +388,31 @@ def _main() -> int:
         except ValueError:
             print(json.dumps({"error": "Snapshot is not valid JSON"}))
             return 2
-        approved_cards: dict[str, dict] = {}
-        # Approved per-field rates come from the card rows; the engine's
-        # resolve index covers aliases, so read cards directly instead.
-        import yaml
-
-        for path in sorted(Path(settings.pricing_path).glob("*.yaml")):
-            document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-            if str(document.get("provider") or "") != args.provider:
-                continue
-            for row in document.get("prices") or []:
-                key = str(row.get("model_key"))
-                fields = approved_cards.setdefault(key, {})
-                fields["input"] = _decimal_or_none(row.get("input_per_mtok"))
-                fields["cached_input"] = _decimal_or_none(row.get("cached_input_per_mtok"))
-                fields["cache_write"] = _decimal_or_none(row.get("cache_write_per_mtok"))
-                fields["cache_write_1h"] = _decimal_or_none(row.get("cache_write_1h_per_mtok"))
-                fields["output"] = _decimal_or_none(row.get("output_per_mtok"))
+        if not isinstance(snapshot, dict):
+            print(json.dumps({"error": "Snapshot must be a JSON object"}))
+            return 2
+        now = datetime.now(UTC)
+        try:
+            observed_at = snapshot_observed_at(snapshot, fallback=now)
+        except ValueError as exc:
+            print(json.dumps({"error": str(exc)}))
+            return 2
+        approved_cards, approved_model_names = approved_rates_at(
+            PricingEngine.load(settings.pricing_path),
+            provider=args.provider,
+            observed_at=observed_at,
+        )
         draft = draft_refresh(
             snapshot=snapshot,
             provider=args.provider,
             approved_cards=approved_cards,
-            observed_at=datetime.now(UTC),
+            observed_at=observed_at,
+            approved_model_names=approved_model_names,
         )
         expiring = load_card_expiries(settings.pricing_path)
-        from spend_app.pricing_refresh import expiring_cards
 
         payload = json.loads(draft.to_json())
-        payload["expiring"] = expiring_cards(expiring, now=datetime.now(UTC))
+        payload["expiring"] = expiring_cards(expiring, now=now)
         payload["note"] = (
             "Draft for review only: nothing is applied automatically. Effective times require "
             "provider documentation; model-created times are provenance, never price starts."

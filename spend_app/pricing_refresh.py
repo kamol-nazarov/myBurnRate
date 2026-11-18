@@ -20,13 +20,23 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
+from spend_app.adapters.traycer_local import canonical_model
+from spend_app.pricing import PricingEngine, UnpricedModelError
+
 MILLION = Decimal("1000000")
 _RATE_KEYS = ("input", "cached_input", "cache_write", "cache_write_1h", "output")
+_OPENROUTER_FIELDS = {
+    "input": "prompt",
+    "cached_input": "input_cache_read",
+    "cache_write": "input_cache_write",
+    "output": "completion",
+}
 
 
 @dataclass(frozen=True)
@@ -121,6 +131,7 @@ def parse_snapshot(document: dict, *, provider: str, observed_at: datetime) -> t
     object with per-token strings, ``created`` epoch seconds as the
     model-created time). No invented defaults: missing fields stay missing,
     and the model-created time is carried separately from any effective time.
+    Normalized per-token field names remain supported.
     """
     rates: list[CandidateRate] = []
     rejections: list[str] = []
@@ -136,10 +147,14 @@ def parse_snapshot(document: dict, *, provider: str, observed_at: datetime) -> t
         per_mtok: dict[str, Decimal | None] = {}
         documented_zero: list[str] = []
         for key in _RATE_KEYS:
-            raw = pricing.get(f"{key}_per_token")
-            value = _decimal_per_token(raw, label=f"{key}_per_token", model=model_id, rejections=rejections)
+            label = f"{key}_per_token"
+            if provider == "openrouter" and label not in pricing:
+                label = _OPENROUTER_FIELDS.get(key, label)
+            value = _decimal_per_token(
+                pricing.get(label), label=label, model=model_id, rejections=rejections
+            )
             per_mtok[key] = value
-            if raw is not None and str(raw).strip() in {"0", "0.0", "0.00"}:
+            if value == 0:
                 documented_zero.append(key)
         created = _parse_time_epoch(row.get("created"))
         rates.append(
@@ -171,6 +186,36 @@ def _parse_time_epoch(value: object) -> datetime | None:
         return _parse_time(value)
 
 
+def snapshot_observed_at(snapshot: dict, *, fallback: datetime) -> datetime:
+    captured_at = snapshot.get("captured_at")
+    if captured_at is None:
+        return fallback
+    observed_at = _parse_time_epoch(captured_at)
+    if observed_at is None:
+        raise ValueError("Snapshot has an invalid captured_at timestamp")
+    return observed_at
+
+
+def approved_rates_at(
+    pricing: PricingEngine, *, provider: str, observed_at: datetime
+) -> tuple[dict[str, dict[str, Decimal | None]], dict[str, str]]:
+    """Approved prices and card identities at the evidence time."""
+    model_keys = dict.fromkeys(price.model_key for price in pricing.prices if price.provider == provider)
+    rates = {}
+    # Keep known canonical names through gaps in pricing coverage.
+    names = {key: key for key in model_keys}
+    for key in model_keys:
+        try:
+            card = pricing.resolve(key, observed_at)
+        except UnpricedModelError:
+            continue
+        if card.provider != provider:
+            continue
+        rates[key] = {rate_key: getattr(card, f"{rate_key}_per_mtok") for rate_key in _RATE_KEYS}
+        names.update(dict.fromkeys(card.aliases, key))
+    return rates, names
+
+
 def _plain(value: Decimal | None) -> str | None:
     """Normalize a rate for comparison output: no exponent, no trailing zeros."""
     if value is None:
@@ -185,10 +230,12 @@ def draft_refresh(
     provider: str,
     approved_cards: dict[str, dict],
     observed_at: datetime,
+    approved_model_names: Mapping[str, str] | None = None,
 ) -> RefreshDraft:
     """Deterministic diff of a snapshot against the approved card fields.
 
     ``approved_cards`` maps model_key -> {rate key -> per-million Decimal|None}.
+    ``approved_model_names`` maps recognized keys and aliases to canonical card keys.
     The snapshot fingerprint (content hash) is part of the draft id, so the
     same source snapshot re-submitted later compares identical and yields no
     new revision proposal.
@@ -202,18 +249,25 @@ def draft_refresh(
     )
     candidates, rejections = parse_snapshot(snapshot, provider=provider, observed_at=observed_at)
     draft.rejections.extend(rejections)
+    names = {key: key for key in approved_cards}
+    names.update(approved_model_names or {})
     seen = set()
     for candidate in candidates:
-        seen.add(candidate.model_key)
+        model_key = candidate.model_key
+        if provider == "openrouter" and model_key not in names:
+            model_key = names.get(canonical_model("openrouter", model_key), model_key)
+        else:
+            model_key = names.get(model_key, model_key)
+        seen.add(model_key)
         proposed = {
             key: (value.quantize(Decimal("1e-12")) if value is not None else None)
             for key, value in candidate.per_mtok.items()
         }
-        current = approved_cards.get(candidate.model_key)
+        current = approved_cards.get(model_key)
         if current is None:
             draft.added.append(
                 {
-                    "modelKey": candidate.model_key,
+                    "modelKey": model_key,
                     "proposed": {k: _plain(v) for k, v in proposed.items()},
                     "effectiveFrom": None,
                     "modelCreatedAt": (
@@ -228,12 +282,13 @@ def draft_refresh(
         diffs = {}
         for key, value in proposed.items():
             existing = current.get(key)
-            if value != existing:
+            # An unquoted field supplies no evidence of a changed rate.
+            if value is not None and value != existing:
                 diffs[key] = {"from": _plain(existing), "to": _plain(value)}
         if diffs:
-            draft.changed.append({"modelKey": candidate.model_key, "fields": diffs})
+            draft.changed.append({"modelKey": model_key, "fields": diffs})
         else:
-            draft.unchanged.append(candidate.model_key)
+            draft.unchanged.append(model_key)
     for model_key in sorted(set(approved_cards) - seen):
         draft.coverage_warnings.append(
             f"{model_key}: absent from the snapshot — keep the approved card; absence is not a price change"
