@@ -14,6 +14,7 @@ from spend_app.capacity_forecast import (
     load_pace_samples,
 )
 from spend_app.db import connect, usage_cache_revision
+from spend_app.native_usage import ORGANIZATION_SOURCES
 from spend_app.sync import list_machines
 from spend_app.timeutil import epoch_micros
 
@@ -395,6 +396,7 @@ def _burn_rows(connection, tools, start: datetime, end: datetime, machine: str) 
              aggregate._fresh(event) + int(event.get("cache_write_tokens") or 0),
              int(event.get("output_tokens") or 0))
             for event in events
+            if event.get("source") not in ORGANIZATION_SOURCES
         ]
     return rows
 

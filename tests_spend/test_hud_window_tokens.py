@@ -1,6 +1,8 @@
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from spend_app import aggregate
 from spend_app.config import Settings
 from spend_app.db import (
@@ -12,9 +14,17 @@ from spend_app.db import (
     upsert_unpriced_event,
     upsert_usage_event,
 )
-from spend_app.hud_data import _model_name, _window_start, local_usage_machine, recorded_usage
-from spend_app.setup_wizard import write_setup_state
+from spend_app.hud_data import (
+    _model_name,
+    _window_start,
+    lane_usage_pace,
+    live_snapshot,
+    local_usage_machine,
+    recorded_usage,
+)
+from spend_app.native_usage import usage_report
 from spend_app.pricing import PricingEngine
+from spend_app.setup_wizard import write_setup_state
 
 ROOT = Path(__file__).resolve().parents[1]
 # 14:00 in New York; local midnight is 04:00 UTC.
@@ -33,20 +43,88 @@ def settings_for(tmp_path) -> Settings:
     return settings
 
 
-def quota(connection, provider_key: str, limit_key: str, resets_at: datetime) -> None:
+def quota(
+    connection, provider_key: str, limit_key: str, resets_at: datetime, *, source: str = "test"
+) -> None:
     upsert_quota(connection, provider_key=provider_key, limit_key=limit_key, label=f"{provider_key} {limit_key}",
                  unit="pct", pct=10, used=None, allowance=None, is_payg=False,
-                 resets_at=iso(resets_at), source="test", polled_at=iso(NOW))
+                 resets_at=iso(resets_at), source=source, polled_at=iso(NOW))
 
 
 def event(connection, raw_id: str, tool_key: str, model_key: str, when: datetime, *,
           fresh: int = 0, cached: int = 0, writes: int = 0, output: int = 0,
-          ingested_at: datetime | None = None) -> None:
+          ingested_at: datetime | None = None, source: str = "test") -> None:
     upsert_usage_event(connection, UsageEvent(
-        source="test", tool_key=tool_key, model_key=model_key, occurred_at=iso(when), session_id="s",
+        source=source, tool_key=tool_key, model_key=model_key, occurred_at=iso(when), session_id="s",
         project=None, input_tokens=fresh + cached, cached_input_tokens=cached, cache_write_tokens=writes,
         cache_write_1h_tokens=0, output_tokens=output, reasoning_tokens=None, cost_usd=None,
         computed_cost_usd=0, raw_id=raw_id, ingested_at=iso(ingested_at or NOW)))
+
+
+@pytest.mark.parametrize(
+    ("source", "tool", "model"),
+    [
+        ("openai_admin", "codex", "gpt-5.6-sol"),
+        ("anthropic_admin", "claude-code", "claude-opus-5-5"),
+    ],
+)
+def test_organization_usage_does_not_burn_personal_quota(tmp_path, source, tool, model):
+    settings = settings_for(tmp_path)
+    before_last_hour = NOW - timedelta(minutes=90)
+    recent = NOW - timedelta(minutes=30)
+    with connect(settings.database_path) as connection:
+        quota(connection, tool, "5h", NOW + timedelta(hours=2), source="sync:fixture")
+        event(connection, "org-priced", tool, model, before_last_hour, fresh=600_000, source=source)
+        upsert_unpriced_event(
+            connection,
+            UnpricedUsageEvent(
+                source=source,
+                tool_key=tool,
+                model_key="unknown-model",
+                occurred_at=iso(recent),
+                session_id=None,
+                project=None,
+                input_tokens=400_000,
+                cached_input_tokens=0,
+                cache_write_tokens=0,
+                cache_write_1h_tokens=0,
+                output_tokens=0,
+                reasoning_tokens=None,
+                unclassified_tokens=0,
+                telemetry_complete=True,
+                cost_usd=None,
+                raw_id="org-unpriced",
+                ingested_at=iso(NOW),
+            ),
+        )
+    pricing = PricingEngine.load(settings.pricing_path)
+
+    usage = usage_report(settings, pricing, now=NOW, period="today")
+    assert usage["organizationTotal"]["tokens"] == 1_000_000
+    assert usage["total"]["tokens"] == 0
+    capacity = live_snapshot(settings, now=NOW)["capacity"]
+    card = next(card for card in capacity if card["providerKey"] == tool)
+    row = next(row for row in card["rows"] if row["limitKey"] == "5h")
+    assert row["pct"] == 10
+    assert row["forecast"] is None
+    with connect(settings.database_path) as connection:
+        pace = lane_usage_pace(connection, capacity, now=NOW)[(tool, "5h")]
+        assert pace["tokens"] == pace["tokensPerHour"] == 0
+    before = recorded_usage(settings, pricing, now=NOW)
+    assert before["windowTokens"][tool]["5h"]["tokens"] == 0
+
+    with connect(settings.database_path) as connection:
+        event(connection, "personal", tool, model, recent, fresh=1000)
+    after = recorded_usage(settings, pricing, now=NOW)
+    assert after["windowTokens"][tool]["5h"]["tokens"] == 1000
+    capacity = live_snapshot(settings, now=NOW)["capacity"]
+    card = next(card for card in capacity if card["providerKey"] == tool)
+    row = next(row for row in card["rows"] if row["limitKey"] == "5h")
+    assert row["forecast"]["basis"] == "usage"
+    assert row["forecast"]["tokensPerHour"] == 1000
+    usage = usage_report(settings, pricing, now=NOW, period="today")
+    assert usage["organizationTotal"]["tokens"] == 1_000_000
+    assert usage["total"]["tokens"] == 1000
 
 
 def test_meter_windows_carry_their_burned_tokens_and_todays_models(tmp_path):
