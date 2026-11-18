@@ -53,6 +53,7 @@ def _profile_folder_and_patterns(
 def ingest(*, database_path: Path, pricing) -> dict:
     from spend_app.adapters.file_cache import merge_results
     from spend_app.connection_paths import MissingLocation, approved, normalize
+    from spend_app.connections import Store, record_completion
     from spend_app.db import PRESERVE_EXISTING_TOOL_KEYS, TOOL_KEY_OVERRIDES
     from spend_app.profile_store import (
         DEFAULT_TOOL_KEYS,
@@ -62,6 +63,7 @@ def ingest(*, database_path: Path, pricing) -> dict:
     )
     from spend_app.providers import REGISTRY
 
+    store = Store(database_path)
     results: list[dict] = []
     for profile in enabled_profiles(database_path):
         if profile.key == "default" or not supports_profiles(profile.provider):
@@ -78,50 +80,54 @@ def ingest(*, database_path: Path, pricing) -> dict:
         try:
             normalized = normalize(profile.location, spec.connection)
             if not location_unchanged(profile, spec.connection):
-                results.append(
-                    {
-                        "source": spec.key,
-                        "status": "failed",
-                        "reason": "location_changed",
-                        "eventsSeen": 0,
-                        "eventsWritten": 0,
-                        "unpricedEventsWritten": 0,
-                        "issues": [f"{profile.key}:location_changed"],
-                    }
-                )
-                continue
-            folder, patterns, arg_value = _profile_folder_and_patterns(
-                profile.provider, Path(normalized), spec.connection
-            )
-            kwargs = {
-                "database_path": database_path,
-                "pricing": pricing,
-                spec.connection.argument: arg_value,
-            }
-            token = TOOL_KEY_OVERRIDES.set({default_tool_key: profile.tool_key})
-            preserve_token = PRESERVE_EXISTING_TOOL_KEYS.set(bool(profile.cutover_at))
-            try:
-                with approved(folder, profile.revision, patterns):
-                    results.append(spec.ingest(**kwargs))
-            finally:
-                PRESERVE_EXISTING_TOOL_KEYS.reset(preserve_token)
-                TOOL_KEY_OVERRIDES.reset(token)
-        except MissingLocation:
-            continue
-        except Exception as exc:
-            results.append(
-                {
+                result = {
                     "source": spec.key,
                     "status": "failed",
+                    "reason": "location_changed",
                     "eventsSeen": 0,
                     "eventsWritten": 0,
                     "unpricedEventsWritten": 0,
-                    "issues": [f"{profile.key}:{type(exc).__name__}"],
+                    "issues": [f"{profile.key}:location_changed"],
                 }
+            else:
+                folder, patterns, arg_value = _profile_folder_and_patterns(
+                    profile.provider, Path(normalized), spec.connection
+                )
+                kwargs = {
+                    "database_path": database_path,
+                    "pricing": pricing,
+                    spec.connection.argument: arg_value,
+                }
+                token = TOOL_KEY_OVERRIDES.set({default_tool_key: profile.tool_key})
+                preserve_token = PRESERVE_EXISTING_TOOL_KEYS.set(bool(profile.cutover_at))
+                try:
+                    with approved(folder, profile.revision, patterns):
+                        result = spec.ingest(**kwargs)
+                finally:
+                    PRESERVE_EXISTING_TOOL_KEYS.reset(preserve_token)
+                    TOOL_KEY_OVERRIDES.reset(token)
+        except MissingLocation:
+            record_completion(
+                store, spec.key, profile.revision,
+                {"status": "failed", "reason": "location_missing"}, profile=profile.key,
             )
+            # Record the configured profile's failure without treating the
+            # optional profiles step as a provider-wide ingest failure.
+            continue
+        except Exception as exc:
+            result = {
+                "source": spec.key,
+                "status": "failed",
+                "eventsSeen": 0,
+                "eventsWritten": 0,
+                "unpricedEventsWritten": 0,
+                "issues": [f"{profile.key}:{type(exc).__name__}"],
+            }
+        if result.get("status") != "skipped":
+            record_completion(store, spec.key, profile.revision, result, profile=profile.key)
+            results.append(result)
 
-    active = [result for result in results if result.get("status") != "skipped"]
-    if not active:
+    if not results:
         # Nothing to read: no run is recorded for a step that is not a source.
         return {"status": "skipped", "eventsWritten": 0, "unpricedEventsWritten": 0}
-    return merge_results(active)
+    return merge_results(results)

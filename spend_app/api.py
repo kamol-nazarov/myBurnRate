@@ -709,7 +709,8 @@ def create_app(
         return {"status": "ok", "application": "burnrate", "pid": os.getpid(),
                 "protocolVersion": HUB_PROTOCOL_VERSION,
                 "collectorEnabled": scheduler is not None,
-                "ingest": heartbeat(current_now()) if scheduler is not None else None}
+                "ingest": heartbeat(current_now(), cadence_seconds=settings.local_ingest_interval_seconds)
+                if scheduler is not None else None}
 
     @app.post("/api/hud/native")
     async def launch_native_hud(request: Request) -> dict:

@@ -1382,6 +1382,66 @@ def test_codex_read_rows_respects_default_vs_custom_or_disabled_binding(
     assert "disabled" in disabled_rows[("codex", "weekly")]["label"]
 
 
+def test_attention_keeps_default_codex_alert_when_connecting_same_folder(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from spend_app import attention_store
+    from spend_app.pricing import PricingEngine
+
+    home = _isolate_default_poll_sources(tmp_path, monkeypatch)
+    monkeypatch.delenv("BURNRATE_CENTRAL_SERVER", raising=False)
+    _freeze_codex_clock(monkeypatch)
+    monkeypatch.setattr("spend_app.quotas.datetime", FixedClock)
+    default_sessions = home / ".codex" / "sessions"
+    _write_codex_session(default_sessions, used_pct=96.0)
+    db_path = _seed_profiles_db(tmp_path / "attention.db", {})
+    poll_quotas(db_path, now=lambda: _iso(NOW))
+
+    now = NOW
+    service = attention_store.Service(
+        attention_store.Repository(db_path), PricingEngine([]), "UTC", lambda: now
+    )
+    assert service.evaluate()
+    original = service.read()
+    assert original["badgeCount"] == 1
+    assert original["current"][0]["evidence"]["usedPercent"] == 96.0
+
+    work_sessions = tmp_path / "codex-work" / "sessions"
+    _write_codex_session(work_sessions, used_pct=97.0)
+    work = _profile_record(
+        "codex_local", "codex-work", name="Work", location=str(work_sessions),
+    )
+    primary = _profile_record(
+        "codex_local", "default", name="Default", location=str(default_sessions),
+    )
+    _seed_profiles_db(db_path, {"codex_local": {"default": primary, "codex-work": work}})
+    poll_quotas(db_path, now=lambda: _iso(NOW))
+    with connect(db_path) as connection:
+        weekly = {
+            row["provider_key"]: row["pct"]
+            for row in codex_quota.read_rows(connection, now=now)
+            if row["limit_key"] == "weekly"
+        }
+    assert weekly["codex"] == 96.0
+    assert weekly["codex-work"] == 97.0
+    assert service.evaluate()
+    bound = service.read()
+    assert bound["badgeCount"] == 1
+    assert bound["current"][0]["id"] == original["current"][0]["id"]
+    assert bound["current"][0]["evidence"]["usedPercent"] == 96.0
+
+    primary["location"] = str(work_sessions)
+    _seed_profiles_db(db_path, {"codex_local": {"default": primary}})
+    assert service.evaluate()
+    assert service.read()["badgeCount"] == 0
+
+    primary["location"] = str(default_sessions)
+    _seed_profiles_db(db_path, {"codex_local": {"default": primary}})
+    now = NOW + timedelta(seconds=codex_quota.MAX_AGE_SECONDS + 1)
+    assert service.evaluate()
+    assert service.read()["badgeCount"] == 0
+
+
 def test_extra_codex_quota_expires_at_read_time(tmp_path: Path) -> None:
     """Ported review probe: expired extra Codex quota is masked at read time even when later poll returns []."""
     work_sessions = tmp_path / "codex-work" / "sessions"

@@ -793,13 +793,11 @@ SETUP_STALE_AFTER_SECONDS = 15 * 60
 
 
 def _build_harness_list(settings) -> list[dict]:
-    """Each known tool: is it installed, and how did its latest collection go.
-
-    Built from the presence check and the ingest log only, so it answers in
-    milliseconds even while a collection pass is running (the dashboard's full
-    source diagnostics take seconds).
-    """
+    """Report local presence, measured history and collection status independently."""
+    from spend_app.connections import default_location
     from spend_app.diagnostics import source_path_hint
+    from spend_app.profile_store import load_config_if_present, location_unchanged, profiles
+    from spend_app.providers import REGISTRY
     from spend_app.setup_checks import _parse
 
     try:
@@ -818,18 +816,44 @@ def _build_harness_list(settings) -> list[dict]:
         successes = dict(connection.execute(
             "SELECT source, MAX(finished_at) FROM ingest_runs WHERE status IN ('success','partial') GROUP BY source"
         ).fetchall())
+        history = dict(connection.execute(
+            "SELECT source, MAX(ingested_at) FROM ("
+            "SELECT source, ingested_at FROM usage_events WHERE raw_id NOT LIKE 'm:%' "
+            "UNION ALL SELECT source, ingested_at FROM unpriced_usage_events WHERE raw_id NOT LIKE 'm:%'"
+            ") GROUP BY source"
+        ).fetchall())
+        config = load_config_if_present(connection) or {}
+
+    configured: dict[str, list] = {}
+    for profile in profiles(config):
+        if profile.enabled and profile.location:
+            configured.setdefault(profile.provider, []).append(profile)
+
     result: list[dict] = []
     for source, meta in HARNESS_CATALOG.items():
+        spec = REGISTRY.get(source)
         installed = bool(presence.get(source))
-        last_ok = successes.get(source)
+        if spec and spec.connection and spec.connection.location_env and os.getenv(spec.connection.location_env):
+            try:
+                installed = Path(default_location(spec, settings)).exists()
+            except OSError:
+                installed = False
+        saved = configured.get(source, ())
+        if any(profile.key == "default" for profile in saved):
+            installed = False
+        available = installed or any(location_unchanged(profile, spec) for profile in saved)
+        has_history = source in history
+        last_ok = (successes.get(source) or history.get(source)) if available else history.get(source)
         read_at = _parse(last_ok)
-        if latest.get(source) == "failed":
+        if not available:
+            state = "failed" if saved else "stale" if has_history else "not_detected"
+        elif latest.get(source) == "failed":
             state = "failed"
         elif latest.get(source) == "running":
             state = "reading"
-        elif read_at is None:
-            state = "detected_without_history" if installed else "not_detected"
-        elif (now - read_at).total_seconds() > SETUP_STALE_AFTER_SECONDS:
+        elif not has_history:
+            state = "detected_without_history"
+        elif read_at is None or (now - read_at).total_seconds() > SETUP_STALE_AFTER_SECONDS:
             state = "stale"
         else:
             state = "healthy"
@@ -840,7 +864,7 @@ def _build_harness_list(settings) -> list[dict]:
                 "tool": meta["tool"],
                 "description": meta["desc"],
                 "state": state,
-                "detected": installed or read_at is not None,
+                "detected": available or bool(saved) or has_history,
                 "path": source_path_hint(source) or "",
                 "lastSuccess": last_ok,
             }

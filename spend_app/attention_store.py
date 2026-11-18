@@ -15,6 +15,7 @@ from spend_app import codex_quota
 from spend_app.attention_rules import initial, iso, stamp, identity, reduce, mutate, snapshot
 from spend_app.diagnostics import collection_stale_after
 from spend_app.connections import eligible as usage_eligible
+from spend_app.connections import suppresses_default_profile
 from spend_app.plans_value_store import load_source_health
 from spend_app.pricing import UnpricedModelError
 from spend_app.providers import REGISTRY
@@ -81,16 +82,17 @@ def quota_facts(connection, config, now):
     # Reuse the released Codex scope/pool/freshness mask, restricted to these latest rows.
     # Its scope helper resolves configured path identity only; it does not discover/read telemetry.
     masked = codex_quota.read_rows(connection, now=now, rows=rows)
+    codex_binding = config.get("bindings", {}).get("codex_local")
+    default_suppressed = suppresses_default_profile("codex_local", codex_binding)
     output = []
     for row in masked:
         provider = row["provider_key"]
-        binding = config.get("bindings", {}).get("codex_local") if provider == "codex" else None
-        eligible = provider == "codex" and row["source"] == PROVIDER_SOURCES["codex"] and not binding
+        eligible = provider == "codex" and row["source"] == PROVIDER_SOURCES["codex"] and not default_suppressed
         proof = provenance if provider == "codex" else {}
         item = quota_fact(row, proof, now, eligible_scope=eligible)
-        if binding:
-            item.update(eligibility="disabled" if binding.get("enabled") is False else "awaiting",
-                        scope="binding:"+str(binding.get("revision")), scopeConfirmed=True)
+        if provider == "codex" and default_suppressed:
+            item.update(eligibility="disabled" if codex_binding.get("enabled") is False else "awaiting",
+                        scope="binding:"+str(codex_binding.get("revision")), scopeConfirmed=True)
         output.append(item)
     return output
 

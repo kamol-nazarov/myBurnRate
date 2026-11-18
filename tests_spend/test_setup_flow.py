@@ -127,6 +127,104 @@ def test_check_says_which_meters_are_current_held_or_missing(client: TestClient,
     assert {"codex", "antigravity"} <= suggested and "muse" not in suggested
 
 
+def test_setup_uses_presence_and_local_usage_instead_of_empty_codex_scan(
+    client: TestClient, settings: Settings, tmp_path: Path, monkeypatch
+) -> None:
+    from dataclasses import replace
+
+    from spend_app.adapters.codex_local import ingest
+    from spend_app.db import UnpricedUsageEvent, upsert_unpriced_event
+
+    home = tmp_path / "isolated-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    sessions = home / ".codex" / "sessions"
+    pricing = PricingEngine.load(settings.pricing_path)
+
+    def scan_empty() -> None:
+        result = ingest(
+            database_path=settings.database_path,
+            pricing=pricing,
+            session_glob=str(sessions / "**" / "*.jsonl"),
+        )
+        assert result["status"] == "success"
+        assert result["files"] == result["eventsAccepted"] == 0
+
+    def check():
+        data = client.get("/api/setup/check").json()
+        codex = next(row for row in data["lanes"] if row["key"] == "codex")
+        return codex["usage"], data["notFound"]
+
+    history_time = iso(datetime.now(UTC) - timedelta(hours=2))
+    event = UnpricedUsageEvent(
+        source="codex_local", tool_key="codex", model_key="fixture",
+        occurred_at=history_time, session_id=None, project=None,
+        input_tokens=0, cached_input_tokens=0, cache_write_tokens=0,
+        cache_write_1h_tokens=0, output_tokens=0, reasoning_tokens=None,
+        unclassified_tokens=123, telemetry_complete=False, cost_usd=None,
+        raw_id="codex-fixture-local", ingested_at=history_time,
+    )
+    scan_empty()
+    usage, not_found = check()
+    assert (usage["state"], usage["text"]) == ("missing", "Not installed")
+    assert "OpenAI Codex CLI" in not_found
+
+    with connect(settings.database_path) as connection:
+        assert upsert_unpriced_event(connection, replace(event, raw_id="m:laptop:codex-fixture"))
+    assert check()[0]["state"] == "missing"
+
+    sessions.mkdir(parents=True)
+    scan_empty()
+    usage, not_found = check()
+    assert (usage["state"], usage["text"]) == ("waiting", "Found · no usage yet")
+    assert "OpenAI Codex CLI" not in not_found
+
+    with connect(settings.database_path) as connection:
+        assert upsert_unpriced_event(connection, event)
+    assert check()[0]["state"] == "ok"
+
+    sessions.rmdir()
+    scan_empty()
+    usage, not_found = check()
+    assert usage["state"] == "warn"
+    assert "last read 2 h ago" in usage["text"]
+    assert "OpenAI Codex CLI" not in not_found
+
+
+def test_setup_recognizes_configured_codex_and_reports_a_missing_location(
+    client: TestClient, settings: Settings, tmp_path: Path, monkeypatch
+) -> None:
+    from spend_app import profile_store
+
+    home = tmp_path / "isolated-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    chosen = tmp_path / "work-sessions"
+    chosen.mkdir()
+    config = profile_store.empty_state()
+    config["profiles"]["codex_local"] = {
+        "work": {"enabled": True, "location": str(chosen), "name": "Work", "revision": 1}
+    }
+    with connect(settings.database_path) as connection:
+        connection.execute(
+            "INSERT INTO app_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (profile_store.KEY, profile_store.encode(config)),
+        )
+
+    def check():
+        data = client.get("/api/setup/check").json()
+        assert "OpenAI Codex CLI" not in data["notFound"]
+        return next(row["usage"] for row in data["lanes"] if row["key"] == "codex")
+
+    assert check()["state"] == "waiting"
+    chosen.rmdir()
+    assert check()["state"] == "bad"
+
+
 def test_a_tracked_plan_is_not_suggested_again(client: TestClient, settings: Settings) -> None:
     now = datetime.now(UTC)
     with connect(settings.database_path) as connection:
