@@ -414,7 +414,7 @@ def test_spoke_fallback_uses_own_id_and_excludes_stale_hub_rows(
                         "source": "codex_local",
                         "tool_key": "codex",
                         "model_key": "gpt-5.6-sol",
-                        "occurred_at": _stamp(now - timedelta(minutes=8)),
+                        "occurred_at": _stamp(now - timedelta(days=2, minutes=8)),
                         "input_tokens": 2_000,
                         "cached_input_tokens": 0,
                         "cache_write_tokens": 0,
@@ -502,6 +502,11 @@ def test_spoke_fallback_uses_own_id_and_excludes_stale_hub_rows(
             assert hud_usage["navigation"]["todayTokens"] == expected_tokens
             if not own_history:
                 assert hud["capacity"] == summary["capacity"] == entity["providerLimits"] == []
+                assert summary["navigation"]["dayCoverage"] == []
+                for view in (summary, entity):
+                    assert view["window"]["from"] == view["window"]["to"]
+                    assert view["window"]["buckets"] == 0
+                    assert view["series"] == []
 
         with connect(hub_settings.database_path) as connection:
             _priced(connection, raw_id="hub-event", occurred_at=now - timedelta(minutes=5), input_tokens=3_000)
@@ -512,6 +517,8 @@ def test_spoke_fallback_uses_own_id_and_excludes_stale_hub_rows(
         monkeypatch.setattr(sync, "_renew_hub_copy_in_background", lambda _key, read: read())
         hub_summary = spoke_client.get("/api/spend/summary", params={"machine": "local", "window": "all"}).json()
         assert hub_summary["totals"]["tokens"] == 3_150
+        assert hub_summary["window"]["from"] < hub_summary["window"]["to"]
+        assert hub_summary["window"]["buckets"] == len(hub_summary["series"]) > 0
         spoke_client.get("/api/spend/hud", params={"machine": "local"})
         hub_hud = spoke_client.get("/api/spend/hud", params={"machine": "local"}).json()
         assert hub_hud["scope"] == "computer"

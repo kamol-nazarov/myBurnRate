@@ -425,10 +425,11 @@ def create_app(
         )
         if scope.get("scope") == "unavailable":
             report = {
-                **report,
+                **_empty_analytics_series(report),
                 "capacity": [],
                 "activity": [],
                 "capacityForecast": None,
+                "navigation": {**report["navigation"], "dayCoverage": []},
                 "totals": {**report["totals"], "reportedChargesUsd": None, "trackedValue": None},
                 "projected": {**report["projected"], "value": None},
             }
@@ -520,7 +521,7 @@ def create_app(
             tool=selected_tool,
         )
         if scope.get("scope") == "unavailable":
-            report.update(providerLimits=[], value=None)
+            report = {**_empty_analytics_series(report), "providerLimits": [], "value": None}
         return {**report, **scope}
 
     @app.get("/api/spend/health")
@@ -564,6 +565,14 @@ def create_app(
             "scope": "unavailable",
             "warning": "This computer's history is unavailable until the hub reconnects.",
         }, own_id
+
+    def _empty_analytics_series(report: dict) -> dict:
+        # The all-time start comes from this database's history. It cannot
+        # describe a different computer while that computer is unavailable.
+        window = {**report["window"], "buckets": 0}
+        if window["key"] == "all":
+            window["from"] = window["to"]
+        return {**report, "window": window, "series": []}
 
     def _spend_hud_live_sync(machine: str = Query(default="all")) -> dict:
         from spend_app.hud_data import live_snapshot
