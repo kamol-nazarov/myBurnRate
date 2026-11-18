@@ -5,10 +5,8 @@ $exe = (Resolve-Path -LiteralPath $Installer).Path
 $settings = 'HKCU:\Software\BURNRATE Native'
 $registration = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\BURNRATENative'
 $dataRoot = Join-Path $env:LOCALAPPDATA 'BURNRATE'
-if ((Test-Path -LiteralPath $settings) -or
-    (Test-Path -LiteralPath $registration) -or
-    (Test-Path -LiteralPath $dataRoot)) {
-    throw 'Run this test in a fresh disposable Windows environment.'
+if ((Test-Path -LiteralPath $settings) -or (Test-Path -LiteralPath $registration)) {
+    throw 'The disposable runner already has a myBurnRate installation registered.'
 }
 
 function Invoke-InstallerProcess {
@@ -35,7 +33,7 @@ $foreignRuntime = Join-Path $foreign '_internal'
 [void][IO.Directory]::CreateDirectory($foreignRuntime)
 [void][IO.Directory]::CreateDirectory($dataRoot)
 $foreignFile = Join-Path $foreignRuntime 'sentinel.txt'
-$dataFile = Join-Path $dataRoot 'preserve.txt'
+$dataFile = Join-Path $dataRoot ((Split-Path -Leaf $fixture) + '.txt')
 [IO.File]::WriteAllText($foreignFile, 'foreign runtime')
 [IO.File]::WriteAllText($dataFile, 'usage-history sentinel')
 
@@ -64,8 +62,8 @@ if (-not (Test-Path -LiteralPath $appExe) -or $markerData.installer -cne 'nsis')
 
 # Exercise the updater's actual silent entry point. All app configuration is
 # confined to this disposable user, with a fresh loopback port and data root.
-$env:BURNRATE_DATA_ROOT = $dataRoot
-$env:SPEND_DATABASE_PATH = Join-Path $dataRoot 'spend.db'
+$env:BURNRATE_DATA_ROOT = Join-Path $fixture 'runtime'
+$env:SPEND_DATABASE_PATH = Join-Path $env:BURNRATE_DATA_ROOT 'spend.db'
 $env:BURNRATE_CENTRAL_SERVER = '1'
 $env:BURNRATE_USAGE_ONLY = '1'
 $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)

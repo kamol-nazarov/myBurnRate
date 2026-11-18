@@ -39,6 +39,12 @@ jobs:
       # Unsigned here: only the release workflow signs, and only from a version tag.
       - name: Build portable native app and installer
         run: python packaging/build_native.py --require-installer
+      - name: Verify installer lifecycle on a disposable Windows runner
+        if: github.ref == 'refs/heads/release/0.6.0-hotfix'
+        run: |
+          $installer = Get-ChildItem -Path 'packaging/build/myBurnRate_*_x64-setup.exe' -File
+          if (@($installer).Count -ne 1) { throw 'Expected exactly one native installer' }
+          ./scripts/verify-native-installer-vm.ps1 -Installer $installer.FullName
       - name: Run frozen native widget smoke test
         run: |
           $app = Join-Path $PWD 'packaging/build/native/BURNRATE/BURNRATE.exe'
@@ -50,12 +56,6 @@ jobs:
           if ($process.ExitCode -ne 0) { throw "Native smoke test failed: $($process.ExitCode)" }
       - name: Verify frozen collector and desktop IPC
         run: python scripts/smoke-native.py
-      - name: Verify installer lifecycle on a disposable Windows runner
-        if: github.ref == 'refs/heads/release/0.6.0-hotfix'
-        run: |
-          $installer = Get-ChildItem -Path 'packaging/build/myBurnRate_*_x64-setup.exe' -File
-          if (@($installer).Count -ne 1) { throw 'Expected exactly one native installer' }
-          ./scripts/verify-native-installer-vm.ps1 -Installer $installer.FullName
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: BURNRATE-native-windows
