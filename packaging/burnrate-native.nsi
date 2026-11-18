@@ -68,6 +68,8 @@ VIAddVersionKey "LegalCopyright" "Apache-2.0"
 
 Var DeleteData
 Var DeleteDataCheck
+Var GuardAction
+Var GuardResult
 
 !define MUI_ICON "${ICON}"
 !define MUI_UNICON "${ICON}"
@@ -85,64 +87,28 @@ UninstPage custom un.DataPageCreate un.DataPageLeave
 
 !insertmacro MUI_LANGUAGE "English"
 
-; The window and its --service collector are both BURNRATE.exe. Neither kill uses /T, and the
-; installer is not called BURNRATE.exe, so an update started by the app does not end itself.
-!macro DEFINE_STOP un
-Function ${un}StopBurnrate
-  StrCpy $R8 0
-  stop_loop:
-    nsExec::Exec '"$SYSDIR\taskkill.exe" /F /IM ${EXE_NAME}'
-    Pop $R0
-    nsExec::Exec '"$SYSDIR\cmd.exe" /c ""$SYSDIR\tasklist.exe" /NH /FI "IMAGENAME eq ${EXE_NAME}" | "$SYSDIR\find.exe" /I "${EXE_NAME}" >nul"'
-    Pop $R0
-    ; find exits 0 while a BURNRATE.exe is still listed
-    ${If} $R0 != 0
-      Return
-    ${EndIf}
-    IntOp $R8 $R8 + 1
-    ${If} $R8 >= 20
-      Return
-    ${EndIf}
-    Sleep 500
-    Goto stop_loop
+# Use fixed arguments to the embedded helper. Directory values travel as data
+# through inherited environment variables and never enter a command line.
+!macro DEFINE_GUARD un
+Function ${un}RunInstallGuard
+  InitPluginsDir
+  File "/oname=$PLUGINSDIR\native-install-guard.ps1" "native-install-guard.ps1"
+  StrCpy $0 "$INSTDIR"
+  StrCpy $1 "$LOCALAPPDATA\BURNRATE"
+  System::Call 'kernel32::SetEnvironmentVariableW(w "BURNRATE_NSIS_PROGRAM_DIR", w r0)i.r2'
+  System::Call 'kernel32::SetEnvironmentVariableW(w "BURNRATE_NSIS_DATA_DIR", w r1)i.r3'
+  StrCpy $GuardResult 1
+  ${If} $2 != 0
+  ${AndIf} $3 != 0
+    nsExec::Exec '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\native-install-guard.ps1" -Action $GuardAction'
+    Pop $GuardResult
+  ${EndIf}
+  System::Call 'kernel32::SetEnvironmentVariableW(w "BURNRATE_NSIS_PROGRAM_DIR", p 0)i'
+  System::Call 'kernel32::SetEnvironmentVariableW(w "BURNRATE_NSIS_DATA_DIR", p 0)i'
 FunctionEnd
 !macroend
-!insertmacro DEFINE_STOP ""
-!insertmacro DEFINE_STOP "un."
-
-; BURNRATE.exe processes currently running (the window and the --service collector); pushes the count.
-Function CountBurnrate
-  nsExec::ExecToStack '"$SYSDIR\cmd.exe" /c ""$SYSDIR\tasklist.exe" /NH /FI "IMAGENAME eq ${EXE_NAME}" | "$SYSDIR\find.exe" /C /I "${EXE_NAME}""'
-  Pop $R0
-  Pop $R1
-  IntOp $R1 $R1 + 0
-  Push $R1
-FunctionEnd
-
-; In-app update only ("/S /UPDATE"): the app starts this installer and then quits by itself,
-; saving the window position and removing its tray icon on the way out. Give it up to ~3 s to
-; do that before StopBurnrate force-kills whatever is left. The --service collector is
-; long-lived and will not exit here, so the wait ends as soon as the process count drops
-; (the window left) or the grace period is over.
-Function WaitForWindowExit
-  Call CountBurnrate
-  Pop $R6
-  ${If} $R6 < 1
-    Return
-  ${EndIf}
-  StrCpy $R7 0
-  grace_loop:
-    Sleep 250
-    Call CountBurnrate
-    Pop $R5
-    ${If} $R5 < $R6
-      Return
-    ${EndIf}
-    IntOp $R7 $R7 + 1
-    ${If} $R7 < 12
-      Goto grace_loop
-    ${EndIf}
-FunctionEnd
+!insertmacro DEFINE_GUARD ""
+!insertmacro DEFINE_GUARD "un."
 
 ; Refuse the data folder (or anything inside it) as the program folder.
 Function CheckProgramDir
@@ -168,25 +134,27 @@ Function .onVerifyInstDir
 FunctionEnd
 
 Section "Install"
-  Call CheckProgramDir
-  Pop $R0
-  ${If} $R0 == 1
-    MessageBox MB_ICONSTOP|MB_OK "${APP_NAME}'s program folder cannot be its data folder ($LOCALAPPDATA\BURNRATE). Choose another folder." /SD IDOK
-    Abort
-  ${EndIf}
-
+  StrCpy $GuardAction Install
   ${If} ${Silent}
     ${GetParameters} $R0
     ${GetOptions} $R0 "/UPDATE" $R1
     ${IfNot} ${Errors}
-      Call WaitForWindowExit
+      StrCpy $GuardAction Update
     ${EndIf}
   ${EndIf}
-  Call StopBurnrate
+  Call RunInstallGuard
+  ${If} $GuardResult != 0
+  ${AndIf} $GuardResult != 2
+    MessageBox MB_ICONSTOP|MB_OK "Choose an empty program folder or the registered ${APP_NAME} installation. The selected installation cannot be safely replaced." /SD IDOK
+    SetErrorLevel 1
+    Abort
+  ${EndIf}
 
   SetOutPath "$INSTDIR"
-  ; An update replaces the runtime wholesale so no file from an older build lingers.
-  RMDir /r "$INSTDIR\_internal"
+  ${If} $GuardResult == 2
+    ; Replace the runtime only after verifying this registered installation.
+    RMDir /r "$INSTDIR\_internal"
+  ${EndIf}
   File /r "${SOURCE_DIR}\*.*"
 
   ; Tells the app it was installed by this installer, so it may update itself.
@@ -245,7 +213,13 @@ Function un.DataPageLeave
 FunctionEnd
 
 Section "Uninstall"
-  Call un.StopBurnrate
+  StrCpy $GuardAction Uninstall
+  Call un.RunInstallGuard
+  ${If} $GuardResult != 2
+    MessageBox MB_ICONSTOP|MB_OK "Run this uninstaller from its registered ${APP_NAME} installation folder." /SD IDOK
+    SetErrorLevel 1
+    Abort
+  ${EndIf}
 
   Delete "$SMPROGRAMS\${SHORTCUT_NAME}.lnk"
   Delete "$DESKTOP\${SHORTCUT_NAME}.lnk"
@@ -266,6 +240,13 @@ Section "Uninstall"
 
   ; Only an interactive uninstall that ticked the box reaches this; /S leaves $DeleteData at 0.
   ${If} $DeleteData == ${BST_CHECKED}
+    StrCpy $GuardAction DeleteData
+    Call un.RunInstallGuard
+    ${If} $GuardResult != 0
+      MessageBox MB_ICONSTOP|MB_OK "The selected data could not be removed safely. Your usage data was kept." /SD IDOK
+      SetErrorLevel 1
+      Abort
+    ${EndIf}
     Delete "$LOCALAPPDATA\BURNRATE\spend.db"
     Delete "$LOCALAPPDATA\BURNRATE\spend.db-wal"
     Delete "$LOCALAPPDATA\BURNRATE\spend.db-shm"
