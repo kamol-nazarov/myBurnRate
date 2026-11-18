@@ -19,7 +19,7 @@ from spend_app.subscriptions import (
 )
 
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 
 class UserFacingError(ValueError):
@@ -50,6 +50,9 @@ CREATE TABLE IF NOT EXISTS usage_events (
     cost_usd REAL,
     computed_cost_usd REAL NOT NULL CHECK (computed_cost_usd >= 0),
     is_exact INTEGER NOT NULL DEFAULT 0 CHECK (is_exact IN (0, 1)),
+    admin_request_count INTEGER,
+    admin_context_window TEXT,
+    organization_scope TEXT,
     occurred_epoch_us INTEGER,
     raw_id TEXT NOT NULL UNIQUE,
     ingested_at TEXT NOT NULL
@@ -170,6 +173,9 @@ CREATE TABLE IF NOT EXISTS unpriced_usage_events (
     reasoning_tokens INTEGER,
     unclassified_tokens INTEGER NOT NULL DEFAULT 0,
     telemetry_complete INTEGER NOT NULL DEFAULT 1,
+    admin_request_count INTEGER,
+    admin_context_window TEXT,
+    organization_scope TEXT,
     cost_usd REAL,
     occurred_epoch_us INTEGER,
     raw_id TEXT NOT NULL UNIQUE,
@@ -285,6 +291,9 @@ class UsageEvent:
     raw_id: str
     ingested_at: str
     is_exact: bool = False
+    admin_request_count: int | None = None
+    admin_context_window: str | None = None
+    organization_scope: str | None = None
 
 
 @dataclass(frozen=True)
@@ -319,6 +328,9 @@ class UnpricedUsageEvent:
     cost_usd: float | None
     raw_id: str
     ingested_at: str
+    admin_request_count: int | None = None
+    admin_context_window: str | None = None
+    organization_scope: str | None = None
 
 
 def utc_now() -> str:
@@ -1430,6 +1442,13 @@ def migrate_release_a(connection: sqlite3.Connection) -> None:
             continue
         if "occurred_epoch_us" not in columns:
             connection.execute(f"ALTER TABLE {table} ADD COLUMN occurred_epoch_us INTEGER")
+        for key, sql_type in (
+            ("admin_request_count", "INTEGER"),
+            ("admin_context_window", "TEXT"),
+            ("organization_scope", "TEXT"),
+        ):
+            if key not in columns:
+                connection.execute(f"ALTER TABLE {table} ADD COLUMN {key} {sql_type}")
     connection.executescript(
         """
         CREATE INDEX IF NOT EXISTS idx_usage_events_epoch ON usage_events(occurred_epoch_us);

@@ -51,6 +51,7 @@ from spend_app.db import (
 )
 from spend_app.capacity_forecast import apply_balance_runway, record_balance_sample
 from spend_app.ingest import IngestRun
+from spend_app.organization import ORGANIZATION_SOURCES, admin_event_metadata, admin_row_pricing_args
 from spend_app.pricing import PricingEngine, UnpricedModelError
 
 LOGGER = logging.getLogger(__name__)
@@ -541,9 +542,9 @@ def _price_pushed_event(pricing: PricingEngine, item: dict) -> tuple[float, bool
     computed = item.get("computed_cost_usd")
     source = str(item.get("source") or "remote")
     is_exact = bool(item.get("is_exact", source in EXACT_USAGE_SOURCES))
-    if computed is not None:
+    if computed is not None and source not in ORGANIZATION_SOURCES:
         return float(computed), is_exact
-    if item.get("cost_usd") is not None:
+    if item.get("cost_usd") is not None and source not in ORGANIZATION_SOURCES:
         return float(item["cost_usd"]), is_exact
     occurred = _parse_iso(str(item.get("occurred_at") or "")) or datetime.now(UTC)
     cost = pricing.compute(
@@ -554,7 +555,10 @@ def _price_pushed_event(pricing: PricingEngine, item: dict) -> tuple[float, bool
         cache_write_tokens=int(item.get("cache_write_tokens") or 0),
         cache_write_1h_tokens=int(item.get("cache_write_1h_tokens") or 0),
         output_tokens=int(item.get("output_tokens") or 0),
+        **admin_row_pricing_args(item),
     )
+    if source in ORGANIZATION_SOURCES:
+        is_exact = pricing.resolve(str(item["model_key"]), occurred).is_exact
     return float(cost), is_exact
 
 
@@ -706,6 +710,7 @@ def apply_sync_push(
                         ),
                         raw_id=raw_id,
                         ingested_at=str(item.get("ingested_at") or stamp),
+                        **admin_event_metadata(item),
                     )
                     if upsert_unpriced_event(connection, unpriced):
                         written += 1
@@ -737,6 +742,7 @@ def apply_sync_push(
                     raw_id=raw_id,
                     ingested_at=str(item.get("ingested_at") or stamp),
                     is_exact=is_exact,
+                    **admin_event_metadata(item),
                 )
                 if upsert_usage_event(connection, event):
                     written += 1
@@ -774,6 +780,7 @@ def apply_sync_push(
                     ),
                     raw_id=raw_id,
                     ingested_at=str(item.get("ingested_at") or stamp),
+                    **admin_event_metadata(item),
                 )
                 if upsert_unpriced_event(connection, unpriced):
                     written += 1

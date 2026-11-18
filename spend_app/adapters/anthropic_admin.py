@@ -15,6 +15,7 @@ from spend_app.adapters.common import (
     skipped_result,
     stable_id,
 )
+from spend_app.organization import clean_context_window, clean_request_count
 from spend_app.pricing import PricingEngine
 
 
@@ -100,6 +101,8 @@ def parse_usage(payload: dict) -> list[UsageRow]:
                     reasoning_tokens=None,
                     cost_usd=None,
                     raw_id=raw_id,
+                    admin_request_count=clean_request_count(result.get("num_model_requests")),
+                    admin_context_window=clean_context_window(SOURCE, result.get("context_window")),
                 )
             )
     return rows

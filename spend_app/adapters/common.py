@@ -25,13 +25,20 @@ from spend_app.db import (
     utc_now,
 )
 from spend_app.ingest import IngestRun
+from spend_app.organization import (
+    ORGANIZATION_SOURCES,
+    admin_event_metadata,
+    admin_pricing_args,
+    admin_row_pricing_args,
+)
 from spend_app.redact import redact
-from spend_app.pricing import Price, PricingEngine, UnpricedModelError
+from spend_app.pricing import Price, PricingEngine, UncertainAggregatePriceError, UnpricedModelError
 
 HEALTHY_INGEST_STATUSES = frozenset({"success", "partial"})
 INCOMPLETE_TELEMETRY_ISSUE = (
     "Token components are incomplete; cache rate is unavailable for this event."
 )
+UNKNOWN_REQUEST_TIER_ISSUE = "Reporting bucket does not determine a request pricing tier."
 
 
 def iso_utc(value: datetime) -> str:
@@ -62,6 +69,9 @@ class UsageRow:
     raw_id: str
     unclassified_tokens: int = 0
     telemetry_complete: bool = True
+    admin_request_count: int | None = None
+    admin_context_window: str | None = None
+    organization_scope: str | None = None
 
 
 @dataclass(frozen=True)
@@ -151,6 +161,9 @@ def _unpriced_from_row(row: UsageRow) -> UnpricedUsageEvent:
         cost_usd=row.cost_usd,
         raw_id=row.raw_id,
         ingested_at=utc_now(),
+        admin_request_count=row.admin_request_count,
+        admin_context_window=row.admin_context_window,
+        organization_scope=row.organization_scope,
     )
 
 
@@ -189,6 +202,7 @@ def promote_priced_unpriced_events(connection, pricing: PricingEngine) -> int:
                 cache_write_tokens=row["cache_write_tokens"],
                 cache_write_1h_tokens=row["cache_write_1h_tokens"],
                 output_tokens=row["output_tokens"],
+                **admin_row_pricing_args(dict(row)),
             )
         except (UnpricedModelError, ValueError):
             continue
@@ -213,7 +227,12 @@ def promote_priced_unpriced_events(connection, pricing: PricingEngine) -> int:
                 raw_id=row["raw_id"],
                 ingested_at=utc_now(),
                 is_exact=event_is_exact(row["source"], price),
+                **admin_event_metadata(dict(row)),
             ),
+        )
+        connection.execute(
+            "DELETE FROM coverage_gap_events WHERE raw_id=? AND issue=?",
+            (row["raw_id"], UNKNOWN_REQUEST_TIER_ISSUE),
         )
         connection.execute("DELETE FROM pricing_gap_events WHERE raw_id=?", (row["raw_id"],))
         if written:
@@ -329,6 +348,7 @@ def persist_rows(
     coverage_written = 0
     cost_buckets_written = 0
     quarantined = 0
+    unknown_request_tier = False
     status = "success"
     with connect(database_path) as connection:
         sync_model_prices(connection, pricing)
@@ -390,8 +410,23 @@ def persist_rows(
                         cache_write_tokens=row.cache_write_tokens,
                         cache_write_1h_tokens=row.cache_write_1h_tokens,
                         output_tokens=row.output_tokens,
+                        **admin_pricing_args(row.source, row.admin_request_count),
                     )
                     price = pricing.resolve(row.model_key, row.occurred_at)
+                except UncertainAggregatePriceError:
+                    unknown_request_tier = True
+                    if upsert_unpriced_event(connection, _unpriced_from_row(row)):
+                        coverage_written += 1
+                    record_coverage_gap(
+                        connection,
+                        raw_id=row.raw_id,
+                        source=row.source,
+                        tool_key=row.tool_key,
+                        model_key=row.model_key,
+                        occurred_at=iso_utc(row.occurred_at),
+                        issue=UNKNOWN_REQUEST_TIER_ISSUE,
+                    )
+                    continue
                 except UnpricedModelError:
                     unpriced.add(row.model_key)
                     record_pricing_gap(
@@ -436,9 +471,17 @@ def persist_rows(
                         raw_id=row.raw_id,
                         ingested_at=utc_now(),
                         is_exact=event_is_exact(row.source, price),
+                        admin_request_count=row.admin_request_count,
+                        admin_context_window=row.admin_context_window,
+                        organization_scope=row.organization_scope,
                     ),
                 ):
                     run.events_written += 1
+                if row.source in ORGANIZATION_SOURCES:
+                    connection.execute(
+                        "DELETE FROM coverage_gap_events WHERE raw_id=? AND issue=?",
+                        (row.raw_id, UNKNOWN_REQUEST_TIER_ISSUE),
+                    )
             for row in cost_rows:
                 if upsert_cost_bucket(
                     connection,
@@ -465,6 +508,8 @@ def persist_rows(
                 error = f"Quarantined malformed rows: {quarantined}"
             elif quarantined:
                 error = f"{error}; quarantined malformed rows: {quarantined}"
+            if unknown_request_tier:
+                issues = (*issues, UNKNOWN_REQUEST_TIER_ISSUE)
             if issues:
                 error = (error + "; " if error else "") + ", ".join(sorted(set(issues)))
             status = "partial" if unpriced or quarantined or issues else "success"

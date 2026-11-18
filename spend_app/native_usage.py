@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 from spend_app import aggregate
 from spend_app.db import connect
+from spend_app.organization import ORGANIZATION_SOURCES, admin_row_pricing_args
 from spend_app.pricing import PricingEngine, UnpricedModelError
 from spend_app.source_reconcile import reconcile_events
 from spend_app.sync import list_machines
@@ -24,11 +25,6 @@ PERIODS = {
     "month": "This month",
     "all": "All time",
 }
-# Organization feeds can overlap local sessions. Keep them visible, separate
-# from the deduplicated tool total, until a shared event identity proves scope.
-ORGANIZATION_SOURCES = frozenset({"openai_admin", "anthropic_admin"})
-
-
 def period_start(period: str, now: datetime, timezone: str) -> datetime:
     zone = ZoneInfo(timezone)
     local = now.astimezone(zone)
@@ -220,6 +216,7 @@ def usage_report(
                             row.get("cache_write_1h_tokens") or 0
                         ),
                         output_tokens=output,
+                        **admin_row_pricing_args(row),
                     )
                 except (UnpricedModelError, ValueError):
                     pass

@@ -12,6 +12,7 @@ from functools import lru_cache
 from zoneinfo import ZoneInfo
 
 from spend_app.db import EXACT_USAGE_SOURCES, connect, usage_cache_revision
+from spend_app.organization import ORGANIZATION_SOURCES, admin_row_pricing_args
 from spend_app.source_reconcile import reconcile_events
 from spend_app.sync import list_machines, machines_fingerprint, row_machine_id
 from spend_app.timeutil import epoch_micros, from_epoch_micros, next_month_start as _next_month_start_utc, parse_utc, previous_calendar_period
@@ -661,6 +662,9 @@ def _event_is_exact(event: dict) -> bool:
     Tool-family membership is not enough: owner-asserted Codex cards
     (auto-review, Daybreak) must render ≈ even though tool_key is codex.
     """
+    if event.get("source") in ORGANIZATION_SOURCES and "computed_total" in event:
+        if event.get("computed_total") is None and event.get("cost_usd") is None:
+            return False
     price = event.get("price")
     if price is None:
         model_key = event.get("model_key")
@@ -1165,6 +1169,7 @@ def _try_price_event(pricing: PricingEngine, event: dict) -> tuple[Decimal | Non
             cache_write_tokens=event["cache_write_tokens"],
             cache_write_1h_tokens=event.get("cache_write_1h_tokens", 0),
             output_tokens=event["output_tokens"],
+            **admin_row_pricing_args(event),
         )
         return sum(components.values(), Decimal(0)), components
     except (UnpricedModelError, ValueError):
@@ -1380,6 +1385,7 @@ def _cache_savings(*, events: list[dict], pricing: PricingEngine) -> float | Non
                 cache_write_tokens=event.get("cache_write_tokens", 0),
                 cache_write_1h_tokens=event.get("cache_write_1h_tokens", 0),
                 output_tokens=event["output_tokens"],
+                **admin_row_pricing_args(event),
             )
             without_cache = pricing.compute(
                 model_key=event["model_key"],
@@ -1389,6 +1395,7 @@ def _cache_savings(*, events: list[dict], pricing: PricingEngine) -> float | Non
                 cache_write_tokens=event.get("cache_write_tokens", 0),
                 cache_write_1h_tokens=event.get("cache_write_1h_tokens", 0),
                 output_tokens=event["output_tokens"],
+                **admin_row_pricing_args(event),
             )
         except (UnpricedModelError, ValueError):
             continue
