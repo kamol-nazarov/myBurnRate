@@ -200,7 +200,7 @@ def test_new_spoke_preserves_local_history_when_old_hub_cannot_import(
 ):
     hs, hub, ss, spoke = clients
     _add(ss, "Ended plan", end="2026-02-28")
-    before = _stored(ss)
+    _add(hs, "Legacy hub plan", end="2025-06-30", start="2025-01-01")
 
     class LegacyHub:
         def __getattr__(self, name):
@@ -219,8 +219,36 @@ def test_new_spoke_preserves_local_history_when_old_hub_cannot_import(
     monkeypatch.setitem(sync._HUB_TEST_CLIENTS, HUB, LegacyHub())
     result = _sign_in(spoke)
     assert result["subscriptionHistoryPending"] is True
-    assert _stored(hs) == []
-    assert _stored(ss) == before
+    assert [p["terms"][0]["name"] for p in _stored(hs)] == ["Legacy hub plan"]
+    assert {p["terms"][0]["name"]: p["end_date"] for p in _stored(ss)} == {
+        "Ended plan": "2026-02-28",
+        "Legacy hub plan": "2025-06-30",
+    }
+
+    monkeypatch.setitem(sync._HUB_TEST_CLIENTS, HUB, hub)
+    upgrade = _sign_in(spoke)
+    assert upgrade["subscriptionHistoryPending"] is False
+    assert len(_stored(hs)) == len(_stored(ss)) == 2
+
+
+def test_dated_import_keeps_older_association_and_fractional_amount(clients):
+    hs, _, ss, spoke = clients
+    plan = _add(ss, "Research plan", end="2026-02-28")
+    long_name = "Longer historical subscription name retained during transfer " * 2
+    with connect(ss.database_path) as conn:
+        conn.execute(
+            "UPDATE subscriptions SET name=?,tool_key=?,amount_usd=? WHERE plan_id=?",
+            (long_name, "research-assistant", 19.995, plan),
+        )
+    assert _sign_in(spoke)["subscriptionHistoryPending"] is False
+    assert len(_stored(hs)) == len(_stored(ss)) == 1
+    term = _stored(hs)[0]["terms"][0]
+    assert (term["name"], term["tool_key"], term["amount_usd"], term["end_date"]) == (
+        long_name,
+        "research-assistant",
+        "19.995",
+        "2026-02-28",
+    )
 
 
 def test_long_history_transfers_in_bounded_batches(clients):

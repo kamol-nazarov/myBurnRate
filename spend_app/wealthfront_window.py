@@ -3159,8 +3159,9 @@ class DesktopBridge:
                             raise _StaleOwnerLifecycle()
 
                     def _apply_auth_state(conn, state):
-                        if remote_history is not None:
-                            receive_sign_in_history(conn, settings.timezone, remote_history)
+                        receive_sign_in_history(
+                            conn, settings.timezone, hub_url, remote_history, auth_data.get("subscriptions")
+                        )
                         state["role"] = "spoke"
                         state["computerName"] = clean_comp
                         state["account"] = account_meta

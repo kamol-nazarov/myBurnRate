@@ -34,7 +34,13 @@ from spend_app.diagnostics import detect_local_sources
 from spend_app.plan_service import PlanConflict, PlanError, apply_mutation, effective_terms, list_plans
 from spend_app.pricing import PricingEngine
 from spend_app.setup_checks import collection_progress, consent_state, lane_rows, plan_issues, plan_suggestions, write_consent
-from spend_app.subscription_transfer import attach_sign_in_history, deferred_uploads, export_history, import_history
+from spend_app.subscription_transfer import (
+    attach_sign_in_history,
+    deferred_uploads,
+    export_history,
+    import_history,
+    import_legacy_history,
+)
 from spend_app.subscriptions import add_subscription, materialize_subscription_days
 from spend_app.sync import (
     STREAM_BROKER,
@@ -512,8 +518,12 @@ def _materialize_transferred_plans(connection, timezone_name: str) -> None:
     )
 
 
-def receive_sign_in_history(connection, timezone_name: str, history: dict) -> None:
-    if import_history(connection, history, from_hub=True):
+def receive_sign_in_history(connection, timezone_name: str, hub_url: str, history, legacy_terms=None) -> None:
+    changed = (
+        import_history(connection, history, from_hub=True, hub_url=hub_url)
+        if history is not None else import_legacy_history(connection, hub_url, legacy_terms)
+    )
+    if changed:
         _materialize_transferred_plans(connection, timezone_name)
 
 
@@ -540,7 +550,7 @@ def complete_deferred_history(settings, saved: dict, hub_url: str, history: dict
             current = read_setup_state(connection)
             if current.get("role") != "spoke" or hub_write_scope(current, hub_url) != scope:
                 raise PlanConflict("The hub connection changed. Reconnect to the hub.")
-            receive_sign_in_history(connection, settings.timezone, latest["subscriptionHistory"])
+            receive_sign_in_history(connection, settings.timezone, hub_url, latest["subscriptionHistory"])
     return latest
 
 
@@ -2171,8 +2181,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
 
                 def _apply_account(connection, state):
                     nonlocal account_out, local_subs
-                    if remote_history is not None:
-                        receive_sign_in_history(connection, settings.timezone, remote_history)
+                    receive_sign_in_history(connection, settings.timezone, working_url, remote_history, remote_subs)
                     state["role"] = "spoke"
                     state["computerName"] = computer_name
                     account_username = str(account_info.get("username") or username)

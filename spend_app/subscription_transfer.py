@@ -1,17 +1,19 @@
 """Dated subscription history exchanged during owner sign-in."""
 
+import hashlib
 import json
+import math
 import re
 import uuid
 
 from spend_app.plan_service import (
+    CADENCES,
     FIELDS,
     PlanConflict,
     PlanError,
     _validate_overlap,
     iso_date,
     list_plans,
-    validate_term,
 )
 
 _STORE_KEY = "subscription_store.v1"
@@ -119,6 +121,31 @@ def _is_id(value):
     return type(value) is int and 0 < value < 2**63
 
 
+def _history_term(values):
+    if (
+        not isinstance(values, dict)
+        or set(values) != FIELDS
+        or not isinstance(values["name"], str)
+        or not isinstance(values["tool_key"], str)
+        or values["cadence"] not in CADENCES
+        or isinstance(values["amount_usd"], bool)
+    ):
+        raise PlanError("Invalid subscription history term.")
+    # Copy the stored term as-is. Older releases permitted more associations,
+    # longer names and fractional cents that current plan entry disallows.
+    try:
+        amount = float(values["amount_usd"])
+    except (ValueError, TypeError, OverflowError) as exc:
+        raise PlanError("Invalid historical subscription amount.") from exc
+    if not math.isfinite(amount) or amount < 0:
+        raise PlanError("Invalid historical subscription amount.")
+    start = iso_date(values["start_date"])
+    end = iso_date(values["end_date"], optional=True)
+    if end is not None and end < start:
+        raise PlanError("A historical term cannot end before it starts.")
+    return {**values, "amount_usd": amount}
+
+
 def _read_history(history, *, from_hub):
     if not isinstance(history, dict) or not _is_store(history.get("store")):
         raise PlanError("Invalid subscription history source.")
@@ -144,21 +171,7 @@ def _read_history(history, *, from_hub):
         terms = plan.get("terms")
         if not isinstance(terms, list) or not terms:
             raise PlanError("Subscription history must include its effective terms.")
-        validated = []
-        for values in terms:
-            if (
-                not isinstance(values, dict)
-                or set(values) != FIELDS
-                or not isinstance(values["tool_key"], str)
-                or not isinstance(values["cadence"], str)
-            ):
-                raise PlanError("Invalid subscription history term.")
-            term = validate_term(values)
-            # These stored associations retain their historical meaning when
-            # imported, even though a newly entered plan uses the current key.
-            if values["tool_key"] in ("cursor", "zcode"):
-                term["tool_key"] = values["tool_key"]
-            validated.append(term)
+        validated = [_history_term(values) for values in terms]
         _validate_overlap(validated)
         decoded.append((identity, version, end_date, validated))
     return sender, decoded
@@ -193,7 +206,81 @@ def _replace_terms(connection, plan_id, terms):
         connection.execute("DELETE FROM subscriptions WHERE id=?", (term_id,))
 
 
-def import_history(connection, history, *, from_hub=False, expected_store=None):
+def _stored_terms(connection, plan_id):
+    return [
+        dict(row)
+        for row in connection.execute(
+            "SELECT name,tool_key,amount_usd,cadence,start_date,end_date FROM subscriptions "
+            "WHERE plan_id=? ORDER BY start_date",
+            (plan_id,),
+        )
+    ]
+
+
+def _same_plan(connection, plan_id, end_date, terms):
+    row = connection.execute(
+        "SELECT end_date FROM subscription_plans WHERE id=?", (plan_id,)
+    ).fetchone()
+    return (
+        row is not None
+        and row["end_date"] == end_date
+        and _stored_terms(connection, plan_id) == terms
+    )
+
+
+def _legacy_store(hub_url):
+    return hashlib.sha256(f"legacy-plan-history:{hub_url}".encode()).hexdigest()[:32]
+
+
+def import_legacy_history(connection, hub_url, rows):
+    """Retain a dated local copy of the old hub's read-only term list."""
+    if not isinstance(rows, list) or not rows:
+        return 0
+    store = _legacy_store(hub_url)
+    groups = {}
+    incomplete = set()
+    for row in rows:
+        if not isinstance(row, dict) or not _is_id(row.get("plan_id")):
+            continue
+        if not FIELDS.issubset(row):
+            incomplete.add(row["plan_id"])
+            continue
+        # An old response only describes the effective terms it includes.
+        # A malformed term leaves that plan pending instead of inserting a
+        # partial history or inventing its dates.
+        groups.setdefault(row["plan_id"], []).append({f: row[f] for f in _TERM_FIELDS})
+    plans = []
+    for source_id, raw_terms in groups.items():
+        if source_id in incomplete:
+            continue
+        try:
+            terms = [_history_term(term) for term in raw_terms]
+            _validate_overlap(terms)
+        except PlanError:
+            continue
+        plans.append(
+            {
+                "origin": store,
+                "sourceId": source_id,
+                "version": 1,
+                "end_date": terms[-1]["end_date"],
+                "terms": terms,
+            }
+        )
+    return import_history(
+        connection, {"store": store, "plans": plans}, from_hub=True, legacy=True
+    )
+
+
+def import_history(
+    connection,
+    history,
+    *,
+    from_hub=False,
+    expected_store=None,
+    legacy=False,
+    hub_url=None,
+):
     """Install complete dated plans. The hub owns a plan once it adopts it."""
     sender, plans = _read_history(history, from_hub=from_hub)
     local_store = _ensure_store(connection)
@@ -212,6 +299,8 @@ def import_history(connection, history, *, from_hub=False, expected_store=None):
             (origin, source_id),
         ).fetchone()
         if link is not None:
+            if legacy and not _same_plan(connection, link["plan_id"], end_date, terms):
+                revision = link["hub_revision"] + 1
             if (
                 from_hub
                 and sender == link["hub_store"]
@@ -231,6 +320,22 @@ def import_history(connection, history, *, from_hub=False, expected_store=None):
                 )
                 changed += 1
             continue
+        if from_hub and not legacy and hub_url and origin == sender:
+            # The legacy API has no database identifier. A matching endpoint,
+            # original ID and complete unchanged terms let us rebind its local
+            # copy without collapsing unrelated plans when an endpoint is reused.
+            prior = connection.execute(
+                "SELECT plan_id,local_revision FROM subscription_transfer_links WHERE origin=? AND source_id=?",
+                (_legacy_store(hub_url), source_id),
+            ).fetchone()
+            if prior is not None and _same_plan(
+                connection, prior["plan_id"], end_date, terms
+            ):
+                connection.execute(
+                    "UPDATE subscription_transfer_links SET origin=?,hub_store=?,hub_revision=? WHERE plan_id=?",
+                    (origin, sender, revision, prior["plan_id"]),
+                )
+                continue
         if origin == local_store:
             if not from_hub:
                 continue
@@ -238,15 +343,11 @@ def import_history(connection, history, *, from_hub=False, expected_store=None):
                 "SELECT version,end_date FROM subscription_plans WHERE id=?",
                 (source_id,),
             ).fetchone()
-            local_terms = [
-                dict(row)
-                for row in connection.execute(
-                    "SELECT name,tool_key,amount_usd,cadence,start_date,end_date FROM subscriptions "
-                    "WHERE plan_id=? ORDER BY start_date",
-                    (source_id,),
-                )
-            ]
-            if local is None or local["end_date"] != end_date or local_terms != terms:
+            if (
+                local is None
+                or local["end_date"] != end_date
+                or _stored_terms(connection, source_id) != terms
+            ):
                 continue
             plan_id, local_revision = source_id, local["version"]
         else:
