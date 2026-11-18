@@ -26,6 +26,7 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 
 from spend_app.adapters.common import UsageRow, persist_rows, stable_id
@@ -40,9 +41,6 @@ from spend_app.adapters.local_common import (
 )
 from spend_app.db import (
     TOOL_KEY_OVERRIDES,
-    connect,
-    initialize,
-    read_opencode_progress,
     record_coverage_gap,
     write_opencode_progress,
 )
@@ -62,6 +60,8 @@ DELTA_ISSUE = (
     "Observed-interval delta from cumulative session counters; timing is the "
     "observation instant and model attribution uses the session's current model."
 )
+COUNTER_COLUMNS = ("input_tokens", "cached_input_tokens", "cache_write_tokens", "output_tokens")
+HISTORY_REPAIR = "opencode.cumulative-repair:v2:"
 
 
 def ingest(*, database_path: Path, pricing: PricingEngine, source_database: Path) -> dict:
@@ -200,16 +200,20 @@ def plan_rows(
     """Baseline/delta rows plus the progress state to commit with them.
 
     ``previous`` maps ``session_id\\x1fprovider_id`` to the stored progress
-    row (or None). Rows keep stable identities so a repeated planning of the
-    same snapshot is an idempotent upsert, never a duplicate.
+    row (or None), which can come from an earlier provider of the same session.
+    Rows keep stable identities when the same observation is replayed.
     """
     rows: list[UsageRow] = []
     next_state: dict[str, dict] = {}
     labels: list[tuple[str, str]] = []
-    for snapshot in snapshots:
+    planned = {}
+    for snapshot in sorted(snapshots, key=lambda item: item.observed_at):
         key = f"{snapshot.session_id}\x1f{snapshot.provider_id}"
-        prev = previous.get(key)
+        prev = planned.get(snapshot.session_id, previous.get(key))
         totals = _counts(snapshot)
+        if prev and prev.get("ambiguous"):
+            labels.append(("", "opencode_ambiguous_cumulative_checkpoint"))
+            continue
         if prev and parse_iso_time(prev.get("observed_at")) and snapshot.observed_at < parse_iso_time(prev["observed_at"]):
             labels.append(("", "opencode_stale_cumulative_snapshot"))
             continue
@@ -242,12 +246,7 @@ def plan_rows(
             )
             labels.append((rows[-1].raw_id, BASELINE_ISSUE))
         else:
-            prev_totals = (
-                prev["input_tokens"],
-                prev["cached_input_tokens"],
-                prev["cache_write_tokens"],
-                prev["output_tokens"],
-            )
+            prev_totals = tuple(prev[column] for column in COUNTER_COLUMNS)
             if any(now < was for now, was in zip(totals, prev_totals)):
                 # This legacy shape has no reset/request identity. Appending
                 # a second baseline would invent usage on corrections/copies.
@@ -272,12 +271,10 @@ def plan_rows(
                             cache_write_tokens=delta_write,
                             cache_write_1h_tokens=0,
                             output_tokens=delta_output,
-                            reasoning_tokens=snapshot.reasoning_tokens
-                            if delta_output
-                            else None,
-                            cost_usd=None
-                            if snapshot.cost_usd is None or prev.get("cost_usd") is None
-                            else max(0.0, snapshot.cost_usd - float(prev["cost_usd"])),
+                            reasoning_tokens=optional_delta(
+                                snapshot.reasoning_tokens, prev.get("reasoning_tokens")
+                            ) if delta_output else None,
+                            cost_usd=cost_delta(snapshot.cost_usd, prev.get("cost_usd")),
                             raw_id=stable_id(
                                 "opencode-delta",
                                 snapshot.session_id,
@@ -288,7 +285,7 @@ def plan_rows(
                         )
                     )
                     labels.append((rows[-1].raw_id, DELTA_ISSUE))
-        next_state[key] = {
+        planned[snapshot.session_id] = next_state[key] = {
             "input_tokens": snapshot.input_tokens,
             "cached_input_tokens": snapshot.cached_input_tokens,
             "cache_write_tokens": snapshot.cache_write_tokens,
@@ -301,14 +298,44 @@ def plan_rows(
     return rows, next_state, labels
 
 
-def progress_for_location(connection, source_database, scope, session_id, provider_id):
-    local = read_opencode_progress(connection, session_id=scope + ":" + session_id, provider_id=provider_id)
-    # The original logical (session, provider) watermark is the existing
-    # deduplication authority, NOT a filesystem cursor. Keep it when moving
-    # an already observed session so a newer cumulative baseline cannot be
-    # billed again. Physical-location progress remains separately scoped.
-    accounted = read_opencode_progress(connection, session_id=session_id, provider_id=provider_id)
-    return accounted if accounted is not None else local
+def optional_delta(current, earlier):
+    if current is None or earlier is None or current < earlier:
+        return None
+    return current - earlier
+
+
+def cost_delta(current, earlier):
+    if current is None or earlier is None:
+        return None
+    return float(max(Decimal(0), Decimal(str(current)) - Decimal(str(earlier))))
+
+
+def progress_for_location(connection, scope, session_id):
+    """Look up the logical session checkpoint across providers and moves."""
+    scoped_id = scope + ":" + session_id
+    location, logical = {}, {}
+    for row in connection.execute(
+        "SELECT * FROM opencode_session_progress WHERE session_id IN (?,?)",
+        (session_id, scoped_id),
+    ):
+        (logical if row["session_id"] == session_id else location)[row["provider_id"]] = dict(row)
+    progress = {**location, **logical}
+    if not progress:
+        return None, logical
+    by_time = [(parse_iso_time(row["observed_at"]), row) for row in progress.values()]
+    if any(moment is None for moment, _ in by_time):
+        return {"ambiguous": True}, logical
+    most_recent = max(moment for moment, _ in by_time)
+    candidates = [row for moment, row in by_time if moment == most_recent]
+    high_water = tuple(max(row[col] for row in candidates) for col in COUNTER_COLUMNS)
+    candidates = [row for row in candidates if tuple(row[col] for col in COUNTER_COLUMNS) == high_water]
+    if not candidates:
+        return {"ambiguous": True}, logical
+    latest = candidates[0].copy()
+    for key in ("reasoning_tokens", "cost_usd"):
+        if any(row[key] != latest[key] for row in candidates):
+            latest[key] = None
+    return latest, logical
 
 
 def _ingest_cumulative(*, database_path: Path, pricing: PricingEngine, source_database: Path,
@@ -319,24 +346,59 @@ def _ingest_cumulative(*, database_path: Path, pricing: PricingEngine, source_da
     files = int(source_database.is_file())
     if snapshots is None:
         snapshots = read_session_snapshots(source_database) if files else []
-    initialize(database_path)
-    with connect(database_path) as connection:
-        previous = {
-            f"{snapshot.session_id}\x1f{snapshot.provider_id}": progress_for_location(
-                connection, source_database, scope, snapshot.session_id, snapshot.provider_id
-            )
-            for snapshot in snapshots
-        }
-    rows, next_state, labels = plan_rows(snapshots, previous)
-    accepted_ids = {row.raw_id for row in rows}
-    issues = [issue for raw_id, issue in labels if not raw_id]
+    rows_by_id = {}
+    next_state = {}
+    labels = []
+    issues = []
     deferred = set()
+    repaired_sessions = set()
+    history = {"historicalCorrections": 0, "historicalUnresolved": 0}
 
-    def prepare(connection, prepared_rows):
+    def prepare(connection, _):
         from spend_app.adapters.opencode_granular import reconcile_cumulative, reattribute_cumulative
+        from spend_app.adapters.opencode_cumulative_repair import (
+            history_key, repair_provider_switch, repair_retained_provider_switches,
+        )
+        from spend_app.adapters.usage_repair import read_meta, write_meta
+
+        # persist_rows starts an ingest_run before invoking this hook. Its
+        # SQLite write transaction pins the checkpoint read through commit.
+        previous = {}
+        for snapshot in snapshots:
+            session = snapshot.session_id
+            latest, logical = progress_for_location(connection, scope, session)
+            previous[f"{session}\x1f{snapshot.provider_id}"] = latest
+            if logical and (len(logical) > 1 or snapshot.provider_id not in logical):
+                key = history_key(session)
+                status = read_meta(connection, key, None)
+                if status is None:
+                    if len(logical) > 1:
+                        corrected = repair_provider_switch(connection, pricing, session, logical)
+                        status = "unresolved" if corrected is None else "repaired"
+                        history["historicalCorrections"] += corrected or 0
+                        if corrected:
+                            repaired_sessions.add(session)
+                    else:
+                        status = "current"
+                    write_meta(connection, key, status)
+                if status == "unresolved":
+                    issues.append("opencode_prior_provider_switch_could_not_be_verified")
+                    history["historicalUnresolved"] += 1
+        corrected, repaired, unresolved, pending = repair_retained_provider_switches(connection, pricing)
+        repaired_sessions.update(repaired)
+        history["historicalCorrections"] += corrected
+        if unresolved:
+            issues.append("opencode_retained_provider_switches_could_not_be_verified")
+            history["retainedHistoricalUnresolved"] = unresolved
+        if pending:
+            history["historicalRepairPending"] = True
         reattribute_cumulative(connection, snapshots)
-        result = reconcile_cumulative(connection, prepared_rows, snapshots, issues, deferred)
-        accepted_ids.intersection_update(row.raw_id for row in result)
+        rows, planned, found = plan_rows(snapshots, previous)
+        next_state.update(planned)
+        labels.extend(found)
+        issues.extend(issue for raw_id, issue in found if not raw_id)
+        result = reconcile_cumulative(connection, rows, snapshots, issues, deferred)
+        rows_by_id.update((row.raw_id, row) for row in result)
         return result
 
     def finalize(connection: sqlite3.Connection) -> None:
@@ -372,9 +434,7 @@ def _ingest_cumulative(*, database_path: Path, pricing: PricingEngine, source_da
                 observed_at=state["observed_at"],
             )
         for raw_id, issue in labels:
-            if raw_id not in accepted_ids:
-                continue
-            row = next((row for row in rows if row.raw_id == raw_id), None)
+            row = rows_by_id.get(raw_id)
             if row is None:
                 continue
             record_coverage_gap(
@@ -386,14 +446,19 @@ def _ingest_cumulative(*, database_path: Path, pricing: PricingEngine, source_da
                 occurred_at=row.occurred_at.isoformat().replace("+00:00", "Z"),
                 issue=issue,
             )
+        sessions = repaired_sessions | {row.session_id for row in rows_by_id.values()}
+        if sessions:
+            from spend_app.adapters.traycer_local import reconcile_opencode_mirrors
+
+            reconcile_opencode_mirrors(connection, sessions)
 
     result = persist_rows(
         database_path=database_path,
         pricing=pricing,
         source=SOURCE,
-        usage_rows=rows,
+        usage_rows=(),
         prepare=prepare,
         finalize=finalize,
         issues=issues,
     )
-    return {**result, "files": files, "eventsSeen": len(snapshots), "eventsAccepted": len(snapshots) if not issues else result["eventsAccepted"], "issues": issues}
+    return {**result, **history, "files": files, "eventsSeen": len(snapshots), "eventsAccepted": len(snapshots) if not issues else result["eventsAccepted"], "issues": sorted(set(issues))}
