@@ -25,7 +25,7 @@ from spend_app.pricing import PricingEngine, UnpricedModelError
 from spend_app.capacity_forecast import alert_fingerprint, apply_balance_runway, apply_forecasts, load_pace_samples, pace_fingerprint, read_forecast_view, active_provider_keys
 from spend_app.quotas import REQUIRED_LIMITS, split_quota_label
 from spend_app.subscriptions import daily_cost
-from spend_app.plan_service import effective_terms
+from spend_app.plan_service import effective_terms, plan_has_ended
 from spend_app.opencode_providers import provider_tool_color, provider_tool_name
 
 
@@ -2561,7 +2561,7 @@ def aggregate_summary(
         )
         monthly_plans: dict[str, tuple[str, Decimal]] = {}
         subscription_rows = []
-        plan_terms = effective_terms(connection) if account_view else ()
+        plan_terms = effective_terms(connection, include_plan_end=True) if account_view else ()
         for row in plan_terms:
             if row["start_date"] > local_now.date().isoformat() or (row["end_date"] and row["end_date"] < local_now.date().isoformat()):
                 continue
@@ -2573,17 +2573,18 @@ def aggregate_summary(
             elif row["cadence"] == "annual":
                 note = f"${float(amount):.2f} annual; ${float(monthly):.2f}/mo equivalent"
             zero = amount <= 0
-            subscription_rows.append(
-                {
-                    "name": row["name"],
-                    "toolKey": row["tool_key"],
-                    "amountUsd": None if zero else float(amount),
-                    "cadence": row["cadence"],
-                    "note": None if zero else note,
-                    "monthlyEquivalent": None if zero else float(monthly),
-                    "planState": "no paid plan" if zero else "paid",
-                }
-            )
+            if not plan_has_ended(row["plan_end"], local_now.date()):
+                subscription_rows.append(
+                    {
+                        "name": row["name"],
+                        "toolKey": row["tool_key"],
+                        "amountUsd": None if zero else float(amount),
+                        "cadence": row["cadence"],
+                        "note": None if zero else note,
+                        "monthlyEquivalent": None if zero else float(monthly),
+                        "planState": "no paid plan" if zero else "paid",
+                    }
+                )
             if zero:
                 continue
             active_start = date.fromisoformat(row["start_date"])

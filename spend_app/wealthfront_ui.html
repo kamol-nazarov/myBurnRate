@@ -6837,7 +6837,7 @@ function planEditorHtml(editor, data, busy) {
     if (operation === "schedule") fields += planField("New price starts", text("effective_date", `type="date" required min="${esc(data.today)}"`));
     if (operation === "add" || operation === "correct") fields += planField("First active day", text("start_date", 'type="date" required'));
     if (operation !== "schedule") fields += planField(operation === "end" ? "Last active day" : "Last active day (optional)", text("end_date", `type="date" ${operation === "end" ? "required" : ""}`));
-    if (operation === "end") fields += '<div class="editor-hint">The plan accrues through this date. Manage billing with your provider.</div>';
+    if (operation === "end") fields += '<div class="editor-hint">Choose today to move the plan to history now. Its cost accrues through the last active day.</div>';
   }
   const title = { add: "Add plan", schedule: "Change price", end: "End plan", correct: "Correct term" }[operation];
   const save = preview ? "Confirm correction" : (operation === "correct" ? "Preview correction" : title);
@@ -6855,24 +6855,30 @@ function planSettingsHtml() {
   const status = error ? `<div class="setting-note err" role="alert">${esc(error)}</div>` : "";
   if (loading) return '<div class="setting-note" role="status">Loading plans…</div>';
   if (!data) return `${status}<div><button class="btn-secondary" id="reloadPlansBtn" type="button">Reload plans</button></div>`;
-  const rows = data.plans.map(plan => {
+  const rows = [];
+  const endedRows = [];
+  for (const plan of data.plans) {
     const current = plan.terms.find(term => term.status === "active");
     const term = current || plan.terms.find(item => item.status === "scheduled") || plan.terms.at(-1);
     const action = (op, label, item = term) => `<button class="btn-secondary" type="button" data-plan-action="${op}" data-plan-id="${Number(plan.id)}" data-term-id="${Number(item.id)}">${label}</button>`;
     const price = item => planPrice({ amountUsd: Number(item.amount_usd) || null, cadence: item.cadence });
-    return `<div class="plan-settings-row">
+    const where = term.status === "ended" ? endedRows : rows;
+    const lastDay = plan.end_date || (term.status === "ended" ? term.end_date : null);
+    const statusText = lastDay ? `${term.status} · last active ${lastDay}` : term.status;
+    where.push(`<div class="plan-settings-row">
       <div class="source-name">${esc(term.name)}</div>
-      <div class="source-meta">${esc(price(term))} · ${esc(term.status)}</div>
+      <div class="source-meta">${esc(price(term))} · ${esc(statusText)}</div>
       <div class="editor-actions">${current ? action("schedule", "Change price") : ""}${term.status !== "ended" ? action("end", "End plan") : ""}</div>
       <details><summary>History</summary>${plan.terms.map(item => `<div class="editor-actions">
         <span class="source-meta">${esc(item.start_date)} · ${esc(price(item))}</span>${action("correct", "Correct", item)}</div>`).join("")}</details>
-    </div>`;
-  }).join("");
+    </div>`);
+  }
   return `${status}${editor ? planEditorHtml(editor, data, saving) : `
     <div class="wf-card"><div class="card-header">
       <span class="card-title">${data.authority === "local" ? "Plans on this computer" : "Plans on your hub"}</span>
       <button class="btn-secondary" id="addPlanBtn" type="button" data-plan-action="add">Add plan</button>
-    </div>${rows || '<div class="plan-settings-row source-meta">No plans configured.</div>'}</div>
+    </div>${rows.join("") || '<div class="plan-settings-row source-meta">No active or scheduled plans.</div>'}</div>
+    ${endedRows.length ? `<details class="wf-card plan-settings-row" id="endedPlans"><summary>Ended plans</summary>${endedRows.join("")}</details>` : ""}
     <div><button class="btn-secondary" id="reloadPlansBtn" type="button">Reload plans</button></div>`}`;
 }
 
@@ -6948,8 +6954,16 @@ async function submitPlanEdit(form) {
     renderOpenPlanSettings();
   }
   if (saved) {
-    showToast("Plan saved");
+    showToast(operation === "end" ? "Last active day saved" : "Plan saved");
+    ++state.h9Request;
     await loadPlanSettings();
+    if (state.h9Summary && state.report && settings.data) {
+      const subscriptions = settings.data.plans.flatMap(plan => plan.terms
+        .filter(item => item.status === "active")
+        .map(item => ({ name: item.name, amountUsd: Number(item.amount_usd) || null, cadence: item.cadence })));
+      state.h9Summary = { ...state.h9Summary, subscriptions };
+      renderPlans(state.report, getNormalizedProviders(state.report).filter(p => !p.organization));
+    }
     if (state.settingsOpen && state.settingsTab === "plans") document.getElementById("addPlanBtn")?.focus();
     loadUsage(false, false);
   } else if (editor.preview && body.preview) {
@@ -7168,7 +7182,7 @@ function renderApiConnectionRow(c) {
 function renderProfileEditor(c, p, isSub) {
   const edKey = profileEditorKey(c.source, p.key);
   const rev = Number(p.revision || 0);
-  const canRemove = p.state !== "not_found" && !(p.key === "default" && p.state === "disabled");
+  const canRemove = p.key === "default" ? p.state !== "disabled" : p.state !== "not_found";
   const removeLabel = p.key === "default" ? "Stop tracking" : "Remove";
   return `
     <div class="inline-editor ${isSub ? "sub" : ""}">
@@ -7460,7 +7474,13 @@ window.saveSource = async function(source, kind, revision, profile = "default", 
 
 window.disconnectSource = async function(source, revision, profile = "default") {
   if (!apiAvailable()) return;
-  const res = await window.pywebview.api.disconnect_source(source, revision, profile || "default");
+  let res;
+  try {
+    res = await window.pywebview.api.disconnect_source(source, revision, profile || "default");
+  } catch {
+    showToast("Could not disconnect the source. Try again.");
+    return;
+  }
   if (res && res.ok) {
     state.editingSource = null;
     state.editingProfile = null;
@@ -7590,7 +7610,13 @@ window.renameProfile = async function(source, profile, revision, editorKey = nul
 
 window.removeProfile = async function(source, profile, revision) {
   if (!apiAvailable()) return;
-  const res = await window.pywebview.api.remove_profile(source, profile, revision);
+  let res;
+  try {
+    res = await window.pywebview.api.remove_profile(source, profile, revision);
+  } catch {
+    showToast("Could not stop tracking the profile. Try again.");
+    return;
+  }
   if (res && res.ok) {
     state.editingSource = null;
     state.editingProfile = null;

@@ -30,6 +30,18 @@ def test_disabled_profile_hides_local_capacity_and_history_from_live_providers()
     assert {row["key"] for row in merge_provider_entries(report, hud=hud, **scopes)} == {"claude-code", "claude-code-work"}
     assert [row["key"] for row in merge_provider_entries(report, hud=hud, machine="desk", **scopes)] == ["claude-code-work"]
 
+
+def test_removed_profile_does_not_reappear_from_cached_quota_or_old_usage():
+    report = {"tools": [{"key": "claude-code-work", "tokens": 23}]}
+    hud = {"capacity": [{"providerKey": "claude-code-work", "rows": [{"source": "sync:desk:usage"}]}]}
+    connections = [{"source": "claude_local", "profiles": [{"key": "default", "state": "receiving"}],
+                    "removedProfileKeys": ["claude-code-work"]}]
+    assert merge_provider_entries(report, hud=hud, connections=connections, local_machine_id="desk") == []
+    connections[0]["profiles"].append({"key": "claude-code-work", "state": "receiving"})
+    assert [p["key"] for p in merge_provider_entries(report, hud=hud, connections=connections,
+                                                       local_machine_id="desk")] == ["claude-code-work"]
+
+
 @needs_chrome
 @browser
 def test_configured_codex_speed_is_labeled_as_local_preference(tmp_path):
@@ -45,7 +57,6 @@ report([...document.querySelectorAll('.provider-speed')].map(row => [
 """
     html = build_page(report=report, pref="dark", probe=script, extra_css=FAST)
     assert probe(html, 380, tmp_path, height=520) == [["codex", "Ultrafast · configured on this PC", True]]
-
 
 LIMITS_PROBE = """
 await until(() => document.querySelectorAll('#providerList .provider-item').length >= 5);
@@ -469,10 +480,9 @@ out.preview = byId('planEditor').textContent.includes('Accrued cost $10 → $12'
 submit();
 await until(() => pick('[data-plan-action=end]'));
 pick('[data-plan-action=end]').click();
-pick('#planEditor [name=end_date]').value = '2026-09-19';
 submit();
-await until(() => byId('sheetBody').textContent.includes('ended'));
-out.historyPreserved = byId('sheetBody').textContent.includes('Synthetic Plan');
+await until(() => byId('endedPlans'));
+out.historyPreserved = byId('endedPlans').textContent.includes('Synthetic Plan') && !byId('endedPlans').open;
 out.requests = window.planChanges;
 out.hiddenProviders = getNormalizedProviders({providers: [], providersAuthoritative: true, tools: [{key: 'codex'}]}).length;
 report(out);
@@ -494,7 +504,7 @@ def test_manage_plans_uses_configured_terms_and_preserves_draft_on_retry(tmp_pat
     assert preview["preview"] is True and preview["term_id"] == 17
     assert correction["confirmed"] is True and correction["preview_token"] == "preview"
     assert correction["values"]["name"] == "Corrected Plan"
-    assert (end["operation"], end["plan_id"], end["expected_version"], end["end_date"]) == ("end", 8, 1, "2026-09-19")
+    assert (end["operation"], end["plan_id"], end["expected_version"], end["end_date"]) == ("end", 8, 1, "2026-09-20")
 
 
 LOADING_PROBE = """

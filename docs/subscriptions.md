@@ -8,7 +8,10 @@ You can add a plan, schedule a price change, record its last active day, or corr
 a term after reviewing the cost preview. On a paired computer, sign in to the hub
 to manage the plans saved there.
 
-**Stop tracking** in Sources hides the disabled source from the current readings
+Choose today as the last active day to move a plan to **Ended plans** immediately.
+The cost report still includes charges through that last active day.
+
+**Stop tracking** under a source's **Configure** action hides its readings
 on that computer. Recorded usage stays in analytics. To stop accruing a configured
 plan, record its last active day in Plans.
 

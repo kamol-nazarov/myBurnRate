@@ -519,6 +519,16 @@ class Service:
 
     def list(self):
         state = self.store.read()
+        # Removal receipts identify retired keys even after the binding is gone.
+        removed_profiles: dict[str, set[str]] = {}
+        for receipt in state["requests"].values():
+            result = receipt.get("result") if isinstance(receipt, dict) else None
+            if not isinstance(result, dict) or result.get("removed") is not True:
+                continue
+            source, profile = result.get("source"), result.get("profile")
+            if isinstance(source, str) and isinstance(profile, str) and profile != "default":
+                if profile not in state["profiles"].get(source, {}):
+                    removed_profiles.setdefault(source, set()).add(profile)
         recent_keys = _recent_ingest_tool_keys(getattr(self.store, "path", None))
         detected_candidates = profile_detect.detect_all()
         candidates_by_provider: dict[str, list[profile_detect.Candidate]] = {}
@@ -770,6 +780,8 @@ class Service:
                 row["profiles"] = profiles_out
                 row["detected"] = detected_out
 
+            if spec.key in removed_profiles:
+                row["removedProfileKeys"] = sorted(removed_profiles[spec.key])
             rows.append(row)
         return {
             "connections": rows,

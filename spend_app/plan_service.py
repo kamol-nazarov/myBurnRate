@@ -130,6 +130,11 @@ def create_plan(connection, values):
     return plan_id
 
 
+def plan_has_ended(last_active_day: str | None, today: date) -> bool:
+    """Current plan lists close on the last active day, which still accrues cost."""
+    return bool(last_active_day and last_active_day <= today.isoformat())
+
+
 def list_plans(connection, today):
     plans = []
     for plan in connection.execute(
@@ -153,10 +158,13 @@ def list_plans(connection, today):
             )
             term["status"] = (
                 "ended"
-                if effective_end
-                and (
-                    effective_end < today.isoformat()
-                    or effective_end < term["start_date"]
+                if plan_has_ended(plan["end_date"], today)
+                or (
+                    effective_end
+                    and (
+                        effective_end < today.isoformat()
+                        or effective_end < term["start_date"]
+                    )
                 )
                 else "scheduled"
                 if term["start_date"] > today.isoformat()
@@ -193,15 +201,18 @@ def _validate_overlap(terms):
             raise PlanError("Effective terms cannot overlap")
 
 
-def effective_terms(connection):
+def effective_terms(connection, *, include_plan_end=False):
     """Keep the existing term shape for aggregation/materialization callers."""
     rows = []
     for row in connection.execute(
         "SELECT s.*, p.end_date AS plan_end FROM subscriptions s LEFT JOIN subscription_plans p ON p.id=s.plan_id"
     ):
         item = dict(row)
-        ends = [v for v in (item["end_date"], item.pop("plan_end")) if v]
+        plan_end = item.pop("plan_end")
+        ends = [v for v in (item["end_date"], plan_end) if v]
         item["end_date"] = min(ends) if ends else None
+        if include_plan_end:
+            item["plan_end"] = plan_end
         if not item["end_date"] or item["start_date"] <= item["end_date"]:
             rows.append(item)
     return rows

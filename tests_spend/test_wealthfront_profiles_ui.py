@@ -520,14 +520,18 @@ await wait(30);
 out.dismissCall = window.__calls.find(c => c[0] === 'dismiss_candidate');
 out.dismissToast = document.getElementById('toast').textContent;
 
-// 5. not_found profile editor omits Rename and Remove
+// 5. A missing default location can still be stopped when its old readings remain visible.
 document.getElementById('cfg_codex_local').click();
 await wait(40);
+const stopDefault = document.querySelector('.inline-editor .btn-danger-quiet');
 out.notFoundEditor = {
   hasPathInput: !!document.getElementById('srcInput_codex_local'),
   hasRename: !!document.getElementById('profName_codex_local'),
-  hasRemove: !!document.querySelector('.inline-editor .btn-danger-quiet'),
+  stopLabel: stopDefault?.textContent.trim(),
 };
+stopDefault?.click();
+await until(() => window.__calls.some(c => c[0] === 'remove_profile' && c[1] === 'codex_local'));
+out.stopDefaultCall = window.__calls.find(c => c[0] === 'remove_profile' && c[1] === 'codex_local');
 report(out);
 """
 
@@ -587,8 +591,9 @@ def test_profile_configure_rename_remove_and_dismiss_flows(tmp_path: Path):
     assert r["notFoundEditor"] == {
         "hasPathInput": True,
         "hasRename": False,
-        "hasRemove": False,
+        "stopLabel": "Stop tracking",
     }
+    assert r["stopDefaultCall"] == ["remove_profile", "codex_local", "default", 1]
 
 
 P6_ESCAPE_PROBE = """

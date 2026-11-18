@@ -6,7 +6,11 @@ from decimal import Decimal
 import pytest
 from fastapi.testclient import TestClient
 
-from spend_app.aggregate import _range_fingerprint, _subscription_cost
+from spend_app.aggregate import (
+    _range_fingerprint,
+    _subscription_cost,
+    aggregate_summary,
+)
 from spend_app.api import create_app
 from spend_app.db import _initialize_base, connect, initialize
 from spend_app.plan_service import (
@@ -92,6 +96,38 @@ def test_effective_history_calendar_cost_and_end_reconciliation(tmp_path):
             terms[0]["amount_usd"] == "100.0" and terms[0]["end_date"] == "2026-09-14"
         )
         assert all(t["status"] == "ended" for t in terms)
+
+
+def test_end_today_leaves_current_plans_but_preserves_the_last_days_cost(tmp_path):
+    from spend_app.pricing import PricingEngine
+
+    db = tmp_path / "end-today.db"
+    initialize(db)
+    first = mutate(db, "add", values=values(name="Ends today"))
+    second = mutate(db, "add", values=values(name="Ends tomorrow"))
+    mutate(
+        db, "end", plan_id=first["id"], expected_version=1, end_date=TODAY.isoformat()
+    )
+    mutate(db, "end", plan_id=second["id"], expected_version=1, end_date="2026-09-02")
+    with connect(db) as connection:
+        plans = list_plans(connection, TODAY)["plans"]
+        assert [plan["terms"][0]["status"] for plan in plans] == ["ended", "active"]
+        assert [row["name"] for row in effective_terms(connection)] == [
+            "Ends today",
+            "Ends tomorrow",
+        ]
+
+    summary = aggregate_summary(
+        database_path=db,
+        pricing=PricingEngine.load(make_settings(db).pricing_path),
+        window_key="1d",
+        tool="all",
+        timezone="UTC",
+        cache_threshold=0.75,
+        now=datetime(2026, 9, 1, 12, tzinfo=UTC),
+    )
+    assert [row["name"] for row in summary["subscriptions"]] == ["Ends tomorrow"]
+    assert summary["totals"]["subscriptionUsd"] == pytest.approx(100 / 30)
 
 
 @pytest.mark.parametrize(

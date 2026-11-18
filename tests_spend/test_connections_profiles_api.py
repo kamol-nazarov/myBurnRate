@@ -1010,6 +1010,15 @@ def test_post_remove_profile_non_default_and_default_preserve_history(
     assert [p["key"] for p in claude_row["profiles"]] == ["default"]
     assert claude_row["profiles"][0]["state"] == "disabled"
     assert claude_row["profiles"][0]["revision"] == 1
+    assert claude_row["removedProfileKeys"] == [work_key]
+
+    from spend_app.wealthfront_window import merge_provider_entries
+
+    assert merge_provider_entries(
+        {"tools": [{"key": "claude-code"}, {"key": work_tool_key}]},
+        hud={"capacity": [{"providerKey": "claude-code"}, {"providerKey": work_tool_key}]},
+        connections=[claude_row],
+    ) == []
 
     # Verify BOTH usage_events rows are preserved untouched
     with spend_db.connect(settings.database_path) as conn:

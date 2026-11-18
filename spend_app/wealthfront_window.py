@@ -232,6 +232,11 @@ def _store_profile_index(connections: list[dict] | None) -> dict[str, dict]:
                 "plan": prof.get("plan"),
                 "state": prof.get("state"),
             }
+        removed = conn.get("removedProfileKeys")
+        if isinstance(removed, list):
+            for key in removed:
+                if isinstance(key, str) and key:
+                    index.setdefault(key, {"state": "disabled"})
     return index
 
 
