@@ -1767,7 +1767,7 @@ def _capacity_from_rows(
             row for row in grouped[provider_key] if row["limitKey"] == "balance"
         ]
         for row in grouped[provider_key]:
-            row["etaLabel"] = "available"
+            row["etaLabel"] = "unavailable" if row["unit"] == "unavailable" else "available"
             row["pct"] = None
             row["resetsAt"] = None
             row["isPayg"] = True

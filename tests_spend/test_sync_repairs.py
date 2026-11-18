@@ -543,6 +543,8 @@ def test_balance_disconnect_and_reconnect_preserve_other_origins(pair):
             row for row in _capacity_from_rows(rows, now=NOW, month_to_date={})
             if row["providerKey"] == "deepseek"
         )
+        if card["fundsRemainingUsd"] is None:
+            assert card["rows"][0]["etaLabel"] == "unavailable"
         return card["fundsRemainingUsd"], rows
 
     save_local("2026-11-09T10:00:00Z", "usd", 31.25)
