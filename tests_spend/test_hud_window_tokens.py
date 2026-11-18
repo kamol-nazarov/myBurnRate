@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from spend_app import aggregate
+from spend_app.capacity_forecast import active_provider_keys, majority_model_names
 from spend_app.config import Settings
 from spend_app.db import (
     UnpricedUsageEvent,
@@ -71,9 +72,8 @@ def event(connection, raw_id: str, tool_key: str, model_key: str, when: datetime
 def test_organization_usage_does_not_burn_personal_quota(tmp_path, source, tool, model):
     settings = settings_for(tmp_path)
     before_last_hour = NOW - timedelta(minutes=90)
-    recent = NOW - timedelta(minutes=30)
+    recent = NOW - timedelta(seconds=30)
     with connect(settings.database_path) as connection:
-        quota(connection, tool, "5h", NOW + timedelta(hours=2), source="sync:fixture")
         event(connection, "org-priced", tool, model, before_last_hour, fresh=600_000, source=source)
         upsert_unpriced_event(
             connection,
@@ -97,6 +97,10 @@ def test_organization_usage_does_not_burn_personal_quota(tmp_path, source, tool,
                 ingested_at=iso(NOW),
             ),
         )
+        assert tool not in aggregate.providers_in_use(connection, NOW)
+        assert tool not in active_provider_keys(connection, NOW)
+        assert tool not in majority_model_names(connection, NOW)
+        quota(connection, tool, "5h", NOW + timedelta(hours=2), source="sync:fixture")
     pricing = PricingEngine.load(settings.pricing_path)
 
     usage = usage_report(settings, pricing, now=NOW, period="today")
@@ -115,6 +119,9 @@ def test_organization_usage_does_not_burn_personal_quota(tmp_path, source, tool,
 
     with connect(settings.database_path) as connection:
         event(connection, "personal", tool, model, recent, fresh=1000)
+        assert tool in aggregate.providers_in_use(connection, NOW)
+        assert tool in active_provider_keys(connection, NOW)
+        assert tool in majority_model_names(connection, NOW)
     after = recorded_usage(settings, pricing, now=NOW)
     assert after["windowTokens"][tool]["5h"]["tokens"] == 1000
     capacity = live_snapshot(settings, now=NOW)["capacity"]

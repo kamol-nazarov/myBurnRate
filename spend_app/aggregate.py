@@ -1613,7 +1613,9 @@ def providers_in_use(connection, now: datetime) -> set[str]:
         tools = [provider, *(tool for tool in ("zcode", "cursor") if _subscription_tool_key(tool) == provider)]
         for table in ("usage_events", "unpriced_usage_events"):
             if any(connection.execute(
-                f"SELECT 1 FROM {table} WHERE tool_key=? AND occurred_epoch_us >= ? LIMIT 1", (tool, since)
+                f"SELECT 1 FROM {table} WHERE tool_key=? AND occurred_epoch_us >= ? "
+                "AND source NOT IN (?, ?) LIMIT 1",
+                (tool, since, *sorted(ORGANIZATION_SOURCES)),
             ).fetchone() for tool in tools):
                 keys.add(provider)
                 break

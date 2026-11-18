@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Request
 
 from spend_app.db import UserFacingError, connect, initialize
+from spend_app.organization import ORGANIZATION_SOURCES
 from spend_app.timeutil import parse_utc
 
 KEY = "capacity_forecast.v1"
@@ -428,8 +429,9 @@ def active_provider_keys(connection, now: datetime) -> set[str]:
         if not _table_exists(connection, table):
             continue
         rows = connection.execute(
-            f"SELECT DISTINCT tool_key FROM {table} WHERE occurred_at >= ?",
-            (since,),
+            f"SELECT DISTINCT tool_key FROM {table} "
+            "WHERE occurred_at >= ? AND source NOT IN (?, ?)",
+            (since, *sorted(ORGANIZATION_SOURCES)),
         )
         keys.update(row[0] for row in rows if row[0])
     return keys
@@ -712,10 +714,10 @@ def majority_model_names(connection, now: datetime) -> dict[str, str]:
         """
         SELECT tool_key, model_key, COUNT(*) AS n
         FROM usage_events
-        WHERE occurred_at >= ?
+        WHERE occurred_at >= ? AND source NOT IN (?, ?)
         GROUP BY tool_key, model_key
         """,
-        (_iso(now - DAY),),
+        (_iso(now - DAY), *sorted(ORGANIZATION_SOURCES)),
     ).fetchall()
     grouped: dict[str, list[tuple[int, str]]] = {}
     for row in rows:
