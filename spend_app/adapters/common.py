@@ -72,6 +72,7 @@ class UsageRow:
     admin_request_count: int | None = None
     admin_context_window: str | None = None
     organization_scope: str | None = None
+    grok_turn_elapsed_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -158,6 +159,7 @@ def _unpriced_from_row(row: UsageRow) -> UnpricedUsageEvent:
         reasoning_tokens=row.reasoning_tokens,
         unclassified_tokens=row.unclassified_tokens,
         telemetry_complete=row.telemetry_complete,
+        grok_turn_elapsed_ms=row.grok_turn_elapsed_ms,
         cost_usd=row.cost_usd,
         raw_id=row.raw_id,
         ingested_at=utc_now(),
@@ -227,6 +229,7 @@ def promote_priced_unpriced_events(connection, pricing: PricingEngine) -> int:
                 raw_id=row["raw_id"],
                 ingested_at=utc_now(),
                 is_exact=event_is_exact(row["source"], price),
+                grok_turn_elapsed_ms=row["grok_turn_elapsed_ms"],
                 **admin_event_metadata(dict(row)),
             ),
         )
@@ -474,6 +477,7 @@ def persist_rows(
                         admin_request_count=row.admin_request_count,
                         admin_context_window=row.admin_context_window,
                         organization_scope=row.organization_scope,
+                        grok_turn_elapsed_ms=row.grok_turn_elapsed_ms,
                     ),
                 ):
                     run.events_written += 1

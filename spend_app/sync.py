@@ -627,6 +627,8 @@ def apply_sync_push(
     body: dict,
     now: datetime | None = None,
 ) -> dict:
+    from spend_app.adapters.grok_native import drop_covered_calls, pushed_turn_elapsed_ms
+
     if not _MACHINE_ID_RE.match(machine_id) or machine_id in {"local", "all"}:
         raise ValueError("Invalid machine identifier.")
     moment = (now or datetime.now(UTC)).astimezone(UTC)
@@ -710,6 +712,7 @@ def apply_sync_push(
                         ),
                         raw_id=raw_id,
                         ingested_at=str(item.get("ingested_at") or stamp),
+                        grok_turn_elapsed_ms=pushed_turn_elapsed_ms(connection, item, raw_id),
                         **admin_event_metadata(item),
                     )
                     if upsert_unpriced_event(connection, unpriced):
@@ -742,6 +745,7 @@ def apply_sync_push(
                     raw_id=raw_id,
                     ingested_at=str(item.get("ingested_at") or stamp),
                     is_exact=is_exact,
+                    grok_turn_elapsed_ms=pushed_turn_elapsed_ms(connection, item, raw_id),
                     **admin_event_metadata(item),
                 )
                 if upsert_usage_event(connection, event):
@@ -780,21 +784,19 @@ def apply_sync_push(
                     ),
                     raw_id=raw_id,
                     ingested_at=str(item.get("ingested_at") or stamp),
+                    grok_turn_elapsed_ms=pushed_turn_elapsed_ms(connection, item, raw_id),
                     **admin_event_metadata(item),
                 )
                 if upsert_unpriced_event(connection, unpriced):
                     written += 1
 
-            # A computer on an older version pushes each Grok model call and
-            # its turn total; keep the turn and drop the calls it counts.
+            # A Grok turn and its component calls can arrive out of order.
             grok_sessions = {
                 prefix_machine_id(machine_id, str(item["session_id"]))
                 for item in (*usage_items, *unpriced_items)
-                if item.get("tool_key") == "grok" and item.get("session_id")
+                if item.get("source") == "grok_local" and item.get("session_id")
             }
             if grok_sessions:
-                from spend_app.adapters.grok_native import drop_covered_calls
-
                 drop_covered_calls(connection, grok_sessions)
 
             for item in session_items:

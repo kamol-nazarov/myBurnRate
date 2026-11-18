@@ -55,7 +55,8 @@ CREATE TABLE IF NOT EXISTS usage_events (
     organization_scope TEXT,
     occurred_epoch_us INTEGER,
     raw_id TEXT NOT NULL UNIQUE,
-    ingested_at TEXT NOT NULL
+    ingested_at TEXT NOT NULL,
+    grok_turn_elapsed_ms INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_usage_events_occurred_at ON usage_events(occurred_at);
@@ -179,7 +180,8 @@ CREATE TABLE IF NOT EXISTS unpriced_usage_events (
     cost_usd REAL,
     occurred_epoch_us INTEGER,
     raw_id TEXT NOT NULL UNIQUE,
-    ingested_at TEXT NOT NULL
+    ingested_at TEXT NOT NULL,
+    grok_turn_elapsed_ms INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_unpriced_usage_time
@@ -294,6 +296,7 @@ class UsageEvent:
     admin_request_count: int | None = None
     admin_context_window: str | None = None
     organization_scope: str | None = None
+    grok_turn_elapsed_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -331,6 +334,7 @@ class UnpricedUsageEvent:
     admin_request_count: int | None = None
     admin_context_window: str | None = None
     organization_scope: str | None = None
+    grok_turn_elapsed_ms: int | None = None
 
 
 def utc_now() -> str:
@@ -1230,8 +1234,8 @@ def dedupe_grok_calls(path: Path) -> int:
                 _GROK_DEDUPE_CHECKED.add(marker)
                 return 0
             recorded = connection.execute(
-                "SELECT EXISTS(SELECT 1 FROM unpriced_usage_events WHERE tool_key='grok') "
-                "OR EXISTS(SELECT 1 FROM usage_events WHERE tool_key='grok')"
+                "SELECT EXISTS(SELECT 1 FROM unpriced_usage_events WHERE grok_turn_elapsed_ms IS NOT NULL) "
+                "OR EXISTS(SELECT 1 FROM usage_events WHERE grok_turn_elapsed_ms IS NOT NULL)"
             ).fetchone()[0]
         if recorded:
             target = path.parent / "backups" / (
@@ -1443,6 +1447,7 @@ def migrate_release_a(connection: sqlite3.Connection) -> None:
         if "occurred_epoch_us" not in columns:
             connection.execute(f"ALTER TABLE {table} ADD COLUMN occurred_epoch_us INTEGER")
         for key, sql_type in (
+            ("grok_turn_elapsed_ms", "INTEGER"),
             ("admin_request_count", "INTEGER"),
             ("admin_context_window", "TEXT"),
             ("organization_scope", "TEXT"),

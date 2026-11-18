@@ -168,6 +168,8 @@ HTTPS timeouts are 15–30 seconds depending on the client. Credential-bearing `
 | Reasoning ⊂ output | OpenCode (and any schema that says so) displays reasoning as detail; it is not added to processed total again. |
 | Direct xAI vs Grok Build | Direct xAI is not ingested. SuperGrok uses `supergrok:` model keys and derived xAI list rates. |
 
+Grok Build can record the same work as model calls in `unified.jsonl` and as a completed turn in `updates.jsonl`. BURNRATE folds calls into a turn only when its recorded elapsed time places those calls inside the turn and the measured token components add up. A newer hub retains older rows when that timing evidence is absent. Replaying retained logs can restore calls removed by an older BURNRATE build. Recovery of a missing call requires its original observation, so rows whose source entries have rotated away may remain missing. Update the hub before replaying retained Grok records from upgraded spokes.
+
 ## Network allowlist (opt-in or experimental)
 
 | Host | Paths | Who |
