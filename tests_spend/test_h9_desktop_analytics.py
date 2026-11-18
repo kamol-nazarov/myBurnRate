@@ -475,11 +475,27 @@ document.getElementById('h9DetailBack').click();
 await until(() => document.querySelector('.h9-model-card' + selector));
 document.querySelector('.h9-model-card' + selector).click();
 await until(() => state.h9EntityData?.selectedTool === 'claude-code-work');
-report({keyboard, refreshTool: refresh[5], click: state.h9EntityData.tokens});
+const click = state.h9EntityData.tokens;
+const requestDetail = window.pywebview.api.fetch_entity_detail;
+let releaseOldMachine;
+window.pywebview.api.fetch_entity_detail = async (...args) => {
+  if (args[3] !== 'all') return {ok: false, error: 'Profile detail is unavailable on Laptop'};
+  const previous = await requestDetail(...args);
+  return new Promise(resolve => { releaseOldMachine = () => resolve(previous); });
+};
+const delayed = loadH9Detail();
+await until(() => releaseOldMachine);
+window.selectScope('example-laptop');
+const hiddenAtSwitch = !state.h9EntityData;
+await until(() => document.getElementById('h9DetailStatus').textContent.includes('unavailable on Laptop'));
+releaseOldMachine();
+await delayed;
+report({keyboard, refreshTool: refresh[5], click, hiddenAtSwitch, hiddenAfterDelay: !state.h9EntityData});
 """,
     )
     assert probe(html, 960, tmp_path, height=700) == {
         "keyboard": 9000, "refreshTool": "claude-code-work", "click": 9000,
+        "hiddenAtSwitch": True, "hiddenAfterDelay": True,
     }
 
 
