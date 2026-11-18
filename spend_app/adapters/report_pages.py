@@ -16,7 +16,7 @@ class IncompleteReport(ValueError):
         self.partial_pages = tuple(pages)  # Never interpolated into logs/errors.
 
 
-def fetch(client, *, url, params, max_pages=100, seconds=20, clock=time.monotonic):
+def fetch(client, *, url, params, max_pages=100, seconds=20, clock=time.monotonic, observe_response=None):
     pages, seen, page = [], set(), None
     deadline = clock() + seconds
     for _ in range(max_pages):
@@ -28,6 +28,8 @@ def fetch(client, *, url, params, max_pages=100, seconds=20, clock=time.monotoni
         payload = response.json()
         if not isinstance(payload, dict) or not isinstance(payload.get("data"), list) or type(payload.get("has_more")) is not bool:
             raise IncompleteReport("Invalid reporting page; previous accepted history was preserved.", pages)
+        if observe_response is not None:
+            observe_response(response)
         pages.append(payload)
         if not payload["has_more"]:
             return pages

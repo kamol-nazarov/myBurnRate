@@ -6,9 +6,13 @@ import hashlib
 import re
 from uuid import UUID
 
+from spend_app.timeutil import EPOCH, parse_utc
 
 ORGANIZATION_SOURCES = frozenset({"openai_admin", "anthropic_admin"})
 _SCOPE = re.compile(r"^[a-f0-9]{64}$")
+_BUCKET = re.compile(
+    r"^(?:openai|anthropic)-(?:usage|cost):[a-f0-9]{64}:org:[a-f0-9]{64}$"
+)
 
 
 def organization_scope(source: str, provider_identifier: object) -> str | None:
@@ -29,11 +33,36 @@ def organization_scope(source: str, provider_identifier: object) -> str | None:
 
 
 def clean_scope(source: str, value: object) -> str | None:
-    return value if source in ORGANIZATION_SOURCES and isinstance(value, str) and _SCOPE.fullmatch(value) else None
+    return (
+        value
+        if source in ORGANIZATION_SOURCES
+        and isinstance(value, str)
+        and _SCOPE.fullmatch(value)
+        else None
+    )
 
 
 def scoped_raw_id(raw_id: str, scope: str | None) -> str:
     return f"{raw_id}:org:{scope}" if scope else raw_id
+
+
+def verified_bucket_id(row: dict) -> str | None:
+    """Return a provider bucket identity, independent of reporting machine."""
+    source = row.get("source")
+    scope = clean_scope(source, row.get("organization_scope"))
+    raw_id = row.get("raw_id") or ""
+    if raw_id.startswith("m:"):
+        raw_id = raw_id.split(":", 2)[-1]
+    if scope and _BUCKET.fullmatch(raw_id) and raw_id.endswith(f":org:{scope}"):
+        provider, _ = source.split("_", 1)
+        if raw_id.startswith(provider + "-"):
+            return raw_id
+    return None
+
+
+def bucket_observation_order(row: dict) -> tuple:
+    """Stable ordering of competing observations of one provider bucket."""
+    return (parse_utc(row.get("ingested_at")) or EPOCH, row.get("raw_id") or "")
 
 
 def clean_request_count(value: object) -> int | None:
@@ -41,7 +70,11 @@ def clean_request_count(value: object) -> int | None:
 
 
 def clean_context_window(source: str, value: object) -> str | None:
-    if source == "anthropic_admin" and isinstance(value, str) and value.lower() in {"0-200k", "200k-1m"}:
+    if (
+        source == "anthropic_admin"
+        and isinstance(value, str)
+        and value.lower() in {"0-200k", "200k-1m"}
+    ):
         return value.lower()
     return None
 
@@ -52,7 +85,9 @@ def admin_event_metadata(row) -> dict:
         return {}
     return {
         "admin_request_count": clean_request_count(row.get("admin_request_count")),
-        "admin_context_window": clean_context_window(source, row.get("admin_context_window")),
+        "admin_context_window": clean_context_window(
+            source, row.get("admin_context_window")
+        ),
         "organization_scope": clean_scope(source, row.get("organization_scope")),
     }
 

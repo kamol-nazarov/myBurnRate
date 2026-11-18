@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 
 from spend_app import aggregate
 from spend_app.db import connect
-from spend_app.organization import ORGANIZATION_SOURCES, admin_row_pricing_args
+from spend_app.organization import ORGANIZATION_SOURCES, admin_row_pricing_args, verified_bucket_id
 from spend_app.pricing import PricingEngine, UnpricedModelError
 from spend_app.source_reconcile import reconcile_events
 from spend_app.sync import list_machines
@@ -184,6 +184,7 @@ def usage_report(
         with connect(settings.database_path) as connection:
             rows = _rows(connection, start, now, machine)
         total, organizations = _empty(), _empty()
+        organization_scope_unknown = 0
         tools: dict[str, dict] = {}
         models: dict[str, dict[str, dict]] = defaultdict(dict)
         timeline_samples: list[tuple[datetime, Decimal, int]] = []
@@ -221,6 +222,8 @@ def usage_report(
                 except (UnpricedModelError, ValueError):
                     pass
             org = row.get("source") in ORGANIZATION_SOURCES
+            if org and verified_bucket_id(row) is None:
+                organization_scope_unknown += 1
             tool = ("api:" + row["source"]) if org else row["tool_key"]
             model = row["model_key"]
             group = tools.setdefault(tool, _empty())
@@ -283,6 +286,11 @@ def usage_report(
             "scope": "all-computers" if machine == "all" else "computer",
             "total": _public(total),
             "organizationTotal": _public(organizations),
+            "organizationScopeUnknown": organization_scope_unknown,
+            "organizationWarning": (
+                "Some organization usage has no verified account identity and may overlap."
+                if organization_scope_unknown and machine == "all" else None
+            ),
             "tools": result,
             "series": series,
             "activeFrom": iso_utc(active_from) if active_from is not None else None,

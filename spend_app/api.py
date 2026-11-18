@@ -530,6 +530,7 @@ def create_app(
             database_path=settings.database_path,
             timezone=settings.timezone,
             now=slot_now(),
+            pricing=pricing,
         )
         return {**payload, "sources": source_guidance()}
 

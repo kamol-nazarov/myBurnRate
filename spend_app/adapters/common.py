@@ -85,6 +85,7 @@ class CostRow:
     model_key: str | None
     cost_usd: float
     raw_id: str
+    organization_scope: str | None = None
 
 
 def public_error(exc: BaseException) -> str:
@@ -499,6 +500,7 @@ def persist_rows(
                         cost_usd=row.cost_usd,
                         raw_id=row.raw_id,
                         ingested_at=utc_now(),
+                        organization_scope=row.organization_scope,
                     ),
                 ):
                     cost_buckets_written += 1

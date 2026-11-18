@@ -54,6 +54,7 @@ from spend_app.capacity_forecast import apply_balance_runway, record_balance_sam
 from spend_app.ingest import IngestRun
 from spend_app.organization import ORGANIZATION_SOURCES, admin_event_metadata, admin_row_pricing_args
 from spend_app.pricing import PricingEngine, UnpricedModelError
+from spend_app.provider_cost_sync import COST_SEQ, apply_provider_costs, cost_acknowledgement, export_provider_costs
 from spend_app.sync_continuity import (
     UsageWindow,
     can_rebase,
@@ -577,6 +578,26 @@ def _price_pushed_event(pricing: PricingEngine, item: dict) -> tuple[float, bool
     return float(cost), is_exact
 
 
+def _pushed_telemetry_complete(item: dict) -> bool:
+    original = item.get("admin_telemetry_complete")
+    if item.get("source") in ORGANIZATION_SOURCES and type(original) is bool:
+        return original
+    return bool(item.get("telemetry_complete", True))
+
+
+def _wire_unpriced_admin_event(item: dict) -> dict:
+    # A pre-evidence hub uses telemetry_complete to decide whether to
+    # reprice a staged row. Keep that reader conservative without losing
+    # the distinction between missing tokens and missing pricing evidence.
+    if item.get("source") in ORGANIZATION_SOURCES:
+        return {
+            **item,
+            "admin_telemetry_complete": bool(item.get("telemetry_complete", True)),
+            "telemetry_complete": False,
+        }
+    return item
+
+
 def _retired_item(item) -> bool:
     return isinstance(item, dict) and (item.get("tool_key") == "cursor" or item.get("source") in RETIRED_SOURCES)
 
@@ -732,6 +753,8 @@ def apply_sync_push(
     usage_changed = False
     change_ack = None
     usage_window = None
+    cost_ack = None
+    costs_changed = False
     skipped_changes = 0
     with connect(database_path) as connection:
         # Serialise acknowledgement with event writes. Retried or concurrent
@@ -762,6 +785,8 @@ def apply_sync_push(
                     raw_id = prefix_machine_id(machine_id, identifier)
                     for table in ("usage_events", "unpriced_usage_events", "coverage_gap_events", "pricing_gap_events"):
                         connection.execute(f"DELETE FROM {table} WHERE raw_id=?", (raw_id,))
+            if "providerCosts" in body:
+                cost_ack, costs_changed = apply_provider_costs(connection, machine_id, body["providerCosts"])
             for item in usage_items:
                 _validate_usage_timestamp(item)
                 raw_id = prefix_machine_id(machine_id, str(item["raw_id"]))
@@ -790,7 +815,7 @@ def apply_sync_push(
                             else None
                         ),
                         unclassified_tokens=int(item.get("unclassified_tokens") or 0),
-                        telemetry_complete=bool(item.get("telemetry_complete", True)),
+                        telemetry_complete=_pushed_telemetry_complete(item),
                         cost_usd=(
                             float(item["cost_usd"])
                             if item.get("cost_usd") is not None
@@ -862,7 +887,7 @@ def apply_sync_push(
                         else None
                     ),
                     unclassified_tokens=int(item.get("unclassified_tokens") or 0),
-                    telemetry_complete=bool(item.get("telemetry_complete", True)),
+                    telemetry_complete=_pushed_telemetry_complete(item),
                     cost_usd=(
                         float(item["cost_usd"])
                         if item.get("cost_usd") is not None
@@ -1058,7 +1083,7 @@ def apply_sync_push(
         except Exception:
             raise
 
-    if written > 0 or agents_changed or quotas_changed or usage_changed:
+    if written > 0 or agents_changed or quotas_changed or usage_changed or costs_changed:
         STREAM_BROKER.publish(
             {
                 "type": "sync",
@@ -1074,6 +1099,7 @@ def apply_sync_push(
         "receivedAt": stamp,
         "tokenExpiresAt": token_expires_at,
         "rotationRequired": rotation_required,
+        **({"providerCostsAck": cost_ack} if cost_ack is not None else {}),
         **({"usageChangeSeq": change_ack, "usageChangesSkipped": skipped_changes} if change_ack is not None else {}),
         **({"usageContinuity": usage_window.head} if usage_window is not None else {}),
     }
@@ -1084,12 +1110,14 @@ def export_sync_batch(
     *,
     cursor: dict | None = None,
     limit: int = 500,
+    pricing: PricingEngine | None = None,
 ) -> tuple[dict, dict]:
     """Read local-only incremental rows from ``database_path`` for pushing to a hub."""
     cursor = cursor or {}
     last_usage_id = int(cursor.get("usage_id") or 0)
     last_unpriced_id = int(cursor.get("unpriced_id") or 0)
     last_change_seq = int(cursor.get("change_seq") or 0)
+    last_cost_seq = int(cursor.get(COST_SEQ) or 0)
     if limit < 1:
         raise ValueError("Sync batch limit must be positive.")
     initialize(database_path)
@@ -1098,6 +1126,7 @@ def export_sync_batch(
     with connect(database_path) as connection:
         # Journal identities and current payloads must share a read snapshot.
         connection.execute("BEGIN")
+        cost_batch = export_provider_costs(connection, last_cost_seq, limit)
         usage_rows = [
             dict(row)
             for row in connection.execute(
@@ -1158,6 +1187,24 @@ def export_sync_batch(
                            if _parse_iso(str(row.get("occurred_at") or "")) is not None}.values())
         unpriced_rows = list({row["raw_id"]: row for row in unpriced_rows
                               if _parse_iso(str(row.get("occurred_at") or "")) is not None}.values())
+        uncertain_admin_ids: set[str] = set()
+        if pricing is not None:
+            for row in usage_rows:
+                if row.get("source") not in ORGANIZATION_SOURCES:
+                    continue
+                try:
+                    _price_pushed_event(pricing, row)
+                except UnpricedModelError:
+                    uncertain_admin_ids.add(row["raw_id"])
+        if uncertain_admin_ids:
+            unpriced_rows.extend(row for row in usage_rows if row["raw_id"] in uncertain_admin_ids)
+            usage_rows = [row for row in usage_rows if row["raw_id"] not in uncertain_admin_ids]
+        unpriced_rows = [_wire_unpriced_admin_event(row) for row in unpriced_rows]
+        for change in changes:
+            if change["raw_id"] in uncertain_admin_ids and change["kind"] == "usage":
+                change["kind"] = "unpriced"
+            if change["kind"] == "unpriced":
+                change["event"] = _wire_unpriced_admin_event(change["event"])
         session_ids = {
             row["session_id"]
             for row in (*usage_rows, *unpriced_rows)
@@ -1228,6 +1275,8 @@ def export_sync_batch(
         "change_seq": next_change_seq,
         "usage_stream": usage_stream,
     }
+    if last_cost_seq or cost_batch["changes"]:
+        next_cursor[COST_SEQ] = cost_batch["through"]
     for row in usage_rows:
         row.pop("id", None)
         row.pop("occurred_epoch_us", None)
@@ -1246,6 +1295,7 @@ def export_sync_batch(
         "usageChanges": {"version": 1, "after": last_change_seq, "through": next_change_seq,
                          "changes": changes, "hasMore": len(journal) == limit},
         "usageContinuity": usage_proof,
+        **({"providerCosts": cost_batch} if cost_batch["changes"] else {}),
     }
     return payload, next_cursor
 
@@ -1406,7 +1456,7 @@ def sync_once(
         for batch_idx in range(15):
             wire_cursor = cursor if legacy_after is None else {**cursor, "change_seq": legacy_after}
             batch, next_cursor = export_sync_batch(
-                settings.database_path, cursor=wire_cursor, limit=batch_limit
+                settings.database_path, cursor=wire_cursor, limit=batch_limit, pricing=pricing
             )
             for key in ("generation", "credential_hash"):
                 if key in cursor:
@@ -1422,6 +1472,15 @@ def sync_once(
                 from spend_app.redact import redact
                 raise RuntimeError(f"Sync push failed ({response.status_code}): {redact(response.text)}")
             last_result = response.json()
+            cost_batch = batch.get("providerCosts")
+            costs_pending = cost_batch is not None and last_result.get("providerCostsAck") != cost_acknowledgement(cost_batch)
+            if costs_pending:
+                next_cursor[COST_SEQ] = int(cursor.get(COST_SEQ) or 0)
+                last_result = {
+                    **last_result,
+                    "providerCostsPending": True,
+                    "providerCostsWarning": "Upgrade the hub to synchronize provider-reported charges.",
+                }
             total_written += int(last_result.get("eventsWritten") or 0)
             total_skipped += int(last_result.get("usageChangesSkipped") or 0)
             head = last_result.get("usageContinuity")
@@ -1511,6 +1570,7 @@ def sync_once(
                 len(batch.get("usageEvents") or []) < batch_limit
                 and len(batch.get("unpricedEvents") or []) < batch_limit
                 and not batch["usageChanges"]["hasMore"]
+                and (cost_batch is None or costs_pending or not cost_batch["hasMore"])
             ):
                 break
         if last_result.get("usageRetry") and not last_result.get("usageChangesPending"):

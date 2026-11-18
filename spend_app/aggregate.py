@@ -12,7 +12,12 @@ from functools import lru_cache
 from zoneinfo import ZoneInfo
 
 from spend_app.db import EXACT_USAGE_SOURCES, connect, usage_cache_revision
-from spend_app.organization import ORGANIZATION_SOURCES, admin_row_pricing_args
+from spend_app.organization import (
+    ORGANIZATION_SOURCES,
+    admin_row_pricing_args,
+    bucket_observation_order,
+    verified_bucket_id,
+)
 from spend_app.source_reconcile import reconcile_events
 from spend_app.sync import list_machines, machines_fingerprint, row_machine_id
 from spend_app.timeutil import epoch_micros, from_epoch_micros, next_month_start as _next_month_start_utc, parse_utc, previous_calendar_period
@@ -790,13 +795,22 @@ def _monthly_subscription_cost(connection, tool: str, on_date: date) -> Decimal:
     return total
 
 
-def _cost_buckets(connection, start: datetime, end: datetime) -> dict[str, Decimal]:
+def _cost_buckets(connection, start: datetime, end: datetime, machine: str = "all") -> dict[str, Decimal]:
     totals: dict[str, Decimal] = defaultdict(Decimal)
-    for row in connection.execute(
-        "SELECT source, starting_at, ending_at, cost_usd FROM provider_cost_buckets "
+    chosen: dict[str, dict] = {}
+    for result in connection.execute(
+        "SELECT source, raw_id, organization_scope, starting_at, ending_at, cost_usd, ingested_at "
+        "FROM provider_cost_buckets "
         "WHERE starting_at < ? AND ending_at > ?",
         (_iso(end), _iso(start)),
     ):
+        row = dict(result)
+        if machine != "all" and row_machine_id(row["raw_id"]) != machine:
+            continue
+        key = verified_bucket_id(row) or row["raw_id"]
+        if key not in chosen or bucket_observation_order(row) > bucket_observation_order(chosen[key]):
+            chosen[key] = row
+    for row in chosen.values():
         bucket_start = _parse(row["starting_at"])
         bucket_end = _parse(row["ending_at"])
         span = (bucket_end - bucket_start).total_seconds()
@@ -856,6 +870,21 @@ def _load_unpriced_events(connection, start: datetime, end: datetime, tool: str,
         row["telemetry_complete"] = bool(row.get("telemetry_complete", 1)) and not row["unclassified_tokens"]
         output.append(row)
     return output
+
+
+def _load_usage_events(connection, start: datetime, end: datetime, tool: str, machine: str = "all") -> tuple[list[dict], list[dict]]:
+    """Resolve duplicate organization copies across priced and staged rows."""
+    events = _load_events(connection, start, end, tool, machine)
+    staged = _load_unpriced_events(connection, start, end, tool, machine)
+    organization_rows = [event for event in (*events, *staged) if event.get("organization_scope")]
+    if not organization_rows:
+        return events, staged
+    canonical, _ = reconcile_events(organization_rows)
+    kept = {id(event.row) for event in canonical}
+    return (
+        [event for event in events if not event.get("organization_scope") or id(event) in kept],
+        [event for event in staged if not event.get("organization_scope") or id(event) in kept],
+    )
 
 
 def _epoch_params(start: datetime, end: datetime, tool: str) -> list[object]:
@@ -1262,8 +1291,8 @@ def _tracked_from_loaded(
 def usage_projection(connection, pricing: PricingEngine, start: datetime, end: datetime,
                      tool: str = "all", machine: str = "all") -> list[dict]:
     """Every recorded observation, valued identically regardless of storage table."""
-    return _enrich([*_load_events(connection, start, end, tool, machine),
-                    *_load_unpriced_events(connection, start, end, tool, machine)], pricing)
+    events, staged = _load_usage_events(connection, start, end, tool, machine)
+    return _enrich([*events, *staged], pricing)
 
 
 def _tracked_value(
@@ -1277,9 +1306,8 @@ def _tracked_value(
     cap_date: date | None = None,
     machine: str = "all",
 ) -> TrackedParts:
-    events = _load_events(connection, start, end, tool, machine)
-    unpriced = _load_unpriced_events(connection, start, end, tool, machine)
-    authority = _cost_buckets(connection, start, end)
+    events, unpriced = _load_usage_events(connection, start, end, tool, machine)
+    authority = _cost_buckets(connection, start, end, machine)
     enriched = _enrich(events, pricing, authority)
     subscriptions, by_tool = _subscription_cost(
         connection, start, end, timezone, cap_date=cap_date
@@ -2147,8 +2175,7 @@ def _month_usage(
     """
 
     def compute() -> tuple[TrackedParts, dict[str, Decimal], dict[str, bool]]:
-        events = _load_events(connection, start, end, tool, machine)
-        unpriced = _load_unpriced_events(connection, start, end, tool, machine)
+        events, unpriced = _load_usage_events(connection, start, end, tool, machine)
         enriched = _enrich(events, pricing)
         parts = _tracked_from_loaded(
             events=events,
@@ -2197,9 +2224,8 @@ def _heatmap_cells(
     machine: str = "all",
 ) -> dict[tuple[int, int], Decimal]:
     def compute() -> dict[tuple[int, int], Decimal]:
-        events = _load_events(connection, start, end, tool, machine)
-        unpriced = _load_unpriced_events(connection, start, end, tool, machine)
-        enriched = _enrich(events, pricing, _cost_buckets(connection, start, end))
+        events, unpriced = _load_usage_events(connection, start, end, tool, machine)
+        enriched = _enrich(events, pricing, _cost_buckets(connection, start, end, machine))
         heat: dict[tuple[int, int], Decimal] = defaultdict(Decimal)
         for event in enriched:
             if event["spend"] is None:
@@ -2347,9 +2373,8 @@ def aggregate_summary(
     zone = ZoneInfo(timezone)
     with connect(database_path) as connection:
         window = _actualize_all_window(connection, window, timezone)
-        events = _load_events(connection, window.start, window.end, tool, machine)
-        unpriced_events = _load_unpriced_events(connection, window.start, window.end, tool, machine)
-        authority = _cost_buckets(connection, window.start, window.end)
+        events, unpriced_events = _load_usage_events(connection, window.start, window.end, tool, machine)
+        authority = _cost_buckets(connection, window.start, window.end, machine)
         enriched = _enrich(events, pricing, authority)
         local_now = now.astimezone(zone)
         account_view = machine == "all"
@@ -2848,13 +2873,12 @@ def aggregate_entity(
         window = _actualize_all_window(connection, window, timezone)
         selected_tool = tool if kind == "model" and tool and tool != "all" else None
         tool_filter = key if kind == "tool" else selected_tool or "all"
-        events = _load_events(connection, window.start, window.end, tool_filter, machine)
-        unpriced_events = _load_unpriced_events(connection, window.start, window.end, tool_filter, machine)
+        events, unpriced_events = _load_usage_events(connection, window.start, window.end, tool_filter, machine)
         if kind == "model":
             model_keys = reporting_model_keys(key)
             events = [event for event in events if event["model_key"] in model_keys]
             unpriced_events = [event for event in unpriced_events if event["model_key"] in model_keys]
-        authority = _cost_buckets(connection, window.start, window.end)
+        authority = _cost_buckets(connection, window.start, window.end, machine)
         enriched = _enrich(events, pricing, authority)
         cap_date = now.astimezone(zone).date()
         subscriptions = Decimal(0)
@@ -3043,6 +3067,7 @@ def aggregate_health_cached(
     database_path: Path,
     now: datetime | None = None,
     timezone: str = "UTC",
+    pricing: PricingEngine | None = None,
 ) -> dict:
     """``aggregate_health`` shared across requests with the same clock and data.
 
@@ -3053,12 +3078,47 @@ def aggregate_health_cached(
     now = (now or datetime.now(UTC)).astimezone(UTC)
     with connect(database_path) as connection:
         fingerprint = _health_state_fingerprint(connection)
-    key = (str(database_path), timezone, _iso(now), fingerprint)
+    key = (str(database_path), timezone, _iso(now), pricing, fingerprint)
     return _memo(
         "health",
         key,
-        lambda: aggregate_health(database_path=database_path, now=now, timezone=timezone),
+        lambda: aggregate_health(database_path=database_path, now=now, timezone=timezone, pricing=pricing),
     )
+
+
+def _provider_charge_variance(connection, pricing: PricingEngine | None) -> float | None:
+    bounds = connection.execute(
+        "SELECT MIN(starting_at), MAX(ending_at) FROM provider_cost_buckets "
+        "WHERE source IN ('openai_admin','anthropic_admin')"
+    ).fetchone()
+    if pricing is None or not bounds[0] or not bounds[1]:
+        return None
+    start, end = _parse(bounds[0]), _parse(bounds[1])
+    charges = _cost_buckets(connection, start, end)
+    provider_total = sum((charges.get(source, Decimal(0)) for source in ORGANIZATION_SOURCES), Decimal(0))
+    if not provider_total:
+        return None
+    billed_sources = tuple(source for source in charges if source in ORGANIZATION_SOURCES)
+    placeholders = ",".join("?" for _ in billed_sources)
+    rows = [
+        dict(row)
+        for table in ("usage_events", "unpriced_usage_events")
+        for row in connection.execute(
+            f"SELECT * FROM {table} WHERE source IN ({placeholders}) "
+            "AND occurred_epoch_us >= ? AND occurred_epoch_us < ?",
+            (*billed_sources, epoch_micros(start), epoch_micros(end)),
+        )
+    ]
+    reconciled, _ = reconcile_events(rows)
+    if not reconciled:
+        return None
+    computed = Decimal(0)
+    for event in reconciled:
+        value, _ = _try_price_event(pricing, event.row)
+        if value is None:
+            return None
+        computed += value
+    return float((provider_total - computed) / provider_total * 100)
 
 
 def aggregate_health(
@@ -3066,6 +3126,7 @@ def aggregate_health(
     database_path: Path,
     now: datetime | None = None,
     timezone: str = "UTC",
+    pricing: PricingEngine | None = None,
 ) -> dict:
     now = (now or datetime.now(UTC)).astimezone(UTC)
     since = _iso(now - timedelta(hours=24))
@@ -3137,18 +3198,7 @@ def aggregate_health(
                     "reason": None if meta.get("isPayg") else "no persisted quota snapshot",
                 }
             )
-        provider_total = Decimal(
-            str(connection.execute("SELECT COALESCE(SUM(cost_usd),0) FROM provider_cost_buckets").fetchone()[0])
-        )
-        computed_total = Decimal(
-            str(connection.execute("SELECT COALESCE(SUM(computed_cost_usd),0) FROM usage_events").fetchone()[0])
-        )
-        bucket_count = connection.execute("SELECT COUNT(*) FROM provider_cost_buckets").fetchone()[0]
-        variance = (
-            float((provider_total - computed_total) / provider_total * 100)
-            if provider_total and bucket_count
-            else None
-        )
+        variance = _provider_charge_variance(connection, pricing)
         coverage_inventory = _coverage_inventory(connection)
         day_coverage = _day_coverage(connection, timezone, now)
     return {

@@ -138,6 +138,7 @@ CREATE TABLE IF NOT EXISTS provider_cost_buckets (
     line_item TEXT,
     model_key TEXT,
     cost_usd REAL NOT NULL CHECK (cost_usd >= 0),
+    organization_scope TEXT,
     raw_id TEXT NOT NULL UNIQUE,
     ingested_at TEXT NOT NULL
 );
@@ -312,6 +313,7 @@ class ProviderCostBucket:
     cost_usd: float
     raw_id: str
     ingested_at: str
+    organization_scope: str | None = None
 
 
 @dataclass(frozen=True)
@@ -980,6 +982,8 @@ def initialize(path: Path) -> None:
     upgrade_database(path, _initialize_base)
     ensure_quota_origin_uniqueness(path)
     ensure_usage_change_journal(path)
+    from spend_app.provider_cost_sync import ensure_provider_cost_journal
+    ensure_provider_cost_journal(path)
     ensure_usage_cache_revisions(path)
     migrate_usage_keys(path)
     retire_cursor_usage(path)
@@ -1518,6 +1522,9 @@ def migrate_release_a(connection: sqlite3.Connection) -> None:
         ):
             if key not in columns:
                 connection.execute(f"ALTER TABLE {table} ADD COLUMN {key} {sql_type}")
+    cost_columns = {row[1] for row in connection.execute("PRAGMA table_info('provider_cost_buckets')")}
+    if cost_columns and "organization_scope" not in cost_columns:
+        connection.execute("ALTER TABLE provider_cost_buckets ADD COLUMN organization_scope TEXT")
     connection.executescript(
         """
         CREATE INDEX IF NOT EXISTS idx_usage_events_epoch ON usage_events(occurred_epoch_us);
@@ -1616,11 +1623,13 @@ def upsert_usage_event(connection: sqlite3.Connection, event: UsageEvent) -> boo
 
 
 def upsert_cost_bucket(connection: sqlite3.Connection, bucket: ProviderCostBucket) -> bool:
-    existed = connection.execute(
-        "SELECT 1 FROM provider_cost_buckets WHERE raw_id = ?", (bucket.raw_id,)
-    ).fetchone() is not None
     values = asdict(bucket)
     columns = tuple(values)
+    existing = connection.execute(
+        f"SELECT {','.join(columns)} FROM provider_cost_buckets WHERE raw_id = ?", (bucket.raw_id,)
+    ).fetchone()
+    if _same_content(existing, values):
+        return False
     placeholders = ",".join("?" for _ in columns)
     updates = ",".join(f"{column}=excluded.{column}" for column in columns if column != "raw_id")
     connection.execute(
@@ -1628,7 +1637,7 @@ def upsert_cost_bucket(connection: sqlite3.Connection, bucket: ProviderCostBucke
         f"ON CONFLICT(raw_id) DO UPDATE SET {updates}",
         tuple(values[column] for column in columns),
     )
-    return not existed
+    return existing is None
 
 
 def upsert_unpriced_event(connection: sqlite3.Connection, event: UnpricedUsageEvent) -> bool:

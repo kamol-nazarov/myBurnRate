@@ -17,6 +17,8 @@ import re
 from dataclasses import dataclass
 from typing import Sequence
 
+from spend_app.organization import bucket_observation_order, verified_bucket_id
+
 # Sources whose rows carry the provider's own event id in the raw_id suffix
 # ``<canonical-source>:<event id>``. A row from any of these maps to
 # ``cursor-usage:<event id>``.
@@ -56,6 +58,10 @@ def _authority_score(row: dict) -> tuple:
     token-only copy; then more complete telemetry wins; then the earlier
     source name keeps results deterministic under import order.
     """
+    if verified_bucket_id(row):
+        # A later correction may be unpriced; a priced previous copy must
+        # not overwrite that more recent provider observation.
+        return bucket_observation_order(row)
     charge = row.get("cost_usd")
     has_charge = 1 if charge is not None else 0
     complete = 1 if row.get("telemetry_complete", 1) else 0
@@ -76,8 +82,11 @@ def reconcile_events(rows: Sequence[dict]) -> tuple[list[ReconciledEvent], dict]
     suppressed_events = 0
     suppressed_by_source: dict[str, int] = {}
     for row in rows:
+        organization_bucket = verified_bucket_id(row)
         canonical = canonical_event_id(str(row.get("source", "")), str(row.get("raw_id", "")))
-        if canonical is None:
+        if organization_bucket is not None:
+            key = (row["organization_scope"], organization_bucket)
+        elif canonical is None:
             key = (None, f"__local__{row.get('raw_id', '')}")
         else:
             # Different accounts/modes with the same provider event id remain
