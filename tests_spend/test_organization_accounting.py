@@ -274,7 +274,9 @@ def test_verified_org_buckets_are_deduplicated_after_machine_selection(tmp_path)
 
 def test_cost_correction_replaces_replays_across_origins_and_keeps_other_costs(
     tmp_path,
+    monkeypatch,
 ):
+    monkeypatch.setattr("spend_app.adapters.common.utc_now", lambda: iso_utc(START))
     spoke = make_settings(tmp_path / "spoke.db")
     other = make_settings(tmp_path / "other.db")
     hub = make_settings(tmp_path / "hub.db")
@@ -289,6 +291,9 @@ def test_cost_correction_replaces_replays_across_origins_and_keeps_other_costs(
     _collect_org(spoke, pricing, organization="org-alpha")
     assert (
         "providerCosts" not in export_sync_batch(spoke.database_path, cursor=cursor)[0]
+    )
+    monkeypatch.setattr(
+        "spend_app.adapters.common.utc_now", lambda: iso_utc(START - timedelta(hours=1))
     )
     _collect_org(spoke, pricing, organization="org-alpha", amount=9.25)
     correction, next_cursor = export_sync_batch(spoke.database_path, cursor=cursor)
@@ -316,6 +321,23 @@ def test_billed_charge_remains_known_when_reference_price_is_uncertain(tmp_path)
         database_path=settings.database_path, pricing=pricing, now=END
     )
     assert health["providerVsComputedVariancePct"] is None
+
+
+def test_charge_variance_excludes_usage_for_an_unbilled_organization(tmp_path):
+    settings = make_settings(tmp_path / "org.db")
+    pricing = PricingEngine.load(settings.pricing_path)
+    _collect_org(settings, pricing, organization="org-alpha", amount=7.5)
+    health = aggregate_health(
+        database_path=settings.database_path, pricing=pricing, now=END
+    )
+    assert health["providerVsComputedVariancePct"] == pytest.approx(99.98)
+    _collect_org(
+        settings, pricing, organization="org-beta", amount=None, tokens=200_000
+    )
+    health = aggregate_health(
+        database_path=settings.database_path, pricing=pricing, now=END
+    )
+    assert health["providerVsComputedVariancePct"] == pytest.approx(99.98)
 
 
 @pytest.mark.parametrize(

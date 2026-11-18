@@ -35,7 +35,8 @@ def organization_scope(source: str, provider_identifier: object) -> str | None:
 def clean_scope(source: str, value: object) -> str | None:
     return (
         value
-        if source in ORGANIZATION_SOURCES
+        if isinstance(source, str)
+        and source in ORGANIZATION_SOURCES
         and isinstance(value, str)
         and _SCOPE.fullmatch(value)
         else None
@@ -81,7 +82,7 @@ def clean_context_window(source: str, value: object) -> str | None:
 
 def admin_event_metadata(row) -> dict:
     source = row.get("source")
-    if source not in ORGANIZATION_SOURCES:
+    if not isinstance(source, str) or source not in ORGANIZATION_SOURCES:
         return {}
     return {
         "admin_request_count": clean_request_count(row.get("admin_request_count")),
@@ -93,7 +94,7 @@ def admin_event_metadata(row) -> dict:
 
 
 def admin_pricing_args(source: str, request_count: int | None = None) -> dict:
-    if source not in ORGANIZATION_SOURCES:
+    if not isinstance(source, str) or source not in ORGANIZATION_SOURCES:
         return {}
     return {
         "request_bucket": True,

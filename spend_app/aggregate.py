@@ -795,11 +795,10 @@ def _monthly_subscription_cost(connection, tool: str, on_date: date) -> Decimal:
     return total
 
 
-def _cost_buckets(connection, start: datetime, end: datetime, machine: str = "all") -> dict[str, Decimal]:
-    totals: dict[str, Decimal] = defaultdict(Decimal)
+def _load_cost_buckets(connection, start: datetime, end: datetime, machine: str = "all") -> list[dict]:
     chosen: dict[str, dict] = {}
     for result in connection.execute(
-        "SELECT source, raw_id, organization_scope, starting_at, ending_at, cost_usd, ingested_at "
+        "SELECT source, raw_id, organization_scope, project_id, starting_at, ending_at, cost_usd, ingested_at "
         "FROM provider_cost_buckets "
         "WHERE starting_at < ? AND ending_at > ?",
         (_iso(end), _iso(start)),
@@ -810,7 +809,12 @@ def _cost_buckets(connection, start: datetime, end: datetime, machine: str = "al
         key = verified_bucket_id(row) or row["raw_id"]
         if key not in chosen or bucket_observation_order(row) > bucket_observation_order(chosen[key]):
             chosen[key] = row
-    for row in chosen.values():
+    return list(chosen.values())
+
+
+def _cost_buckets(connection, start: datetime, end: datetime, machine: str = "all") -> dict[str, Decimal]:
+    totals: dict[str, Decimal] = defaultdict(Decimal)
+    for row in _load_cost_buckets(connection, start, end, machine):
         bucket_start = _parse(row["starting_at"])
         bucket_end = _parse(row["ending_at"])
         span = (bucket_end - bucket_start).total_seconds()
@@ -3094,11 +3098,19 @@ def _provider_charge_variance(connection, pricing: PricingEngine | None) -> floa
     if pricing is None or not bounds[0] or not bounds[1]:
         return None
     start, end = _parse(bounds[0]), _parse(bounds[1])
-    charges = _cost_buckets(connection, start, end)
-    provider_total = sum((charges.get(source, Decimal(0)) for source in ORGANIZATION_SOURCES), Decimal(0))
+    billed_ranges = defaultdict(set)
+    provider_total = Decimal(0)
+    for bucket in _load_cost_buckets(connection, start, end):
+        if bucket["source"] not in ORGANIZATION_SOURCES:
+            continue
+        if verified_bucket_id(bucket) is None:
+            return None
+        key = (bucket["source"], bucket["organization_scope"], bucket["project_id"])
+        billed_ranges[key].add((epoch_micros(_parse(bucket["starting_at"])), epoch_micros(_parse(bucket["ending_at"]))))
+        provider_total += Decimal(str(bucket["cost_usd"]))
     if not provider_total:
         return None
-    billed_sources = tuple(source for source in charges if source in ORGANIZATION_SOURCES)
+    billed_sources = tuple(sorted({key[0] for key in billed_ranges}))
     placeholders = ",".join("?" for _ in billed_sources)
     rows = [
         dict(row)
@@ -3110,14 +3122,24 @@ def _provider_charge_variance(connection, pricing: PricingEngine | None) -> floa
         )
     ]
     reconciled, _ = reconcile_events(rows)
-    if not reconciled:
-        return None
     computed = Decimal(0)
+    matched = set()
     for event in reconciled:
-        value, _ = _try_price_event(pricing, event.row)
+        row = event.row
+        if verified_bucket_id(row) is None:
+            return None
+        key = (row["source"], row["organization_scope"], row["project"])
+        epoch = row["occurred_epoch_us"]
+        covered = {(lo, hi) for lo, hi in billed_ranges.get(key, ()) if lo <= epoch < hi}
+        if not covered:
+            continue
+        value, _ = _try_price_event(pricing, row)
         if value is None:
             return None
+        matched.update((key, window) for window in covered)
         computed += value
+    if matched != {(key, window) for key, ranges in billed_ranges.items() for window in ranges}:
+        return None
     return float((provider_total - computed) / provider_total * 100)
 
 

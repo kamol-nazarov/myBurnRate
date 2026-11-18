@@ -1639,6 +1639,8 @@ def upsert_usage_event(connection: sqlite3.Connection, event: UsageEvent) -> boo
 
 
 def upsert_cost_bucket(connection: sqlite3.Connection, bucket: ProviderCostBucket) -> bool:
+    if not connection.in_transaction:
+        connection.execute("BEGIN IMMEDIATE")
     values = asdict(bucket)
     columns = tuple(values)
     existing = connection.execute(
@@ -1646,6 +1648,15 @@ def upsert_cost_bucket(connection: sqlite3.Connection, bucket: ProviderCostBucke
     ).fetchone()
     if _same_content(existing, values):
         return False
+    if existing is not None and not bucket.raw_id.startswith("m:"):
+        # Date-ordering protects the hub from stale replays. Preserve local
+        # correction order when the wall clock repeats or moves backward.
+        from spend_app.timeutil import iso_utc, parse_utc
+
+        observed = parse_utc(bucket.ingested_at)
+        previous = parse_utc(existing["ingested_at"])
+        if previous is not None and observed is not None and observed <= previous:
+            values["ingested_at"] = iso_utc(previous + timedelta(microseconds=1))
     placeholders = ",".join("?" for _ in columns)
     updates = ",".join(f"{column}=excluded.{column}" for column in columns if column != "raw_id")
     connection.execute(
