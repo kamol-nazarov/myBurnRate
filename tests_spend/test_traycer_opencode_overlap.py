@@ -144,7 +144,10 @@ def test_exact_overlap_leaves_independent_usage_in_both_orders(tmp_path, pricing
 
     def native_key(session):
         if cumulative:
-            return stable_id("opencode-baseline", session, PROVIDER, T0, (100, 0, 0, 20))
+            from spend_app.adapters.opencode_local import source_identifiers
+
+            location, _ = source_identifiers(opencode_db)
+            return stable_id("opencode-source-baseline", location, session, PROVIDER, T0, (100, 0, 0, 20))
         return stable_id("opencode-message", PROVIDER, f"message-{session}")
 
     expected = {

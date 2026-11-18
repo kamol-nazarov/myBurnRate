@@ -14,7 +14,7 @@ import pytest
 
 from spend_app.adapters import opencode_local as adapter, unchanged
 from spend_app.adapters.common import persist_rows
-from spend_app.db import connect, initialize, record_coverage_gap, write_opencode_progress
+from spend_app.db import TOOL_KEY_OVERRIDES, connect, initialize, record_coverage_gap, write_opencode_progress
 from spend_app.pricing import PricingEngine
 from spend_app.sync import apply_sync_push, export_sync_batch
 
@@ -111,6 +111,35 @@ def test_cumulative_provider_switch_counts_observed_deltas_after_move_and_restar
     assert measured_totals(dest) == (120, 25, Decimal("1.20"))
 
 
+@pytest.mark.parametrize("same_provider", [False, True], ids=["provider-switch-lookalike", "exact-copy"])
+def test_independent_sources_with_a_copied_session_id_have_separate_watermarks(fixture, same_provider):
+    source, dest, _, pricing = fixture
+    clone = source.with_name("other-profile.db")
+    clone.write_bytes(source.read_bytes())
+    first = REPORTS[0]
+    second = first if same_provider else replace(
+        REPORTS[1], project="other-project", input_tokens=10, output_tokens=2, cost_usd=0.1
+    )
+    for path, sample, profile in (
+        (source, first, "opencode-alpha-profile"),
+        (clone, second, "opencode-beta-profile"),
+    ):
+        write_snapshot(path, sample)
+        token = TOOL_KEY_OVERRIDES.set({f"opencode-provider:{sample.provider_id}": profile})
+        try:
+            result = collect(path, dest, pricing)
+            assert result["eventsAccepted"] == 1
+            assert result["issues"] == []
+            collect(path, dest, pricing)
+        finally:
+            TOOL_KEY_OVERRIDES.reset(token)
+    assert len({row[0] for row in measured(dest)}) == 2
+    assert sorted(row[1:] for row in measured(dest)) == [
+        ("opencode-alpha-profile", 100, 20, 1.0),
+        ("opencode-beta-profile", second.input_tokens, second.output_tokens, second.cost_usd),
+    ]
+
+
 def test_competing_cumulative_imports_share_the_writer_checkpoint(fixture, monkeypatch):
     source, dest, _, pricing = fixture
     write_snapshot(source, REPORTS[0])
@@ -168,9 +197,10 @@ def test_interrupted_cumulative_import_does_not_advance_progress_or_usage(fixtur
     assert measured_totals(dest) == (110, 22, Decimal("1.10"))
 
 
-def seed_legacy(dest, pricing, *, separate_locations=False):
+def seed_legacy(dest, pricing, *, source=None, separate_locations=False):
     """Recreate audited v0.6.0 state with a checkpoint per provider."""
     already = {}
+    location = adapter.source_identifiers(source)[0] if source is not None else "a" * 24
     for observation in REPORTS:
         key = f"{observation.session_id}\x1f{observation.provider_id}"
         rows, progress, labels = adapter.plan_rows([observation], already)
@@ -179,7 +209,7 @@ def seed_legacy(dest, pricing, *, separate_locations=False):
         _, issue = labels[0]
 
         def finish(connection):
-            scope = "b" * 24 if separate_locations and observation.provider_id == "beta" else "a" * 24
+            scope = "b" * 24 if separate_locations and observation.provider_id == "beta" else location
             for session in (observation.session_id, f"{scope}:{observation.session_id}"):
                 write_opencode_progress(
                     connection, session_id=session, provider_id=observation.provider_id,
@@ -194,7 +224,7 @@ def seed_legacy(dest, pricing, *, separate_locations=False):
 def test_verified_legacy_corrections_keep_raw_ids_and_sync_once(fixture):
     source, dest, hub, pricing = fixture
     write_snapshot(source, REPORTS[-1])
-    seed_legacy(dest, pricing)
+    seed_legacy(dest, pricing, source=source)
     assert measured_totals(dest) == (230, 47, Decimal("2.3"))
     original = measured(dest)
     payload, cursor = export_sync_batch(dest)
@@ -219,7 +249,7 @@ def test_verified_legacy_corrections_keep_raw_ids_and_sync_once(fixture):
 def test_unverifiable_legacy_usage_is_reported_and_preserved(fixture):
     source, dest, _, pricing = fixture
     write_snapshot(source, REPORTS[-1])
-    seed_legacy(dest, pricing)
+    seed_legacy(dest, pricing, source=source)
     with connect(dest) as db:
         db.execute("UPDATE unpriced_usage_events SET input_tokens=111 WHERE tool_key='opencode-provider:beta'")
     before = measured(dest)

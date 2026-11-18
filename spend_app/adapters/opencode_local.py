@@ -22,6 +22,7 @@ Live-session rule:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from dataclasses import dataclass
@@ -62,6 +63,8 @@ DELTA_ISSUE = (
 )
 COUNTER_COLUMNS = ("input_tokens", "cached_input_tokens", "cache_write_tokens", "output_tokens")
 HISTORY_REPAIR = "opencode.cumulative-repair:v2:"
+SOURCE_SCOPE_KEY = "opencode.cumulative-source:v1:"
+SCOPED_CHECKPOINT_PATTERN = "[0-9a-f]" * 24 + ":*"
 
 
 def ingest(*, database_path: Path, pricing: PricingEngine, source_database: Path) -> dict:
@@ -195,7 +198,7 @@ def _counts(snapshot: SessionSnapshot) -> tuple[int, int, int, int]:
 
 
 def plan_rows(
-    snapshots: list[SessionSnapshot], previous: dict[str, dict | None]
+    snapshots: list[SessionSnapshot], previous: dict[str, dict | None], *, scope: str | None = None
 ) -> tuple[list[UsageRow], dict[str, dict], list[tuple[str, str]]]:
     """Baseline/delta rows plus the progress state to commit with them.
 
@@ -235,13 +238,7 @@ def plan_rows(
                     output_tokens=snapshot.output_tokens,
                     reasoning_tokens=snapshot.reasoning_tokens,
                     cost_usd=snapshot.cost_usd,
-                    raw_id=stable_id(
-                        "opencode-baseline",
-                        snapshot.session_id,
-                        snapshot.provider_id,
-                        int(snapshot.observed_at.timestamp() * 1000),
-                        totals,
-                    ),
+                    raw_id=cumulative_id("baseline", snapshot, totals, scope),
                 )
             )
             labels.append((rows[-1].raw_id, BASELINE_ISSUE))
@@ -275,13 +272,7 @@ def plan_rows(
                                 snapshot.reasoning_tokens, prev.get("reasoning_tokens")
                             ) if delta_output else None,
                             cost_usd=cost_delta(snapshot.cost_usd, prev.get("cost_usd")),
-                            raw_id=stable_id(
-                                "opencode-delta",
-                                snapshot.session_id,
-                                snapshot.provider_id,
-                                int(snapshot.observed_at.timestamp() * 1000),
-                                totals,
-                            ),
+                            raw_id=cumulative_id("delta", snapshot, totals, scope),
                         )
                     )
                     labels.append((rows[-1].raw_id, DELTA_ISSUE))
@@ -298,6 +289,13 @@ def plan_rows(
     return rows, next_state, labels
 
 
+def cumulative_id(kind, snapshot, totals, scope):
+    identity = snapshot.session_id, snapshot.provider_id, int(snapshot.observed_at.timestamp() * 1000), totals
+    if scope is not None:
+        return stable_id("opencode-source-" + kind, scope, *identity)
+    return stable_id("opencode-" + kind, *identity)
+
+
 def optional_delta(current, earlier):
     if current is None or earlier is None or current < earlier:
         return None
@@ -310,8 +308,8 @@ def cost_delta(current, earlier):
     return float(max(Decimal(0), Decimal(str(current)) - Decimal(str(earlier))))
 
 
-def progress_for_location(connection, scope, session_id):
-    """Look up the logical session checkpoint across providers and moves."""
+def progress_for_location(connection, scope, session_id, snapshot=None):
+    """Use the source's checkpoint, keeping global rows for legacy repair."""
     scoped_id = scope + ":" + session_id
     location, logical = {}, {}
     for row in connection.execute(
@@ -319,10 +317,26 @@ def progress_for_location(connection, scope, session_id):
         (session_id, scoped_id),
     ):
         (logical if row["session_id"] == session_id else location)[row["provider_id"]] = dict(row)
-    progress = {**location, **logical}
-    if not progress:
+    if not location:
+        if logical and snapshot is not None and not connection.execute(
+            "SELECT 1 FROM opencode_session_progress WHERE session_id GLOB ? AND substr(session_id,25)=? LIMIT 1",
+            (SCOPED_CHECKPOINT_PATTERN, ":" + session_id),
+        ).fetchone():
+            # Some older records predate source scopes. An exact observation
+            # can attach a checkpoint without minting another baseline.
+            prior = logical.get(snapshot.provider_id)
+            if (
+                prior
+                and tuple(prior[column] for column in COUNTER_COLUMNS) == _counts(snapshot)
+                and prior["model_id"] == snapshot.model_id
+                and prior["cost_usd"] == snapshot.cost_usd
+                and prior["reasoning_tokens"] == snapshot.reasoning_tokens
+                and parse_iso_time(prior["observed_at"]) == snapshot.observed_at
+            ):
+                return prior, logical
+            return {"ambiguous": True}, logical
         return None, logical
-    by_time = [(parse_iso_time(row["observed_at"]), row) for row in progress.values()]
+    by_time = [(parse_iso_time(row["observed_at"]), row) for row in location.values()]
     if any(moment is None for moment, _ in by_time):
         return {"ambiguous": True}, logical
     most_recent = max(moment for moment, _ in by_time)
@@ -338,11 +352,45 @@ def progress_for_location(connection, scope, session_id):
     return latest, logical
 
 
+def source_identifiers(path: Path) -> tuple[str, str | None]:
+    from spend_app.connection_paths import confined, identity, stat_path
+
+    path = confined(path)
+    location = hashlib.sha256(identity(path.resolve()).encode()).hexdigest()[:24]
+    try:
+        info = stat_path(path)
+    except OSError:
+        return location, None
+    inode = getattr(info, "st_ino", 0)
+    if not inode:
+        return location, None
+    key = stable_id("file", info.st_dev, inode, getattr(info, "st_birthtime_ns", None))
+    return location, key.split(":", 1)[1][:24]
+
+
+def source_scope(connection, location, physical):
+    """Keep a lineage through a physical rename, with separate copied files."""
+    from spend_app.adapters.usage_repair import read_meta, write_meta
+
+    if physical is None:
+        return location
+    file_key = SOURCE_SCOPE_KEY + "file:" + physical
+    path_key = SOURCE_SCOPE_KEY + "path:" + location
+    scope = read_meta(connection, file_key, None)
+    path_file = read_meta(connection, path_key, None)
+    if scope is None:
+        # The location scope is the key existing releases put on disk.
+        # A new physical file at a recorded path starts a separate lineage.
+        scope = location if path_file in (None, physical) else physical
+        write_meta(connection, file_key, scope)
+    if path_file != physical:
+        write_meta(connection, path_key, physical)
+    return scope
+
+
 def _ingest_cumulative(*, database_path: Path, pricing: PricingEngine, source_database: Path,
                        snapshots: list[SessionSnapshot] | None = None) -> dict:
-    from spend_app.connection_paths import identity
-    import hashlib
-    scope = hashlib.sha256(identity(source_database.resolve()).encode()).hexdigest()[:24]
+    location, physical = source_identifiers(source_database)
     files = int(source_database.is_file())
     if snapshots is None:
         snapshots = read_session_snapshots(source_database) if files else []
@@ -353,6 +401,7 @@ def _ingest_cumulative(*, database_path: Path, pricing: PricingEngine, source_da
     deferred = set()
     repaired_sessions = set()
     history = {"historicalCorrections": 0, "historicalUnresolved": 0}
+    scope = location
 
     def prepare(connection, _):
         from spend_app.adapters.opencode_granular import reconcile_cumulative, reattribute_cumulative
@@ -361,12 +410,14 @@ def _ingest_cumulative(*, database_path: Path, pricing: PricingEngine, source_da
         )
         from spend_app.adapters.usage_repair import read_meta, write_meta
 
+        nonlocal scope
         # persist_rows starts an ingest_run before invoking this hook. Its
         # SQLite write transaction pins the checkpoint read through commit.
+        scope = source_scope(connection, location, physical)
         previous = {}
         for snapshot in snapshots:
             session = snapshot.session_id
-            latest, logical = progress_for_location(connection, scope, session)
+            latest, logical = progress_for_location(connection, scope, session, snapshot)
             previous[f"{session}\x1f{snapshot.provider_id}"] = latest
             if logical and (len(logical) > 1 or snapshot.provider_id not in logical):
                 key = history_key(session)
@@ -393,7 +444,7 @@ def _ingest_cumulative(*, database_path: Path, pricing: PricingEngine, source_da
         if pending:
             history["historicalRepairPending"] = True
         reattribute_cumulative(connection, snapshots)
-        rows, planned, found = plan_rows(snapshots, previous)
+        rows, planned, found = plan_rows(snapshots, previous, scope=scope)
         next_state.update(planned)
         labels.extend(found)
         issues.extend(issue for raw_id, issue in found if not raw_id)

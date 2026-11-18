@@ -83,6 +83,7 @@ def reconcile_messages(connection, messages, issues):
         records = []
         for table in ("usage_events", "unpriced_usage_events"):
             records.extend(dict(row) for row in connection.execute(f"SELECT e.* FROM {table} e LEFT JOIN coverage_gap_events g ON g.raw_id=e.raw_id WHERE e.source='opencode_local' AND e.session_id=? AND (e.raw_id=? OR g.issue IN (?,?))", (session, legacy_id, BASELINE_ISSUE, DELTA_ISSUE)))
+        records = [row for row in records if not row["raw_id"].startswith("opencode-source-") or row["tool_key"] == tool]
         if records and providers != [provider] and any(row["raw_id"] != legacy_id for row in records):
             issues.append("opencode_coarse_provider_scope_ambiguous")
             # Preserve the existing coarse history; only clearly later usage
@@ -185,13 +186,15 @@ def reconcile_cumulative(connection, rows, snapshots, issues=None, deferred=None
     outputs = []
     for coarse in rows:
         provider = providers.get(coarse.session_id)
+        profile_tool = (TOOL_KEY_OVERRIDES.get() or {}).get(coarse.tool_key)
         key = "opencode.granular.v1:" + stable_id(coarse.session_id, provider)
         state = read_meta(connection, key, {"revisions": {}, "allocations": {}})
         messages = []
         unknown_overlap = False
         for raw_id in state["revisions"]:
             record = stored_event(connection, raw_id)
-            if record and record["source"] == "opencode_local" and record["session_id"] == coarse.session_id:
+            if (record and record["source"] == "opencode_local" and record["session_id"] == coarse.session_id
+                    and (profile_tool is None or record["tool_key"] == profile_tool)):
                 row = row_from_record(record)
                 started = parse_iso_time(state.get("starts", {}).get(raw_id))
                 if started is None and row.occurred_at > coarse.occurred_at:

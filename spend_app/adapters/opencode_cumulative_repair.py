@@ -6,14 +6,13 @@ from math import isclose
 from spend_app.adapters.common import stable_id
 from spend_app.adapters.local_common import parse_iso_time
 from spend_app.adapters.opencode_local import (
-    BASELINE_ISSUE, COUNTER_COLUMNS, DELTA_ISSUE, HISTORY_REPAIR, SOURCE,
+    BASELINE_ISSUE, COUNTER_COLUMNS, DELTA_ISSUE, HISTORY_REPAIR, SCOPED_CHECKPOINT_PATTERN, SOURCE,
 )
 from spend_app.adapters.usage_repair import delete_event, read_meta, write_meta
 from spend_app.pricing import UnpricedModelError
 
 ZERO_COUNTS = (0, 0, 0, 0)
 REPAIR_SCAN = "opencode.cumulative-repair-scan:v2"
-SCOPED_CHECKPOINT_PATTERN = "[0-9a-f]" * 24 + ":*"
 
 
 def history_key(session):
