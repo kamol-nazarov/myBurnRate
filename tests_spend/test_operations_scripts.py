@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import os
 import shutil
 import subprocess
@@ -304,6 +305,51 @@ def _run_lifecycle_wrapper(tmp_path: Path, env: dict[str, str], verb: str) -> li
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
     return Path(env["BR42_TRACE"]).read_text(encoding="utf-8").splitlines()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the PowerShell lifecycle scripts are for Windows")
+@pytest.mark.parametrize("shell_name", ["powershell", "pwsh"])
+def test_native_restart_launcher_does_not_hold_capture_pipes_open(
+    tmp_path: Path, shell_name: str
+) -> None:
+    shell = shutil.which(shell_name)
+    if not shell:
+        pytest.skip(f"{shell_name} is not installed")
+    child = r"""
+$deadline = [DateTime]::UtcNow.AddSeconds(30)
+while ([DateTime]::UtcNow -lt $deadline -and -not (Test-Path -LiteralPath $env:BR42_RELEASE)) {
+    Start-Sleep -Milliseconds 100
+}
+"""
+    encoded = base64.b64encode(child.encode("utf-16-le")).decode("ascii")
+    def quote(value):
+        return "'" + str(value).replace("'", "''") + "'"
+    release = tmp_path / "allow-child-to-exit"
+    launch = f"""
+. {quote(SCRIPTS / 'BurnrateRuntime.ps1')}
+$launch = [pscustomobject]@{{
+    FilePath = {quote(shell)}
+    ArgumentString = '-NoProfile -NonInteractive -EncodedCommand {encoded}'
+    WorkingDirectory = {quote(tmp_path)}
+    IsNative = $true
+}}
+$child = Start-BurnrateDashboardProcess -Launch $launch
+Write-Output "native child $($child.Id)"
+"""
+    command = base64.b64encode(launch.encode("utf-16-le")).decode("ascii")
+    try:
+        result = subprocess.run(
+            [shell, "-NoProfile", "-NonInteractive", "-EncodedCommand", command],
+            env={**os.environ, "BR42_RELEASE": str(release)},
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.startswith("native child ")
+    finally:
+        release.touch()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="the PowerShell lifecycle scripts are for Windows")

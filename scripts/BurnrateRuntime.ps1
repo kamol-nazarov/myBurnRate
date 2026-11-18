@@ -644,6 +644,17 @@ function Start-BurnrateDashboard {
 
 function Start-BurnrateDashboardProcess {
     param([Parameter(Mandatory = $true)]$Launch)
+    if ($Launch.IsNative) {
+        # The windowless collector outlives this wrapper. The Windows shell
+        # launcher keeps a caller's captured console pipes out of the child.
+        $previousHost = $env:BURNRATE_HOST
+        try {
+            $env:BURNRATE_HOST = $script:BurnrateHost
+            return Start-Process -FilePath $Launch.FilePath -ArgumentList $Launch.ArgumentString -WorkingDirectory $Launch.WorkingDirectory -WindowStyle Hidden -PassThru
+        } finally {
+            $env:BURNRATE_HOST = $previousHost
+        }
+    }
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $launch.FilePath
     $psi.Arguments = $launch.ArgumentString
@@ -651,9 +662,6 @@ function Start-BurnrateDashboardProcess {
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
     $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
-    if ($launch.IsNative) {
-        $psi.EnvironmentVariables['BURNRATE_HOST'] = $script:BurnrateHost
-    }
     $started = [System.Diagnostics.Process]::Start($psi)
     if (-not $started) {
         throw "Failed to start $($launch.FilePath)"
