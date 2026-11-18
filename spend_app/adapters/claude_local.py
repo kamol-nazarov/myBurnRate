@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from spend_app.adapters.common import UsageRow, persist_rows, failed_result, public_error
+from spend_app.adapters.common import UsageRow, persist_rows, failed_result, public_error, stable_id
 from spend_app.source_health import SourceHealth, parse_jsonl_record
 from spend_app.timeutil import parse_utc
 from spend_app.adapters.local_common import open_text_read_only
@@ -136,6 +136,7 @@ def ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) ->
 def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -> dict:
     from spend_app.adapters import file_cache
     from spend_app.adapters.event_identity import reconcile
+    from spend_app.adapters.usage_repair import read_meta, write_meta
     from spend_app.connection_paths import cache_identity, file_signature, stat_path
 
     initialize(database_path)
@@ -156,22 +157,49 @@ def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -
         for name in batch:
             batch[name] = []
 
+        models = {}
+
+        def prepare(connection, _rows):
+            return reconcile(connection, observations, issues, claude_models=models)
+
         def finalize(connection):
             for session in session_rows:
+                sid = session["session_id"]
+                model_key = "unknown"
+                key = "usage.identity.v1:" + stable_id(SOURCE, "session-model", sid)
+                stored = read_meta(connection, key, None)
+                if stored:
+                    old_rank = tuple(stored[0])
+                    model_key = stored[1]
+                else:
+                    old_rank = (0, 0)
+                    old_session = connection.execute(
+                        "SELECT model_key, ended_at FROM sessions WHERE session_id=?", (sid,)
+                    ).fetchone()
+                    if old_session and old_session["model_key"] != "unknown":
+                        old_time = parse_utc(old_session["ended_at"] or "")
+                        old_rank = (old_time.timestamp(), 0) if old_time is not None else old_rank
+                        model_key = old_session["model_key"]
+                candidate = models.get(sid)
+                if candidate and candidate[0] >= old_rank:
+                    model_key = candidate[1]
+                    ranked_model = [list(candidate[0]), model_key]
+                    if ranked_model != stored:
+                        write_meta(connection, key, ranked_model)
                 upsert_session(
                     connection,
-                    session_id=session["session_id"],
+                    session_id=sid,
                     tool_key="claude-code",
                     project=session["project"],
                     started_at=session["started_at"],
                     ended_at=session["ended_at"],
-                    model_key=session["model_key"],
+                    model_key=model_key,
                 )
             file_cache.save(connection, SOURCE, [*pending, *((key, signature, 0, 0) for key, signature in empty)])
 
         results.append(persist_rows(
             database_path=database_path, pricing=pricing, source=SOURCE, usage_rows=usage_rows,
-            prepare=(lambda connection, rows: reconcile(connection, observations, issues)) if observations else None,
+            prepare=prepare if observations else None,
             finalize=finalize, issues=issues))
         # The rows were persisted (a failure raises before this point), so every
         # parsed file is cached: an unchanged signature means identical bytes and
@@ -221,7 +249,6 @@ def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -
         duplicates_removed += max(0, raw_usage_lines - len(events))
         parsed_events += len(events)
         latest_time: datetime | None = None
-        latest_model: str | None = None
         for parsed in events:
             if parsed.observation:
                 batch["observations"].append(parsed.observation)
@@ -245,16 +272,15 @@ def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -
                     unclassified_tokens=parsed.observation.row.unclassified_tokens if parsed.observation else 0,
                 )
             )
-            latest_time = parsed.occurred_at
-            latest_model = parsed.model_key
-        if latest_time and latest_model:
+            if latest_time is None or parsed.occurred_at > latest_time:
+                latest_time = parsed.occurred_at
+        if latest_time is not None:
             batch["session_rows"].append(
                 {
                     "session_id": session["id"],
                     "project": session["project"],
                     "started_at": _iso(session["started_at"]),
                     "ended_at": _iso(latest_time),
-                    "model_key": latest_model,
                 }
             )
         batch["pending"].append((cache_key, signature, len(events), health.quarantined + health.skipped))

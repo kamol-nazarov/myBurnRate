@@ -13,7 +13,7 @@ from spend_app.adapters.opencode_schema import count
 from spend_app.source_health import quarantine
 from spend_app.timeutil import parse_utc
 
-PARSER_VERSION = "claude-message-4"
+PARSER_VERSION = "claude-message-5"
 FIELDS = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens")
 DURATION_FIELDS = ("ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens")
 
@@ -144,9 +144,10 @@ def reduce_records(records, health, fallback_session):
             health.note(quarantine("claude_request_identity_missing"))
             continue
         identity = (message_id, request_id or legacy_message)
-        provider = outer.get("providerId") or outer.get("provider_id") or message.get("providerId") or message.get("provider_id")
-        if not isinstance(provider, str) or not provider:
-            provider = known_scope.get(identity, "native")
+        reported_provider = outer.get("providerId") or outer.get("provider_id") or message.get("providerId") or message.get("provider_id")
+        if not isinstance(reported_provider, str) or not reported_provider:
+            reported_provider = None
+        provider = reported_provider or known_scope.get(identity, "native")
         known_scope[identity] = provider
         key = stable_id("claude-message", provider, message_id or "request", request_id or legacy_message)
         previous = observations.get(key)
@@ -186,9 +187,10 @@ def reduce_records(records, health, fallback_session):
         envelope = outer.get("uuid")
         request_envelopes = ()
         if isinstance(envelope, str) and envelope and isinstance(legacy_message, str):
-            scope = stable_id("claude-envelope", provider, sid, legacy_message, envelope)
+            scope = stable_id("claude-envelope-v2", sid, legacy_message, envelope)
             fallback = stable_id("claude-message", provider, message_id or "request", legacy_message)
-            request_envelopes = ((scope, fallback, key if request_id else None),)
+            provider_evidence = stable_id("claude-provider", reported_provider) if reported_provider else None
+            request_envelopes = ((scope, provider_evidence, fallback, key if request_id else None),)
         total = count(usage.get("total_tokens"))
         if total is not None:
             values["total_tokens"] = total

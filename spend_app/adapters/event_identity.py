@@ -35,26 +35,47 @@ def _alias_key(source, alias):
     return "usage.alias.v1:" + stable_id(source, alias)
 
 
+def _claude_fallback_key(raw_id):
+    return _identity_key("claude_local", stable_id("claude-fallback-v2", raw_id))
+
+
+def _bounded_claude_envelope(evidence):
+    """Keep enough observations to recognize incompatible provider or request IDs."""
+    by_provider = defaultdict(list)
+    for item in sorted(evidence, key=lambda item: (item[0] or "", item[2] or "", item[1])):
+        by_provider[item[0]].append(item)
+    providers = sorted(provider for provider in by_provider if provider is not None)[:2]
+    return [list(item) for provider in (None, *providers)
+            for item in by_provider.get(provider, ())[:3]]
+
+
 def _link_claude_requests(connection, observations, issues):
     """Link a missing request ID only through its observed assistant envelope."""
     source = "claude_local"
     envelopes = defaultdict(set)
     for item in observations:
-        for scope, fallback, explicit in item.request_envelopes:
-            envelopes[scope, fallback].add(explicit)
+        for scope, provider, fallback, explicit in item.request_envelopes:
+            envelopes[scope].add((provider, fallback, explicit))
 
     candidates = defaultdict(set)
     fallback_scopes = defaultdict(set)
-    for (scope, fallback), current in envelopes.items():
+    blocked = set()
+    for scope, current in envelopes.items():
         key = _identity_key(source, scope)
         stored = read_meta(connection, key, [])
-        seen = set(stored) | current
-        if None in seen:
+        seen = {tuple(item) for item in stored} | current
+        providers = {provider for provider, _, _ in seen if provider is not None}
+        known_requests = [(provider, explicit) for provider, _, explicit in seen if explicit is not None]
+        for provider, fallback, explicit in seen:
+            if explicit is not None:
+                continue
             fallback_scopes[fallback].add(scope)
-            candidates[fallback].update((scope, choice) for choice in seen if choice)
-        # Two different explicit requests are enough to keep this envelope
-        # ambiguous. Bound the metadata even for conflicting transcript copies.
-        state = ([None] if None in seen else []) + sorted(choice for choice in seen if choice)[:2]
+            for other_provider, request in known_requests:
+                if provider == other_provider or (len(providers) <= 1 and None in (provider, other_provider)):
+                    candidates[fallback].add((scope, request))
+                elif None in (provider, other_provider):
+                    blocked.add(fallback)
+        state = _bounded_claude_envelope(seen)
         if state != stored:
             write_meta(connection, key, state)
 
@@ -62,32 +83,34 @@ def _link_claude_requests(connection, observations, issues):
     for fallback, scopes in fallback_scopes.items():
         # The fallback key predates scoped UUIDs. If different envelopes
         # contributed to that same row, one match cannot identify the whole row.
-        scope_key = _identity_key(source, stable_id("claude-fallback-scopes", fallback))
-        previous = read_meta(connection, scope_key, [])
-        known_scopes = sorted(scopes | set(previous))[:2]
-        if known_scopes != previous:
-            write_meta(connection, scope_key, known_scopes)
+        scope_key = _claude_fallback_key(fallback)
+        previous = read_meta(connection, scope_key, {})
+        known_scopes = sorted(scopes | set(previous.get("scopes", ())))[:2]
         options = candidates[fallback]
-        if not options:
-            continue
-        if len(options) != 1 or len(known_scopes) != 1:
+        explicit = next(iter(options))[1] if len(options) == 1 else None
+        owner = read_meta(connection, _alias_key(source, fallback), None) if options else None
+        ambiguous = (fallback in blocked or previous.get("ambiguous") or len(options) > 1
+                     or bool(options) and (len(known_scopes) != 1 or owner not in (None, fallback, explicit)))
+        state = {"scopes": known_scopes, "ambiguous": bool(ambiguous)}
+        if state != previous:
+            write_meta(connection, scope_key, state)
+        if ambiguous:
+            blocked.add(fallback)
             issues.append("claude_envelope_request_ambiguity")
-            continue
-        _, explicit = next(iter(options))
-        owner = read_meta(connection, _alias_key(source, fallback), None)
-        if owner not in (None, fallback, explicit):
-            issues.append("claude_envelope_request_ambiguity")
-            continue
-        redirects[fallback] = explicit
+        elif explicit:
+            redirects[fallback] = explicit
 
-    # A formerly proven link is durable. Replaying the fallback cannot revive
-    # its duplicate even if the replay omits the envelope evidence.
+    # A formerly proven link is durable. Contrary evidence prevents the same
+    # fallback from rewriting either explicit request or reviving a third row.
     normalized, former_ids = [], defaultdict(list)
     for item in observations:
         canonical = item.row.raw_id
         if item.row.source == source:
             explicit = redirects.get(canonical) or read_meta(connection, _alias_key(source, canonical), None)
             if explicit and explicit != canonical:
+                if canonical in blocked or read_meta(connection, _claude_fallback_key(canonical), {}).get("ambiguous"):
+                    issues.append("claude_envelope_request_ambiguity")
+                    continue
                 redirects[canonical] = explicit
                 item = replace(item, row=replace(item.row, raw_id=explicit))
         normalized.append(item)
@@ -97,7 +120,7 @@ def _link_claude_requests(connection, observations, issues):
     return normalized, former_ids
 
 
-def reconcile(connection, observations, issues=None):
+def reconcile(connection, observations, issues=None, *, claude_models=None):
     issues = issues if issues is not None else []
     linked = []
     for observation in observations:
@@ -187,6 +210,13 @@ def reconcile(connection, observations, issues=None):
         components.update(dict(observation.components))
         if source == "claude_local":
             components = dict(observation.components)
+            if claude_models is not None:
+                model_rank = dict(observation.field_ranks).get("model")
+                if model_rank is None and row.model_key != "unknown":
+                    model_rank = (observation.revision, observation.authority)
+                previous = claude_models.get(row.session_id)
+                if model_rank is not None and (previous is None or model_rank >= previous[0]):
+                    claude_models[row.session_id] = (model_rank, row.model_key)
         write_meta(connection, key, {"raw_id": target, "rank": rank, **({"components": components} if components else {}),
             **({"field_ranks": dict(observation.field_ranks), "field_conflicts": dict(observation.field_conflicts)} if source == "claude_local" else {})})
     return rows

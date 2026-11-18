@@ -43,6 +43,11 @@ def _claude_rows(database, lane="usage_events"):
         )]
 
 
+def _session_model(database, sid="session"):
+    with connect(database) as connection:
+        return connection.execute("SELECT model_key FROM sessions WHERE session_id=?", (sid,)).fetchone()[0]
+
+
 @pytest.mark.parametrize("reverse", [False, True])
 def test_request_id_enrichment_keeps_one_charge_through_restart(tmp_path, reverse):
     database = tmp_path / "spend.db"
@@ -88,6 +93,51 @@ def test_envelope_proof_is_required_for_request_id_link(tmp_path):
     _ingest_assistants(tmp_path / "legacy.jsonl", database, pricing, _assistant())
     _ingest_assistants(tmp_path / "explicit.jsonl", database, pricing, unrelated)
     assert len(_claude_rows(database)) == 2
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("provider_on_explicit", [False, True])
+def test_request_enrichment_uses_single_reported_provider(tmp_path, reverse, provider_on_explicit):
+    database = tmp_path / "spend.db"
+    pricing = PricingEngine.load(ROOT / "pricing")
+    fallback, explicit = _assistant(), _assistant(request_id="request")
+    (explicit if provider_on_explicit else fallback)["providerId"] = "local-proxy"
+    first, second = (explicit, fallback) if reverse else (fallback, explicit)
+    _ingest_assistants(tmp_path / "first.jsonl", database, pricing, first)
+    initial, = _claude_rows(database)
+    reset_file_cache()
+    _ingest_assistants(tmp_path / "second.jsonl", database, pricing, second)
+    result, = _claude_rows(database)
+    assert result["raw_id"] == initial["raw_id"]
+    assert result["computed_cost_usd"] == pytest.approx(0.0075)
+
+
+def test_request_enrichment_does_not_merge_distinct_reported_providers(tmp_path):
+    database = tmp_path / "spend.db"
+    pricing = PricingEngine.load(ROOT / "pricing")
+    fallback = {**_assistant(), "providerId": "first-proxy"}
+    explicit = {**_assistant(request_id="request"), "providerId": "second-proxy"}
+    _ingest_assistants(tmp_path / "first.jsonl", database, pricing, fallback)
+    _ingest_assistants(tmp_path / "second.jsonl", database, pricing, explicit)
+    assert len(_claude_rows(database)) == 2
+
+
+def test_saved_fallback_cannot_revise_request_after_envelope_becomes_ambiguous(tmp_path):
+    database = tmp_path / "spend.db"
+    pricing = PricingEngine.load(ROOT / "pricing")
+    _ingest_assistants(tmp_path / "fallback.jsonl", database, pricing, _assistant())
+    _ingest_assistants(tmp_path / "first.jsonl", database, pricing, _assistant(request_id="first"))
+    _ingest_assistants(tmp_path / "second.jsonl", database, pricing, _assistant(request_id="second"))
+    accepted = _claude_rows(database)
+    assert len(accepted) == 2
+    reset_file_cache()
+    changed = _assistant(second=3, usage={"input_tokens": 9_000})
+    result = _ingest_assistants(tmp_path / "changed.jsonl", database, pricing, changed)
+    assert _claude_rows(database) == accepted
+    assert "claude_envelope_request_ambiguity" in result["issues"]
+    del changed["uuid"]
+    _ingest_assistants(tmp_path / "without-envelope.jsonl", database, pricing, changed)
+    assert _claude_rows(database) == accepted
 
 
 def test_request_id_cannot_claim_a_fallback_shared_by_distinct_envelopes(tmp_path):
@@ -149,11 +199,13 @@ def test_older_model_copy_cannot_reprice_newer_observation(tmp_path):
         row, = _claude_rows(database)
         assert row["model_key"] == "claude-opus-5"
         assert row["computed_cost_usd"] == pytest.approx(5.0025)
+        assert _session_model(database) == "claude-opus-5"
     corrected = _assistant(request_id="explicit", second=3, model="claude-sonnet-5", usage=usage)
     _ingest_assistants(tmp_path / "new-authority.jsonl", database, pricing, corrected)
     row, = _claude_rows(database)
     assert row["model_key"] == "claude-sonnet-5"
     assert row["computed_cost_usd"] == pytest.approx(2.001)
+    assert _session_model(database) == "claude-sonnet-5"
 
 
 def test_legacy_model_metadata_requires_current_evidence_to_reprice(tmp_path):
@@ -188,10 +240,12 @@ def test_equal_authority_model_conflict_is_unpriced_until_correction(tmp_path):
     assert _claude_rows(database) == []
     unpriced, = _claude_rows(database, "unpriced_usage_events")
     assert unpriced["model_key"] == "unknown"
+    assert _session_model(database) == "unknown"
     assert (unpriced["input_tokens"], unpriced["output_tokens"]) == (1_000, 100)
     conflict["message"]["stop_reason"] = "end_turn"
     _ingest_assistants(tmp_path / "authoritative.jsonl", database, pricing, conflict)
     assert _claude_rows(database)[0]["model_key"] == "claude-sonnet-5"
+    assert _session_model(database) == "claude-sonnet-5"
     assert _claude_rows(database, "unpriced_usage_events") == []
 
 

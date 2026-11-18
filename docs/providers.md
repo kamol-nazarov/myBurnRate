@@ -91,7 +91,10 @@ its logical/path progress, until source replay provides the missing evidence.
 Claude field values, including the model, retain their individual revisions
 across files, batches and saved state. A transcript with a newly supplied
 request ID shares the existing charge when its scoped assistant envelope proves
-the match. Different explicit requests remain separate. Omissions preserve
+the match. A single reported provider can identify a copy that omits it.
+Different explicit requests remain separate. If later evidence makes the
+match ambiguous, copies without a request ID cannot revise either charge.
+Omissions preserve
 observed values. For cache writes, a measured total and a valid count for one
 duration can establish the other. An unknown or conflicting split preserves
 measured tokens with incomplete cost. Retained transcripts replay after a
