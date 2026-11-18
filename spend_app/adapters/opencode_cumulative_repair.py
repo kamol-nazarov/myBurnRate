@@ -13,25 +13,32 @@ from spend_app.pricing import UnpricedModelError
 
 ZERO_COUNTS = (0, 0, 0, 0)
 REPAIR_SCAN = "opencode.cumulative-repair-scan:v2"
+SCOPED_CHECKPOINT_PATTERN = "[0-9a-f]" * 24 + ":*"
 
 
 def history_key(session):
     return HISTORY_REPAIR + stable_id(SOURCE, session).split(":", 1)[1]
 
 
+def _unresolved_count(connection):
+    return connection.execute(
+        "SELECT COUNT(*) FROM app_meta WHERE key GLOB ? AND value=?",
+        (HISTORY_REPAIR + "*", '"unresolved"'),
+    ).fetchone()[0]
+
+
 def repair_retained_provider_switches(connection, pricing, *, limit=64):
     """Reach closed sessions from retained evidence, in resumable batches."""
-    state = read_meta(connection, REPAIR_SCAN, {"after": "", "done": False, "unresolved": 0})
+    state = read_meta(connection, REPAIR_SCAN, {"after": "", "done": False})
     corrected, repaired = 0, set()
     if state["done"]:
-        return corrected, repaired, state["unresolved"], False
+        return corrected, repaired, _unresolved_count(connection), False
     # Ignore the physical-location copies of the logical checkpoint rows.
-    local_scope = "[0-9a-f]" * 24 + ":*"
     sessions = connection.execute(
         "SELECT session_id FROM opencode_session_progress "
         "WHERE session_id > ? AND session_id NOT GLOB ? "
         "GROUP BY session_id HAVING COUNT(*) > 1 ORDER BY session_id LIMIT ?",
-        (state["after"], local_scope, limit),
+        (state["after"], SCOPED_CHECKPOINT_PATTERN, limit),
     ).fetchall()
     for (session,) in sessions:
         key = history_key(session)
@@ -44,15 +51,30 @@ def repair_retained_provider_switches(connection, pricing, *, limit=64):
             }
             count = repair_provider_switch(connection, pricing, session, checkpoints)
             write_meta(connection, key, "unresolved" if count is None else "repaired")
-            if count is None:
-                state["unresolved"] += 1
-            elif count:
+            if count:
                 repaired.add(session)
                 corrected += count
         state["after"] = session
     state["done"] = len(sessions) < limit
     write_meta(connection, REPAIR_SCAN, state)
-    return corrected, repaired, state["unresolved"], not state["done"]
+    return corrected, repaired, _unresolved_count(connection), not state["done"]
+
+
+def _checkpoints_share_source(connection, session_id, checkpoints):
+    """Require one location to corroborate all terminal logical checkpoints."""
+    per_location = {}
+    for row in connection.execute(
+        "SELECT * FROM opencode_session_progress WHERE session_id GLOB ? "
+        "AND substr(session_id,25)=?",
+        (SCOPED_CHECKPOINT_PATTERN, ":" + session_id),
+    ):
+        provider = row["provider_id"]
+        logical = checkpoints.get(provider)
+        if logical is not None and all(
+            row[key] == logical[key] for key in (*COUNTER_COLUMNS, "cost_usd", "observed_at")
+        ):
+            per_location.setdefault(row["session_id"], set()).add(provider)
+    return any(providers == checkpoints.keys() for providers in per_location.values())
 
 
 def _historical_events(connection, session_id):
@@ -97,6 +119,8 @@ def repair_provider_switch(connection, pricing, session_id, checkpoints):
     each hash from the retained incremental observations, compare the end
     totals to all saved provider checkpoints, and only then replace deltas.
     """
+    if not _checkpoints_share_source(connection, session_id, checkpoints):
+        return None
     events = _historical_events(connection, session_id)
     if not events or len({stamp for stamp, _, _ in events}) != len(events):
         return None

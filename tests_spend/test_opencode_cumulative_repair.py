@@ -168,7 +168,7 @@ def test_interrupted_cumulative_import_does_not_advance_progress_or_usage(fixtur
     assert measured_totals(dest) == (110, 22, Decimal("1.10"))
 
 
-def seed_legacy(dest, pricing):
+def seed_legacy(dest, pricing, *, separate_locations=False):
     """Recreate audited v0.6.0 state with a checkpoint per provider."""
     already = {}
     for observation in REPORTS:
@@ -179,10 +179,12 @@ def seed_legacy(dest, pricing):
         _, issue = labels[0]
 
         def finish(connection):
-            write_opencode_progress(
-                connection, session_id=observation.session_id, provider_id=observation.provider_id,
-                **progress[key],
-            )
+            scope = "b" * 24 if separate_locations and observation.provider_id == "beta" else "a" * 24
+            for session in (observation.session_id, f"{scope}:{observation.session_id}"):
+                write_opencode_progress(
+                    connection, session_id=session, provider_id=observation.provider_id,
+                    **progress[key],
+                )
             record_coverage_gap(connection, raw_id=row.raw_id, source=row.source, tool_key=row.tool_key,
                                 model_key=row.model_key, occurred_at=row.occurred_at.isoformat(), issue=issue)
 
@@ -226,6 +228,21 @@ def test_unverifiable_legacy_usage_is_reported_and_preserved(fixture):
     assert result["historicalUnresolved"] == 1
     assert "opencode_prior_provider_switch_could_not_be_verified" in result["issues"]
     assert measured(dest) == before
+    with closing(sqlite3.connect(source)) as db, db:
+        db.execute("DELETE FROM session")
+    unchanged.reset_state()
+    retained = collect(source, dest, pricing)
+    assert retained["retainedHistoricalUnresolved"] == 1
+    assert measured(dest) == before
+
+
+def test_unrelated_location_checkpoints_do_not_prove_historical_switch(fixture):
+    source, dest, _, pricing = fixture
+    seed_legacy(dest, pricing, separate_locations=True)
+    result = collect(source, dest, pricing)
+    assert result["historicalCorrections"] == 0
+    assert result["retainedHistoricalUnresolved"] == 1
+    assert measured_totals(dest) == (230, 47, Decimal("2.3"))
 
 
 def test_repair_reaches_closed_session_using_retained_local_evidence(fixture):
