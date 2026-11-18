@@ -188,6 +188,8 @@ Scheduler glob: `%USERPROFILE%\.codex\sessions\**\*.jsonl`.
 
 Usage fields from `event_msg` / `token_count` / `last_token_usage`: `input_tokens`, `cached_input_tokens`, `cache_write_input_tokens`, `output_tokens`, optional `reasoning_output_tokens`. File signature cache `(size, mtime_ns)` skips unchanged JSONL.
 
+The desktop Limits card can show the saved Standard, Fast, or Ultrafast setting from the default local Codex profile's `config.toml`. The label applies to this computer and refreshes with usage. Each chat or turn can choose its own speed, so the configured setting does not change historical pricing.
+
 Quota: first window with `window_minutes >= 7*24*60` becomes “Codex weekly window.” Only weekly is persisted.
 
 Live: `inprogress`/`running`, `completed_at` NULL, not archived, updated within 6 hours.

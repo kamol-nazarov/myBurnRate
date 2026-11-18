@@ -55,26 +55,36 @@ def check_native_signature(installer: Path) -> str:
     return text
 
 
-def build_native_feed(directory: Path, *, tag: str, repo: str, notes: str = "", now: datetime | None = None) -> dict:
+def _signed_asset(path: Path, repo: str, tag: str) -> dict:
+    signature = check_native_signature(path)
+    with path.open("rb") as stream:
+        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    return {
+        "url": f"https://github.com/{repo}/releases/download/{tag}/{path.name}",
+        "signature": signature,
+        "sha256": digest,
+        "size": path.stat().st_size,
+    }
+
+
+def build_native_feed(directory: Path, *, tag: str, repo: str, notes: str = "", now: datetime | None = None,
+                      require_wheel: bool = False) -> dict:
     version = tag.removeprefix("v")
     installer = directory / native_installer_name(version)
     if not installer.is_file():
         raise SystemExit(f"No native installer {installer.name} in {directory}")
-    signature = check_native_signature(installer)
-    data = installer.read_bytes()
-    return {
+    result = {
         "version": version,
         "notes": notes or f"See https://github.com/{repo}/releases/tag/{tag}",
         "pub_date": (now or datetime.now(UTC)).isoformat().replace("+00:00", "Z"),
-        "platforms": {
-            "windows-x86_64": {
-                "url": f"https://github.com/{repo}/releases/download/{tag}/{installer.name}",
-                "signature": signature,
-                "sha256": hashlib.sha256(data).hexdigest(),
-                "size": len(data),
-            }
-        },
+        "platforms": {"windows-x86_64": _signed_asset(installer, repo, tag)},
     }
+    if require_wheel:
+        wheel = directory / f"burnrate-{version}-py3-none-any.whl"
+        if not wheel.is_file():
+            raise SystemExit(f"No wheel {wheel.name} in {directory}")
+        result["wheel"] = _signed_asset(wheel, repo, tag)
+    return result
 
 
 def main() -> int:
@@ -83,6 +93,7 @@ def main() -> int:
     parser.add_argument("--repo")
     parser.add_argument("--dir", type=Path)
     parser.add_argument("--native", action="store_true", help="write native-latest.json (default)")
+    parser.add_argument("--require-wheel", action="store_true", help="include the signed Python wheel")
     parser.add_argument("--verify-native-sig", type=Path, metavar="INSTALLER",
                         help="check that INSTALLER's .sig names INSTALLER, then stop")
     args = parser.parse_args()
@@ -92,7 +103,7 @@ def main() -> int:
         return 0
     if not (args.tag and args.repo and args.dir):
         parser.error("--tag, --repo and --dir are required")
-    native = build_native_feed(args.dir, tag=args.tag, repo=args.repo)
+    native = build_native_feed(args.dir, tag=args.tag, repo=args.repo, require_wheel=args.require_wheel)
     (args.dir / "native-latest.json").write_text(json.dumps(native, indent=2) + "\n", encoding="utf-8")
     print("native-latest.json:", native["version"])
     return 0

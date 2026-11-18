@@ -30,6 +30,23 @@ def test_disabled_profile_hides_local_capacity_and_history_from_live_providers()
     assert {row["key"] for row in merge_provider_entries(report, hud=hud, **scopes)} == {"claude-code", "claude-code-work"}
     assert [row["key"] for row in merge_provider_entries(report, hud=hud, machine="desk", **scopes)] == ["claude-code-work"]
 
+@needs_chrome
+@browser
+def test_configured_codex_speed_is_labeled_as_local_preference(tmp_path):
+    report = d2_report()
+    for provider in report["providers"]:
+        provider["configuredSpeed"] = "ultrafast"
+    script = """
+await until(() => document.querySelector('.provider-speed'));
+report([...document.querySelectorAll('.provider-speed')].map(row => [
+  row.closest('.provider-item').dataset.key, row.textContent.trim(),
+  row.getBoundingClientRect().right <= window.innerWidth,
+]));
+"""
+    html = build_page(report=report, pref="dark", probe=script, extra_css=FAST)
+    assert probe(html, 380, tmp_path, height=520) == [["codex", "Ultrafast · configured on this PC", True]]
+
+
 LIMITS_PROBE = """
 await until(() => document.querySelectorAll('#providerList .provider-item').length >= 5);
 const groups = [...document.querySelectorAll('#providerList .provider-item')];

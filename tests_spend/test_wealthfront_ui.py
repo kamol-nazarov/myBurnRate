@@ -1132,9 +1132,11 @@ report(out);
 
 @needs_chrome
 @browser
-def test_general_tab_theme_tray_alerts_and_updates(tmp_path):
+@pytest.mark.parametrize("kind", ["installer", "wheel"])
+def test_general_tab_theme_tray_alerts_and_updates(tmp_path, kind):
     html = build_page(
-        pref="system", probe=GENERAL_PROBE, extra_css=FAST, init={"theme": "system"}
+        pref="system", probe=GENERAL_PROBE, extra_css=FAST,
+        init={"theme": "system", "update": {"kind": kind, "current": "0.5.4", "canAutoUpdate": True}},
     )
     r = probe(html, 380, tmp_path, height=800)
     assert r["initial"] == {

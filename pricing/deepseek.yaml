@@ -5,7 +5,8 @@
 # peak hours (01:00-04:00 and 06:00-10:00 UTC, Monday to Friday) bill 2x. The
 # page also treats Chinese public holidays as off-peak; a card cannot know
 # holidays, so a holiday weekday is priced as peak. DeepSeek bills no
-# cache-write class (0). Verified 2026-10-26; effective_from is that floor.
+# cache-write class (0). The October 17 revision retained the existing prices.
+# https://api-docs.deepseek.com/updates/#deepseek-v41-flash-1017-update
 provider: deepseek
 exactness: derived
 prices:
@@ -19,5 +20,5 @@ prices:
     peak_hours_utc: [[1, 4], [6, 10]]
     peak_weekdays: [mon, tue, wed, thu, fri]
     peak_multiplier: 2
-    effective_from: 2026-10-26T00:00:00Z
+    effective_from: 2026-10-17T00:00:00Z
     source_url: https://api-docs.deepseek.com/quick_start/pricing/

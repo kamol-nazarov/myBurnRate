@@ -4,6 +4,31 @@
 provider: openai
 exactness: exact
 prices:
+  - model_key: gpt-6.2-astra
+    aliases: [opencode:gpt-6.2-astra]
+    # November 17 launch: https://developers.openai.com/api/docs/changelog
+    # Standard rates with 30-minute cache writes. The telemetry does not
+    # identify 12-hour retention, background discounts, or other API tiers.
+    input_per_mtok: 8.00
+    cached_input_per_mtok: 0.40
+    cache_write_per_mtok: 10.00
+    output_per_mtok: 40.00
+    long_context_threshold: 272000
+    long_input_multiplier: 2
+    long_output_multiplier: 1.5
+    effective_from: 2026-11-17T00:00:00Z
+    source_url: https://developers.openai.com/api/docs/models/gpt-6.2-astra
+  - model_key: gpt-6.2-sol
+    aliases: [opencode:gpt-6.2-sol]
+    input_per_mtok: 2.00
+    cached_input_per_mtok: 0.10
+    cache_write_per_mtok: 2.50
+    output_per_mtok: 10.00
+    long_context_threshold: 272000
+    long_input_multiplier: 2
+    long_output_multiplier: 1.5
+    effective_from: 2026-11-17T00:00:00Z
+    source_url: https://developers.openai.com/api/docs/models/gpt-6.2-sol
   - model_key: gpt-6-astra
     aliases: [opencode:gpt-6-astra]
     # Standard API rates verified 2026-09-04; this is an assertion floor,

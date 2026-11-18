@@ -48,6 +48,28 @@ def test_alias_resolves_to_effective_price() -> None:
     assert resolved.cached_input_per_mtok == Decimal("0.5")
 
 
+@pytest.mark.parametrize(
+    "model,rates",
+    [("gpt-6.2-astra", ("8", "0.4", "10", "40")), ("gpt-6.2-sol", ("2", "0.1", "2.5", "10"))],
+)
+def test_gpt62_documented_launch_rates_and_long_context(model, rates):
+    engine = PricingEngine.load(ROOT / "pricing")
+    day = datetime(2026, 11, 17, tzinfo=UTC)
+    with pytest.raises(UnpricedModelError):
+        engine.resolve(model, datetime(2026, 11, 16, 23, 59, tzinfo=UTC))
+    rate = engine.resolve(model, day)
+    assert (rate.input_per_mtok, rate.cached_input_per_mtok, rate.cache_write_per_mtok, rate.output_per_mtok) == tuple(map(Decimal, rates))
+    assert (rate.long_context_threshold, rate.long_input_multiplier, rate.long_output_multiplier) == (272000, Decimal(2), Decimal("1.5"))
+
+
+@pytest.mark.parametrize("key,day", [
+    ("gemini-4-carbon", 13), ("gemini-4-hydrogen", 16),
+    ("antigravity:gemini-4-hydrogen-xhigh", 12), ("antigravity:gemini-3.8-flash-tiered", 11),
+])
+def test_google_aliases_used_in_recorded_usage_are_priced(key, day):
+    assert PricingEngine.load(ROOT / "pricing").resolve(key, datetime(2026, 11, day, tzinfo=UTC)).provider == "google"
+
+
 def test_unpriced_model_fails_loudly() -> None:
     engine = PricingEngine.load(ROOT / "pricing")
     with pytest.raises(UnpricedModelError):

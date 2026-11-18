@@ -80,8 +80,8 @@ update itself. About a minute after it starts, then daily, it reads
 `https://github.com/kamol-nazarov/myBurnRate/releases/latest/download/native-latest.json`;
 **Settings -> General -> Check for updates** does it on demand. **Install & restart** downloads the
 installer into `%LOCALAPPDATA%\BURNRATE\updates`, verifies it and runs it silently
-(`/S /UPDATE`), and the new version opens. A portable or source copy only shows a link to the
-release page. The feed's single Windows entry is `{url, signature, sha256, size}`; the app
+(`/S /UPDATE`), and the new version opens. Portable copies and development installs show a link to
+the release page. The feed's Windows installer entry is `{url, signature, sha256, size}`; the app
 accepts it only if:
 
 - the URL is `https://github.com/kamol-nazarov/myBurnRate/releases/download/v<version>/myBurnRate_<version>_x64-setup.exe`
@@ -93,6 +93,13 @@ accepts it only if:
 - the version is strictly newer than the running one (prereleases sort below their release);
 - when the running `BURNRATE.exe` is Authenticode-signed, the installer is validly signed by the
   same publisher (a secondary check: the minisign signature is the primary one).
+
+For the managed Python runtime at `%LOCALAPPDATA%\BURNRATE\native-python`, an on-demand
+check offers **Install & restart** when the release's feed includes a signed wheel. The updater
+verifies the version, file name, checksum, and signature, backs up the usage database and runtime,
+installs the wheel offline into that runtime, and reopens the desktop. If the installation or
+dependency check fails, it restores the previous runtime. Update details are in the `updates`
+folder beside `native-python`.
 
 Nothing is run unless every check passed, and a file that fails one is deleted. Set
 `BURNRATE_NO_UPDATE_CHECK=1` to turn all update checks off; see the

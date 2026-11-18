@@ -59,6 +59,8 @@ maintainer's computer, so every download traces back to a tagged commit.
      then makes its update signature for those final bytes and checks that the
      `.sig` names exactly that file and verifies against the key pinned in the
      app;
+   - signs and verifies the release wheel with the same updater key. The optional
+     `wheel` entry in `native-latest.json` serves managed Python desktop installs;
    - writes `native-latest.json` and `SHA256SUMS` and attests the build
      provenance;
    - creates a **draft** release with the installer, wheel and sdist.

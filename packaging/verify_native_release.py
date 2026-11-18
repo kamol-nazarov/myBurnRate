@@ -29,11 +29,16 @@ def main(argv: list[str] | None = None) -> int:
     from spend_app import native_update
 
     signature = check_native_signature(installer)
-    version = installer.name.removeprefix(native_update.INSTALLER_PREFIX).removesuffix(
-        native_update.INSTALLER_SUFFIX
-    )
-    if native_update.installer_name(version) != installer.name:
-        raise SystemExit(f"{installer.name} is not a native installer file name")
+    if installer.name.endswith("-py3-none-any.whl"):
+        version = installer.name.removeprefix("burnrate-").removesuffix("-py3-none-any.whl")
+        if native_update.wheel_name(version) != installer.name:
+            raise SystemExit(f"{installer.name} is not a release wheel file name")
+    else:
+        version = installer.name.removeprefix(native_update.INSTALLER_PREFIX).removesuffix(
+            native_update.INSTALLER_SUFFIX
+        )
+        if native_update.installer_name(version) != installer.name:
+            raise SystemExit(f"{installer.name} is not a native installer file name")
     native_update.verify_minisign_file(
         installer, signature, expected_file=installer.name, expected_version=version
     )

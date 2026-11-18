@@ -187,6 +187,18 @@ jobs:
           test -n "$BURNRATE_BUILTIN_HUB_URL" || { echo "::error::Set the BURNRATE_BUILTIN_HUB_URL repository secret"; exit 1; }
           python -m pip install --require-hashes -r requirements-build.txt
           python -m build --no-isolation --outdir release
+      - uses: actions/setup-node@49933ea5288caeca8640d1d96e6e02f7c4563b1c # v4
+        with:
+          node-version: "20"
+      - name: Sign and verify the managed desktop wheel
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          npm ci --prefix tools/tauri --no-audit --no-fund
+          wheel="release/burnrate-${VERSION}-py3-none-any.whl"
+          npm exec --prefix tools/tauri -- tauri signer sign "$wheel"
+          python packaging/verify_native_release.py "$wheel"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: native-windows
@@ -195,7 +207,7 @@ jobs:
         run: |
           cp native/* release/
           cp assets/icons/icon.ico release/
-          python packaging/make_latest_json.py --native --tag "$TAG" --repo "$GITHUB_REPOSITORY" --dir release
+          python packaging/make_latest_json.py --native --require-wheel --tag "$TAG" --repo "$GITHUB_REPOSITORY" --dir release
           (cd release && sha256sum * > SHA256SUMS)
           ls -la release
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2

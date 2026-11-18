@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 This project is licensed under Apache-2.0.
 
+## [0.6.3] - Unreleased
+
+### Added
+
+- **See the configured Codex speed in Limits.** The local Codex card shows the saved Standard, Fast,
+  or Ultrafast preference for this computer. Historical usage keeps its existing pricing basis.
+- **Update the managed Python desktop from Settings.** Check for updates, then choose **Install & restart**
+  to install a verified release wheel. The updater backs up local data and can restore the previous runtime.
+
+### Fixed
+
+- **Price more recorded usage.** Add Standard API-equivalent rates for GPT-6.2 Astra and Sol, cover missing
+  Gemini model IDs, and apply documented historical rates for DeepSeek V4.1 Flash and Grok 4.7.
+- **Recognize stale Windows taskbar entries on launch.** BURNRATE can reopen after an update when Explorer
+  still holds an entry for the previous window.
+
 ## [0.6.2] - 2026-11-18
 
 ### Added

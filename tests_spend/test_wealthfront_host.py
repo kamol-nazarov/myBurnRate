@@ -1199,6 +1199,11 @@ def test_second_launch_unhides_a_tray_hidden_window(monkeypatch):
         SetForegroundWindow = staticmethod(lambda _h: 1)
 
         @staticmethod
+        def GetClassNameW(_h, buffer, _size):
+            buffer.value = "WindowsForms10.Window.8.app.0"
+            return len(buffer.value)
+
+        @staticmethod
         def ShowWindow(_h, command):
             shown.append(command)
 
@@ -1206,6 +1211,15 @@ def test_second_launch_unhides_a_tray_hidden_window(monkeypatch):
     assert host_module._focus_existing_window("BURNRATE") is True
     # The tab is put away (SW_HIDE) before the full window is shown (SW_SHOW).
     assert shown == [0, 5]
+
+    def proxy_class(_h, buffer, _size):
+        buffer.value = "Windows.Internal.Shell.TabProxyWindow"
+        return len(buffer.value)
+
+    shown.clear()
+    monkeypatch.setattr(User32, "GetClassNameW", staticmethod(proxy_class))
+    assert host_module._focus_existing_window("BURNRATE") is False
+    assert shown == []
 
 
 # --- automatic update checks -------------------------------------------------
@@ -1990,6 +2004,32 @@ def test_fetch_usage_fetches_connections_in_non_demo_mode_and_passes_to_merge():
 
     assert DesktopBridge(TrackingDemo(), demo=True).fetch_usage("today", "all")["ok"] is True
     assert "/api/connections" not in demo_calls
+
+
+def test_codex_configured_speed_only_applies_to_the_local_scope(tmp_path, monkeypatch):
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    config = tmp_path / "config.toml"
+    config.write_text('service_tier = "ultrafast"', encoding="utf-8")
+    client = ProfileRecordingClient(connections=[{
+        "source": "codex_local",
+        "profiles": [{"key": "default", "state": "receiving", "location": str(sessions)}],
+    }])
+    client.snapshot_payload["localMachineId"] = "desktop"
+    client.hud = {"capacity": [{"providerKey": "codex", "providerName": "Codex", "rows": []}]}
+    bridge = DesktopBridge(client, demo=False)
+
+    def provider(machine):
+        result = bridge.fetch_usage("today", machine)
+        assert result["ok"]
+        return result["report"]["providers"][0]
+
+    assert provider("all")["configuredSpeed"] == "ultrafast"
+    assert provider("desktop")["configuredSpeed"] == "ultrafast"
+    assert "configuredSpeed" not in provider("another-computer")
+    config.write_text('service_tier = "fast"', encoding="utf-8")
+    assert provider("all")["configuredSpeed"] == "fast"
 
 
 class ServiceBridgeClient:

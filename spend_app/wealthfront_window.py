@@ -22,6 +22,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 from spend_app import __version__, native_geometry
+from spend_app.codex_speed import configured_codex_speed
 from spend_app.error_codes import (
     HUB_PROTOCOL_VERSION,
     CodedError,
@@ -1558,9 +1559,10 @@ class DesktopBridge:
             return fallback
         kind = status.get("kind")
         return {
-            "kind": kind if kind in {"installer", "portable", "source"} else "source",
+            "kind": kind if kind in {"installer", "portable", "source", "wheel"} else "source",
             "current": str(status.get("current") or __version__),
             "canAutoUpdate": bool(status.get("canAutoUpdate")),
+            **({"lastError": str(status["lastError"])} if status.get("lastError") else {}),
         }
 
     def check_for_update(self) -> dict:
@@ -1820,6 +1822,15 @@ class DesktopBridge:
                     machine=use_machine,
                 )
                 report["providersAuthoritative"] = True
+                if not self._demo and (
+                    use_machine in ("all", report.get("localMachineId") or "local")
+                    or report.get("scope") == "local-fallback"
+                ):
+                    codex = next((row for row in report["providers"] if row["key"] == "codex"), None)
+                    if codex is not None:
+                        speed = configured_codex_speed(connections)
+                        if speed is not None:
+                            codex["configuredSpeed"] = speed
                 # H10 ops/hud
                 report["activity"] = (
                     hud.get("activity")
@@ -4285,9 +4296,15 @@ def _focus_existing_window(title: str) -> bool:
         user32 = ctypes.windll.user32
         hwnd = user32.FindWindowW(None, title)
         if hwnd:
+            cls = ctypes.create_unicode_buffer(128)
+            user32.GetClassNameW(hwnd, cls, len(cls))
+            if cls.value == "Windows.Internal.Shell.TabProxyWindow":
+                return False
             tab_hwnd = user32.FindWindowW(None, TAB_WINDOW_TITLE)
             if tab_hwnd:
-                user32.ShowWindow(tab_hwnd, 0)  # SW_HIDE: the full window takes over
+                user32.GetClassNameW(tab_hwnd, cls, len(cls))
+                if cls.value != "Windows.Internal.Shell.TabProxyWindow":
+                    user32.ShowWindow(tab_hwnd, 0)  # SW_HIDE: the full window takes over
             if not user32.IsWindowVisible(hwnd):
                 user32.ShowWindow(hwnd, 5)  # SW_SHOW: it was hidden to the tray
             if user32.IsIconic(hwnd):

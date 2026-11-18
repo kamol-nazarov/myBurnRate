@@ -25,8 +25,12 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
+import threading
+import time
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -423,6 +427,7 @@ class Feed:
     version: str
     notes: str
     asset: Asset
+    wheel: Asset | None = None
 
 
 def _clean_notes(value: Any) -> str:
@@ -482,6 +487,30 @@ def validate_redirect(url: str) -> str:
     return url
 
 
+def wheel_name(version: str) -> str:
+    clean = version.removeprefix("v")
+    if not _PEP440.fullmatch(clean):
+        raise FeedError("The update does not name a supported wheel version.")
+    return f"burnrate-{clean}-py3-none-any.whl"
+
+
+def _parse_asset(entry: dict, version: str, name: str, label: str) -> Asset:
+    signature = entry.get("signature")
+    sha256 = entry.get("sha256")
+    size = entry.get("size")
+    if not isinstance(signature, str) or not signature.strip() or len(signature) > 8192:
+        raise FeedError("The update has no signature.")
+    if not isinstance(sha256, str) or re.fullmatch(r"[0-9a-fA-F]{64}", sha256) is None:
+        raise FeedError("The update has no valid checksum.")
+    if type(size) is not int or not 0 < size <= MAX_INSTALLER_BYTES:
+        raise FeedError("The update's size is not valid or is too large.")
+    url = validate_asset_url(entry.get("url"))
+    segments = urlsplit(url).path.split("/")
+    if len(segments) != 7 or segments[5] != f"v{_file_version(version)}" or segments[6] != name:
+        raise FeedError(f"The update's download is not this version's {label}.")
+    return Asset(url, signature.strip(), sha256.lower(), size)
+
+
 def parse_feed(raw: bytes) -> Feed:
     try:
         data = json.loads(raw.decode("utf-8"))
@@ -500,38 +529,18 @@ def parse_feed(raw: bytes) -> Feed:
     entry = platforms.get(PLATFORM_KEY) if isinstance(platforms, dict) else None
     if not isinstance(entry, dict):
         raise FeedError("The update feed has no Windows installer.")
-    signature = entry.get("signature")
-    sha256 = entry.get("sha256")
-    size = entry.get("size")
-    if not isinstance(signature, str) or not signature.strip() or len(signature) > 8192:
-        raise FeedError("The update has no signature.")
-    if not isinstance(sha256, str) or re.fullmatch(r"[0-9a-fA-F]{64}", sha256) is None:
-        raise FeedError("The update has no valid checksum.")
-    if (
-        isinstance(size, bool)
-        or not isinstance(size, int)
-        or not 0 < size <= MAX_INSTALLER_BYTES
-    ):
-        raise FeedError("The update's size is not valid or is too large.")
     clean_version = version.strip().removeprefix("v")
-    url = validate_asset_url(entry.get("url"))
-    segments = urlsplit(url).path.split("/")
-    # /<owner>/<repo>/releases/download/<tag>/<file>
-    if (
-        len(segments) != 7
-        or segments[5] != f"v{_file_version(clean_version)}"
-        or segments[6] != installer_name(clean_version)
-    ):
-        raise FeedError("The update's download is not this version's native installer.")
+    asset = _parse_asset(entry, clean_version, installer_name(clean_version), "native installer")
+    wheel = None
+    if "wheel" in data:
+        if not isinstance(data["wheel"], dict):
+            raise FeedError("The wheel update is malformed.")
+        wheel = _parse_asset(data["wheel"], clean_version, wheel_name(clean_version), "release wheel")
     return Feed(
         version=clean_version,
         notes=_clean_notes(data.get("notes")),
-        asset=Asset(
-            url=url,
-            signature=signature.strip(),
-            sha256=sha256.lower(),
-            size=size,
-        ),
+        asset=asset,
+        wheel=wheel,
     )
 
 
@@ -806,6 +815,7 @@ class Updater:
         self._current = current_version
         self._lock = lock or _deny_writes
         self._public_key = public_key
+        self._install_gate = threading.Lock()
 
     # -- context -------------------------------------------------------------------
 
@@ -838,6 +848,8 @@ class Updater:
 
     def kind(self) -> str:
         if not self._is_frozen():
+            if self._managed_runtime() is not None:
+                return "wheel"
             return "source"
         try:
             marker = self._exe().parent / INSTALL_MARKER
@@ -846,7 +858,27 @@ class Updater:
             return "portable"
 
     def can_auto_update(self) -> bool:
-        return self.kind() == "installer" and self._is_windows()
+        return self._is_windows() and self.kind() in {"installer", "wheel"}
+
+    def _managed_runtime(self) -> Path | None:
+        local = self._environ().get("LOCALAPPDATA")
+        if not self._is_windows() or not local:
+            return None
+        runtime = (Path(local) / "BURNRATE" / "native-python").resolve()
+        executable = self._exe().resolve()
+        package = Path(__file__).resolve()
+        if (
+            executable.parent == runtime / "Scripts"
+            and executable.name.casefold() in {"python.exe", "pythonw.exe"}
+            and Path(sys.prefix).resolve() == runtime
+            and package.is_relative_to(runtime / "Lib" / "site-packages")
+            and (runtime / "pyvenv.cfg").is_file()
+            and (runtime / "Scripts" / "pythonw.exe").is_file()
+            and self._environ().get("BURNRATE_PORT", "17331") == "17331"
+            and not any(arg.split("=", 1)[0] in {"--port", "--token-file", "--demo", "--smoke-test"} for arg in sys.argv[1:])
+        ):
+            return runtime
+        return None
 
     def _updates_dir(self) -> Path:
         if self._data_dir is not None:
@@ -862,11 +894,19 @@ class Updater:
 
     def status(self) -> dict[str, Any]:
         try:
-            return {
+            result = {
                 "kind": self.kind(),
                 "current": self.current_version(),
                 "canAutoUpdate": self.can_auto_update(),
             }
+            runtime = self._managed_runtime() if result["kind"] == "wheel" else None
+            if runtime is not None:
+                with contextlib.suppress(OSError, UnicodeError):
+                    with (runtime.parent / "updates" / "wheel-update-error.txt").open(encoding="utf-8-sig") as stream:
+                        error = stream.read(512).strip()
+                    if error:
+                        result["lastError"] = error
+            return result
         except Exception:  # noqa: BLE001 -- the contract is "never raises"
             return {"kind": "source", "current": "", "canAutoUpdate": False}
 
@@ -895,7 +935,7 @@ class Updater:
                 version=feed.version,
                 notes=feed.notes,
                 pageUrl=f"{RELEASES_URL}/tag/v{_file_version(feed.version)}",
-                canInstall=self.can_auto_update(),
+                canInstall=self.can_auto_update() and (self.kind() != "wheel" or feed.wheel is not None),
             )
         except Exception as exc:  # noqa: BLE001 -- the contract is "never raises"
             return self._result(
@@ -903,6 +943,8 @@ class Updater:
             )
 
     def install(self, progress: Progress | None = None) -> dict[str, Any]:
+        if not self._install_gate.acquire(blocking=False):
+            return {"ok": False, "error": "An update is already being prepared."}
         try:
             return self._install(progress)
         except Exception as exc:  # noqa: BLE001 -- the contract is "never raises"
@@ -910,6 +952,8 @@ class Updater:
                 "ok": False,
                 "error": _describe(exc, "Could not install the update."),
             }
+        finally:
+            self._install_gate.release()
 
     # -- internals -----------------------------------------------------------------
 
@@ -943,6 +987,9 @@ class Updater:
         if not is_newer(feed.version, self.current_version()):
             raise UpdateError("BURNRATE is already up to date.")
 
+        if self.kind() == "wheel":
+            return self._install_wheel(feed, progress)
+
         folder = self._updates_dir()
         folder.mkdir(parents=True, exist_ok=True)
         self._remove_stale(folder)
@@ -971,6 +1018,49 @@ class Updater:
                 for leftover in (part, final):
                     with contextlib.suppress(OSError):
                         leftover.unlink()
+        return {"ok": True, "restarting": True}
+
+    def _install_wheel(self, feed: Feed, progress: Progress | None) -> dict[str, Any]:
+        from spend_app.config import default_database_path
+
+        runtime = self._managed_runtime()
+        if runtime is None or feed.wheel is None:
+            raise UpdateError("This release has no signed wheel for the managed desktop runtime.")
+        updates = runtime.parent / "updates"
+        updates.mkdir(exist_ok=True)
+        job = Path(tempfile.mkdtemp(prefix="wheel-", dir=updates))
+        wheel = job / wheel_name(feed.version)
+        prepared = False
+        try:
+            self._download_asset(feed.wheel, wheel, progress)
+            with self._lock(wheel):
+                self._report(progress, "verifying", None)
+                verify_minisign_file(
+                    wheel, feed.wheel.signature, self._public_key, expected_file=wheel.name,
+                    expected_version=_file_version(feed.version),
+                )
+                worker = job / "wheel_update.ps1"
+                shutil.copyfile(Path(__file__).with_name("wheel_update.ps1"), worker)
+                (job / "request.json").write_text(json.dumps({
+                    "runtime": str(runtime), "wheel": wheel.name, "version": feed.version,
+                    "sha256": feed.wheel.sha256, "database": str(default_database_path().resolve()),
+                    "basePython": str(Path(sys._base_executable).resolve()), "desktopPid": os.getpid(),
+                }), encoding="utf-8")
+                powershell = Path(self._environ().get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+                self._report(progress, "preparing restart", None)
+                self._launcher(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(worker)])
+                ready = job / "ready"
+                failure = job / "failed"
+                deadline = time.monotonic() + 20
+                while not ready.is_file():
+                    if failure.is_file() or time.monotonic() >= deadline:
+                        raise UpdateError("The desktop update could not start safely. Check the update log and try again.")
+                    time.sleep(0.1)
+                prepared = True
+        finally:
+            if not prepared:
+                with contextlib.suppress(OSError):
+                    wheel.unlink()
         return {"ok": True, "restarting": True}
 
     def _download_asset(

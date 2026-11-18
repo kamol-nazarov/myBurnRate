@@ -710,6 +710,49 @@ def test_portable_and_source_get_a_page_but_cannot_install(tmp_path, kind):
     assert fx.launched == [] and fx.leftovers() == []
 
 
+@pytest.mark.parametrize("signed", [True, False])
+def test_managed_runtime_requires_a_signed_wheel_before_handoff(tmp_path, monkeypatch, signed):
+    wheel = b"synthetic release wheel"
+    name = nu.wheel_name(NEW_VERSION)
+    url = f"{GH}/download/v{NEW_VERSION}/{name}"
+    pub, feed = make_feed()
+    _, signature = minisign(
+        KEY_SEED, wheel if signed else b"different signed release bytes",
+        alg=b"ED", trusted=f"timestamp:1\tfile:{name}".encode(),
+    )
+    feed["wheel"] = {"url": url, "signature": signature, "sha256": hashlib.sha256(wheel).hexdigest(), "size": len(wheel)}
+    net = feed_routes(feed, **{url: lambda: Resp(200, wheel)})
+    runtime = tmp_path / "native-python"
+    runtime.mkdir()
+    started = []
+
+    def launch(path, args):
+        assert path.name == "powershell.exe"
+        job = Path(args[-1]).parent
+        request = json.loads((job / "request.json").read_text(encoding="utf-8"))
+        assert request["runtime"] == str(runtime)
+        assert (job / name).read_bytes() == wheel
+        (job / "ready").touch()
+        started.append(job)
+
+    fx = Fixture(tmp_path, net, pub, frozen=False, launcher=launch)
+    monkeypatch.setattr(fx.updater, "_managed_runtime", lambda: runtime)
+    assert fx.updater.status()["kind"] == "wheel"
+    assert fx.updater.check()["canInstall"] is True
+    result = fx.updater.install()
+    assert result["ok"] is signed and bool(started) is signed
+    assert asset_url() not in net.calls
+
+
+def test_managed_runtime_leaves_the_installer_link_when_the_feed_has_no_wheel(tmp_path, monkeypatch):
+    fx, net = fixture(tmp_path, frozen=False)
+    monkeypatch.setattr(fx.updater, "_managed_runtime", lambda: tmp_path)
+    assert fx.updater.check()["canInstall"] is False
+    assert fx.updater.install()["ok"] is False
+    assert net.calls == [nu.FEED_URL, nu.FEED_URL]
+    assert fx.launched == []
+
+
 def test_opt_out_env_skips_the_network(tmp_path):
     fx, net = fixture(tmp_path, env={"BURNRATE_NO_UPDATE_CHECK": "1"})
     result = fx.updater.check()

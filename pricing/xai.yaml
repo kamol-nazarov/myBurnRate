@@ -22,7 +22,8 @@ prices:
     effective_from: 2026-08-12T00:00:00Z
     source_url: https://docs.x.ai/developers/pricing
   - model_key: xai:grok-4.7
-    # Verified 2026-10-26; effective_from is that verification floor. Grok
+    # September 21 release and rates: https://docs.x.ai/developers/release-notes#grok-47
+    # Grok
     # Build names this model grok-4.7-build: its per-turn charges
     # (costUsdTicks) reproduce these rates, long-context tier included.
     aliases: [supergrok:grok-4.7, supergrok:grok-4.7-build, opencode:grok-4.7]
@@ -34,7 +35,7 @@ prices:
     long_context_inclusive: true
     long_input_multiplier: 2
     long_output_multiplier: 2
-    effective_from: 2026-10-26T00:00:00Z
+    effective_from: 2026-09-21T00:00:00Z
     source_url: https://docs.x.ai/developers/pricing
   - model_key: xai:grok-4.20-0309-non-reasoning
     aliases: [opencode:grok-4.20-0309-non-reasoning]
@@ -53,7 +54,7 @@ prices:
     # Grok 4.7 Fast is offered only in Cursor and Grok Build, with no public
     # API model id; Grok Build reports it as grok-4.7-build-fast, and its turn
     # charges reproduce these rates. Above 200k prompt tokens the page lists
-    # $6 / $1.50 / $18 (1.5x). Verified 2026-10-26.
+    # $6 / $1.50 / $18 (1.5x). The September 21 release notes document both tiers.
     aliases: [supergrok:grok-4.7-build-fast, supergrok:grok-4.7-fast]
     input_per_mtok: 4.00
     cached_input_per_mtok: 1.00
@@ -63,5 +64,5 @@ prices:
     long_context_inclusive: true
     long_input_multiplier: 1.5
     long_output_multiplier: 1.5
-    effective_from: 2026-10-26T00:00:00Z
+    effective_from: 2026-09-21T00:00:00Z
     source_url: https://docs.x.ai/developers/pricing

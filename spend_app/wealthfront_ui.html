@@ -4007,6 +4007,11 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
 .tag.warn { color: var(--warn); background: var(--warn-bg); }
 
 .lanes { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.provider-speed {
+  margin: 0 0 2px 32px;
+  font-size: 10.5px;
+  color: var(--ink-secondary);
+}
 .lane {
   display: grid;
   grid-template-columns: var(--lane-name) minmax(0, 1fr) var(--lane-pct);
@@ -5524,6 +5529,8 @@ function renderLimitGroup(prov, idx, horizon, doStagger) {
   const badge = prov.badge && prov.badge !== profile ? String(prov.badge) : "";
   const badgeCls = (badge === "Primary" || badge === "Org API") ? "acct-tag neutral" : "acct-tag";
   const plan = prov.plan === "PAYG" ? "Pay as you go" : String(prov.plan || "");
+  const speedLabels = { standard: "Standard", fast: "Fast", ultrafast: "Ultrafast" };
+  const configuredSpeed = prov.key === "codex" && Object.hasOwn(speedLabels, prov.configuredSpeed) ? speedLabels[prov.configuredSpeed] : "";
   const tag = LIMIT_TAGS[level] ? `<span class="tag ${level === "warn" ? "warn" : "soon"}">${LIMIT_TAGS[level]}</span>` : "";
 
   const dayValue = burn.dayTokens;
@@ -5577,6 +5584,7 @@ function renderLimitGroup(prov, idx, horizon, doStagger) {
           </span>
         </span>
       </button>
+      ${configuredSpeed ? `<div class="provider-speed" title="Saved Codex default. Individual chats or turns can select another speed.">${configuredSpeed} · configured on this PC</div>` : ""}
       <div class="lanes">${lanes.join("")}</div>
       <div class="drawer-collapse">
         <div class="drawer-inner">
@@ -6676,12 +6684,12 @@ function updatesHtml() {
   const info = state.updateInfo;
   const chk = state.updateCheck;
   const kind = u.kind || "";
-  const kindLabel = ({ installer: "Installed app", portable: "Portable copy", source: "Source install" })[kind] || "";
+  const kindLabel = ({ installer: "Installed app", portable: "Portable copy", source: "Source install", wheel: "Managed Python runtime" })[kind] || "";
   const ver = state.version || u.current || "";
   const canCheck = apiHas("check_for_update");
   const busy = chk.status === "checking" || chk.status === "installing" || chk.status === "restarting";
   let body = "";
-  if (chk.error) body += `<div class="setting-note err" role="alert">${esc(chk.error)}</div>`;
+  if (chk.error || u.lastError) body += `<div class="setting-note err" role="alert">${esc(chk.error || u.lastError)}</div>`;
   if (chk.status === "restarting") {
     body += `<div class="setting-note" role="status">Restarting BURNRATE to finish the update\u2026</div>`;
   } else if (info && info.available) {
