@@ -12,7 +12,13 @@ from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 from spend_app.db import connect
-from spend_app.plan_service import PlanConflict, PlanError, apply_mutation, list_plans
+from spend_app.plan_service import (
+    PlanConflict,
+    PlanError,
+    apply_mutation,
+    list_plans,
+    plan_authority,
+)
 from spend_app.plans_value_periods import SUPPORTED_PERIODS
 from spend_app.sync import HubMutationError
 
@@ -35,8 +41,32 @@ def product_router(settings, pricing=None):
         return datetime.now(UTC).astimezone(ZoneInfo(settings.timezone)).date()
 
     @router.get("/api/subscriptions")
-    def plans():
+    def plans(manage: bool = False):
+        from spend_app.setup_wizard import read_setup_state
         from spend_app.sync import fetch_from_configured_hub
+
+        if manage:
+            with connect(settings.database_path) as connection:
+                authority = plan_authority(read_setup_state(connection))
+                if authority == "local":
+                    return {**list_plans(connection, today()), "authority": authority}
+            hub_data = fetch_from_configured_hub(
+                settings, "/api/subscriptions", ttl_seconds=0
+            )
+            with connect(settings.database_path) as connection:
+                if authority != plan_authority(read_setup_state(connection)):
+                    return JSONResponse(
+                        {"error": "The plan account changed. Reload plans."},
+                        status_code=409,
+                    )
+            if hub_data is None or not isinstance(hub_data.get("plans"), list):
+                return JSONResponse(
+                    {
+                        "error": "Connect to the hub and sign in as the owner to manage plans."
+                    },
+                    status_code=503,
+                )
+            return {**hub_data, "authority": authority}
 
         hub_data = fetch_from_configured_hub(settings, "/api/subscriptions")
         if hub_data is not None and isinstance(hub_data.get("plans"), list):
@@ -81,7 +111,7 @@ def product_router(settings, pricing=None):
         return JSONResponse(report, headers={"Cache-Control": "no-store"})
 
     @router.post("/api/subscriptions")
-    async def mutate(request: Request):
+    async def mutate(request: Request, authority: str | None = None):
         # JSON + a non-simple header prevent HTML form CSRF; exact Origin and
         # Host checks also reject DNS rebinding and cross-origin fetches.
         host = request.headers.get("host", "")
@@ -129,11 +159,23 @@ def product_router(settings, pricing=None):
                 raise PlanError("Expected a subscription request object")
 
             def apply_change():
+                from spend_app.setup_wizard import read_setup_state
                 from spend_app.sync import post_to_configured_hub
 
-                hub_result = post_to_configured_hub(
-                    settings, "/api/account/subscriptions", body, strict=True
-                )
+                hub_result = None
+                if authority != "local":
+                    options = (
+                        {"expected_plan_authority": authority}
+                        if authority is not None
+                        else {}
+                    )
+                    hub_result = post_to_configured_hub(
+                        settings,
+                        "/api/account/subscriptions",
+                        body,
+                        strict=True,
+                        **options,
+                    )
                 if hub_result is not None:
                     if (
                         body.get("operation") == "correct"
@@ -161,6 +203,11 @@ def product_router(settings, pricing=None):
                     return hub_result
                 with connect(settings.database_path) as connection:
                     connection.execute("BEGIN IMMEDIATE")
+                    if authority is not None and (
+                        authority != "local"
+                        or plan_authority(read_setup_state(connection)) != authority
+                    ):
+                        raise PlanConflict("The plan account changed. Reload plans.")
                     return apply_mutation(connection, body, today())
 
             return await run_in_threadpool(apply_change)

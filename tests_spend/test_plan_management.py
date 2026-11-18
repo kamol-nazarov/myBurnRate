@@ -363,6 +363,56 @@ def test_configured_tls_termination_origin(tmp_path, monkeypatch):
     )
 
 
+def test_managed_plans_follow_the_same_authority_for_reads_and_writes(
+    tmp_path, monkeypatch
+):
+    from spend_app.setup_wizard import read_setup_state, write_setup_state
+
+    db = tmp_path / "managed.db"
+    app = create_app(make_settings(db), enable_scheduler=False)
+    client = TestClient(app, base_url="http://localhost")
+    headers = {"Origin": "http://localhost", "X-BURNRATE-Request": "1"}
+    list_path = "/api/subscriptions?manage=true"
+    local_write = "/api/subscriptions?authority=local"
+    body = {"operation": "add", "request_id": "managed-plan-add", "values": values()}
+    assert client.get(list_path).json()["authority"] == "local"
+    assert client.post(local_write, headers=headers, json=body).status_code == 200
+
+    with connect(db) as connection:
+        setup = read_setup_state(connection)
+        setup["role"] = "spoke"
+        setup["account"]["machineId"] = "synthetic-spoke"
+        setup["spokeConfig"]["enabled"] = True
+        write_setup_state(connection, setup)
+
+    monkeypatch.setattr(
+        "spend_app.sync.fetch_from_configured_hub", lambda *a, **kw: None
+    )
+    assert client.get(list_path).status_code == 503
+    assert client.post(local_write, headers=headers, json=body).status_code == 409
+    monkeypatch.setattr(
+        "spend_app.sync.fetch_from_configured_hub", lambda *a, **kw: {"plans": []}
+    )
+    listing = client.get(list_path).json()
+    assert listing["plans"] == [] and listing["authority"].startswith("hub-")
+
+    with connect(db) as connection:
+        setup = read_setup_state(connection)
+        setup["account"]["machineId"] = "another-synthetic-spoke"
+        write_setup_state(connection, setup)
+    assert (
+        client.post(
+            "/api/subscriptions",
+            params={"authority": listing["authority"]},
+            headers=headers,
+            json=body,
+        ).status_code
+        == 409
+    )
+    with connect(db) as connection:
+        assert len(list_plans(connection, TODAY)["plans"]) == 1
+
+
 def test_unknown_existing_schema_requires_backup_and_stops(tmp_path):
     db = tmp_path / "unknown.db"
     with sqlite3.connect(db) as c:

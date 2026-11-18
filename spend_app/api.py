@@ -457,12 +457,13 @@ def create_app(
         request_collection()
         hub = fetch_from_configured_hub(settings, "/api/spend/usage",
                                         {"period": period, "machine": machine}, read_timeout=20.0)
-        if hub is not None and isinstance(hub.get("total"), dict):
-            return {**hub, "scope": "all-computers" if machine == "all" else "computer"}
         with connect(settings.database_path) as connection:
             setup = read_setup_state(connection)
+        own_id = str(setup.get("account", {}).get("machineId") or "")
+        if hub is not None and isinstance(hub.get("total"), dict):
+            return {**hub, "scope": "all-computers" if machine == "all" else "computer",
+                    "localMachineId": own_id or "local"}
         if setup.get("role") == "spoke" and setup.get("spokeConfig", {}).get("enabled"):
-            own_id = str(setup.get("account", {}).get("machineId") or "")
             own_selected = machine == "all" or bool(own_id and machine == own_id)
             # On the Hub, 'local' means the Hub itself, never this Spoke.
             # A cold/offline cache must not put this machine's totals under

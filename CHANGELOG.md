@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 This project is licensed under Apache-2.0.
 
+## [0.6.2] - Unreleased
+
+### Added
+
+- **Manage plans from the desktop.** Add plans, schedule price changes, record the last
+  active day, and preview and confirm corrections from **Settings → Plans**.
+
+### Fixed
+
+- **The desktop Plans card lists active configured plans.** Disabled sources disappear from
+  the desktop's current readings for that computer, and their recorded usage stays available.
+
 ## [0.6.1] - 2026-11-18
 
 ### Fixed

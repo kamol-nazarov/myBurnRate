@@ -32,6 +32,23 @@ class PlanConflict(PlanError):
     pass
 
 
+def plan_authority(setup):
+    """Identify the saved plan account across an editor's read and write."""
+    spoke = setup.get("spokeConfig") or {}
+    if setup.get("role") != "spoke" or not spoke.get("enabled"):
+        return "local"
+    from spend_app.config import resolve_hub_url
+
+    account = setup.get("account") or {}
+    pairing = [
+        resolve_hub_url() or spoke.get("hubUrl"),
+        account.get("machineId"),
+        account.get("connectedAt"),
+        spoke.get("credentialGeneration"),
+    ]
+    return "hub-" + hashlib.sha256(json.dumps(pairing).encode()).hexdigest()
+
+
 def iso_date(value, optional=False):
     if optional and value is None:
         return None

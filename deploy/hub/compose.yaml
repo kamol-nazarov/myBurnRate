@@ -17,7 +17,7 @@ services:
   # Refuse to publish ports on empty, wildcard (0.0.0.0 / ::), public, or
   # hostname targets unless BURNRATE_HUB_ALLOW_PUBLIC=1 is explicitly set.
   publish-check:
-    image: ${BURNRATE_HUB_IMAGE:-ghcr.io/kamol-nazarov/myburnrate-hub:0.6.1-rc.13@sha256:36ded17fb57d9e608cd8e488b4590a6ecd4bcc7ac269555ab80805c106933a49}
+    image: ${BURNRATE_HUB_IMAGE:-ghcr.io/kamol-nazarov/myburnrate-hub:0.6.2}
     restart: "no"
     environment:
       BURNRATE_TAILNET_IP: ${BURNRATE_TAILNET_IP:?Set BURNRATE_TAILNET_IP to this machine's Tailscale IP (e.g. 100.x.y.z)}
@@ -25,8 +25,8 @@ services:
     command: ["sh", "-c", "exec python -m spend_app.exposure check-publish \"$BURNRATE_TAILNET_IP\""]
 
   hub:
-    # The v0.6.1 tag promotes this candidate digest to the 0.6.1 image.
-    image: ${BURNRATE_HUB_IMAGE:-ghcr.io/kamol-nazarov/myburnrate-hub:0.6.1-rc.13@sha256:36ded17fb57d9e608cd8e488b4590a6ecd4bcc7ac269555ab80805c106933a49}
+    # Before tagging v0.6.2, pin the candidate digest published by the Hub image workflow.
+    image: ${BURNRATE_HUB_IMAGE:-ghcr.io/kamol-nazarov/myburnrate-hub:0.6.2}
     restart: unless-stopped
     depends_on:
       publish-check:

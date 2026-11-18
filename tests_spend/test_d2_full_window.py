@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from spend_app.wealthfront_window import merge_provider_entries
 from tests_spend.d2_fixtures import d2_report
 from tests_spend.test_h9_desktop_analytics import _h9_api_js
 from tests_spend.test_wealthfront_ui import (
@@ -14,6 +15,20 @@ from tests_spend.test_wealthfront_ui import (
 )
 
 browser = pytest.mark.browser
+
+
+def test_disabled_profile_hides_local_capacity_and_history_from_live_providers():
+    report = {"tools": [{"key": "claude-code", "tokens": 17}, {"key": "claude-code-work", "tokens": 23}]}
+    hud = {"capacity": [{"providerKey": "claude-code", "rows": [{"source": "sync:desk:usage"}]}]}
+    connections = [{"source": "claude_local", "profiles": [
+        {"key": "default", "state": "disabled"}, {"key": "claude-code-work", "state": "receiving"},
+    ]}]
+    scopes = {"connections": connections, "local_machine_id": "desk"}
+    assert [row["key"] for row in merge_provider_entries(report, hud=hud, **scopes)] == ["claude-code-work"]
+    assert report["tools"][0] == {"key": "claude-code", "tokens": 17}
+    hud["capacity"][0]["rows"][0]["source"] = "sync:laptop:usage"
+    assert {row["key"] for row in merge_provider_entries(report, hud=hud, **scopes)} == {"claude-code", "claude-code-work"}
+    assert [row["key"] for row in merge_provider_entries(report, hud=hud, machine="desk", **scopes)] == ["claude-code-work"]
 
 LIMITS_PROBE = """
 await until(() => document.querySelectorAll('#providerList .provider-item').length >= 5);
@@ -386,6 +401,83 @@ def test_plans_show_their_price_from_the_analytics_summary(tmp_path):
         "Grok free | no paid plan",
     ]
     assert r["sub"].endswith("accrued this period") and r["shown"] != "none"
+
+
+PLAN_SETTINGS_API = """
+const testPlans = { plans: [], authority: "local", today: "2026-09-20",
+    tools: ["codex", "claude-code"], cadences: ["monthly", "annual"] };
+let rejectFirst = true;
+window.planChanges = [];
+api.get_plan_settings = async () => ({ok: true, result: structuredClone(testPlans)});
+api.change_plan = async (authority, body) => {
+  window.planChanges.push({ authority, ...body });
+  if (rejectFirst) { rejectFirst = false; return {ok: false, error: "Please retry"}; }
+  if (body.operation === "add") {
+    testPlans.plans = [{ id: 8, version: 1, terms: [{ id: 17, status: "active", ...body.values }] }];
+  } else if (body.preview) {
+    return {ok: true, result: { from: "2026-09-01", through: "2026-09-20", before_usd: "10", after_usd: "12", preview_token: "preview" }};
+  } else if (body.operation === "end") {
+    testPlans.plans[0].terms[0].status = "ended";
+  }
+  return {ok: true, result: {id: 8, version: 2}};
+};
+"""
+
+
+PLAN_SETTINGS_PROBE = """
+const byId = id => document.getElementById(id);
+const pick = selector => document.querySelector(selector);
+const submit = () => byId('planEditor').requestSubmit();
+await until(() => !byId('managePlansBtn').hidden);
+const out = { inferredPlans: document.querySelectorAll('#plansList li').length };
+byId('managePlansBtn').click();
+await until(() => byId('addPlanBtn'));
+byId('addPlanBtn').click();
+pick('#planEditor [name=name]').value = 'Synthetic Plan';
+pick('#planEditor [name=amount_usd]').value = '18.25';
+pick('#planEditor [name=start_date]').value = '2026-09-01';
+submit();
+await until(() => pick('#sheetBody [role=alert]')?.textContent === 'Please retry');
+out.retainedPrice = pick('#planEditor [name=amount_usd]').value;
+submit();
+await until(() => pick('[data-plan-action=end]'));
+out.savedPlan = byId('sheetBody').textContent.includes('Synthetic Plan');
+out.reusedRequest = window.planChanges[0].request_id === window.planChanges[1].request_id;
+pick('#sheetBody details').open = true;
+pick('[data-plan-action=correct]').click();
+pick('#planEditor [name=name]').value = 'Corrected Plan';
+submit();
+await until(() => pick('#planEditor [type=submit]')?.textContent === 'Confirm correction');
+out.preview = byId('planEditor').textContent.includes('Accrued cost $10 → $12');
+submit();
+await until(() => pick('[data-plan-action=end]'));
+pick('[data-plan-action=end]').click();
+pick('#planEditor [name=end_date]').value = '2026-09-19';
+submit();
+await until(() => byId('sheetBody').textContent.includes('ended'));
+out.historyPreserved = byId('sheetBody').textContent.includes('Synthetic Plan');
+out.requests = window.planChanges;
+out.hiddenProviders = getNormalizedProviders({providers: [], providersAuthoritative: true, tools: [{key: 'codex'}]}).length;
+report(out);
+"""
+
+
+@needs_chrome
+@browser
+def test_manage_plans_uses_configured_terms_and_preserves_draft_on_retry(tmp_path):
+    html = build_page(pref="dark", report=d2_report(), init={"demo": False},
+                      api_js=PLAN_SETTINGS_API, probe=PLAN_SETTINGS_PROBE, extra_css=FAST)
+    result = probe(html, 380, tmp_path, height=520)
+    assert result["inferredPlans"] == result["hiddenProviders"] == 0
+    assert result["retainedPrice"] == "18.25"
+    assert all(result[key] for key in ("savedPlan", "reusedRequest", "preview", "historyPreserved"))
+    add, retry, preview, correction, end = result["requests"]
+    assert add == retry
+    assert add["authority"] == "local" and add["values"]["amount_usd"] == "18.25"
+    assert preview["preview"] is True and preview["term_id"] == 17
+    assert correction["confirmed"] is True and correction["preview_token"] == "preview"
+    assert correction["values"]["name"] == "Corrected Plan"
+    assert (end["operation"], end["plan_id"], end["expected_version"], end["end_date"]) == ("end", 8, 1, "2026-09-19")
 
 
 LOADING_PROBE = """

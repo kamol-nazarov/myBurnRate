@@ -1767,6 +1767,7 @@ def post_to_configured_hub(
     *,
     strict: bool = False,
     cookie_out: dict | None = None,
+    expected_plan_authority: str | None = None,
 ) -> dict | None:
     """Forward a write mutation from a paired Spoke to the central Hub.
 
@@ -1782,6 +1783,11 @@ def post_to_configured_hub(
         if strict:
             raise HubMutationError("Could not read the hub configuration. Retry the change.") from exc
         return None
+    if expected_plan_authority is not None:
+        from spend_app.plan_service import plan_authority
+
+        if expected_plan_authority != plan_authority(state):
+            raise HubMutationError("The plan account changed. Reload plans.", 409)
     if state.get("role") != "spoke":
         return None
     spoke = state.get("spokeConfig") or {}

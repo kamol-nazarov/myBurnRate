@@ -8,6 +8,7 @@ import json
 import logging
 import math
 import os
+import re
 import shutil
 import struct
 import sys
@@ -190,6 +191,8 @@ _SOURCE_DISPLAY_NAMES = {
     "grok_local": ("grok", "Grok Build"),
     "antigravity_local": ("antigravity", "Antigravity"),
     "muse_local": ("muse", "Muse Code"),
+    "openrouter": ("openrouter", "OpenRouter"),
+    "deepseek": ("deepseek", "DeepSeek"),
 }
 _MULTI_PRIMARY_KEYS = PROFILE_FAMILIES
 
@@ -224,6 +227,7 @@ def _store_profile_index(connections: list[dict] | None) -> dict[str, dict]:
                 "name": str(prof.get("name") or "").strip(),
                 "providerName": default_display,
                 "plan": prof.get("plan"),
+                "state": prof.get("state"),
             }
     return index
 
@@ -277,6 +281,8 @@ def merge_provider_entries(
     week_report: dict | None = None,
     provider_order: list[str] | None = None,
     connections: list[dict] | None = None,
+    local_machine_id: str = "local",
+    machine: str = "all",
 ) -> list[dict]:
     """Merge live quota/balance lanes with recorded token telemetry across accounts."""
     capacity = (hud or {}).get("capacity") if isinstance(hud, dict) else []
@@ -289,6 +295,29 @@ def merge_provider_entries(
         window_tokens_all = {}
 
     store_profiles = _store_profile_index(connections)
+    hidden = set()
+    if machine in ("all", local_machine_id) or period_report.get("scope") == "local-fallback":
+        hidden = {key for key, profile in store_profiles.items() if profile["state"] == "disabled"}
+    if hidden and machine == "all" and period_report.get("scope") != "local-fallback":
+        # Keep readings from other computers even when this computer stopped tracking the provider.
+        scoped_capacity = []
+        for card in capacity:
+            key = str(card.get("providerKey") or "").strip() if isinstance(card, dict) else ""
+            if key not in hidden:
+                scoped_capacity.append(card)
+                continue
+            rows = []
+            for row in card.get("rows") or []:
+                source = str(row.get("source") or "") if isinstance(row, dict) else ""
+                kind, _, origin = source.partition(":")
+                origin = origin.partition(":")[0]
+                if kind == "sync" and origin and origin != local_machine_id:
+                    rows.append(row)
+            if rows:
+                hidden.discard(key)
+                balance = next((row.get("used") for row in rows if row.get("limitKey") == "balance"), None)
+                scoped_capacity.append({**card, "rows": rows, "fundsRemainingUsd": balance, "fundsRunway": None})
+        capacity = scoped_capacity
 
     period_tools = {
         str(t["key"]): t
@@ -309,7 +338,7 @@ def merge_provider_entries(
     capacity_keys = {
         str(c.get("providerKey") or "").strip()
         for c in capacity
-        if isinstance(c, dict) and c.get("providerKey")
+        if isinstance(c, dict) and c.get("providerKey") and c["providerKey"] not in hidden
     }
     multi_primary_keys = {
         pk
@@ -324,7 +353,7 @@ def merge_provider_entries(
         if not isinstance(card, dict):
             continue
         key = str(card.get("providerKey") or "").strip()
-        if not key:
+        if not key or key in hidden:
             continue
 
         if key == "opencode" and "zcode" not in capacity_keys:
@@ -637,7 +666,7 @@ def merge_provider_entries(
 
     # Include any recorded-usage tools that do not have a quota card (e.g. Org API feeds)
     for key, tool in period_tools.items():
-        if key in consumed_usage_keys:
+        if key in consumed_usage_keys or key in hidden:
             continue
         opencode_provider = key.startswith("opencode-provider:")
         is_extra_profile = any(key.startswith(pk + "-") for pk in _MULTI_PRIMARY_KEYS)
@@ -1787,7 +1816,10 @@ class DesktopBridge:
                     week_report=week_report,
                     provider_order=self._provider_order,
                     connections=connections,
+                    local_machine_id=report.get("localMachineId") or "local",
+                    machine=use_machine,
                 )
+                report["providersAuthoritative"] = True
                 # H10 ops/hud
                 report["activity"] = (
                     hud.get("activity")
@@ -3845,6 +3877,45 @@ class DesktopBridge:
             return {"ok": False, "error": str(exc)}
         except (OSError, RuntimeError, ValueError, KeyError, TypeError):
             return {"ok": False, "error": "Could not check suggested plans."}
+
+    def _request_plan_settings(self, path: str, body: dict | None = None) -> dict:
+        if self._demo:
+            return {"ok": False, "error": "Plan settings are unavailable in sample data."}
+        try:
+            with self._lock:
+                if not self._service_ready:
+                    self._client.ensure_service()
+                    self._service_ready = True
+                response = self._client.request(path) if body is None else self._client.request(path, body)
+            if body is None and (
+                not isinstance(response.get("plans"), list)
+                or not isinstance(response.get("tools"), (list, tuple))
+                or not isinstance(response.get("cadences"), (list, tuple))
+                or not response.get("today")
+                or not response.get("authority")
+            ):
+                return {"ok": False, "error": "Could not read the plan settings from this service."}
+            return {"ok": True, "result": response}
+        except DesktopError as exc:
+            if exc.status_code == 409:
+                return {"ok": False, "error": "These plans changed. Reload plans before trying again."}
+            if body is None and exc.status_code == 503:
+                return {"ok": False, "error": "Connect to your hub and sign in to load plans."}
+            if body is not None and exc.status_code == 422:
+                return {"ok": False, "error": "Check the plan price and dates. Plan terms must have valid dates and cannot overlap."}
+            return {"ok": False, "error": str(exc)}
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return {"ok": False, "error": "Could not load or save plans."}
+
+    def get_plan_settings(self) -> dict:
+        return self._request_plan_settings("/api/subscriptions?manage=true")
+
+    def change_plan(self, authority: str, mutation: dict) -> dict:
+        if not isinstance(authority, str) or not re.fullmatch(r"local|hub-[0-9a-f]{64}", authority):
+            return {"ok": False, "error": "Reload plans before saving."}
+        if not isinstance(mutation, dict) or mutation.get("operation") not in ("add", "schedule", "end", "correct"):
+            return {"ok": False, "error": "Invalid plan change."}
+        return self._request_plan_settings("/api/subscriptions?" + urlencode({"authority": authority}), mutation)
 
     def confirm_suggested_plan(self, suggestion: dict) -> dict:
         if self._demo:

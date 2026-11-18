@@ -3,6 +3,15 @@
 Configure and inspect plans via `burnrate subscription add`, `burnrate subscription list`,
 `burnrate subscription apply`, or the quick plan suggestion in the desktop app.
 
+In the desktop app, open **Settings → Plans** or choose **Manage** on the Plans card.
+You can add a plan, schedule a price change, record its last active day, or correct
+a term after reviewing the cost preview. On a paired computer, sign in to the hub
+to manage the plans saved there.
+
+**Stop tracking** in Sources hides the disabled source from the current readings
+on that computer. Recorded usage stays in analytics. To stop accruing a configured
+plan, record its last active day in Plans.
+
 Open **/mo plans** in the navbar or **Manage** beside Fixed costs. The Fixed
 costs panel stays expanded. The dialog opens to a list of every plan, with an
 active-term monthly-equivalent total, prices, dates and proportional term bars.

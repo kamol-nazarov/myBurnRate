@@ -896,7 +896,7 @@ def test_controls_expose_roles_names_and_focus_rings(tmp_path):
     assert r["theme"] == [["System", "false"], ["Light", "true"], ["Dark", "false"]]
     assert r["unnamed"] == []
     assert r["rowAttrs"][0] == ["false", "Alt+ArrowUp Alt+ArrowDown"]
-    assert [t[1] for t in r["tabs"]] == ["false", "false", "true"] and r["tabs"][0][
+    assert [t[1] for t in r["tabs"]] == ["false", "false", "false", "true"] and r["tabs"][0][
         0
     ] == "tab"
     assert r["dialog"] == ["dialog", "true"]

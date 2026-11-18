@@ -4077,10 +4077,17 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
 .running-row + .running-row { border-top: none; }
 .plans-section { display: none; }
 .plans-section.has-rows,
+.plans-section.has-management,
 .plans-section:has(> .quick-plan-banner:not([hidden])) { display: flex; }
 .plans { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; }
 .plans li { display: flex; justify-content: space-between; gap: 8px; }
 .plans li b { color: var(--ink-secondary); font-weight: 600; text-align: right; }
+.plan-settings-row { display: grid; gap: 6px; padding: 9px 12px; }
+.plan-settings-row + .plan-settings-row { border-top: 1px solid var(--divider); }
+.plan-settings-row .source-meta { white-space: normal; overflow-wrap: anywhere; }
+.plan-settings-row summary { cursor: pointer; color: var(--ink-secondary); font-size: 11px; }
+.plan-settings-row details .editor-actions { margin-top: 5px; }
+.plan-settings-row input, .plan-settings-row select { min-width: 0; font-family: inherit; }
 .foot { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; padding: 2px 0 0; }
 .ops-pill .update-dot { position: static; flex-shrink: 0; }
 .ops-pill.has-update .update-dot { display: inline-block; }
@@ -4500,6 +4507,7 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
         <div class="sh">
           <h2 class="sec-title">Plans</h2>
           <span class="sec-sub" id="plansSub"></span>
+          <button class="btn-secondary" id="managePlansBtn" type="button" aria-label="Manage plans" hidden>Manage</button>
         </div>
         <div class="quick-plan-banner" id="hudQuickPlan" role="region" aria-label="Suggested subscription plan" hidden></div>
         <ul class="plans" id="plansList"></ul>
@@ -4674,6 +4682,7 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
   <div class="sheet-tabs" role="tablist" aria-label="Settings sections">
     <button class="sheet-tab active" data-tab="sources" type="button" role="tab" aria-selected="true">Sources</button>
     <button class="sheet-tab" data-tab="computers" type="button" role="tab" aria-selected="false" tabindex="-1">Computers</button>
+    <button class="sheet-tab" data-tab="plans" type="button" role="tab" aria-selected="false" tabindex="-1">Plans</button>
     <button class="sheet-tab" data-tab="general" type="button" role="tab" aria-selected="false" tabindex="-1">General</button>
   </div>
   <div class="sheet-body" id="sheetBody"></div>
@@ -4828,6 +4837,8 @@ const state = {
   suppressNextClick: false,
   settingsOpen: false,
   settingsTab: "sources",
+  settingsTrigger: null,
+  planSettings: { data: null, loading: false, saving: false, editor: null, error: "" },
   theme: window.burnrateTheme ? window.burnrateTheme.pref() : "system",
   closeToTray: false,
   lowQuotaAlerts: false,
@@ -5172,7 +5183,7 @@ function findStoreProfileName(toolKey) {
 }
 
 function getNormalizedProviders(data) {
-  if (Array.isArray(data.providers) && data.providers.length) {
+  if (Array.isArray(data.providers) && (data.providers.length || data.providersAuthoritative)) {
     return data.providers;
   }
   const tools = data.tools || [];
@@ -5256,7 +5267,7 @@ function paintHeroText(data, animate = true) {
     document.getElementById("heroTokensContext").textContent = "";
   } else {
     document.getElementById("heroTokens").textContent = `${fmtTokens(total.tokens || 0)} tokens`;
-    document.getElementById("heroTokensContext").textContent = `across ${providers.length} ${providers.length === 1 ? "provider" : "providers"}`;
+    document.getElementById("heroTokensContext").textContent = providers.length ? `across ${providers.length} ${providers.length === 1 ? "provider" : "providers"}` : "";
   }
 
   let freshness = "Updated just now";
@@ -5786,15 +5797,18 @@ function planPrice(sub) {
 function renderPlans(data, providers) {
   const card = document.getElementById("plansCard");
   const listEl = document.getElementById("plansList");
+  const canManage = !state.demo && apiHas("get_plan_settings");
+  document.getElementById("managePlansBtn").hidden = !canManage;
+  card.classList.toggle("has-management", canManage);
   const subs = state.h9Summary && Array.isArray(state.h9Summary.subscriptions)
     ? state.h9Summary.subscriptions.filter(s => s && s.name) : [];
   const rows = [];
   if (subs.length) {
     for (const s of subs) rows.push([String(s.name), planPrice(s)]);
-  } else {
+  } else if (!canManage) {
     const seen = new Set();
     for (const p of providers) {
-      if (p.isPayg || !p.plan) continue;
+      if (p.isPayg || p.remaining?.kind === "usage_only" || !p.plan) continue;
       const label = p.profile ? `${p.name} · ${p.profile}` : p.name;
       const id = `${label}|${p.plan}`;
       if (seen.has(id)) continue;
@@ -6558,11 +6572,12 @@ window.selectScope = function(machineId) {
 };
 
 /* Settings Sheet */
-window.openSettings = async function(tab = "sources") {
+window.openSettings = async function(tab = "sources", trigger = null) {
   closeScopePopover(false);
   if (typeof closeH9RangePopover === "function") closeH9RangePopover(false);
   const sheet = document.getElementById("settingsSheet");
   const wasOpen = state.settingsOpen;
+  if (!wasOpen) state.settingsTrigger = trigger;
   state.settingsOpen = true;
   syncUiBusy();
   setSettingsTab(tab, false);
@@ -6585,10 +6600,12 @@ window.closeSettings = function(returnFocus = true) {
   sheet.inert = true;
   document.getElementById("appShell").inert = false;
   syncUiBusy();
-  if (returnFocus) document.getElementById("settingsBtn").focus();
+  if (returnFocus) (state.settingsTrigger || document.getElementById("settingsBtn")).focus();
+  state.settingsTrigger = null;
 };
 
 function setSettingsTab(tab, rerender = true) {
+  const changed = tab !== state.settingsTab;
   state.settingsTab = tab;
   document.querySelectorAll(".sheet-tab").forEach(b => {
     const on = b.dataset.tab === tab;
@@ -6597,6 +6614,8 @@ function setSettingsTab(tab, rerender = true) {
     b.tabIndex = on ? 0 : -1;
   });
   if (rerender || state.settingsOpen) renderSettingsBody();
+  if (changed) document.getElementById("sheetBody").scrollTop = 0;
+  if (tab === "plans" && !state.planSettings.editor) loadPlanSettings();
   /* H11 settings */
   h11EnsureSettingsTabExtras(tab);
 }
@@ -6606,7 +6625,7 @@ async function refreshSettingsData() {
   const res = await window.pywebview.api.get_settings_data();
   if (res && res.ok) {
     state.settingsData = res;
-    renderSettingsBody();
+    if (state.settingsTab !== "plans") renderSettingsBody();
   } else if (res && res.error) {
     showToast(res.error);
   }
@@ -6694,9 +6713,181 @@ function updatesHtml() {
     </div>`;
 }
 
+function renderOpenPlanSettings() {
+  if (state.settingsOpen && state.settingsTab === "plans") renderSettingsBody();
+}
+
+async function loadPlanSettings() {
+  const settings = state.planSettings;
+  if (state.demo || !apiHas("get_plan_settings") || settings.loading || settings.saving) return;
+  settings.loading = true;
+  settings.error = "";
+  renderOpenPlanSettings();
+  try {
+    const response = await window.pywebview.api.get_plan_settings();
+    if (!response?.ok) throw new Error(response?.error || "Could not load plans.");
+    settings.data = response.result;
+  } catch (error) {
+    settings.data = null;
+    settings.error = error.message || "Could not load plans.";
+  } finally {
+    settings.loading = false;
+    renderOpenPlanSettings();
+  }
+}
+
+function planField(label, control) {
+  return `<label class="editor-field"><span class="editor-label">${label}</span>${control}</label>`;
+}
+
+function planEditorHtml(editor, data, busy) {
+  const { operation, values, preview } = editor;
+  const text = (name, attributes = "") => `<input class="text-input" name="${name}" value="${esc(values[name] || "")}" ${attributes} ${busy ? "disabled" : ""}>`;
+  const select = (name, options, label) => `<select class="text-input" name="${name}" ${busy ? "disabled" : ""}>${options.map(value =>
+    `<option value="${esc(value)}" ${value === values[name] ? "selected" : ""}>${esc(label(value))}</option>`).join("")}</select>`;
+  let fields = "";
+  if (preview) {
+    fields = `<div class="source-meta">${esc(preview.from)} to ${esc(preview.through)}<br>Accrued cost $${esc(preview.before_usd)} → $${esc(preview.after_usd)}</div>`;
+  } else {
+    if (operation === "add" || operation === "correct") {
+      fields += planField("Plan name", text("name", 'required maxlength="80"'));
+      fields += planField("Provider", select("tool_key", data.tools, key => diagDisplayName(key) || key));
+    }
+    if (operation !== "end") {
+      fields += planField("Price in USD", text("amount_usd", 'type="number" required min="0" max="1000000" step="0.01"'));
+      fields += planField("Billing interval", select("cadence", data.cadences, key => ({ monthly: "Monthly", quarterly: "Quarterly", annual: "Annual" })[key] || key));
+    }
+    if (operation === "schedule") fields += planField("New price starts", text("effective_date", `type="date" required min="${esc(data.today)}"`));
+    if (operation === "add" || operation === "correct") fields += planField("First active day", text("start_date", 'type="date" required'));
+    if (operation !== "schedule") fields += planField(operation === "end" ? "Last active day" : "Last active day (optional)", text("end_date", `type="date" ${operation === "end" ? "required" : ""}`));
+    if (operation === "end") fields += '<div class="editor-hint">The plan accrues through this date. Manage billing with your provider.</div>';
+  }
+  const title = { add: "Add plan", schedule: "Change price", end: "End plan", correct: "Correct term" }[operation];
+  const save = preview ? "Confirm correction" : (operation === "correct" ? "Preview correction" : title);
+  return `<div class="wf-card"><form class="plan-settings-row" id="planEditor">
+    <div class="source-name">${title}${editor.name ? ` · ${esc(editor.name)}` : ""}</div>${fields}
+    <div class="editor-actions">
+      <button class="btn-secondary" id="cancelPlanEditBtn" type="button" ${busy ? "disabled" : ""}>${preview ? "Back" : "Cancel"}</button>
+      <button class="btn-primary" type="submit" ${busy ? "disabled" : ""}>${busy ? "Saving…" : save}</button>
+    </div></form></div>`;
+}
+
+function planSettingsHtml() {
+  const { data, loading, saving, editor, error } = state.planSettings;
+  if (state.demo || !apiHas("get_plan_settings")) return '<div class="setting-note">Plan editing is unavailable here.</div>';
+  const status = error ? `<div class="setting-note err" role="alert">${esc(error)}</div>` : "";
+  if (loading) return '<div class="setting-note" role="status">Loading plans…</div>';
+  if (!data) return `${status}<div><button class="btn-secondary" id="reloadPlansBtn" type="button">Reload plans</button></div>`;
+  const rows = data.plans.map(plan => {
+    const current = plan.terms.find(term => term.status === "active");
+    const term = current || plan.terms.find(item => item.status === "scheduled") || plan.terms.at(-1);
+    const action = (op, label, item = term) => `<button class="btn-secondary" type="button" data-plan-action="${op}" data-plan-id="${Number(plan.id)}" data-term-id="${Number(item.id)}">${label}</button>`;
+    const price = item => planPrice({ amountUsd: Number(item.amount_usd) || null, cadence: item.cadence });
+    return `<div class="plan-settings-row">
+      <div class="source-name">${esc(term.name)}</div>
+      <div class="source-meta">${esc(price(term))} · ${esc(term.status)}</div>
+      <div class="editor-actions">${current ? action("schedule", "Change price") : ""}${term.status !== "ended" ? action("end", "End plan") : ""}</div>
+      <details><summary>History</summary>${plan.terms.map(item => `<div class="editor-actions">
+        <span class="source-meta">${esc(item.start_date)} · ${esc(price(item))}</span>${action("correct", "Correct", item)}</div>`).join("")}</details>
+    </div>`;
+  }).join("");
+  return `${status}${editor ? planEditorHtml(editor, data, saving) : `
+    <div class="wf-card"><div class="card-header">
+      <span class="card-title">${data.authority === "local" ? "Plans on this computer" : "Plans on your hub"}</span>
+      <button class="btn-secondary" id="addPlanBtn" type="button" data-plan-action="add">Add plan</button>
+    </div>${rows || '<div class="plan-settings-row source-meta">No plans configured.</div>'}</div>
+    <div><button class="btn-secondary" id="reloadPlansBtn" type="button">Reload plans</button></div>`}`;
+}
+
+function editPlan(operation, planId, termId) {
+  const settings = state.planSettings;
+  if (!settings.data || settings.saving) return;
+  const plan = settings.data.plans.find(item => item.id === planId);
+  const term = plan?.terms.find(item => item.id === termId);
+  if (operation !== "add" && !term) return;
+  const today = settings.data.today;
+  let effectiveDate = today;
+  if (operation === "schedule" && term.start_date === today) {
+    const nextDay = new Date(`${today}T00:00:00Z`);
+    nextDay.setUTCDate(nextDay.getUTCDate() + 1);
+    effectiveDate = nextDay.toISOString().slice(0, 10);
+  }
+  const values = {
+    name: term?.name || "", tool_key: term?.tool_key || settings.data.tools[0],
+    amount_usd: term?.amount_usd || "", cadence: term?.cadence || "monthly",
+    start_date: term?.start_date || today, effective_date: effectiveDate,
+    end_date: operation === "end" ? (term.start_date > today ? term.start_date : today) : (term?.end_date || ""),
+  };
+  settings.error = "";
+  settings.editor = { operation, values, plan, term, name: term?.name, authority: settings.data.authority };
+  renderOpenPlanSettings();
+  document.getElementById("planEditor").querySelector("input")?.focus();
+}
+
+function cancelPlanEdit() {
+  const settings = state.planSettings;
+  if (!settings.editor || settings.saving) return;
+  if (settings.editor.preview) settings.editor.preview = null;
+  else settings.editor = null;
+  settings.error = "";
+  renderOpenPlanSettings();
+  (document.querySelector("#planEditor input") || document.getElementById("addPlanBtn"))?.focus();
+}
+
+async function submitPlanEdit(form) {
+  const settings = state.planSettings;
+  const editor = settings.editor;
+  if (!editor || settings.saving) return;
+  const { operation, values, plan, term, preview, authority } = editor;
+  Object.assign(values, Object.fromEntries(new FormData(form)));
+  const { name, tool_key, amount_usd, cadence, start_date, end_date, effective_date } = values;
+  const body = { operation };
+  if (plan) Object.assign(body, { plan_id: plan.id, expected_version: plan.version });
+  if (operation === "schedule") Object.assign(body, { effective_date, values: { amount_usd, cadence } });
+  else if (operation === "end") body.end_date = end_date;
+  else body.values = { name, tool_key, amount_usd, cadence, start_date, end_date: end_date || null };
+  if (operation === "correct") {
+    Object.assign(body, { term_id: term.id, preview: !preview });
+    if (preview) Object.assign(body, { confirmed: true, preview_token: preview.preview_token });
+  }
+  const fingerprint = JSON.stringify(body);
+  if (editor.request?.fingerprint !== fingerprint) {
+    editor.request = { fingerprint, id: "desktop-plan-" + crypto.getRandomValues(new Uint32Array(4)).join("-") };
+  }
+  body.request_id = editor.request.id;
+  settings.error = "";
+  settings.saving = true;
+  renderOpenPlanSettings();
+  let saved = false;
+  try {
+    const response = await window.pywebview.api.change_plan(authority, body);
+    if (!response?.ok) throw new Error(response?.error || "Could not save the plan.");
+    if (body.preview) editor.preview = response.result;
+    else { settings.editor = null; saved = true; }
+  } catch (error) {
+    settings.error = error.message || "Could not save the plan.";
+  } finally {
+    settings.saving = false;
+    renderOpenPlanSettings();
+  }
+  if (saved) {
+    showToast("Plan saved");
+    await loadPlanSettings();
+    if (state.settingsOpen && state.settingsTab === "plans") document.getElementById("addPlanBtn")?.focus();
+    loadUsage(false, false);
+  } else if (editor.preview && body.preview) {
+    document.querySelector('#planEditor button[type="submit"]')?.focus();
+  }
+}
+
 function paintSettingsBody() {
   const body = document.getElementById("sheetBody");
   const tab = state.settingsTab;
+
+  if (tab === "plans") {
+    body.innerHTML = planSettingsHtml();
+    return;
+  }
 
   if (tab === "sources") {
     const conns = state.settingsData.connections || [];
@@ -8669,9 +8860,26 @@ document.getElementById("pinBtn").addEventListener("click", window.toggleTopmost
 document.getElementById("scopeBackdrop").addEventListener("click", () => closeScopePopover(true));
 document.getElementById("refreshBtn").addEventListener("click", () => loadUsage(true, true));
 document.getElementById("settingsBtn").addEventListener("click", () => openSettings("sources"));
+document.getElementById("managePlansBtn").addEventListener("click", (event) => openSettings("plans", event.currentTarget));
 document.getElementById("settingsDoneBtn").addEventListener("click", () => closeSettings(true));
 document.querySelectorAll(".sheet-tab").forEach(btn => {
   btn.addEventListener("click", () => setSettingsTab(btn.dataset.tab));
+});
+document.getElementById("sheetBody").addEventListener("click", (event) => {
+  const button = event.target.closest("button");
+  if (!button || state.settingsTab !== "plans") return;
+  if (button.id === "reloadPlansBtn") loadPlanSettings();
+  else if (button.id === "cancelPlanEditBtn") cancelPlanEdit();
+  else if (button.dataset.planAction) editPlan(button.dataset.planAction, Number(button.dataset.planId), Number(button.dataset.termId));
+});
+document.getElementById("sheetBody").addEventListener("input", (event) => {
+  const editor = state.planSettings.editor;
+  if (editor && event.target.form?.id === "planEditor") editor.values[event.target.name] = event.target.value;
+});
+document.getElementById("sheetBody").addEventListener("submit", (event) => {
+  if (event.target.id !== "planEditor") return;
+  event.preventDefault();
+  submitPlanEdit(event.target);
 });
 document.querySelector(".sheet-tabs").addEventListener("keydown", (e) => {
   const tabs = Array.from(document.querySelectorAll(".sheet-tab"));
@@ -8708,6 +8916,11 @@ document.addEventListener("keydown", (e) => {
   if (state.diagnosticsOpen && !state.settingsOpen) { e.preventDefault(); closeDiagnostics(true); return; }
   if (state.settingsOpen) {
     e.preventDefault();
+    if (state.settingsTab === "plans") {
+      if (state.planSettings.editor) cancelPlanEdit();
+      else closeSettings(true);
+      return;
+    }
     if (state.editingSource) {
       const src = state.editingSource;
       state.editingSource = null;
