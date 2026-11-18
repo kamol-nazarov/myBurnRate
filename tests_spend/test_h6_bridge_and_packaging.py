@@ -207,14 +207,14 @@ def test_desktop_bridge_public_method_allowlist_and_removed_setup_routes(
 
     expected_methods = {
         "add_profile", "attach", "attach_host", "attach_surfaces", "begin_resize", "browse_location",
-        "call_page", "change_password", "check_for_update", "close_window",
+        "call_page", "change_password", "change_plan", "check_for_update", "close_window",
         "complete_onboarding", "confirm_suggested_plan", "connect_hub_account",
         "connect_source", "copy_image_to_clipboard", "create_account",
         "defer_onboarding", "disconnect_source", "dismiss_candidate",
         "dismiss_email_prompt", "fetch_alert_providers", "fetch_analytics_summary",
         "fetch_entity_detail", "fetch_usage", "get_diagnostics_data",
         "get_diagnostics_report", "get_initial_state", "get_notification_settings",
-        "get_onboarding_data", "get_settings_data", "get_setup_check",
+        "get_onboarding_data", "get_plan_settings", "get_settings_data", "get_setup_check",
         "get_setup_progress", "get_setup_scan", "get_week_share_data",
         "install_update", "list_computers", "minimize_window", "opacity_state",
         "open_external", "quit_app", "remove_computer", "remove_profile",
