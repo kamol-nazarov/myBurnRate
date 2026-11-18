@@ -157,15 +157,17 @@ def test_existing_loader_contracts_under_strict_boundaries(case):
 def test_pure_module_import_and_legacy_sanitizer_surface():
     from spend_app import source_evidence
 
-    # Read only this tracked module; execute its fresh import body with external
-    # access denied and imports restricted to the sole standard-library dependency.
+    # Read only this tracked module and execute it with external access denied.
+    # Check imports made by the module without constraining lazy stdlib imports.
     source = Path(source_evidence.__file__).read_text()
     real_import = builtins.__import__
 
     def only_pure(name, *args, **kwargs):
-        assert name in {"re", "spend_app.redact", "urllib.parse", "pathlib", "__future__"}, (
-            f"unexpected pure-layer dependency: {name}"
-        )
+        module_globals = args[0] if args else kwargs.get("globals")
+        if module_globals and module_globals.get("__name__") == "source_evidence_isolated":
+            assert name in {"re", "spend_app.redact", "urllib.parse", "pathlib", "__future__"}, (
+                f"unexpected pure-layer dependency: {name}"
+            )
         return real_import(name, *args, **kwargs)
 
     with isolated(), patch("builtins.__import__", only_pure):
