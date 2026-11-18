@@ -1,4 +1,5 @@
 """Atomic, exact-ID compatibility for repaired event parsers."""
+from collections import defaultdict
 from dataclasses import dataclass, replace
 
 from spend_app.adapters.common import stable_id
@@ -15,6 +16,7 @@ class Observation:
     components: tuple = ()
     field_ranks: tuple = ()
     field_conflicts: tuple = ()
+    request_envelopes: tuple = ()
 
 
 def stored_event(connection, raw_id):
@@ -23,6 +25,76 @@ def stored_event(connection, raw_id):
         if row:
             return dict(row)
     return None
+
+
+def _identity_key(source, canonical):
+    return "usage.identity.v1:" + stable_id(source, canonical)
+
+
+def _alias_key(source, alias):
+    return "usage.alias.v1:" + stable_id(source, alias)
+
+
+def _link_claude_requests(connection, observations, issues):
+    """Link a missing request ID only through its observed assistant envelope."""
+    source = "claude_local"
+    envelopes = defaultdict(set)
+    for item in observations:
+        for scope, fallback, explicit in item.request_envelopes:
+            envelopes[scope, fallback].add(explicit)
+
+    candidates = defaultdict(set)
+    fallback_scopes = defaultdict(set)
+    for (scope, fallback), current in envelopes.items():
+        key = _identity_key(source, scope)
+        stored = read_meta(connection, key, [])
+        seen = set(stored) | current
+        if None in seen:
+            fallback_scopes[fallback].add(scope)
+            candidates[fallback].update((scope, choice) for choice in seen if choice)
+        # Two different explicit requests are enough to keep this envelope
+        # ambiguous. Bound the metadata even for conflicting transcript copies.
+        state = ([None] if None in seen else []) + sorted(choice for choice in seen if choice)[:2]
+        if state != stored:
+            write_meta(connection, key, state)
+
+    redirects = {}
+    for fallback, scopes in fallback_scopes.items():
+        # The fallback key predates scoped UUIDs. If different envelopes
+        # contributed to that same row, one match cannot identify the whole row.
+        scope_key = _identity_key(source, stable_id("claude-fallback-scopes", fallback))
+        previous = read_meta(connection, scope_key, [])
+        known_scopes = sorted(scopes | set(previous))[:2]
+        if known_scopes != previous:
+            write_meta(connection, scope_key, known_scopes)
+        options = candidates[fallback]
+        if not options:
+            continue
+        if len(options) != 1 or len(known_scopes) != 1:
+            issues.append("claude_envelope_request_ambiguity")
+            continue
+        _, explicit = next(iter(options))
+        owner = read_meta(connection, _alias_key(source, fallback), None)
+        if owner not in (None, fallback, explicit):
+            issues.append("claude_envelope_request_ambiguity")
+            continue
+        redirects[fallback] = explicit
+
+    # A formerly proven link is durable. Replaying the fallback cannot revive
+    # its duplicate even if the replay omits the envelope evidence.
+    normalized, former_ids = [], defaultdict(list)
+    for item in observations:
+        canonical = item.row.raw_id
+        if item.row.source == source:
+            explicit = redirects.get(canonical) or read_meta(connection, _alias_key(source, canonical), None)
+            if explicit and explicit != canonical:
+                redirects[canonical] = explicit
+                item = replace(item, row=replace(item.row, raw_id=explicit))
+        normalized.append(item)
+    for fallback, explicit in redirects.items():
+        if fallback != explicit:
+            former_ids[explicit].append(fallback)
+    return normalized, former_ids
 
 
 def reconcile(connection, observations, issues=None):
@@ -38,6 +110,7 @@ def reconcile(connection, observations, issues=None):
                     components=observation.components + (("request_equivalent_counter", raw_id),))
         linked.append(observation)
     observations = guard_counter_fragments(connection, linked, issues)
+    observations, claude_former_ids = _link_claude_requests(connection, observations, issues)
     grouped = {}
     claude_groups = {}
     for observation in observations:
@@ -62,27 +135,37 @@ def reconcile(connection, observations, issues=None):
         source = observation.row.source
         namespace = source
         allowed_sources = {source}
-        key = "usage.identity.v1:" + stable_id(namespace, canonical)
+        key = _identity_key(namespace, canonical)
         record = read_meta(connection, key, None)
-        if source == "claude_local":
-            observation = merge_observations([observation], record=record,
-                existing=stored_event(connection, record["raw_id"] if record else canonical), issues=issues)
-        rank = [observation.revision, int(observation.row.telemetry_complete), observation.authority]
-        if record and rank < record["rank"]:
-            issues.append("older_usage_revision_ignored")
-            continue
         target = record["raw_id"] if record else canonical
         found = []
-        for alias in dict.fromkeys((canonical,) + observation.aliases):
-            owner_key = "usage.alias.v1:" + stable_id(namespace, alias)
+        former_ids = claude_former_ids.get(canonical, [])
+        if source == "claude_local":
+            existing = stored_event(connection, target)
+            saved = [(record, existing)]
+            for former_id in former_ids:
+                previous_record = read_meta(connection, _identity_key(source, former_id), None)
+                previous_target = previous_record["raw_id"] if previous_record else former_id
+                previous_event = stored_event(connection, previous_target)
+                if previous_event and previous_event["source"] == source:
+                    found.append(previous_target)
+                    if previous_target != target:
+                        saved.append((previous_record, previous_event))
+            observation = merge_observations([observation], saved=saved, issues=issues)
+        rank = [observation.revision, int(observation.row.telemetry_complete), observation.authority]
+        if source != "claude_local" and record and rank < record["rank"]:
+            issues.append("older_usage_revision_ignored")
+            continue
+        for alias in dict.fromkeys((canonical, *former_ids, *observation.aliases)):
+            owner_key = _alias_key(namespace, alias)
             owner = read_meta(connection, owner_key, None)
             if owner is not None and owner != canonical:
                 proven_counter = source == "codex_local" and dict(observation.components).get("request_equivalent_counter") == alias
-                if not (proven_counter and owner == alias):
+                if not ((proven_counter or alias in former_ids) and owner == alias):
                     if proven_counter:
                         issues.append("codex_counter_request_ownership_conflict")
                     continue
-                old_identity = read_meta(connection, "usage.identity.v1:" + stable_id(source, owner), None)
+                old_identity = read_meta(connection, _identity_key(source, owner), None)
                 if old_identity:
                     old_target = old_identity["raw_id"]
                     old_event = stored_event(connection, old_target)

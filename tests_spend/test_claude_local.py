@@ -3,6 +3,8 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from spend_app.adapters.claude_local import ingest, parse_file, reset_file_cache
 from spend_app.db import connect
 from spend_app.limits import _claude_active_sessions
@@ -10,6 +12,230 @@ from spend_app.pricing import PricingEngine
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _assistant(*, request_id=None, second=2, model="claude-opus-5", usage=None):
+    record = {
+        "type": "assistant", "timestamp": f"2026-09-01T00:00:{second:02d}Z",
+        "sessionId": "session", "uuid": "envelope",
+        "message": {
+            "id": "message", "model": model,
+            "usage": usage if usage is not None else {
+                "input_tokens": 1_000, "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 0, "output_tokens": 100,
+            },
+        },
+    }
+    if request_id is not None:
+        record["requestId"] = request_id
+    return record
+
+
+def _ingest_assistants(path, database, pricing, *records):
+    path.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+    return ingest(database_path=database, pricing=pricing, session_glob=str(path))
+
+
+def _claude_rows(database, lane="usage_events"):
+    with connect(database) as connection:
+        return [dict(row) for row in connection.execute(
+            "SELECT * FROM " + lane + " WHERE source='claude_local' ORDER BY id"
+        )]
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_request_id_enrichment_keeps_one_charge_through_restart(tmp_path, reverse):
+    database = tmp_path / "spend.db"
+    pricing = PricingEngine.load(ROOT / "pricing")
+    legacy, explicit = _assistant(), _assistant(request_id="explicit")
+    first, second = (explicit, legacy) if reverse else (legacy, explicit)
+    _ingest_assistants(tmp_path / "first.jsonl", database, pricing, first)
+    first_id = _claude_rows(database)[0]["raw_id"]
+    reset_file_cache()
+    _ingest_assistants(tmp_path / "second.jsonl", database, pricing, second)
+    reset_file_cache()
+    _ingest_assistants(tmp_path / "replay.jsonl", database, pricing, legacy, explicit)
+    row, = _claude_rows(database)
+    assert row["raw_id"] == first_id
+    assert (row["input_tokens"], row["output_tokens"]) == (1_000, 100)
+    assert row["computed_cost_usd"] == pytest.approx(0.0075)
+    assert _claude_rows(database, "unpriced_usage_events") == []
+
+    # An explicit request remains independent even when the message ID and
+    # envelope UUID were reused by its producer.
+    _ingest_assistants(tmp_path / "other.jsonl", database, pricing, _assistant(request_id="another"))
+    assert len(_claude_rows(database)) == 2
+
+
+def test_request_id_enrichment_moves_unpriced_event_on_same_identity(tmp_path):
+    database = tmp_path / "spend.db"
+    pricing = PricingEngine.load(ROOT / "pricing")
+    _ingest_assistants(tmp_path / "legacy.jsonl", database, pricing,
+                       _assistant(model="", usage={"input_tokens": 1_000, "output_tokens": 100}))
+    unpriced, = _claude_rows(database, "unpriced_usage_events")
+    _ingest_assistants(tmp_path / "explicit.jsonl", database, pricing,
+                       _assistant(request_id="explicit", second=3))
+    priced, = _claude_rows(database)
+    assert priced["raw_id"] == unpriced["raw_id"]
+    assert priced["computed_cost_usd"] == pytest.approx(0.0075)
+    assert _claude_rows(database, "unpriced_usage_events") == []
+
+
+def test_envelope_proof_is_required_for_request_id_link(tmp_path):
+    database = tmp_path / "spend.db"
+    pricing = PricingEngine.load(ROOT / "pricing")
+    unrelated = {**_assistant(request_id="explicit"), "uuid": "different-envelope"}
+    _ingest_assistants(tmp_path / "legacy.jsonl", database, pricing, _assistant())
+    _ingest_assistants(tmp_path / "explicit.jsonl", database, pricing, unrelated)
+    assert len(_claude_rows(database)) == 2
+
+
+def test_request_id_cannot_claim_a_fallback_shared_by_distinct_envelopes(tmp_path):
+    database = tmp_path / "spend.db"
+    pricing = PricingEngine.load(ROOT / "pricing")
+    first, other = _assistant(), {**_assistant(), "uuid": "second-envelope"}
+    _ingest_assistants(tmp_path / "first.jsonl", database, pricing, first)
+    _ingest_assistants(tmp_path / "second.jsonl", database, pricing, other)
+    explicit = _assistant(request_id="explicit")
+    result = _ingest_assistants(tmp_path / "known.jsonl", database, pricing, explicit)
+    assert len(_claude_rows(database)) == 2
+    assert "claude_envelope_request_ambiguity" in result["issues"]
+
+
+def test_replaying_old_duplicate_charges_journals_correction_to_hub(tmp_path, monkeypatch):
+    from spend_app.adapters import claude_local, event_identity
+    from spend_app.db import initialize
+    from spend_app.sync import apply_sync_push, export_sync_batch
+
+    database, hub = tmp_path / "spoke.db", tmp_path / "hub.db"
+    initialize(hub)
+    pricing = PricingEngine.load(ROOT / "pricing")
+    fixture = tmp_path / "duplicate.jsonl"
+    legacy, explicit = _assistant(), _assistant(request_id="explicit")
+    now = datetime(2026, 9, 2, tzinfo=UTC)
+    # Simulate the pre-repair parser's persisted usage rows and file cache,
+    # while leaving both underlying transcript records available for replay.
+    with monkeypatch.context() as old:
+        old.setattr(claude_local, "PARSER_VERSION", "claude-message-3")
+        old.setattr(event_identity, "_link_claude_requests", lambda _, observations, issues: (observations, {}))
+        _ingest_assistants(fixture, database, pricing, legacy, explicit)
+    assert len(_claude_rows(database)) == 2
+    initial, cursor = export_sync_batch(database)
+    apply_sync_push(hub, pricing, machine_id="claude-spoke", body=initial, now=now)
+    assert len(_claude_rows(hub)) == 2
+
+    repair = ingest(database_path=database, pricing=pricing, session_glob=str(fixture))
+    assert repair["files"] == 1  # The parser-version bump invalidated its old file cache.
+    corrected, _ = export_sync_batch(database, cursor=cursor)
+    assert len(_claude_rows(database)) == 1
+    assert any(change["kind"] == "delete" for change in corrected["usageChanges"]["changes"])
+    for _ in range(2):
+        apply_sync_push(hub, pricing, machine_id="claude-spoke", body=corrected, now=now)
+    row, = _claude_rows(hub)
+    assert row["computed_cost_usd"] == pytest.approx(0.0075)
+
+
+def test_older_model_copy_cannot_reprice_newer_observation(tmp_path):
+    database = tmp_path / "spend.db"
+    pricing = PricingEngine.load(ROOT / "pricing")
+    usage = {"input_tokens": 1_000_000, "cache_read_input_tokens": 0,
+             "cache_creation_input_tokens": 0, "output_tokens": 100}
+    newer = _assistant(request_id="explicit", usage=usage)
+    older = _assistant(request_id="explicit", second=1, model="claude-sonnet-5", usage=usage)
+    _ingest_assistants(tmp_path / "newer.jsonl", database, pricing, newer)
+    reset_file_cache()
+    for path in ("older.jsonl", "replay.jsonl"):
+        _ingest_assistants(tmp_path / path, database, pricing, older)
+        row, = _claude_rows(database)
+        assert row["model_key"] == "claude-opus-5"
+        assert row["computed_cost_usd"] == pytest.approx(5.0025)
+    corrected = _assistant(request_id="explicit", second=3, model="claude-sonnet-5", usage=usage)
+    _ingest_assistants(tmp_path / "new-authority.jsonl", database, pricing, corrected)
+    row, = _claude_rows(database)
+    assert row["model_key"] == "claude-sonnet-5"
+    assert row["computed_cost_usd"] == pytest.approx(2.001)
+
+
+def test_legacy_model_metadata_requires_current_evidence_to_reprice(tmp_path):
+    from spend_app.adapters.common import stable_id
+    from spend_app.adapters.usage_repair import read_meta, write_meta
+
+    database = tmp_path / "spend.db"
+    pricing = PricingEngine.load(ROOT / "pricing")
+    _ingest_assistants(tmp_path / "initial.jsonl", database, pricing, _assistant(request_id="explicit"))
+    raw_id = _claude_rows(database)[0]["raw_id"]
+    with connect(database) as connection:
+        key = "usage.identity.v1:" + stable_id("claude_local", raw_id)
+        identity = read_meta(connection, key, None)
+        del identity["components"]["model"]
+        del identity["field_ranks"]["model"]
+        write_meta(connection, key, identity)
+    _ingest_assistants(tmp_path / "older.jsonl", database, pricing,
+                       _assistant(request_id="explicit", second=1, model="claude-sonnet-5"))
+    assert _claude_rows(database)[0]["model_key"] == "claude-opus-5"
+    # Replay of the saved revision establishes an independently ranked model.
+    _ingest_assistants(tmp_path / "current.jsonl", database, pricing, _assistant(request_id="explicit"))
+    with connect(database) as connection:
+        assert read_meta(connection, key, None)["components"]["model"] == "claude-opus-5"
+
+
+def test_equal_authority_model_conflict_is_unpriced_until_correction(tmp_path):
+    database = tmp_path / "spend.db"
+    pricing = PricingEngine.load(ROOT / "pricing")
+    _ingest_assistants(tmp_path / "first.jsonl", database, pricing, _assistant(request_id="explicit"))
+    conflict = _assistant(request_id="explicit", model="claude-sonnet-5")
+    _ingest_assistants(tmp_path / "conflicting.jsonl", database, pricing, conflict)
+    assert _claude_rows(database) == []
+    unpriced, = _claude_rows(database, "unpriced_usage_events")
+    assert unpriced["model_key"] == "unknown"
+    assert (unpriced["input_tokens"], unpriced["output_tokens"]) == (1_000, 100)
+    conflict["message"]["stop_reason"] = "end_turn"
+    _ingest_assistants(tmp_path / "authoritative.jsonl", database, pricing, conflict)
+    assert _claude_rows(database)[0]["model_key"] == "claude-sonnet-5"
+    assert _claude_rows(database, "unpriced_usage_events") == []
+
+
+@pytest.mark.parametrize(("five_minutes", "one_hour", "priced_hour", "cost"), [
+    (100_000, 900_000, 900_000, 9.625),
+    (100_000, None, 900_000, 9.625),
+    (1_000_000, None, 0, 6.25),
+    (100_000, 200_000, None, None),
+    (100_000, -1, None, None),
+    (None, None, None, None),
+])
+def test_cache_duration_must_support_exact_charge(tmp_path, five_minutes, one_hour, priced_hour, cost):
+    database = tmp_path / "spend.db"
+    pricing = PricingEngine.load(ROOT / "pricing")
+    parts = (("ephemeral_5m_input_tokens", five_minutes), ("ephemeral_1h_input_tokens", one_hour))
+    usage = {"input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 0,
+             "cache_creation_input_tokens": 1_000_000,
+             "cache_creation": {name: value for name, value in parts if value is not None}}
+    _ingest_assistants(tmp_path / "cache.jsonl", database, pricing, _assistant(usage=usage))
+    if cost is None:
+        assert _claude_rows(database) == []
+        row, = _claude_rows(database, "unpriced_usage_events")
+        assert not row["telemetry_complete"]
+    else:
+        row, = _claude_rows(database)
+        assert row["cache_write_1h_tokens"] == priced_hour
+        assert row["computed_cost_usd"] == pytest.approx(cost)
+        assert row["is_exact"]
+    assert row["cache_write_tokens"] == 1_000_000
+
+
+def test_corrected_total_rederives_one_hour_without_inventing_observation(tmp_path):
+    database = tmp_path / "spend.db"
+    pricing = PricingEngine.load(ROOT / "pricing")
+    usage = {"input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 0,
+             "cache_creation_input_tokens": 1_000_000,
+             "cache_creation": {"ephemeral_5m_input_tokens": 100_000}}
+    _ingest_assistants(tmp_path / "first.jsonl", database, pricing, _assistant(usage=usage))
+    _ingest_assistants(tmp_path / "corrected.jsonl", database, pricing,
+                       _assistant(second=3, usage={"cache_creation_input_tokens": 800_000}))
+    row, = _claude_rows(database)
+    assert row["cache_write_tokens"] == 800_000
+    assert row["cache_write_1h_tokens"] == 700_000
+    assert row["computed_cost_usd"] == pytest.approx(7.625)
 
 
 def write_fixture(path: Path) -> None:

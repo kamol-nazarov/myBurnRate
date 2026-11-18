@@ -261,7 +261,8 @@ def test_reporting_window_revisits_seven_days_with_fixed_hour_boundaries():
 
 def test_new_claude_partial_fragment_does_not_erase_stored_complete_components():
     from spend_app.adapters.event_identity import Observation, reconcile
-    row = replace(schema.parse_message(message()).row, source="claude_local", raw_id="claude-message:one")
+    row = replace(schema.parse_message(message()).row, source="claude_local",
+                  raw_id="claude-message:one", cache_write_1h_tokens=1)
     db = FakeEventDB([row])
     partial = replace(row, input_tokens=0, cached_input_tokens=0, cache_write_tokens=0, output_tokens=3, telemetry_complete=False)
     result = reconcile(db, [Observation(partial, (), 4, "claude_message", components=(("output_tokens", 3),))])
@@ -599,7 +600,11 @@ def reduce_claude(records):
 
 def test_claude_partial_to_complete_and_authoritative_decrease():
     first = claude_message(1, usage={"input_tokens": 10, "output_tokens": 0})
-    completed = claude_message(2)
+    completed = claude_message(2, usage={
+        "input_tokens": 10, "cache_read_input_tokens": 2,
+        "cache_creation_input_tokens": 3, "output_tokens": 5,
+        "cache_creation": {"ephemeral_5m_input_tokens": 3, "ephemeral_1h_input_tokens": 0},
+    })
     corrected = claude_message(3, usage={"output_tokens": 4})
     events, _ = reduce_claude([first, completed, corrected])
     assert len(events) == 1

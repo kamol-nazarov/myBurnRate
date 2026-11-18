@@ -88,11 +88,15 @@ for start during reverse reconciliation. Older records without sufficient start
 evidence report ambiguous overlap and defer the cumulative checkpoint, including
 its logical/path progress, until source replay provides the missing evidence.
 
-Claude field values retain their individual revisions across files, batches
-and saved state. Omissions preserve known fields and one-hour cache writes;
-explicit zeros and downward corrections remain effective. Equal-authority
-conflicts and invalid duration totals remain incomplete rather than being
-resolved by maximum counts. ZCode transcript totals (`total`, `totalTokens`,
+Claude field values, including the model, retain their individual revisions
+across files, batches and saved state. A transcript with a newly supplied
+request ID shares the existing charge when its scoped assistant envelope proves
+the match. Different explicit requests remain separate. Omissions preserve
+observed values. For cache writes, a measured total and a valid count for one
+duration can establish the other. An unknown or conflicting split preserves
+measured tokens with incomplete cost. Retained transcripts replay after a
+parser upgrade to repair historical records where the source proves a
+correction. ZCode transcript totals (`total`, `totalTokens`,
 `total_tokens`) constrain component attribution: a contradictory 15-token
 report remains 15 unclassified tokens, while an evidenced additive 21-token
 report remains 21. These changes use compatible optional metadata in `app_meta`,
