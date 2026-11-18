@@ -1,0 +1,139 @@
+"""Immutable usage journal checkpoints shared by the spoke and hub."""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass
+
+
+_MARK = re.compile(r"[0-9a-f]{32}")
+_STREAM = re.compile(r"(?:dev-)?[0-9a-f]{32}")
+_HUB_HEAD_PREFIX = "sync.received.usage_head.v1:"
+
+
+def journal_mark(connection, seq: int) -> str | None:
+    row = connection.execute("SELECT mark FROM usage_change_marks WHERE seq=?", (seq,)).fetchone()
+    return row[0] if row else None
+
+
+def _valid_mark(value: object) -> bool:
+    return isinstance(value, str) and _MARK.fullmatch(value) is not None
+
+
+def _valid_stream(value: object) -> bool:
+    return isinstance(value, str) and _STREAM.fullmatch(value) is not None
+
+
+def _valid_head(value: object) -> bool:
+    return (
+        isinstance(value, dict)
+        and _valid_stream(value.get("stream"))
+        and type(value.get("through")) is int
+        and value["through"] >= 0
+        and (value.get("mark") is None or _valid_mark(value["mark"]))
+    )
+
+
+@dataclass(frozen=True)
+class UsageWindow:
+    """Proposed transaction boundary, or the current head for a retry."""
+
+    accepted: bool
+    head: dict
+    marks: dict
+    revisions: dict
+    legacy_through: int = 0
+
+
+def hub_usage_head(connection, machine_id: str) -> dict | None:
+    row = connection.execute(
+        "SELECT value FROM app_meta WHERE key=?", (_HUB_HEAD_PREFIX + machine_id,)
+    ).fetchone()
+    return json.loads(row[0]) if row else None
+
+
+def choose_usage_window(connection, machine_id: str, legacy_ack: int, batch: dict, proof: object) -> UsageWindow:
+    """Check lineage and range under the same writer lock as the event updates."""
+    if not isinstance(proof, dict) or not _valid_stream(proof.get("stream")):
+        raise ValueError("Invalid usage continuation stream.")
+    after, through = batch["after"], batch["through"]
+    marks, revisions = {}, {}
+    for field, destination in (("marks", marks), ("revisions", revisions)):
+        values = proof.get(field)
+        if not isinstance(values, list):
+            raise ValueError("Invalid usage continuation checkpoints.")
+        previous = after
+        for value in values:
+            if not isinstance(value, list) or len(value) != 2:
+                raise ValueError("Invalid usage continuation checkpoint.")
+            seq, mark = value
+            if type(seq) is not int or not previous < seq <= through or not _valid_mark(mark):
+                raise ValueError("Invalid usage continuation checkpoint.")
+            destination[seq] = mark
+            previous = seq
+    after_mark = proof.get("afterMark")
+    if (after_mark is not None and not _valid_mark(after_mark)) or (
+        through != after and through not in marks
+    ):
+        raise ValueError("Usage continuation has an incomplete range.")
+    if any(seq not in marks for seq in revisions):
+        raise ValueError("Usage revisions lack journal checkpoints.")
+
+    stream = proof["stream"]
+    existing = hub_usage_head(connection, machine_id)
+    legacy_through = 0
+    if existing is None:
+        if after != legacy_ack:
+            legacy_head = {"stream": None, "through": legacy_ack, "mark": None}
+            if proof.get("rebase") != legacy_head or after > legacy_ack:
+                return UsageWindow(False, legacy_head, {}, {})
+            # A v1 hub knew only a number. Verify each overlapping change
+            # against storage before adopting its first provable checkpoint.
+            legacy_through = legacy_ack
+    elif stream == existing["stream"]:
+        if after != existing["through"] or after_mark != existing.get("mark"):
+            return UsageWindow(False, existing, {}, {})
+        legacy_through = existing.get("legacyThrough", 0)
+    else:
+        # A restored spoke starts a new branch using a compare-and-swap
+        # against the hub head. A delayed batch from the previous branch
+        # cannot apply after this transition.
+        if proof.get("rebase") != existing or after > existing["through"]:
+            return UsageWindow(False, existing, {}, {})
+        legacy_through = existing.get("legacyThrough", 0)
+
+    head = {"stream": stream, "through": through, "mark": marks.get(through, after_mark)}
+    if through < legacy_through:
+        head["legacyThrough"] = legacy_through
+    return UsageWindow(True, head, marks, revisions, legacy_through)
+
+
+def received_revision(connection, machine_id: str, mark: str) -> bool:
+    return connection.execute(
+        "SELECT 1 FROM sync_usage_receipts WHERE machine_id=? AND mark=?", (machine_id, bytes.fromhex(mark))
+    ).fetchone() is not None
+
+
+def commit_usage_window(connection, machine_id: str, window: UsageWindow) -> None:
+    marks = set(window.marks.values()) | set(window.revisions.values())
+    connection.executemany(
+        "INSERT OR IGNORE INTO sync_usage_receipts(machine_id,mark) VALUES(?,?)",
+        ((machine_id, bytes.fromhex(mark)) for mark in marks),
+    )
+    connection.execute(
+        "INSERT INTO app_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (_HUB_HEAD_PREFIX + machine_id, json.dumps(window.head)),
+    )
+
+
+def verified_reply(connection, head: object, offered: dict, after: int) -> bool:
+    if not _valid_head(head) or head["through"] < after:
+        return False
+    if head["through"] == after and head["stream"] == offered["stream"]:
+        return head["mark"] == offered["afterMark"]
+    return head["mark"] is not None and head["mark"] == journal_mark(connection, head["through"])
+
+
+def can_rebase(head: object, after: int) -> bool:
+    return _valid_head(head) and head["mark"] is not None and head["through"] >= after

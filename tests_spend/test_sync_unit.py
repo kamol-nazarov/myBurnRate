@@ -232,7 +232,7 @@ def test_machine_rename_and_sync_push_reject_case_insensitive_collisions(
     assert push_reuse.status_code == 200
 
     machines_by_id = {m["id"]: m for m in client.get("/api/machines", headers=admin_headers).json()["machines"]}
-    assert machines_by_id[alpha_id]["name"] == "alphaBox"
+    assert machines_by_id[alpha_id]["name"] == "ALPHABOX"
     assert machines_by_id[beta_id]["name"] == "gammabox"
     assert machines_by_id[delta["machine"]["id"]]["name"] == "EPSILONBOX"
 

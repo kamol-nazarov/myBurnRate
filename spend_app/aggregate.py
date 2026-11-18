@@ -1678,15 +1678,33 @@ def _capacity_from_rows(
     in_use: set[str] | None = None,
 ) -> list[dict]:
     """Capacity cards from quota rows; ``in_use`` (providers_in_use) hides the rest."""
-    latest: dict[tuple[str, str], dict] = {}
+    latest_by_origin: dict[tuple[str, str, str], dict] = {}
+    oldest = datetime.min.replace(tzinfo=UTC)
     for row in rows:
         if row["provider_key"] == "cursor":
             continue
         if in_use is not None and row["provider_key"] not in in_use:
             continue
-        key = (row["provider_key"], row["limit_key"])
+        source = str(row.get("source") or "")
+        independent = source.startswith("sync:") or row["limit_key"] == "balance"
+        key = (row["provider_key"], row["limit_key"], source if independent else "")
+        previous = latest_by_origin.get(key)
+        if previous is None or (parse_utc(row["polled_at"]) or oldest) >= (
+            parse_utc(previous["polled_at"]) or oldest
+        ):
+            latest_by_origin[key] = row
+
+    latest: dict[tuple[str, str], dict] = {}
+    for (provider_key, limit_key, _source), row in latest_by_origin.items():
+        key = (provider_key, limit_key)
         previous = latest.get(key)
-        if previous is None or row["polled_at"] >= previous["polled_at"]:
+        # An unavailable reading supersedes the earlier balance from its
+        # own origin. It does not invalidate a different machine's balance.
+        rank = (limit_key == "balance" and row["unit"] != "unavailable", parse_utc(row["polled_at"]) or oldest)
+        if previous is None or rank >= (
+            limit_key == "balance" and previous["unit"] != "unavailable",
+            parse_utc(previous["polled_at"]) or oldest,
+        ):
             latest[key] = row
     grouped: dict[str, list[dict]] = defaultdict(list)
     payg: dict[str, bool] = {}

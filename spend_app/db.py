@@ -214,7 +214,7 @@ CREATE TABLE IF NOT EXISTS opencode_session_progress (
 );
 """
 
-ACTIVITY_SCHEMA_SQL = """
+QUOTAS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS quotas (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     provider_key TEXT NOT NULL,
@@ -228,9 +228,11 @@ CREATE TABLE IF NOT EXISTS quotas (
     source TEXT NOT NULL,
     is_payg BOOLEAN CHECK (is_payg IS NULL OR is_payg IN (0, 1)),
     polled_at TEXT NOT NULL,
-    UNIQUE(provider_key, limit_key, polled_at)
+    UNIQUE(provider_key, limit_key, polled_at, source)
 );
+"""
 
+ACTIVITY_SCHEMA_SQL = QUOTAS_TABLE_SQL + """
 CREATE INDEX IF NOT EXISTS idx_quotas_provider ON quotas(provider_key, polled_at);
 CREATE INDEX IF NOT EXISTS idx_quotas_lane_id ON quotas(provider_key, limit_key, id);
 
@@ -693,6 +695,12 @@ def prune_usage_changes(
     if safe_seq is not None and safe_seq > 0:
         cur = connection.execute("DELETE FROM usage_changes WHERE seq <= ?", (safe_seq,))
         removed += int(cur.rowcount or 0)
+        # Keep the acknowledged checkpoint itself. Superseded unacknowledged
+        # mutations remain provable even after the lightweight journal folds them.
+        if connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='usage_change_marks'"
+        ).fetchone():
+            connection.execute("DELETE FROM usage_change_marks WHERE seq < ?", (safe_seq,))
     cur_dedup = connection.execute(
         """
         DELETE FROM usage_changes
@@ -970,6 +978,7 @@ def migrate_setup_hub_url(path: Path) -> bool:
 def initialize(path: Path) -> None:
     from spend_app.subscription_schema import upgrade_database
     upgrade_database(path, _initialize_base)
+    ensure_quota_origin_uniqueness(path)
     ensure_usage_change_journal(path)
     ensure_usage_cache_revisions(path)
     migrate_usage_keys(path)
@@ -984,6 +993,29 @@ def initialize(path: Path) -> None:
     Store(path).bootstrap()
 
 
+def ensure_quota_origin_uniqueness(path: Path) -> None:
+    """Preserve quota observations from distinct sources at the same instant."""
+    marker = "quotas.origin_uniqueness.v1"
+    with connect(path) as connection:
+        if connection.execute("SELECT 1 FROM app_meta WHERE key=?", (marker,)).fetchone():
+            return
+        connection.execute("BEGIN IMMEDIATE")
+        if connection.execute("SELECT 1 FROM app_meta WHERE key=?", (marker,)).fetchone():
+            return
+        schema = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='quotas'"
+        ).fetchone()[0]
+        if "UNIQUE(provider_key, limit_key, polled_at, source)" not in schema:
+            columns = "id, provider_key, limit_key, label, used, allowance, unit, pct, resets_at, source, is_payg, polled_at"
+            connection.execute(QUOTAS_TABLE_SQL.replace("IF NOT EXISTS quotas", "quotas_with_origin"))
+            connection.execute(f"INSERT INTO quotas_with_origin({columns}) SELECT {columns} FROM quotas")
+            connection.execute("DROP TABLE quotas")
+            connection.execute("ALTER TABLE quotas_with_origin RENAME TO quotas")
+            connection.execute("CREATE INDEX idx_quotas_provider ON quotas(provider_key, polled_at)")
+            connection.execute("CREATE INDEX idx_quotas_lane_id ON quotas(provider_key, limit_key, id)")
+        connection.execute("INSERT INTO app_meta(key,value) VALUES(?, '1')", (marker,))
+
+
 def ensure_usage_change_journal(path: Path) -> None:
     """Capture every local usage mutation, including SQL-based parser repairs.
 
@@ -992,16 +1024,45 @@ def ensure_usage_change_journal(path: Path) -> None:
     the latest state in one read transaction. Imported machine rows never echo.
     Existing rows seed the first sequence so legacy ID cursors can be upgraded.
     """
-    marker = "usage_changes.initialized.v1"
+    v1 = "usage_changes.initialized.v1"
+    marker = "usage_changes.checkpoints.v1"
     with connect(path) as connection:
-        if connection.execute("SELECT 1 FROM app_meta WHERE key=?", (marker,)).fetchone():
+        def migrated() -> bool:
+            return connection.execute(
+                "SELECT COUNT(*) FROM app_meta WHERE key IN (?,?)", (v1, marker)
+            ).fetchone()[0] == 2
+
+        if migrated():
             return
         connection.execute("BEGIN IMMEDIATE")
-        if connection.execute("SELECT 1 FROM app_meta WHERE key=?", (marker,)).fetchone():
+        if migrated():
             return
+        seed = not connection.execute("SELECT 1 FROM app_meta WHERE key=?", (v1,)).fetchone()
         connection.execute(
             "CREATE TABLE IF NOT EXISTS usage_changes ("
             "seq INTEGER PRIMARY KEY AUTOINCREMENT, raw_id TEXT NOT NULL)"
+        )
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS usage_change_marks ("
+            "seq INTEGER PRIMARY KEY, raw_id TEXT NOT NULL, mark TEXT NOT NULL)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_usage_change_marks_raw ON usage_change_marks(raw_id, seq)"
+        )
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS sync_usage_receipts ("
+            "machine_id TEXT NOT NULL, mark BLOB NOT NULL, PRIMARY KEY(machine_id, mark)) WITHOUT ROWID"
+        )
+        if seed:
+            connection.execute("DELETE FROM usage_change_marks")
+        connection.execute(
+            "INSERT OR IGNORE INTO usage_change_marks(seq,raw_id,mark) "
+            "SELECT seq,raw_id,lower(hex(randomblob(16))) FROM usage_changes"
+        )
+        connection.execute(
+            "CREATE TRIGGER IF NOT EXISTS journal_usage_changes_checkpoint AFTER INSERT ON usage_changes "
+            "BEGIN INSERT INTO usage_change_marks(seq,raw_id,mark) "
+            "VALUES(NEW.seq,NEW.raw_id,lower(hex(randomblob(16)))); END"
         )
         for table in ("usage_events", "unpriced_usage_events"):
             for action, reference in (("INSERT", "NEW"), ("UPDATE", "NEW"), ("DELETE", "OLD")):
@@ -1015,11 +1076,14 @@ def ensure_usage_change_journal(path: Path) -> None:
                 "WHEN OLD.raw_id != NEW.raw_id AND OLD.raw_id NOT LIKE 'm:%' "
                 "BEGIN INSERT INTO usage_changes(raw_id) VALUES(OLD.raw_id); END"
             )
-            connection.execute(
-                f"INSERT INTO usage_changes(raw_id) SELECT raw_id FROM {table} "
-                "WHERE raw_id NOT LIKE 'm:%' ORDER BY id"
-            )
-        connection.execute("INSERT INTO app_meta(key,value) VALUES(?, '1')", (marker,))
+            if seed:
+                connection.execute(
+                    f"INSERT INTO usage_changes(raw_id) SELECT raw_id FROM {table} "
+                    "WHERE raw_id NOT LIKE 'm:%' ORDER BY id"
+                )
+        connection.executemany(
+            "INSERT OR IGNORE INTO app_meta(key,value) VALUES(?, '1')", ((v1,), (marker,))
+        )
 
 
 # Event identity and alias records (one or more per usage event) live in their
@@ -1605,8 +1669,8 @@ def upsert_quota(
     is_payg: bool | None = None,
 ) -> bool:
     existed = connection.execute(
-        "SELECT 1 FROM quotas WHERE provider_key=? AND limit_key=? AND polled_at=?",
-        (provider_key, limit_key, polled_at),
+        "SELECT 1 FROM quotas WHERE provider_key=? AND limit_key=? AND polled_at=? AND source=?",
+        (provider_key, limit_key, polled_at, source),
     ).fetchone() is not None
     connection.execute(
         """
@@ -1614,14 +1678,13 @@ def upsert_quota(
             provider_key, limit_key, label, used, allowance, unit, pct, resets_at,
             source, is_payg, polled_at
         ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(provider_key, limit_key, polled_at) DO UPDATE SET
+        ON CONFLICT(provider_key, limit_key, polled_at, source) DO UPDATE SET
             label=excluded.label,
             used=excluded.used,
             allowance=excluded.allowance,
             unit=excluded.unit,
             pct=excluded.pct,
             resets_at=excluded.resets_at,
-            source=excluded.source,
             is_payg=excluded.is_payg
         """,
         (
