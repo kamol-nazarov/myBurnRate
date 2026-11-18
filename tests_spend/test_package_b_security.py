@@ -13,6 +13,7 @@ Covers audit items M1, L2, L3, L5, L7, L15, L16, and N1:
 from __future__ import annotations
 
 import logging
+from contextlib import closing
 from pathlib import Path
 
 import httpx
@@ -587,7 +588,10 @@ def test_l7_spoke_join_register_login_owner_session_and_rotate_end_to_end(
 
     local_ui = {"Origin": "http://127.0.0.1:17331", "X-BURNRATE-Request": "1"}
 
-    with hub_client, spoke1, spoke2:
+    # The spokes call the hub from their own event loops. Give those HTTP
+    # requests per-call portals so a pending sync response cannot stall a
+    # shared portal's teardown. A separate client owns the hub app lifespan.
+    with TestClient(hub_client.app), closing(hub_client), spoke1, spoke2:
         monkeypatch.setenv("BURNRATE_HUB_URL", HUB_URL)
         monkeypatch.setitem(sync._HUB_TEST_CLIENTS, HUB_URL, hub_client)
 
