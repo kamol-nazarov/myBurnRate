@@ -63,6 +63,19 @@ updates** does it on demand, and **Install & restart** applies a verified update
 | Windows 10 or 11 (64-bit) | `myBurnRate_<version>_x64-setup.exe` | **Native desktop window.** Light, Dark and System themes, tray mode, verified in-app updates. Installs per user. |
 | Python 3.12 (any OS) | `burnrate-<version>-py3-none-any.whl` | Command line, background service (`burnrate serve`) and `burnrate desktop`. |
 
+**Python install**
+
+BURNRATE is not published on PyPI. The `burnrate` package there is an unrelated project, so do not
+run `pip install burnrate`. Install the wheel from the GitHub release instead, replacing `<version>`
+with the version on the [latest release](https://github.com/kamol-nazarov/myBurnRate/releases/latest):
+
+```bash
+python -m pip install "https://github.com/kamol-nazarov/myBurnRate/releases/download/v<version>/burnrate-<version>-py3-none-any.whl"
+```
+
+To check the wheel before installing it, download it and follow **Verify a download** below, then
+run `python -m pip install burnrate-<version>-py3-none-any.whl`.
+
 **First launch**
 
 - **Windows:** the installer is not yet Authenticode-signed while the SignPath Foundation
@@ -76,7 +89,8 @@ Every file is built on GitHub Actions from a tagged commit and recorded in `SHA2
 
 ```bash
 gh attestation verify myBurnRate_<version>_x64-setup.exe --repo kamol-nazarov/myBurnRate
-sha256sum -c SHA256SUMS
+gh attestation verify burnrate-<version>-py3-none-any.whl --repo kamol-nazarov/myBurnRate
+sha256sum -c --ignore-missing SHA256SUMS
 ```
 
 ## What it does
@@ -229,7 +243,10 @@ including `SPEND_DATABASE_PATH`, `SPEND_TIMEZONE` and `BURNRATE_NO_UPDATE_CHECK`
 
 - **Native app:** use **Settings → General → Check for updates**, or let it check on its own. Updates
   never touch `%LOCALAPPDATA%\BURNRATE`.
-- **Python installs:** `python -m pip install --upgrade burnrate`.
+- **Python installs:** install the newer release's wheel the same way as the first install (never
+  `pip install burnrate`, which is an unrelated PyPI package), then restart `burnrate desktop` or
+  `burnrate serve`:
+  `python -m pip install --upgrade "https://github.com/kamol-nazarov/myBurnRate/releases/download/v<version>/burnrate-<version>-py3-none-any.whl"`.
 - **Self-hosted hub:** `burnrate hub update`, or pull a newer container tag.
 - **Uninstall:** remove **myBurnRate** from Windows' installed apps. The uninstaller removes the
   program and shortcuts and offers, unticked and only interactively, to delete your data too. To
