@@ -1531,26 +1531,37 @@ body:not(.dragging-active) .provider-row:hover .logo-badge {
 }
 
 .sheet-tabs {
-  display: flex;
-  gap: 5px;
-  padding: 8px 10px 2px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 2px;
+  margin: 8px 12px 2px;
+  padding: 2.5px;
+  border-radius: 8px;
+  background: var(--seg-bg);
+  border: 1px solid var(--border);
 }
 
 .sheet-tab {
-  flex: 1;
-  border: none;
-  background: var(--tab-bg);
+  border: 1px solid transparent;
+  background: transparent;
   color: var(--ink-secondary);
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 600;
-  padding: 5px 8px;
-  border-radius: 999px;
+  padding: 5px 4px;
+  border-radius: 6px;
   cursor: pointer;
-  transition: background 0.18s ease, color 0.18s ease;
+  white-space: nowrap;
+  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+}
+.sheet-tab:hover {
+  color: var(--ink);
 }
 .sheet-tab.active {
-  background: var(--accent);
-  color: var(--on-accent);
+  background: var(--seg-thumb);
+  color: var(--ink);
+  font-weight: 700;
+  border-color: var(--seg-border);
+  box-shadow: var(--seg-shadow);
 }
 
 .sheet-body {
@@ -2566,6 +2577,7 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
 }
 /* H10 ops/hud */
 .scroll-body[hidden],
+html.is-diagnostics #glanceBar,
 html.is-diagnostics #opsBar,
 html.is-diagnostics #scrollBody { display: none !important; }
 .ops-pill {
@@ -4087,16 +4099,253 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
 .plans-section.has-rows,
 .plans-section.has-management,
 .plans-section:has(> .quick-plan-banner:not([hidden])) { display: flex; }
-.plans { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; }
-.plans li { display: flex; justify-content: space-between; gap: 8px; }
-.plans li b { color: var(--ink-secondary); font-weight: 600; text-align: right; }
+.plans { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0; font-size: 12px; }
+.plans li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  row-gap: 4px;
+  column-gap: 8px;
+  padding: 7px 0;
+  border-top: 1px solid var(--divider);
+}
+.plans li:first-child { border-top: none; padding-top: 2px; }
+.plans li > span { font-weight: 650; color: var(--ink); min-width: 0; overflow-wrap: anywhere; }
+.plans li > b { color: var(--ink-secondary); font-weight: 600; text-align: right; white-space: nowrap; }
+.plan-roi {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+.plan-roi-track {
+  height: 5px;
+  border-radius: 999px;
+  background: var(--track);
+  overflow: hidden;
+}
+.plan-roi-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+}
+.plan-roi-fill.is-good { background: var(--mint); }
+.plan-roi-fill.is-warn { background: var(--amber); }
+.plan-roi-badge {
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 1.5px 6px;
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--ink-secondary);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums lining-nums;
+}
+.plan-roi-badge.is-good { background: var(--mint-bg); color: var(--mint); }
+.plan-roi-badge.is-warn { background: var(--warn-bg); color: var(--warn); }
 .plan-settings-row { display: grid; gap: 6px; padding: 9px 12px; }
 .plan-settings-row + .plan-settings-row { border-top: 1px solid var(--divider); }
 .plan-settings-row .source-meta { white-space: normal; overflow-wrap: anywhere; }
 .plan-settings-row summary { cursor: pointer; color: var(--ink-secondary); font-size: 11px; }
 .plan-settings-row details .editor-actions { margin-top: 5px; }
 .plan-settings-row input, .plan-settings-row select { min-width: 0; font-family: inherit; }
-.foot { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; padding: 2px 0 0; }
+.plan-settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+/* Sticky KPI glance ribbon + section nav */
+.glance-bar {
+  flex-shrink: 0;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 6px 12px 7px;
+  display: grid;
+  gap: 6px;
+}
+.glance-bar[hidden] { display: none !important; }
+.glance-kpi {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 2px 8px;
+  min-width: 0;
+}
+.glance-kpi-left {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.glance-usd {
+  font-family: var(--display);
+  font-size: 16.5px;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  color: var(--ink);
+  line-height: 1.05;
+  font-variant-numeric: tabular-nums lining-nums;
+}
+.glance-sub {
+  font-size: 10.8px;
+  color: var(--ink-secondary);
+  white-space: nowrap;
+}
+.glance-kpi-right {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  font-size: 10.5px;
+  color: var(--ink-secondary);
+  font-variant-numeric: tabular-nums lining-nums;
+  white-space: nowrap;
+}
+.glance-kpi-right b {
+  color: var(--ink);
+  font-weight: 700;
+}
+.view-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2px;
+  padding: 2px;
+  border-radius: 7.5px;
+  background: var(--seg-bg);
+  border: 1px solid var(--border);
+}
+.view-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink-secondary);
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3.5px 4px;
+  border-radius: 5.5px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.16s ease, background 0.16s ease;
+}
+.view-tab:hover { color: var(--ink); }
+.view-tab.active {
+  background: var(--seg-thumb);
+  color: var(--ink);
+  font-weight: 700;
+  border-color: var(--seg-border);
+  box-shadow: var(--seg-shadow);
+}
+.view-tab-badge {
+  font-size: 10.5px;
+  font-weight: 750;
+  line-height: 1;
+  padding: 1.5px 5px;
+  border-radius: 999px;
+  background: var(--danger-bg);
+  color: var(--danger-ink);
+}
+.view-tab-badge.is-warn {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+.view-tab-badge[hidden] { display: none; }
+.view-tab-meta {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--ink-secondary);
+}
+
+/* Compact 2-column calm grid on default 440px+ width; urgent & open rows stay full-width */
+@media (min-width: 410px) {
+  #providerList:not(.is-custom-order) {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 7px;
+  }
+  #providerList:not(.is-custom-order) > .limits-empty,
+  #providerList:not(.is-custom-order) > .limits-skel,
+  #providerList:not(.is-custom-order) > .empty-state,
+  #providerList:not(.is-custom-order) > .ob,
+  #providerList:not(.is-custom-order) > .provider-item:not(.is-calm),
+  #providerList:not(.is-custom-order) > .provider-item.open {
+    grid-column: 1 / -1;
+  }
+  #providerList:not(.is-custom-order) > .provider-item.is-calm:not(.open) {
+    background: var(--surface-subtle);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 7px 9px;
+    margin: 0;
+  }
+  #providerList:not(.is-custom-order) > .provider-item.is-calm:not(.open) .provider-row {
+    padding: 0 0 4px;
+    gap: 6px;
+  }
+  #providerList:not(.is-custom-order) > .provider-item.is-calm:not(.open) .logo-badge {
+    width: 20px;
+    height: 20px;
+    border-radius: 6px;
+  }
+  #providerList:not(.is-custom-order) > .provider-item.is-calm:not(.open) .logo-badge svg {
+    width: 11px;
+    height: 11px;
+  }
+  #providerList:not(.is-custom-order) > .provider-item.is-calm:not(.open) .provider-name {
+    font-size: 11.8px;
+  }
+  #providerList:not(.is-custom-order) > .provider-item.is-calm:not(.open) .provider-sub {
+    display: none;
+  }
+  #providerList:not(.is-custom-order) > .provider-item.is-calm:not(.open) .lane {
+    --lane-name: 44px;
+    --lane-pct: 32px;
+    --lane-gap: 5px;
+  }
+  #providerList:not(.is-custom-order) > .provider-item.is-calm:not(.open) .lane-name {
+    font-size: 10.5px;
+  }
+  #providerList:not(.is-custom-order) > .provider-item.is-calm:not(.open) .lane-pct {
+    font-size: 11.5px;
+  }
+  #providerList:not(.is-custom-order) > .provider-item.is-calm:not(.open) .balrow {
+    gap: 2px 5px;
+  }
+  #providerList:not(.is-custom-order) > .provider-item.is-calm:not(.open) .balrow strong.provider-rem {
+    font-size: 16px;
+  }
+}
+
+/* Permanently docked utility bar at the bottom of the window */
+.foot {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 3.5px;
+  padding: 5px 6px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+}
+.foot .ops-pill {
+  min-height: 25px;
+  padding: 3px 6.5px;
+  gap: 3px;
+  font-size: 10.5px;
+  border-radius: 7px;
+}
+.foot .ops-pill svg {
+  width: 10.5px;
+  height: 10.5px;
+}
 .ops-pill .update-dot { position: static; flex-shrink: 0; }
 .ops-pill.has-update .update-dot { display: inline-block; }
 
@@ -4254,6 +4503,22 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
       </button>
     </div>
   </header>
+
+  <!-- Sticky KPI glance bar & instant section navigation -->
+  <div class="glance-bar" id="glanceBar" aria-label="Quick overview and navigation">
+    <div class="glance-kpi">
+      <div class="glance-kpi-left">
+        <strong class="glance-usd" id="glanceUsd">—</strong>
+        <span class="glance-sub" id="glanceSub"></span>
+      </div>
+      <div class="glance-kpi-right" id="glanceMeta"></div>
+    </div>
+    <nav class="view-tabs" id="viewNavBar" aria-label="Jump to section">
+      <button class="view-tab active" data-view="limits" type="button" aria-current="true">Limits<span class="view-tab-badge" id="glanceUrgentBadge" hidden></span></button>
+      <button class="view-tab" data-view="spend" type="button">Spend</button>
+      <button class="view-tab" data-view="plans" type="button">Plans<span class="view-tab-meta" id="glancePlansMeta"></span></button>
+    </nav>
+  </div>
 
   <!-- Main scrollable feed -->
   <div class="scroll-body" id="scrollBody">
@@ -4521,24 +4786,6 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
         <ul class="plans" id="plansList"></ul>
       </section>
 
-      <!-- H10 ops/hud -->
-      <div class="foot" id="opsBar" role="toolbar" aria-label="Window actions">
-        <button class="ops-pill" id="diagBtn" type="button" aria-label="Open diagnostics">
-          <span class="ops-dot" aria-hidden="true"></span>
-          <span>Diagnostics</span>
-        </button>
-        <button class="ops-pill" id="shareWeekBtn" type="button" aria-label="Copy weekly share card">Share week</button>
-        <button class="ops-pill pin-btn" id="pinBtn" type="button" aria-label="Pin window above other apps" aria-pressed="false" title="Pin window above other apps">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6l-1 5 3 3v2H7v-2l3-3-1-5ZM12 13v8"/></svg>
-          <span>Keep on top</span>
-        </button>
-        <button class="ops-pill" id="densityBtn" type="button" aria-pressed="false" aria-label="Spacing density">Density: Compact</button>
-        <button class="ops-pill" id="settingsBtn" type="button" title="Settings &amp; Sources" aria-label="Settings and sources" aria-haspopup="dialog">
-          <span class="update-dot" id="updateDot" aria-hidden="true"></span>
-          <span>Settings</span>
-        </button>
-      </div>
-
       <div class="footer-note" id="footerStatus">Click a provider for its tokens and models</div>
     </div>
 
@@ -4631,6 +4878,24 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
         <div id="h9SessionsBody" class="h9-list"></div>
       </article>
     </section>
+  </div>
+
+  <!-- Permanently docked window actions -->
+  <div class="foot" id="opsBar" role="toolbar" aria-label="Window actions">
+    <button class="ops-pill" id="diagBtn" type="button" aria-label="Open diagnostics">
+      <span class="ops-dot" aria-hidden="true"></span>
+      <span>Diagnostics</span>
+    </button>
+    <button class="ops-pill" id="shareWeekBtn" type="button" aria-label="Copy weekly share card">Share week</button>
+    <button class="ops-pill pin-btn" id="pinBtn" type="button" aria-label="Pin window above other apps" aria-pressed="false" title="Pin window above other apps">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6l-1 5 3 3v2H7v-2l3-3-1-5ZM12 13v8"/></svg>
+      <span>Keep on top</span>
+    </button>
+    <button class="ops-pill" id="densityBtn" type="button" aria-pressed="false" aria-label="Spacing density">Density: Compact</button>
+    <button class="ops-pill" id="settingsBtn" type="button" title="Settings &amp; Sources" aria-label="Settings and sources" aria-haspopup="dialog">
+      <span class="update-dot" id="updateDot" aria-hidden="true"></span>
+      <span>Settings</span>
+    </button>
   </div>
 
   <!-- H10 ops/hud -->
@@ -5576,11 +5841,28 @@ function orderProviders(providers) {
   return { list, byUrgency: true };
 }
 
-function renderLimitGroup(prov, idx, horizon, doStagger) {
+const CALM_LEVELS = new Set(["ok", "balance", "idle"]);
+function isCalmProvider(prov) {
+  const level = prov.urgency && prov.urgency.level ? String(prov.urgency.level) : "";
+  if (!CALM_LEVELS.has(level)) return false;
+  const windows = Array.isArray(prov.windows) ? prov.windows : [];
+  for (const w of windows) {
+    if (w.unit === "usd" || w.unavailable) continue;
+    const rem = finiteOrNull(w.remainingPct);
+    const resetH = hoursUntil(w.resetsAt);
+    if (rem !== null && resetH !== null && resetH > 0 && (rem <= 0 || paceOf(w) || paceState(w) === "safe")) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function renderLimitGroup(prov, idx, horizon, doStagger, allowCalm = false) {
   const key = String(prov.key || "");
   const isOpen = state.expandedTools.has(key);
   const burn = prov.burn || {};
   const level = prov.urgency && prov.urgency.level ? String(prov.urgency.level) : "";
+  const isCalm = allowCalm && isCalmProvider(prov);
   const windows = Array.isArray(prov.windows) ? prov.windows : [];
   const models = Array.isArray(prov.models) ? prov.models : [];
   const profile = prov.profile ? String(prov.profile) : "";
@@ -5621,7 +5903,7 @@ function renderLimitGroup(prov, idx, horizon, doStagger) {
 
   const enterStyle = doStagger ? `style="animation-delay:${Math.min(idx * 26, 220)}ms"` : "";
   return `
-    <div class="provider-item ${isOpen ? "open" : ""} ${doStagger ? "enter-anim" : ""}" data-key="${esc(key)}" data-level="${esc(level)}" ${enterStyle}>
+    <div class="provider-item ${isCalm ? "is-calm" : ""} ${isOpen ? "open" : ""} ${doStagger ? "enter-anim" : ""}" data-key="${esc(key)}" data-level="${esc(level)}" ${enterStyle}>
       <button class="provider-row" type="button" data-row-key="${esc(key)}" aria-expanded="${isOpen}" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" title="${esc(hoverSummary)}">
         ${logoHtml(key, "logo-badge", !!prov.inUse)}
         <span class="tile-ident">
@@ -5742,7 +6024,8 @@ function renderLimits(providers) {
       <span>Limits show here as each source reports.</span>
       <button class="limits-empty-link" type="button" onclick="openSettings('sources')">Add a source</button>
     </div>` : "";
-  list.innerHTML = emptyCard + ordered.map((prov, idx) => renderLimitGroup(prov, idx, horizon, doStagger)).join("");
+  list.classList.toggle("is-custom-order", !byUrgency);
+  list.innerHTML = emptyCard + ordered.map((prov, idx) => renderLimitGroup(prov, idx, horizon, doStagger, byUrgency)).join("");
   /* The time ruler and the timeline legend only appear while a lane is drawn on the time axis; level bars have none. */
   const hasTimeline = !!list.querySelector(".lane:not(.is-muted) .lane-track:not(.is-level)");
   const hasLevel = !!list.querySelector(".lane-track.is-level");
@@ -5862,6 +6145,57 @@ function planPrice(sub) {
   return text + (PLAN_CADENCE[sub.cadence] || (sub.cadence ? "/" + sub.cadence : ""));
 }
 
+function planMonthlyEquiv(sub) {
+  const direct = finiteOrNull(sub.monthlyEquivalent);
+  if (direct !== null && direct > 0) return direct;
+  const amt = finiteOrNull(sub.amountUsd);
+  if (amt === null || amt <= 0) return null;
+  if (sub.cadence === "annual" || sub.cadence === "yearly") return amt / 12;
+  if (sub.cadence === "quarterly") return amt / 3;
+  if (sub.cadence === "weekly") return amt * 4.333;
+  return amt;
+}
+
+function matchProvidersValue(toolKey, providers) {
+  const tk = String(toolKey || "").toLowerCase();
+  if (!tk || !Array.isArray(providers)) return 0;
+  let sum = 0;
+  for (const p of providers) {
+    const pk = String(p.key || "").toLowerCase();
+    const match = pk === tk || pk.startsWith(tk + "-") || (tk === "opencode" && pk === "zcode");
+    if (match) sum += Math.max(0, Number(p.valueUsd || 0));
+  }
+  return sum;
+}
+
+function planPeriodFactor() {
+  if (state.period === "today") return 1 / 30;
+  if (state.period === "week") return 7 / 30;
+  return 1;
+}
+
+function planRoiHtml(toolKey, monthlyEquiv, providers, maxVal) {
+  const val = matchProvidersValue(toolKey, providers);
+  if (monthlyEquiv !== null && monthlyEquiv > 0 && state.machine === "all") {
+    const periodCost = monthlyEquiv * planPeriodFactor();
+    if (periodCost > 0) {
+      const mult = val / periodCost;
+      const pct = Math.max(val > 0 ? 6 : 0, Math.min(100, mult * 100));
+      const good = mult >= 1;
+      const cls = good ? "is-good" : "is-warn";
+      const label = val > 0
+        ? `${fmtMultiple(mult)} · ${fmtMoney(val, true, true)} value`
+        : "0× · unused";
+      return `<div class="plan-roi"><div class="plan-roi-track"><span class="plan-roi-fill ${cls}" style="width:${pct.toFixed(1)}%"></span></div><span class="plan-roi-badge ${cls}">${esc(label)}</span></div>`;
+    }
+  }
+  if (val > 0 && maxVal > 0) {
+    const pct = Math.max(8, Math.min(100, (val / maxVal) * 100));
+    return `<div class="plan-roi"><div class="plan-roi-track"><span class="plan-roi-fill" style="width:${pct.toFixed(1)}%"></span></div><span class="plan-roi-badge">${esc(fmtMoney(val, true, true))} API value</span></div>`;
+  }
+  return "";
+}
+
 function renderPlans(data, providers) {
   const card = document.getElementById("plansCard");
   const listEl = document.getElementById("plansList");
@@ -5871,8 +6205,15 @@ function renderPlans(data, providers) {
   const subs = state.h9Summary && Array.isArray(state.h9Summary.subscriptions)
     ? state.h9Summary.subscriptions.filter(s => s && s.name) : [];
   const rows = [];
+  const maxVal = providers.reduce((m, p) => Math.max(m, Number(p.valueUsd || 0)), 0);
   if (subs.length) {
-    for (const s of subs) rows.push([String(s.name), planPrice(s)]);
+    for (const s of subs) {
+      rows.push({
+        label: String(s.name),
+        price: planPrice(s),
+        roi: planRoiHtml(s.toolKey, planMonthlyEquiv(s), providers, maxVal),
+      });
+    }
   } else if (!canManage) {
     const seen = new Set();
     for (const p of providers) {
@@ -5881,15 +6222,79 @@ function renderPlans(data, providers) {
       const id = `${label}|${p.plan}`;
       if (seen.has(id)) continue;
       seen.add(id);
-      rows.push([label, p.plan]);
+      rows.push({
+        label,
+        price: p.plan,
+        roi: planRoiHtml(p.key, null, providers, maxVal),
+      });
     }
   }
-  listEl.innerHTML = rows.map(([label, price]) => `<li><span>${esc(label)}</span><b>${esc(price)}</b></li>`).join("");
+  listEl.innerHTML = rows.map(r => `<li><span>${esc(r.label)}</span><b>${esc(r.price)}</b>${r.roi}</li>`).join("");
   const plans = data && data.plans || null;
   const accrued = plans && plans.accruedUsd !== null && plans.accruedUsd !== undefined ? Number(plans.accruedUsd) : NaN;
-  document.getElementById("plansSub").textContent = Number.isFinite(accrued) && accrued > 0
+  const hasAccrued = Number.isFinite(accrued) && accrued > 0;
+  document.getElementById("plansSub").textContent = hasAccrued
     ? `${fmtMoney(accrued, true, true)} accrued this period` : "";
+  const plansMeta = document.getElementById("glancePlansMeta");
+  if (plansMeta) plansMeta.textContent = hasAccrued ? `· ${fmtMoney(accrued, true, true)}` : "";
   card.classList.toggle("has-rows", rows.length > 0);
+}
+
+function setActiveViewTab(view) {
+  document.querySelectorAll("#viewNavBar .view-tab").forEach(btn => {
+    const on = btn.dataset.view === view;
+    btn.classList.toggle("active", on);
+    if (on) btn.setAttribute("aria-current", "true");
+    else btn.removeAttribute("aria-current");
+  });
+}
+
+function updateGlanceBar(data, providers) {
+  const bar = document.getElementById("glanceBar");
+  if (!bar) return;
+  const total = (data && data.total) || {};
+  const unavailable = data && data.scope === "unavailable";
+  const usdEl = document.getElementById("glanceUsd");
+  const subEl = document.getElementById("glanceSub");
+  const metaEl = document.getElementById("glanceMeta");
+  const badgeEl = document.getElementById("glanceUrgentBadge");
+
+  if (usdEl) {
+    usdEl.textContent = unavailable
+      ? "Unavailable"
+      : fmtMoney(Number(total.valueUsd || 0), total.complete !== false, true);
+  }
+  const pName = ({ today: "today", week: "7d", month: "month", all: "all time" })[state.period] || "today";
+  if (subEl) {
+    subEl.textContent = unavailable
+      ? "offline"
+      : `${pName} · ${fmtTokens(total.tokens || 0)} tok`;
+  }
+  if (metaEl) {
+    const parts = [];
+    const rateVal = document.getElementById("metricRate")?.textContent || "—";
+    const rateUnit = state.period === "today" ? "/h" : "/d";
+    if (rateVal && rateVal !== "—") parts.push(`<span><b>${esc(rateVal)}</b>${rateUnit}</span>`);
+    const cacheVal = document.getElementById("metricCache")?.textContent || "—";
+    if (cacheVal && cacheVal !== "—") parts.push(`<span><b>${esc(cacheVal)}</b> cache</span>`);
+    const planVal = document.getElementById("metricPlans")?.textContent || "—";
+    if (planVal && planVal !== "—") parts.push(`<span><b>${esc(planVal)}</b> ROI</span>`);
+    metaEl.innerHTML = parts.join(" · ");
+  }
+  if (badgeEl) {
+    const urgent = (providers || []).filter(p => {
+      const lv = p.urgency && p.urgency.level;
+      return lv === "out" || lv === "soon" || lv === "warn";
+    });
+    if (urgent.length > 0) {
+      const hasDanger = urgent.some(p => p.urgency.level === "out" || p.urgency.level === "soon");
+      badgeEl.textContent = String(urgent.length);
+      badgeEl.classList.toggle("is-warn", !hasDanger);
+      badgeEl.hidden = false;
+    } else {
+      badgeEl.hidden = true;
+    }
+  }
 }
 
 function renderReport(data, animateChart = false) {
@@ -5929,6 +6334,7 @@ function renderReport(data, animateChart = false) {
 
   setOnboardingChrome(!providers.length);
   renderPlans(data, ordinary);
+  updateGlanceBar(data, providers);
   if (typeof h9SyncHeroFromFilter === "function" && state.tool && state.tool !== "all") h9SyncHeroFromFilter();
   if (!providers.length) {
     renderOnboarding();
@@ -5949,6 +6355,8 @@ function setOnboardingChrome(on) {
   document.getElementById("providersHint").hidden = on;
   document.getElementById("providersSub").hidden = on;
   document.getElementById("footerStatus").hidden = on;
+  const gb = document.getElementById("glanceBar");
+  if (gb) gb.hidden = on;
   if (on) {
     document.getElementById("limitTicks").hidden = true;
     document.getElementById("limitLegend").hidden = true;
@@ -6865,8 +7273,20 @@ function planSettingsHtml() {
     const where = term.status === "ended" ? endedRows : rows;
     const lastDay = plan.end_date || (term.status === "ended" ? term.end_date : null);
     const statusText = lastDay ? `${term.status} · last active ${lastDay}` : term.status;
+    const provList = state.report ? getNormalizedProviders(state.report).filter(p => !p.organization) : [];
+    const roiChip = current && state.machine === "all"
+      ? (() => {
+          const mo = planMonthlyEquiv({ amountUsd: Number(term.amount_usd) || null, cadence: term.cadence });
+          const pCost = mo ? mo * planPeriodFactor() : 0;
+          const val = matchProvidersValue(term.tool_key, provList);
+          if (pCost <= 0) return "";
+          const mult = val / pCost;
+          const cls = mult >= 1 ? "is-good" : "is-warn";
+          return `<span class="plan-roi-badge ${cls}">${esc(val > 0 ? `${fmtMultiple(mult)} · ${fmtMoney(val, true, true)}` : "0×")}</span>`;
+        })()
+      : "";
     where.push(`<div class="plan-settings-row">
-      <div class="source-name">${esc(term.name)}</div>
+      <div class="plan-settings-head"><div class="source-name">${esc(term.name)}</div>${roiChip}</div>
       <div class="source-meta">${esc(price(term))} · ${esc(statusText)}</div>
       <div class="editor-actions">${current ? action("schedule", "Change price") : ""}${term.status !== "ended" ? action("end", "End plan") : ""}</div>
       <details><summary>History</summary>${plan.terms.map(item => `<div class="editor-actions">
@@ -10128,6 +10548,8 @@ async function openH9Detail(kind, key, opts = {}) {
   resetH9DetailData();
   if (opts.triggerEl) state.h9DetailReturnFocus = opts.triggerEl;
   document.getElementById("sectionStack").hidden = true;
+  const gbOpen = document.getElementById("glanceBar");
+  if (gbOpen) gbOpen.hidden = true;
   const dv = document.getElementById("h9DetailView");
   dv.hidden = false;
   h9JumpScroll(scrollEl, 0);
@@ -10187,6 +10609,8 @@ function closeH9Detail(returnFocus = true) {
   state.h9DetailPinned = null;
   document.getElementById("h9DetailView").hidden = true;
   document.getElementById("sectionStack").hidden = false;
+  const gbClose = document.getElementById("glanceBar");
+  if (gbClose && !document.getElementById("providersCard").classList.contains("is-onboarding")) gbClose.hidden = false;
   const scrollEl = document.getElementById("scrollBody");
   const savedScroll = state.h9SavedScrollTop || 0;
   h9JumpScroll(scrollEl, savedScroll);
@@ -11114,6 +11538,32 @@ async function checkSuggestedPlan(force = false) {
 }
 
 document.getElementById("diagBtn")?.addEventListener("click", () => openDiagnostics());
+document.getElementById("viewNavBar")?.addEventListener("click", (e) => {
+  const btn = e.target.closest(".view-tab");
+  if (!btn) return;
+  const view = btn.dataset.view;
+  const scroller = document.getElementById("scrollBody");
+  if (!scroller) return;
+  setActiveViewTab(view);
+  const target = view === "spend"
+    ? document.getElementById("heroSection")
+    : view === "plans"
+      ? document.getElementById("plansCard")
+      : null;
+  const top = target ? Math.max(0, target.offsetTop - 8) : 0;
+  scroller.scrollTo({ top, behavior: prefersReducedMotion() ? "auto" : "smooth" });
+});
+document.getElementById("scrollBody")?.addEventListener("scroll", () => {
+  const scroller = document.getElementById("scrollBody");
+  const hero = document.getElementById("heroSection");
+  const plans = document.getElementById("plansCard");
+  if (!scroller || !hero) return;
+  const y = scroller.scrollTop + 48;
+  const atBottom = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 16;
+  if (plans && plans.offsetParent !== null && (y >= plans.offsetTop || atBottom)) setActiveViewTab("plans");
+  else if (hero.offsetParent !== null && y >= hero.offsetTop) setActiveViewTab("spend");
+  else setActiveViewTab("limits");
+}, { passive: true });
 document.getElementById("diagnosticsBackBtn")?.addEventListener("click", () => closeDiagnostics(true));
 document.getElementById("diagRefreshBtn")?.addEventListener("click", () => loadDiagnostics(false));
 document.getElementById("shareWeekBtn")?.addEventListener("click", () => shareWeek());
