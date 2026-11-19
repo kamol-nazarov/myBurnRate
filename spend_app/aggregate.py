@@ -389,16 +389,44 @@ SUMMARY_CAPACITY_PROVIDERS = (
 BALANCE_PROVIDERS = ("openrouter", "deepseek")
 UNAVAILABLE_QUOTA_REASON = "no persisted quota snapshot"
 MODEL_NAMES = {
+    "gpt-6.2-astra": "GPT-6.2 Astra",
+    "gpt-6.2-sol": "GPT-6.2 Sol",
     "gpt-6-astra": "GPT-6 Astra",
     "gpt-6.1-sol": "GPT-6.1 Sol",
+    "gpt-6.1-terra": "GPT-6.1 Terra",
+    "gpt-6-sol": "GPT-6 Sol",
+    "gpt-6-luna": "GPT-6 Luna",
+    "gpt-5.6-sol": "GPT-5.6 Sol",
+    "gpt-5.6-terra": "GPT-5.6 Terra",
+    "gpt-5.6-luna": "GPT-5.6 Luna",
+    "codex-auto-review": "Codex Auto Review",
+    "claude-fable-5-2": "Claude Fable 5.2",
+    "claude-fable-5-1": "Claude Fable 5.1",
+    "claude-fable-5": "Claude Fable 5",
+    "claude-mythos-5-2": "Claude Mythos 5.2",
+    "claude-mythos-5-1": "Claude Mythos 5.1",
+    "claude-mythos-5": "Claude Mythos 5",
     "claude-opus-5-5": "Claude Opus 5.5",
     "claude-sonnet-5-5": "Claude Sonnet 5.5",
     "claude-haiku-5-5": "Claude Haiku 5.5",
+    "claude-opus-5": "Claude Opus 5",
+    "claude-sonnet-5": "Claude Sonnet 5",
+    "claude-opus-4-8": "Claude Opus 4.8",
     "claude-haiku-4-5": "Claude Haiku 4.5",
     "claude-haiku-4-5-20251001": "Claude Haiku 4.5",
+    "gemini-4-neon": "Gemini 4 Neon",
+    "gemini-4-hydrogen": "Gemini 4 Hydrogen",
+    "gemini-4-carbon": "Gemini 4 Carbon",
+    "gemini-4-argon": "Gemini 4 Argon",
+    "antigravity:gemini-4-neon": "Antigravity Gemini 4 Neon",
+    "antigravity:gemini-4-hydrogen": "Antigravity Gemini 4 Hydrogen",
+    "antigravity:gemini-4-carbon": "Antigravity Gemini 4 Carbon",
+    "antigravity:gemini-4-argon": "Antigravity Gemini 4 Argon",
     "opencode:glm-5.3": "OpenCode GLM 5.3",
     "zcode:glm-5.3": "ZCode GLM 5.3",
     "supergrok:grok-4.6": "SuperGrok Grok 4.6",
+    "supergrok:grok-4.7": "SuperGrok Grok 4.7",
+    "supergrok:grok-4.7-build": "SuperGrok Grok 4.7 Build",
     "cursor:grok-4.6": "Cursor Grok 4.6",
     "cursor:gemini-3.7-flash": "Cursor Gemini 3.7 Flash",
     "cursor:gemini-3.8-flash": "Cursor Gemini 3.8 Flash",
@@ -476,7 +504,8 @@ def display_model(model_key: str) -> str:
     if model_key.startswith("antigravity:"):
         return "Antigravity " + model_key.split(":", 1)[1].replace("-", " ").title()
     if model_key.startswith("muse:"):
-        return "Muse " + model_key.split(":", 1)[1].replace("-", " ").title()
+        slug = model_key.split(":", 1)[1].replace("-", " ").title()
+        return slug if slug.startswith("Muse ") else "Muse " + slug
     return model_key
 
 

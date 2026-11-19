@@ -1546,3 +1546,49 @@ def test_limit_groups_stack_in_one_full_width_column_and_open_in_place(tmp_path)
         "openGrowsInPlace": True,
         "narrowNoScroll": True,
     }
+
+
+DRAWER_OVERFLOW_PROBE = """
+await until(() => document.querySelectorAll('#providerList .provider-item').length >= 1);
+const item = document.querySelector('#providerList .provider-item');
+item.querySelector('.provider-row').click();
+await wait(80);
+const box = item.querySelector('.drawer-box');
+const br = box.getBoundingClientRect();
+const shell = document.getElementById('appShell').getBoundingClientRect();
+const overflowers = [];
+for (const el of box.querySelectorAll('.drawer-burn-strip, .burn-stat, .breakdown-box, .breakdown-grid, .api-equivalent, .model-rows, .model-row, .model-val')) {
+  const r = el.getBoundingClientRect();
+  if (r.width === 0) continue;
+  if (el.scrollWidth > el.clientWidth + 1 || r.right > br.right + 1 || r.right > shell.right + 1) {
+    overflowers.push(el.className);
+  }
+}
+const names = [...box.querySelectorAll('.model-name')];
+report({
+  open: item.classList.contains('open'),
+  boxFitsShell: br.right <= shell.right + 1 && box.scrollWidth <= box.clientWidth + 1,
+  overflowers,
+  hasTitles: names.length >= 2 && names.every(n => n.getAttribute('title') === n.textContent),
+  longNameTruncated: names.some(n => n.scrollWidth > n.clientWidth),
+});
+"""
+
+
+@needs_chrome
+@browser
+def test_expanded_drawer_truncates_long_model_names_without_overflow(tmp_path):
+    rep = demo_report("today")
+    rep["providers"][0]["models"] = [
+        {"key": "gemini-4-hydrogen", "name": "Gemini 4 Hydrogen", "tokens": 1_700_000, "valueUsd": 0.62, "complete": True},
+        {"key": "antigravity:gemini-4-hydrogen-xhigh", "name": "Antigravity Gemini 4 Hydrogen Xhigh", "tokens": 1_500_000, "valueUsd": 0.48, "complete": True},
+        {"key": "opencode:qwen/qwen3-235b-a22b-thinking-2507", "name": "OpenCode QWEN/QWEN3-235B-A22B-THINKING-2507", "tokens": 28_500_000, "valueUsd": 7.92, "complete": True},
+    ]
+    r = probe(build_page(pref="dark", report=rep, probe=DRAWER_OVERFLOW_PROBE, extra_css=FAST), 360, tmp_path, height=800)
+    assert r == {
+        "open": True,
+        "boxFitsShell": True,
+        "overflowers": [],
+        "hasTitles": True,
+        "longNameTruncated": True,
+    }

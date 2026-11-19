@@ -36,7 +36,7 @@ prices:
     effective_from: 2026-09-09T16:00:00Z
     source_url: https://docs.z.ai/guides/overview/pricing.md
   - model_key: zcode:glm-5.3
-    aliases: [opencode:glm-5.3]
+    aliases: [opencode:glm-5.3, opencode:z-ai/glm-5.3]
     input_per_mtok: 1.40
     cached_input_per_mtok: 0.26
     cache_write_per_mtok: 0.00
@@ -44,4 +44,85 @@ prices:
     # Assertion floor is the first persisted Coding Plan observation. Z.AI's
     # rate table lists cache writes as Limited-time Free, not a per-token fee.
     effective_from: 2026-09-10T13:01:10.039000Z
+    source_url: https://docs.z.ai/guides/overview/pricing.md
+  # Additional Z.AI GLM models verified 2026-11-19 on https://docs.z.ai/guides/overview/pricing.md
+  - model_key: zcode:glm-5.3-flashx
+    aliases: [opencode:glm-5.3-flashx, opencode:z-ai/glm-5.3-flashx]
+    input_per_mtok: 0.37
+    cached_input_per_mtok: 0.075
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 1.25
+    effective_from: 2026-11-19T00:00:00Z
+    source_url: https://docs.z.ai/guides/overview/pricing.md
+  - model_key: zcode:glm-5.2
+    aliases: [opencode:glm-5.2, opencode:z-ai/glm-5.2]
+    input_per_mtok: 1.40
+    cached_input_per_mtok: 0.26
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 4.40
+    effective_from: 2026-11-19T00:00:00Z
+    source_url: https://docs.z.ai/guides/overview/pricing.md
+  - model_key: zcode:glm-5.1
+    aliases: [opencode:glm-5.1, opencode:z-ai/glm-5.1]
+    input_per_mtok: 1.40
+    cached_input_per_mtok: 0.26
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 4.40
+    effective_from: 2026-11-19T00:00:00Z
+    source_url: https://docs.z.ai/guides/overview/pricing.md
+  - model_key: zcode:glm-5
+    aliases: [opencode:glm-5, opencode:z-ai/glm-5]
+    input_per_mtok: 1.00
+    cached_input_per_mtok: 0.20
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 3.20
+    effective_from: 2026-11-19T00:00:00Z
+    source_url: https://docs.z.ai/guides/overview/pricing.md
+  - model_key: zcode:glm-4.7
+    aliases: [opencode:glm-4.7, opencode:z-ai/glm-4.7]
+    input_per_mtok: 0.60
+    cached_input_per_mtok: 0.11
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 2.20
+    effective_from: 2026-11-19T00:00:00Z
+    source_url: https://docs.z.ai/guides/overview/pricing.md
+  - model_key: zcode:glm-4.7-flashx
+    aliases: [opencode:glm-4.7-flashx, opencode:z-ai/glm-4.7-flashx]
+    input_per_mtok: 0.07
+    cached_input_per_mtok: 0.01
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 0.40
+    effective_from: 2026-11-19T00:00:00Z
+    source_url: https://docs.z.ai/guides/overview/pricing.md
+  - model_key: zcode:glm-4.7-flash
+    aliases: [opencode:glm-4.7-flash, opencode:z-ai/glm-4.7-flash]
+    input_per_mtok: 0.00
+    cached_input_per_mtok: 0.00
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 0.00
+    effective_from: 2026-11-19T00:00:00Z
+    source_url: https://docs.z.ai/guides/overview/pricing.md
+  - model_key: zcode:glm-4.6
+    aliases: [opencode:glm-4.6, opencode:z-ai/glm-4.6]
+    input_per_mtok: 0.60
+    cached_input_per_mtok: 0.11
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 2.20
+    effective_from: 2026-11-19T00:00:00Z
+    source_url: https://docs.z.ai/guides/overview/pricing.md
+  - model_key: zcode:glm-4.5
+    aliases: [opencode:glm-4.5, opencode:z-ai/glm-4.5]
+    input_per_mtok: 0.60
+    cached_input_per_mtok: 0.11
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 2.20
+    effective_from: 2026-11-19T00:00:00Z
+    source_url: https://docs.z.ai/guides/overview/pricing.md
+  - model_key: zcode:glm-4.5-air
+    aliases: [opencode:glm-4.5-air, opencode:z-ai/glm-4.5-air]
+    input_per_mtok: 0.20
+    cached_input_per_mtok: 0.03
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 1.10
+    effective_from: 2026-11-19T00:00:00Z
     source_url: https://docs.z.ai/guides/overview/pricing.md

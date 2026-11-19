@@ -10,7 +10,7 @@ provider: xai
 exactness: derived
 prices:
   - model_key: xai:grok-4.6
-    aliases: [supergrok:grok-4.6, opencode:grok-4.6]
+    aliases: [supergrok:grok-4.6, opencode:grok-4.6, opencode:x-ai/grok-4.6]
     input_per_mtok: 2.00
     cached_input_per_mtok: 0.50
     cache_write_per_mtok: 0.00
@@ -26,7 +26,7 @@ prices:
     # Grok
     # Build names this model grok-4.7-build: its per-turn charges
     # (costUsdTicks) reproduce these rates, long-context tier included.
-    aliases: [supergrok:grok-4.7, supergrok:grok-4.7-build, opencode:grok-4.7]
+    aliases: [supergrok:grok-4.7, supergrok:grok-4.7-build, opencode:grok-4.7, opencode:x-ai/grok-4.7]
     input_per_mtok: 2.00
     cached_input_per_mtok: 0.50
     cache_write_per_mtok: 0.00
@@ -36,6 +36,71 @@ prices:
     long_input_multiplier: 2
     long_output_multiplier: 2
     effective_from: 2026-09-21T00:00:00Z
+    source_url: https://docs.x.ai/developers/pricing
+  - model_key: xai:grok-build-0.1
+    aliases: [supergrok:grok-build-0.1, opencode:grok-build-0.1, opencode:x-ai/grok-build-0.1]
+    # Verified 2026-11-19 on https://docs.x.ai/developers/pricing
+    input_per_mtok: 1.00
+    cached_input_per_mtok: 0.20
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 2.00
+    long_context_threshold: 200000
+    long_context_inclusive: true
+    long_input_multiplier: 2
+    long_output_multiplier: 2
+    effective_from: 2026-11-19T00:00:00Z
+    source_url: https://docs.x.ai/developers/pricing
+  - model_key: xai:grok-4.5
+    aliases: [supergrok:grok-4.5, opencode:grok-4.5, opencode:x-ai/grok-4.5]
+    # Verified 2026-11-19 on https://docs.x.ai/developers/pricing
+    input_per_mtok: 2.00
+    cached_input_per_mtok: 0.30
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 6.00
+    long_context_threshold: 200000
+    long_context_inclusive: true
+    long_input_multiplier: 2
+    long_output_multiplier: 2
+    effective_from: 2026-11-19T00:00:00Z
+    source_url: https://docs.x.ai/developers/pricing
+  - model_key: xai:grok-4.3
+    aliases: [supergrok:grok-4.3, opencode:grok-4.3, opencode:x-ai/grok-4.3]
+    # Verified 2026-11-19 on https://docs.x.ai/developers/pricing
+    input_per_mtok: 1.25
+    cached_input_per_mtok: 0.20
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 2.50
+    long_context_threshold: 200000
+    long_context_inclusive: true
+    long_input_multiplier: 2
+    long_output_multiplier: 2
+    effective_from: 2026-11-19T00:00:00Z
+    source_url: https://docs.x.ai/developers/pricing
+  - model_key: xai:grok-4.20-0309-reasoning
+    aliases: [opencode:grok-4.20-0309-reasoning, opencode:x-ai/grok-4.20]
+    # Verified 2026-11-19 on https://docs.x.ai/developers/pricing
+    input_per_mtok: 1.25
+    cached_input_per_mtok: 0.20
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 2.50
+    long_context_threshold: 200000
+    long_context_inclusive: true
+    long_input_multiplier: 2
+    long_output_multiplier: 2
+    effective_from: 2026-11-19T00:00:00Z
+    source_url: https://docs.x.ai/developers/pricing
+  - model_key: xai:grok-4.20-multi-agent-0309
+    aliases: [opencode:grok-4.20-multi-agent-0309, opencode:x-ai/grok-4.20-multi-agent]
+    # Verified 2026-11-19 on https://docs.x.ai/developers/pricing
+    input_per_mtok: 1.25
+    cached_input_per_mtok: 0.20
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 2.50
+    long_context_threshold: 200000
+    long_context_inclusive: true
+    long_input_multiplier: 2
+    long_output_multiplier: 2
+    effective_from: 2026-11-19T00:00:00Z
     source_url: https://docs.x.ai/developers/pricing
   - model_key: xai:grok-4.20-0309-non-reasoning
     aliases: [opencode:grok-4.20-0309-non-reasoning]

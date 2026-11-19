@@ -15,7 +15,7 @@ prices:
   # Antigravity's thinking-level selectors use the same model/API rates.
   # Standard tier only; implicit caching has no separate cache-write SKU.
   - model_key: antigravity:gemini-4-argon
-    aliases: [antigravity:gemini-4-argon-low, antigravity:gemini-4-argon-medium, antigravity:gemini-4-argon-high]
+    aliases: [gemini-4-argon, antigravity:gemini-4-argon-low, antigravity:gemini-4-argon-medium, antigravity:gemini-4-argon-high, antigravity:gemini-4-argon-xhigh, antigravity:gemini-4-argon-tiered, antigravity:gemini-4-argon-tiered-high, opencode:gemini-4-argon, opencode:google/gemini-4-argon]
     input_per_mtok: 2.00
     cached_input_per_mtok: 0.10
     cache_write_per_mtok: 0.00
@@ -24,7 +24,7 @@ prices:
     effective_to: 2026-12-01T00:00:00Z
     source_url: https://ai.google.dev/gemini-api/docs/pricing#gemini-4-argon
   - model_key: antigravity:gemini-4-argon
-    aliases: [antigravity:gemini-4-argon-low, antigravity:gemini-4-argon-medium, antigravity:gemini-4-argon-high]
+    aliases: [gemini-4-argon, antigravity:gemini-4-argon-low, antigravity:gemini-4-argon-medium, antigravity:gemini-4-argon-high, antigravity:gemini-4-argon-xhigh, antigravity:gemini-4-argon-tiered, antigravity:gemini-4-argon-tiered-high, opencode:gemini-4-argon, opencode:google/gemini-4-argon]
     input_per_mtok: 4.00
     cached_input_per_mtok: 0.20
     cache_write_per_mtok: 0.00
@@ -34,7 +34,7 @@ prices:
   # GA 2026-11-10: https://ai.google.dev/gemini-api/docs/changelog#11-10-2026
   # Standard tier only; implicit caching has no separate cache-write SKU.
   - model_key: antigravity:gemini-4-carbon
-    aliases: [gemini-4-carbon, antigravity:gemini-4-carbon-low, antigravity:gemini-4-carbon-medium, antigravity:gemini-4-carbon-high]
+    aliases: [gemini-4-carbon, antigravity:gemini-4-carbon-low, antigravity:gemini-4-carbon-medium, antigravity:gemini-4-carbon-high, antigravity:gemini-4-carbon-xhigh, antigravity:gemini-4-carbon-tiered, antigravity:gemini-4-carbon-tiered-high, opencode:gemini-4-carbon, opencode:google/gemini-4-carbon]
     input_per_mtok: 2.00
     cached_input_per_mtok: 0.10
     cache_write_per_mtok: 0.00
@@ -43,17 +43,27 @@ prices:
     effective_to: 2026-12-01T00:00:00Z
     source_url: https://ai.google.dev/gemini-api/docs/pricing#gemini-4-carbon
   - model_key: antigravity:gemini-4-carbon
-    aliases: [gemini-4-carbon, antigravity:gemini-4-carbon-low, antigravity:gemini-4-carbon-medium, antigravity:gemini-4-carbon-high]
+    aliases: [gemini-4-carbon, antigravity:gemini-4-carbon-low, antigravity:gemini-4-carbon-medium, antigravity:gemini-4-carbon-high, antigravity:gemini-4-carbon-xhigh, antigravity:gemini-4-carbon-tiered, antigravity:gemini-4-carbon-tiered-high, opencode:gemini-4-carbon, opencode:google/gemini-4-carbon]
     input_per_mtok: 4.00
     cached_input_per_mtok: 0.20
     cache_write_per_mtok: 0.00
     output_per_mtok: 20.00
     effective_from: 2026-12-01T00:00:00Z
     source_url: https://ai.google.dev/gemini-api/docs/pricing#gemini-4-carbon
+  # GA 2026-11-18: https://ai.google.dev/gemini-api/docs/pricing#gemini-4-neon
+  # Thinking levels (low, medium, high, xhigh) share Standard token rates.
+  - model_key: antigravity:gemini-4-neon
+    aliases: [gemini-4-neon, antigravity:gemini-4-neon-low, antigravity:gemini-4-neon-medium, antigravity:gemini-4-neon-high, antigravity:gemini-4-neon-xhigh, antigravity:gemini-4-neon-tiered, antigravity:gemini-4-neon-tiered-high, opencode:gemini-4-neon, opencode:google/gemini-4-neon]
+    input_per_mtok: 3.00
+    cached_input_per_mtok: 0.15
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 15.00
+    effective_from: 2026-11-18T00:00:00Z
+    source_url: https://ai.google.dev/gemini-api/docs/pricing#gemini-4-neon
   # Launched November 12: https://antigravity.google/docs/changelog
   # Thinking levels share the Standard token rates. Implicit caching only.
   - model_key: antigravity:gemini-4-hydrogen
-    aliases: [gemini-4-hydrogen, antigravity:gemini-4-hydrogen-low, antigravity:gemini-4-hydrogen-medium, antigravity:gemini-4-hydrogen-high, antigravity:gemini-4-hydrogen-xhigh]
+    aliases: [gemini-4-hydrogen, antigravity:gemini-4-hydrogen-low, antigravity:gemini-4-hydrogen-medium, antigravity:gemini-4-hydrogen-high, antigravity:gemini-4-hydrogen-xhigh, antigravity:gemini-4-hydrogen-tiered, antigravity:gemini-4-hydrogen-tiered-high, opencode:gemini-4-hydrogen, opencode:google/gemini-4-hydrogen]
     input_per_mtok: 1.50
     cached_input_per_mtok: 0.075
     cache_write_per_mtok: 0.00
@@ -61,7 +71,7 @@ prices:
     effective_from: 2026-11-12T00:00:00Z
     source_url: https://ai.google.dev/gemini-api/docs/pricing#gemini-4-hydrogen
   - model_key: antigravity:gemini-3.8-flash
-    aliases: [antigravity:gemini-3.8-flash-high, antigravity:gemini-3.8-flash-tiered]
+    aliases: [gemini-3.8-flash, antigravity:gemini-3.8-flash-high, antigravity:gemini-3.8-flash-tiered, antigravity:gemini-3.8-flash-tiered-high, opencode:google/gemini-3.8-flash]
     input_per_mtok: 0.75
     cached_input_per_mtok: 0.075
     cache_write_per_mtok: 0.00
@@ -70,10 +80,90 @@ prices:
     effective_to: 2027-01-01T00:00:00Z
     source_url: https://ai.google.dev/gemini-api/docs/pricing
   - model_key: antigravity:gemini-3.8-flash
-    aliases: [antigravity:gemini-3.8-flash-high, antigravity:gemini-3.8-flash-tiered]
+    aliases: [gemini-3.8-flash, antigravity:gemini-3.8-flash-high, antigravity:gemini-3.8-flash-tiered, antigravity:gemini-3.8-flash-tiered-high, opencode:google/gemini-3.8-flash]
     input_per_mtok: 1.50
     cached_input_per_mtok: 0.15
     cache_write_per_mtok: 0.00
     output_per_mtok: 7.50
     effective_from: 2027-01-01T00:00:00Z
     source_url: https://ai.google.dev/gemini-api/docs/pricing
+  # Verified 2026-11-19 on https://ai.google.dev/gemini-api/docs/pricing
+  - model_key: antigravity:gemini-3.6-flash
+    aliases: [gemini-3.6-flash, opencode:google/gemini-3.6-flash]
+    input_per_mtok: 0.75
+    cached_input_per_mtok: 0.075
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 3.75
+    effective_from: 2026-11-19T00:00:00Z
+    effective_to: 2027-01-01T00:00:00Z
+    source_url: https://ai.google.dev/gemini-api/docs/pricing#gemini-3.6-flash
+  - model_key: antigravity:gemini-3.6-flash
+    aliases: [gemini-3.6-flash, opencode:google/gemini-3.6-flash]
+    input_per_mtok: 1.50
+    cached_input_per_mtok: 0.15
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 7.50
+    effective_from: 2027-01-01T00:00:00Z
+    source_url: https://ai.google.dev/gemini-api/docs/pricing#gemini-3.6-flash
+  - model_key: gemini-3.5-flash-lite
+    aliases: [antigravity:gemini-3.5-flash-lite, opencode:google/gemini-3.5-flash-lite]
+    input_per_mtok: 0.30
+    cached_input_per_mtok: 0.03
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 2.50
+    effective_from: 2026-11-19T00:00:00Z
+    source_url: https://ai.google.dev/gemini-api/docs/pricing#gemini-3.5-flash-lite
+  - model_key: gemini-3.1-flash-lite
+    aliases: [gemini-3.1-flash-lite-preview, antigravity:gemini-3.1-flash-lite, opencode:google/gemini-3.1-flash-lite, opencode:google/gemini-3.1-flash-lite-preview]
+    input_per_mtok: 0.25
+    cached_input_per_mtok: 0.025
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 1.50
+    effective_from: 2026-11-19T00:00:00Z
+    source_url: https://ai.google.dev/gemini-api/docs/pricing#gemini-3.1-flash-lite
+  - model_key: gemini-3.1-pro-preview
+    aliases: [gemini-3.1-pro-preview-customtools, antigravity:gemini-3.1-pro, antigravity:gemini-3.1-pro-preview, opencode:google/gemini-3.1-pro-preview, opencode:google/gemini-3.1-pro-preview-customtools]
+    input_per_mtok: 2.00
+    cached_input_per_mtok: 0.20
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 12.00
+    long_context_threshold: 200000
+    long_input_multiplier: 2
+    long_output_multiplier: 1.5
+    effective_from: 2026-11-19T00:00:00Z
+    source_url: https://ai.google.dev/gemini-api/docs/pricing#gemini-3.1-pro-preview
+  - model_key: gemini-3-flash-preview
+    aliases: [antigravity:gemini-3-flash-preview, opencode:google/gemini-3-flash-preview]
+    input_per_mtok: 0.50
+    cached_input_per_mtok: 0.05
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 3.00
+    effective_from: 2026-11-19T00:00:00Z
+    source_url: https://ai.google.dev/gemini-api/docs/pricing#gemini-3-flash-preview
+  - model_key: gemini-2.5-pro
+    aliases: [antigravity:gemini-2.5-pro, opencode:google/gemini-2.5-pro]
+    input_per_mtok: 1.25
+    cached_input_per_mtok: 0.125
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 10.00
+    long_context_threshold: 200000
+    long_input_multiplier: 2
+    long_output_multiplier: 1.5
+    effective_from: 2026-11-19T00:00:00Z
+    source_url: https://ai.google.dev/gemini-api/docs/pricing#gemini-2.5-pro
+  - model_key: gemini-2.5-flash
+    aliases: [antigravity:gemini-2.5-flash, opencode:google/gemini-2.5-flash]
+    input_per_mtok: 0.30
+    cached_input_per_mtok: 0.03
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 2.50
+    effective_from: 2026-11-19T00:00:00Z
+    source_url: https://ai.google.dev/gemini-api/docs/pricing#gemini-2.5-flash
+  - model_key: gemini-2.5-flash-lite
+    aliases: [antigravity:gemini-2.5-flash-lite, opencode:google/gemini-2.5-flash-lite]
+    input_per_mtok: 0.10
+    cached_input_per_mtok: 0.01
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 0.40
+    effective_from: 2026-11-19T00:00:00Z
+    source_url: https://ai.google.dev/gemini-api/docs/pricing#gemini-2.5-flash-lite

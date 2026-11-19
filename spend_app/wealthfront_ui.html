@@ -754,9 +754,11 @@ button, input {
 .section-stack {
   padding: 8px 10px 10px;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 7px;
   max-width: 540px;
   width: 100%;
+  min-width: 0;
   margin: 0 auto;
 }
 
@@ -1036,7 +1038,9 @@ body:not(.dragging-active) .provider-row:hover .logo-badge {
 /* Smooth CSS-Grid Height Collapse Drawer for Full Usage Limits */
 .drawer-collapse {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: 0fr;
+  min-width: 0;
   opacity: 0;
   transition: grid-template-rows 0.28s var(--spring), opacity 0.22s ease;
 }
@@ -1062,6 +1066,7 @@ body:not(.dragging-active) .provider-row:hover .logo-badge {
   border-radius: 10px;
   padding: 8px 10px;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   min-width: 0;
   gap: 7px;
   transform: translateY(-4px);
@@ -1075,12 +1080,14 @@ body:not(.dragging-active) .provider-row:hover .logo-badge {
 /* Full Usage Limits Section inside Drawer */
 .limits-stack {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
   min-width: 0;
 }
 
 .limit-row {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 3px;
   min-width: 0;
   padding-top: 5px;
@@ -1169,6 +1176,7 @@ body:not(.dragging-active) .provider-row:hover .logo-badge {
 .drawer-burn-strip {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(70px, 1fr));
+  min-width: 0;
   gap: 5px;
 }
 
@@ -1178,6 +1186,7 @@ body:not(.dragging-active) .provider-row:hover .logo-badge {
   border-radius: 7px;
   padding: 4px 6px;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   min-width: 0;
   gap: 0.5px;
 }
@@ -1215,12 +1224,15 @@ body:not(.dragging-active) .provider-row:hover .logo-badge {
   border-radius: 7px;
   padding: 6px 8px;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 5px;
 }
 
 .breakdown-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-width: 0;
   gap: 3.5px 12px;
 }
 
@@ -1259,6 +1271,7 @@ body:not(.dragging-active) .provider-row:hover .logo-badge {
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
+  min-width: 0;
   font-size: 10.8px;
   color: var(--ink-secondary);
   font-variant-numeric: tabular-nums lining-nums;
@@ -1278,6 +1291,8 @@ body:not(.dragging-active) .provider-row:hover .logo-badge {
 
 .model-rows {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 4px;
   padding-top: 4px;
   border-top: 1px solid var(--hair);
@@ -1288,6 +1303,7 @@ body:not(.dragging-active) .provider-row:hover .logo-badge {
   align-items: center;
   justify-content: space-between;
   gap: 6px;
+  min-width: 0;
   font-size: 10.8px;
   padding-top: 3px;
   border-top: 1px solid var(--hair-faint);
@@ -1299,6 +1315,7 @@ body:not(.dragging-active) .provider-row:hover .logo-badge {
 }
 
 .model-name {
+  flex: 1 1 auto;
   min-width: 0;
   color: var(--ink);
   font-weight: 500;
@@ -1319,6 +1336,7 @@ body:not(.dragging-active) .provider-row:hover .logo-badge {
 .model-tok {
   color: var(--ink-tertiary);
   font-size: 10.5px;
+  white-space: nowrap;
 }
 
 .model-val {
@@ -1326,6 +1344,7 @@ body:not(.dragging-active) .provider-row:hover .logo-badge {
   font-weight: 600;
   min-width: 44px;
   text-align: right;
+  white-space: nowrap;
 }
 
 .empty-state {
@@ -2803,6 +2822,7 @@ html.is-comfortable .quick-plan-banner { padding: 11px 12px; }
   box-shadow: var(--shadow-card);
   padding: 10px 12px;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 5px;
   min-width: 0;
 }
@@ -2815,7 +2835,7 @@ html.is-comfortable .quick-plan-banner { padding: 11px 12px; }
 }
 .diag-heading { margin: 0; font-family: var(--display); font-size: 13px; font-weight: 700; line-height: 1.25; color: var(--ink); }
 .diag-note { margin: 0; font-size: 11.5px; color: var(--ink-secondary); line-height: 1.4; overflow-wrap: anywhere; }
-.diag-list { display: grid; gap: 6px; }
+.diag-list { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: 6px; }
 .diag-item {
   display: flex;
   align-items: flex-start;
@@ -3392,6 +3412,8 @@ html.is-comfortable .quick-plan-banner { padding: 11px 12px; }
 }
 .h9-list {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 6px;
 }
 .h9-waste-item {
@@ -3654,6 +3676,7 @@ html.is-comfortable .quick-plan-banner { padding: 11px 12px; }
 .h9-model-card,
 .h9-session-card {
   width: 100%;
+  min-width: 0;
   text-align: left;
   appearance: none;
   background: var(--surface-subtle);
@@ -3661,6 +3684,7 @@ html.is-comfortable .quick-plan-banner { padding: 11px 12px; }
   border-radius: 9px;
   padding: 8px 9px;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 5px;
   color: var(--ink);
   font-family: inherit;
@@ -4182,7 +4206,7 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
 }
 .plan-roi-badge.is-good { background: var(--mint-bg); color: var(--mint); }
 .plan-roi-badge.is-warn { background: var(--warn-bg); color: var(--warn); }
-.plan-settings-row { display: grid; gap: 6px; padding: 9px 12px; }
+.plan-settings-row { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: 6px; padding: 9px 12px; }
 .plan-settings-row + .plan-settings-row { border-top: 1px solid var(--divider); }
 .plan-settings-row .source-meta { white-space: normal; overflow-wrap: anywhere; }
 .plan-settings-row summary { cursor: pointer; color: var(--ink-secondary); font-size: 11px; }
@@ -6042,7 +6066,7 @@ function renderLimitGroup(prov, idx, horizon, doStagger, allowCalm = false) {
                 <div class="model-rows">
                   ${models.map(m => `
                     <div class="model-row">
-                      <span class="model-name">${esc(m.name || m.key || "Model")}</span>
+                      <span class="model-name" title="${esc(m.name || m.key || "Model")}">${esc(m.name || m.key || "Model")}</span>
                       <span class="model-metrics">
                         <span class="model-tok">${fmtTokens(m.tokens || 0)}</span>
                         <span class="model-val">${esc(fmtMoney(m.valueUsd, m.complete !== false, true))}</span>

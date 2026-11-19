@@ -7,6 +7,7 @@ provider: anthropic
 exactness: exact
 prices:
   - model_key: claude-fable-5-2
+    aliases: [opencode:claude-fable-5-2, opencode:anthropic/claude-fable-5.2, opencode:anthropic/claude-fable-5-2, antigravity:claude-fable-5-2, antigravity:claude-fable-5-2-low, antigravity:claude-fable-5-2-medium, antigravity:claude-fable-5-2-high]
     # Released 2026-11-09. Standard API pricing, including the full 1M
     # context window. Effort changes token consumption, not these rates;
     # Fast mode is a separate tier and is not inferred from missing metadata.
@@ -17,12 +18,33 @@ prices:
     output_per_mtok: 40.00
     effective_from: 2026-11-09T00:00:00Z
     source_url: https://platform.claude.com/docs/en/models/fable-5-2/overview
+  - model_key: claude-mythos-5-2
+    aliases: [opencode:claude-mythos-5-2, opencode:anthropic/claude-mythos-5.2, opencode:anthropic/claude-mythos-5-2]
+    # Released 2026-11-09 alongside Fable 5.2 at identical standard API rates
+    # ($8 input, $0.20 cache read, $10/$16 cache writes, $40 output per MTok).
+    input_per_mtok: 8.00
+    cached_input_per_mtok: 0.20
+    cache_write_per_mtok: 10.00
+    cache_write_1h_per_mtok: 16.00
+    output_per_mtok: 40.00
+    effective_from: 2026-11-09T00:00:00Z
+    source_url: https://platform.claude.com/docs/en/about-claude/pricing
   # Claude Fable 5.1 succeeds Claude Fable 5 in the same tier at the same
   # per-token base price ($10 / $50 per MTok) with cache reads at $0.25/MTok
   # per the official pricing page. effective_from is the telemetry assertion
   # floor (the first local Fable 5.1 usage observed), not a documented launch
   # date.
   - model_key: claude-fable-5-1
+    aliases: [opencode:claude-fable-5-1, opencode:anthropic/claude-fable-5.1]
+    input_per_mtok: 10.00
+    cached_input_per_mtok: 0.25
+    cache_write_per_mtok: 12.50
+    cache_write_1h_per_mtok: 20.00
+    output_per_mtok: 50.00
+    effective_from: 2026-09-01T00:00:00Z
+    source_url: https://platform.claude.com/docs/en/about-claude/pricing
+  - model_key: claude-mythos-5-1
+    aliases: [opencode:claude-mythos-5-1, opencode:anthropic/claude-mythos-5.1]
     input_per_mtok: 10.00
     cached_input_per_mtok: 0.25
     cache_write_per_mtok: 12.50
@@ -31,6 +53,16 @@ prices:
     effective_from: 2026-09-01T00:00:00Z
     source_url: https://platform.claude.com/docs/en/about-claude/pricing
   - model_key: claude-fable-5
+    aliases: [opencode:claude-fable-5, opencode:anthropic/claude-fable-5]
+    input_per_mtok: 10.00
+    cached_input_per_mtok: 1.00
+    cache_write_per_mtok: 12.50
+    cache_write_1h_per_mtok: 20.00
+    output_per_mtok: 50.00
+    effective_from: 2026-06-09T00:00:00Z
+    source_url: https://platform.claude.com/docs/en/about-claude/pricing
+  - model_key: claude-mythos-5
+    aliases: [opencode:claude-mythos-5, opencode:anthropic/claude-mythos-5]
     input_per_mtok: 10.00
     cached_input_per_mtok: 1.00
     cache_write_per_mtok: 12.50
@@ -39,6 +71,7 @@ prices:
     effective_from: 2026-06-09T00:00:00Z
     source_url: https://platform.claude.com/docs/en/about-claude/pricing
   - model_key: claude-opus-4-8
+    aliases: [opencode:anthropic/claude-opus-4.8]
     input_per_mtok: 5.00
     cached_input_per_mtok: 0.50
     cache_write_per_mtok: 6.25
@@ -46,8 +79,53 @@ prices:
     output_per_mtok: 25.00
     effective_from: 2026-05-28T00:00:00Z
     source_url: https://platform.claude.com/docs/en/about-claude/pricing
+  - model_key: claude-opus-4-7
+    aliases: [opencode:anthropic/claude-opus-4.7]
+    input_per_mtok: 5.00
+    cached_input_per_mtok: 0.50
+    cache_write_per_mtok: 6.25
+    cache_write_1h_per_mtok: 10.00
+    output_per_mtok: 25.00
+    effective_from: 2026-01-01T00:00:00Z
+    source_url: https://platform.claude.com/docs/en/about-claude/pricing
+  - model_key: claude-opus-4-6
+    aliases: [opencode:anthropic/claude-opus-4.6, antigravity:claude-4.6, antigravity:claude-opus-4-6]
+    input_per_mtok: 5.00
+    cached_input_per_mtok: 0.50
+    cache_write_per_mtok: 6.25
+    cache_write_1h_per_mtok: 10.00
+    output_per_mtok: 25.00
+    effective_from: 2026-01-01T00:00:00Z
+    source_url: https://platform.claude.com/docs/en/about-claude/pricing
+  - model_key: claude-opus-4-5
+    aliases: [claude-opus-4-5-20251101, opencode:anthropic/claude-opus-4.5]
+    input_per_mtok: 5.00
+    cached_input_per_mtok: 0.50
+    cache_write_per_mtok: 6.25
+    cache_write_1h_per_mtok: 10.00
+    output_per_mtok: 25.00
+    effective_from: 2026-01-01T00:00:00Z
+    source_url: https://platform.claude.com/docs/en/about-claude/pricing
+  - model_key: claude-opus-4-1
+    aliases: [claude-opus-4-1-20250805, opencode:anthropic/claude-opus-4.1]
+    input_per_mtok: 15.00
+    cached_input_per_mtok: 1.50
+    cache_write_per_mtok: 18.75
+    cache_write_1h_per_mtok: 30.00
+    output_per_mtok: 75.00
+    effective_from: 2026-01-01T00:00:00Z
+    source_url: https://platform.claude.com/docs/en/about-claude/pricing
+  - model_key: claude-opus-4
+    aliases: [claude-opus-4-20250514, opencode:anthropic/claude-opus-4]
+    input_per_mtok: 15.00
+    cached_input_per_mtok: 1.50
+    cache_write_per_mtok: 18.75
+    cache_write_1h_per_mtok: 30.00
+    output_per_mtok: 75.00
+    effective_from: 2026-01-01T00:00:00Z
+    source_url: https://platform.claude.com/docs/en/about-claude/pricing
   - model_key: claude-opus-5
-    aliases: ["claude-opus-5[1m]"]
+    aliases: ["claude-opus-5[1m]", opencode:anthropic/claude-opus-5]
     input_per_mtok: 5.00
     cached_input_per_mtok: 0.50
     cache_write_per_mtok: 6.25
@@ -59,7 +137,7 @@ prices:
     # Antigravity's thinking levels select the same Opus model:
     # https://antigravity.google/docs/models. Price at the underlying API
     # rate; antigravity_local remains a derived source, never a billed charge.
-    aliases: [antigravity:claude-opus-5-5, antigravity:claude-opus-5-5-low, antigravity:claude-opus-5-5-medium, antigravity:claude-opus-5-5-high]
+    aliases: [antigravity:claude-opus-5-5, antigravity:claude-opus-5-5-low, antigravity:claude-opus-5-5-medium, antigravity:claude-opus-5-5-high, opencode:anthropic/claude-opus-5.5, opencode:claude-opus-5-5]
     # Released 2026-09-22. Standard card: $4 input, $0.20 cache read (0.05x),
     # $5 / $8 cache writes, $20 output. The full 1M window uses these rates.
     input_per_mtok: 4.00
@@ -70,6 +148,7 @@ prices:
     effective_from: 2026-09-22T00:00:00Z
     source_url: https://platform.claude.com/docs/en/about-claude/pricing
   - model_key: claude-sonnet-5
+    aliases: [opencode:anthropic/claude-sonnet-5, opencode:claude-sonnet-5]
     # Launched 2026-06-30 at introductory $2/$10 per MTok. Anthropic's official
     # pricing page states the scheduled 2026-09-01 increase to $3/$15 will not
     # occur: the introductory price is now the standard price, so this card is
@@ -82,6 +161,7 @@ prices:
     effective_from: 2026-06-30T00:00:00Z
     source_url: https://platform.claude.com/docs/en/about-claude/pricing
   - model_key: claude-sonnet-5-5
+    aliases: [antigravity:claude-sonnet-5-5, antigravity:claude-sonnet-5-5-low, antigravity:claude-sonnet-5-5-medium, antigravity:claude-sonnet-5-5-high, opencode:anthropic/claude-sonnet-5.5, opencode:claude-sonnet-5-5]
     # Released 2026-09-28. Standard card includes the full 1M window. Cache
     # hits are 0.05x base input ($0.10), as for Opus 5.5 (footnote 2 of the
     # pricing page); the card said $0.20 until 2026-10-26.
@@ -93,6 +173,25 @@ prices:
     effective_from: 2026-09-28T00:00:00Z
     source_url: https://platform.claude.com/docs/en/about-claude/pricing
   - model_key: claude-sonnet-4-6
+    aliases: [opencode:anthropic/claude-sonnet-4.6, antigravity:claude-sonnet-4-6]
+    input_per_mtok: 3.00
+    cached_input_per_mtok: 0.30
+    cache_write_per_mtok: 3.75
+    cache_write_1h_per_mtok: 6.00
+    output_per_mtok: 15.00
+    effective_from: 2026-01-01T00:00:00Z
+    source_url: https://platform.claude.com/docs/en/about-claude/pricing
+  - model_key: claude-sonnet-4-5
+    aliases: [claude-sonnet-4-5-20250929, opencode:anthropic/claude-sonnet-4.5]
+    input_per_mtok: 3.00
+    cached_input_per_mtok: 0.30
+    cache_write_per_mtok: 3.75
+    cache_write_1h_per_mtok: 6.00
+    output_per_mtok: 15.00
+    effective_from: 2026-01-01T00:00:00Z
+    source_url: https://platform.claude.com/docs/en/about-claude/pricing
+  - model_key: claude-sonnet-4
+    aliases: [claude-sonnet-4-20250514, opencode:anthropic/claude-sonnet-4]
     input_per_mtok: 3.00
     cached_input_per_mtok: 0.30
     cache_write_per_mtok: 3.75
@@ -101,6 +200,7 @@ prices:
     effective_from: 2026-01-01T00:00:00Z
     source_url: https://platform.claude.com/docs/en/about-claude/pricing
   - model_key: claude-haiku-5-5
+    aliases: [opencode:anthropic/claude-haiku-5.5, opencode:claude-haiku-5-5]
     # Released 2026-10-07. Prompts up to 100,000 tokens: $0.10 input, $0.01
     # cache read (0.1x), $0.125 / $0.20 cache writes, $0.50 output. A prompt
     # over 100,000 tokens — input, cache reads, and cache writes together —

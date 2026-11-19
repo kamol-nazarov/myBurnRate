@@ -11,12 +11,40 @@ provider: deepseek
 exactness: derived
 prices:
   - model_key: deepseek:deepseek-flash
-    # OpenCode records DeepSeek API usage as opencode:<model>.
-    aliases: [opencode:deepseek-flash, opencode:deepseek/deepseek-v4.1-flash-1017]
+    # OpenCode records DeepSeek API usage as opencode:<model>. Per the official
+    # pricing page footnote (1), legacy names deepseek-v4-flash and
+    # deepseek-v4-flash-vision-exp route to DeepSeek-V4.1-Flash-1017 at these rates.
+    aliases:
+      - deepseek-flash
+      - opencode:deepseek-flash
+      - opencode:deepseek-v4.1-flash
+      - opencode:deepseek-v4.1-flash-1017
+      - opencode:deepseek/deepseek-v4.1-flash
+      - opencode:deepseek/deepseek-v4.1-flash-1017
+      - deepseek:deepseek-v4-flash
+      - opencode:deepseek-v4-flash
+      - deepseek:deepseek-v4-flash-vision-exp
+      - opencode:deepseek-v4-flash-vision-exp
     input_per_mtok: 0.15
     cached_input_per_mtok: 0.003
     cache_write_per_mtok: 0.00
     output_per_mtok: 0.60
+    peak_hours_utc: [[1, 4], [6, 10]]
+    peak_weekdays: [mon, tue, wed, thu, fri]
+    peak_multiplier: 2
+    effective_from: 2026-10-17T00:00:00Z
+    source_url: https://api-docs.deepseek.com/quick_start/pricing/
+  - model_key: deepseek:deepseek-v4-pro
+    # DeepSeek-V4-Pro-0813 direct API off-peak rates; peak hours bill 2x.
+    aliases:
+      - deepseek-v4-pro
+      - opencode:deepseek-v4-pro
+      - opencode:deepseek/deepseek-v4-pro
+      - opencode:deepseek/deepseek-v4-pro-0813
+    input_per_mtok: 0.66
+    cached_input_per_mtok: 0.022
+    cache_write_per_mtok: 0.00
+    output_per_mtok: 1.98
     peak_hours_utc: [[1, 4], [6, 10]]
     peak_weekdays: [mon, tue, wed, thu, fri]
     peak_multiplier: 2
