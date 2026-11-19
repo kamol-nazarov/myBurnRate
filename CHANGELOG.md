@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 This project is licensed under Apache-2.0.
 
+## [0.6.7] - Unreleased
+
+### Added
+
+- **Pin any usage limit to the floating corner pill.** Choose a specific provider usage limit (such as `Claude Code · Primary (Fable weekly)` or `Codex (Weekly)`) or stay on **Auto (most urgent)** from the inline **Pill limit** picker inside the hover card or from **Settings → Floating pill limit**. Selection persists across restarts.
+- **Claude Fable weekly usage limits across all Claude accounts.** Reads the `weekly_scoped` Fable quota bucket from each Claude profile's cached plan usage (and Traycer's model-scoped limits), displaying **Fable weekly** in Limits, forecasts, and the floating pill limit picker.
+
+### Fixed
+
+- **Fix floating pill hover card scrollbars and bottom footer clipping.** Removed negative horizontal margins inside `.ov-rest-list` that triggered native horizontal scrollbars, replaced default bright Win32 scrollbars with a slim theme-matched 5px borderless scrollbar, prevented flex-shrink row squishing in long lists, and re-verified settled card height after paint so `Open full BURNRATE ↗` and `Refresh now` stay unclipped.
+
 ## [0.6.6] - 2026-11-19
 
 ### Added
