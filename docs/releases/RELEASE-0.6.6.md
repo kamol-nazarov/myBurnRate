@@ -1,0 +1,5 @@
+# BURNRATE 0.6.6
+
+- **Fix right-edge clipping in expanded provider drawers.** Long model names now truncate cleanly with ellipsis and hover tooltips instead of pushing the `7 DAYS` stat box, breakdown figures, and prices past the right drawer edge.
+- **Polish display names for recent flagship models.** Formats Gemini 4 Neon/Hydrogen/Carbon/Argon, Claude Mythos & Fable 5–5.2, GPT-5.6 & GPT-6.2 cleanly and removes the duplicate `Muse Muse` prefix.
+- **Broadly expand official & open-source model pricing (267 cards / 761 keys & aliases).** Prices Claude Mythos 5–5.2 and Opus/Sonnet 4–4.7, Gemini 2.5–4 (including Gemini 4 Neon, `-xhigh`, and `-tiered` aliases), OpenAI GPT-4o/4.1, o3/o4-mini, and GPT-5–6.2, xAI Grok 4.20–4.7/Build, DeepSeek V4.1 Flash and V4 Pro, Z.AI GLM 4.5–5.3, plus 120 popular open-source & OpenRouter models (Qwen 3/3.5–4 & Qwen3-Coder, DeepSeek V3/R1/V4, Kimi K2–K3.1, MiniMax M2.5–M3.1, Llama 3/4 Maverick & Scout, Mistral/Devstral/Codestral, Gemma 3/4, GPT-OSS 120B/20B, Nemotron, MiMo, and StepFun).

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 This project is licensed under Apache-2.0.
 
+## [0.6.6] - Unreleased
+
+### Added
+
+- **Expanded official & open-source model pricing (267 cards / 761 keys & aliases).** Added verified official API rates for Claude Mythos 5–5.2 and Opus/Sonnet 4–4.7, Gemini 2.5–4 (including Gemini 4 Neon, `-xhigh`, and `-tiered` aliases), OpenAI GPT-4o/4.1, o3/o4-mini, and GPT-5–6.2, xAI Grok 4.20–4.7/Build, DeepSeek V4.1 Flash and V4 Pro, Z.AI GLM 4.5–5.3, plus 120 popular open-source & OpenRouter models (Qwen 3/3.5–4 & Qwen3-Coder, DeepSeek V3/R1/V4, Kimi K2–K3.1, MiniMax M2.5–M3.1, Llama 3/4 Maverick & Scout, Mistral/Devstral/Codestral, Gemma 3/4, GPT-OSS 120B/20B, Nemotron, MiMo, and StepFun).
+
+### Fixed
+
+- **Prevent right-edge clipping inside expanded provider drawers.** Locked single-column CSS grid containers (`.drawer-collapse`, `.drawer-box`, `.breakdown-box`, `.model-rows`, and companion panels) to `minmax(0, 1fr)` with `min-width: 0` so long model names cleanly ellipsis-truncate with hover tooltips instead of pushing stats, breakdown figures, and prices past the drawer border.
+- **Polish recent model display names.** Added clean labels for Gemini 4 Neon/Hydrogen/Carbon/Argon, Claude Mythos & Fable 5–5.2, GPT-5.6 & GPT-6.2 models, and removed the duplicate `Muse Muse` prefix on Muse variants.
+
 ## [0.6.5] - 2026-11-19
 
 ### Fixed
