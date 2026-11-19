@@ -412,6 +412,60 @@ def test_legacy_hub_delivers_batches_without_pruning_until_its_upgrade(pair):
         assert db.execute("SELECT COUNT(*) FROM usage_changes").fetchone()[0] == 0
 
 
+def test_interrupted_legacy_batch_recovers_on_legacy_and_upgraded_hub(pair):
+    """If a v1 hub commits past the spoke's saved usage_legacy_seq, neither v1 paging nor v2 rebase deadlocks."""
+    local, hub, pricing = pair
+    with connect(local) as db:
+        for index in range(1005):
+            upsert_usage_event(db, event(f"legacy-{index}", 1))
+
+    class InterruptingLegacyHub:
+        acknowledged = 0
+        fail_after = None
+
+        def post(self, _url, *, json, **_kwargs):
+            old_payload = {key: value for key, value in json.items() if key != "usageContinuity"}
+            if old_payload["usageChanges"]["after"] == self.acknowledged:
+                result = apply_sync_push(hub, pricing, machine_id="laptop", body=old_payload, now=NOW)
+                self.acknowledged = result["usageChangeSeq"]
+                if self.fail_after is not None and self.acknowledged >= self.fail_after:
+                    self.fail_after = None
+                    raise ConnectionError("simulated drop after hub commit")
+            else:
+                result = {"ok": True, "eventsWritten": 0, "usageChangeSeq": self.acknowledged}
+            return SimpleNamespace(status_code=200, json=lambda: result)
+
+    legacy = InterruptingLegacyHub()
+    legacy.fail_after = 1005
+    # Batch 1 (1..1000) persists usage_legacy_seq=1000; Batch 2 (1001..1005) commits on hub then drops reply.
+    with pytest.raises(ConnectionError):
+        sync_local(local, pricing, legacy)
+    assert legacy.acknowledged == 1005
+    assert read_sync_cursor(local, "https://hub.test")["usage_legacy_seq"] == 1000
+
+    # Add a newer event while the hub is still v1: spoke must recover paging past 1005 without pruning.
+    with connect(local) as db:
+        upsert_usage_event(db, event("post-drop-v1", 7))
+    v1_res = sync_local(local, pricing, legacy)
+    assert v1_res["usageChangesPending"]
+    assert legacy.acknowledged == 1006
+    assert total(hub) == 1012
+    assert read_sync_cursor(local, "https://hub.test")["change_seq"] == 0
+
+    # Simulate another stale usage_legacy_seq right before the hub upgrades to v2.
+    stale_cursor = {**read_sync_cursor(local, "https://hub.test"), "usage_legacy_seq": 1000}
+    write_sync_cursor(local, "https://hub.test", stale_cursor)
+    with connect(local) as db:
+        upsert_usage_event(db, event("post-upgrade-v2", 13))
+
+    upgraded = sync_local(local, pricing, ReceiptHub(pair))
+    assert not upgraded.get("usageChangesPending")
+    assert upgraded["usageChangeSeq"] == 1007
+    assert total(hub) == 1025
+    with connect(local) as db:
+        assert db.execute("SELECT COUNT(*) FROM usage_changes").fetchone()[0] == 0
+
+
 @pytest.mark.parametrize("legacy_count", (1, 3))
 def test_pre_checkpoint_backup_retains_conflicts_and_syncs_fresh_reused_positions(
     pair, tmp_path, legacy_count,

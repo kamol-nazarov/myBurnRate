@@ -1538,9 +1538,10 @@ def sync_once(
                     type(acknowledged) is int and acknowledged > after
                 ) else None
             legacy_rebase = (
-                isinstance(head, dict) and head.get("stream") is None
-                and acknowledged == cursor.get("usage_legacy_seq")
-                and legacy_mark is not None and legacy_mark == cursor.get("usage_legacy_mark")
+                isinstance(head, dict)
+                and head == {"stream": None, "through": acknowledged, "mark": None}
+                and type(acknowledged) is int
+                and acknowledged > after
             )
             if proved and (head["through"] >= next_cursor["change_seq"] or last_result.get("usageRetry")):
                 if last_result.get("usageRetry"):
@@ -1592,10 +1593,10 @@ def sync_once(
                 # A legacy hub can still consume ordinary batches. Its
                 # numeric position is only a paging hint. Keep every pending
                 # change and probe the confirmed prefix again on the next call.
-                if head is None and legacy_mark and (
+                legacy_floor = legacy_after if legacy_after is not None else after
+                if head is None and legacy_mark and acknowledged > legacy_floor and (
                     acknowledged == batch["usageChanges"]["through"]
-                    or (acknowledged == cursor.get("usage_legacy_seq")
-                        and legacy_mark == cursor.get("usage_legacy_mark"))
+                    or acknowledged >= int(cursor.get("usage_legacy_seq") or 0)
                 ):
                     legacy_cursor.update(usage_legacy_seq=acknowledged, usage_legacy_mark=legacy_mark)
                     legacy_after = acknowledged
@@ -1606,7 +1607,10 @@ def sync_once(
                     expected_generation=generation, expected_usage=cursor,
                 )
                 cursor = legacy_cursor
-                if legacy_after is not None and batch["usageChanges"]["hasMore"]:
+                if legacy_after is not None and (
+                    batch["usageChanges"]["hasMore"]
+                    or batch["usageChanges"]["through"] > legacy_after
+                ):
                     continue
                 break
             if last_result.get("usageChangesPending"):
