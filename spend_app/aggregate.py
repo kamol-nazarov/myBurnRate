@@ -471,7 +471,7 @@ COVERAGE_TARGETS = (
     ("antigravity", "antigravity:gpt-oss-120b", "Antigravity GPT-OSS 120B"),
 )
 CAPACITY_LIMIT_ORDER = {
-    "claude-code": ("5h", "weekly"),
+    "claude-code": ("5h", "weekly", "weekly-fable"),
     "antigravity": ("gemini-5h", "gemini-weekly", "3p-5h", "3p-weekly"),
     "opencode": ("5h", "weekly"),
     "muse": ("5h", "weekly"),

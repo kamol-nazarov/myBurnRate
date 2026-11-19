@@ -168,6 +168,30 @@ def format_reset(resets_at, now: datetime | None = None) -> str:
     return f"resets in {int(round(hours / 24))}d"
 
 
+def window_urgency(window: dict, now: datetime | None = None) -> dict:
+    """``{"level", "limitKey", "text"}`` for one measured window."""
+    now = now or datetime.now(UTC)
+    limit_key = str(window.get("limitKey") or "") or None
+    level = grade_window(window)
+    left = _remaining_pct(window)
+    reset_text = format_reset(window.get("resetsAt"), now)
+    if level == "out":
+        text = f"out · {reset_text}" if reset_text else "out of quota"
+    elif _is_drying(window):
+        hours = _hours_to_dry(window)
+        if math.isinf(hours):
+            text = "dry before reset"
+        elif hours <= 0:
+            text = "dry now"
+        else:
+            text = f"dry in {format_hours(hours)}"
+    elif level == "soon":
+        text = f"{left:.0f}% left" + (f" · {reset_text}" if reset_text else "")
+    else:
+        text = reset_text or "on pace"
+    return {"level": level, "limitKey": limit_key, "text": text}
+
+
 def compute_urgency(provider: dict, now: datetime | None = None) -> dict:
     """``{"level", "limitKey", "text"}`` for one merged provider."""
     balance = _balance(provider)
@@ -189,25 +213,7 @@ def compute_urgency(provider: dict, now: datetime | None = None) -> dict:
             "text": reason or "Awaiting reading",
         }
 
-    limit_key = str(window.get("limitKey") or "") or None
-    level = grade_window(window)
-    left = _remaining_pct(window)
-    reset_text = format_reset(window.get("resetsAt"), now)
-    if level == "out":
-        text = f"out · {reset_text}" if reset_text else "out of quota"
-    elif _is_drying(window):
-        hours = _hours_to_dry(window)
-        if math.isinf(hours):
-            text = "dry before reset"
-        elif hours <= 0:
-            text = "dry now"
-        else:
-            text = f"dry in {format_hours(hours)}"
-    elif level == "soon":
-        text = f"{left:.0f}% left" + (f" · {reset_text}" if reset_text else "")
-    else:
-        text = reset_text or "on pace"
-    return {"level": level, "limitKey": limit_key, "text": text}
+    return window_urgency(window, now)
 
 
 def grade_window(window: dict) -> str:

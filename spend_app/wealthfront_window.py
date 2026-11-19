@@ -57,6 +57,7 @@ from spend_app.provider_urgency import (
     window_has_current_reading,
 )
 from spend_app.tab_window import (
+    PILL_LIMIT_KEY,
     SURFACE_KEY,
     SURFACES,
     TAB_HEIGHT,
@@ -66,6 +67,7 @@ from spend_app.tab_window import (
     TabHost,
     TabModel,
     load_tab_html,
+    normalize_pill_limit,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -92,6 +94,7 @@ EDGE_HITS = {
 SHORT_WINDOW_LABELS = {
     "5h": "5h",
     "weekly": "7d",
+    "weekly-fable": "Fable 7d",
     "monthly": "30d",
     "gemini-5h": "Gemini 5h",
     "gemini-weekly": "Gemini 7d",
@@ -105,13 +108,14 @@ WINDOW_TIE_ORDER = {
     "gemini-5h": 1,
     "3p-5h": 2,
     "weekly": 3,
-    "gemini-weekly": 4,
-    "3p-weekly": 5,
-    "monthly": 6,
+    "weekly-fable": 4,
+    "gemini-weekly": 5,
+    "3p-weekly": 6,
+    "monthly": 7,
 }
 
 SESSION_KEYS = ("5h", "gemini-5h", "3p-5h")
-WEEKLY_KEYS = ("weekly", "gemini-weekly", "3p-weekly")
+WEEKLY_KEYS = ("weekly", "weekly-fable", "gemini-weekly", "3p-weekly")
 LABEL_SEPARATOR = " \u2014 "
 
 
@@ -1326,7 +1330,8 @@ class DesktopBridge:
         self._surface = surface
         if "hudMini" in saved:
             self._prefs.update({SURFACE_KEY: surface, "hudMini": None})
-        self._tab_model = TabModel()
+        self._pill_limit = normalize_pill_limit(saved.get(PILL_LIMIT_KEY))
+        self._tab_model = TabModel(pill_limit=self._pill_limit)
         self._quota_auth_scope: tuple | None = None
         self._quota_capacity: dict[tuple[str, str], list[dict]] = {}
         self._published_usage_machine: str | None = None
@@ -1408,6 +1413,7 @@ class DesktopBridge:
                 "analyticsWindow": self._analytics_window,
                 "hudMini": None,
                 SURFACE_KEY: self._surface,
+                PILL_LIMIT_KEY: self._pill_limit,
                 "hudDensity": self._hud_density,
             }
         )
@@ -1429,6 +1435,7 @@ class DesktopBridge:
             "update": self.update_summary(),
             "hudMini": False,
             "surface": self._surface,
+            PILL_LIMIT_KEY: self._pill_limit,
             "hudDensity": self._hud_density,
         }
 
@@ -1749,6 +1756,19 @@ class DesktopBridge:
             self._idle_opacity = max(0.20, min(0.85, val))
             self._write_preferences()
         return {"ok": True, "idleOpacity": round(self._idle_opacity, 2)}
+
+    def set_pill_limit(self, value: str | None = None) -> dict:
+        self._pill_limit = normalize_pill_limit(value)
+        self._write_preferences()
+        self._tab_model.set_pill_limit(self._pill_limit)
+        if self._window is not None:
+            try:
+                self._window.evaluate_js(
+                    f"window.syncPillLimitFromHost && window.syncPillLimitFromHost({json.dumps(self._pill_limit)})"
+                )
+            except Exception:
+                pass
+        return {"ok": True, "pillLimit": self._pill_limit}
 
     def set_ui_busy(self, busy: bool) -> dict:
         self._ui_busy = bool(busy)

@@ -367,7 +367,7 @@ def test_tab_bridge_only_exposes_the_methods_the_page_uses():
     public = {n for n, v in inspect.getmembers(TabBridge) if not n.startswith("_") and callable(v)}
     assert public == {
         "attach_controller", "begin_drag", "build_payload", "collapse", "expand",
-        "get_state", "open_full", "press", "refresh_now", "set_focus",
+        "get_state", "open_full", "press", "refresh_now", "set_focus", "set_pill_limit",
     }
 
 

@@ -641,9 +641,15 @@ def _claude_desktop_limits_uncached(
     }
 
 
+def _claude_scoped_key(display_name: str, fallback: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", str(display_name or "").strip().lower()).strip("-")
+    return f"weekly-{slug}" if slug else fallback
+
+
 def _claude_usage_windows(usage: dict) -> list[dict]:
-    """5-hour and weekly windows from Claude Code's cached plan-usage document."""
-    windows = []
+    """5-hour, weekly, and model-scoped weekly windows (e.g. Fable) from Claude Code's cached plan usage."""
+    windows: list[dict] = []
+    seen_keys: set[str] = set()
     for key, label in (("five_hour", "5-hour window"), ("seven_day", "Weekly window")):
         window = usage.get(key)
         if not isinstance(window, dict):
@@ -651,23 +657,80 @@ def _claude_usage_windows(usage: dict) -> list[dict]:
         used = _finite_number(window.get("utilization"))
         if used is None:
             continue
+        used = min(100.0, max(0.0, used))
+        win_key = "5h" if key == "five_hour" else "weekly"
+        seen_keys.add(win_key)
         windows.append(
             {
-                "key": "5h" if key == "five_hour" else "weekly",
+                "key": win_key,
                 "label": label,
                 "usedPct": used,
-                "remainingPct": max(0.0, 100 - used),
+                "remainingPct": max(0.0, 100.0 - used),
                 "resetAt": window.get("resets_at"),
             }
         )
+
+    raw_limits = usage.get("limits")
+    if isinstance(raw_limits, list):
+        for index, item in enumerate(raw_limits):
+            if not isinstance(item, dict):
+                continue
+            used = _finite_number(item.get("percent"))
+            if used is None:
+                continue
+            used = min(100.0, max(0.0, used))
+            kind = str(item.get("kind") or "").strip().lower()
+            group = str(item.get("group") or "").strip().lower()
+            if kind == "session" and "5h" not in seen_keys:
+                seen_keys.add("5h")
+                windows.append(
+                    {
+                        "key": "5h",
+                        "label": "5-hour window",
+                        "usedPct": used,
+                        "remainingPct": max(0.0, 100.0 - used),
+                        "resetAt": item.get("resets_at"),
+                    }
+                )
+            elif kind == "weekly_all" and "weekly" not in seen_keys:
+                seen_keys.add("weekly")
+                windows.append(
+                    {
+                        "key": "weekly",
+                        "label": "Weekly window",
+                        "usedPct": used,
+                        "remainingPct": max(0.0, 100.0 - used),
+                        "resetAt": item.get("resets_at"),
+                    }
+                )
+            elif kind == "weekly_scoped" or (group == "weekly" and isinstance(item.get("scope"), dict)):
+                scope = item.get("scope") if isinstance(item.get("scope"), dict) else {}
+                model_scope = scope.get("model") if isinstance(scope.get("model"), dict) else {}
+                display_name = str(model_scope.get("display_name") or model_scope.get("displayName") or "").strip()
+                if not display_name:
+                    continue
+                win_key = _claude_scoped_key(display_name, f"weekly-model-{index}")
+                if win_key in seen_keys:
+                    continue
+                seen_keys.add(win_key)
+                windows.append(
+                    {
+                        "key": win_key,
+                        "label": f"Weekly · {display_name}",
+                        "usedPct": used,
+                        "remainingPct": max(0.0, 100.0 - used),
+                        "resetAt": item.get("resets_at"),
+                    }
+                )
     return windows
 
 
 def _past_reset(window: dict, moment: datetime) -> dict:
     """A cached window whose reset has passed: nothing used since.
 
-    The weekly window resets on a fixed cadence, so its next reset is known.
-    A 5-hour window starts with the next message, so it has no reset yet.
+    Weekly windows (including model-scoped weekly pools like Fable) reset on a
+    fixed 7-day cadence, so their next reset is known. A 5-hour window starts
+    with the next message, so it has no reset yet.
     """
     raw = window.get("resetAt")
     try:
@@ -677,7 +740,8 @@ def _past_reset(window: dict, moment: datetime) -> dict:
     if reset is None or reset.tzinfo is None or reset > moment:
         return window
     next_reset = None
-    if window["key"] == "weekly":
+    win_key = str(window.get("key") or "")
+    if win_key == "weekly" or win_key.startswith("weekly-"):
         next_reset = reset
         while next_reset <= moment:
             next_reset += timedelta(days=7)
@@ -1167,10 +1231,11 @@ def _claude_from_traycer_result(data: dict) -> dict:
         if not isinstance(source, dict) or not isinstance(source.get("usedPercent"), (int, float)):
             continue
         used = max(0.0, float(source["usedPercent"]))
+        display_name = str(source.get("displayName") or "").strip()
         windows.append(
             {
-                "key": f"model_{index}",
-                "label": f"Weekly · {source.get('displayName') or 'model'}",
+                "key": _claude_scoped_key(display_name, f"model_{index}"),
+                "label": f"Weekly · {display_name or 'model'}",
                 "usedPct": used,
                 "remainingPct": max(0.0, 100 - used),
                 "resetAt": _iso_from_millis(source.get("resetsAt")),

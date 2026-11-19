@@ -682,3 +682,55 @@ def test_an_error_keeps_exactly_the_last_known_segments_dimmed():
     assert failed["more"] == healthy["more"]
     assert failed["spend"] == healthy["spend"]
     assert failed["stale"] is True and failed["error"]["code"] == "NET-001"
+
+
+def test_pill_limit_customization_pins_specific_window_and_persists(tmp_path):
+    from spend_app.wealthfront_window import DesktopBridge
+
+    report = DemoClient().snapshot("today", "all")
+    report = dict(report)
+    provs = merge_provider_entries(
+        report, hud=demo_hud(), hud_usage=demo_hud_usage(), today_report=report, week_report=report
+    )
+    for p in provs:
+        if p.get("key") == "claude-code":
+            p["windows"] = list(p.get("windows") or []) + [{
+                "limitKey": "weekly-fable",
+                "label": "Claude Fable weekly",
+                "shortLabel": "Fable 7d",
+                "usedPct": 41.0,
+                "remainingPct": 59.0,
+                "resetsAt": (NOW + timedelta(days=6)).isoformat().replace("+00:00", "Z"),
+                "pace": {"state": "safe"},
+            }]
+    report["providers"] = provs
+
+    prefs = tmp_path / "native-window.json"
+    bridge = DesktopBridge(DemoClient(), preferences=prefs, demo=True)
+    bridge._tab_model.publish_report(report, today_report=report)
+
+    auto_payload = bridge._tab_model.payload(dark=True, now=NOW)
+    assert auto_payload["pillLimit"] is None
+    assert auto_payload["pillPinned"] is False
+    option_ids = {o["id"] for o in auto_payload["pillOptions"]}
+    assert "claude-code::weekly-fable" in option_ids
+
+    res = bridge.set_pill_limit("claude-code::weekly-fable")
+    assert res == {"ok": True, "pillLimit": "claude-code::weekly-fable"}
+    pinned_payload = bridge._tab_model.payload(dark=True, now=NOW)
+    assert pinned_payload["pillPinned"] is True
+    assert pinned_payload["primary"]["key"] == "claude-code"
+    assert pinned_payload["primary"]["limitKey"] == "weekly-fable"
+    assert pinned_payload["primary"]["windowTag"] == "Fable"
+    assert pinned_payload["primary"]["big"] == "59%"
+    assert pinned_payload["primary"]["shortStatus"] == "6d"
+    assert pinned_payload["pillLabel"].endswith("(Fable)")
+
+    # Reloaded DesktopBridge restores saved pillLimit from preferences
+    reloaded = DesktopBridge(DemoClient(), preferences=prefs, demo=True)
+    assert reloaded.get_initial_state()["pillLimit"] == "claude-code::weekly-fable"
+    assert reloaded._tab_model.pill_limit == "claude-code::weekly-fable"
+
+    # Reset back to Auto
+    assert bridge.set_pill_limit(None) == {"ok": True, "pillLimit": None}
+    assert bridge._tab_model.payload(dark=True, now=NOW)["pillPinned"] is False

@@ -236,7 +236,7 @@ function audit(label) {
 """
 
 
-def audit_script(label, payload_json, *, hover=False, expand_rest=False):
+def audit_script(label, payload_json, *, hover=False, expand_rest=False, expand_picker=False):
     show = ""
     if hover:
         extra = ""
@@ -244,6 +244,10 @@ def audit_script(label, payload_json, *, hover=False, expand_rest=False):
             extra = """
       var restBtn = document.querySelector('#card [data-toggle-rest]');
       if (restBtn) { restBtn.click(); await tick(); }"""
+        elif expand_picker:
+            extra = """
+      var pickBtn = document.querySelector('#card [data-toggle-picker]');
+      if (pickBtn) { pickBtn.click(); await tick(); }"""
         show = f"""
       window.burnrateTab.show();
       await tick();{extra}"""
@@ -304,6 +308,7 @@ def test_every_text_in_every_state_has_at_least_4_5_to_1_including_ancestor_opac
     script = "".join([
         audit_script("demo", demo_payload_json(dark=dark)),
         audit_script("demo hover", demo_payload_json(dark=dark), hover=True, expand_rest=True),
+        audit_script("demo picker", demo_payload_json(dark=dark), hover=True, expand_picker=True),
         audit_script("single hover", json.dumps(single_payload(dark)), hover=True),
         audit_script("idle", json.dumps(idle_payload(dark))),
         audit_script("idle hover", json.dumps(idle_payload(dark)), hover=True),
@@ -323,3 +328,45 @@ def test_every_text_in_every_state_has_at_least_4_5_to_1_including_ancestor_opac
     assert {r["label"] for r in rows} >= {"demo", "demo hover", "single hover", "idle", "stale", "empty", "error"}
     failing = [r for r in rows if r["ratio"] < 4.5]
     assert not failing, failing[:8]
+
+
+def test_hover_rest_and_pill_picker_lists_never_overflow_horizontally_or_squish_rows(tmp_path):
+    out = run_page(tmp_path, f"""
+      var picked = [];
+      var p = {demo_payload_json(dark=True)};
+      window.pywebview = {{ api: {{
+        set_pill_limit: function (val) {{ picked.push(val); return Promise.resolve({{ ok: true }}); }},
+        expand: function () {{ return Promise.resolve({{ ok: true, up: false }}); }},
+        collapse: function () {{ return Promise.resolve({{ ok: true }}); }},
+      }} }};
+      window.burnrateTab.update(p);
+      window.burnrateTab.show();
+      await tick();
+
+      document.querySelector('#card [data-toggle-rest]').click();
+      await tick();
+      var restList = document.querySelector('#card .ov-rest-list');
+      var restRows = [...document.querySelectorAll('#card .rest-row')];
+      report.restNoHorizScroll = restList.scrollWidth <= restList.clientWidth + 1;
+      report.restMinRowHeight = Math.min.apply(null, restRows.map(function (r) {{ return r.getBoundingClientRect().height; }}));
+
+      document.querySelector('#card [data-toggle-picker]').click();
+      await tick();
+      var pickList = document.querySelector('#card .pill-picker-list');
+      var pickRows = [...document.querySelectorAll('#card .pick-row')];
+      report.pickNoHorizScroll = pickList.scrollWidth <= pickList.clientWidth + 1;
+      report.pickMinRowHeight = Math.min.apply(null, pickRows.map(function (r) {{ return r.getBoundingClientRect().height; }}));
+      report.pickCount = pickRows.length;
+
+      var target = pickRows.find(function (r) {{ return r.getAttribute('data-pick-limit'); }});
+      target.click();
+      await tick();
+      report.picked = picked;
+    """, theme="dark")
+    assert "error" not in out, out.get("error")
+    assert out["restNoHorizScroll"] is True
+    assert out["restMinRowHeight"] >= 22
+    assert out["pickNoHorizScroll"] is True
+    assert out["pickMinRowHeight"] >= 22
+    assert out["pickCount"] >= 5
+    assert len(out["picked"]) == 1 and "::" in out["picked"][0]

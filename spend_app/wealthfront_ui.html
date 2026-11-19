@@ -5203,6 +5203,7 @@ const state = {
   topmost: false,
   autoFade: true,
   idleOpacity: 0.38,
+  pillLimit: null,
   providerOrder: [],
   demo: false,
   report: null,
@@ -5725,7 +5726,13 @@ function paintHeroText(data, animate = true) {
 }
 
 /* ---------- Limits: one group per provider or profile, lanes with refill timelines ---------- */
-const LIMIT_NAMES = { "5h": "5-hour", weekly: "Weekly", monthly: "Monthly", balance: "Balance" };
+const LIMIT_NAMES = {
+  "5h": "5-hour",
+  weekly: "Weekly",
+  "weekly-fable": "Fable weekly",
+  monthly: "Monthly",
+  balance: "Balance",
+};
 const LIMIT_TAGS = { out: "Out of quota", soon: "About to run out", warn: "Dry before refill" };
 const LIMIT_TICKS = [[6, "6h"], [24, "1d"], [72, "3d"]];
 const LIMIT_MIN_HORIZON_H = 96;
@@ -5733,6 +5740,10 @@ const LIMIT_MIN_HORIZON_H = 96;
 function limitName(w) {
   const k = String(w.limitKey || "");
   if (LIMIT_NAMES[k]) return LIMIT_NAMES[k];
+  if (k.startsWith("weekly-")) {
+    const suffix = k.slice("weekly-".length).replace(/-/g, " ").trim();
+    if (suffix) return suffix.replace(/\b\w/g, ch => ch.toUpperCase()) + " weekly";
+  }
   return String(w.label || w.shortLabel || "Limit").replace(/\s+window$/i, "");
 }
 
@@ -7599,6 +7610,17 @@ function paintSettingsBody() {
       ` : ""}
       ${showTray ? switchRow("sw_tray", "Keep running in the tray when closed", "Closing the window hides BURNRATE instead of quitting", state.closeToTray, "toggleCloseToTray") : ""}
       ${showAlerts ? switchRow("sw_alerts", "Low-quota notifications", "Warn when a plan or balance is about to run out", state.lowQuotaAlerts, "toggleLowQuotaAlerts") : ""}
+      ${apiHas("set_pill_limit") ? `
+        <div class="toggle-row wrap">
+          <div>
+            <div class="source-name" id="pillLimitLabel">Floating pill limit</div>
+            <div class="source-meta">Choose which usage limit shows in the corner pill</div>
+          </div>
+          <select class="text-input" id="pillLimitSelect" aria-labelledby="pillLimitLabel" style="width:auto;min-width:170px;max-width:100%" onchange="selectPillLimit(this.value)">
+            ${pillLimitOptionsHtml()}
+          </select>
+        </div>
+      ` : ""}
       ${state.providerOrder.length ? `
         <div class="toggle-row">
           <div>
@@ -8870,6 +8892,54 @@ window.selectIdleOpacity = async function(val) {
   if (apiAvailable() && window.pywebview.api.set_idle_opacity) {
     await window.pywebview.api.set_idle_opacity(state.idleOpacity);
   }
+};
+
+function pillLimitOptionsHtml() {
+  const current = state.pillLimit || "";
+  const providers = Array.isArray(state.report?.providers) ? state.report.providers : [];
+  const opts = [["", "Auto (most urgent)"]];
+  const seen = new Set([""]);
+  for (const p of providers) {
+    if (!p || (p.remaining && p.remaining.kind === "usage_only")) continue;
+    const key = String(p.key || "").trim();
+    if (!key) continue;
+    const title = p.profile ? `${p.name || key} · ${p.profile}` : String(p.name || key);
+    const windows = (p.windows || []).filter(w => w && w.unit !== "usd" && String(w.limitKey || "").trim());
+    for (const w of windows) {
+      const id = `${key}::${String(w.limitKey).trim()}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      opts.push([id, `${title} · ${limitName(w)}`]);
+    }
+    const isBal = (p.remaining && p.remaining.kind === "balance") || (p.fundsRemainingUsd != null && !windows.length);
+    if (isBal) {
+      const id = `${key}::balance`;
+      if (!seen.has(id)) {
+        seen.add(id);
+        opts.push([id, `${title} · Balance`]);
+      }
+    }
+  }
+  if (current && !seen.has(current)) {
+    opts.push([current, current.replace("::", " · ")]);
+  }
+  return opts.map(([val, lbl]) =>
+    `<option value="${esc(val)}"${val === current ? " selected" : ""}>${esc(lbl)}</option>`
+  ).join("");
+}
+
+window.selectPillLimit = async function(val) {
+  state.pillLimit = val ? String(val) : null;
+  if (apiAvailable() && window.pywebview.api.set_pill_limit) {
+    const res = await window.pywebview.api.set_pill_limit(state.pillLimit);
+    if (res && "pillLimit" in res) state.pillLimit = res.pillLimit || null;
+  }
+  showToast(state.pillLimit ? "Pinned limit to floating pill" : "Floating pill set to Auto");
+};
+
+window.syncPillLimitFromHost = function(val) {
+  state.pillLimit = val ? String(val) : null;
+  if (state.settingsOpen && state.settingsTab === "app") renderSettingsBody();
 };
 
 window.resetProviderOrder = async function() {
@@ -10988,6 +11058,7 @@ async function boot() {
     updatePinButton();
     state.autoFade = init.autoFade !== undefined ? !!init.autoFade : true;
     state.idleOpacity = Number.isFinite(Number(init.idleOpacity)) ? Number(init.idleOpacity) : 0.38;
+    state.pillLimit = init.pillLimit ? String(init.pillLimit) : null;
     state.providerOrder = Array.isArray(init.providerOrder) ? init.providerOrder : [];
     state.demo = !!init.demo;
     if (init.theme === "system" || init.theme === "light" || init.theme === "dark") {

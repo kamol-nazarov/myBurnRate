@@ -49,7 +49,7 @@ AGENT_NO_DATA_STATE = "no_data"
 LOG = logging.getLogger("burnrate.quotas")
 LIVE_STATE_ALIASES = frozenset({"live", "running"})
 QUOTA_LIMIT_ORDER = {
-    "claude-code": ("5h", "weekly"),
+    "claude-code": ("5h", "weekly", "weekly-fable"),
     "antigravity": ("gemini-5h", "gemini-weekly", "3p-5h", "3p-weekly"),
     "opencode": ("5h", "weekly"),
     "muse": ("5h", "weekly"),
@@ -500,6 +500,36 @@ def claude_quota_samples(
                 resets_at=_window_reset(window),
             )
         )
+    if exact:
+        for window in payload.get("windows") or []:
+            if not isinstance(window, dict):
+                continue
+            limit_key = str(window.get("key") or "").strip()
+            if not limit_key.startswith("weekly-"):
+                continue
+            used_pct = _number(window.get("usedPct"))
+            if used_pct is None:
+                continue
+            raw_label = str(window.get("label") or "").strip()
+            if raw_label.lower().startswith("weekly · "):
+                model_label = raw_label[len("Weekly · "):].strip()
+                label = f"{name} {model_label} weekly" if model_label else f"{name} weekly model"
+            elif raw_label:
+                label = raw_label if raw_label.lower().startswith(name.lower()) else f"{name} {raw_label}"
+            else:
+                suffix = limit_key[len("weekly-"):].replace("-", " ").title()
+                label = f"{name} {suffix} weekly"
+            samples.append(
+                QuotaSample(
+                    provider_key=provider_key,
+                    limit_key=limit_key,
+                    label=label,
+                    unit="pct",
+                    source=source,
+                    pct=max(0.0, used_pct),
+                    resets_at=_window_reset(window),
+                )
+            )
     return samples
 
 

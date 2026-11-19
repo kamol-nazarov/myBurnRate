@@ -99,6 +99,47 @@ def test_a_window_whose_reset_has_passed_reads_as_reset(tmp_path: Path) -> None:
     assert (windows["weekly"]["usedPct"], windows["weekly"]["resetAt"]) == (0.0, "2026-10-30T08:00:00Z")
 
 
+def test_cached_usage_extracts_fable_weekly_limit_and_rolls_past_reset(tmp_path: Path) -> None:
+    from spend_app.limits import claude_cached_usage
+    from spend_app.quotas import claude_quota_samples
+
+    usage_with_fable = {
+        "five_hour": None,
+        "seven_day": {"utilization": 31, "resets_at": "2026-10-23T08:00:00+00:00"},
+        "limits": [
+            {
+                "kind": "weekly_all",
+                "group": "weekly",
+                "percent": 31,
+                "resets_at": "2026-10-23T08:00:00+00:00",
+                "scope": None,
+            },
+            {
+                "kind": "weekly_scoped",
+                "group": "weekly",
+                "percent": 41,
+                "resets_at": "2026-10-23T08:00:00+00:00",
+                "scope": {"model": {"id": None, "display_name": "Fable"}, "surface": None},
+            },
+        ],
+    }
+    path = _state(tmp_path / ".claude-fable", "work-uuid", usage=usage_with_fable, fetched=NOW)
+    payload = claude_cached_usage(path, key="claude-code", plan="Claude Max", now=NOW)
+    windows = {w["key"]: w for w in payload["windows"]}
+    assert set(windows) == {"weekly", "weekly-fable"}
+    assert (windows["weekly-fable"]["usedPct"], windows["weekly-fable"]["remainingPct"]) == (41.0, 59.0)
+    samples = {s.limit_key: s for s in claude_quota_samples(payload, source="claude_code_cache")}
+    assert samples["weekly-fable"].pct == 41.0
+    assert samples["weekly-fable"].label == "Claude Fable weekly"
+    # After reset passes, weekly-fable rolls forward by 7 days to 0% used.
+    after = {w["key"]: w for w in claude_cached_usage(path, key="claude-code", now=NOW + timedelta(days=5))["windows"]}
+    assert (after["weekly-fable"]["usedPct"], after["weekly-fable"]["remainingPct"], after["weekly-fable"]["resetAt"]) == (
+        0.0,
+        100.0,
+        "2026-10-30T08:00:00Z",
+    )
+
+
 def test_a_profile_without_a_cached_reading_has_no_meter_and_no_credential_read(tmp_path: Path, monkeypatch) -> None:
     from spend_app import limits
 

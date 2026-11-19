@@ -30,6 +30,7 @@ from spend_app.provider_urgency import (
     format_reset,
     grade_window,
     window_has_current_reading,
+    window_urgency,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -37,6 +38,7 @@ LOGGER = logging.getLogger(__name__)
 SURFACES = ("full", "tab")
 TAB_PREFERENCE_KEY = "tabWindow"
 SURFACE_KEY = "surface"
+PILL_LIMIT_KEY = "pillLimit"
 
 # Layout, in logical pixels. The page uses the same numbers (they ride along
 # in every payload), so the corner pill is exactly as wide as its content.
@@ -77,6 +79,7 @@ URGENT_LEVELS = ("out", "soon")
 LIMIT_LABELS = {
     "5h": "5-hour",
     "weekly": "Weekly",
+    "weekly-fable": "Fable weekly",
     "monthly": "Monthly",
     "gemini-5h": "Gemini 5-hour",
     "gemini-weekly": "Gemini weekly",
@@ -88,6 +91,7 @@ LIMIT_LABELS = {
 WINDOW_TAGS = {
     "5h": "5h",
     "weekly": "Weekly",
+    "weekly-fable": "Fable",
     "monthly": "Monthly",
     "gemini-5h": "Gemini 5h",
     "gemini-weekly": "Gemini weekly",
@@ -95,6 +99,32 @@ WINDOW_TAGS = {
     "3p-weekly": "3P weekly",
     "balance": "Balance",
 }
+
+
+def normalize_pill_limit(value) -> str | None:
+    """Normalized ``provider::limit`` (or ``provider``) selection, or ``None`` for Auto."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() == "auto" or len(text) > 160 or any(ch in text for ch in "\r\n\t"):
+        return None
+    if "::" in text:
+        provider, _, limit = text.partition("::")
+        provider, limit = provider.strip(), limit.strip()
+        if not provider:
+            return None
+        return f"{provider}::{limit}" if limit else provider
+    return text
+
+
+def split_pill_limit(value: str | None) -> tuple[str, str | None] | None:
+    norm = normalize_pill_limit(value)
+    if norm is None:
+        return None
+    if "::" in norm:
+        provider, _, limit = norm.partition("::")
+        return (provider, limit or None)
+    return (norm, None)
 
 _FIRST_SENTENCE = re.compile(r"^(.*?[.!?])(?:\s|$)")
 
@@ -110,10 +140,14 @@ def short_error(message: str, code: str | None) -> str:
 
 
 def window_label(window: dict) -> str:
-    """``5-hour`` / ``Weekly`` for a window, falling back to its own label."""
+    """``5-hour`` / ``Weekly`` / ``Fable weekly`` for a window, falling back to its own label."""
     key = str(window.get("limitKey") or "")
     if key in LIMIT_LABELS:
         return LIMIT_LABELS[key]
+    if key.startswith("weekly-"):
+        suffix = key[len("weekly-") :].replace("-", " ").strip().title()
+        if suffix:
+            return f"{suffix} weekly"
     label = str(window.get("label") or window.get("shortLabel") or "Window").strip()
     label = re.sub(r"\s+window$", "", label, flags=re.IGNORECASE)
     return label[:1].upper() + label[1:] if label else "Window"
@@ -287,7 +321,7 @@ def extract_spend(report, today_report=None) -> dict | None:
 
 
 def window_tag(window: dict | None, *, is_balance: bool = False) -> str:
-    """Short parenthetical tag for hover-card rows: ``5h`` / ``Weekly`` / ``Balance``."""
+    """Short parenthetical tag for hover-card rows: ``5h`` / ``Weekly`` / ``Fable`` / ``Balance``."""
     if is_balance:
         return "Balance"
     if window is None:
@@ -295,6 +329,10 @@ def window_tag(window: dict | None, *, is_balance: bool = False) -> str:
     key = str(window.get("limitKey") or "")
     if key in WINDOW_TAGS:
         return WINDOW_TAGS[key]
+    if key.startswith("weekly-"):
+        suffix = key[len("weekly-") :].replace("-", " ").strip().title()
+        if suffix:
+            return suffix
     return window_label(window)
 
 
@@ -351,12 +389,44 @@ def _headline_forms(provider: dict, exact: str, level: str, name: str) -> tuple[
     return shorten(exact, HEADLINE_CHARS), shorten(exact, COMPACT_HEADLINE_CHARS)
 
 
-def build_segment(provider: dict, now: datetime) -> dict:
-    urgency = compute_urgency(provider, now)
+def build_segment(provider: dict, now: datetime, *, limit_key: str | None = None) -> dict:
+    is_balance_provider = (provider.get("remaining") or {}).get("kind") == "balance"
+    is_balance = is_balance_provider if limit_key is None else (limit_key == "balance" and (is_balance_provider or provider.get("fundsRemainingUsd") is not None))
+    if limit_key is None or (limit_key == "balance" and is_balance_provider):
+        urgency = compute_urgency(provider, now)
+        window = focus_window(provider, now)
+    elif is_balance:
+        urgency = compute_urgency(provider, now)
+        window = None
+    else:
+        target = next(
+            (w for w in (provider.get("windows") or []) if str(w.get("limitKey") or "") == limit_key),
+            None,
+        )
+        if target is None:
+            urgency = compute_urgency(provider, now)
+            window = focus_window(provider, now)
+            is_balance = is_balance_provider
+        elif window_has_current_reading(target, now):
+            window = target
+            urgency = window_urgency(target, now)
+        else:
+            window = target
+            reason = str(target.get("reason") or "Awaiting reading")
+            urgency = {"level": "idle", "limitKey": limit_key, "text": reason}
+
     level = urgency.get("level") or "idle"
-    window = focus_window(provider, now)
-    is_balance = (provider.get("remaining") or {}).get("kind") == "balance"
-    big, unit, fuel = _headline(provider, window)
+    if is_balance:
+        balance = provider.get("fundsRemainingUsd")
+        amount = max(0.0, float(balance)) if isinstance(balance, (int, float)) else 0.0
+        fuel = 100.0 if amount >= 25 else max(6.0, amount / 25 * 100)
+        big, unit = f"${amount:,.2f}", "balance"
+    elif window is not None and level != "idle":
+        left = _pct(window.get("remainingPct")) or 0.0
+        big, unit, fuel = f"{round(left)}%", window_label(window).lower(), left
+    else:
+        big, unit, fuel = "—", window_label(window).lower() if window is not None else "", 0.0
+
     profile = provider.get("profile")
     unit_label = f"{profile} · {unit}" if profile and unit and unit != "balance" else unit
     if profile and unit == "balance":
@@ -388,7 +458,7 @@ def build_segment(provider: dict, now: datetime) -> dict:
         "title": title,
         "plan": provider.get("plan") or "",
         "level": level,
-        "limitKey": urgency.get("limitKey"),
+        "limitKey": urgency.get("limitKey") or (limit_key if window is not None else ("balance" if is_balance else None)),
         "windowTag": w_tag,
         "big": big_normal,
         "bigCompact": big_compact,
@@ -408,6 +478,69 @@ def build_segment(provider: dict, now: datetime) -> dict:
             "summary": str((provider.get("remaining") or {}).get("summary") or ""),
         },
     }
+
+
+def build_pill_options(providers: list[dict], now: datetime) -> list[dict]:
+    """Selectable usage-limit targets for pinning to the compact corner pill."""
+    options: list[dict] = []
+    for provider in providers:
+        key = str(provider.get("key") or "").strip()
+        if not key:
+            continue
+        name = str(provider.get("name") or key)
+        profile = provider.get("profile")
+        title = f"{name} · {profile}" if profile else name
+        windows = [
+            w
+            for w in (provider.get("windows") or [])
+            if isinstance(w, dict) and w.get("unit") != "usd" and str(w.get("limitKey") or "").strip()
+        ]
+        for w in windows:
+            lk = str(w.get("limitKey") or "").strip()
+            w_lbl = window_label(w)
+            w_tag = window_tag(w)
+            if window_has_current_reading(w, now):
+                urg = window_urgency(w, now)
+                lvl = urg["level"]
+                left = round(_pct(w.get("remainingPct")) or 0.0)
+                st = _short_status(lvl, urg["text"])
+                stat = f"{left}% · {st}" if st else f"{left}%"
+            else:
+                lvl = "idle"
+                stat = "Awaiting"
+            options.append(
+                {
+                    "id": f"{key}::{lk}",
+                    "providerKey": key,
+                    "limitKey": lk,
+                    "key": key,
+                    "title": title,
+                    "windowLabel": w_lbl,
+                    "windowTag": w_tag,
+                    "level": lvl,
+                    "stat": stat,
+                }
+            )
+        is_bal = (provider.get("remaining") or {}).get("kind") == "balance"
+        if is_bal or (provider.get("fundsRemainingUsd") is not None and not windows):
+            bal = provider.get("fundsRemainingUsd")
+            amt = max(0.0, float(bal)) if isinstance(bal, (int, float)) else None
+            stat = f"${amt:,.2f}" if amt is not None else "No key"
+            lvl = "balance" if amt is not None else "idle"
+            options.append(
+                {
+                    "id": f"{key}::balance",
+                    "providerKey": key,
+                    "limitKey": "balance",
+                    "key": key,
+                    "title": title,
+                    "windowLabel": "Balance",
+                    "windowTag": "Balance",
+                    "level": lvl,
+                    "stat": stat,
+                }
+            )
+    return options
 
 
 def tab_providers(providers, now: datetime | None = None) -> list[dict]:
@@ -619,17 +752,32 @@ def fit_pill_layout(
 class TabModel:
     """Last known usage, daily spend, and last error; the single source for the tab."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, pill_limit: str | None = None) -> None:
         self._lock = threading.Lock()
         self._providers: list[dict] = []
         self._spend: dict | None = None
         self._loaded = False
         self._error: dict | None = None
+        self._pill_limit: str | None = normalize_pill_limit(pill_limit)
         self._listeners: list = []
         self._updated = 0.0
 
     def subscribe(self, listener) -> None:
         self._listeners.append(listener)
+
+    @property
+    def pill_limit(self) -> str | None:
+        with self._lock:
+            return self._pill_limit
+
+    def set_pill_limit(self, value: str | None) -> str | None:
+        normalized = normalize_pill_limit(value)
+        with self._lock:
+            changed = normalized != self._pill_limit
+            self._pill_limit = normalized
+        if changed:
+            self._notify()
+        return normalized
 
     @property
     def loaded(self) -> bool:
@@ -693,7 +841,27 @@ class TabModel:
             spend = dict(self._spend) if self._spend else None
             loaded = self._loaded
             error = dict(self._error) if self._error else None
-        segments = [build_segment(p, now) for p in tab_providers(providers, now)]
+            pill_limit = self._pill_limit
+        ordered = tab_providers(providers, now)
+        segments = [build_segment(p, now) for p in ordered]
+        pill_options = build_pill_options(ordered, now)
+
+        pinned_pair = split_pill_limit(pill_limit)
+        matched_provider = None
+        if pinned_pair is not None:
+            p_key, p_limit = pinned_pair
+            matched_provider = next((p for p in ordered if str(p.get("key") or "") == p_key), None)
+        if matched_provider is not None:
+            pinned_seg = build_segment(matched_provider, now, limit_key=pinned_pair[1])
+            pinned_seg["pinned"] = True
+            pinned_seg["aria"] = f"Pinned · {pinned_seg['aria']}"
+            pill_segments = [pinned_seg] + [s for s in segments if s["key"] != matched_provider.get("key")]
+            tag = pinned_seg.get("windowTag") or ""
+            pill_label = f"{pinned_seg['title']} ({tag})" if tag else pinned_seg["title"]
+        else:
+            pill_segments = segments
+            pill_label = "Auto"
+
         if not loaded and error is None:
             state = "loading"
         elif not segments:
@@ -701,7 +869,7 @@ class TabModel:
         else:
             state = "ready"
         plan = fit_pill_layout(
-            segments,
+            pill_segments,
             state=state,
             spend=spend,
             has_error=bool(error),
@@ -722,6 +890,10 @@ class TabModel:
             "more": _more_info(plan["rest"]),
             "overview": _build_overview(segments),
             "urgentCount": urgent,
+            "pillLimit": pill_limit,
+            "pillPinned": matched_provider is not None,
+            "pillLabel": pill_label,
+            "pillOptions": pill_options,
             "layout": {
                 "height": TAB_HEIGHT,
                 "width": plan["width"],
@@ -829,6 +1001,15 @@ class TabBridge:
         elif hasattr(self._bridge, "call_page"):
             self._bridge.call_page("refresh")
         return {"ok": True}
+
+    def set_pill_limit(self, value: str | None = None) -> dict:
+        """Pin a specific provider/limit to the corner pill (or ``None`` for Auto)."""
+        if hasattr(self._bridge, "set_pill_limit"):
+            result = self._bridge.set_pill_limit(value)
+            chosen = result.get("pillLimit") if isinstance(result, dict) else normalize_pill_limit(value)
+        else:
+            chosen = self._model.set_pill_limit(value)
+        return {"ok": True, "pillLimit": chosen, "state": self.build_payload()}
 
     def begin_drag(self) -> None:
         if self._controller is not None:

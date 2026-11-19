@@ -30,6 +30,7 @@
 <style>
 /*__EMBEDDED_FONTS__*/
 :root {
+  color-scheme: light;
   --font: "Manrope", -apple-system, "Segoe UI Variable Text", system-ui, sans-serif;
   --spring: cubic-bezier(0.22, 1, 0.36, 1);
   --surface: #ffffff;
@@ -52,6 +53,7 @@
   --brand: #564ed1;
 }
 html[data-theme="dark"] {
+  color-scheme: dark;
   --surface: #18172b;
   --card: #201f36;
   --ink: #ffffff;
@@ -490,20 +492,50 @@ body.up .card.is-entering .ov-row { animation: rowGlideUp 220ms var(--spring) bo
 .ov-rest-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding-top: 6px;
+  gap: 2px;
+  padding: 6px 4px 2px 0;
   border-top: 1px dashed var(--line);
-  max-height: 168px;
+  max-height: 192px;
   overflow-y: auto;
+  overflow-x: hidden;
+}
+.ov-rest-list::-webkit-scrollbar,
+.pill-picker-list::-webkit-scrollbar {
+  width: 5px;
+  height: 0;
+}
+.ov-rest-list::-webkit-scrollbar-track,
+.pill-picker-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+.ov-rest-list::-webkit-scrollbar-thumb,
+.pill-picker-list::-webkit-scrollbar-thumb {
+  background: var(--track);
+  border-radius: 999px;
+}
+.ov-rest-list::-webkit-scrollbar-thumb:hover,
+.pill-picker-list::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+.ov-rest-list::-webkit-scrollbar-button,
+.pill-picker-list::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
 }
 .rest-row {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 7px;
+  width: 100%;
+  min-width: 0;
   font-size: 11.5px;
-  padding: 2.5px 6px;
-  margin: 0 -6px;
+  line-height: 1.3;
+  padding: 4px 6px;
+  margin: 0;
   border-radius: 7px;
+  overflow: hidden;
   transition: background-color 140ms ease;
   animation: rowGlideDown 200ms var(--spring) both;
 }
@@ -514,11 +546,127 @@ body.up .card.is-entering .ov-row { animation: rowGlideUp 220ms var(--spring) bo
 .rest-row:nth-child(5) { animation-delay: 64ms; }
 .rest-row:nth-child(6) { animation-delay: 80ms; }
 .rest-row:nth-child(7) { animation-delay: 96ms; }
-.rest-row .logo { width: 16px; height: 16px; border-radius: 4px; }
+.rest-row .logo { width: 16px; height: 16px; border-radius: 4px; flex: none; }
 .rest-row .logo svg { width: 9px; height: 9px; }
 .rest-row b { flex: 1; min-width: 0; font-weight: 600; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rest-row span { font-size: 11px; font-weight: 700; color: var(--muted); white-space: nowrap; }
+.rest-row span { font-size: 11px; font-weight: 700; color: var(--muted); white-space: nowrap; flex: none; }
 .rest-row span.l-balance { color: var(--bal); }
+
+/* In-card Pill Display Customizer */
+.pill-cfg {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+.pill-cfg-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: calc(100% + 12px);
+  padding: 4px 6px;
+  margin: 0 -6px;
+  border-radius: 8px;
+  font-size: 11px;
+  transition: background-color 150ms ease, transform 140ms var(--spring);
+}
+.pill-cfg-btn:hover { background: var(--hover); }
+.pill-cfg-btn:active { transform: scale(0.985); }
+.pill-cfg-lbl {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-weight: 600;
+  white-space: nowrap;
+  flex: none;
+}
+.pill-cfg-lbl svg { flex: none; }
+.pill-cfg-val {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  font-weight: 700;
+  color: var(--ink);
+}
+.pill-cfg-val.is-pinned { color: var(--ok); }
+.pill-cfg-val > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pill-cfg-btn[aria-expanded="true"] .rest-chev { transform: rotate(180deg); }
+.pill-picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 4px 2px 0;
+  max-height: 196px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.pick-row {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-width: 0;
+  padding: 5px 6px;
+  border-radius: 7px;
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--ink);
+  overflow: hidden;
+  transition: background-color 140ms ease;
+}
+.pick-row:hover { background: var(--hover); }
+.pick-row.is-active { background: var(--spend-bg); }
+.pick-row .logo { width: 16px; height: 16px; border-radius: 4px; flex: none; }
+.pick-row .logo svg { width: 9px; height: 9px; }
+.pick-auto-ico {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--spend-bg);
+  color: var(--ok);
+}
+.pick-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+}
+.pick-name b { font-weight: 650; }
+.pick-stat {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--muted);
+  white-space: nowrap;
+  flex: none;
+}
+.pick-stat.l-out, .pick-stat.l-soon { color: var(--soon); }
+.pick-stat.l-warn { color: var(--warn); }
+.pick-stat.l-ok { color: var(--ok); }
+.pick-stat.l-balance { color: var(--bal); }
+.pick-check {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ok);
+}
 
 /* Single-provider detailed window view (when user has only 1 connected provider) */
 .ph { display: flex; align-items: center; gap: 8px; padding-top: 9px; border-top: 1px solid var(--line); }
@@ -621,13 +769,15 @@ body.up .card.is-entering .ov-row { animation: rowGlideUp 220ms var(--spring) bo
 (function () {
   "use strict";
   var HIDE_DELAY = 220, SHOW_DELAY = 150, CLOSE_MS = 120;
-  var state = null, cardOpen = false, restExpanded = false;
-  var showTimer = 0, hideTimer = 0, closeTimer = 0, enterTimer = 0, spinTimer = 0, ready = false;
+  var state = null, cardOpen = false, restExpanded = false, pickerExpanded = false;
+  var showTimer = 0, hideTimer = 0, closeTimer = 0, enterTimer = 0, spinTimer = 0, rafMeasure = 0, ready = false;
   var lastSig = null, restoring = false, rebuilding = false, refreshing = false;
   var lastRevision = 0;
   var DRAG_PX = 4, press = null, dragging = false, swallowClick = false, lastRing = false;
   var $ = function (id) { return document.getElementById(id); };
   var CHEV_SVG = '<svg class="rest-chev" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
+  var PIN_SVG = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg>';
+  var AUTO_SVG = '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>';
 
   function esc(value) {
     return String(value === null || value === undefined ? "" : value)
@@ -676,6 +826,7 @@ body.up .card.is-entering .ov-row { animation: rowGlideUp 220ms var(--spring) bo
     if (el.hasAttribute && el.hasAttribute("data-open")) return { k: "card-open" };
     if (el.hasAttribute && el.hasAttribute("data-refresh")) return { k: "card-refresh" };
     if (el.hasAttribute && el.hasAttribute("data-toggle-rest")) return { k: "card-rest" };
+    if (el.hasAttribute && el.hasAttribute("data-toggle-picker")) return { k: "card-picker" };
     return null;
   }
   function restoreFocus(token) {
@@ -684,6 +835,7 @@ body.up .card.is-entering .ov-row { animation: rowGlideUp 220ms var(--spring) bo
     if (token.k === "card-open") target = document.querySelector("#card [data-open]");
     else if (token.k === "card-refresh") target = document.querySelector("#card [data-refresh]");
     else if (token.k === "card-rest") target = document.querySelector("#card [data-toggle-rest]");
+    else if (token.k === "card-picker") target = document.querySelector("#card [data-toggle-picker]");
     else target = $(token.k);
     if (!target || target.hidden) return;
     restoring = true;
@@ -912,13 +1064,43 @@ body.up .card.is-entering .ov-row { animation: rowGlideUp 220ms var(--spring) bo
       body = '<div class="card-empty">No provider limits connected yet. Open BURNRATE to add a source.</div>';
     }
 
+    var pickerHtml = "";
+    var opts = s.pillOptions || [];
+    if (opts.length > 0 && s.state === "ready") {
+      var activeId = s.pillLimit || "";
+      var pillLbl = s.pillLabel || "Auto";
+      var pinCls = s.pillPinned ? " is-pinned" : "";
+      pickerHtml = '<div class="pill-cfg">' +
+        '<button class="pill-cfg-btn" type="button" data-toggle-picker aria-expanded="' + (pickerExpanded ? "true" : "false") + '">' +
+          '<span class="pill-cfg-lbl">' + PIN_SVG + "<span>Pill limit</span></span>" +
+          '<span class="pill-cfg-val' + pinCls + '"><span>' + esc(pillLbl) + "</span>" + CHEV_SVG + "</span>" +
+        "</button>";
+      if (pickerExpanded) {
+        var autoActive = !activeId;
+        var itemsHtml = '<button class="pick-row' + (autoActive ? " is-active" : "") + '" type="button" data-pick-limit="">' +
+          '<span class="pick-auto-ico" aria-hidden="true">' + AUTO_SVG + "</span>" +
+          '<span class="pick-name"><b>Auto</b> <span class="ov-tag">(most urgent)</span></span>' +
+          '<span class="pick-check">' + (autoActive ? CHECK : "") + "</span></button>";
+        itemsHtml += opts.map(function (o) {
+          var isAct = activeId === o.id;
+          return '<button class="pick-row' + (isAct ? " is-active" : "") + '" type="button" data-pick-limit="' + esc(o.id) + '">' +
+            logo(o.key) +
+            '<span class="pick-name"><b>' + esc(o.title) + '</b> <span class="ov-tag">(' + esc(o.windowLabel) + ")</span></span>" +
+            '<span class="pick-stat l-' + esc(o.level) + '">' + esc(o.stat) + "</span>" +
+            '<span class="pick-check">' + (isAct ? CHECK : "") + "</span></button>";
+        }).join("");
+        pickerHtml += '<div class="pill-picker-list">' + itemsHtml + "</div>";
+      }
+      pickerHtml += "</div>";
+    }
+
     var spinCls = refreshing ? " spinning" : "";
     var refLabel = refreshing ? "Refreshing\u2026" : "Refresh now";
     var foot = '<div class="card-foot">' +
       '<button class="foot-open" type="button" data-open>Open full BURNRATE <span class="open-arrow" aria-hidden="true">\u2197</span></button>' +
       '<button class="foot-refresh' + spinCls + '" type="button" data-refresh>' + REFRESH_SVG + "<span>" + esc(refLabel) + "</span></button>" +
       "</div>";
-    return head + errBanner + body + foot;
+    return head + errBanner + body + pickerHtml + foot;
   }
 
   function fillCard(animateEnter) {
@@ -934,6 +1116,7 @@ body.up .card.is-entering .ov-row { animation: rowGlideUp 220ms var(--spring) bo
       rebuilding = false;
     }
     clearTimeout(closeTimer);
+    if (rafMeasure) { cancelAnimationFrame(rafMeasure); rafMeasure = 0; }
     card.classList.remove("is-closing");
     $("cardWrap").hidden = false;
     var layout = state.layout || {};
@@ -942,7 +1125,10 @@ body.up .card.is-entering .ov-row { animation: rowGlideUp 220ms var(--spring) bo
     var pillW = layout.width || cardW;
     var cardLeft = pillW > cardW ? Math.max(0, Math.round((pillW - cardW) / 2)) : 0;
     card.style.marginLeft = cardLeft + "px";
-    var cardH = card.offsetHeight;
+    var measureH = function () {
+      return Math.ceil(card.getBoundingClientRect().height || card.offsetHeight) + 1;
+    };
+    var cardH = measureH();
     var width = Math.max(pillW, cardLeft + cardW);
     var height = (layout.height || 40) + (layout.cardGap || 6) + cardH;
     var triggerEnter = function () {
@@ -957,6 +1143,15 @@ body.up .card.is-entering .ov-row { animation: rowGlideUp 220ms var(--spring) bo
       document.body.classList.toggle("up", !!(res && res.up));
       $("tab").style.marginLeft = (res && res.stripX ? Number(res.stripX) : 0) + "px";
       triggerEnter();
+      rafMeasure = requestAnimationFrame(function () {
+        rafMeasure = 0;
+        if (!cardOpen || $("cardWrap").hidden) return;
+        var settledH = measureH();
+        if (Math.abs(settledH - cardH) >= 1) {
+          var nextH = (layout.height || 40) + (layout.cardGap || 6) + settledH;
+          call("expand", width, nextH, cardLeft, cardW, settledH);
+        }
+      });
     });
   }
 
@@ -972,6 +1167,7 @@ body.up .card.is-entering .ov-row { animation: rowGlideUp 220ms var(--spring) bo
   function finishHideDom() {
     clearTimeout(closeTimer);
     clearTimeout(enterTimer);
+    if (rafMeasure) { cancelAnimationFrame(rafMeasure); rafMeasure = 0; }
     var card = $("card");
     card.classList.remove("is-closing", "is-entering");
     card.dataset.html = "";
@@ -979,6 +1175,7 @@ body.up .card.is-entering .ov-row { animation: rowGlideUp 220ms var(--spring) bo
     $("tab").style.marginLeft = "";
     document.body.classList.remove("up");
     restExpanded = false;
+    pickerExpanded = false;
   }
   function hideCard(instant) {
     clearTimeout(showTimer);
@@ -1054,7 +1251,24 @@ body.up .card.is-entering .ov-row { animation: rowGlideUp 220ms var(--spring) bo
     if (e.target.closest("[data-refresh]")) { triggerRefresh(); return; }
     if (e.target.closest("[data-toggle-rest]")) {
       restExpanded = !restExpanded;
+      if (restExpanded) pickerExpanded = false;
       fillCard(false);
+      return;
+    }
+    if (e.target.closest("[data-toggle-picker]")) {
+      pickerExpanded = !pickerExpanded;
+      if (pickerExpanded) restExpanded = false;
+      fillCard(false);
+      return;
+    }
+    var pickBtn = e.target.closest("[data-pick-limit]");
+    if (pickBtn) {
+      var val = pickBtn.getAttribute("data-pick-limit") || "";
+      pickerExpanded = false;
+      call("set_pill_limit", val || null).then(function (res) {
+        if (res && res.state) applyUpdate(res.state);
+        else fillCard(false);
+      });
     }
   });
   document.documentElement.addEventListener("mouseleave", scheduleHide);
