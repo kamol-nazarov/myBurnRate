@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 This project is licensed under Apache-2.0.
 
-## [0.6.5] - Unreleased
+## [0.6.5] - 2026-11-19
 
 ### Fixed
 
