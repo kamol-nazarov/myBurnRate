@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 This project is licensed under Apache-2.0.
 
+## [0.6.5] - Unreleased
+
+### Fixed
+
+- **Unblock multi-computer hub sync across legacy-to-v2 upgrades.** Recover cleanly when a hub's acknowledged `usage_changes` sequence is ahead of a spoke's saved legacy hint (for example after an interrupted batch during a `0.6.3` → `0.6.4` upgrade), rebasing and verifying overlapping rows against hub storage instead of looping indefinitely.
+- **Fix managed Python desktop Install & restart on Windows.** Launch `wheel_update.ps1` with `CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP` instead of `DETACHED_PROCESS` (under which Windows PowerShell 5.1 exits silently without running the script), recognize `uv`-managed Python junctions alongside resolved base paths, wait for the venv launcher stub on exit, and surface worker error messages if startup fails.
+
 ## [0.6.4] - 2026-11-18
 
 ### Added
