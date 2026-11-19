@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 This project is licensed under Apache-2.0.
 
+## [0.6.4] - Unreleased
+
+### Added
+
+- **Ultra-compact floating corner pill with hover-to-peek overview.** Shrink to tab now parks as a `40 px` corner capsule showing today's live `$` spend, your most urgent provider limit, a `+N` overflow badge, and an in-place `↻` quick refresh button. Hovering smoothly unfurls an overview card at 120 Hz with burn rate, cache reuse, at-risk limits, and an inline toggle for healthy and pay-as-you-go providers.
+- **Sticky KPI glance bar and compact desktop layout.** The main window adds a pinned daily-spend header with `Limits | Spend | Plans` jump tabs, a two-column grid for calm providers at `410 px+`, a permanently docked bottom utility bar, and per-plan ROI progress bars in Plans and Settings.
+- **Smooth spring motion across pill and desktop.** Cohesive spring transitions for hover card reveal/retract, fuel bars, rotating chevrons, sliding segmented tab thumbs, and hover micro-interactions, honoring `prefers-reduced-motion`.
+
+### Fixed
+
+- **Audit remediation across collectors, hub sync, profiles, and plans.** Integrates full 0.6.0 audit hardening (`BR-01`–`BR-42`), separates ended plans into collapsible history, keeps removed profiles hidden cleanly, and guards source disconnect/remove actions.
+
 ## [0.6.3] - 2026-11-18
 
 ### Added
