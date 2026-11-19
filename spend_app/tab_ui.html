@@ -31,6 +31,7 @@
 /*__EMBEDDED_FONTS__*/
 :root {
   --font: "Manrope", -apple-system, "Segoe UI Variable Text", system-ui, sans-serif;
+  --spring: cubic-bezier(0.22, 1, 0.36, 1);
   --surface: #ffffff;
   --card: #f7f7fc;
   --ink: #18172b;
@@ -125,7 +126,12 @@ body.up { flex-direction: column-reverse; }
   background: var(--brand);
   color: #ffffff;
   flex: none;
+  transition: transform 200ms var(--spring);
 }
+.brand svg { transition: transform 200ms var(--spring); }
+.home:hover .brand { transform: scale(1.07); }
+.home:hover .brand svg { transform: translate(0.5px, -0.5px) !important; }
+.home:active .brand { transform: scale(0.94); }
 .badge {
   position: absolute;
   top: 0;
@@ -143,6 +149,7 @@ body.up { flex-direction: column-reverse; }
   place-items: center;
   border: 1.5px solid var(--surface);
   box-sizing: content-box;
+  transition: transform 200ms var(--spring);
 }
 
 .pill-main {
@@ -152,8 +159,10 @@ body.up { flex-direction: column-reverse; }
   height: 32px;
   border-radius: 999px;
   min-width: 0;
+  transition: background-color 160ms ease, transform 150ms var(--spring);
 }
 .pill-main:hover, .pill-main.on { background: var(--hover); }
+.pill-main:active { transform: scale(0.985); }
 
 .spend {
   flex: none;
@@ -171,6 +180,7 @@ body.up { flex-direction: column-reverse; }
   letter-spacing: -0.02em;
   white-space: nowrap;
   overflow: hidden;
+  transition: background-color 160ms ease, color 160ms ease;
 }
 .sep {
   flex: none;
@@ -259,7 +269,9 @@ html[data-theme="dark"] .brand-chip { background: var(--bd-bg); color: var(--bd-
   font-size: 10.5px;
   font-weight: 800;
   white-space: nowrap;
+  transition: transform 180ms var(--spring), background-color 160ms ease;
 }
+.pill-main:hover .more-chip { transform: scale(1.04); }
 .more.urgent .more-chip {
   background: var(--soon);
   color: var(--badge-ink);
@@ -310,8 +322,12 @@ html[data-theme="dark"] .brand-chip { background: var(--bd-bg); color: var(--bd-
   display: grid;
   place-items: center;
   color: var(--muted);
+  transition: background-color 160ms ease, color 160ms ease, transform 160ms var(--spring);
 }
+.refresh svg { transition: transform 240ms var(--spring); }
 .refresh:hover { background: var(--hover); color: var(--ink); }
+.refresh:hover:not(.spinning) svg { transform: rotate(40deg); }
+.refresh:active { transform: scale(0.92); }
 .refresh.spinning svg, .foot-refresh.spinning svg { animation: spin 0.75s linear infinite; }
 @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
@@ -331,7 +347,7 @@ html[data-theme="dark"] .brand-chip { background: var(--bd-bg); color: var(--bd-
 .card-wrap { flex: none; padding: 6px 0 0; }
 body.up .card-wrap { padding: 0 0 6px; }
 .card {
-  width: 340px;
+  width: 356px;
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: 14px;
@@ -340,7 +356,24 @@ body.up .card-wrap { padding: 0 0 6px; }
   flex-direction: column;
   gap: 9px;
   box-shadow: 0 8px 24px rgba(24, 23, 43, 0.16);
+  transform-origin: top center;
+  transition: transform 140ms var(--spring);
 }
+body.up .card { transform-origin: bottom center; }
+.card.is-entering { animation: cardEnterDown 210ms var(--spring) both; }
+body.up .card.is-entering { animation: cardEnterUp 210ms var(--spring) both; }
+.card.is-closing {
+  transform: translateY(-7px);
+  transition: transform 110ms cubic-bezier(0.4, 0, 1, 1);
+  pointer-events: none;
+}
+body.up .card.is-closing { transform: translateY(7px); }
+@keyframes cardEnterDown { from { transform: translateY(-9px); } to { transform: translateY(0); } }
+@keyframes cardEnterUp { from { transform: translateY(9px); } to { transform: translateY(0); } }
+@keyframes rowGlideDown { from { transform: translateY(-5px); } to { transform: translateY(0); } }
+@keyframes rowGlideUp { from { transform: translateY(5px); } to { transform: translateY(0); } }
+@keyframes barSweep { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+
 .card-head {
   display: flex;
   align-items: baseline;
@@ -369,13 +402,28 @@ body.up .card-wrap { padding: 0 0 6px; }
 .ov-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding-top: 9px;
+  gap: 5px;
+  padding-top: 8px;
   border-top: 1px solid var(--line);
 }
-.ov-row { display: flex; flex-direction: column; gap: 4px; }
+.ov-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 3px 6px;
+  margin: 0 -6px;
+  border-radius: 8px;
+  transition: background-color 140ms ease;
+}
+.ov-row:hover { background: var(--hover); }
+.card.is-entering .ov-row { animation: rowGlideDown 220ms var(--spring) both; }
+body.up .card.is-entering .ov-row { animation: rowGlideUp 220ms var(--spring) both; }
+.card.is-entering .ov-row:nth-child(2) { animation-delay: 24ms; }
+.card.is-entering .ov-row:nth-child(3) { animation-delay: 48ms; }
+.card.is-entering .ov-row:nth-child(4) { animation-delay: 72ms; }
 .ov-line { display: flex; align-items: center; gap: 7px; min-width: 0; }
-.ov-line .logo { width: 18px; height: 18px; border-radius: 5px; }
+.ov-line .logo { width: 18px; height: 18px; border-radius: 5px; transition: transform 180ms var(--spring); }
+.ov-row:hover .logo { transform: scale(1.06); }
 .ov-line .logo svg { width: 10px; height: 10px; }
 .ov-name {
   flex: 1;
@@ -396,7 +444,15 @@ body.up .card-wrap { padding: 0 0 6px; }
 .ov-stat.l-idle { color: var(--muted); font-weight: 600; }
 
 .ov-bar { height: 3px; border-radius: 9px; background: var(--track); overflow: hidden; display: block; margin-left: 25px; }
-.ov-bar i { display: block; height: 100%; border-radius: 9px; background: var(--ok); }
+.ov-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 9px;
+  background: var(--ok);
+  transform-origin: left center;
+  transition: width 360ms var(--spring);
+}
+.card.is-entering .ov-bar i, .card.is-entering .pb i { animation: barSweep 360ms var(--spring) 35ms both; }
 .ov-row.l-out .ov-bar i, .ov-row.l-soon .ov-bar i { background: var(--soon); }
 .ov-row.l-warn .ov-bar i { background: var(--warn); }
 
@@ -405,27 +461,59 @@ body.up .card-wrap { padding: 0 0 6px; }
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  width: 100%;
+  width: calc(100% + 12px);
   padding: 5px 6px;
-  margin: 0 -6px;
+  margin: 1px -6px 0;
   border-radius: 8px;
   font-size: 11.5px;
+  transition: background-color 150ms ease, transform 140ms var(--spring);
 }
 .ov-rest-btn:hover { background: var(--hover); }
+.ov-rest-btn:active { transform: scale(0.985); }
 .ov-rest-lbl { color: var(--muted); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ov-rest-st { font-weight: 800; color: var(--bal); white-space: nowrap; flex: none; }
+.ov-rest-st {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 800;
+  color: var(--bal);
+  white-space: nowrap;
+  flex: none;
+}
 .ov-rest-st.is-muted { color: var(--muted); }
+.rest-chev {
+  flex: none;
+  transition: transform 220ms var(--spring);
+}
+.ov-rest-btn[aria-expanded="true"] .rest-chev { transform: rotate(180deg); }
 
 .ov-rest-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   padding-top: 6px;
   border-top: 1px dashed var(--line);
-  max-height: 164px;
+  max-height: 168px;
   overflow-y: auto;
 }
-.rest-row { display: flex; align-items: center; gap: 7px; font-size: 11.5px; }
+.rest-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11.5px;
+  padding: 2.5px 6px;
+  margin: 0 -6px;
+  border-radius: 7px;
+  transition: background-color 140ms ease;
+  animation: rowGlideDown 200ms var(--spring) both;
+}
+.rest-row:hover { background: var(--hover); }
+.rest-row:nth-child(2) { animation-delay: 16ms; }
+.rest-row:nth-child(3) { animation-delay: 32ms; }
+.rest-row:nth-child(4) { animation-delay: 48ms; }
+.rest-row:nth-child(5) { animation-delay: 64ms; }
+.rest-row:nth-child(6) { animation-delay: 80ms; }
+.rest-row:nth-child(7) { animation-delay: 96ms; }
 .rest-row .logo { width: 16px; height: 16px; border-radius: 4px; }
 .rest-row .logo svg { width: 9px; height: 9px; }
 .rest-row b { flex: 1; min-width: 0; font-weight: 600; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -442,7 +530,14 @@ body.up .card-wrap { padding: 0 0 6px; }
 .pl span { font-weight: 600; }
 .pr { font-size: 10.5px; color: var(--muted); }
 .pb { height: 4px; border-radius: 9px; background: var(--track); overflow: hidden; display: block; }
-.pb i { display: block; height: 100%; background: var(--ok); border-radius: 9px; }
+.pb i {
+  display: block;
+  height: 100%;
+  background: var(--ok);
+  border-radius: 9px;
+  transform-origin: left center;
+  transition: width 360ms var(--spring);
+}
 .pw.l-out .pb i, .pw.l-soon .pb i { background: var(--soon); }
 .pw.l-warn .pb i { background: var(--warn); }
 .pw.muted .pl span, .pw.muted .pl b { color: var(--muted); }
@@ -463,14 +558,21 @@ body.up .card-wrap { padding: 0 0 6px; }
   border-top: 1px solid var(--line);
 }
 .foot-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: 11.5px;
   font-weight: 800;
   color: var(--ok);
   padding: 4px 7px;
   margin-left: -7px;
   border-radius: 7px;
+  transition: background-color 150ms ease, color 150ms ease, transform 140ms var(--spring);
 }
 .foot-open:hover { background: var(--hover); }
+.foot-open:active { transform: scale(0.96); }
+.open-arrow { display: inline-block; transition: transform 180ms var(--spring); }
+.foot-open:hover .open-arrow { transform: translate(2px, -2px); }
 .foot-refresh {
   display: inline-flex;
   align-items: center;
@@ -481,8 +583,19 @@ body.up .card-wrap { padding: 0 0 6px; }
   padding: 4px 7px;
   margin-right: -7px;
   border-radius: 7px;
+  transition: background-color 150ms ease, color 150ms ease, transform 140ms var(--spring);
 }
+.foot-refresh svg { transition: transform 240ms var(--spring); }
 .foot-refresh:hover { background: var(--hover); color: var(--ink); }
+.foot-refresh:hover:not(.spinning) svg { transform: rotate(40deg); }
+.foot-refresh:active { transform: scale(0.96); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
 </style>
 </head>
 <body>
@@ -507,13 +620,14 @@ body.up .card-wrap { padding: 0 0 6px; }
 /*__BRAND_JS__*/
 (function () {
   "use strict";
-  var HIDE_DELAY = 220, SHOW_DELAY = 150;
+  var HIDE_DELAY = 220, SHOW_DELAY = 150, CLOSE_MS = 120;
   var state = null, cardOpen = false, restExpanded = false;
-  var showTimer = 0, hideTimer = 0, spinTimer = 0, ready = false;
+  var showTimer = 0, hideTimer = 0, closeTimer = 0, enterTimer = 0, spinTimer = 0, ready = false;
   var lastSig = null, restoring = false, rebuilding = false, refreshing = false;
   var lastRevision = 0;
   var DRAG_PX = 4, press = null, dragging = false, swallowClick = false, lastRing = false;
   var $ = function (id) { return document.getElementById(id); };
+  var CHEV_SVG = '<svg class="rest-chev" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
 
   function esc(value) {
     return String(value === null || value === undefined ? "" : value)
@@ -713,8 +827,8 @@ body.up .card-wrap { padding: 0 0 6px; }
     }
 
     if (cardOpen) {
-      if (canShowCard(next)) fillCard();
-      else hideCard();
+      if (canShowCard(next)) fillCard(false);
+      else hideCard(true);
     }
     fitPillText();
     restoreFocus(token);
@@ -783,11 +897,10 @@ body.up .card-wrap { padding: 0 0 6px; }
       var listHtml = hi.map(overviewRowHtml).join("");
       var restHtml = "";
       if (rest.length > 0) {
-        var arrow = restExpanded ? " \u25b4" : " \u25be";
         var mutedCls = ov.restStatus === "Idle" ? " is-muted" : "";
         restHtml = '<button class="ov-rest-btn" type="button" data-toggle-rest aria-expanded="' + (restExpanded ? "true" : "false") + '">' +
           '<span class="ov-rest-lbl">' + esc(ov.restSummary) + '</span>' +
-          '<span class="ov-rest-st' + mutedCls + '">' + esc(ov.restStatus) + arrow + "</span></button>";
+          '<span class="ov-rest-st' + mutedCls + '">' + esc(ov.restStatus) + CHEV_SVG + "</span></button>";
         if (restExpanded) {
           restHtml += '<div class="ov-rest-list">' + rest.map(function (it) {
             return '<div class="rest-row">' + logo(it.key) + "<b>" + esc(it.title) + '</b><span class="l-' + esc(it.level) + '">' + esc(it.text) + "</span></div>";
@@ -802,13 +915,13 @@ body.up .card-wrap { padding: 0 0 6px; }
     var spinCls = refreshing ? " spinning" : "";
     var refLabel = refreshing ? "Refreshing\u2026" : "Refresh now";
     var foot = '<div class="card-foot">' +
-      '<button class="foot-open" type="button" data-open>Open full BURNRATE \u2197</button>' +
+      '<button class="foot-open" type="button" data-open>Open full BURNRATE <span class="open-arrow" aria-hidden="true">\u2197</span></button>' +
       '<button class="foot-refresh' + spinCls + '" type="button" data-refresh>' + REFRESH_SVG + "<span>" + esc(refLabel) + "</span></button>" +
       "</div>";
     return head + errBanner + body + foot;
   }
 
-  function fillCard() {
+  function fillCard(animateEnter) {
     if (!state || !canShowCard(state)) return;
     var card = $("card");
     var html = cardHtml(state);
@@ -820,9 +933,11 @@ body.up .card-wrap { padding: 0 0 6px; }
       restoreFocus(token);
       rebuilding = false;
     }
+    clearTimeout(closeTimer);
+    card.classList.remove("is-closing");
     $("cardWrap").hidden = false;
     var layout = state.layout || {};
-    var cardW = layout.cardWidth || 340;
+    var cardW = layout.cardWidth || 356;
     card.style.width = cardW + "px";
     var pillW = layout.width || cardW;
     var cardLeft = pillW > cardW ? Math.max(0, Math.round((pillW - cardW) / 2)) : 0;
@@ -830,45 +945,78 @@ body.up .card-wrap { padding: 0 0 6px; }
     var cardH = card.offsetHeight;
     var width = Math.max(pillW, cardLeft + cardW);
     var height = (layout.height || 40) + (layout.cardGap || 6) + cardH;
+    var triggerEnter = function () {
+      if (!animateEnter || !cardOpen) return;
+      clearTimeout(enterTimer);
+      card.classList.remove("is-entering");
+      void card.offsetWidth;
+      card.classList.add("is-entering");
+      enterTimer = setTimeout(function () { card.classList.remove("is-entering"); }, 420);
+    };
     call("expand", width, height, cardLeft, cardW, cardH).then(function (res) {
       document.body.classList.toggle("up", !!(res && res.up));
       $("tab").style.marginLeft = (res && res.stripX ? Number(res.stripX) : 0) + "px";
+      triggerEnter();
     });
   }
 
   function showCard() {
     if (!canShowCard(state)) return;
+    var wasClosed = !cardOpen || $("card").classList.contains("is-closing");
+    clearTimeout(closeTimer);
+    clearTimeout(hideTimer);
     cardOpen = true;
     $("pillMain").classList.add("on");
-    fillCard();
+    fillCard(wasClosed);
   }
-  function hideCard() {
-    clearTimeout(showTimer);
-    if (!cardOpen) return;
-    cardOpen = false;
-    restExpanded = false;
-    $("pillMain").classList.remove("on");
-    $("card").dataset.html = "";
+  function finishHideDom() {
+    clearTimeout(closeTimer);
+    clearTimeout(enterTimer);
+    var card = $("card");
+    card.classList.remove("is-closing", "is-entering");
+    card.dataset.html = "";
     $("cardWrap").hidden = true;
     $("tab").style.marginLeft = "";
     document.body.classList.remove("up");
-    call("collapse");
+    restExpanded = false;
+  }
+  function hideCard(instant) {
+    clearTimeout(showTimer);
+    clearTimeout(hideTimer);
+    if (!cardOpen && $("cardWrap").hidden) return;
+    cardOpen = false;
+    $("pillMain").classList.remove("on");
+    if (instant !== false) {
+      finishHideDom();
+      call("collapse", true);
+      return;
+    }
+    var card = $("card");
+    card.classList.remove("is-entering");
+    card.classList.add("is-closing");
+    call("collapse", false);
+    clearTimeout(closeTimer);
+    closeTimer = setTimeout(finishHideDom, CLOSE_MS);
   }
   function scheduleShow() {
     clearTimeout(hideTimer);
     clearTimeout(showTimer);
+    clearTimeout(closeTimer);
     if (press || dragging || !canShowCard(state)) return;
-    if (cardOpen) return;
-    showTimer = setTimeout(showCard, SHOW_DELAY);
+    if (cardOpen && !$("card").classList.contains("is-closing")) return;
+    showTimer = setTimeout(showCard, $("card").classList.contains("is-closing") ? 0 : SHOW_DELAY);
   }
   function scheduleHide() {
     clearTimeout(showTimer);
     clearTimeout(hideTimer);
-    hideTimer = setTimeout(hideCard, HIDE_DELAY);
+    hideTimer = setTimeout(function () { hideCard(false); }, HIDE_DELAY);
   }
 
   /* ---- Events ----------------------------------------------------------- */
-  $("tab").addEventListener("mouseenter", function () { clearTimeout(hideTimer); });
+  $("tab").addEventListener("mouseenter", function () {
+    clearTimeout(hideTimer);
+    if ($("card").classList.contains("is-closing")) showCard();
+  });
   $("home").addEventListener("mouseenter", scheduleShow);
   $("home").addEventListener("click", function () { call("open_full"); });
   $("pillMain").addEventListener("mouseenter", scheduleShow);
@@ -886,26 +1034,32 @@ body.up .card-wrap { padding: 0 0 6px; }
   });
   $("chip").addEventListener("click", function () { call("open_full"); });
   $("refresh").addEventListener("mouseenter", function () {
-    if (cardOpen) clearTimeout(hideTimer);
+    if (cardOpen || $("card").classList.contains("is-closing")) {
+      clearTimeout(hideTimer);
+      if ($("card").classList.contains("is-closing")) showCard();
+    }
   });
   $("refresh").addEventListener("click", function (e) {
     e.stopPropagation();
     triggerRefresh();
   });
 
-  $("cardWrap").addEventListener("mouseenter", function () { clearTimeout(hideTimer); });
+  $("cardWrap").addEventListener("mouseenter", function () {
+    clearTimeout(hideTimer);
+    if ($("card").classList.contains("is-closing")) showCard();
+  });
   $("cardWrap").addEventListener("click", function (e) {
     if (!e.target.closest) return;
     if (e.target.closest("[data-open]")) { call("open_full"); return; }
     if (e.target.closest("[data-refresh]")) { triggerRefresh(); return; }
     if (e.target.closest("[data-toggle-rest]")) {
       restExpanded = !restExpanded;
-      fillCard();
+      fillCard(false);
     }
   });
   document.documentElement.addEventListener("mouseleave", scheduleHide);
   document.addEventListener("keydown", function (e) {
-    if (e.key === "Escape" && cardOpen) { hideCard(); }
+    if (e.key === "Escape" && (cardOpen || !$("cardWrap").hidden)) { hideCard(true); }
   });
   document.addEventListener("focusout", function (e) {
     if (rebuilding) return;
@@ -930,7 +1084,7 @@ body.up .card-wrap { padding: 0 0 6px; }
     swallowClick = true;
     clearTimeout(showTimer);
     clearTimeout(hideTimer);
-    hideCard();
+    hideCard(true);
     call("begin_drag");
   });
   document.addEventListener("mouseup", function () { press = null; dragging = false; });

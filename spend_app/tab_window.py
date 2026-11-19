@@ -44,7 +44,7 @@ TAB_HEIGHT = 40
 TAB_RADIUS = 20
 CARD_GAP = 6
 CARD_RADIUS = 14
-CARD_WIDTH = 340
+CARD_WIDTH = 356
 #: How close the tab may come to the work area's edge, in logical pixels.
 BUDGET_MARGIN = 16
 
@@ -869,9 +869,9 @@ class TabBridge:
             )
         return {"ok": True, **self._controller.tab.expand(width, height, card)}
 
-    def collapse(self) -> dict:
+    def collapse(self, instant: bool = False) -> dict:
         if self._controller is not None:
-            self._controller.tab.collapse()
+            self._controller.tab.collapse(instant=bool(instant))
         return {"ok": True}
 
 
@@ -904,23 +904,32 @@ def shape_rects(
         return [(0, 0, width, height, tab_radius)]
     card_x, card_w, card_h = card
     tab_top = height - tab_h if up else 0
-    card_top = 0 if up else tab_h + int(round(CARD_GAP * scale))
+    gap_px = int(round(CARD_GAP * scale))
+    card_h_px = int(round(card_h * scale))
+    if up:
+        card_bottom = max(0, tab_top - gap_px)
+        card_top = max(0, card_bottom - card_h_px)
+    else:
+        card_top = tab_h + gap_px
+        card_bottom = min(height, card_top + card_h_px)
     if strip is None:
         strip_left, strip_right = 0, width
     else:
         strip_x, strip_w = strip
         strip_left = max(0, min(width, int(round(strip_x * scale))))
         strip_right = max(strip_left, min(width, strip_left + int(round(strip_w * scale))))
-    return [
-        (strip_left, tab_top, strip_right, tab_top + tab_h, tab_radius),
-        (
-            int(round(card_x * scale)),
-            card_top,
-            min(width, int(round((card_x + card_w) * scale))),
-            min(height, card_top + int(round(card_h * scale))),
-            int(round(CARD_RADIUS * scale)),
-        ),
-    ]
+    rects = [(strip_left, tab_top, strip_right, tab_top + tab_h, tab_radius)]
+    if card_h_px > 0 and card_bottom > card_top:
+        rects.append(
+            (
+                int(round(card_x * scale)),
+                card_top,
+                min(width, int(round((card_x + card_w) * scale))),
+                card_bottom,
+                int(round(CARD_RADIUS * scale)),
+            )
+        )
+    return rects
 
 
 def clamp_number(value, low: float, high: float) -> float:
@@ -955,6 +964,10 @@ class TabHost:
         self._card: tuple[float, float, float] | None = None
         self._strip_x = 0.0
         self._up = False
+        #: Generation token & current logical card height for smooth Win32 region reveal/retract.
+        self._anim_gen = 0
+        self._anim_card_h = 0.0
+        self.animate_region = True
         #: Physical top-left of the collapsed tab for the whole expansion session.
         self._anchor: tuple[int, int] | None = None
         self.on_reflow = None
@@ -1136,6 +1149,8 @@ class TabHost:
 
     def fit(self, *, keep_visible: bool = True) -> None:
         """Re-apply the wanted size (DPI changes rescale it) and pull on screen."""
+        self._anim_gen += 1
+        self._anim_card_h = float(self._card[2]) if self._card is not None else 0.0
         width, height = self._target_size()
         if self._anchor is not None and self._expanded is not None:
             x, y, self._up = self._place_session()
@@ -1213,6 +1228,88 @@ class TabHost:
         finally:
             self._reflowing = False
 
+    OPEN_ANIM_DURATION = 0.175
+    RESIZE_ANIM_DURATION = 0.160
+    CLOSE_ANIM_DURATION = 0.115
+    ANIM_FRAME_SEC = 0.008  # ~120 Hz eased SetWindowRgn ticks
+
+    def _should_animate_region(self) -> bool:
+        return bool(
+            self.animate_region
+            and sys.platform == "win32"
+            and self.hwnd
+            and getattr(self.window, "native", None) is not None
+        )
+
+    def _run_region_anim(
+        self,
+        gen: int,
+        *,
+        size: tuple[int, int],
+        scale: float,
+        card_x: float,
+        card_w: float,
+        start_h: float,
+        end_h: float,
+        up: bool,
+        strip: tuple[float, float] | None,
+        duration: float,
+        ease_in: bool = False,
+        on_done=None,
+    ) -> None:
+        started = time.monotonic()
+        while True:
+            with self._lock:
+                if self.quitting or self._anim_gen != gen:
+                    return
+            elapsed = time.monotonic() - started
+            t = 1.0 if duration <= 0 else min(1.0, elapsed / duration)
+            eased = (t * t) if ease_in else (1.0 - (1.0 - t) ** 3)
+            cur_h = start_h + (end_h - start_h) * eased
+            with self._lock:
+                if self.quitting or self._anim_gen != gen:
+                    return
+                self._anim_card_h = max(0.0, cur_h)
+                rects = shape_rects(
+                    size,
+                    scale,
+                    (card_x, card_w, self._anim_card_h) if self._anim_card_h > 0.5 else None,
+                    up,
+                    strip,
+                )
+                if self._anim_card_h <= 0.5:
+                    # Only the pill stays visible on the final retraction frame
+                    tab_h = min(size[1], int(round(TAB_HEIGHT * scale)))
+                    tab_top = size[1] - tab_h if up else 0
+                    tab_r = int(round(TAB_RADIUS * scale))
+                    sl = max(0, min(size[0], int(round((strip[0] if strip else 0.0) * scale))))
+                    sr = max(sl, min(size[0], sl + int(round((strip[1] if strip else size[0] / scale) * scale))))
+                    rects = [(sl, tab_top, sr, tab_top + tab_h, tab_r)]
+                self._set_region(rects)
+            if t >= 1.0:
+                if on_done is not None:
+                    on_done(gen)
+                return
+            time.sleep(self.ANIM_FRAME_SEC)
+
+    def _finish_collapse(self, gen: int) -> None:
+        with self._lock:
+            if self.quitting or self._anim_gen != gen or self._expanded is None:
+                return
+            anchor = self._anchor
+            self._expanded = None
+            self._card = None
+            self._strip_x = 0.0
+            self._up = False
+            self._anchor = None
+            self._anim_card_h = 0.0
+            width, height = self._target_size()
+            if anchor is None:
+                self._apply(None, None, width, height)
+            else:
+                self._apply(anchor[0], anchor[1], width, height)
+            self._apply_shape()
+
     def expand(
         self,
         width: float,
@@ -1229,6 +1326,10 @@ class TabHost:
         width = clamp_number(width, self._base[0], 2400)
         height = clamp_number(height, self._base[1], 1200)
         with self._lock:
+            self._anim_gen += 1
+            gen = self._anim_gen
+            prev_expanded = self._expanded
+            prev_h = self._anim_card_h
             if self._anchor is None:
                 rect = self._current()
                 if rect is not None:
@@ -1239,35 +1340,131 @@ class TabHost:
             if self._anchor is None:
                 self._up = False
                 self._strip_x = 0.0
+                self._anim_card_h = float(card[2]) if card is not None else 0.0
                 self._apply(None, None, new_w, new_h)
                 self._apply_shape()
                 return {"up": False}
             x, y, self._up = self._place_session()
             self._update_strip_offset(x, new_w)
+            scale = max(self._dpi(), 1) / 96
+            strip = self._strip_spec()
+            if card is not None and self._should_animate_region():
+                target_h = float(card[2])
+                start_h = prev_h if prev_h > 4.0 else min(target_h, 18.0)
+                if abs(target_h - start_h) >= 4.0:
+                    shrinking = (
+                        prev_expanded is not None
+                        and height < prev_expanded[1]
+                        and prev_h > target_h
+                    )
+                    duration = self.RESIZE_ANIM_DURATION if prev_h > 4.0 else self.OPEN_ANIM_DURATION
+                    if shrinking:
+                        # Keep current taller window bounds while smoothly retracting the card height,
+                        # then snap the final window height cleanly once retracted.
+                        old_w, old_h = _scaled(prev_expanded[0], self._dpi()), _scaled(prev_expanded[1], self._dpi())
+                        self._anim_card_h = start_h
+
+                        def finalize_shrink(done_gen: int) -> None:
+                            with self._lock:
+                                if self.quitting or self._anim_gen != done_gen:
+                                    return
+                                self._anim_card_h = target_h
+                                self._apply(x, y, new_w, new_h)
+                                self._apply_shape()
+
+                        threading.Thread(
+                            target=self._run_region_anim,
+                            args=(gen,),
+                            kwargs={
+                                "size": (old_w, old_h),
+                                "scale": scale,
+                                "card_x": card[0],
+                                "card_w": card[1],
+                                "start_h": start_h,
+                                "end_h": target_h,
+                                "up": self._up,
+                                "strip": strip,
+                                "duration": duration,
+                                "ease_in": False,
+                                "on_done": finalize_shrink,
+                            },
+                            name="burnrate-tab-anim",
+                            daemon=True,
+                        ).start()
+                    else:
+                        self._anim_card_h = start_h
+                        self._apply(x, y, new_w, new_h)
+                        self._set_region(shape_rects((new_w, new_h), scale, (card[0], card[1], start_h), self._up, strip))
+                        threading.Thread(
+                            target=self._run_region_anim,
+                            args=(gen,),
+                            kwargs={
+                                "size": (new_w, new_h),
+                                "scale": scale,
+                                "card_x": card[0],
+                                "card_w": card[1],
+                                "start_h": start_h,
+                                "end_h": target_h,
+                                "up": self._up,
+                                "strip": strip,
+                                "duration": duration,
+                                "ease_in": False,
+                            },
+                            name="burnrate-tab-anim",
+                            daemon=True,
+                        ).start()
+                    result: dict = {"up": self._up}
+                    if self._strip_x:
+                        result["stripX"] = self._strip_x
+                    return result
+            self._anim_card_h = float(card[2]) if card is not None else 0.0
             self._apply(x, y, new_w, new_h)
             self._apply_shape()
-            result: dict = {"up": self._up}
+            result = {"up": self._up}
             if self._strip_x:
                 result["stripX"] = self._strip_x
             return result
 
-    def collapse(self) -> None:
-        """End the session: back to the strip at the anchor."""
+    def collapse(self, *, instant: bool = False) -> None:
+        """End the session: smoothly retract the hover card back into the pill."""
         with self._lock:
             if self._expanded is None:
                 return
-            anchor = self._anchor
-            self._expanded = None
-            self._card = None
-            self._strip_x = 0.0
-            self._up = False
-            self._anchor = None
-            width, height = self._target_size()
-            if anchor is None:
-                self._apply(None, None, width, height)
-            else:
-                self._apply(anchor[0], anchor[1], width, height)
-            self._apply_shape()
+            self._anim_gen += 1
+            gen = self._anim_gen
+            if (
+                not instant
+                and self._card is not None
+                and self._should_animate_region()
+                and self._anim_card_h > 4.0
+            ):
+                size = self._target_size()
+                scale = max(self._dpi(), 1) / 96
+                card_x, card_w, _ = self._card
+                start_h = self._anim_card_h
+                up = self._up
+                strip = self._strip_spec()
+                threading.Thread(
+                    target=self._run_region_anim,
+                    args=(gen,),
+                    kwargs={
+                        "size": size,
+                        "scale": scale,
+                        "card_x": card_x,
+                        "card_w": card_w,
+                        "start_h": start_h,
+                        "end_h": 0.0,
+                        "up": up,
+                        "strip": strip,
+                        "duration": self.CLOSE_ANIM_DURATION,
+                        "ease_in": True,
+                        "on_done": self._finish_collapse,
+                    },
+                    name="burnrate-tab-anim",
+                    daemon=True,
+                ).start()
+                return
+            self._finish_collapse(gen)
 
     def drop_dwm_frame(self) -> None:
         """No DWM border or corner rounding: the window region draws the shape.
@@ -1323,7 +1520,7 @@ class TabHost:
         """
         if self.quitting or not self.visible or self._dragging:
             return
-        self.collapse()
+        self.collapse(instant=True)
         start = native_geometry.cursor_pos()
         press = self._press
         if press is not None and press[0] is not None and time.monotonic() - press[1] < self.PRESS_FRESH:
@@ -1416,7 +1613,7 @@ class TabHost:
     def hide(self) -> None:
         if self.quitting:
             return
-        self.collapse()  # back to the anchor, so the next show is not displaced
+        self.collapse(instant=True)  # back to the anchor, so the next show is not displaced
         self.tracker.flush()
         with self._lock:
             self.visible = False
@@ -1427,6 +1624,7 @@ class TabHost:
 
     def destroy(self) -> None:
         self.quitting = True
+        self._anim_gen += 1
         self.tracker.disable()
         try:
             self.window.destroy()

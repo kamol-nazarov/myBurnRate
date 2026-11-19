@@ -626,6 +626,46 @@ def test_hiding_drops_the_card_shape(host, monkeypatch):
     assert regions[-1] == [(0, 0, 260, 40, 20)]
 
 
+def test_animated_region_unfurls_down_and_up_and_retracts_cleanly(host, monkeypatch):
+    import sys
+    import time
+
+    if sys.platform != "win32":
+        pytest.skip("Windows region animation only")
+    regions = []
+    monkeypatch.setattr(host, "_set_region", lambda rects: regions.append(rects))
+    monkeypatch.setattr(host, "OPEN_ANIM_DURATION", 0.04)
+    monkeypatch.setattr(host, "CLOSE_ANIM_DURATION", 0.03)
+    monkeypatch.setattr(host, "ANIM_FRAME_SEC", 0.004)
+    host.window.native = object()  # enables real Win32 region animation path
+    host.set_base(260)
+    regions.clear()
+
+    host.expand(356, 256, (0, 356, 210))
+    time.sleep(0.12)
+    assert len(regions) >= 2
+    # Intermediate frame started smaller and ended at exact full height 256
+    assert regions[0][1][3] < regions[-1][1][3]
+    assert regions[-1] == [(0, 0, 260, 40, 20), (0, 46, 356, 256, 14)]
+
+    # Smooth collapse retracts back to the 40px pill
+    regions.clear()
+    host.collapse()
+    time.sleep(0.12)
+    assert host._expanded is None
+    assert regions[-1] == [(0, 0, 260, 40, 20)]
+
+    # Upward animation anchors the card bottom right above the pill (y = 210)
+    monkeypatch.setattr(native_geometry, "window_rect", lambda hwnd: Rect(100, 980, 360, 1020))
+    regions.clear()
+    host.expand(356, 256, (0, 356, 210))
+    time.sleep(0.12)
+    assert regions[0][1][3] == 210 and regions[0][1][1] > 0  # rose upward from y=210
+    assert regions[-1] == [(0, 216, 260, 256, 20), (0, 0, 356, 210, 14)]
+    host.collapse(instant=True)
+    assert host._expanded is None
+
+
 def test_an_error_keeps_exactly_the_last_known_segments_dimmed():
     healthy = demo_payload()
     report = DemoClient().snapshot("today", "all")

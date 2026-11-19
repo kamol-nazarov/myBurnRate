@@ -504,6 +504,13 @@ button, input {
   color: var(--danger);
 }
 
+#refreshBtn svg {
+  transition: transform 0.24s var(--spring);
+}
+#refreshBtn:hover:not(.spinning) svg {
+  transform: rotate(38deg);
+}
+
 .icon-btn.spinning svg {
   animation: spin 0.75s linear infinite;
 }
@@ -1531,6 +1538,7 @@ body:not(.dragging-active) .provider-row:hover .logo-badge {
 }
 
 .sheet-tabs {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 2px;
@@ -1540,8 +1548,28 @@ body:not(.dragging-active) .provider-row:hover .logo-badge {
   background: var(--seg-bg);
   border: 1px solid var(--border);
 }
+.sheet-tabs::before {
+  content: "";
+  position: absolute;
+  top: 2.5px;
+  bottom: 2.5px;
+  left: 2.5px;
+  width: calc((100% - 5px) / 4);
+  border-radius: 6px;
+  background: var(--seg-thumb);
+  border: 1px solid var(--seg-border);
+  box-shadow: var(--seg-shadow);
+  transition: transform 0.24s var(--spring);
+  pointer-events: none;
+  z-index: 0;
+}
+.sheet-tabs[data-idx="1"]::before { transform: translateX(100%); }
+.sheet-tabs[data-idx="2"]::before { transform: translateX(200%); }
+.sheet-tabs[data-idx="3"]::before { transform: translateX(300%); }
 
 .sheet-tab {
+  position: relative;
+  z-index: 1;
   border: 1px solid transparent;
   background: transparent;
   color: var(--ink-secondary);
@@ -1551,17 +1579,17 @@ body:not(.dragging-active) .provider-row:hover .logo-badge {
   border-radius: 6px;
   cursor: pointer;
   white-space: nowrap;
-  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+  transition: color 0.16s ease, transform 0.14s var(--spring);
 }
 .sheet-tab:hover {
   color: var(--ink);
 }
+.sheet-tab:active {
+  transform: scale(0.97);
+}
 .sheet-tab.active {
-  background: var(--seg-thumb);
   color: var(--ink);
   font-weight: 700;
-  border-color: var(--seg-border);
-  box-shadow: var(--seg-shadow);
 }
 
 .sheet-body {
@@ -1573,6 +1601,13 @@ body:not(.dragging-active) .provider-row:hover .logo-badge {
   grid-auto-rows: max-content;
   gap: 8px;
   align-content: start;
+}
+.sheet-body.tab-switch > * {
+  animation: sheetTabEnter 0.2s var(--spring) both;
+}
+@keyframes sheetTabEnter {
+  from { opacity: 0.65; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .source-row {
@@ -4130,6 +4165,8 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
   height: 100%;
   border-radius: 999px;
   background: var(--accent);
+  transform-origin: left center;
+  transition: width 0.42s var(--spring);
 }
 .plan-roi-fill.is-good { background: var(--mint); }
 .plan-roi-fill.is-warn { background: var(--amber); }
@@ -4160,12 +4197,18 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
 
 /* Sticky KPI glance ribbon + section nav */
 .glance-bar {
+  position: relative;
+  z-index: 5;
   flex-shrink: 0;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   padding: 6px 12px 7px;
   display: grid;
   gap: 6px;
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+.glance-bar.is-scrolled {
+  box-shadow: var(--seg-shadow);
 }
 .glance-bar[hidden] { display: none !important; }
 .glance-kpi {
@@ -4210,6 +4253,7 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
   font-weight: 700;
 }
 .view-tabs {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 2px;
@@ -4218,7 +4262,26 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
   background: var(--seg-bg);
   border: 1px solid var(--border);
 }
+.view-tabs::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 2px;
+  width: calc((100% - 4px) / 3);
+  border-radius: 5.5px;
+  background: var(--seg-thumb);
+  border: 1px solid var(--seg-border);
+  box-shadow: var(--seg-shadow);
+  transition: transform 0.24s var(--spring);
+  pointer-events: none;
+  z-index: 0;
+}
+.view-tabs[data-idx="1"]::before { transform: translateX(100%); }
+.view-tabs[data-idx="2"]::before { transform: translateX(200%); }
 .view-tab {
+  position: relative;
+  z-index: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -4233,15 +4296,13 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
   border-radius: 5.5px;
   cursor: pointer;
   white-space: nowrap;
-  transition: color 0.16s ease, background 0.16s ease;
+  transition: color 0.16s ease, transform 0.14s var(--spring);
 }
 .view-tab:hover { color: var(--ink); }
+.view-tab:active { transform: scale(0.97); }
 .view-tab.active {
-  background: var(--seg-thumb);
   color: var(--ink);
   font-weight: 700;
-  border-color: var(--seg-border);
-  box-shadow: var(--seg-shadow);
 }
 .view-tab-badge {
   font-size: 10.5px;
@@ -4284,6 +4345,16 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
     border-radius: 10px;
     padding: 7px 9px;
     margin: 0;
+    transition: background 0.16s ease, border-color 0.18s ease, transform 0.2s var(--spring), box-shadow 0.2s var(--spring);
+  }
+  body:not(.dragging-active) #providerList:not(.is-custom-order) > .provider-item.is-calm:not(.open):hover {
+    background: var(--surface);
+    border-color: var(--accent-border);
+    transform: translateY(-1px);
+    box-shadow: var(--seg-shadow);
+  }
+  body:not(.dragging-active) #providerList:not(.is-custom-order) > .provider-item.is-calm:not(.open):active {
+    transform: scale(0.985);
   }
   #providerList:not(.is-custom-order) > .provider-item.is-calm:not(.open) .provider-row {
     padding: 0 0 4px;
@@ -4341,6 +4412,10 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
   gap: 3px;
   font-size: 10.5px;
   border-radius: 7px;
+  transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease, transform 0.15s var(--spring);
+}
+.foot .ops-pill:active {
+  transform: scale(0.95);
 }
 .foot .ops-pill svg {
   width: 10.5px;
@@ -6241,6 +6316,9 @@ function renderPlans(data, providers) {
 }
 
 function setActiveViewTab(view) {
+  const nav = document.getElementById("viewNavBar");
+  const idx = view === "spend" ? "1" : view === "plans" ? "2" : "0";
+  if (nav) nav.dataset.idx = idx;
   document.querySelectorAll("#viewNavBar .view-tab").forEach(btn => {
     const on = btn.dataset.view === view;
     btn.classList.toggle("active", on);
@@ -7092,14 +7170,26 @@ window.closeSettings = function(returnFocus = true) {
 function setSettingsTab(tab, rerender = true) {
   const changed = tab !== state.settingsTab;
   state.settingsTab = tab;
-  document.querySelectorAll(".sheet-tab").forEach(b => {
+  const tabBar = document.querySelector(".sheet-tabs");
+  const tabs = Array.from(document.querySelectorAll(".sheet-tab"));
+  const idx = Math.max(0, tabs.findIndex(b => b.dataset.tab === tab));
+  if (tabBar) tabBar.dataset.idx = String(idx);
+  tabs.forEach(b => {
     const on = b.dataset.tab === tab;
     b.classList.toggle("active", on);
     b.setAttribute("aria-selected", String(on));
     b.tabIndex = on ? 0 : -1;
   });
   if (rerender || state.settingsOpen) renderSettingsBody();
-  if (changed) document.getElementById("sheetBody").scrollTop = 0;
+  if (changed) {
+    const body = document.getElementById("sheetBody");
+    if (body) {
+      body.scrollTop = 0;
+      body.classList.remove("tab-switch");
+      void body.offsetWidth;
+      body.classList.add("tab-switch");
+    }
+  }
   if (tab === "plans" && !state.planSettings.editor) loadPlanSettings();
   /* H11 settings */
   h11EnsureSettingsTabExtras(tab);
@@ -11558,6 +11648,7 @@ document.getElementById("scrollBody")?.addEventListener("scroll", () => {
   const hero = document.getElementById("heroSection");
   const plans = document.getElementById("plansCard");
   if (!scroller || !hero) return;
+  document.getElementById("glanceBar")?.classList.toggle("is-scrolled", scroller.scrollTop > 4);
   const y = scroller.scrollTop + 48;
   const atBottom = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 16;
   if (plans && plans.offsetParent !== null && (y >= plans.offsetTop || atBottom)) setActiveViewTab("plans");
