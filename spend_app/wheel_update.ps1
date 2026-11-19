@@ -12,6 +12,8 @@ $python = Join-Path $runtime 'Scripts\python.exe'
 $pythonw = Join-Path $runtime 'Scripts\pythonw.exe'
 $lock = $null
 $wheelLock = $null
+$desktop = $null
+$desktopParent = $null
 $desktopExited = $false
 $installStarted = $false
 $phase = 'preparing'
@@ -31,8 +33,17 @@ function Get-CollectorRecords {
     $pattern = '^(?:"[^"]+"|\S+)\s+-m\s+spend_app\.service\s+--port\s+17331\s*$'
     if (-not $record -or $record.CommandLine -notmatch $pattern) { throw 'The collector could not be identified.' }
     if ($record.ExecutablePath -in @($python, $pythonw)) { return $record }
-    $baseWindowless = Join-Path (Split-Path $request.basePython -Parent) 'pythonw.exe'
-    if ($record.ExecutablePath -notin @($request.basePython, $baseWindowless)) {
+    $baseDirs = @((Split-Path $request.basePython -Parent))
+    if ($request.basePythonDirs) {
+        foreach ($dir in @($request.basePythonDirs)) {
+            if ($dir) { $baseDirs += [string]$dir }
+        }
+    }
+    $allowedBase = @($baseDirs | Sort-Object -Unique | ForEach-Object {
+        (Join-Path $_ 'python.exe')
+        (Join-Path $_ 'pythonw.exe')
+    })
+    if ($record.ExecutablePath -notin $allowedBase) {
         throw 'The listener is outside the managed Python runtime.'
     }
     $parent = Get-ProcessRecord $record.ParentProcessId
@@ -85,9 +96,20 @@ try {
     $wheelLock = [IO.File]::Open($wheel, 'Open', 'Read', 'Read')
     $desktop = Get-Process -Id ([int]$request.desktopPid)
     $null = $desktop.Handle
+    $desktopParent = $null
+    $desktopRecord = Get-ProcessRecord ([int]$request.desktopPid)
+    if ($desktopRecord -and $desktopRecord.ParentProcessId) {
+        $parentRec = Get-ProcessRecord $desktopRecord.ParentProcessId
+        if ($parentRec -and $parentRec.ExecutablePath -in @($python, $pythonw)) {
+            $desktopParent = Get-Process -Id $parentRec.ProcessId -ErrorAction SilentlyContinue
+        }
+    }
     $null = @(Get-CollectorRecords)
     New-Item -Path $ready -ItemType File | Out-Null
     if (-not $desktop.WaitForExit(45000)) { throw 'The desktop did not exit.' }
+    if ($desktopParent) {
+        [void]$desktopParent.WaitForExit(5000)
+    }
     $desktopExited = $true
 
     $phase = 'stopping the collector'
@@ -171,6 +193,8 @@ if prefs.is_file():
     if ($desktopExited -and (Test-Path -LiteralPath $pythonw)) { Start-Desktop }
     exit 1
 } finally {
+    if ($desktopParent) { $desktopParent.Dispose() }
+    if ($desktop) { $desktop.Dispose() }
     if ($wheelLock) { $wheelLock.Dispose() }
     if ($lock) { $lock.Dispose() }
 }

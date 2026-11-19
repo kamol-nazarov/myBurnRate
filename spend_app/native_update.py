@@ -738,7 +738,10 @@ def check_signer_policy(
 def _launch_detached(path: Path, args: list[str]) -> None:
     flags = 0
     if sys.platform == "win32":
-        flags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        # Windows PowerShell 5.1 exits silently with code 0 under DETACHED_PROCESS
+        # (no console host at all). CREATE_NO_WINDOW keeps console workers hidden
+        # while still giving them a console host and letting them survive parent exit.
+        flags = 0x08000000 | 0x00000200  # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
     subprocess.Popen(
         [str(path), *args],
         stdin=subprocess.DEVNULL,
@@ -1041,10 +1044,16 @@ class Updater:
                 )
                 worker = job / "wheel_update.ps1"
                 shutil.copyfile(Path(__file__).with_name("wheel_update.ps1"), worker)
+                raw_base = Path(sys._base_executable)
+                resolved_base = raw_base.resolve()
+                base_dirs = [str(resolved_base.parent)]
+                if str(raw_base.parent) not in base_dirs:
+                    base_dirs.append(str(raw_base.parent))
                 (job / "request.json").write_text(json.dumps({
                     "runtime": str(runtime), "wheel": wheel.name, "version": feed.version,
                     "sha256": feed.wheel.sha256, "database": str(default_database_path().resolve()),
-                    "basePython": str(Path(sys._base_executable).resolve()), "desktopPid": os.getpid(),
+                    "basePython": str(resolved_base), "basePythonDirs": base_dirs,
+                    "desktopPid": os.getpid(),
                 }), encoding="utf-8")
                 powershell = Path(self._environ().get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
                 self._report(progress, "preparing restart", None)
@@ -1054,7 +1063,13 @@ class Updater:
                 deadline = time.monotonic() + 20
                 while not ready.is_file():
                     if failure.is_file() or time.monotonic() >= deadline:
-                        raise UpdateError("The desktop update could not start safely. Check the update log and try again.")
+                        detail = ""
+                        if failure.is_file():
+                            with contextlib.suppress(OSError):
+                                detail = failure.read_text(encoding="utf-8", errors="replace").strip()
+                        raise UpdateError(
+                            detail or "The desktop update could not start safely. Check the update log and try again."
+                        )
                     time.sleep(0.1)
                 prepared = True
         finally:

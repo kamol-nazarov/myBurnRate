@@ -731,6 +731,8 @@ def test_managed_runtime_requires_a_signed_wheel_before_handoff(tmp_path, monkey
         job = Path(args[-1]).parent
         request = json.loads((job / "request.json").read_text(encoding="utf-8"))
         assert request["runtime"] == str(runtime)
+        assert request["basePython"] == str(Path(sys._base_executable).resolve())
+        assert str(Path(sys._base_executable).parent) in request["basePythonDirs"]
         assert (job / name).read_bytes() == wheel
         (job / "ready").touch()
         started.append(job)
@@ -742,6 +744,52 @@ def test_managed_runtime_requires_a_signed_wheel_before_handoff(tmp_path, monkey
     result = fx.updater.install()
     assert result["ok"] is signed and bool(started) is signed
     assert asset_url() not in net.calls
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell 5.1 launch semantics")
+def test_launch_detached_executes_powershell_worker_and_reads_locked_wheel(tmp_path):
+    """_launch_detached must actually execute powershell.exe (not exit silently under DETACHED_PROCESS)."""
+    import os
+    import time
+
+    wheel = tmp_path / "burnrate-0.6.5-py3-none-any.whl"
+    wheel.write_bytes(b"synthetic wheel bytes")
+    ready = tmp_path / "ready"
+    worker = tmp_path / "probe.ps1"
+    worker.write_text(
+        f"$fs = [IO.File]::Open('{wheel}', 'Open', 'Read', 'Read')\n"
+        f"try {{ Set-Content -LiteralPath '{ready}' -Value $fs.Length -Encoding UTF8 }} finally {{ $fs.Dispose() }}\n",
+        encoding="utf-8",
+    )
+    powershell = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    with nu._deny_writes(wheel):
+        nu._launch_detached(
+            powershell,
+            ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(worker)],
+        )
+        deadline = time.monotonic() + 15.0
+        while not ready.is_file() and time.monotonic() < deadline:
+            time.sleep(0.1)
+    assert ready.is_file()
+    assert ready.read_text(encoding="utf-8-sig").strip() == str(len(b"synthetic wheel bytes"))
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell syntax check")
+def test_wheel_update_script_parses_cleanly():
+    import os
+    import subprocess
+
+    script = ROOT / "spend_app" / "wheel_update.ps1"
+    powershell = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    proc = subprocess.run(
+        [
+            str(powershell), "-NoProfile", "-NonInteractive", "-Command",
+            f"$errs = $null; [void][System.Management.Automation.Language.Parser]::ParseFile('{script}', [ref]$null, [ref]$errs); "
+            f"if ($errs.Count -gt 0) {{ $errs | ForEach-Object {{ Write-Error $_.Message }}; exit 1 }}",
+        ],
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
 
 
 def test_managed_runtime_leaves_the_installer_link_when_the_feed_has_no_wheel(tmp_path, monkeypatch):
