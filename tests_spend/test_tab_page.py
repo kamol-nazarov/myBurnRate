@@ -1,4 +1,4 @@
-"""The tab page in a real browser: keyboard focus across refreshes and text contrast."""
+"""The Option 4B corner pill page in a real browser: keyboard focus, revisions, and WCAG text contrast."""
 
 import json
 
@@ -7,8 +7,8 @@ import pytest
 from spend_app import tab_window
 from spend_app.tab_window import TabModel
 from tests_spend.browser_runtime import CHROME, _chrome_dump, _probe
-from tests_spend.test_tab_review import demo_providers_list, many_urgent
-from tests_spend.test_tab_window import NOW, card, dry, iso, providers
+from tests_spend.test_tab_review import demo_report_and_providers, many_urgent, out_cards
+from tests_spend.test_tab_window import NOW, card, providers
 
 pytestmark = pytest.mark.browser
 
@@ -16,8 +16,14 @@ HELPERS = """
 function tick(ms) { return new Promise(function (r) { setTimeout(r, ms || 30); }); }
 function describe(el) {
   if (!el) return null;
-  return { tag: el.tagName, cls: String(el.className || ''), i: el.dataset ? el.dataset.i || null : null,
-           open: !!(el.hasAttribute && el.hasAttribute('data-open')), id: el.id || null };
+  return {
+    tag: el.tagName,
+    cls: String(el.className || ''),
+    open: !!(el.hasAttribute && el.hasAttribute('data-open')),
+    refresh: !!(el.hasAttribute && el.hasAttribute('data-refresh')),
+    rest: !!(el.hasAttribute && el.hasAttribute('data-toggle-rest')),
+    id: el.id || null
+  };
 }
 """
 
@@ -35,13 +41,15 @@ window.addEventListener('load', async function () {{
 </script></body>"""
     page = tmp_path / "tab-page.html"
     page.write_text(html.replace("</body>", wrapper), encoding="utf-8")
-    dump = _chrome_dump(page.resolve().as_uri(), 1300, tmp_path, 6000)
+    dump = _chrome_dump(page.resolve().as_uri(), 600, tmp_path, 6000)
     return _probe(dump)
 
 
 def demo_payload_json(*, dark=False):
+    report, items = demo_report_and_providers()
+    report = dict(report, providers=items)
     model = TabModel()
-    model.publish_report({"providers": demo_providers_list()})
+    model.publish_report(report, today_report=report)
     return json.dumps(model.payload(dark=dark, now=NOW))
 
 
@@ -51,85 +59,69 @@ def need_chrome():
         pytest.skip("Google Chrome is needed for the tab page checks")
 
 
-def test_a_refresh_keeps_keyboard_focus_on_the_same_segment_and_card_button(tmp_path):
+def test_a_refresh_keeps_keyboard_focus_on_the_pill_refresh_and_card_actions(tmp_path):
     out = run_page(tmp_path, f"""
       var p = {demo_payload_json()};
       window.burnrateTab.update(p);
-      var seg = document.querySelectorAll('.seg')[1];
-      seg.focus();
+      var pill = document.getElementById('pillMain');
+      pill.focus();
       await tick();
-      report.focusedSegment = describe(document.activeElement);
+      report.focusedPill = describe(document.activeElement);
       report.cardOpenBefore = !document.getElementById('cardWrap').hidden;
 
       var before = document.activeElement;
-      window.burnrateTab.update(JSON.parse(JSON.stringify(p)));      // the 20 s poll, nothing changed
+      window.burnrateTab.update(JSON.parse(JSON.stringify(p)));      // unchanged poll touches no DOM
       report.sameElementWhenUnchanged = document.activeElement === before;
 
-      var changed = JSON.parse(JSON.stringify(p));                    // a real refresh
-      changed.segments[3].big = '51%';
-      changed.segments[1].status = 'dry in ~13h';
+      var changed = JSON.parse(JSON.stringify(p));                    // real refresh
+      changed.primary.pillBig = '51%';
+      changed.spend.exact = '$129.10';
       window.burnrateTab.update(changed);
       await tick();
-      report.afterSegmentRefresh = describe(document.activeElement);
+      report.afterPillRefresh = describe(document.activeElement);
       report.cardOpenAfter = !document.getElementById('cardWrap').hidden;
-      report.openKeyStillSecond = document.querySelector('#card .ph b').textContent;
+      report.headSpend = document.querySelector('#card .ch-val').textContent;
 
-      var button = document.querySelector('#card [data-open]');
-      button.focus();
-      report.cardButtonFocused = describe(document.activeElement);
+      var openBtn = document.querySelector('#card [data-open]');
+      openBtn.focus();
       var changedAgain = JSON.parse(JSON.stringify(changed));
-      changedAgain.segments[1].card.rows[0].leftPct = 49;
+      changedAgain.overview.highlighted[0].cardStatus = '49% · dry ~50m';
       window.burnrateTab.update(changedAgain);
       await tick();
       report.afterCardRefresh = describe(document.activeElement);
       report.cardStillOpen = !document.getElementById('cardWrap').hidden;
 
-      var open = document.getElementById('open'); open.focus();
+      var restBtn = document.querySelector('#card [data-toggle-rest]');
+      restBtn.click();
+      await tick();
+      report.restExpandedCount = document.querySelectorAll('#card .rest-row').length;
+
+      var refBtn = document.getElementById('refresh');
+      refBtn.focus();
       window.burnrateTab.update(changed);
-      report.openButtonAfter = describe(document.activeElement);
+      report.refreshButtonAfter = describe(document.activeElement);
       """)
     assert "error" not in out, out.get("error")
-    assert out["focusedSegment"]["cls"].startswith("seg") and out["focusedSegment"]["i"] == "1"
+    assert out["focusedPill"]["id"] == "pillMain"
     assert out["cardOpenBefore"] is True
-    assert out["sameElementWhenUnchanged"] is True  # an unchanged poll does not touch the DOM
-    assert out["afterSegmentRefresh"]["cls"].startswith("seg") and out["afterSegmentRefresh"]["i"] == "1"
-    assert out["cardOpenAfter"] is True
-    assert out["cardButtonFocused"]["open"] is True
+    assert out["sameElementWhenUnchanged"] is True
+    assert out["afterPillRefresh"]["id"] == "pillMain"
+    assert out["cardOpenAfter"] is True and out["headSpend"] == "$129.10"
     assert out["afterCardRefresh"]["open"] is True and out["cardStillOpen"] is True
-    assert out["openButtonAfter"]["id"] == "open"
+    assert out["restExpandedCount"] == 7
+    assert out["refreshButtonAfter"]["id"] == "refresh"
 
 
-def test_focus_follows_a_provider_that_moves_to_another_slot(tmp_path):
+def test_loading_state_closes_any_open_card(tmp_path):
     out = run_page(tmp_path, f"""
       var p = {demo_payload_json()};
       window.burnrateTab.update(p);
-      document.querySelectorAll('.seg')[0].focus();
+      document.getElementById('pillMain').focus();
       await tick();
-      var moved = JSON.parse(JSON.stringify(p));
-      moved.segments.reverse();                                       // the focused provider is now last
-      window.burnrateTab.update(moved);
-      await tick();
-      var active = document.activeElement;
-      report.index = active.dataset.i;
-      report.title = active.getAttribute('aria-label');
-      report.last = String(moved.segments.length - 1);
-      """)
-    assert "error" not in out, out.get("error")
-    assert out["index"] == out["last"] and out["title"].startswith("Claude Code")
-
-
-def test_a_provider_that_disappears_does_not_leave_a_dead_card(tmp_path):
-    out = run_page(tmp_path, f"""
-      var p = {demo_payload_json()};
-      window.burnrateTab.update(p);
-      document.querySelectorAll('.seg')[0].focus();
-      await tick();
-      var gone = JSON.parse(JSON.stringify(p));
-      gone.segments.shift();
-      window.burnrateTab.update(gone);
+      var loading = {json.dumps(status_payload("loading", False))};
+      window.burnrateTab.update(loading);
       await tick();
       report.cardHidden = document.getElementById('cardWrap').hidden;
-      report.active = describe(document.activeElement);
       """)
     assert "error" not in out, out.get("error")
     assert out["cardHidden"] is True
@@ -141,16 +133,16 @@ def test_an_old_poll_cannot_overwrite_a_new_push_or_current_scope(tmp_path):
       old.revision = 1;
       var depleted = JSON.parse(JSON.stringify(old));
       depleted.revision = 2;
-      depleted.segments[0].big = '0%';
-      depleted.segments[0].level = 'out';
+      depleted.primary.pillBig = depleted.primary.big = '0%';
+      depleted.primary.level = 'out';
       depleted.urgentCount = 2;
       var scope = JSON.parse(JSON.stringify(old));
       scope.revision = 3;
-      scope.segments[0].big = '70%';
+      scope.primary.pillBig = scope.primary.big = '70%';
       scope.urgentCount = 0;
       var fresh = JSON.parse(JSON.stringify(scope));
       fresh.revision = 4;
-      fresh.segments[0].big = '80%';
+      fresh.primary.pillBig = fresh.primary.big = '80%';
 
       var replies = [];
       window.pywebview = {{ api: {{ get_state: function () {{
@@ -159,10 +151,9 @@ def test_an_old_poll_cannot_overwrite_a_new_push_or_current_scope(tmp_path):
       var poll = function () {{ window.dispatchEvent(new Event('pywebviewready')); }};
       var read = function () {{
         var badge = document.getElementById('badge');
-        return [document.querySelector('.seg .top b').textContent, badge.hidden ? null : badge.textContent];
+        return [document.querySelector('#primary .pbig').textContent, badge.hidden ? null : badge.textContent];
       }};
 
-      // Each page boot starts at the first revision of its own bridge.
       window.burnrateTab.update(old);
       report.onLaunch = read();
       poll();
@@ -172,7 +163,7 @@ def test_an_old_poll_cannot_overwrite_a_new_push_or_current_scope(tmp_path):
       report.afterOldPoll = read();
 
       var duplicate = JSON.parse(JSON.stringify(depleted));
-      duplicate.segments[0].big = '54%';
+      duplicate.primary.pillBig = duplicate.primary.big = '54%';
       window.burnrateTab.update(duplicate);
       report.afterDuplicate = read();
 
@@ -187,11 +178,11 @@ def test_an_old_poll_cannot_overwrite_a_new_push_or_current_scope(tmp_path):
       await tick();
       report.afterNewPoll = read();
 
-      var headline = document.querySelector('.seg .top b');
+      var headline = document.querySelector('#primary .pbig');
       var unchanged = JSON.parse(JSON.stringify(fresh));
       unchanged.revision = 5;
       window.burnrateTab.update(unchanged);
-      report.unchangedHeadline = headline === document.querySelector('.seg .top b');
+      report.unchangedHeadline = headline === document.querySelector('#primary .pbig');
       """)
     assert "error" not in out, out.get("error")
     assert out["onLaunch"] == ["54%", "1"]
@@ -245,15 +236,20 @@ function audit(label) {
 """
 
 
-def audit_script(label, payload_json, *, hover=None):
+def audit_script(label, payload_json, *, hover=False, expand_rest=False):
     show = ""
     if hover:
+        extra = ""
+        if expand_rest:
+            extra = """
+      var restBtn = document.querySelector('#card [data-toggle-rest]');
+      if (restBtn) { restBtn.click(); await tick(); }"""
         show = f"""
-      var state = window.burnrateTab.state, seat;
-      var idx = state.segments.findIndex(function (s) {{ return s.key === {json.dumps(hover)}; }});
-      seat = document.querySelector('.seg[data-i="' + idx + '"]');
-      window.burnrateTab.show({json.dumps(hover)}, seat);
-      await tick();"""
+      window.burnrateTab.show();
+      await tick();{extra}"""
+    else:
+        show = """
+      window.burnrateTab.hide();"""
     return f"""
       window.burnrateTab.update({payload_json});{show}
       report.rows = (report.rows || []).concat(audit({json.dumps(label)}));"""
@@ -271,25 +267,26 @@ def idle_payload(dark):
     return model.payload(dark=dark, now=NOW)
 
 
-def stale_payload(dark):
+def single_payload(dark):
+    report, items = demo_report_and_providers()
+    single = [p for p in items if p["key"] == "claude-code"][:1]
     model = TabModel()
-    model.publish_report({"providers": demo_providers_list()})
+    model.publish_report(dict(report, providers=single), today_report=report)
+    return model.payload(dark=dark, now=NOW)
+
+
+def stale_payload(dark):
+    report, items = demo_report_and_providers()
+    model = TabModel()
+    model.publish_report(dict(report, providers=items), today_report=report)
     model.publish_error("Can't reach your hub. Check that this computer is on your network.", "NET-001")
     return model.payload(dark=dark, now=NOW)
 
 
-def pill_payload(dark):
+def red_more_payload(dark):
     model = TabModel()
-    model.publish_report({"providers": providers(*many_urgent(9), card("grok", 10.0, None, resets=100.0))})
-    return model.payload(dark=dark, now=NOW, budget=700)
-
-
-def red_pill_payload(dark):
-    from tests_spend.test_tab_review import out_cards
-
-    model = TabModel()
-    model.publish_report({"providers": providers(*out_cards(8))})
-    return model.payload(dark=dark, now=NOW, budget=420)
+    model.publish_report({"providers": providers(*out_cards(5))})
+    return model.payload(dark=dark, now=NOW)
 
 
 def status_payload(state, dark):
@@ -306,22 +303,23 @@ def test_every_text_in_every_state_has_at_least_4_5_to_1_including_ancestor_opac
     dark = theme == "dark"
     script = "".join([
         audit_script("demo", demo_payload_json(dark=dark)),
-        audit_script("demo hover", demo_payload_json(dark=dark), hover="claude-code"),
+        audit_script("demo hover", demo_payload_json(dark=dark), hover=True, expand_rest=True),
+        audit_script("single hover", json.dumps(single_payload(dark)), hover=True),
         audit_script("idle", json.dumps(idle_payload(dark))),
-        audit_script("idle hover", json.dumps(idle_payload(dark)), hover="claude-code"),
+        audit_script("idle hover", json.dumps(idle_payload(dark)), hover=True),
         audit_script("stale", json.dumps(stale_payload(dark))),
-        audit_script("urgent pill", json.dumps(pill_payload(dark))),
-        audit_script("urgent pill red", json.dumps(red_pill_payload(dark))),
+        audit_script("stale hover", json.dumps(stale_payload(dark)), hover=True),
+        audit_script("urgent more red", json.dumps(red_more_payload(dark))),
         audit_script("empty", json.dumps(status_payload("empty", dark))),
+        audit_script("empty hover", json.dumps(status_payload("empty", dark)), hover=True),
         audit_script("loading", json.dumps(status_payload("loading", dark))),
         audit_script("error", json.dumps(status_payload("error", dark))),
+        audit_script("error hover", json.dumps(status_payload("error", dark)), hover=True),
     ])
     out = run_page(tmp_path, script, theme=theme)
     assert "error" not in out, out.get("error")
     rows = out["rows"]
-    assert len(rows) > 60
-    assert {r["label"] for r in rows} >= {"demo", "idle", "stale", "urgent pill", "empty", "error"}
+    assert len(rows) > 80
+    assert {r["label"] for r in rows} >= {"demo", "demo hover", "single hover", "idle", "stale", "empty", "error"}
     failing = [r for r in rows if r["ratio"] < 4.5]
     assert not failing, failing[:8]
-    awaiting = [r for r in rows if r["text"] == "Awaiting reading" and r["label"] == "idle"]
-    assert awaiting and min(r["ratio"] for r in awaiting) >= 4.5

@@ -305,18 +305,18 @@ def test_the_real_win32_wrapper_issues_lwa_alpha(monkeypatch):
 
 def test_the_hit_test_covers_the_strip_and_the_card_but_not_the_gap_or_the_cut_away_area(placed):
     host, state = placed
-    state["rect"] = Rect(100, 20, 1000, 80)
-    host.set_base(900)
-    assert host.visible_screen_rects() == [(100, 20, 1000, 80)]
-    assert host.contains_screen_point((500, 50)) and host.contains_screen_point((1003, 50))
-    assert not host.contains_screen_point((500, 300))
-    host.expand(900, 330, (60, 300, 250))
+    state["rect"] = Rect(100, 20, 360, 60)
+    host.set_base(260)
+    assert host.visible_screen_rects() == [(100, 20, 360, 60)]
+    assert host.contains_screen_point((200, 40)) and host.contains_screen_point((363, 40))
+    assert not host.contains_screen_point((200, 200))
+    host.expand(308, 256, (0, 308, 210))
     strip, card = host.visible_screen_rects()
-    assert strip == (state["rect"].left, state["rect"].top, state["rect"].right, state["rect"].top + 60)
-    assert card[0] == 160 and card[2] == 460 and card[1] == state["rect"].top + 66
-    assert host.contains_screen_point((300, state["rect"].top + 150))  # inside the card
-    assert not host.contains_screen_point((700, state["rect"].top + 150))  # right of the card: cut away
-    assert not host.contains_screen_point((300, state["rect"].top + 63), margin=0)  # the 6 px gap
+    assert strip == (state["rect"].left, state["rect"].top, state["rect"].left + 260, state["rect"].top + 40)
+    assert card[0] == state["rect"].left and card[2] == state["rect"].left + 308 and card[1] == state["rect"].top + 46
+    assert host.contains_screen_point((200, state["rect"].top + 120))  # inside the card
+    assert not host.contains_screen_point((state["rect"].left + 290, state["rect"].top + 20), margin=0)  # beside pill
+    assert not host.contains_screen_point((200, state["rect"].top + 43), margin=0)  # the 6 px gap
 
 
 def test_the_tab_holds_opaque_while_a_card_is_open_or_focus_is_inside(placed):
@@ -566,13 +566,14 @@ window.calls = [];
 window.pywebview = { api: {
   begin_drag: function () { calls.push('begin_drag'); },
   open_full: function () { calls.push('open_full'); return Promise.resolve({ok: true}); },
+  refresh_now: function () { calls.push('refresh_now'); return Promise.resolve({ok: true}); },
   expand: function () { calls.push('expand'); return Promise.resolve({ok: true, up: false}); },
   collapse: function () { calls.push('collapse'); return Promise.resolve({ok: true}); },
   press: function () { calls.push('press'); },
   set_focus: function (v) { calls.push('focus:' + v); return Promise.resolve({ok: true}); },
   get_state: function () { return Promise.resolve(null); }
 } };
-function S(i) { return document.querySelectorAll('.seg')[i]; }
+function P() { return document.getElementById('pillMain'); }
 function mouse(type, el, x, y, buttons, detail) {
   if (typeof el === 'function') el = el();
   el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y,
@@ -600,70 +601,75 @@ needs_chrome = pytest.mark.skipif(not CHROME.exists(), reason="Google Chrome is 
 def test_a_press_that_moves_more_than_4_px_starts_a_native_drag_and_no_click_follows(tmp_path):
     out = run_page(tmp_path, f"""{STUB}
       window.burnrateTab.update({demo_json()});
-      var seg = function () {{ return S(1); }};
-      mouse('mousedown', seg, 300, 30, 1);
-      mouse('mousemove', seg, 303, 32, 1);          // 3 px: still a click
+      mouse('mousedown', P, 100, 20, 1);
+      mouse('mousemove', P, 103, 22, 1);            // 3 px: still a click
       report.presses = count('press');
       report.afterSmall = count('begin_drag');
-      mouse('mousemove', seg, 306, 30, 1);          // 6 px: a drag
+      mouse('mousemove', P, 106, 20, 1);            // 6 px: a drag
       report.afterBig = count('begin_drag');
-      mouse('mousemove', seg, 340, 30, 1);          // more movement does not start a second drag
+      mouse('mousemove', P, 140, 20, 1);            // more movement does not start a second drag
       report.afterMore = count('begin_drag');
-      mouse('mouseup', seg, 340, 30, 0);
-      mouse('click', seg, 340, 30, 0, 1);           // the click the browser fires after the drag
+      mouse('mouseup', P, 140, 20, 0);
+      mouse('click', P, 140, 20, 0, 1);             // the click the browser fires after the drag
       report.clickAfterDrag = count('open_full');
-      mouse('click', seg, 340, 30, 0, 0);           // a keyboard click is still honoured
+      mouse('click', P, 140, 20, 0, 0);             // a keyboard click is still honoured
       report.keyboardClick = count('open_full');
       """)
     assert "error" not in out, out.get("error")
-    assert out["presses"] == 1  # the host is told where the press happened
+    assert out["presses"] == 1
     assert out["afterSmall"] == 0 and out["afterBig"] == 1 and out["afterMore"] == 1
     assert out["clickAfterDrag"] == 0 and out["keyboardClick"] == 1
 
 
 @needs_chrome
 @pytest.mark.browser
-def test_a_press_and_release_without_moving_stays_a_click(tmp_path):
+def test_a_press_and_release_without_moving_stays_a_click_and_refresh_stays_in_place(tmp_path):
     out = run_page(tmp_path, f"""{STUB}
       window.burnrateTab.update({demo_json()});
-      var seg = function () {{ return S(0); }}, fine = document.getElementById('fine'),
-          open = document.getElementById('open');
-      [seg, fine, open].forEach(function (el) {{
-        mouse('mousedown', el, 50, 30, 1); mouse('mousemove', el, 52, 31, 1);
-        mouse('mouseup', el, 52, 31, 0); mouse('click', el, 52, 31, 0, 1);
+      var home = document.getElementById('home'), refresh = document.getElementById('refresh');
+      [P, home].forEach(function (el) {{
+        mouse('mousedown', el, 50, 20, 1); mouse('mousemove', el, 52, 21, 1);
+        mouse('mouseup', el, 52, 21, 0); mouse('click', el, 52, 21, 0, 1);
       }});
       report.opened = count('open_full'); report.drags = count('begin_drag');
+      // clicking refresh refreshes in place without opening the full window
+      mouse('mousedown', refresh, 240, 20, 1); mouse('mouseup', refresh, 240, 20, 0);
+      mouse('click', refresh, 240, 20, 0, 1);
+      report.refreshed = count('refresh_now');
+      report.openedAfterRefresh = count('open_full');
       // a drag, then later a normal click works again
-      mouse('mousedown', seg, 50, 30, 1); mouse('mousemove', seg, 90, 30, 1);
-      mouse('mousedown', seg, 50, 30, 1); mouse('mouseup', seg, 50, 30, 0); mouse('click', seg, 50, 30, 0, 1);
+      mouse('mousedown', P, 50, 20, 1); mouse('mousemove', P, 90, 20, 1);
+      mouse('mousedown', P, 50, 20, 1); mouse('mouseup', P, 50, 20, 0); mouse('click', P, 50, 20, 0, 1);
       report.openedAfter = count('open_full');
       """)
     assert "error" not in out, out.get("error")
-    assert out["opened"] == 3 and out["drags"] == 0
-    assert out["openedAfter"] == 4  # the click after a later press is not swallowed
+    assert out["opened"] == 2 and out["drags"] == 0
+    assert out["refreshed"] == 1 and out["openedAfterRefresh"] == 2
+    assert out["openedAfter"] == 3
 
 
 @needs_chrome
 @pytest.mark.browser
-def test_a_drag_can_start_on_segments_pills_the_brand_the_open_button_and_empty_space(tmp_path):
+def test_a_drag_can_start_on_any_part_of_the_corner_pill(tmp_path):
     out = run_page(tmp_path, f"""{STUB}
       window.burnrateTab.update({fit_json()});
-      var targets = {{ seg: document.querySelector('.seg'), fine: document.getElementById('fine'),
-        urgent: document.getElementById('urgentPill'), home: document.getElementById('home'),
-        brand: document.querySelector('.brand'), open: document.getElementById('open'),
-        strip: document.getElementById('tab'), chip: document.getElementById('chip') }};
+      var targets = {{ pill: document.getElementById('pillMain'), spend: document.getElementById('spend'),
+        primary: document.getElementById('primary'), more: document.getElementById('more'),
+        home: document.getElementById('home'), brand: document.querySelector('.brand'),
+        refresh: document.getElementById('refresh'), strip: document.getElementById('tab'),
+        chip: document.getElementById('chip') }};
       report.started = {{}};
       Object.keys(targets).forEach(function (name) {{
         var el = targets[name];
         if (!el || el.hidden) return;
         var before = count('begin_drag');
-        mouse('mousedown', el, 20, 30, 1); mouse('mousemove', el, 40, 30, 1); mouse('mouseup', el, 40, 30, 0);
+        mouse('mousedown', el, 20, 20, 1); mouse('mousemove', el, 40, 20, 1); mouse('mouseup', el, 40, 20, 0);
         report.started[name] = count('begin_drag') - before;
       }});
       """)
     assert "error" not in out, out.get("error")
     assert out["started"] and all(v == 1 for v in out["started"].values()), out["started"]
-    assert {"seg", "fine", "home", "brand", "open", "strip"} <= set(out["started"])
+    assert {"pill", "spend", "primary", "more", "home", "brand", "refresh", "strip", "chip"} <= set(out["started"])
 
 
 @needs_chrome
@@ -671,29 +677,28 @@ def test_a_drag_can_start_on_segments_pills_the_brand_the_open_button_and_empty_
 def test_no_hover_card_opens_during_a_drag_and_an_open_one_closes_when_it_starts(tmp_path):
     out = run_page(tmp_path, f"""{STUB}
       window.burnrateTab.update({demo_json()});
-      var segs = [0, 1, 2, 3].map(function (i) {{ return function () {{ return S(i); }}; }});
-      mouse('mouseover', segs[0], 100, 30, 0);
+      mouse('mouseenter', P, 100, 20, 0);
       await tick(300);
       report.cardOpened = count('expand') > 0 && !document.getElementById('cardWrap').hidden;
       var collapsesBefore = count('collapse');
-      mouse('mousedown', segs[0], 100, 30, 1);
-      mouse('mousemove', segs[0], 120, 30, 1);                      // the drag starts
+      mouse('mousedown', P, 100, 20, 1);
+      mouse('mousemove', P, 120, 20, 1);                            // the drag starts
       report.cardClosed = document.getElementById('cardWrap').hidden;
       report.collapsedOnStart = count('collapse') - collapsesBefore;
       var expands = count('expand');
-      mouse('mouseover', segs[2], 300, 30, 1);                      // pointer sweeps over another segment
-      await tick(400);
+      mouse('mouseenter', document.getElementById('home'), 20, 20, 1);
+      await tick(350);
       report.expandsDuringDrag = count('expand') - expands;
       report.cardDuringDrag = !document.getElementById('cardWrap').hidden;
-      mouse('mouseup', segs[2], 300, 30, 0);
-      mouse('mouseover', segs[3], 400, 30, 0);
-      await tick(400);
+      mouse('mouseup', P, 120, 20, 0);
+      mouse('mouseenter', P, 100, 20, 0);
+      await tick(350);
       report.cardAfterDrag = !document.getElementById('cardWrap').hidden;
       """)
     assert "error" not in out, out.get("error")
     assert out["cardOpened"] is True and out["cardClosed"] is True and out["collapsedOnStart"] == 1
     assert out["expandsDuringDrag"] == 0 and out["cardDuringDrag"] is False
-    assert out["cardAfterDrag"] is True  # hovering works again once the drag is over
+    assert out["cardAfterDrag"] is True
 
 
 @needs_chrome
@@ -701,8 +706,8 @@ def test_no_hover_card_opens_during_a_drag_and_an_open_one_closes_when_it_starts
 def test_a_mouse_press_does_not_pop_the_card_before_it_becomes_a_drag(tmp_path):
     out = run_page(tmp_path, f"""{STUB}
       window.burnrateTab.update({demo_json()});
-      mouse('mousedown', function () {{ return S(1); }}, 100, 30, 1);
-      S(1).dispatchEvent(new FocusEvent('focusin', {{ bubbles: true }}));   // the mouse focuses the button
+      mouse('mousedown', P, 100, 20, 1);
+      P().dispatchEvent(new FocusEvent('focus', {{ bubbles: false }}));
       await tick(300);
       report.expandsOnPress = count('expand');
       """)
@@ -712,21 +717,24 @@ def test_a_mouse_press_does_not_pop_the_card_before_it_becomes_a_drag(tmp_path):
 
 @needs_chrome
 @pytest.mark.browser
-def test_keyboard_behaviour_is_unchanged_and_focus_is_reported_to_the_host(tmp_path):
+def test_keyboard_behaviour_and_card_actions_work_and_focus_is_reported_to_the_host(tmp_path):
     out = run_page(tmp_path, f"""{STUB}
       window.burnrateTab.update({demo_json()});
-      S(0).focus();
+      P().focus();
       await tick(100);
       report.cardOnFocus = !document.getElementById('cardWrap').hidden;
       report.focusTrue = count('focus:true');
+      document.querySelector('#card [data-refresh]').click();
+      report.cardRefresh = count('refresh_now');
       document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Escape', bubbles: true }}));
       report.escapeClosed = document.getElementById('cardWrap').hidden;
-      document.activeElement.click();                                 // Enter on a focused button: detail 0
+      document.activeElement.click();                               // Enter on focused pill: detail 0
       report.enterOpens = count('open_full');
       document.activeElement.blur();
       await tick(50);
       report.focusFalse = count('focus:false');
       """)
     assert "error" not in out, out.get("error")
-    assert out["cardOnFocus"] is True and out["escapeClosed"] is True and out["enterOpens"] == 1
+    assert out["cardOnFocus"] is True and out["cardRefresh"] == 1
+    assert out["escapeClosed"] is True and out["enterOpens"] == 1
     assert out["focusTrue"] >= 1 and out["focusFalse"] >= 1

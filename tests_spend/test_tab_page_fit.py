@@ -1,4 +1,4 @@
-"""Review round 2: the compact strip in a real browser, and focus when a provider folds."""
+"""Option 4B corner pill fit and hover-card layout checks in real Chrome."""
 
 import json
 
@@ -6,13 +6,21 @@ import pytest
 
 from spend_app.tab_window import TabModel
 from tests_spend.browser_runtime import CHROME
-from tests_spend.test_tab_page import demo_payload_json, run_page
-from tests_spend.test_tab_review import demo_providers_list, error_model, many_urgent, providers
+from tests_spend.test_tab_page import run_page
+from tests_spend.test_tab_review import (
+    _error_only,
+    _healthy,
+    demo_report_and_providers,
+    error_model,
+    many_urgent,
+    out_cards,
+    providers,
+)
 from tests_spend.test_tab_window import NOW
 
 pytestmark = pytest.mark.browser
 
-BUDGETS = [240, 250, 280, 320, 400, 480, 560, 700, 900, 1200]
+BUDGETS = [240, 250, 260, 280, 320, 400, 560, 900, 1200]
 
 
 @pytest.fixture(autouse=True)
@@ -22,20 +30,19 @@ def need_chrome():
 
 
 def datasets():
-    from tests_spend.test_tab_review import _error_only, _healthy
-
+    report, items = demo_report_and_providers()
     return {
-        "demo+error": error_model(demo_providers_list()),
-        "demo+error without code": error_model(demo_providers_list(), code=None),
+        "demo+error": error_model(items, spend_report=report),
+        "demo+error without code": error_model(items, code=None, spend_report=report),
         "many urgent+error": error_model(providers(*many_urgent(9))),
-        "demo": _healthy(demo_providers_list()),
+        "demo": _healthy(items, spend_report=report),
         "empty": _healthy([]),
         "loading": TabModel(),
         "error first": _error_only(),
     }
 
 
-def test_the_rendered_strip_never_overflows_its_window_at_any_budget(tmp_path):
+def test_the_rendered_pill_never_overflows_its_window_at_any_budget(tmp_path):
     cases = []
     for name, model in datasets().items():
         for budget in BUDGETS:
@@ -66,13 +73,15 @@ def test_the_rendered_strip_never_overflows_its_window_at_any_budget(tmp_path):
     bad = [r for r in rows if r["overflow"] > 0 or r["outside"]]
     assert not bad, bad[:6]
     assert all(r["width"] <= r["budget"] for r in rows)
-    # the compact modes were really exercised
-    assert any(r["mode"]["tight"] for r in rows) and any(r["mode"]["chip"] == "icon" for r in rows)
-    assert any(r["mode"]["compact"] for r in rows) and any(r["mode"]["chip"] == "code" for r in rows)
+    # Compact fallback rungs were really exercised
+    assert any(r["mode"]["chip"] == "code" for r in rows)
+    assert any(r["mode"]["chip"] == "icon" for r in rows)
+    assert any(r["mode"]["showSpend"] is False and r["name"] == "demo+error" for r in rows)
 
 
 def test_the_short_chip_keeps_its_full_text_in_the_tooltip_and_aria_label(tmp_path):
-    payload = error_model(demo_providers_list()).payload(dark=False, now=NOW, budget=260)
+    report, items = demo_report_and_providers()
+    payload = error_model(items, spend_report=report).payload(dark=False, now=NOW, budget=260)
     assert payload["layout"]["mode"]["chip"] in ("code", "icon")
     out = run_page(tmp_path, f"""
       window.burnrateTab.update({json.dumps(payload)});
@@ -88,115 +97,40 @@ def test_the_short_chip_keeps_its_full_text_in_the_tooltip_and_aria_label(tmp_pa
 
 
 def test_the_hover_card_fits_a_narrow_budget(tmp_path):
-    payload = _healthy_demo(budget=260)
+    report, items = demo_report_and_providers()
+    payload = _healthy(items, spend_report=report).payload(dark=False, now=NOW, budget=260)
     out = run_page(tmp_path, f"""
-      document.body.style.width = {payload["layout"]["width"]} + 'px';
+      document.body.style.width = Math.max({payload["layout"]["width"]}, {payload["layout"]["cardWidth"]}) + 'px';
       window.burnrateTab.update({json.dumps(payload)});
-      var state = window.burnrateTab.state;
-      window.burnrateTab.show(state.segments.length ? state.segments[0].key : '__fine__',
-                              document.querySelector('.seg') || document.getElementById('fine'));
+      window.burnrateTab.show();
       await tick();
       var card = document.getElementById('card').getBoundingClientRect();
       report.cardRight = card.right; report.cardLeft = card.left;
       """)
     assert "error" not in out, out.get("error")
-    # the window grows to hold the card, never past the budget
     assert out["cardLeft"] >= 0 and out["cardRight"] <= max(payload["layout"]["width"], payload["layout"]["cardWidth"]) + 0.5
     assert payload["layout"]["cardWidth"] <= 260
 
 
-def _healthy_demo(budget):
-    model = TabModel()
-    model.publish_report({"providers": demo_providers_list()})
-    return model.payload(dark=False, now=NOW, budget=budget)
-
-
-# ---- R2-L01: focus goes to the pill that now contains the provider --------------
-
-def test_focus_moves_to_the_fine_pill_when_the_focused_provider_folds(tmp_path):
-    wide = json.loads(demo_payload_json())
-    narrow = _healthy_demo(budget=520)
-    keys_after = {s["key"] for s in narrow["segments"]}
-    folded = next(s["key"] for s in wide["segments"]
-                  if s["key"] not in keys_after and s["level"] in ("ok", "balance", "idle"))
-    assert folded in {i["key"] for i in narrow["fine"]["items"]}
-    out = run_page(tmp_path, f"""
-      var wide = {json.dumps(wide)};
-      window.burnrateTab.update(wide);
-      var index = wide.segments.findIndex(function (s) {{ return s.key === {json.dumps(folded)}; }});
-      document.querySelector('.seg[data-i="' + index + '"]').focus();
-      await tick();
-      window.burnrateTab.update({json.dumps(narrow)});
-      await tick();
-      report.active = describe(document.activeElement);
-      report.cardHidden = document.getElementById('cardWrap').hidden;
-      """)
-    assert "error" not in out, out.get("error")
-    assert out["active"]["id"] == "fine"
-    assert out["cardHidden"] is True  # the folded provider's card is gone with it
-
-
-def test_focus_moves_to_the_urgent_pill_when_an_urgent_provider_folds(tmp_path):
-    model = TabModel()
-    model.publish_report({"providers": providers(*many_urgent(9))})
-    wide = model.payload(dark=False, now=NOW, budget=2400)
-    narrow = model.payload(dark=False, now=NOW, budget=700)
-    last_key = wide["segments"][-1]["key"]
-    assert last_key in {i["key"] for i in narrow["urgentMore"]["items"]}
-    out = run_page(tmp_path, f"""
-      var wide = {json.dumps(wide)};
-      window.burnrateTab.update(wide);
-      document.querySelector('.seg[data-i="' + (wide.segments.length - 1) + '"]').focus();
-      await tick();
-      window.burnrateTab.update({json.dumps(narrow)});
-      await tick();
-      report.active = describe(document.activeElement);
-      """)
-    assert "error" not in out, out.get("error")
-    assert out["active"]["id"] == "urgentPill"
-
-
-def test_a_provider_that_vanishes_entirely_leaves_focus_on_the_page_not_a_stale_pill(tmp_path):
-    wide = json.loads(demo_payload_json())
-    gone = json.loads(demo_payload_json())
-    gone["segments"] = [s for s in gone["segments"] if s["key"] != "claude-code"]
-    gone["fine"] = None
-    out = run_page(tmp_path, f"""
-      window.burnrateTab.update({json.dumps(wide)});
-      document.querySelector('.seg[data-i="0"]').focus();
-      await tick();
-      window.burnrateTab.update({json.dumps(gone)});
-      await tick();
-      report.active = describe(document.activeElement);
-      """)
-    assert "error" not in out, out.get("error")
-    assert out["active"]["id"] not in ("fine", "urgentPill")
-
-
-def test_the_urgent_pill_is_amber_for_warn_only_and_red_with_an_out_inside(tmp_path):
-    from tests_spend.test_tab_review import out_cards
-
-    warn_model = TabModel()
-    warn_model.publish_report({"providers": providers(*many_urgent(9))})
+def test_the_more_pill_turns_red_only_when_another_out_or_soon_provider_is_hidden(tmp_path):
+    report, items = demo_report_and_providers()
+    calm_more = _healthy(items, spend_report=report).payload(dark=False, now=NOW)
     red_model = TabModel()
-    red_model.publish_report({"providers": providers(*out_cards(8))})
-    warn = warn_model.payload(dark=False, now=NOW, budget=700)
-    red = red_model.payload(dark=False, now=NOW, budget=420)
-    assert warn["urgentMore"]["severity"] == "warn" and red["urgentMore"]["severity"] == "soon"
+    red_model.publish_report({"providers": providers(*out_cards(5))})
+    red_more = red_model.payload(dark=False, now=NOW)
     out = run_page(tmp_path, f"""
-      function pill() {{
-        var el = document.getElementById('urgentPill');
-        var span = el.querySelector('span');
-        return {{ text: span.textContent, warn: el.classList.contains('warn'),
-                  bg: getComputedStyle(span).backgroundColor, aria: el.getAttribute('aria-label') }};
+      function readMore() {{
+        var el = document.getElementById('more');
+        var chip = el.querySelector('.more-chip');
+        return {{ text: chip.textContent, urgent: el.classList.contains('urgent'),
+                  bg: getComputedStyle(chip).backgroundColor }};
       }}
-      window.burnrateTab.update({json.dumps(warn)});
-      report.amber = pill();
-      window.burnrateTab.update({json.dumps(red)});
-      report.red = pill();
+      window.burnrateTab.update({json.dumps(calm_more)});
+      report.calm = readMore();
+      window.burnrateTab.update({json.dumps(red_more)});
+      report.red = readMore();
       """)
     assert "error" not in out, out.get("error")
-    assert out["amber"]["warn"] is True and out["amber"]["text"].endswith("to watch")
-    assert out["red"]["warn"] is False and out["red"]["text"].endswith("urgent")
-    assert out["amber"]["bg"] != out["red"]["bg"]
-    assert "to watch" in out["amber"]["aria"] and "about to run out" in out["red"]["aria"]
+    assert out["calm"]["urgent"] is False and out["calm"]["text"] == "+9"
+    assert out["red"]["urgent"] is True and out["red"]["text"] == "+4"
+    assert out["calm"]["bg"] != out["red"]["bg"]

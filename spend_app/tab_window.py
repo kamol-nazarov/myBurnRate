@@ -39,42 +39,38 @@ TAB_PREFERENCE_KEY = "tabWindow"
 SURFACE_KEY = "surface"
 
 # Layout, in logical pixels. The page uses the same numbers (they ride along
-# in every payload), so the window is exactly as wide as its content.
-TAB_HEIGHT = 60
-MAX_SEGMENTS = 5
-HOME_WIDTH = 42
-SEGMENT_WIDTH = 124
-#: A segment that names its profile ("Primary · 5-hour") needs a longer label line.
-PROFILE_EXTRA = 36
-#: An idle segment says "Awaiting reading", which needs a little more room.
-IDLE_EXTRA = 20
-FINE_WIDTH = 60
-OPEN_WIDTH = 36
-CHIP_WIDTH = 212
-#: The red "+N urgent" pill (urgent providers that do not fit the monitor).
-URGENT_PILL_WIDTH = 92
+# in every payload), so the corner pill is exactly as wide as its content.
+TAB_HEIGHT = 40
+TAB_RADIUS = 20
+CARD_GAP = 6
+CARD_RADIUS = 14
+CARD_WIDTH = 340
 #: How close the tab may come to the work area's edge, in logical pixels.
 BUDGET_MARGIN = 16
-#: The compact fallbacks, used only when the monitor is too narrow for the normal
-#: layout: the error chip shrinks to its code, then to its icon; segments drop their
-#: secondary label; the brand, the pills and the open button tighten.
-CHIP_CODE_WIDTH = 88
-CHIP_ICON_WIDTH = 34
-COMPACT_SEGMENT_WIDTH = 96
-TIGHT_HOME_WIDTH = 38
-TIGHT_OPEN_WIDTH = 32
-TIGHT_FINE_WIDTH = 54
-TIGHT_URGENT_WIDTH = 76
-COMPACT_EMPTY_WIDTH = 140
-#: Gap between the strip and its hover card, and the two corner radii.
-CARD_GAP = 6
-TAB_RADIUS = 14
-CARD_RADIUS = 12
+
+#: Resting corner-pill slot widths (kept 1:1 with tab_ui.html CSS).
+PILL_PAD = 10            # 5px left + 5px right inside .tab
+HOME_WIDTH = 31          # 29px home + 2px right margin
+TIGHT_HOME_WIDTH = 28    # 27px home + 1px right margin
+SPEND_WIDTH = 50         # "$127" chip (46px) + 4px right margin
+SPEND_WIDE_WIDTH = 58    # "$12.3K" chip (54px) + 4px right margin
+DIVIDER_WIDTH = 6        # 1px divider + 5px right margin
+PRIMARY_WIDTH = 94       # 20px logo + headline + compact runway ("54% ~1h")
+PRIMARY_WIDE_WIDTH = 106 # balance with runway or idle provider name
+PRIMARY_COMPACT_WIDTH = 72  # 20px logo + headline only ("54%")
+MORE_PILL_WIDTH = 36     # "+9" pill (34px) + 2px left margin
+MORE_PILL_WIDE_WIDTH = 42  # "+10" pill (40px) + 2px left margin
+TIGHT_MORE_WIDTH = 32
+REFRESH_WIDTH = 28       # 26px refresh button + 2px left margin
+TIGHT_REFRESH_WIDTH = 25
+CHIP_WIDTH = 196         # full error chip (error-only state)
+CHIP_CODE_WIDTH = 78     # error code badge ("NET-001")
+CHIP_ICON_WIDTH = 28     # warning icon only
+LOADING_WIDTH = 92       # "Loading…"
+EMPTY_WIDTH = 116        # "No limits yet"
+COMPACT_EMPTY_WIDTH = 84 # "No limits"
 #: Longer idle reasons show as "Awaiting reading" (the full reason is the tooltip).
 IDLE_STATUS_LIMIT = 22
-LOADING_WIDTH = 150
-EMPTY_WIDTH = 340
-CARD_WIDTH = 300
 FOLDABLE_LEVELS = ("ok", "balance", "idle")
 URGENT_LEVELS = ("out", "soon")
 
@@ -85,6 +81,17 @@ LIMIT_LABELS = {
     "gemini-5h": "Gemini 5-hour",
     "gemini-weekly": "Gemini weekly",
     "3p-5h": "3P 5-hour",
+    "3p-weekly": "3P weekly",
+    "balance": "Balance",
+}
+
+WINDOW_TAGS = {
+    "5h": "5h",
+    "weekly": "Weekly",
+    "monthly": "Monthly",
+    "gemini-5h": "Gemini 5h",
+    "gemini-weekly": "Gemini weekly",
+    "3p-5h": "3P 5h",
     "3p-weekly": "3P weekly",
     "balance": "Balance",
 }
@@ -209,6 +216,117 @@ def shorten(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: max(1, limit - 1)].rstrip() + "\u2026"
 
 
+def abbreviate_spend(amount: float) -> str:
+    """Compact daily spend for the 40px corner pill: ``$0``, ``$4.20`` under $10,
+    whole dollars ``$127`` up to $999, then ``$1.2K`` / ``$1.2M``."""
+    amount = max(0.0, float(amount))
+    if amount == 0:
+        return "$0"
+    if amount < 10:
+        return f"${amount:.2f}"
+    if amount < 1_000:
+        return f"${round(amount):,d}"
+    thousands = round(amount / 1_000, 1)
+    if thousands >= 1_000:
+        return f"${amount / 1_000_000:.1f}M"
+    return f"${thousands:.1f}K"
+
+
+def extract_spend(report, today_report=None) -> dict | None:
+    """Today's spend, hourly burn rate, and cache hit % for the pill & hover card."""
+    source = today_report if isinstance(today_report, dict) else (report if isinstance(report, dict) else None)
+    total = None
+    if isinstance(today_report, dict) and isinstance(today_report.get("total"), dict):
+        total = today_report["total"]
+    elif isinstance(report, dict):
+        if isinstance(report.get("todayTotal"), dict):
+            total = report["todayTotal"]
+        elif isinstance(report.get("total"), dict) and report.get("period") in (None, "today"):
+            total = report["total"]
+    if not isinstance(total, dict) or not isinstance(total.get("valueUsd"), (int, float)):
+        return None
+    usd = max(0.0, float(total["valueUsd"]))
+    complete = total.get("complete") is not False
+    suffix = "" if complete else "+"
+    compact_label = abbreviate_spend(usd) + suffix
+    exact_label = f"${usd:,.2f}{suffix}"
+
+    rate = (source or {}).get("rate") if isinstance(source, dict) else None
+    rate_text = ""
+    if isinstance(rate, dict) and isinstance(rate.get("perHourUsd"), (int, float)):
+        per_h = max(0.0, float(rate["perHourUsd"]))
+        rate_suffix = "+" if rate.get("complete") is False else ""
+        rate_text = f"${per_h:,.2f}/h{rate_suffix}"
+
+    tools = (source or {}).get("tools") if isinstance(source, dict) else None
+    cache_pct: int | None = None
+    if isinstance(tools, list):
+        cached = fresh = writes = 0.0
+        for tool in tools:
+            if not isinstance(tool, dict) or tool.get("organization"):
+                continue
+            cached += max(0.0, float(tool.get("cached") or 0))
+            fresh += max(0.0, float(tool.get("input") or 0))
+            writes += max(0.0, float(tool.get("writes") or 0))
+        prompt = cached + fresh + writes
+        if prompt > 0:
+            cache_pct = round(cached / prompt * 100)
+
+    meta_parts = [p for p in (rate_text, f"{cache_pct}% cache" if cache_pct is not None else "") if p]
+    meta = " · ".join(meta_parts)
+    return {
+        "usd": round(usd, 2),
+        "compact": compact_label,
+        "exact": exact_label,
+        "complete": complete,
+        "rateText": rate_text,
+        "cachePct": cache_pct,
+        "meta": meta,
+        "aria": f"{exact_label} spent today" + (f", {meta}" if meta else ""),
+    }
+
+
+def window_tag(window: dict | None, *, is_balance: bool = False) -> str:
+    """Short parenthetical tag for hover-card rows: ``5h`` / ``Weekly`` / ``Balance``."""
+    if is_balance:
+        return "Balance"
+    if window is None:
+        return ""
+    key = str(window.get("limitKey") or "")
+    if key in WINDOW_TAGS:
+        return WINDOW_TAGS[key]
+    return window_label(window)
+
+
+def _short_status(level: str, status: str) -> str:
+    """Ultra-compact runway/reset token for the 40px pill: ``~1h``, ``out``, ``~42d``, ``5d``."""
+    if level == "out":
+        return "out"
+    if level == "idle":
+        return ""
+    text = str(status or "").strip()
+    if text.startswith("dry in "):
+        return text[len("dry in ") :].strip()
+    if text.startswith("resets in "):
+        return text[len("resets in ") :].strip()
+    if text.endswith(" runway"):
+        return text[: -len(" runway")].strip()
+    return ""
+
+
+def _card_status(level: str, exact_big: str, status: str, short_status: str) -> str:
+    """Right-aligned metric in the overview hover card (e.g. ``54% · dry ~1h``)."""
+    if level == "idle":
+        return status or "Awaiting reading"
+    if level == "out":
+        return f"0% · {status}" if status and not status.startswith("out") else (status or "0% · out")
+    if level in ("soon", "warn") and short_status and status.startswith("dry in "):
+        return f"{exact_big} · dry {short_status}"
+    if level == "balance":
+        return f"{exact_big} · {short_status}" if short_status else f"{exact_big} · PAYG"
+    return f"{exact_big} · {status}" if status else exact_big
+
+
 def _headline(provider: dict, window: dict | None) -> tuple[str, str, float]:
     """``(exact text, small unit label, fuel percent)`` for a segment."""
     if (provider.get("remaining") or {}).get("kind") == "balance":
@@ -237,6 +355,7 @@ def build_segment(provider: dict, now: datetime) -> dict:
     urgency = compute_urgency(provider, now)
     level = urgency.get("level") or "idle"
     window = focus_window(provider, now)
+    is_balance = (provider.get("remaining") or {}).get("kind") == "balance"
     big, unit, fuel = _headline(provider, window)
     profile = provider.get("profile")
     unit_label = f"{profile} · {unit}" if profile and unit and unit != "balance" else unit
@@ -258,6 +377,10 @@ def build_segment(provider: dict, now: datetime) -> dict:
     title = f"{name} · {profile}" if profile else name
     aria = f"{title}: {exact_big} {unit}".strip() + (f", {status}" if status else "")
     big_normal, big_compact = _headline_forms(provider, exact_big, level, name)
+    short_st = _short_status(level, status)
+    pill_big = big_compact if level in ("balance", "idle") else big_normal
+    w_tag = window_tag(window, is_balance=is_balance)
+    card_st = _card_status(level, exact_big, status, short_st)
     return {
         "key": provider.get("key"),
         "name": name,
@@ -265,14 +388,17 @@ def build_segment(provider: dict, now: datetime) -> dict:
         "title": title,
         "plan": provider.get("plan") or "",
         "level": level,
-        "width": SEGMENT_WIDTH + (PROFILE_EXTRA if profile else 0) + (IDLE_EXTRA if level == "idle" else 0),
         "limitKey": urgency.get("limitKey"),
+        "windowTag": w_tag,
         "big": big_normal,
         "bigCompact": big_compact,
+        "pillBig": pill_big,
         "exact": exact_big,
         "unit": unit_label,
         "fuel": round(fuel, 1),
         "status": status,
+        "shortStatus": short_st,
+        "cardStatus": card_st,
         "detail": detail or status,
         "muted": level == "idle",
         "aria": aria,
@@ -300,178 +426,203 @@ def tab_providers(providers, now: datetime | None = None) -> list[dict]:
     return display_order(usable, now)
 
 
-def split_overflow(segments: list[dict], cap: int = MAX_SEGMENTS) -> tuple[list[dict], list[dict]]:
-    """Keep every urgent segment; fill to ``cap`` from the rest; fold the remainder."""
-    shown, folded, _ = plan_segments(segments, cap=cap)
-    return shown, folded
-
-
-def plan_segments(
-    segments: list[dict],
-    *,
-    budget: float | None = None,
-    fixed: int = 0,
-    cap: int = MAX_SEGMENTS,
-    fold_calm: bool = True,
-    fold_urgent: bool = True,
-    fine_width: int = FINE_WIDTH,
-    urgent_width: int = URGENT_PILL_WIDTH,
-) -> tuple[list[dict], list[dict], list[dict]] | None:
-    """Choose what the strip shows: ``(shown, folded, urgent_hidden)``.
-
-    Out/soon/warn segments always show, even beyond ``cap``. The rest fill the
-    remaining slots and fold into "+N fine". With a ``budget`` (the logical
-    width the monitor can spare; ``fixed`` is everything that is not a segment
-    or a pill) more calm segments fold until it fits (``fold_calm``), and if
-    the urgent ones alone do not fit the last of them move into a "+N urgent"
-    pill (``fold_urgent``). ``None`` means no plan fits under those rules.
-    """
-    urgent = [s for s in segments if s["level"] not in FOLDABLE_LEVELS]
-    calm = [s for s in segments if s["level"] in FOLDABLE_LEVELS]
-
-    def total(shown_urgent, shown_calm, folded, urgent_more) -> int:
-        width = fixed + sum(s["width"] for s in shown_urgent) + sum(s["width"] for s in shown_calm)
-        return width + (fine_width if folded else 0) + (urgent_width if urgent_more else 0)
-
-    room = len(calm) if len(segments) <= cap else max(0, cap - len(urgent))
-    room = min(room, len(calm))
-    lowest = 0 if (budget is not None and fold_calm) else room
-    for kept in range(room, lowest - 1, -1):
-        shown_calm, folded = calm[:kept], calm[kept:]
-        if budget is None or total(urgent, shown_calm, folded, False) <= budget:
-            keep = {id(s) for s in urgent + shown_calm}
-            return [s for s in segments if id(s) in keep], folded, []
-    if budget is None or not fold_urgent:
-        return None
-    for count in range(len(urgent) - 1, -1, -1):
-        shown_urgent, hidden = urgent[:count], urgent[count:]
-        if count == 0 or total(shown_urgent, [], calm, True) <= budget:
-            return shown_urgent, calm, hidden
-    return [], calm, urgent
-
-
-def layout_width(
-    shown: int,
-    fine: bool,
-    *,
-    chip: bool = False,
-    status: int = 0,
-    extra: int = 0,
-    urgent_pill: bool = False,
-) -> int:
-    """Window width for ``shown`` segments, the pills, an error chip and status
-    text (``status`` is that text's width in pixels)."""
-    width = HOME_WIDTH + shown * SEGMENT_WIDTH + extra + OPEN_WIDTH + status
-    if fine:
-        width += FINE_WIDTH
-    if urgent_pill:
-        width += URGENT_PILL_WIDTH
-    if chip:
-        width += CHIP_WIDTH
-    return width
-
-
 class _Step:
-    """One rung of the fit ladder: how compact the strip is, and what may fold."""
+    """One rung of the Option 4B pill fit ladder."""
 
-    def __init__(self, chip, *, fold_calm, fold_urgent, compact, tight):
-        self.chip, self.fold_calm, self.fold_urgent = chip, fold_calm, fold_urgent
-        self.compact, self.tight = compact, tight
+    def __init__(self, chip, *, show_spend: bool, show_status: bool, compact: bool, tight: bool):
+        self.chip = chip
+        self.show_spend = show_spend
+        self.show_status = show_status
+        self.compact = compact
+        self.tight = tight
 
 
-#: Tried in order until the strip fits the monitor: shorten the error chip to its
-#: code, fold calm providers, fold urgent ones into "+N urgent", drop the
-#: segments' secondary label, tighten the chrome, and finally keep only the
-#: chip's icon.
+#: Tried in order until the corner pill fits the monitor budget:
+#: shorten error chip -> drop runway tag -> hide spend chip on pill (stays in card) -> tighten chrome.
 FIT_LADDER = (
-    _Step("full", fold_calm=False, fold_urgent=False, compact=False, tight=False),
-    _Step("code", fold_calm=False, fold_urgent=False, compact=False, tight=False),
-    _Step("code", fold_calm=True, fold_urgent=False, compact=False, tight=False),
-    _Step("code", fold_calm=True, fold_urgent=True, compact=False, tight=False),
-    _Step("code", fold_calm=True, fold_urgent=True, compact=True, tight=False),
-    _Step("code", fold_calm=True, fold_urgent=True, compact=True, tight=True),
-    _Step("icon", fold_calm=True, fold_urgent=True, compact=True, tight=True),
+    _Step("auto", show_spend=True, show_status=True, compact=False, tight=False),
+    _Step("short", show_spend=True, show_status=True, compact=False, tight=False),
+    _Step("icon", show_spend=True, show_status=True, compact=False, tight=False),
+    _Step("icon", show_spend=True, show_status=False, compact=True, tight=False),
+    _Step("icon", show_spend=False, show_status=False, compact=True, tight=False),
+    _Step("icon", show_spend=False, show_status=False, compact=True, tight=True),
 )
 _CHIP_WIDTHS = {"full": CHIP_WIDTH, "code": CHIP_CODE_WIDTH, "icon": CHIP_ICON_WIDTH}
 
 
-def fit_layout(segments: list[dict], *, state: str, has_error: bool, has_code: bool, budget: float | None) -> dict:
-    """Plan the whole strip for ``budget`` logical pixels (``None``: no limit).
-
-    Returns ``shown``/``folded``/``hidden`` segments plus the chosen ``mode`` and
-    the resulting ``width``. Nothing is ever wider than the budget unless even
-    the minimal strip (brand, pills, the chip's icon, the open button) cannot fit,
-    which takes a budget under about 240 logical pixels.
-    """
-    last = None
-    for step in FIT_LADDER:
-        if step.chip == "code" and not has_code and has_error:
-            chip_mode = "icon"  # nothing to show but the icon
-        else:
-            chip_mode = step.chip
-        home, open_w = (TIGHT_HOME_WIDTH, TIGHT_OPEN_WIDTH) if step.tight else (HOME_WIDTH, OPEN_WIDTH)
-        fine_w = TIGHT_FINE_WIDTH if step.tight else FINE_WIDTH
-        urgent_w = TIGHT_URGENT_WIDTH if step.tight else URGENT_PILL_WIDTH
-        status = {"loading": LOADING_WIDTH, "empty": COMPACT_EMPTY_WIDTH if step.compact else EMPTY_WIDTH}.get(state, 0)
-        chip_w = _CHIP_WIDTHS[chip_mode] if has_error else 0
-        fixed = home + open_w + status + chip_w
-        sized = [
-            dict(s, width=COMPACT_SEGMENT_WIDTH, big=s.get("bigCompact", s["big"])) if step.compact else dict(s)
-            for s in segments
-        ]
-        plan = plan_segments(
-            sized, budget=budget, fixed=fixed, fold_calm=step.fold_calm,
-            fold_urgent=step.fold_urgent, fine_width=fine_w, urgent_width=urgent_w,
-        )
-        last = (step, chip_mode, fixed, fine_w, urgent_w, sized, plan)
-        if plan is not None and (
-            budget is None
-            or (
-                fixed + sum(s["width"] for s in plan[0]) + (fine_w if plan[1] else 0) + (urgent_w if plan[2] else 0) <= budget
-                # a strip with only pills is the last resort: try a more compact one first
-                and (plan[0] or not segments)
-            )
-        ):
-            break
-    step, chip_mode, fixed, fine_w, urgent_w, sized, plan = last
-    if plan is None:  # nothing fit: the most compact strip with everything in pills
-        urgent = [s for s in sized if s["level"] not in FOLDABLE_LEVELS]
-        calm = [s for s in sized if s["level"] in FOLDABLE_LEVELS]
-        plan = ([], calm, urgent)
-    shown, folded, hidden = plan
-    width = fixed + sum(s["width"] for s in shown) + (fine_w if folded else 0) + (urgent_w if hidden else 0)
-    return {
-        "shown": shown,
-        "folded": folded,
-        "hidden": hidden,
-        "width": width,
-        "mode": {"chip": chip_mode, "compact": step.compact, "tight": step.tight},
-    }
+def _resolve_chip_mode(step_chip: str, *, state: str, has_error: bool, has_code: bool) -> str:
+    if not has_error:
+        return "none"
+    if state == "error":  # error-only (no primary provider): full -> code -> icon
+        if step_chip == "auto":
+            return "full"
+        if step_chip == "short":
+            return "code" if has_code else "icon"
+        return "icon"
+    # Stale (error alongside live provider): code -> icon to keep the corner pill sleek
+    if step_chip == "auto":
+        return "code" if has_code else "icon"
+    return "icon"
 
 
-def _pill_info(items: list[dict], *, severity: bool = False) -> dict | None:
+def _more_info(items: list[dict]) -> dict | None:
     if not items:
         return None
-    info = {
+    urgent_count = sum(1 for s in items if s["level"] in URGENT_LEVELS)
+    warn_count = sum(1 for s in items if s["level"] == "warn")
+    severity = "soon" if urgent_count > 0 else ("warn" if warn_count > 0 else "ok")
+    return {
         "count": len(items),
+        "severity": severity,
+        "urgentCount": urgent_count,
         "items": [
-            {"key": s["key"], "title": s["title"], "level": s["level"],
-             "text": f"{s.get('exact', s['big'])} {s['unit']}".strip()}
+            {
+                "key": s["key"],
+                "title": s["title"],
+                "level": s["level"],
+                "windowTag": s.get("windowTag", ""),
+                "text": s.get("cardStatus") or f"{s.get('exact', s['big'])} {s['unit']}".strip(),
+            }
             for s in items
         ],
     }
-    if severity:
-        # red only when something inside is about to run out; amber for "dries before refill"
-        info["severity"] = "soon" if any(s["level"] in URGENT_LEVELS for s in items) else "warn"
-    return info
+
+
+def _build_overview(segments: list[dict]) -> dict:
+    """Structured rows for the Option 4B hover-to-peek overview card."""
+    urgent_warn = [s for s in segments if s["level"] not in FOLDABLE_LEVELS]
+    if urgent_warn:
+        highlighted = urgent_warn
+        rest = [s for s in segments if s["level"] in FOLDABLE_LEVELS]
+    else:
+        highlighted = segments[:3]
+        rest = segments[3:]
+
+    n_rest = len(rest)
+    n_ok = sum(1 for s in rest if s["level"] == "ok")
+    n_bal = sum(1 for s in rest if s["level"] == "balance")
+    n_idle = sum(1 for s in rest if s["level"] == "idle")
+    if n_rest == 0:
+        rest_summary, rest_status = "", ""
+    elif n_ok > 0 and n_bal > 0:
+        rest_summary = f"{n_rest} other {'provider' if n_rest == 1 else 'providers'} healthy / balances"
+        rest_status = "All fine"
+    elif n_bal == n_rest:
+        rest_summary = f"{n_rest} pay-as-you-go {'balance' if n_rest == 1 else 'balances'}"
+        rest_status = "All fine"
+    elif n_idle == n_rest:
+        rest_summary = f"{n_rest} other {'provider' if n_rest == 1 else 'providers'} awaiting reading"
+        rest_status = "Idle"
+    else:
+        rest_summary = f"{n_rest} other {'provider' if n_rest == 1 else 'providers'} healthy"
+        rest_status = "All fine"
+
+    return {
+        "single": len(segments) == 1,
+        "highlighted": highlighted,
+        "rest": [
+            {
+                "key": s["key"],
+                "title": s["title"],
+                "windowTag": s.get("windowTag", ""),
+                "level": s["level"],
+                "text": s.get("cardStatus") or s.get("status") or "",
+            }
+            for s in rest
+        ],
+        "restSummary": rest_summary,
+        "restStatus": rest_status,
+    }
+
+
+def fit_pill_layout(
+    segments: list[dict],
+    *,
+    state: str,
+    spend: dict | None,
+    has_error: bool,
+    has_code: bool,
+    budget: float | None,
+) -> dict:
+    """Plan the Option 4B corner pill for ``budget`` logical pixels (``None``: no limit).
+
+    The resting pill always stays ultra-compact: brand mark (+ urgent badge),
+    optional daily spend chip, #1 most-urgent limit, optional ``+N`` overflow
+    pill, optional error indicator, and quick refresh button.
+    """
+    primary = segments[0] if segments else None
+    rest = segments[1:] if len(segments) > 1 else []
+    spend_text = spend["compact"] if isinstance(spend, dict) else ""
+    spend_w = (SPEND_WIDE_WIDTH if len(spend_text) >= 5 else SPEND_WIDTH) if spend_text else 0
+    more_base_w = (MORE_PILL_WIDE_WIDTH if len(rest) >= 10 else MORE_PILL_WIDTH) if rest else 0
+    primary_normal_w = (
+        PRIMARY_WIDE_WIDTH
+        if primary is not None and (primary["level"] in ("balance", "idle") or len(primary.get("pillBig", "")) >= 5)
+        else PRIMARY_WIDTH
+    )
+
+    chosen = None
+    for step in FIT_LADDER:
+        chip_mode = _resolve_chip_mode(step.chip, state=state, has_error=has_error, has_code=has_code)
+        home_w = TIGHT_HOME_WIDTH if step.tight else HOME_WIDTH
+        refresh_w = TIGHT_REFRESH_WIDTH if step.tight else REFRESH_WIDTH
+        show_spend = bool(spend_text) and step.show_spend and state in ("ready", "empty")
+        show_divider = show_spend and (primary is not None or state == "empty")
+        cur_spend_w = spend_w if show_spend else 0
+        cur_div_w = DIVIDER_WIDTH if show_divider else 0
+        chip_w = _CHIP_WIDTHS.get(chip_mode, 0) if has_error else 0
+
+        if state == "loading":
+            body_w = LOADING_WIDTH
+            primary_w = 0
+            more_w = 0
+        elif state == "empty":
+            body_w = COMPACT_EMPTY_WIDTH if step.compact else EMPTY_WIDTH
+            primary_w = 0
+            more_w = 0
+        elif state == "error":
+            body_w = 0
+            primary_w = 0
+            more_w = 0
+        else:  # ready
+            body_w = 0
+            has_short = bool(primary and primary.get("shortStatus")) and step.show_status
+            primary_w = (
+                PRIMARY_COMPACT_WIDTH
+                if (step.compact or not has_short) and primary is not None and primary["level"] not in ("balance", "idle")
+                else (PRIMARY_COMPACT_WIDTH if step.compact else primary_normal_w)
+            )
+            more_w = (TIGHT_MORE_WIDTH if step.tight else more_base_w) if rest else 0
+
+        width = PILL_PAD + home_w + cur_spend_w + cur_div_w + body_w + primary_w + more_w + chip_w + refresh_w
+        chosen = {
+            "shown": [primary] if primary is not None else [],
+            "primary": primary,
+            "rest": rest,
+            "width": width,
+            "spendWidth": (cur_spend_w - 4) if show_spend else 0,
+            "primaryWidth": primary_w,
+            "moreWidth": (more_w - 2) if more_w else 0,
+            "mode": {
+                "chip": chip_mode if has_error else "none",
+                "showSpend": show_spend,
+                "showStatus": step.show_status,
+                "compact": step.compact,
+                "tight": step.tight,
+            },
+        }
+        if budget is None or width <= budget:
+            break
+    return chosen
 
 
 class TabModel:
-    """Last known usage plus the last error; the single source for the tab."""
+    """Last known usage, daily spend, and last error; the single source for the tab."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._providers: list[dict] = []
+        self._spend: dict | None = None
         self._loaded = False
         self._error: dict | None = None
         self._listeners: list = []
@@ -489,13 +640,15 @@ class TabModel:
         """Seconds since the last successful fetch (``inf`` before the first)."""
         return time.monotonic() - self._updated if self._loaded else float("inf")
 
-    def publish_report(self, report) -> None:
+    def publish_report(self, report, *, today_report=None) -> None:
         providers = report.get("providers") if isinstance(report, dict) else None
         if not isinstance(providers, list):
             return
         quota_failed = report.get("quotaStatus") in ("stale", "unavailable")
+        spend = extract_spend(report, today_report=today_report)
         with self._lock:
             self._providers = providers
+            self._spend = spend
             self._loaded = True
             self._error = (
                 {"message": "Quota refresh failed.", "code": None, "text": "Quota refresh failed"}
@@ -508,6 +661,7 @@ class TabModel:
         with self._lock:
             if not retain_providers:
                 self._providers = []
+                self._spend = None
             self._error = {"message": str(message or ""), "code": code, "text": short_error(message, code)}
         self._notify()
 
@@ -531,11 +685,12 @@ class TabModel:
         budget: float | None = None,
     ) -> dict:
         """What the tab page draws. ``budget`` is the logical width the current
-        monitor can spare; the strip is planned against it with compact fallbacks
-        (see ``FIT_LADDER``), so nothing is ever cut off."""
+        monitor can spare; the corner pill shrinks along ``FIT_LADDER`` so
+        nothing is ever cut off."""
         now = now or datetime.now(UTC)
         with self._lock:
             providers = list(self._providers)
+            spend = dict(self._spend) if self._spend else None
             loaded = self._loaded
             error = dict(self._error) if self._error else None
         segments = [build_segment(p, now) for p in tab_providers(providers, now)]
@@ -545,9 +700,10 @@ class TabModel:
             state = "error" if error else "empty"
         else:
             state = "ready"
-        plan = fit_layout(
+        plan = fit_pill_layout(
             segments,
             state=state,
+            spend=spend,
             has_error=bool(error),
             has_code=bool(error and error.get("code")),
             budget=budget,
@@ -560,16 +716,20 @@ class TabModel:
             "demo": bool(demo),
             "stale": bool(error) and bool(segments),
             "error": error,
+            "spend": spend,
+            "primary": plan["primary"],
             "segments": plan["shown"],
-            "fine": _pill_info(plan["folded"]),
-            "urgentMore": _pill_info(plan["hidden"], severity=True),
+            "more": _more_info(plan["rest"]),
+            "overview": _build_overview(segments),
             "urgentCount": urgent,
             "layout": {
                 "height": TAB_HEIGHT,
                 "width": plan["width"],
                 "budget": budget,
                 "mode": plan["mode"],
-                "segmentWidth": SEGMENT_WIDTH,
+                "spendWidth": plan["spendWidth"],
+                "primaryWidth": plan["primaryWidth"],
+                "moreWidth": plan["moreWidth"],
                 "cardWidth": card_width,
                 "cardGap": CARD_GAP,
             },
@@ -662,6 +822,14 @@ class TabBridge:
             self._controller.show_full()
         return {"ok": True}
 
+    def refresh_now(self) -> dict:
+        """Ask the main window's page to trigger an immediate usage & quota refresh."""
+        if self._controller is not None and hasattr(self._controller.main, "refresh_page"):
+            self._controller.main.refresh_page()
+        elif hasattr(self._bridge, "call_page"):
+            self._bridge.call_page("refresh")
+        return {"ok": True}
+
     def begin_drag(self) -> None:
         if self._controller is not None:
             self._controller.tab.begin_drag()
@@ -719,13 +887,15 @@ def shape_rects(
     scale: float,
     card: tuple[float, float, float] | None = None,
     up: bool = False,
+    strip: tuple[float, float] | None = None,
 ) -> list[tuple[int, int, int, int, int]]:
     """The visible parts of the tab window as ``(left, top, right, bottom, radius)``
-    in physical pixels: the strip, plus the hover card while one is open.
+    in physical pixels: the pill strip, plus the hover card while one is open.
 
-    ``card`` is ``(x, width, height)`` in logical pixels. Everything outside
-    these rectangles is cut away by the window region, so it is invisible and
-    clicks go through to whatever is underneath.
+    ``card`` is ``(x, width, height)`` in logical pixels. ``strip`` is the pill's
+    ``(x, width)`` in logical pixels (defaults to spanning the full window width).
+    Everything outside these rectangles is cut away by the window region, so it
+    is invisible and clicks go through to whatever is underneath.
     """
     width, height = size
     tab_h = min(height, int(round(TAB_HEIGHT * scale)))
@@ -735,8 +905,14 @@ def shape_rects(
     card_x, card_w, card_h = card
     tab_top = height - tab_h if up else 0
     card_top = 0 if up else tab_h + int(round(CARD_GAP * scale))
+    if strip is None:
+        strip_left, strip_right = 0, width
+    else:
+        strip_x, strip_w = strip
+        strip_left = max(0, min(width, int(round(strip_x * scale))))
+        strip_right = max(strip_left, min(width, strip_left + int(round(strip_w * scale))))
     return [
-        (0, tab_top, width, tab_top + tab_h, tab_radius),
+        (strip_left, tab_top, strip_right, tab_top + tab_h, tab_radius),
         (
             int(round(card_x * scale)),
             card_top,
@@ -774,9 +950,10 @@ class TabHost:
         )
         if not persist:
             self.tracker.disable()
-        self._base = (LOADING_WIDTH + HOME_WIDTH + OPEN_WIDTH, TAB_HEIGHT)  # logical (w, h)
+        self._base = (PILL_PAD + HOME_WIDTH + LOADING_WIDTH + REFRESH_WIDTH, TAB_HEIGHT)  # logical (w, h)
         self._expanded: tuple[float, float] | None = None
         self._card: tuple[float, float, float] | None = None
+        self._strip_x = 0.0
         self._up = False
         #: Physical top-left of the collapsed tab for the whole expansion session.
         self._anchor: tuple[int, int] | None = None
@@ -801,6 +978,11 @@ class TabHost:
 
     # -- fading support (read by WindowOpacityController) ------------------------
 
+    def _strip_spec(self) -> tuple[float, float] | None:
+        if self._expanded is None:
+            return None
+        return (self._strip_x, self._base[0])
+
     def visible_screen_rects(self) -> list[tuple[int, int, int, int]]:
         """The visible parts (strip, plus the card while one is open) as screen
         rectangles ``(left, top, right, bottom)``; everything else is cut away."""
@@ -811,7 +993,7 @@ class TabHost:
         return [
             (rect.left + left, rect.top + top, rect.left + right, rect.top + bottom)
             for left, top, right, bottom, _radius in shape_rects(
-                (rect.width, rect.height), scale, self._card, self._up
+                (rect.width, rect.height), scale, self._card, self._up, self._strip_spec()
             )
         ]
 
@@ -917,7 +1099,9 @@ class TabHost:
 
     def _apply_shape(self) -> None:
         width, height = self._target_size()
-        self._set_region(shape_rects((width, height), self._dpi() / 96, self._card, self._up))
+        self._set_region(
+            shape_rects((width, height), self._dpi() / 96, self._card, self._up, self._strip_spec())
+        )
 
     def _target_size(self) -> tuple[int, int]:
         dpi = self._dpi()
@@ -941,11 +1125,21 @@ class TabHost:
             native_geometry.enum_monitors(),
         )
 
+    def _update_strip_offset(self, expanded_x: int, new_w: int) -> None:
+        if self._anchor is None:
+            self._strip_x = 0.0
+            return
+        scale = max(self._dpi(), 1) / 96
+        base_w, _ = self._base_size()
+        shift_px = max(0, min(max(0, new_w - base_w), self._anchor[0] - expanded_x))
+        self._strip_x = round(shift_px / scale, 2) if shift_px else 0.0
+
     def fit(self, *, keep_visible: bool = True) -> None:
         """Re-apply the wanted size (DPI changes rescale it) and pull on screen."""
         width, height = self._target_size()
         if self._anchor is not None and self._expanded is not None:
             x, y, self._up = self._place_session()
+            self._update_strip_offset(x, width)
             self._apply(x, y, width, height)
             self._apply_shape()
             self.check_budget()
@@ -1044,13 +1238,18 @@ class TabHost:
             new_w, new_h = self._target_size()
             if self._anchor is None:
                 self._up = False
+                self._strip_x = 0.0
                 self._apply(None, None, new_w, new_h)
                 self._apply_shape()
                 return {"up": False}
             x, y, self._up = self._place_session()
+            self._update_strip_offset(x, new_w)
             self._apply(x, y, new_w, new_h)
             self._apply_shape()
-            return {"up": self._up}
+            result: dict = {"up": self._up}
+            if self._strip_x:
+                result["stripX"] = self._strip_x
+            return result
 
     def collapse(self) -> None:
         """End the session: back to the strip at the anchor."""
@@ -1060,6 +1259,7 @@ class TabHost:
             anchor = self._anchor
             self._expanded = None
             self._card = None
+            self._strip_x = 0.0
             self._up = False
             self._anchor = None
             width, height = self._target_size()

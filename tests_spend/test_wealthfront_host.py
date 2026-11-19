@@ -2058,7 +2058,7 @@ def test_partial_quota_failure_keeps_only_current_scope_limits(tmp_path):
     measured = bridge.fetch_usage(machine="all")["report"]
     assert measured["quotaStatus"] == "fresh"
     original = bridge._tab_model.payload(dark=False)
-    assert len(original["segments"]) == 5
+    assert len(original["segments"]) == 1 and original["more"]["count"] == 9
     assert original["urgentCount"] >= 1
 
     client.hud_mode = "failed"

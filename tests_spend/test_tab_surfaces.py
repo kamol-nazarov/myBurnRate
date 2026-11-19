@@ -367,8 +367,19 @@ def test_tab_bridge_only_exposes_the_methods_the_page_uses():
     public = {n for n, v in inspect.getmembers(TabBridge) if not n.startswith("_") and callable(v)}
     assert public == {
         "attach_controller", "begin_drag", "build_payload", "collapse", "expand",
-        "get_state", "open_full", "press", "set_focus",
+        "get_state", "open_full", "press", "refresh_now", "set_focus",
     }
+
+
+def test_tab_bridge_refresh_now_triggers_main_page_refresh_without_opening_full():
+    bridge, host, tab, surfaces, main_win, tab_win, _ = make()
+    refreshed = []
+    host.refresh_page = lambda: refreshed.append(1)
+    surfaces.show_tab()
+    tab_bridge = TabBridge(bridge, bridge._tab_model, surfaces)
+    assert tab_bridge.refresh_now() == {"ok": True}
+    assert refreshed == [1]
+    assert tab.visible is True and main_win.visible is False
 
 
 # ---- run_webview with a fake pywebview -----------------------------------

@@ -32,16 +32,19 @@
 :root {
   --font: "Manrope", -apple-system, "Segoe UI Variable Text", system-ui, sans-serif;
   --surface: #ffffff;
-  --card: #f4f4fa;
+  --card: #f7f7fc;
   --ink: #18172b;
-  --muted: #68677d;
-  --line: rgba(24, 23, 43, 0.09);
+  --muted: #5b5a72;
+  --line: rgba(24, 23, 43, 0.10);
   --hover: rgba(24, 23, 43, 0.06);
   --track: rgba(24, 23, 43, 0.12);
-  --soon: #c9293a;
-  --warn: #a8480a;
-  --ok: #4840bb;
-  --bal: #13795b;
+  --spend-bg: #f1f1f8;
+  --more-bg: #e4f6ee;
+  --more-ink: #0d664b;
+  --soon: #c42334;
+  --warn: #9a4008;
+  --ok: #463db8;
+  --bal: #0f6f52;
   --chip-bg: #fdecee;
   --chip-ink: #a3202f;
   --badge-ink: #ffffff;
@@ -49,25 +52,29 @@
 }
 html[data-theme="dark"] {
   --surface: #18172b;
-  --card: #201f33;
+  --card: #201f36;
   --ink: #ffffff;
-  --muted: #b4b3c9;
-  --line: rgba(255, 255, 255, 0.08);
+  --muted: #b6b5cc;
+  --line: rgba(255, 255, 255, 0.10);
   --hover: rgba(255, 255, 255, 0.08);
   --track: rgba(255, 255, 255, 0.16);
-  --soon: #ff6b7a;
-  --warn: #f5a524;
-  --ok: #9b95ff;
-  --bal: #5be3a8;
-  --chip-bg: rgba(255, 107, 122, 0.16);
-  --chip-ink: #ffb3bb;
+  --spend-bg: rgba(255, 255, 255, 0.08);
+  --more-bg: rgba(92, 229, 171, 0.16);
+  --more-ink: #7ff0bf;
+  --soon: #ff7381;
+  --warn: #f6ad33;
+  --ok: #a39dff;
+  --bal: #5ce5ab;
+  --chip-bg: rgba(255, 115, 129, 0.16);
+  --chip-ink: #ffc0c7;
   --badge-ink: #18172b;
+  --brand: #635be0;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body {
   height: 100%;
   overflow: hidden;
-  background: var(--surface);
+  background: transparent;
   color: var(--ink);
   font-family: var(--font);
   -webkit-font-smoothing: antialiased;
@@ -80,98 +87,361 @@ button:focus-visible { outline: 2px solid var(--ok); outline-offset: -2px; }
 [hidden] { display: none !important; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 
-body { display: flex; flex-direction: column; }
+body { display: flex; flex-direction: column; align-items: flex-start; }
 body.up { flex-direction: column-reverse; }
 
-/* ---- the bar -------------------------------------------------------- */
-.tab { height: 60px; flex: none; display: flex; align-items: center; padding: 0 4px 0 8px; border-radius: 14px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); }
-.home { position: relative; display: flex; align-items: center; width: 34px; flex: none; height: 48px; cursor: grab; }
-.brand { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 7px; background: var(--brand); color: #fff; flex: none; }
+/* ---- Option 4B ultra-compact corner pill (40px capsule) --------------- */
+.tab {
+  height: 40px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  padding: 0 5px;
+  border-radius: 20px;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line);
+  overflow: hidden;
+}
+.home {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  width: 29px;
+  height: 32px;
+  margin-right: 2px;
+  padding-left: 1px;
+  flex: none;
+  cursor: grab;
+  border-radius: 999px;
+}
+.brand {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: var(--brand);
+  color: #ffffff;
+  flex: none;
+}
 .badge {
-  position: absolute; top: 5px; left: 15px; min-width: 14px; height: 14px; padding: 0 3px;
-  border-radius: 8px; background: var(--soon); color: var(--badge-ink);
-  font-size: 9px; font-weight: 800; display: grid; place-items: center; border: 2px solid var(--surface); box-sizing: content-box;
+  position: absolute;
+  top: 0;
+  right: 0;
+  min-width: 12px;
+  height: 12px;
+  padding: 0 2.5px;
+  border-radius: 999px;
+  background: var(--soon);
+  color: var(--badge-ink);
+  font-size: 8.5px;
+  font-weight: 800;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  border: 1.5px solid var(--surface);
+  box-sizing: content-box;
 }
-.segs { list-style: none; display: flex; flex: none; }
-.segs li { flex: none; }
-.seg { display: flex; align-items: center; gap: 7px; width: 100%; height: 48px; padding: 0 8px; border-radius: 10px; }
-.segs li + li .seg { box-shadow: inset 1px 0 0 var(--line); border-radius: 0 10px 10px 0; }
-.seg:hover, .seg.on { background: var(--hover); }
+
+.pill-main {
+  display: flex;
+  align-items: center;
+  flex: none;
+  height: 32px;
+  border-radius: 999px;
+  min-width: 0;
+}
+.pill-main:hover, .pill-main.on { background: var(--hover); }
+
+.spend {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  margin-right: 4px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--spend-bg);
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.sep {
+  flex: none;
+  width: 1px;
+  height: 16px;
+  margin-right: 5px;
+  background: var(--line);
+}
+
+.primary {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 4px;
+  border-radius: 999px;
+  min-width: 0;
+  overflow: hidden;
+}
 .logo {
-  width: 22px; height: 22px; border-radius: 7px; flex: none;
-  display: inline-flex; align-items: center; justify-content: center; position: relative;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
 }
-.logo svg { width: 12px; height: 12px; display: block; }
+.logo svg { width: 11px; height: 11px; display: block; }
 .brand-chip { background: var(--bl-bg); color: var(--bl-fg); border: var(--bl-ring); }
 html[data-theme="dark"] .brand-chip { background: var(--bd-bg); color: var(--bd-fg); border: var(--bd-ring); }
-.txt { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
-.top { display: flex; align-items: baseline; gap: 5px; min-width: 0; white-space: nowrap; }
-.top b { font-size: 15px; font-weight: 800; letter-spacing: -0.02em; }
-.top span { font-size: 10px; color: var(--muted); font-weight: 600; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.top b { flex: none; white-space: nowrap; }
-.fuel { display: block; width: 100%; max-width: 72px; height: 4px; border-radius: 9px; background: var(--track); overflow: hidden; }
-.fuel i { display: block; height: 100%; border-radius: 9px; background: var(--ok); }
-.st { font-size: 10px; font-weight: 700; white-space: nowrap; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
-.l-out .fuel i, .l-soon .fuel i { background: var(--soon); }
-.l-out .st, .l-soon .st, .l-out .top b, .l-soon .top b { color: var(--soon); }
-.l-warn .fuel i { background: var(--warn); }
-.l-warn .st { color: var(--warn); }
-.l-balance .top b { color: var(--bal); }
-.l-balance .fuel i { background: var(--bal); opacity: 0.6; }
-.l-idle .logo { opacity: 0.55; }
-.l-idle .fuel { opacity: 0.5; }
-.l-idle .top b { font-size: 12px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; }
-.l-idle .st { font-weight: 600; }
 
-.fine { flex: none; width: 60px; height: 48px; display: flex; align-items: center; justify-content: center; border-radius: 10px; }
-.fine span { font-size: 10.5px; font-weight: 800; padding: 5px 8px; border-radius: 99px; background: var(--hover); color: var(--muted); white-space: nowrap; }
-.fine:hover span, .fine.on span { color: var(--ink); }
+.ptxt {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.pbig {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  flex: none;
+  white-space: nowrap;
+  color: var(--ink);
+}
+.pst {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.primary.l-out .pbig, .primary.l-soon .pbig,
+.primary.l-out .pst, .primary.l-soon .pst { color: var(--soon); }
+.primary.l-warn .pbig, .primary.l-warn .pst { color: var(--warn); }
+.primary.l-balance .pbig { color: var(--bal); }
+.primary.l-idle .logo { opacity: 0.55; }
+.primary.l-idle .pbig { font-size: 11.5px; font-weight: 700; color: var(--muted); }
 
-.urgentpill { flex: none; width: 92px; height: 48px; display: flex; align-items: center; justify-content: center; border-radius: 10px; }
-.urgentpill span { font-size: 10.5px; font-weight: 800; padding: 5px 9px; border-radius: 99px; background: var(--soon); color: var(--badge-ink); white-space: nowrap; }
-.urgentpill.warn span { background: var(--warn); }
-.urgentpill:hover, .urgentpill.on { background: var(--hover); }
-.status { flex: none; height: 48px; display: flex; align-items: center; padding: 0 12px; border-radius: 10px; font-size: 12px; font-weight: 700; color: var(--muted); white-space: nowrap; }
-button.status:hover { background: var(--hover); color: var(--ink); }
-.status b { color: var(--ink); font-weight: 800; margin-right: 6px; }
+.more {
+  flex: none;
+  height: 28px;
+  margin-left: 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.more-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 22px;
+  min-width: 30px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--more-bg);
+  color: var(--more-ink);
+  font-size: 10.5px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.more.urgent .more-chip {
+  background: var(--soon);
+  color: var(--badge-ink);
+}
+
+.status-txt {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  height: 28px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .chip {
-  flex: none; width: 212px; margin: 0; padding: 6px 9px; border-radius: 10px; overflow: hidden;
-  background: var(--chip-bg); color: var(--chip-ink); font-size: 10.5px; font-weight: 700; line-height: 1.3;
-  display: flex; align-items: center; gap: 7px;
+  flex: none;
+  height: 28px;
+  padding: 0 9px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--chip-bg);
+  color: var(--chip-ink);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1.2;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
 }
 .chip svg { flex: none; }
-/* Dimmed, not faded: text keeps a 4.5:1 colour, only the logos and bars fade. */
-/* Fallbacks for a monitor too narrow for the normal strip (sizes match tab_window.py). */
-.tab[data-chip="code"] .chip { width: 88px; padding: 6px 7px; justify-content: center; }
-.tab[data-chip="icon"] .chip { width: 34px; padding: 0; justify-content: center; }
-.tab[data-compact] .top span { display: none; }
-.tab[data-compact] .seg { padding: 0 6px; gap: 6px; }
-.tab[data-compact] .status .more { display: none; }
-.tab[data-tight] .home { width: 30px; }
-.tab[data-tight] .badge { left: 12px; }
-.tab[data-tight] .open { width: 28px; margin-left: 0; }
-.tab[data-tight] .fine { width: 54px; }
-.tab[data-tight] .urgentpill { width: 76px; }
-.tab[data-tight] .fine span, .tab[data-tight] .urgentpill span { padding: 5px 6px; font-size: 10px; }
-.stale .logo, .stale .fuel { opacity: 0.5; }
-.stale .top b, .stale .st { color: var(--muted); }
-.spacer { flex: 1; }
-.open { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; color: var(--muted); flex: none; margin-left: 2px; }
-.open:hover { background: var(--hover); color: var(--ink); }
+.chip span { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.tab[data-chip="full"] .chip { width: 196px; }
+.tab[data-chip="code"] .chip { width: 78px; padding: 0 6px; justify-content: center; }
+.tab[data-chip="icon"] .chip { width: 28px; padding: 0; justify-content: center; }
 
-/* ---- the hover card --------------------------------------------------- */
+.refresh {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  margin-left: 2px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+}
+.refresh:hover { background: var(--hover); color: var(--ink); }
+.refresh.spinning svg, .foot-refresh.spinning svg { animation: spin 0.75s linear infinite; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+/* Dimmed (stale) preserves >= 4.5:1 contrast on every text label. */
+.tab.stale .logo { opacity: 0.5; }
+.tab.stale .primary .pbig,
+.tab.stale .primary .pst,
+.tab.stale .spend { color: var(--muted); }
+
+/* Compact & tight fallbacks for narrow monitor budgets (matches tab_window.py). */
+.tab[data-no-status] .pst { display: none; }
+.tab[data-tight] .home { width: 27px; margin-right: 1px; }
+.tab[data-tight] .refresh { width: 24px; height: 24px; margin-left: 1px; }
+.tab[data-tight] .more-chip { min-width: 26px; padding: 0 5px; font-size: 10px; }
+
+/* ---- Hover-to-peek overview card -------------------------------------- */
 .card-wrap { flex: none; padding: 6px 0 0; }
 body.up .card-wrap { padding: 0 0 6px; }
-.card { width: 300px; box-shadow: 0 6px 22px rgba(24, 23, 43, 0.18); background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
-.ph { display: flex; align-items: center; gap: 9px; }
-.ph b { display: block; font-size: 13px; }
+.card {
+  width: 340px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 13px 14px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  box-shadow: 0 8px 24px rgba(24, 23, 43, 0.16);
+}
+.card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.ch-left { display: flex; align-items: baseline; gap: 5px; min-width: 0; }
+.ch-val { font-size: 17px; font-weight: 800; letter-spacing: -0.025em; color: var(--ink); white-space: nowrap; }
+.ch-lbl { font-size: 11.5px; font-weight: 600; color: var(--muted); white-space: nowrap; }
+.ch-meta { font-size: 11px; font-weight: 600; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.card-err {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 7px 9px;
+  border-radius: 9px;
+  background: var(--chip-bg);
+  color: var(--chip-ink);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+.card-err svg { flex: none; margin-top: 1px; }
+
+.ov-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+}
+.ov-row { display: flex; flex-direction: column; gap: 4px; }
+.ov-line { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.ov-line .logo { width: 18px; height: 18px; border-radius: 5px; }
+.ov-line .logo svg { width: 10px; height: 10px; }
+.ov-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ink);
+}
+.ov-name b { font-weight: 700; }
+.ov-tag { color: var(--muted); font-weight: 600; }
+.ov-stat { font-size: 11.5px; font-weight: 800; white-space: nowrap; flex: none; color: var(--ink); }
+.ov-stat.l-out, .ov-stat.l-soon { color: var(--soon); }
+.ov-stat.l-warn { color: var(--warn); }
+.ov-stat.l-ok { color: var(--ok); }
+.ov-stat.l-balance { color: var(--bal); }
+.ov-stat.l-idle { color: var(--muted); font-weight: 600; }
+
+.ov-bar { height: 3px; border-radius: 9px; background: var(--track); overflow: hidden; display: block; margin-left: 25px; }
+.ov-bar i { display: block; height: 100%; border-radius: 9px; background: var(--ok); }
+.ov-row.l-out .ov-bar i, .ov-row.l-soon .ov-bar i { background: var(--soon); }
+.ov-row.l-warn .ov-bar i { background: var(--warn); }
+
+.ov-rest-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 6px;
+  margin: 0 -6px;
+  border-radius: 8px;
+  font-size: 11.5px;
+}
+.ov-rest-btn:hover { background: var(--hover); }
+.ov-rest-lbl { color: var(--muted); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ov-rest-st { font-weight: 800; color: var(--bal); white-space: nowrap; flex: none; }
+.ov-rest-st.is-muted { color: var(--muted); }
+
+.ov-rest-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--line);
+  max-height: 164px;
+  overflow-y: auto;
+}
+.rest-row { display: flex; align-items: center; gap: 7px; font-size: 11.5px; }
+.rest-row .logo { width: 16px; height: 16px; border-radius: 4px; }
+.rest-row .logo svg { width: 9px; height: 9px; }
+.rest-row b { flex: 1; min-width: 0; font-weight: 600; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rest-row span { font-size: 11px; font-weight: 700; color: var(--muted); white-space: nowrap; }
+.rest-row span.l-balance { color: var(--bal); }
+
+/* Single-provider detailed window view (when user has only 1 connected provider) */
+.ph { display: flex; align-items: center; gap: 8px; padding-top: 9px; border-top: 1px solid var(--line); }
+.ph b { display: block; font-size: 12.5px; }
 .ph small { display: block; font-size: 11px; color: var(--muted); }
-.pw { display: flex; flex-direction: column; gap: 4px; padding-top: 8px; border-top: 1px solid var(--line); }
+.pw { display: flex; flex-direction: column; gap: 4px; padding-top: 7px; border-top: 1px solid var(--line); }
 .pl, .pr { display: flex; justify-content: space-between; gap: 8px; }
-.pl { font-size: 12px; }
+.pl { font-size: 11.5px; }
 .pl span { font-weight: 600; }
 .pr { font-size: 10.5px; color: var(--muted); }
-.pb { height: 5px; border-radius: 9px; background: var(--track); overflow: hidden; display: block; }
+.pb { height: 4px; border-radius: 9px; background: var(--track); overflow: hidden; display: block; }
 .pb i { display: block; height: 100%; background: var(--ok); border-radius: 9px; }
 .pw.l-out .pb i, .pw.l-soon .pb i { background: var(--soon); }
 .pw.l-warn .pb i { background: var(--warn); }
@@ -181,37 +451,66 @@ body.up .card-wrap { padding: 0 0 6px; }
 .pc.soon { color: var(--soon); }
 .pc.warn { color: var(--warn); }
 .pc.ok { color: var(--bal); font-weight: 600; }
-.bal { font-size: 18px; font-weight: 800; color: var(--bal); }
-.po { align-self: flex-start; font-size: 12px; font-weight: 700; color: var(--ink); background: var(--hover); border-radius: 8px; padding: 6px 10px; }
-.po:hover { background: var(--track); }
-.fine-row { display: flex; align-items: center; gap: 8px; font-size: 12px; padding-top: 6px; }
-.fine-row b { font-weight: 700; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fine-row span { color: var(--muted); font-size: 11px; font-weight: 600; white-space: nowrap; }
+.bal { font-size: 16px; font-weight: 800; color: var(--bal); }
+.card-empty { padding-top: 8px; border-top: 1px solid var(--line); font-size: 11.5px; color: var(--muted); line-height: 1.4; }
+
+.card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+.foot-open {
+  font-size: 11.5px;
+  font-weight: 800;
+  color: var(--ok);
+  padding: 4px 7px;
+  margin-left: -7px;
+  border-radius: 7px;
+}
+.foot-open:hover { background: var(--hover); }
+.foot-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--muted);
+  padding: 4px 7px;
+  margin-right: -7px;
+  border-radius: 7px;
+}
+.foot-refresh:hover { background: var(--hover); color: var(--ink); }
 </style>
 </head>
 <body>
 <!--__BRAND_SPRITE__-->
-<div class="tab" id="tab" role="region" aria-label="BURNRATE usage tab">
-  <div class="home" id="home" title="Drag to move">
-    <span class="brand" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17 17 7M8 7h9v9"/></svg></span>
+<div class="tab" id="tab" role="region" aria-label="BURNRATE corner pill">
+  <div class="home" id="home" title="Drag to move · Click to open BURNRATE">
+    <span class="brand" aria-hidden="true"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="transform:translate(-1px,1px)"><path d="M7 17 17 7M8 7h9v9"/></svg></span>
     <span class="badge" id="badge" hidden></span>
   </div>
-  <ul class="segs" id="segs" aria-label="What is left per provider, most urgent first"></ul>
-  <button class="urgentpill" id="urgentPill" type="button" hidden></button>
-  <button class="fine" id="fine" type="button" hidden></button>
-  <div id="status"></div>
-  <div class="chip" id="chip" role="status" hidden></div>
-  <span class="spacer"></span>
-  <button class="open" id="open" type="button" aria-label="Open BURNRATE" title="Open BURNRATE"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button>
+  <button class="pill-main" id="pillMain" type="button" hidden>
+    <span class="spend" id="spend" hidden></span>
+    <span class="sep" id="sep" hidden aria-hidden="true"></span>
+    <span class="primary" id="primary" hidden></span>
+    <span class="more" id="more" hidden></span>
+    <span class="status-txt" id="statusTxt" hidden></span>
+  </button>
+  <button class="chip" id="chip" type="button" hidden></button>
+  <button class="refresh" id="refresh" type="button" aria-label="Refresh usage now" title="Refresh usage now"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button>
 </div>
-<div class="card-wrap" id="cardWrap" hidden><div class="card" id="card" role="dialog" aria-label="Provider limits"></div></div>
+<div class="card-wrap" id="cardWrap" hidden><div class="card" id="card" role="dialog" aria-label="BURNRATE overview"></div></div>
 <script>
 /*__BRAND_JS__*/
 (function () {
   "use strict";
-  var HIDE_DELAY = 220, SHOW_DELAY = 140;
-  var state = null, openKey = null, showTimer = 0, hideTimer = 0, ready = false;
-  var lastSig = null, restoring = false, rebuilding = false;
+  var HIDE_DELAY = 220, SHOW_DELAY = 150;
+  var state = null, cardOpen = false, restExpanded = false;
+  var showTimer = 0, hideTimer = 0, spinTimer = 0, ready = false;
+  var lastSig = null, restoring = false, rebuilding = false, refreshing = false;
   var lastRevision = 0;
   var DRAG_PX = 4, press = null, dragging = false, swallowClick = false, lastRing = false;
   var $ = function (id) { return document.getElementById(id); };
@@ -234,68 +533,86 @@ body.up .card-wrap { padding: 0 0 6px; }
   }
   var WARN = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>';
   var CHECK = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>';
+  var REFRESH_SVG = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>';
 
-  function segHtml(s, i) {
-    var cls = "l-" + esc(s.level);
-    var top = s.muted
-      ? '<div class="top"><b>' + esc(s.name) + "</b>" + (s.unit ? "<span>" + esc(s.unit) + "</span>" : "") + "</div>"
-      : '<div class="top"><b>' + esc(s.big) + "</b><span>" + esc(s.unit) + "</span></div>" +
-        '<span class="fuel"><i style="width:' + Number(s.fuel || 0) + '%"></i></span>';
-    return '<li class="' + cls + '" style="width:' + Number(s.width || 156) + 'px"><button class="seg" type="button" data-i="' + i + '" aria-label="' + esc(s.aria) +
-      '" title="' + esc(s.aria) + '">' + logo(s.key) + '<div class="txt">' + top +
-      '<span class="st">' + esc(s.status) + "</span></div></button></li>";
+  function setRefreshing(on) {
+    refreshing = !!on;
+    clearTimeout(spinTimer);
+    $("refresh").classList.toggle("spinning", refreshing);
+    var fr = document.querySelector("#card [data-refresh]");
+    if (fr) {
+      fr.classList.toggle("spinning", refreshing);
+      var lbl = fr.querySelector("span");
+      if (lbl) lbl.textContent = refreshing ? "Refreshing\u2026" : "Refresh now";
+    }
+    if (refreshing) {
+      spinTimer = setTimeout(function () { setRefreshing(false); }, 8000);
+    }
+  }
+  function triggerRefresh() {
+    setRefreshing(true);
+    call("refresh_now");
   }
 
-  /* Updates never take the keyboard's place: an unchanged payload touches no
-     DOM, and a changed one puts focus back on the same provider or action. */
+  /* Focus preservation across live refreshes */
   function focusToken() {
     var el = document.activeElement;
     if (!el || el === document.body) return null;
-    if (el.classList.contains("seg")) {
-      var seg = state && state.segments[Number(el.dataset.i)];
-      return seg ? { k: "seg", key: seg.key } : null;
-    }
-    if (el.id === "fine" || el.id === "urgentPill" || el.id === "open" || el.id === "emptyBtn") return { k: el.id };
+    if (el.id === "pillMain" || el.id === "chip" || el.id === "refresh") return { k: el.id };
     if (el.hasAttribute && el.hasAttribute("data-open")) return { k: "card-open" };
+    if (el.hasAttribute && el.hasAttribute("data-refresh")) return { k: "card-refresh" };
+    if (el.hasAttribute && el.hasAttribute("data-toggle-rest")) return { k: "card-rest" };
     return null;
-  }
-  function inPill(info, key) {
-    return !!info && info.items.some(function (it) { return it.key === key; });
   }
   function restoreFocus(token) {
     if (!token) return;
     var target = null;
-    if (token.k === "seg") {
-      var index = segIndex(token.key);
-      if (index >= 0) target = document.querySelector('.seg[data-i="' + index + '"]');
-      else if (inPill(state && state.urgentMore, token.key)) target = $("urgentPill");
-      else if (inPill(state && state.fine, token.key)) target = $("fine");
-    } else if (token.k === "card-open") {
-      target = document.querySelector("#card [data-open]");
-    } else {
-      target = $(token.k);
-    }
+    if (token.k === "card-open") target = document.querySelector("#card [data-open]");
+    else if (token.k === "card-refresh") target = document.querySelector("#card [data-refresh]");
+    else if (token.k === "card-rest") target = document.querySelector("#card [data-toggle-rest]");
+    else target = $(token.k);
     if (!target || target.hidden) return;
     restoring = true;
     try { target.focus({ preventScroll: true }); } finally { restoring = false; }
   }
-  function pillHtml(count, noun) { return "<span>+" + esc(count) + " " + noun + "</span>"; }
 
-  /* Whatever the headline says, it never draws past its segment: shrink the type a
-     little, then cut the text with an ellipsis (the full text is in the tooltip). */
-  function fitHeadlines() {
-    document.querySelectorAll("#segs .seg").forEach(function (seg) {
-      var b = seg.querySelector(".top b"), txt = seg.querySelector(".txt");
-      if (!b || !txt) return;
-      var size = parseFloat(getComputedStyle(b).fontSize) || 15, full = b.textContent;
-      b.style.fontSize = "";
-      while (b.scrollWidth > txt.clientWidth && size > 10) { size -= 0.5; b.style.fontSize = size + "px"; }
-      var text = full;
-      while (b.scrollWidth > txt.clientWidth && text.length > 2) {
-        text = text.slice(0, -2).replace(/\s+$/, "") + "\u2026";
-        b.textContent = text;
-      }
-    });
+  /* Keep pill headlines strictly inside their slot even under extreme text */
+  function fitSlot(el, container, minPx) {
+    if (!el || !container || container.clientWidth <= 0) return;
+    var size = parseFloat(getComputedStyle(el).fontSize) || 13;
+    var full = el.textContent;
+    el.style.fontSize = "";
+    while (el.scrollWidth > container.clientWidth && size > minPx) {
+      size -= 0.5;
+      el.style.fontSize = size + "px";
+    }
+    var text = full;
+    while (el.scrollWidth > container.clientWidth && text.length > 2) {
+      text = text.slice(0, -2).replace(/\s+$/, "") + "\u2026";
+      el.textContent = text;
+    }
+  }
+  function fitPillText() {
+    var spend = $("spend");
+    if (!spend.hidden) fitSlot(spend, spend, 9.5);
+    var primary = $("primary");
+    if (!primary.hidden) {
+      var big = primary.querySelector(".pbig");
+      var ptxt = primary.querySelector(".ptxt");
+      if (big && ptxt) fitSlot(big, ptxt, 9.5);
+    }
+  }
+
+  function pillAria(next) {
+    var parts = [];
+    if (next.spend && next.spend.aria) parts.push(next.spend.aria);
+    if (next.primary && next.primary.aria) parts.push(next.primary.aria);
+    if (next.more && next.more.count) {
+      parts.push("+" + next.more.count + (next.more.urgentCount ? " more including " + next.more.urgentCount + " urgent" : " more providers"));
+    }
+    if (next.state === "loading") parts.push("Loading usage");
+    else if (next.state === "empty") parts.push("No limits yet, click to open BURNRATE");
+    return parts.join(" · ") || "Open BURNRATE";
   }
 
   function render(next) {
@@ -308,37 +625,81 @@ body.up .card-wrap { padding: 0 0 6px; }
     rebuilding = true;
     state = next;
     if (window.burnrateTabTheme) window.burnrateTabTheme.setDark(!!next.dark);
+
     var tab = $("tab");
+    var layout = next.layout || {};
+    var mode = layout.mode || {};
+    tab.style.width = Number(layout.width || 260) + "px";
     tab.classList.toggle("stale", !!next.stale);
-    var mode = (next.layout && next.layout.mode) || {};
-    tab.dataset.chip = mode.chip || "full";
-    if (mode.compact) tab.dataset.compact = "1"; else delete tab.dataset.compact;
+    tab.dataset.chip = mode.chip || "none";
+    if (mode.showStatus === false) tab.dataset.noStatus = "1"; else delete tab.dataset.noStatus;
     if (mode.tight) tab.dataset.tight = "1"; else delete tab.dataset.tight;
-    $("segs").innerHTML = (next.segments || []).map(segHtml).join("");
+
     var badge = $("badge");
     badge.hidden = !(next.urgentCount > 0);
     badge.textContent = next.urgentCount || "";
     badge.setAttribute("aria-label", next.urgentCount + " about to run out");
-    var fine = $("fine");
-    if (next.fine) {
-      fine.hidden = false;
-      fine.innerHTML = pillHtml(next.fine.count, "fine");
-      fine.setAttribute("aria-label", next.fine.count + " more providers, all fine");
-    } else { fine.hidden = true; fine.innerHTML = ""; }
-    var urgentPill = $("urgentPill");
-    if (next.urgentMore) {
-      urgentPill.hidden = false;
-      var watching = next.urgentMore.severity === "warn";
-      urgentPill.classList.toggle("warn", watching);
-      urgentPill.innerHTML = pillHtml(next.urgentMore.count, watching ? "to watch" : "urgent");
-      urgentPill.setAttribute("aria-label", next.urgentMore.count + (watching ? " more providers to watch" : " more providers about to run out"));
-    } else { urgentPill.hidden = true; urgentPill.innerHTML = ""; }
-    var status = $("status");
-    if (next.state === "loading") {
-      status.innerHTML = '<div class="status"><b>BURNRATE</b>Loading…</div>';
-    } else if (next.state === "empty") {
-      status.innerHTML = '<button class="status" type="button" id="emptyBtn" title="Open BURNRATE to add a source"><b>No limits yet</b><span class="more">· Open BURNRATE to add a source</span></button>';
-    } else { status.innerHTML = ""; }
+
+    var pillMain = $("pillMain");
+    var spendEl = $("spend");
+    var sepEl = $("sep");
+    var primaryEl = $("primary");
+    var moreEl = $("more");
+    var statusTxt = $("statusTxt");
+
+    var showPillMain = next.state !== "error";
+    pillMain.hidden = !showPillMain;
+    if (showPillMain) {
+      var label = pillAria(next);
+      pillMain.setAttribute("aria-label", label);
+      pillMain.title = label;
+
+      var showSpend = !!(mode.showSpend && next.spend && next.spend.compact);
+      if (showSpend) {
+        spendEl.hidden = false;
+        spendEl.style.width = Number(layout.spendWidth || 46) + "px";
+        spendEl.textContent = next.spend.compact;
+      } else {
+        spendEl.hidden = true;
+        spendEl.textContent = "";
+      }
+
+      var showPrimary = next.state === "ready" && !!next.primary;
+      var showStatusText = next.state === "loading" || next.state === "empty";
+      sepEl.hidden = !(showSpend && (showPrimary || next.state === "empty"));
+
+      if (showPrimary) {
+        var p = next.primary;
+        primaryEl.hidden = false;
+        primaryEl.className = "primary l-" + esc(p.level);
+        primaryEl.style.width = Number(layout.primaryWidth || 100) + "px";
+        var stHtml = (mode.showStatus !== false && p.shortStatus) ? '<span class="pst">' + esc(p.shortStatus) + "</span>" : "";
+        primaryEl.innerHTML = logo(p.key) + '<span class="ptxt"><b class="pbig">' + esc(p.pillBig || p.big) + "</b>" + stHtml + "</span>";
+      } else {
+        primaryEl.hidden = true;
+        primaryEl.innerHTML = "";
+      }
+
+      if (showPrimary && next.more && next.more.count > 0) {
+        moreEl.hidden = false;
+        moreEl.style.width = Number(layout.moreWidth || 34) + "px";
+        moreEl.classList.toggle("urgent", next.more.severity === "soon");
+        moreEl.innerHTML = '<span class="more-chip">+' + esc(next.more.count) + "</span>";
+      } else {
+        moreEl.hidden = true;
+        moreEl.innerHTML = "";
+      }
+
+      if (showStatusText) {
+        statusTxt.hidden = false;
+        statusTxt.style.width = next.state === "loading" ? "92px" : (mode.compact ? "84px" : "116px");
+        statusTxt.textContent = next.state === "loading" ? "Loading\u2026" : (mode.compact ? "No limits" : "No limits yet");
+      } else {
+        statusTxt.hidden = true;
+        statusTxt.textContent = "";
+      }
+    }
+
     var chip = $("chip");
     if (next.error) {
       chip.hidden = false;
@@ -346,30 +707,27 @@ body.up .card-wrap { padding: 0 0 6px; }
       chip.setAttribute("aria-label", next.error.text);
       var chipText = mode.chip === "icon" ? "" : mode.chip === "code" ? (next.error.code || "") : next.error.text;
       chip.innerHTML = WARN + (chipText ? "<span>" + esc(chipText) + "</span>" : "");
-    } else { chip.hidden = true; chip.innerHTML = ""; }
-    var emptyBtn = $("emptyBtn");
-    if (emptyBtn) emptyBtn.addEventListener("click", function () { call("open_full"); });
-    if (openKey !== null) {
-      var still = cardFor(openKey);
-      if (still) fillCard(still); else hideCard();
+    } else {
+      chip.hidden = true;
+      chip.innerHTML = "";
     }
-    fitHeadlines();
+
+    if (cardOpen) {
+      if (canShowCard(next)) fillCard();
+      else hideCard();
+    }
+    fitPillText();
     restoreFocus(token);
     rebuilding = false;
   }
 
-  /* ---- hover card ---------------------------------------------------- */
-  function cardFor(key) {
-    if (!state) return null;
-    if (key === "__fine__") return state.fine ? { pill: state.fine, kind: "fine" } : null;
-    if (key === "__urgent__") return state.urgentMore ? { pill: state.urgentMore, kind: "urgent" } : null;
-    var list = state.segments || [];
-    for (var i = 0; i < list.length; i++) if (list[i].key === key) return list[i];
-    return null;
+  /* ---- Hover-to-peek overview card ------------------------------------ */
+  function canShowCard(s) {
+    return !!(s && s.state !== "loading");
   }
   function windowHtml(r) {
     if (r.muted) {
-      return '<div class="pw muted"><div class="pl"><span>' + esc(r.label) + '</span><b>—</b></div><div class="pr"><span>' + esc(r.note) + "</span></div></div>";
+      return '<div class="pw muted"><div class="pl"><span>' + esc(r.label) + '</span><b>\u2014</b></div><div class="pr"><span>' + esc(r.note) + "</span></div></div>";
     }
     var pace = "";
     if (r.pace) {
@@ -379,30 +737,81 @@ body.up .card-wrap { padding: 0 0 6px; }
       '<span class="pb"><i style="width:' + Number(r.leftPct) + '%"></i></span>' +
       '<div class="pr"><span>' + esc(r.resets) + "</span><span>" + esc(r.usedPct) + "% used</span></div>" + pace + "</div>";
   }
-  function cardHtml(seg) {
-    if (seg.pill) {
-      var heading = seg.kind === "urgent"
-        ? esc(seg.pill.count) + " more need attention"
-        : esc(seg.pill.count) + " more, all fine";
-      var sub = seg.kind === "urgent" ? "Open BURNRATE for the full picture" : "Nothing close to running out";
-      return '<div class="ph"><div><b>' + heading + "</b><small>" + sub + "</small></div></div>" +
-        seg.pill.items.map(function (it) {
-          return '<div class="fine-row">' + logo(it.key) + "<b>" + esc(it.title) + "</b><span>" + esc(it.text) + "</span></div>";
-        }).join("") + '<button class="po" type="button" data-open>Open BURNRATE</button>';
-    }
-    var c = seg.card || {};
-    var body = (c.rows || []).map(windowHtml).join("");
-    if (c.balance) {
-      body += '<div class="pw"><div class="pl"><span>Balance</span><span class="bal">$' + esc(Number(c.balance.amount || 0).toFixed(2)) +
-        '</span></div><div class="pr"><span>' + esc(c.balance.summary) + "</span></div></div>";
-    }
-    if (!body) body = '<div class="pw"><div class="pr"><span>' + esc(seg.status || c.summary || "Awaiting reading") + "</span></div></div>";
-    return '<div class="ph">' + logo(seg.key) + "<div><b>" + esc(seg.title) + "</b><small>" + esc(seg.plan) + "</small></div></div>" +
-      body + '<button class="po" type="button" data-open>Open BURNRATE</button>';
+  function overviewRowHtml(item) {
+    var tag = item.windowTag ? ' <span class="ov-tag">(' + esc(item.windowTag) + ")</span>" : "";
+    var bar = (!item.muted && item.level !== "balance")
+      ? '<span class="ov-bar"><i style="width:' + Number(item.fuel || 0) + '%"></i></span>'
+      : "";
+    return '<div class="ov-row l-' + esc(item.level) + '">' +
+      '<div class="ov-line">' + logo(item.key) +
+      '<span class="ov-name"><b>' + esc(item.title) + "</b>" + tag + "</span>" +
+      '<span class="ov-stat l-' + esc(item.level) + '">' + esc(item.cardStatus || item.status) + "</span></div>" +
+      bar + "</div>";
   }
-  function fillCard(seg) {
+  function cardHtml(s) {
+    var head = "";
+    if (s.spend && s.spend.exact) {
+      head = '<div class="card-head"><div class="ch-left"><span class="ch-val">' + esc(s.spend.exact) +
+        '</span><span class="ch-lbl">today</span></div>' +
+        (s.spend.meta ? '<span class="ch-meta">' + esc(s.spend.meta) + "</span>" : "") + "</div>";
+    } else {
+      head = '<div class="card-head"><div class="ch-left"><span class="ch-val">BURNRATE</span></div>' +
+        '<span class="ch-meta">Usage limits</span></div>';
+    }
+
+    var errBanner = "";
+    if (s.error) {
+      var detail = s.error.message && s.error.message !== s.error.text ? s.error.message : s.error.text;
+      errBanner = '<div class="card-err">' + WARN + "<span>" + esc(s.error.code ? s.error.text : detail) + "</span></div>";
+    }
+
+    var body = "";
+    var ov = s.overview || {};
+    var hi = ov.highlighted || [];
+    var rest = ov.rest || [];
+    if (ov.single && hi.length === 1) {
+      var seg = hi[0];
+      var c = seg.card || {};
+      var rows = (c.rows || []).map(windowHtml).join("");
+      if (c.balance) {
+        rows += '<div class="pw"><div class="pl"><span>Balance</span><span class="bal">$' + esc(Number(c.balance.amount || 0).toFixed(2)) +
+          '</span></div><div class="pr"><span>' + esc(c.balance.summary) + "</span></div></div>";
+      }
+      if (!rows) rows = '<div class="pw"><div class="pr"><span>' + esc(seg.status || c.summary || "Awaiting reading") + "</span></div></div>";
+      body = '<div class="ph">' + logo(seg.key) + "<div><b>" + esc(seg.title) + "</b><small>" + esc(seg.plan) + "</small></div></div>" + rows;
+    } else if (hi.length > 0) {
+      var listHtml = hi.map(overviewRowHtml).join("");
+      var restHtml = "";
+      if (rest.length > 0) {
+        var arrow = restExpanded ? " \u25b4" : " \u25be";
+        var mutedCls = ov.restStatus === "Idle" ? " is-muted" : "";
+        restHtml = '<button class="ov-rest-btn" type="button" data-toggle-rest aria-expanded="' + (restExpanded ? "true" : "false") + '">' +
+          '<span class="ov-rest-lbl">' + esc(ov.restSummary) + '</span>' +
+          '<span class="ov-rest-st' + mutedCls + '">' + esc(ov.restStatus) + arrow + "</span></button>";
+        if (restExpanded) {
+          restHtml += '<div class="ov-rest-list">' + rest.map(function (it) {
+            return '<div class="rest-row">' + logo(it.key) + "<b>" + esc(it.title) + '</b><span class="l-' + esc(it.level) + '">' + esc(it.text) + "</span></div>";
+          }).join("") + "</div>";
+        }
+      }
+      body = '<div class="ov-list">' + listHtml + restHtml + "</div>";
+    } else if (s.state === "empty") {
+      body = '<div class="card-empty">No provider limits connected yet. Open BURNRATE to add a source.</div>';
+    }
+
+    var spinCls = refreshing ? " spinning" : "";
+    var refLabel = refreshing ? "Refreshing\u2026" : "Refresh now";
+    var foot = '<div class="card-foot">' +
+      '<button class="foot-open" type="button" data-open>Open full BURNRATE \u2197</button>' +
+      '<button class="foot-refresh' + spinCls + '" type="button" data-refresh>' + REFRESH_SVG + "<span>" + esc(refLabel) + "</span></button>" +
+      "</div>";
+    return head + errBanner + body + foot;
+  }
+
+  function fillCard() {
+    if (!state || !canShowCard(state)) return;
     var card = $("card");
-    var html = cardHtml(seg);
+    var html = cardHtml(state);
     if (card.dataset.html !== html) {
       var token = focusToken();
       rebuilding = true;
@@ -412,51 +821,45 @@ body.up .card-wrap { padding: 0 0 6px; }
       rebuilding = false;
     }
     $("cardWrap").hidden = false;
-    var layout = (state && state.layout) || {};
-    var cardW = layout.cardWidth || 300;
+    var layout = state.layout || {};
+    var cardW = layout.cardWidth || 340;
     card.style.width = cardW + "px";
-    var seat = openKey === "__fine__" ? $("fine")
-      : openKey === "__urgent__" ? $("urgentPill")
-      : document.querySelector('.seg[data-i="' + segIndex(openKey) + '"]');
-    var left = 0;
-    if (seat) left = Math.max(0, Math.min(seat.getBoundingClientRect().left, (layout.width || cardW) - cardW));
-    card.style.marginLeft = left + "px";
+    var pillW = layout.width || cardW;
+    var cardLeft = pillW > cardW ? Math.max(0, Math.round((pillW - cardW) / 2)) : 0;
+    card.style.marginLeft = cardLeft + "px";
     var cardH = card.offsetHeight;
-    var width = Math.max(layout.width || 0, left + cardW);
-    var height = (layout.height || 60) + (layout.cardGap || 6) + cardH;
-    call("expand", width, height, left, cardW, cardH).then(function (res) {
+    var width = Math.max(pillW, cardLeft + cardW);
+    var height = (layout.height || 40) + (layout.cardGap || 6) + cardH;
+    call("expand", width, height, cardLeft, cardW, cardH).then(function (res) {
       document.body.classList.toggle("up", !!(res && res.up));
+      $("tab").style.marginLeft = (res && res.stripX ? Number(res.stripX) : 0) + "px";
     });
   }
-  function segIndex(key) {
-    var list = (state && state.segments) || [];
-    for (var i = 0; i < list.length; i++) if (list[i].key === key) return i;
-    return -1;
-  }
-  function showCard(key, seat) {
-    var seg = cardFor(key);
-    if (!seg) return;
-    openKey = key;
-    document.querySelectorAll(".seg.on, .fine.on, .urgentpill.on").forEach(function (el) { el.classList.remove("on"); });
-    if (seat) seat.classList.add("on");
-    fillCard(seg);
+
+  function showCard() {
+    if (!canShowCard(state)) return;
+    cardOpen = true;
+    $("pillMain").classList.add("on");
+    fillCard();
   }
   function hideCard() {
     clearTimeout(showTimer);
-    if (openKey === null) return;
-    openKey = null;
-    document.querySelectorAll(".seg.on, .fine.on, .urgentpill.on").forEach(function (el) { el.classList.remove("on"); });
+    if (!cardOpen) return;
+    cardOpen = false;
+    restExpanded = false;
+    $("pillMain").classList.remove("on");
     $("card").dataset.html = "";
     $("cardWrap").hidden = true;
+    $("tab").style.marginLeft = "";
     document.body.classList.remove("up");
     call("collapse");
   }
-  function scheduleShow(key, seat) {
+  function scheduleShow() {
     clearTimeout(hideTimer);
     clearTimeout(showTimer);
-    if (press || dragging) return;
-    if (openKey === key) return;
-    showTimer = setTimeout(function () { showCard(key, seat); }, openKey === null ? SHOW_DELAY : 0);
+    if (press || dragging || !canShowCard(state)) return;
+    if (cardOpen) return;
+    showTimer = setTimeout(showCard, SHOW_DELAY);
   }
   function scheduleHide() {
     clearTimeout(showTimer);
@@ -464,45 +867,53 @@ body.up .card-wrap { padding: 0 0 6px; }
     hideTimer = setTimeout(hideCard, HIDE_DELAY);
   }
 
-  /* ---- events ----------------------------------------------------------- */
-  var segsEl = $("segs");
-  function segFrom(target) { return target.closest ? target.closest(".seg") : null; }
-  segsEl.addEventListener("mouseover", function (e) {
-    var seat = segFrom(e.target);
-    if (!seat || !state) return;
-    var seg = state.segments[Number(seat.dataset.i)];
-    if (seg) scheduleShow(seg.key, seat);
-  });
-  segsEl.addEventListener("focusin", function (e) {
+  /* ---- Events ----------------------------------------------------------- */
+  $("tab").addEventListener("mouseenter", function () { clearTimeout(hideTimer); });
+  $("home").addEventListener("mouseenter", scheduleShow);
+  $("home").addEventListener("click", function () { call("open_full"); });
+  $("pillMain").addEventListener("mouseenter", scheduleShow);
+  $("pillMain").addEventListener("focus", function () {
     if (restoring || press) return;
-    var seat = segFrom(e.target);
-    if (!seat || !state) return;
-    var seg = state.segments[Number(seat.dataset.i)];
-    if (seg) { clearTimeout(hideTimer); showCard(seg.key, seat); }
+    clearTimeout(hideTimer);
+    showCard();
   });
-  segsEl.addEventListener("click", function (e) { if (segFrom(e.target)) call("open_full"); });
-  $("fine").addEventListener("mouseenter", function () { scheduleShow("__fine__", $("fine")); });
-  $("fine").addEventListener("focus", function () { if (restoring || press) return; clearTimeout(hideTimer); showCard("__fine__", $("fine")); });
-  $("fine").addEventListener("click", function () { call("open_full"); });
-  $("urgentPill").addEventListener("mouseenter", function () { scheduleShow("__urgent__", $("urgentPill")); });
-  $("urgentPill").addEventListener("focus", function () { if (restoring || press) return; clearTimeout(hideTimer); showCard("__urgent__", $("urgentPill")); });
-  $("urgentPill").addEventListener("click", function () { call("open_full"); });
-  $("open").addEventListener("click", function () { call("open_full"); });
-  $("cardWrap").addEventListener("click", function (e) {
-    if (e.target.closest && e.target.closest("[data-open]")) call("open_full");
+  $("pillMain").addEventListener("click", function () { call("open_full"); });
+  $("chip").addEventListener("mouseenter", scheduleShow);
+  $("chip").addEventListener("focus", function () {
+    if (restoring || press) return;
+    clearTimeout(hideTimer);
+    showCard();
   });
+  $("chip").addEventListener("click", function () { call("open_full"); });
+  $("refresh").addEventListener("mouseenter", function () {
+    if (cardOpen) clearTimeout(hideTimer);
+  });
+  $("refresh").addEventListener("click", function (e) {
+    e.stopPropagation();
+    triggerRefresh();
+  });
+
   $("cardWrap").addEventListener("mouseenter", function () { clearTimeout(hideTimer); });
+  $("cardWrap").addEventListener("click", function (e) {
+    if (!e.target.closest) return;
+    if (e.target.closest("[data-open]")) { call("open_full"); return; }
+    if (e.target.closest("[data-refresh]")) { triggerRefresh(); return; }
+    if (e.target.closest("[data-toggle-rest]")) {
+      restExpanded = !restExpanded;
+      fillCard();
+    }
+  });
   document.documentElement.addEventListener("mouseleave", scheduleHide);
   document.addEventListener("keydown", function (e) {
-    if (e.key === "Escape" && openKey !== null) { hideCard(); }
+    if (e.key === "Escape" && cardOpen) { hideCard(); }
   });
   document.addEventListener("focusout", function (e) {
     if (rebuilding) return;
     if (e.relatedTarget === null || !document.body.contains(e.relatedTarget)) scheduleHide();
   });
-  /* Drag from anywhere on the strip: a press that moves more than DRAG_PX starts a
-     native window drag (and closes the card); a press and release without moving
-     stays a normal click. No click follows a drag. */
+
+  /* Drag from anywhere on the pill (> 4px starts native drag, closes hover card,
+     and swallows trailing click so a drag never triggers open_full or refresh). */
   $("tab").addEventListener("mousedown", function (e) {
     if (e.button !== 0) return;
     press = { x: e.clientX, y: e.clientY };
@@ -512,7 +923,7 @@ body.up .card-wrap { padding: 0 0 6px; }
   });
   document.addEventListener("mousemove", function (e) {
     if (!press) return;
-    if (e.buttons === 0) { press = null; dragging = false; return; }  // released out of sight
+    if (e.buttons === 0) { press = null; dragging = false; return; }
     if (dragging) return;
     if (Math.abs(e.clientX - press.x) <= DRAG_PX && Math.abs(e.clientY - press.y) <= DRAG_PX) return;
     dragging = true;
@@ -524,14 +935,14 @@ body.up .card-wrap { padding: 0 0 6px; }
   });
   document.addEventListener("mouseup", function () { press = null; dragging = false; });
   document.addEventListener("click", function (e) {
-    if (swallowClick && e.detail > 0) {  // a mouse click that ends a drag; keyboard clicks still work
+    if (swallowClick && e.detail > 0) {
       swallowClick = false;
       e.preventDefault();
       e.stopPropagation();
     }
   }, true);
 
-  /* The tab stays fully opaque while a keyboard focus ring is inside it. */
+  /* Keep Auto-fade opaque while a keyboard focus ring is inside the pill or card. */
   function reportFocus() {
     var el = document.activeElement;
     var ring = !!(el && el !== document.body && el.matches && el.matches(":focus-visible"));
@@ -550,6 +961,7 @@ body.up .card-wrap { padding: 0 0 6px; }
     } else if (lastRevision) {
       return;
     }
+    if (refreshing) setRefreshing(false);
     render(next);
   }
   function poll() { call("get_state").then(applyUpdate); }

@@ -1850,7 +1850,7 @@ class DesktopBridge:
             if isinstance(today_total, dict):
                 report["todayTotal"] = today_total
             if request == self._usage_request:
-                self._tab_model.publish_report(report)
+                self._tab_model.publish_report(report, today_report=today_report)
                 self._published_usage_machine = use_machine
             return {"ok": True, "report": report}
         except DesktopError as exc:
@@ -4891,9 +4891,9 @@ def run_webview(
         TAB_WINDOW_TITLE,
         html=load_tab_html(bridge.theme),
         js_api=tab_bridge,
-        width=360,
+        width=272,
         height=TAB_HEIGHT,
-        min_size=(120, 40),
+        min_size=(120, TAB_HEIGHT),
         resizable=False,
         frameless=True,
         easy_drag=False,

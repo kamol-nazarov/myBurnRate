@@ -7,7 +7,7 @@ import pytest
 from spend_app import native_geometry, tab_window
 from spend_app import provider_urgency as pu
 from spend_app.native_geometry import Monitor, Rect
-from spend_app.tab_window import TabBridge, TabHost, TabModel, plan_segments
+from spend_app.tab_window import TabBridge, TabHost, TabModel
 from tests_spend.test_tab_surfaces import Win, make
 from tests_spend.test_tab_window import (
     FakeStore,
@@ -99,7 +99,7 @@ BIG = [Monitor(Rect(0, 0, 3840, 2160), Rect(0, 0, 3840, 2120), primary=True)]
 def placed(monkeypatch):
     """A tab whose rectangle really changes after every placement."""
     host = TabHost(Win(), store=FakeStore(), hwnd_box=[77])
-    state = {"rect": Rect(100, 0, 1000, 60), "dpi": 96}
+    state = {"rect": Rect(100, 0, 360, 40), "dpi": 96}
 
     def apply(x, y, width, height):
         left = state["rect"].left if x is None else x
@@ -117,26 +117,26 @@ def placed(monkeypatch):
 def put(host, state, dpi, *, top):
     state["dpi"] = dpi
     scale = dpi / 96
-    state["rect"] = Rect(100, top, 100 + round(900 * scale), top + round(60 * scale))
-    host.set_base(900)
+    state["rect"] = Rect(100, top, 100 + round(260 * scale), top + round(40 * scale))
+    host.set_base(260)
     return state["rect"].top, scale
 
 
 @pytest.mark.parametrize("dpi", [96, 144, 192])
 def test_repeated_expands_and_segment_switches_keep_one_anchor_upward(placed, dpi):
     host, state = placed
-    anchor_top, scale = put(host, state, dpi, top=2100 - round(60 * scale_for(dpi)))
-    base_h = round(60 * scale)
-    result = host.expand(900, 330, (60, 300, 250))
+    anchor_top, scale = put(host, state, dpi, top=2100 - round(40 * scale_for(dpi)))
+    base_h = round(40 * scale)
+    result = host.expand(308, 256, (0, 308, 210))
     assert result == {"up": True}
     first = state["rect"]
     assert first.bottom == anchor_top + base_h  # the strip stays where it was
-    assert host.expand(900, 330, (60, 300, 250)) == {"up": True}  # a push or poll
+    assert host.expand(308, 256, (0, 308, 210)) == {"up": True}  # a push or poll
     assert state["rect"] == first
-    assert host.expand(900, 250, (180, 300, 170)) == {"up": True}  # another segment, shorter card
+    assert host.expand(308, 340, (0, 308, 294)) == {"up": True}  # expanded rest list, taller card
     assert state["rect"].bottom == anchor_top + base_h
-    assert state["rect"].height == round(250 * scale)
-    assert host.expand(900, 330, (60, 300, 250)) == {"up": True}
+    assert state["rect"].height == round(340 * scale)
+    assert host.expand(308, 256, (0, 308, 210)) == {"up": True}
     assert state["rect"] == first
     host.collapse()
     assert (state["rect"].top, state["rect"].height) == (anchor_top, base_h)
@@ -150,8 +150,8 @@ def scale_for(dpi):
 def test_a_downward_card_keeps_the_anchor_across_repeated_expands(placed, dpi):
     host, state = placed
     anchor_top, scale = put(host, state, dpi, top=200)
-    for height in (330, 330, 220, 330):
-        assert host.expand(900, height, (60, 300, height - 66)) == {"up": False}
+    for height in (256, 256, 340, 256):
+        assert host.expand(308, height, (0, 308, height - 46)) == {"up": False}
         assert state["rect"].top == anchor_top
     host.collapse()
     assert state["rect"].top == anchor_top
@@ -160,61 +160,52 @@ def test_a_downward_card_keeps_the_anchor_across_repeated_expands(placed, dpi):
 @pytest.mark.parametrize("dpi", [96, 144, 192])
 def test_hiding_from_an_upward_card_restores_the_anchor_for_the_next_show(placed, dpi):
     host, state = placed
-    anchor_top, scale = put(host, state, dpi, top=2100 - round(60 * scale_for(dpi)))
-    host.expand(900, 330, (60, 300, 250))
+    anchor_top, scale = put(host, state, dpi, top=2100 - round(40 * scale_for(dpi)))
+    host.expand(308, 256, (0, 308, 210))
     assert state["rect"].top != anchor_top  # displaced while the card is up
     host.hide()
-    assert (state["rect"].top, state["rect"].height) == (anchor_top, round(60 * scale))
+    assert (state["rect"].top, state["rect"].height) == (anchor_top, round(40 * scale))
     host.window.calls.clear()
     host.show()
     assert state["rect"].top == anchor_top and host.window.calls == ["show"]
     # and the next card opens upward from the same spot again
-    assert host.expand(900, 330, (60, 300, 250)) == {"up": True}
-    assert state["rect"].bottom == anchor_top + round(60 * scale)
+    assert host.expand(308, 256, (0, 308, 210)) == {"up": True}
+    assert state["rect"].bottom == anchor_top + round(40 * scale)
 
 
 def test_a_refresh_that_changes_the_width_mid_card_keeps_the_anchor(placed):
     host, state = placed
-    anchor_top, _ = put(host, state, 96, top=2100 - 60)
-    host.expand(900, 330, (60, 300, 250))
+    anchor_top, _ = put(host, state, 96, top=2100 - 40)
+    host.expand(308, 256, (0, 308, 210))
     bottom = state["rect"].bottom
-    host.set_base(1100)
-    assert state["rect"].bottom == bottom and state["rect"].width == 1100
+    host.set_base(340)
+    assert state["rect"].bottom == bottom and state["rect"].width == 340
     host.collapse()
-    assert (state["rect"].top, state["rect"].width) == (anchor_top, 1100)
+    assert (state["rect"].top, state["rect"].width) == (anchor_top, 340)
 
 
 def test_the_tracker_never_saves_a_displaced_position(placed, monkeypatch):
     host, state = placed
-    put(host, state, 96, top=2100 - 60)
+    put(host, state, 96, top=2100 - 40)
     monkeypatch.setattr(native_geometry, "snapshot", lambda hwnd: "SNAP")
-    host.expand(900, 330, (60, 300, 250))
+    host.expand(308, 256, (0, 308, 210))
     assert host._snapshot(77) is None
     host.collapse()
     assert host._snapshot(77) == "SNAP"
 
 
-# ---- D2-03: the tab always fits the monitor ----------------------------------
+# ---- D2-03: the corner pill always fits the monitor --------------------------
 
 def many_urgent(count):
     return [card(f"claude-code-{i}", 40.0, dry(20.0 + i, 50.0), title=f"Provider {i}", label=f"P{i}")
             for i in range(count)]
 
 
-def test_the_budget_folds_calm_providers_until_the_strip_fits():
+def error_model(providers_list, *, code="NET-001", spend_report=None):
     model = TabModel()
-    model.publish_report({"providers": providers(*[card(f"k{i}", 10.0 + i, resets=100.0, title=f"P{i}") for i in range(5)])})
-    roomy = model.payload(dark=False, budget=2000)
-    assert roomy["layout"]["width"] > 600 and roomy["fine"] is None
-    fitted = model.payload(dark=False, budget=560)
-    assert fitted["layout"]["width"] <= 560
-    assert len(fitted["segments"]) < 5 and fitted["fine"]["count"] == 5 - len(fitted["segments"])
-    assert fitted["urgentMore"] is None
-
-
-def error_model(providers_list, *, code="NET-001"):
-    model = TabModel()
-    model.publish_report({"providers": providers_list})
+    report = dict(spend_report) if isinstance(spend_report, dict) else {}
+    report["providers"] = providers_list
+    model.publish_report(report, today_report=spend_report)
     model.publish_error("Can't reach your hub. Check that this computer is on your network.", code)
     return model
 
@@ -225,30 +216,40 @@ FIT_MATRIX = [
 ]
 
 
+def demo_report_and_providers():
+    from spend_app.native_desktop import DemoClient, demo_hud, demo_hud_usage
+    from spend_app.wealthfront_window import merge_provider_entries
+
+    report = DemoClient().snapshot("today", "all")
+    items = merge_provider_entries(report, hud=demo_hud(), hud_usage=demo_hud_usage(),
+                                   today_report=report, week_report=report)
+    return report, items
+
+
 @pytest.mark.parametrize("work_px, dpi", FIT_MATRIX)
 def test_the_demo_with_an_error_chip_fits_every_monitor_and_scale(work_px, dpi):
-    model = error_model(demo_providers_list())
+    report, items = demo_report_and_providers()
+    model = error_model(items, spend_report=report)
     scale = dpi / 96
     budget = work_px / scale - tab_window.BUDGET_MARGIN
     assert budget >= 240
     data = model.payload(dark=True, budget=budget)
-    # the real budget is a hard limit: compare physical widths with the physical work area
     assert data["layout"]["width"] <= budget
     assert data["layout"]["width"] * scale <= work_px
     assert data["error"]["code"] == "NET-001" and data["stale"] is True
-    # nothing urgent is ever lost: every urgent provider is shown or listed in the pill
+    # nothing is lost: #1 primary + remaining in more + every urgent in overview.highlighted
     urgent_keys = {"claude-code", "codex", "opencode-go"}
-    shown = {s["key"] for s in data["segments"]}
-    listed = {i["key"] for i in (data["urgentMore"] or {"items": []})["items"]}
-    assert urgent_keys <= shown | listed
-    # and nothing at all is lost: every provider is a segment or in a pill
-    everything = shown | listed | {i["key"] for i in (data["fine"] or {"items": []})["items"]}
-    assert len(everything) == len(tab_window.tab_providers(demo_providers_list()))
+    shown = {data["primary"]["key"]} if data["primary"] else set()
+    listed = {i["key"] for i in (data["more"] or {"items": []})["items"]}
+    highlighted = {s["key"] for s in data["overview"]["highlighted"]}
+    assert urgent_keys <= highlighted
+    assert len(shown | listed) == len(tab_window.tab_providers(items))
 
 
 def sweep_sets():
     from tests_spend.test_tab_window import card as make_card
 
+    report, items = demo_report_and_providers()
     idle = [
         {"providerKey": "claude-code", "title": "Claude Code", "plan": "Max",
          "rows": [{"limitKey": "5h", "label": "5h window \u2014 Waiting", "unavailable": True}]},
@@ -256,11 +257,11 @@ def sweep_sets():
         {"providerKey": "openrouter", "title": "OpenRouter", "isPayg": True, "fundsRemainingUsd": 23.4, "rows": []},
     ]
     return {
-        "demo+error": lambda: error_model(demo_providers_list()),
-        "demo+error without code": lambda: error_model(demo_providers_list(), code=None),
+        "demo+error": lambda: error_model(items, spend_report=report),
+        "demo+error without code": lambda: error_model(items, code=None, spend_report=report),
         "many urgent+error": lambda: error_model(providers(*many_urgent(9))),
         "idle+error": lambda: error_model(providers(*idle)),
-        "demo": lambda: _healthy(demo_providers_list()),
+        "demo": lambda: _healthy(items, spend_report=report),
         "empty": lambda: _healthy([]),
         "loading": lambda: TabModel(),
         "error first": lambda: _error_only(),
@@ -268,9 +269,11 @@ def sweep_sets():
     }
 
 
-def _healthy(providers_list):
+def _healthy(providers_list, spend_report=None):
     model = TabModel()
-    model.publish_report({"providers": providers_list})
+    report = dict(spend_report) if isinstance(spend_report, dict) else {}
+    report["providers"] = providers_list
+    model.publish_report(report, today_report=spend_report)
     return model
 
 
@@ -289,126 +292,57 @@ def test_nothing_is_ever_cut_off_at_any_budget_of_240_or_more():
             assert data["layout"]["cardWidth"] <= budget, (name, budget)
 
 
-def test_the_fit_ladder_shortens_the_chip_before_folding_anything():
-    model = error_model(demo_providers_list())
+def test_the_fit_ladder_shrinks_chip_then_status_then_spend_on_narrow_budgets():
+    report, items = demo_report_and_providers()
+    model = error_model(items, spend_report=report)
     roomy = model.payload(dark=False, budget=2000)
-    assert roomy["layout"]["mode"] == {"chip": "full", "compact": False, "tight": False}
-    # just narrower than the full chip allows: the chip shrinks to its code, nothing folds yet
-    squeezed = model.payload(dark=False, budget=roomy["layout"]["width"] - 20)
-    assert squeezed["layout"]["mode"]["chip"] == "code" and not squeezed["layout"]["mode"]["compact"]
-    assert [s["key"] for s in squeezed["segments"]] == [s["key"] for s in roomy["segments"]]
-    assert squeezed["error"]["code"] == "NET-001" and squeezed["error"]["text"].endswith("NET-001")
+    assert roomy["layout"]["mode"] == {
+        "chip": "code", "showSpend": True, "showStatus": True, "compact": False, "tight": False
+    }
+    # Narrower than code chip allows -> chip becomes icon first while spend & status remain
+    mid = model.payload(dark=False, budget=roomy["layout"]["width"] - 20)
+    assert mid["layout"]["mode"]["chip"] == "icon" and mid["layout"]["mode"]["showSpend"] is True
+    # Tight 240px budget drops spend chip from the resting pill (stays in hover card!)
+    narrow = model.payload(dark=False, budget=240)
+    assert narrow["layout"]["width"] <= 240
+    assert narrow["layout"]["mode"]["chip"] == "icon"
+    assert narrow["layout"]["mode"]["showSpend"] is False
+    assert narrow["spend"]["exact"] == "$127.34"  # still available in the hover card
+    assert narrow["primary"]["key"] == "claude-code" and narrow["more"]["count"] == 9
 
 
-def test_segments_drop_their_secondary_label_only_after_urgent_ones_fold():
-    model = error_model(providers(*many_urgent(4)))
-    plain = model.payload(dark=False, budget=2000)
-    assert all(s["unit"] for s in plain["segments"])
-    steps = []
-    for budget in range(1000, 239, -10):
-        data = model.payload(dark=False, budget=budget)
-        mode = data["layout"]["mode"]
-        steps.append((mode["chip"], bool(data["urgentMore"]), mode["compact"], mode["tight"]))
-    order = []
-    for step in steps:
-        if step not in order:
-            order.append(step)
-    # chip first, then urgent segments fold, then the labels go, then the chrome tightens
-    assert order[0] == ("full", False, False, False)
-    assert order.index(("code", False, False, False)) < min(
-        i for i, st in enumerate(order) if st[1]
-    )
-    first_compact = min(i for i, st in enumerate(order) if st[2])
-    first_fold = min(i for i, st in enumerate(order) if st[1])
-    assert first_fold < first_compact
-    assert any(st[3] for st in order)
-
-
-def test_the_minimum_strip_is_brand_pills_and_the_chip_icon():
-    model = error_model(demo_providers_list())
-    data = model.payload(dark=False, budget=240)
-    assert data["layout"]["width"] <= 240
-    mode = data["layout"]["mode"]
-    assert mode["chip"] in ("code", "icon") and mode["compact"] and mode["tight"]
-    assert data["urgentMore"] or data["segments"]
-    assert data["fine"]  # the calm providers are all in the pill
-    tiny = model.payload(dark=False, budget=200)  # below the supported minimum: still no crash
-    assert tiny["layout"]["mode"]["chip"] == "icon" and not tiny["segments"]
-
-
-def test_a_chip_without_a_code_shows_only_its_icon_when_short():
-    model = error_model(demo_providers_list(), code=None)
+def test_a_chip_without_a_code_shows_only_its_icon_when_stale():
+    report, items = demo_report_and_providers()
+    model = error_model(items, code=None, spend_report=report)
     data = model.payload(dark=False, budget=700)
     assert data["layout"]["mode"]["chip"] == "icon"
     assert data["error"]["text"]
 
 
 def test_the_hover_card_never_outgrows_the_budget():
-    model = error_model(demo_providers_list())
+    report, items = demo_report_and_providers()
+    model = error_model(items, spend_report=report)
     assert model.payload(dark=False, budget=2000)["layout"]["cardWidth"] == tab_window.CARD_WIDTH
     assert model.payload(dark=False, budget=250)["layout"]["cardWidth"] == 250
 
 
 def demo_providers_list():
-    from spend_app.native_desktop import DemoClient, demo_hud, demo_hud_usage
-    from spend_app.wealthfront_window import merge_provider_entries
-
-    report = DemoClient().snapshot("today", "all")
-    return merge_provider_entries(report, hud=demo_hud(), hud_usage=demo_hud_usage(),
-                                  today_report=report, week_report=report)
+    _, items = demo_report_and_providers()
+    return items
 
 
-def test_urgent_providers_that_alone_do_not_fit_become_a_red_urgent_pill():
-    model = TabModel()
-    model.publish_report({"providers": providers(*many_urgent(9))})
-    data = model.payload(dark=False, budget=700)
-    shown = data["segments"]
-    more = data["urgentMore"]
-    assert data["layout"]["width"] <= 700
-    assert shown and more and len(shown) + more["count"] == 9
-    assert [s["key"] for s in shown] + [i["key"] for i in more["items"]] == [f"claude-code-{i}" for i in range(9)]
-    assert all(i["level"] == "warn" for i in more["items"])
-    assert data["fine"] is None
-    assert data["urgentCount"] == 0  # warn is "not about to run out"; the badge counts out and soon
-
-
-def test_out_and_soon_hidden_in_the_pill_still_count_on_the_badge():
-    cards = [card(f"claude-code-{i}", 100.0, dry(0.0, 40.0), title=f"Provider {i}", resets=24.0, label=f"P{i}")
+def test_out_and_soon_hidden_in_more_pill_still_count_on_the_badge_and_turn_pill_red():
+    cards = [card(f"claude-code-{i}", 100.0, dry(0.0, 40.0), title=f"Provider {i}", label=f"P{i}", resets=24.0)
              for i in range(8)]
     model = TabModel()
     model.publish_report({"providers": providers(*cards)})
     data = model.payload(dark=False, budget=640)
-    assert data["urgentMore"] and data["urgentCount"] == 8
+    assert data["more"]["count"] == 7 and data["more"]["severity"] == "soon"
+    assert data["urgentCount"] == 8
     assert data["layout"]["width"] <= 640
 
 
-def test_calm_providers_fold_before_any_urgent_one_is_dropped():
-    cards = many_urgent(4) + [card(f"k{i}", 10.0, resets=100.0, title=f"Calm {i}") for i in range(3)]
-    model = TabModel()
-    model.publish_report({"providers": providers(*cards)})
-    data = model.payload(dark=False, budget=800)
-    assert data["layout"]["width"] <= 800
-    assert [s["level"] for s in data["segments"]].count("warn") == 4
-    assert data["urgentMore"] is None and data["fine"]["count"] >= 1
-
-
-def test_plan_segments_without_a_budget_keeps_the_cap_rule():
-    segs = [{"level": lv, "key": str(i), "width": 124} for i, lv in enumerate(["soon", "ok", "ok", "ok", "ok", "ok"])]
-    shown, folded, hidden = plan_segments(segs)
-    assert len(shown) == 5 and len(folded) == 1 and hidden == []
-
-
-def test_the_pill_is_never_left_empty_and_the_window_is_never_wider_than_its_plan():
-    for count in range(1, 12):
-        model = TabModel()
-        model.publish_report({"providers": providers(*many_urgent(count))})
-        data = model.payload(dark=False, budget=700)
-        assert data["layout"]["width"] <= 700
-        if data["urgentMore"]:
-            assert data["urgentMore"]["count"] >= 1
-
-
-def host_with_monitor(monkeypatch, work_width, dpi, rect=Rect(100, 20, 900, 80)):
+def host_with_monitor(monkeypatch, work_width, dpi, rect=Rect(100, 20, 360, 60)):
     host = TabHost(Win(), store=FakeStore(), hwnd_box=[77])
     monitors = [Monitor(Rect(0, 0, work_width, 1200), Rect(0, 0, work_width, 1160), primary=True)]
     monkeypatch.setattr(native_geometry, "enum_monitors", lambda: monitors)
@@ -467,65 +401,34 @@ def test_a_dpi_change_reflows_and_does_not_recurse(monkeypatch):
 @pytest.mark.parametrize("work_px, dpi", FIT_MATRIX)
 def test_the_physical_window_never_exceeds_the_physical_work_area(monkeypatch, work_px, dpi):
     bridge, _, tab, surfaces, *_ = make()
-    host, monitors = host_with_monitor(monkeypatch, work_px, dpi, rect=Rect(0, 20, 300, 80))
+    host, monitors = host_with_monitor(monkeypatch, work_px, dpi, rect=Rect(0, 20, 260, 60))
     monkeypatch.setattr(surfaces, "tab", host)
-    bridge._tab_model.publish_report({"providers": demo_providers_list()})
+    report, items = demo_report_and_providers()
+    report = dict(report, providers=items)
+    bridge._tab_model.publish_report(report, today_report=report)
     bridge._tab_model.publish_error("Can't reach your hub. Check that this computer is on your network.", "NET-001")
     data = TabBridge(bridge, bridge._tab_model, surfaces).build_payload()
     host.set_base(data["layout"]["width"])
     physical_width, _ = host._target_size()
     assert physical_width <= monitors[0].work.width  # compared with the real work area
-    host.expand(max(data["layout"]["width"], data["layout"]["cardWidth"]), 330, (0, data["layout"]["cardWidth"], 250))
+    host.expand(max(data["layout"]["width"], data["layout"]["cardWidth"]), 256, (0, data["layout"]["cardWidth"], 210))
     assert host._target_size()[0] <= monitors[0].work.width
 
 
-# ---- the "+N urgent" pill is coloured by the worst level inside it -------------
-
-def severity_of(cards, budget=700):
-    model = TabModel()
-    model.publish_report({"providers": providers(*cards)})
-    return model.payload(dark=False, budget=budget)["urgentMore"]
-
-
-def test_the_urgent_pill_is_amber_when_it_holds_only_warn_providers():
-    pill = severity_of(many_urgent(9))
-    assert pill["severity"] == "warn"
-    assert {i["level"] for i in pill["items"]} == {"warn"}
-
+# ---- the "+N" pill severity follows what is inside it -----------------------
 
 def out_cards(count):
     return [card(f"claude-code-{i}", 100.0, dry(0.0, 40.0), title=f"Provider {i}", label=f"P{i}", resets=24.0)
             for i in range(count)]
 
 
-def test_the_urgent_pill_is_red_when_it_holds_any_out_or_soon_provider():
-    pill = severity_of(out_cards(8), budget=420)
-    assert pill["severity"] == "soon"
-    assert {i["level"] for i in pill["items"]} == {"out"}
-    soon = [card(f"claude-code-{i}", 50.0, dry(1.5, 40.0), title=f"Provider {i}", label=f"P{i}") for i in range(8)]
-    assert severity_of(soon, budget=420)["severity"] == "soon"
-
-
-def test_the_severity_follows_what_is_inside_the_pill_as_the_budget_shrinks():
-    # out/soon providers sort first, so they stay on the strip longest; the pill is amber while
-    # it holds only warn ones and turns red once an out/soon provider has to fold into it
-    cards = out_cards(3) + [
-        card(f"claude-code-{i}", 40.0, dry(20.0 + i, 50.0), title=f"Provider {i}", label=f"P{i}") for i in range(3, 8)
-    ]
-    model = TabModel()
-    model.publish_report({"providers": providers(*cards)})
-    seen = []
-    for budget in range(1400, 239, -20):
-        pill = model.payload(dark=False, budget=budget)["urgentMore"]
-        state = None if pill is None else pill["severity"]
-        has_urgent = pill is not None and any(i["level"] in ("out", "soon") for i in pill["items"])
-        assert (state == "soon") == has_urgent
-        if not seen or seen[-1] != state:
-            seen.append(state)
-    assert seen == [None, "warn", "soon"]
-
-
-def test_a_pill_that_is_not_the_urgent_pill_has_no_severity():
-    model = TabModel()
-    model.publish_report({"providers": providers(*[card(f"k{i}", 10.0 + i, resets=100.0, title=f"P{i}") for i in range(7)])})
-    assert "severity" not in model.payload(dark=False, budget=2000)["fine"]
+def test_more_pill_severity_is_red_only_when_another_out_or_soon_is_hidden():
+    warn_model = TabModel()
+    warn_model.publish_report({"providers": providers(*many_urgent(5))})
+    assert warn_model.payload(dark=False)["more"]["severity"] == "warn"
+    red_model = TabModel()
+    red_model.publish_report({"providers": providers(*out_cards(4))})
+    assert red_model.payload(dark=False)["more"]["severity"] == "soon"
+    ok_model = TabModel()
+    ok_model.publish_report({"providers": providers(*[card(f"k{i}", 10.0 + i, resets=100.0, title=f"P{i}") for i in range(5)])})
+    assert ok_model.payload(dark=False)["more"]["severity"] == "ok"
