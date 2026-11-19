@@ -18,19 +18,21 @@ code or responses are ever stored.
 > **Current release:** `v0.6.4` · [Release notes](docs/releases/RELEASE-0.6.4.md) · [Changelog](CHANGELOG.md)
 
 <p align="center">
-  <img src="docs/images/native-desktop.png" width="760" alt="The myBurnRate desktop window in Light and Dark themes: API-equivalent value for today, an interactive usage timeline, two-column provider tiles, and an expanded limit and token breakdown">
+  <img src="docs/images/native-desktop.png" width="760" alt="The myBurnRate v0.6.4 desktop window in Light and Dark themes: sticky daily-spend header with Limits, Spend and Plans tabs, urgency-sorted pace timelines, two-column calm provider cards, an expanded Claude Code breakdown, and a docked bottom utility bar">
 </p>
 
 <p align="center"><sub>Screenshots use synthetic sample data from <code>burnrate desktop --demo</code>.</sub></p>
 
 ## Why myBurnRate
 
-- **One window for every tool.** Claude Code, Codex, OpenCode, ZCode, Grok Build, Antigravity, Muse
-  Code and your pay-as-you-go balances sit side by side, each read independently.
+- **One window — or a corner pill — for every tool.** Claude Code, Codex, OpenCode, ZCode, Grok
+  Build, Antigravity, Muse Code and your pay-as-you-go balances sit side by side, each read
+  independently.
 - **Value, not just tokens.** Recorded tokens are priced at published API rates for the exact day
   they were used, so you can see what a month of agent work would have cost on the API.
 - **Plan headroom at a glance.** Every 5-hour, weekly and monthly window shows what is left and when
-  it resets, with pace and run-dry indicators.
+  it resets, with pace timelines and run-dry indicators. Shrink the window to a `40 px` floating
+  corner pill and hover to peek at limits without leaving your editor.
 - **Answers you can defend.** Missing data stays missing: exact, derived, partial and unavailable
   are separate states, and a gap never renders as `$0.00`.
 - **Yours alone.** Local SQLite, operating-system keychain, loopback-only listener, no telemetry.
@@ -52,15 +54,16 @@ lands in `%LOCALAPPDATA%\Programs\BURNRATE` with Start Menu and Desktop shortcut
 first-run screen. Your data lives separately in `%LOCALAPPDATA%\BURNRATE`.
 
 You can also download **`myBurnRate_<version>_x64-setup.exe`** directly from the
-**[latest release](https://github.com/kamol-nazarov/myBurnRate/releases/latest)**. Installed copies
-check for updates about a minute after launch and then daily; **Settings → General → Check for
-updates** does it on demand, and **Install & restart** applies a verified update.
+**[latest release](https://github.com/kamol-nazarov/myBurnRate/releases/latest)**. Both the native
+app and managed Python desktop installs check for updates about a minute after launch and then
+daily; **Settings → General → Check for updates** runs on demand, and **Install & restart** applies
+a signature-verified installer or wheel update with automatic local backup.
 
 ### Every platform
 
 | System | Download | What it is |
 | --- | --- | --- |
-| Windows 10 or 11 (64-bit) | `myBurnRate_<version>_x64-setup.exe` | **Native desktop window.** Light, Dark and System themes, tray mode, verified in-app updates. Installs per user. |
+| Windows 10 or 11 (64-bit) | `myBurnRate_<version>_x64-setup.exe` | **Native desktop window.** Light, Dark and System themes, floating corner pill, tray mode, verified in-app updates. Installs per user. |
 | Python 3.12 (any OS) | `burnrate-<version>-py3-none-any.whl` | Command line, background service (`burnrate serve`) and `burnrate desktop`. |
 
 **Python install**
@@ -101,25 +104,51 @@ The main interface is a compact, frameless Windows app built on Edge WebView2, w
 Tk/ttk fallback when WebView2 is unavailable. It bundles its **Manrope** variable font, so it makes
 no font or asset requests to a CDN.
 
-- **Split hero.** Today's API-equivalent value sits beside an interactive interval timeline. Hover or
-  focus the timeline and use the arrow keys to read the running total and each interval's
-  contribution.
-- **Summary strip.** Burn rate (average value per hour today, per day otherwise), cache hit share of
-  prompt tokens, and value vs. plans for the selected span.
-- **Two-column provider tiles.** Each tile shows recorded tokens and reference value, then expands
-  full-width for window meters, reset countdowns and a two-column token ledger: fresh input, cached
-  input, cache writes, output, reasoning and API-equivalent value. Reorder tiles by dragging them in
-  two dimensions, or focus one and press `Alt+↑` / `Alt+↓`. The grid stacks to one column on narrow
-  windows.
-- **Periods and scope.** `Today`, `7 days`, `Month` and `All`, filtered to **All computers** or a
-  single machine.
-- **Multiple accounts.** Separate Claude Code profiles and OpenCode accounts appear as their own
-  tagged tiles instead of being merged.
-- **Themes and window behavior.** Light, Dark and System themes, always-on-top pinning, optional
-  transparency when the pointer leaves the window, a saved window position, and a notification-area
-  icon. Closing the window keeps collection running; reopen it from the tray or the Start Menu.
-- **Accessible by default.** Keyboard navigation with visible focus rings, reduced-motion support,
-  WCAG AA contrast in both themes, and a 10.5 px minimum text size.
+- **Sticky KPI glance bar and section nav.** Today's live API-equivalent value, burn rate, cache
+  hit share and ROI multiple stay pinned above sliding `Limits | Spend | Plans` jump tabs with a
+  live urgent-count badge.
+- **Limits-first urgency view and two-column calm grid.** Tight and at-risk plan windows rise to the
+  top with full-width timeline pace lanes (`usable at this pace` vs. `dry before refill` and refill
+  markers). Healthy and balance providers pack into a two-column grid at `410 px+` (stacking on
+  narrow windows). Click any provider to expand its full window meters, reset countdowns, saved
+  Codex speed (`Standard`, `Fast` or `Ultrafast`), and a two-column token ledger: fresh input,
+  cached input, cache writes, output, reasoning and API-equivalent value. Reorder cards by dragging
+  them, or focus one and press `Alt+↑` / `Alt+↓`.
+- **Spend timeline and summary strip.** Switch between `Today`, `7 days`, `Month` and `All`,
+  filtered to **All computers** or a single machine, with an interactive interval timeline (hover or
+  use arrow keys to inspect each interval), burn rate, cache hit share and value vs. plans.
+- **Plans and per-plan ROI.** Active configured subscriptions show per-plan ROI progress bars and
+  value multiples right in the Plans section. Add plans, schedule price changes, record end dates,
+  preview corrections and review archived plans from **Settings → Plans**.
+- **Multiple accounts and profiles.** Separate Claude Code profiles and OpenCode accounts appear as
+  their own tagged cards instead of being merged, and disabled or removed profiles stay cleanly
+  separated from current readings.
+- **Docked utility bar, themes and smooth motion.** A permanently docked bottom bar keeps
+  `Diagnostics`, `Share week`, `Keep on top`, `Density` and `Settings` one click away. Includes
+  Light, Dark and System themes, always-on-top pinning, optional auto-fade transparency when the
+  pointer leaves, a saved window position, and a tray icon (closing the window keeps collection
+  running; reopen it from the tray or the Start Menu). Smooth spring transitions honor
+  `prefers-reduced-motion`, alongside keyboard focus rings, WCAG AA contrast in both themes and a
+  `10.5 px` minimum text size.
+
+### Floating corner pill (Shrink to tab)
+
+<p align="center">
+  <img src="docs/images/corner-pill.png" width="740" alt="The myBurnRate floating corner pill in Light and Dark themes: a compact 40 px capsule showing today's spend and most urgent limit, smoothly unfurling a hover-to-peek overview card with burn rate, cache hit share, at-risk limits, and an expandable summary of healthy providers">
+</p>
+
+Click **Shrink to tab** in the title bar (or **Show tab** in the tray menu) to collapse myBurnRate
+into an always-on-top corner capsule with no taskbar button:
+
+- **Ultra-compact `40 px` resting pill.** Displays today's live `$` spend, your `#1` most urgent
+  limit and countdown, a `+N` overflow badge for other active providers, and an in-place `↻` quick
+  refresh button.
+- **Smooth `120 Hz` hover-to-peek card.** Hovering over the pill smoothly unfurls an overview card
+  with today's total, burn rate, cache reuse share, at-risk fuel bars, and an expandable **All fine
+  ▾** toggle showing remaining healthy and pay-as-you-go providers.
+- **Drag anywhere and auto-fade.** Drag from anywhere on the pill to park it on any monitor edge,
+  optionally auto-fade it when idle, or click the launch arrow / **Open full BURNRATE ↗** to restore
+  the main window.
 
 ### Plans, balances and alerts
 
@@ -241,11 +270,12 @@ including `SPEND_DATABASE_PATH`, `SPEND_TIMEZONE` and `BURNRATE_NO_UPDATE_CHECK`
 
 ## Upgrade and uninstall
 
-- **Native app:** use **Settings → General → Check for updates**, or let it check on its own. Updates
-  never touch `%LOCALAPPDATA%\BURNRATE`.
-- **Python installs:** install the newer release's wheel the same way as the first install (never
-  `pip install burnrate`, which is an unrelated PyPI package), then restart `burnrate desktop` or
-  `burnrate serve`:
+- **Native app and managed Python desktop:** use **Settings → General → Check for updates** and
+  choose **Install & restart**, or let it check automatically. Both installer and signed-wheel
+  updates back up local data first and never wipe `%LOCALAPPDATA%\BURNRATE`.
+- **Manual Python upgrades:** install the newer release's wheel the same way as the first install
+  (never `pip install burnrate`, which is an unrelated PyPI package), then restart
+  `burnrate desktop` or `burnrate serve`:
   `python -m pip install --upgrade "https://github.com/kamol-nazarov/myBurnRate/releases/download/v<version>/burnrate-<version>-py3-none-any.whl"`.
 - **Self-hosted hub:** `burnrate hub update`, or pull a newer container tag.
 - **Uninstall:** remove **myBurnRate** from Windows' installed apps. The uninstaller removes the
@@ -295,7 +325,7 @@ installer, update feed and signing. Contributions are welcome; start with
 
 ## Project status and support
 
-myBurnRate is actively developed and free to use. The current stable line is `0.5.x`; undocumented
+myBurnRate is actively developed and free to use. The current stable line is `0.6.x`; undocumented
 provider readers are labeled experimental and can change without a major version bump. The packaged native installer targets Windows 10/11 (x64); the Python package runs on any OS with CPython 3.12.
 
 - **Questions and reproducible bugs:** open an [issue](https://github.com/kamol-nazarov/myBurnRate/issues)
