@@ -9,6 +9,8 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+## [0.6.8] - Unreleased
+
 ### Fixed
 
 - **A Claude account's limits follow the account, not one config folder.** When the same Claude account is signed in at more than one place on this computer (for example `~/.claude-work` and a Traycer-managed profile under `~/.traycer/host/harness-accounts/claude-code`), its lane now shows the newest valid plan-usage reading Claude Code cached in any of them, instead of a days-old reading from a folder that has gone idle. The lane's own folder wins ties, readings cached for a different account are ignored, and folders that are symlinks or junctions are never followed. These extra folders never create lanes of their own. More roots can be listed in `BURNRATE_CLAUDE_HARNESS_DIRS`.
