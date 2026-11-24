@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 This project is licensed under Apache-2.0.
 
+## [Unreleased]
+
+### Fixed
+
+- **A Claude account's limits follow the account, not one config folder.** When the same Claude account is signed in at more than one place on this computer (for example `~/.claude-work` and a Traycer-managed profile under `~/.traycer/host/harness-accounts/claude-code`), its lane now shows the newest valid plan-usage reading Claude Code cached in any of them, instead of a days-old reading from a folder that has gone idle. The lane's own folder wins ties, readings cached for a different account are ignored, and folders that are symlinks or junctions are never followed. These extra folders never create lanes of their own. More roots can be listed in `BURNRATE_CLAUDE_HARNESS_DIRS`.
+- **Claude spend written by another tool's profile lands on the right account lane.** Claude Code transcripts written by a Traycer-managed (or other) profile whose transcripts end up in `~/.claude/projects` are now attributed to the matching account lane using that profile's own `session-env/<sessionId>` folders. An attribution is sticky once made, and whatever `session-env` still lists (about 30 days) is backfilled. This relies on Claude Code creating `session-env` entries, which it does when a SessionStart hook is configured.
+
 ## [0.6.7] - 2026-11-19
 
 ### Added

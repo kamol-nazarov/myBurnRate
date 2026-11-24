@@ -792,21 +792,57 @@ def _claude_no_reading(key: str, plan: str | None = None) -> dict:
             "windows": [], "detail": CLAUDE_NO_READING_DETAIL}
 
 
+def _newest_claude_cached_usage(state_path: Path, *, key: str, plan: str | None, owner: str | None = None,
+                                now: datetime | None = None) -> dict:
+    """The newest valid cached reading for a lane's account across every folder signed into it.
+
+    The lane's own state file is read first and wins ties. Other folders (Traycer-managed profiles, other
+    config dirs) only supply a reading when it is newer, so a lane whose own folder has gone idle still
+    follows the account's usage. A lane without an account UUID reads only its own state file.
+    """
+    from spend_app import claude_accounts
+
+    try:
+        best, error = claude_cached_usage(state_path, key=key, plan=plan, now=now), None
+    except Exception as exc:
+        best, error = None, exc
+    owner = owner or claude_accounts.account_uuid(claude_accounts.read_state(state_path))
+    if not owner:
+        if best is None:
+            raise error
+        return best
+    own = claude_accounts._safe_identity(state_path)
+    for folder in claude_accounts.account_folders(owner):
+        if own is not None and claude_accounts._safe_identity(folder.state_path) == own:
+            continue
+        try:
+            reading = claude_cached_usage(folder.state_path, key=key, plan=plan, now=now)
+        except Exception:
+            continue
+        if best is None or reading["observedAt"] > best["observedAt"]:
+            best = reading
+    if best is None:
+        raise error
+    return best
+
+
 def _claude_limits_uncached(*, key: str = "claude-code", now: datetime | None = None) -> dict:
     """The default Claude Code profile's cached plan usage, else no reading."""
     from spend_app.claude_accounts import plan_name, primary_state_path, read_state
 
     state_path = primary_state_path(Path.home(), os.environ)
     try:
-        return claude_cached_usage(state_path, key=key, plan=plan_name(read_state(state_path)), now=now)
+        return _newest_claude_cached_usage(state_path, key=key, plan=plan_name(read_state(state_path)), now=now)
     except Exception:
         return _claude_no_reading(key)
 
 
 def claude_account_limits(account, *, now: datetime | None = None) -> tuple[dict, str]:
-    """An extra Claude account's quota from its own profile's cached usage."""
+    """An extra Claude account's quota from the newest cached usage of its account."""
     try:
-        return claude_cached_usage(account.state_path, key=account.key, plan=account.plan, now=now), "claude_code_cache"
+        reading = _newest_claude_cached_usage(account.state_path, key=account.key, plan=account.plan,
+                                              owner=account.account_uuid or None, now=now)
+        return reading, "claude_code_cache"
     except Exception:
         return _claude_no_reading(account.key, account.plan), "claude_code_cache"
 

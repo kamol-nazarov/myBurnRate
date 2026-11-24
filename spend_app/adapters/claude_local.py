@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import glob
 from spend_app.connection_paths import adapter_files
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -137,9 +137,14 @@ def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -
     from spend_app.adapters import file_cache
     from spend_app.adapters.event_identity import reconcile
     from spend_app.adapters.usage_repair import read_meta, write_meta
+    from spend_app.claude_session_lanes import PRIMARY_KEY, remember, session_id_for_path, session_lanes
     from spend_app.connection_paths import cache_identity, file_signature, stat_path
+    from spend_app.db import TOOL_KEY_OVERRIDES
 
     initialize(database_path)
+    # The default run splits sessions that ran under another account's lane out of
+    # ~/.claude/projects; a profile run reads its own folder and keeps its override.
+    lanes = {} if TOOL_KEY_OVERRIDES.get() else session_lanes(database_path)
     file_cache.warm(database_path, SOURCE, _FILE_SIGNATURES, _FILE_COUNTS, _FILE_QUARANTINED)
     parsed_files = 0
     parsed_events = 0
@@ -149,11 +154,14 @@ def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -
     skipped_files = 0
     quarantined = 0
     batch: dict[str, list] = {"usage_rows": [], "observations": [], "session_rows": [], "pending": [], "empty": []}
+    attributed: dict[str, str] = {}
     results: list[dict] = []
 
     def flush() -> None:
         usage_rows, observations, session_rows = batch["usage_rows"], batch["observations"], batch["session_rows"]
         pending, empty = batch["pending"], batch["empty"]
+        moved = dict(attributed)
+        attributed.clear()
         for name in batch:
             batch[name] = []
 
@@ -189,12 +197,13 @@ def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -
                 upsert_session(
                     connection,
                     session_id=sid,
-                    tool_key="claude-code",
+                    tool_key=session["tool_key"],
                     project=session["project"],
                     started_at=session["started_at"],
                     ended_at=session["ended_at"],
                     model_key=model_key,
                 )
+            remember(connection, moved)
             file_cache.save(connection, SOURCE, [*pending, *((key, signature, 0, 0) for key, signature in empty)])
 
         results.append(persist_rows(
@@ -218,7 +227,11 @@ def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -
             stat = stat_path(path)
         except OSError:
             continue
-        cache_key = cache_identity(database_path, path, PARSER_VERSION)
+        session_id = session_id_for_path(path)
+        tool_key = lanes.get(session_id, PRIMARY_KEY)
+        # Only a non-default lane enters the cache identity: a file that moves lanes is
+        # re-parsed once (its rows are updated in place), every other file keeps its cache.
+        cache_key = cache_identity(database_path, path, PARSER_VERSION if tool_key == PRIMARY_KEY else f"{PARSER_VERSION}+{tool_key}")
         cached = _FILE_SIGNATURES.get(cache_key)
         try:
             signature = cached if file_cache.unchanged(cached, stat) else file_signature(path, stat)
@@ -246,16 +259,20 @@ def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -
             batch["empty"].append((cache_key, signature))
             continue
         parsed_files += 1
+        if tool_key != PRIMARY_KEY:
+            attributed[session_id] = tool_key
         duplicates_removed += max(0, raw_usage_lines - len(events))
         parsed_events += len(events)
         latest_time: datetime | None = None
         for parsed in events:
             if parsed.observation:
-                batch["observations"].append(parsed.observation)
+                batch["observations"].append(
+                    replace(parsed.observation, row=replace(parsed.observation.row, tool_key=tool_key))
+                )
             batch["usage_rows"].append(
                 UsageRow(
                     source=SOURCE,
-                    tool_key="claude-code",
+                    tool_key=tool_key,
                     model_key=parsed.model_key,
                     occurred_at=parsed.occurred_at,
                     session_id=parsed.session_id,
@@ -277,6 +294,7 @@ def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -
         if latest_time is not None:
             batch["session_rows"].append(
                 {
+                    "tool_key": tool_key,
                     "session_id": session["id"],
                     "project": session["project"],
                     "started_at": _iso(session["started_at"]),

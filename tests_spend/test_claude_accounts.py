@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -211,3 +213,130 @@ def test_spoke_shows_an_account_lane_the_hub_does_not_have_yet(tmp_path: Path, m
 
 def _iso(moment: datetime) -> str:
     return moment.isoformat().replace("+00:00", "Z")
+
+
+def _link(link: Path, target: Path) -> None:
+    """A symlink, or a junction on Windows when symlinks are not permitted; skips when neither can be made."""
+    try:
+        link.symlink_to(target, target_is_directory=target.is_dir())
+        return
+    except (OSError, NotImplementedError):
+        pass
+    if os.name == "nt" and target.is_dir():
+        done = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True)
+        if done.returncode == 0:
+            return
+    pytest.skip("cannot create a symlink or junction here")
+
+
+def _harness(home: Path) -> Path:
+    return home / ".traycer" / "host" / "harness-accounts" / "claude-code"
+
+
+def _folders(uuid: str, home: Path, environ: dict | None = None) -> list[Path]:
+    return [f.config_dir for f in claude_accounts.account_folders(uuid, home=home, environ=environ or {})]
+
+
+def test_account_folders_cover_every_folder_signed_into_the_account(tmp_path: Path) -> None:
+    _state(tmp_path, "personal-uuid")
+    _state(tmp_path / ".claude-work", "work-uuid")
+    _state(tmp_path / "elsewhere" / "Client", "work-uuid")
+    _state(_harness(tmp_path) / "profile-a", "work-uuid")
+    _state(_harness(tmp_path) / "profile-b", "other-uuid")
+    _state(_harness(tmp_path) / "profile-c", None)  # never signed in
+    (_harness(tmp_path) / "profile-d").mkdir()  # no state file at all
+    environ = {claude_accounts.EXTRA_DIRS_ENV: str(tmp_path / "elsewhere" / "Client")}
+    assert _folders("work-uuid", tmp_path, environ) == [
+        tmp_path / ".claude-work", tmp_path / "elsewhere" / "Client", _harness(tmp_path) / "profile-a"]
+    assert _folders("other-uuid", tmp_path, environ) == [_harness(tmp_path) / "profile-b"]
+    assert _folders("nobody", tmp_path, environ) == []
+
+
+def test_account_folders_mark_the_primary_profile(tmp_path: Path) -> None:
+    _state(tmp_path, "personal-uuid")
+    _state(_harness(tmp_path) / "profile-a", "personal-uuid")
+    folders = claude_accounts.account_folders("personal-uuid", home=tmp_path, environ={})
+    assert [(f.config_dir, f.state_path, f.is_primary) for f in folders] == [
+        (tmp_path / ".claude", tmp_path / ".claude.json", True),
+        (_harness(tmp_path) / "profile-a", _harness(tmp_path) / "profile-a" / ".claude.json", False)]
+    configured = tmp_path / "configured"
+    _state(configured, "personal-uuid")
+    [primary, *_] = claude_accounts.account_folders("personal-uuid", home=tmp_path,
+                                                    environ={"CLAUDE_CONFIG_DIR": str(configured)})
+    assert (primary.config_dir, primary.state_path, primary.is_primary) == (configured, configured / ".claude.json", True)
+
+
+def test_account_folders_are_deduplicated_by_folder(tmp_path: Path) -> None:
+    _state(tmp_path / ".claude-work", "work-uuid")
+    environ = {claude_accounts.EXTRA_DIRS_ENV: str(tmp_path / ".claude-work"),
+               claude_accounts.HARNESS_DIRS_ENV: str(_harness(tmp_path))}
+    _state(_harness(tmp_path) / "profile-a", "work-uuid")
+    assert _folders("work-uuid", tmp_path, environ) == [tmp_path / ".claude-work", _harness(tmp_path) / "profile-a"]
+
+
+def test_harness_roots_come_from_traycer_and_the_environment(tmp_path: Path) -> None:
+    extra = tmp_path / "other-tool" / "claude"
+    _state(extra / "p1", "work-uuid")
+    _state(_harness(tmp_path) / "profile-a", "work-uuid")
+    environ = {claude_accounts.HARNESS_DIRS_ENV: os.pathsep.join([str(extra), str(tmp_path / "missing")])}
+    assert claude_accounts.harness_roots(tmp_path, environ) == [_harness(tmp_path), extra]
+    assert _folders("work-uuid", tmp_path, environ) == [_harness(tmp_path) / "profile-a", extra / "p1"]
+    assert claude_accounts.harness_roots(tmp_path / "nowhere", {}) == []
+
+
+def test_linked_harness_folders_are_ignored(tmp_path: Path) -> None:
+    real = _state(tmp_path / "real-profile", "work-uuid").parent
+    _state(_harness(tmp_path) / "good", "work-uuid")
+    _link(_harness(tmp_path) / "linked-dir", real)
+    assert _folders("work-uuid", tmp_path) == [_harness(tmp_path) / "good"]
+
+
+def test_linked_harness_state_files_are_ignored(tmp_path: Path) -> None:
+    _state(_harness(tmp_path) / "good", "work-uuid")
+    target = _state(tmp_path / "state-target", "work-uuid")
+    try:
+        (tmp_path / "probe").symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create file symlinks here")
+    (_harness(tmp_path) / "linked-state").mkdir()
+    _link(_harness(tmp_path) / "linked-state" / ".claude.json", target)
+    assert _folders("work-uuid", tmp_path) == [_harness(tmp_path) / "good"]
+
+
+def test_a_linked_harness_root_is_ignored(tmp_path: Path) -> None:
+    real = tmp_path / "real-root"
+    _state(real / "p1", "work-uuid")
+    _harness(tmp_path).parent.mkdir(parents=True)
+    _link(_harness(tmp_path), real)
+    assert claude_accounts.harness_roots(tmp_path, {}) == []
+    assert _folders("work-uuid", tmp_path) == []
+
+
+def test_harness_children_are_bounded(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(claude_accounts, "MAX_HARNESS_CHILDREN", 3)
+    for name in ("a", "b", "c", "d"):
+        _state(_harness(tmp_path) / name, "work-uuid")
+    assert _folders("work-uuid", tmp_path) == [_harness(tmp_path) / name for name in ("a", "b", "c")]
+
+
+def test_harness_folders_never_become_lanes(tmp_path: Path) -> None:
+    _state(tmp_path, "personal-uuid")
+    _state(tmp_path / ".claude-work", "work-uuid")
+    before = discover(home=tmp_path, environ={})
+    _state(_harness(tmp_path) / "profile-a", "work-uuid")
+    _state(_harness(tmp_path) / "profile-b", "brand-new-uuid")
+    environ = {claude_accounts.HARNESS_DIRS_ENV: str(_harness(tmp_path))}
+    assert discover(home=tmp_path, environ=environ) == before
+    assert [a.key for a in before] == ["claude-code-work"]
+
+
+def test_account_folder_scan_is_cached_until_reset(tmp_path: Path) -> None:
+    _state(_harness(tmp_path) / "profile-a", "work-uuid")
+    assert _folders("work-uuid", tmp_path) == [_harness(tmp_path) / "profile-a"]
+    _state(_harness(tmp_path) / "profile-b", "work-uuid")
+    assert _folders("work-uuid", tmp_path) == [_harness(tmp_path) / "profile-a"]
+    claude_accounts.reset_cache()
+    assert _folders("work-uuid", tmp_path) == [_harness(tmp_path) / "profile-a", _harness(tmp_path) / "profile-b"]
+    # A different environment is a different scan, cache or not.
+    other = {claude_accounts.HARNESS_DIRS_ENV: str(tmp_path / "x")}
+    assert _folders("work-uuid", tmp_path, other) == [_harness(tmp_path) / "profile-a", _harness(tmp_path) / "profile-b"]

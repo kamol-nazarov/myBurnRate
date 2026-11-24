@@ -1,9 +1,12 @@
 import os
 import json
+import subprocess
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
+import pytest
 import spend_app.limits as limits
 
 from spend_app.limits import (
@@ -378,6 +381,150 @@ def test_claude_reads_claude_codes_cache_and_omits_windows_without_utilization(t
     assert result["status"] == "exact" and result["plan"] == "Claude Max"
     assert [window["key"] for window in result["windows"]] == ["weekly"]
     assert result["windows"][0]["usedPct"] == 41
+
+
+_CLAUDE_NOW = datetime(2026, 11, 24, 12, 0, tzinfo=UTC)
+
+
+def _claude_profile(directory: Path, uuid: str | None, *, used: float | None = None, age_minutes: float = 1,
+                    cached_uuid: str | None = None, weekly: float = 1) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    document: dict = {"oauthAccount": {"accountUuid": uuid, "organizationRateLimitTier": "default_claude_max_5x"}} if uuid else {}
+    if used is not None:
+        fetched = _CLAUDE_NOW - timedelta(minutes=age_minutes)
+        document["cachedUsageUtilization"] = {
+            "fetchedAtMs": int(fetched.timestamp() * 1000), "accountUuid": cached_uuid or uuid,
+            "utilization": {"five_hour": {"utilization": used, "resets_at": "2026-11-24T15:00:00Z"},
+                            "seven_day": {"utilization": weekly, "resets_at": "2026-11-28T08:00:00Z"}},
+        }
+    path = directory / ".claude.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    return path
+
+
+def _harness_dir(home: Path, name: str = "profile-a") -> Path:
+    return home / ".traycer" / "host" / "harness-accounts" / "claude-code" / name
+
+
+def _work_lane(home: Path):
+    from spend_app.claude_accounts import ClaudeAccount
+
+    state = home / ".claude-work" / ".claude.json"
+    return ClaudeAccount(key="claude-code-work", label="Work", config_dir=state.parent, state_path=state,
+                         account_uuid="work-uuid", plan="Claude Max")
+
+
+def _five_hour(payload: dict) -> float:
+    return next(window["usedPct"] for window in payload["windows"] if window["key"] == "5h")
+
+
+@pytest.fixture
+def claude_home(tmp_path: Path, monkeypatch) -> Path:
+    from spend_app import claude_accounts
+
+    monkeypatch.setattr("spend_app.limits.Path.home", lambda: tmp_path)
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.delenv(claude_accounts.EXTRA_DIRS_ENV, raising=False)
+    monkeypatch.delenv(claude_accounts.HARNESS_DIRS_ENV, raising=False)
+    _no_network(monkeypatch)
+    claude_accounts.reset_cache()
+    yield tmp_path
+    claude_accounts.reset_cache()
+
+
+def test_claude_lane_follows_a_fresher_reading_from_a_harness_profile(claude_home: Path) -> None:
+    lane = _work_lane(claude_home)
+    _claude_profile(lane.config_dir, "work-uuid", used=0, age_minutes=4 * 24 * 60)
+    _claude_profile(_harness_dir(claude_home), "work-uuid", used=2, age_minutes=3, weekly=1)
+    payload, source = limits.claude_account_limits(lane, now=_CLAUDE_NOW)
+    assert source == "claude_code_cache" and payload["status"] == "exact"
+    assert payload["key"] == "claude-code-work" and payload["plan"] == "Claude Max"
+    assert _five_hour(payload) == 2
+
+
+def test_claude_lane_uses_the_newest_reading_and_keeps_its_own_on_a_tie(claude_home: Path) -> None:
+    lane = _work_lane(claude_home)
+    _claude_profile(lane.config_dir, "work-uuid", used=30, age_minutes=10)
+    _claude_profile(_harness_dir(claude_home, "older"), "work-uuid", used=20, age_minutes=60)
+    _claude_profile(_harness_dir(claude_home, "newer"), "work-uuid", used=40, age_minutes=5)
+    assert _five_hour(limits.claude_account_limits(lane, now=_CLAUDE_NOW)[0]) == 40
+    _claude_profile(_harness_dir(claude_home, "newer"), "work-uuid", used=50, age_minutes=10)  # same age as the lane
+    from spend_app import claude_accounts
+
+    claude_accounts.reset_cache()
+    assert _five_hour(limits.claude_account_limits(lane, now=_CLAUDE_NOW)[0]) == 30
+
+
+def test_claude_lane_ignores_readings_owned_by_another_account(claude_home: Path) -> None:
+    lane = _work_lane(claude_home)
+    _claude_profile(lane.config_dir, "work-uuid", used=7, age_minutes=120)
+    _claude_profile(_harness_dir(claude_home, "personal"), "personal-uuid", used=90, age_minutes=1)
+    # Signed into the work account but carrying a reading cached for someone else.
+    _claude_profile(_harness_dir(claude_home, "mixed"), "work-uuid", used=95, age_minutes=1, cached_uuid="personal-uuid")
+    assert _five_hour(limits.claude_account_limits(lane, now=_CLAUDE_NOW)[0]) == 7
+
+
+def test_claude_lane_ignores_stale_harness_readings_and_unsigned_profiles(claude_home: Path) -> None:
+    lane = _work_lane(claude_home)
+    _claude_profile(lane.config_dir, "work-uuid", used=7, age_minutes=120)
+    _claude_profile(_harness_dir(claude_home, "stale"), "work-uuid", used=60, age_minutes=9 * 24 * 60)
+    _claude_profile(_harness_dir(claude_home, "unsigned"), None, used=80, age_minutes=1)
+    (_harness_dir(claude_home, "empty")).mkdir(parents=True)
+    assert _five_hour(limits.claude_account_limits(lane, now=_CLAUDE_NOW)[0]) == 7
+
+
+def test_claude_lane_ignores_linked_harness_profiles(claude_home: Path) -> None:
+    lane = _work_lane(claude_home)
+    _claude_profile(lane.config_dir, "work-uuid", used=7, age_minutes=120)
+    real = _claude_profile(claude_home / "real-profile", "work-uuid", used=88, age_minutes=1).parent
+    link = _harness_dir(claude_home, "linked")
+    link.parent.mkdir(parents=True)
+    try:
+        link.symlink_to(real, target_is_directory=True)
+    except OSError:
+        done = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(real)], capture_output=True)
+        if os.name != "nt" or done.returncode != 0:
+            pytest.skip("cannot create a symlink or junction here")
+    assert _five_hour(limits.claude_account_limits(lane, now=_CLAUDE_NOW)[0]) == 7
+
+
+def test_claude_lane_without_a_fresh_reading_anywhere_has_no_meter(claude_home: Path) -> None:
+    lane = _work_lane(claude_home)
+    _claude_profile(lane.config_dir, "work-uuid", used=7, age_minutes=9 * 24 * 60)
+    _claude_profile(_harness_dir(claude_home), "work-uuid")  # signed in, never cached anything
+    payload, source = limits.claude_account_limits(lane, now=_CLAUDE_NOW)
+    assert payload["status"] == "unavailable" and payload["windows"] == [] and source == "claude_code_cache"
+
+
+def test_claude_lane_reads_harness_roots_named_in_the_environment(claude_home: Path, monkeypatch) -> None:
+    from spend_app import claude_accounts
+
+    lane = _work_lane(claude_home)
+    _claude_profile(lane.config_dir, "work-uuid", used=0, age_minutes=4 * 24 * 60)
+    root = claude_home / "other-tool" / "claude"
+    _claude_profile(root / "p1", "work-uuid", used=11, age_minutes=2)
+    monkeypatch.setenv(claude_accounts.HARNESS_DIRS_ENV, str(root))
+    assert _five_hour(limits.claude_account_limits(lane, now=_CLAUDE_NOW)[0]) == 11
+
+
+def test_default_claude_lane_also_follows_a_fresher_harness_reading(claude_home: Path) -> None:
+    _claude_profile(claude_home, "personal-uuid", used=0, age_minutes=4 * 24 * 60)
+    _claude_profile(_harness_dir(claude_home), "personal-uuid", used=14, age_minutes=2)
+    _claude_profile(_harness_dir(claude_home, "work"), "work-uuid", used=70, age_minutes=1)
+    payload = _claude_limits_uncached(now=_CLAUDE_NOW)
+    assert payload["key"] == "claude-code" and payload["plan"] == "Claude Max"
+    assert _five_hour(payload) == 14
+
+
+def test_a_lane_without_an_account_uuid_reads_only_its_own_state(claude_home: Path) -> None:
+    from spend_app.claude_accounts import ClaudeAccount
+
+    state = _claude_profile(claude_home / ".claude-work", None, used=0, age_minutes=1)
+    _claude_profile(_harness_dir(claude_home), "work-uuid", used=33, age_minutes=1)
+    lane = ClaudeAccount(key="claude-code-work", label="Work", config_dir=state.parent, state_path=state,
+                         account_uuid="", plan=None)
+    payload, _ = limits.claude_account_limits(lane, now=_CLAUDE_NOW)
+    assert payload["status"] == "unavailable" and payload["windows"] == []
 
 
 def test_claude_never_reads_or_refreshes_its_sign_in(tmp_path: Path, monkeypatch) -> None:

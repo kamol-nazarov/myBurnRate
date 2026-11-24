@@ -11,6 +11,12 @@ read from the state file. The account's email address is never surfaced; the
 lane is named after the directory ("Work" for ``~/.claude-work``).
 Directories with other names can be listed in ``BURNRATE_CLAUDE_ACCOUNT_DIRS``
 (separated by the OS path separator).
+
+Other tools run Claude Code with a config directory of their own (Traycer keeps
+one per profile under ``~/.traycer/host/harness-accounts/claude-code``). Those
+folders never become lanes; they are only extra places to read an existing
+account's data, e.g. a fresher cached usage reading (``account_folders``).
+Further roots can be listed in ``BURNRATE_CLAUDE_HARNESS_DIRS``.
 """
 
 from __future__ import annotations
@@ -28,10 +34,13 @@ from pathlib import Path
 PRIMARY_KEY = "claude-code"
 PREFIX = "claude-code-"
 EXTRA_DIRS_ENV = "BURNRATE_CLAUDE_ACCOUNT_DIRS"
+HARNESS_DIRS_ENV = "BURNRATE_CLAUDE_HARNESS_DIRS"  # extra harness roots, os.pathsep-separated
 DISCOVERY_TTL_SECONDS = 60
+MAX_HARNESS_CHILDREN = 128
 
 _LOCK = threading.Lock()
 _DISCOVERED: dict = {"at": None, "key": None, "accounts": ()}
+_FOLDERS: dict = {"at": None, "key": None, "folders": ()}
 
 
 @dataclass(frozen=True)
@@ -44,9 +53,17 @@ class ClaudeAccount:
     plan: str | None
 
 
+@dataclass(frozen=True)
+class AccountFolder:
+    config_dir: Path
+    state_path: Path  # primary profile: primary_state_path(home, environ); others: config_dir / ".claude.json"
+    is_primary: bool
+
+
 def reset_cache() -> None:
     with _LOCK:
         _DISCOVERED.update(at=None, key=None, accounts=())
+        _FOLDERS.update(at=None, key=None, folders=())
 
 
 def read_state(path: Path) -> dict:
@@ -155,6 +172,82 @@ def extra_accounts() -> tuple[ClaudeAccount, ...]:
     with _LOCK:
         _DISCOVERED.update(at=time.monotonic(), key=marker, accounts=accounts)
     return accounts
+
+
+def _plain_dir(path: Path) -> bool:
+    from spend_app.connection_paths import is_junction
+
+    try:
+        return not path.is_symlink() and not is_junction(path) and path.is_dir()
+    except OSError:
+        return False
+
+
+def _plain_state_file(path: Path) -> bool:
+    from spend_app.connection_paths import is_junction
+
+    try:
+        return not path.is_symlink() and not is_junction(path) and path.is_file()
+    except OSError:
+        return False
+
+
+def harness_roots(home: Path, environ) -> list[Path]:
+    """Roots holding one Claude config folder per profile for tools that run Claude Code."""
+    roots = [Path(home) / ".traycer" / "host" / "harness-accounts" / "claude-code"]
+    for raw in str(environ.get(HARNESS_DIRS_ENV) or "").split(os.pathsep):
+        if raw.strip():
+            roots.append(Path(raw.strip()).expanduser())
+    return [root for root in roots if _plain_dir(root)]
+
+
+def _harness_children(root: Path) -> list[Path]:
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return []
+    return [root / name for name in names[:MAX_HARNESS_CHILDREN] if _plain_dir(root / name)]
+
+
+def _scan_folders(home: Path, environ) -> tuple[tuple[AccountFolder, str], ...]:
+    """Every folder with a regular state file signed into some account, as (folder, account uuid)."""
+    primary_dir = Path(str(environ.get("CLAUDE_CONFIG_DIR") or "").strip() or home / ".claude").expanduser()
+    candidates = [AccountFolder(primary_dir, primary_state_path(home, environ), True)]
+    candidates += [AccountFolder(path, path / ".claude.json", False) for path in _candidates(home, environ)]
+    for root in harness_roots(home, environ):
+        candidates += [AccountFolder(path, path / ".claude.json", False) for path in _harness_children(root)]
+    found: list[tuple[AccountFolder, str]] = []
+    seen: set[str] = set()
+    for folder in candidates:
+        marker = _safe_identity(folder.config_dir)
+        if marker is None or marker in seen:
+            continue
+        seen.add(marker)
+        if not _plain_state_file(folder.state_path):
+            continue
+        uuid = account_uuid(read_state(folder.state_path))
+        if uuid:
+            found.append((folder, uuid))
+    return tuple(found)
+
+
+def account_folders(account_uuid: str, *, home: Path | None = None, environ=None) -> tuple[AccountFolder, ...]:
+    """Every Claude Code config folder on this computer signed into ``account_uuid``.
+
+    Covers the primary profile, ``~/.claude-*`` and ``BURNRATE_CLAUDE_ACCOUNT_DIRS`` folders and each folder under
+    the harness roots. Symlinked or junctioned folders and state files are skipped. Re-scanned at most once a minute.
+    """
+    home = Path(home) if home is not None else Path.home()
+    environ = os.environ if environ is None else environ
+    marker = (str(home), environ.get("CLAUDE_CONFIG_DIR"), environ.get(EXTRA_DIRS_ENV), environ.get(HARNESS_DIRS_ENV))
+    with _LOCK:
+        fresh = _FOLDERS["at"] is not None and time.monotonic() - _FOLDERS["at"] < DISCOVERY_TTL_SECONDS
+        scanned = _FOLDERS["folders"] if fresh and _FOLDERS["key"] == marker else None
+    if scanned is None:
+        scanned = _scan_folders(home, environ)
+        with _LOCK:
+            _FOLDERS.update(at=time.monotonic(), key=marker, folders=scanned)
+    return tuple(folder for folder, uuid in scanned if uuid == account_uuid)
 
 
 def _safe_identity(path: Path) -> str | None:

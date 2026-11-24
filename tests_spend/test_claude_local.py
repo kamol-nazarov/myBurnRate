@@ -588,3 +588,71 @@ def test_unchanged_file_with_quarantined_records_is_not_reparsed(tmp_path: Path,
     assert second["quarantined"] == first["quarantined"] >= 1
     assert second["status"] == first["status"] == "partial"
     reset_file_cache()
+
+
+def _lane_ingest(tmp_path, database, pricing):
+    return ingest(database_path=database, pricing=pricing, session_glob=str(tmp_path / "**" / "*.jsonl"))
+
+
+def test_default_run_tags_attributed_sessions_with_their_lane(tmp_path, monkeypatch):
+    from spend_app import claude_session_lanes
+
+    database = tmp_path / "spend.db"
+    pricing = PricingEngine.load(ROOT / "pricing")
+    top = tmp_path / "session.jsonl"
+    sub = tmp_path / "session" / "subagents" / "agent-1.jsonl"
+    other = tmp_path / "other.jsonl"
+    for path, request, sid in ((top, "r1", "session"), (sub, "r2", "session"), (other, "r3", "other")):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        record = _assistant(request_id=request)
+        record["sessionId"] = sid
+        record["uuid"] = f"envelope-{request}"
+        record["message"]["id"] = f"message-{request}"
+        path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    monkeypatch.setattr(claude_session_lanes, "session_lanes", lambda _db: {"session": "claude-code-work"})
+    reset_file_cache()
+    result = _lane_ingest(tmp_path, database, pricing)
+    assert result["files"] == 3
+    with connect(database) as connection:
+        events = {r["session_id"]: r["tool_key"] for r in connection.execute("SELECT * FROM usage_events")}
+        sessions = {r["session_id"]: r["tool_key"] for r in connection.execute("SELECT * FROM sessions")}
+        remembered = claude_session_lanes.read_remembered(connection)
+    assert events == {"session": "claude-code-work", "other": "claude-code"}
+    assert sessions == events
+    assert remembered == {"session": "claude-code-work"}  # parent id, shared by the subagent transcript
+    assert sum(r["tool_key"] == "claude-code-work" for r in _claude_rows(database)) == 2
+
+    # Unchanged files stay cached under their lane's identity.
+    assert _lane_ingest(tmp_path, database, pricing)["filesSkippedUnchanged"] == 3
+    reset_file_cache()
+
+
+def test_file_that_moves_lanes_is_reparsed_but_other_files_keep_their_cache(tmp_path, monkeypatch):
+    from spend_app import claude_session_lanes
+    from spend_app.adapters import claude_local
+
+    database = tmp_path / "spend.db"
+    pricing = PricingEngine.load(ROOT / "pricing")
+    path = tmp_path / "session.jsonl"
+    stay = tmp_path / "stay.jsonl"
+    for target, sid in ((path, "session"), (stay, "stay")):
+        record = _assistant(request_id=sid)
+        record["sessionId"], record["uuid"] = sid, f"envelope-{sid}"
+        record["message"]["id"] = f"message-{sid}"
+        target.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    lanes = {}
+    monkeypatch.setattr(claude_session_lanes, "session_lanes", lambda _db: lanes)
+    reset_file_cache()
+    _lane_ingest(tmp_path, database, pricing)
+    before = {row["raw_id"] for row in _claude_rows(database)}
+    lanes["session"] = "claude-code-work"
+    calls = []
+    original = claude_local.parse_file_with_health
+    monkeypatch.setattr(claude_local, "parse_file_with_health", lambda p: calls.append(Path(p).name) or original(p))
+    result = _lane_ingest(tmp_path, database, pricing)
+    assert calls == ["session.jsonl"]
+    assert result["filesSkippedUnchanged"] == 1
+    rows = _claude_rows(database)
+    assert {row["raw_id"] for row in rows} == before
+    assert {row["session_id"]: row["tool_key"] for row in rows} == {"session": "claude-code-work", "stay": "claude-code"}
+    reset_file_cache()

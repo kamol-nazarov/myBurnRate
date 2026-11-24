@@ -132,6 +132,8 @@ Claude Code keeps one signed-in account per config directory. Run a second accou
 - A profile signed in to the same account as the default lane is ignored, so nothing is shown twice.
 - Each lane reads the plan usage Claude Code itself cached for that profile, which needs no network call and no sign-in. An idle profile shows its last reading with its age, and a window whose reset has passed reads as reset.
 - Lanes are named after the directory. The account's email address is never shown.
+- If the same account is also signed in somewhere else on this computer, such as a profile that Traycer manages under `~/.traycer/host/harness-accounts/claude-code`, the lane shows the newest valid reading from any of those folders, so a folder you no longer use cannot freeze the meter. Those folders never become lanes. Put other tools' profile roots in `BURNRATE_CLAUDE_HARNESS_DIRS` (separated by `;` on Windows).
+- Spend from a profile whose transcripts are written to `~/.claude/projects` (as Traycer-managed profiles do) is attributed to the matching account lane using that profile's `session-env/<sessionId>` folders. This needs Claude Code to create those folders, which it does when a SessionStart hook is configured. Once a session is attributed it stays on that lane, and sessions that `session-env` still lists (about 30 days) are backfilled.
 
 ### More than one OpenCode profile
 
