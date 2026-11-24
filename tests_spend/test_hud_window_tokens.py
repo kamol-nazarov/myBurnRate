@@ -247,5 +247,6 @@ def test_window_starts_follow_each_window_length():
 def test_uncurated_model_names_read_cleanly():
     assert _model_name("opencode-go", "opencode-go:deepseek-v4.1-flash") == "DeepSeek V4.1 Flash"
     assert _model_name("antigravity", "antigravity:gpt-oss-120b") == "GPT OSS 120B"
-    assert _model_name("codex", "gpt-5.6-sol") == "GPT 5.6 Sol"
+    assert _model_name("codex", "gpt-5.7-sol") == "GPT 5.7 Sol"
+    assert _model_name("codex", "gpt-5.6-sol") == "GPT-5.6 Sol"  # curated name wins
     assert _model_name("claude-code", "claude-opus-5-5") == "Opus 5.5"

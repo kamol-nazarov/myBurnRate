@@ -158,6 +158,12 @@ def _no_real_opencode_profiles(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_claude_config_dir(monkeypatch):
+    """A CLAUDE_CONFIG_DIR inherited from the shell (Traycer sets one) must not point tests at real Claude state."""
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_real_claude_accounts(monkeypatch):
     """Extra Claude accounts in the developer's home must not become quota lanes or profiles in tests."""
     monkeypatch.setattr("spend_app.claude_accounts.extra_accounts", lambda: ())

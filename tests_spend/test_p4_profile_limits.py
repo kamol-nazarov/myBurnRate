@@ -1148,7 +1148,7 @@ def test_custom_non_prefix_store_keys_and_provider_meta(tmp_path: Path, monkeypa
 
     # With SPEND_DATABASE_PATH pointing to db_path, order & cadence helpers resolve custom keys too.
     monkeypatch.setenv("SPEND_DATABASE_PATH", str(db_path))
-    assert _limit_order("studio-claude") == ("5h", "weekly")
+    assert _limit_order("studio-claude") == ("5h", "weekly", "weekly-fable")
     assert _limit_order("studio-oc") == ("5h", "weekly", "monthly")
     scheduler = QuotaLaneScheduler()
     assert scheduler.lane_cadence("studio-claude") == LANE_CADENCE["claude-code"]

@@ -222,7 +222,7 @@ def test_desktop_bridge_public_method_allowlist_and_removed_setup_routes(
         "save_analytics_window", "save_period", "save_provider_order",
         "send_test_notification", "service_owns_plan_alerts", "set_account_email",
         "set_auto_fade", "set_close_to_tray", "set_hud_density", "set_hud_mini",
-        "set_idle_opacity", "set_low_quota_alerts", "set_notification_kind",
+        "set_idle_opacity", "set_low_quota_alerts", "set_notification_kind", "set_pill_limit",
         "set_setup_consent", "set_theme", "set_topmost", "set_tray_available",
         "set_ui_busy", "show_tab", "sign_in", "sign_out", "trigger_sync", "update_summary",
     }
