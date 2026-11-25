@@ -342,6 +342,9 @@ def _main() -> int:
     machines_sub.add_parser("list")
     m_rev = machines_sub.add_parser("revoke")
     m_rev.add_argument("--id", required=True)
+    m_delete = machines_sub.add_parser("delete-data", help="Back up and remove one revoked computer's imported data")
+    m_delete.add_argument("--id", required=True)
+    m_delete.add_argument("--confirm", required=True, help="Repeat the exact computer ID to confirm")
     desktop_parser = subparsers.add_parser(
         "desktop",
         help="Open the compact native usage application",
@@ -540,13 +543,35 @@ def _main() -> int:
     if args.command == "hub" and args.hub_command == "update":
         from spend_app.hub_update import update_hub
         return update_hub(ssh=args.ssh, path=args.path, service=args.service, branch=args.branch,
-                          push_local=args.push_local, dry_run=args.dry_run)
+                          tag=args.tag, push_local=args.push_local,
+                          require_host_preflight=args.require_host_preflight, dry_run=args.dry_run)
     if args.command == "hub" and args.hub_command == "reset-password":
         from spend_app.hub_update import reset_hub_password
         return reset_hub_password(settings.database_path, args.email)
+    if args.command == "hub" and args.hub_command == "create-owner":
+        from spend_app.hub_update import create_hub_owner
+        return create_hub_owner(settings.database_path, args.email)
     if args.command == "machines":
         from spend_app.sync import list_machines, revoke_machine
 
+        if args.machines_command == "delete-data":
+            from spend_app.auth_model import Principal
+            from spend_app.connection_api import central_server
+            from spend_app.machine_data import delete_machine_data
+            from spend_app.redact import redact
+
+            if not central_server() or args.confirm != args.id:
+                print("Run this command on the hub and confirm the exact computer ID.", file=sys.stderr)
+                return 1
+            try:
+                result = delete_machine_data(
+                    settings.database_path, args.id, actor=Principal("system", "local-cli"),
+                )
+            except (ValueError, OSError, sqlite3.Error) as error:
+                print("Computer data removal failed: " + redact(str(error)), file=sys.stderr)
+                return 1
+            print(json.dumps(result, indent=2))
+            return 0
         initialize(settings.database_path)
         if args.machines_command == "revoke":
             from spend_app.auth_model import Principal

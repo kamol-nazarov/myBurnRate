@@ -10,6 +10,7 @@ from spend_app.config import Settings
 from spend_app.db import connect, initialize, upsert_agent_run, upsert_quota
 from spend_app.pricing import PricingEngine
 from spend_app.scheduler import HistoryDemand, create_scheduler
+from tests_spend.local_client_fixture import local_client
 
 ROOT = Path(__file__).resolve().parents[1]
 NOW = datetime(2026, 10, 20, 18, tzinfo=UTC)
@@ -47,7 +48,7 @@ def test_hud_reads_live_meters_without_loading_history(tmp_path, monkeypatch):
         res = client.get(route)
         assert res.status_code == 404
         assert res.json()["error"]["code"] == "REQ-404"
-    payload = client.get("/api/spend/hud").json()
+    payload = local_client(app, settings.database_path).get("/api/spend/hud").json()
     grok = next(card for card in payload["capacity"] if card["providerKey"] == "grok")
     assert grok["primaryPct"] == 42
     assert payload["activity"][0]["name"] == "Live agent"
@@ -133,7 +134,7 @@ def test_startup_does_not_warm_history_and_dashboard_requests_activate_it(tmp_pa
 
     monkeypatch.setattr("spend_app.api.aggregate_summary_cached", summary)
     app = create_app(settings)
-    with TestClient(app) as client:
+    with local_client(app, settings.database_path) as client:
         assert client.get("/healthz").status_code == 200
         assert client.get("/hud").status_code == 404
         assert client.get("/api/spend/hud").status_code == 200
@@ -178,7 +179,7 @@ def test_hud_recorded_usage_keeps_collection_active_without_building_dashboard(t
     for name in ("aggregate_summary", "_month_usage", "_heatmap_cells", "_day_coverage"):
         monkeypatch.setattr(aggregate, name, no_dashboard)
     app = create_app(settings, enable_scheduler=False, now=now)
-    payload = TestClient(app).get("/api/spend/hud/usage").json()
+    payload = local_client(app, settings.database_path).get("/api/spend/hud/usage").json()
     for key in ("todayUsd", "todayTokens", "burnRatePerDay", "tokensAvgPerDay", "todayComplete"):
         assert payload["navigation"][key] == expected["navigation"][key]
     assert payload["totals"]["cacheReusePct"] == expected["totals"]["cacheReusePct"]
@@ -228,7 +229,7 @@ def test_hud_only_collects_new_usage_across_midnight_and_renews_demand(tmp_path,
     freshness.reset_state()
     try:
         app = create_app(settings)
-        client = TestClient(app)
+        client = local_client(app, settings.database_path)
         job = schedulers[0].get_job("local-ingest")
         assert client.get("/api/spend/hud").status_code == 200
         assert not demand.active()
@@ -264,7 +265,7 @@ def test_hud_usage_activates_collection_on_both_spoke_and_hub(tmp_path, monkeypa
     hub_settings = settings_for(tmp_path / "hub")
     spoke_settings = settings_for(tmp_path / "spoke")
     hub = create_app(hub_settings, enable_scheduler=False, now=NOW)
-    hub_client = TestClient(hub)
+    hub_client = local_client(hub, hub_settings.database_path)
     spoke = create_app(spoke_settings, enable_scheduler=False, now=NOW)
 
     def fetch(settings, path, params, **_):
@@ -276,7 +277,7 @@ def test_hud_usage_activates_collection_on_both_spoke_and_hub(tmp_path, monkeypa
         return hub_client.get(path, params=params).json()
 
     monkeypatch.setattr("spend_app.sync.fetch_from_configured_hub", fetch)
-    client = TestClient(spoke)
+    client = local_client(spoke, spoke_settings.database_path)
     assert client.get("/api/spend/hud").status_code == 200
     assert not hub.state.history_demand.active() and not spoke.state.history_demand.active()
     assert client.get("/api/spend/hud/usage").status_code == 200
@@ -295,7 +296,8 @@ def test_hud_usage_schedules_collection_once_and_renews_on_each_poll(tmp_path, m
     monkeypatch.setattr("spend_app.api.HistoryDemand", lambda: demand)
     monkeypatch.setattr("spend_app.api.create_scheduler", lambda *args, **kwargs: Scheduler())
     monkeypatch.setattr("spend_app.freshness.collection_resumed", lambda: calls.append("resumed"))
-    client = TestClient(create_app(settings_for(tmp_path), now=NOW))
+    settings = settings_for(tmp_path)
+    client = local_client(create_app(settings, now=NOW), settings.database_path)
     expected = ["resumed", "local-ingest", "provider-admin"]
     assert client.get("/api/spend/hud/usage").status_code == 200
     assert calls == expected
@@ -312,7 +314,7 @@ def test_hud_usage_schedules_collection_once_and_renews_on_each_poll(tmp_path, m
 def test_hud_freshness_reports_a_stalled_loop_without_any_polling(tmp_path, monkeypatch):
     settings = settings_for(tmp_path)
     app = create_app(settings, enable_scheduler=False, now=NOW)
-    client = TestClient(app)
+    client = local_client(app, settings.database_path)
     freshness.reset_state()
     monkeypatch.setattr(freshness, "_STARTED_MONO", freshness.time.monotonic() - 7200)
     try:

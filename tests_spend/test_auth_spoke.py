@@ -18,6 +18,7 @@ from spend_app.connection_secrets import (
     read_vault_secret,
 )
 from spend_app.db import UsageEvent, connect, upsert_usage_event
+from spend_app.local_access import read_local_key
 from spend_app.native_desktop import NativeClient
 from spend_app.pricing import PricingEngine
 from spend_app.wealthfront_window import DesktopBridge
@@ -65,13 +66,19 @@ def seed(path, raw_id, tokens):
             ingested_at=now, is_exact=True))
 
 
+def _local_api_client(local_settings):
+    app = create_app(local_settings, enable_scheduler=False)
+    key = read_local_key(local_settings.database_path)
+    assert key
+    return TestClient(app, base_url="http://testserver", headers={"Authorization": f"Bearer {key}"})
+
+
 @pytest.fixture
 def pair(tmp_path, monkeypatch):
     monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "synthetic-admin")
     monkeypatch.setenv("BURNRATE_SETUP_TOKEN", SETUP_TOKEN)
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
     aggregate.reset_memo()
     hs = settings(tmp_path / "hub.db")
@@ -87,7 +94,7 @@ def pair(tmp_path, monkeypatch):
         monkeypatch.delenv("BURNRATE_CENTRAL_SERVER", raising=False)
         monkeypatch.delenv("BURNRATE_ACCESS_TOKEN", raising=False)
         ss = settings(tmp_path / "spoke.db")
-        with TestClient(create_app(ss, enable_scheduler=False), base_url="http://testserver") as spoke:
+        with _local_api_client(ss) as spoke:
             seed(ss.database_path, "spoke-event", 7000)
             joined = spoke.post("/api/setup/account", headers=UI, json={
                 "mode": "login",
@@ -105,7 +112,6 @@ def pair(tmp_path, monkeypatch):
     sync.clear_hub_proxy_cache()
     aggregate.reset_memo()
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
 
 
 def state(settings):
@@ -154,14 +160,15 @@ def test_spoke_local_session_gates_hub_owner_actions(pair):
         ("POST", "/api/auth/sessions/revoke", {"id": "unknown"}, 401),
         ("POST", "/api/auth/logout", {}, 401),
         ("POST", "/api/auth/session/rotate", {}, 401),
-        ("POST", "/api/auth/rotate", {}, 403),
+        ("POST", "/api/auth/rotate", {}, 401),
     ):
         response = (anonymous.get(path, headers=UI) if method == "GET"
                     else anonymous.post(path, headers=UI, json=body))
         assert response.status_code == expected, (path, response.status_code, response.text)
         assert "br_bg_" not in response.text and "br_s_" not in response.text
 
-    ctx = anonymous.get("/api/auth/context")
+    assert anonymous.get("/api/auth/context").status_code == 401
+    ctx = spoke.get("/api/auth/context")
     assert ctx.status_code == 200
     assert ctx.json() == {"spoke": True, "hasOwner": False, "localSession": False}
 
@@ -200,7 +207,10 @@ def test_spoke_local_session_gates_hub_owner_actions(pair):
     assert not owner_session_of(ss)
     assert bridge._owner_session_status() == {"ok": True, "hasOwnerSession": False, "expiresAt": None}
     assert bridge.list_computers()["code"] == "AUTH-107"
-    assert spoke.get("/api/auth/sessions", headers=UI).status_code == 403
+    assert anonymous.get("/api/auth/sessions", headers=UI).status_code == 401
+    local_sessions = spoke.get("/api/auth/sessions", headers=UI)
+    assert local_sessions.status_code == 200
+    assert local_sessions.json()["sessions"] == []
 
 
 def test_paired_spoke_owner_signin_logout_and_machine_sync(pair):
@@ -295,7 +305,7 @@ def test_spoke_login_refuses_revoked_machine_name_and_expired_rotation_deadline(
     name_only = hub.post("/api/machines", headers=ADMIN, json={"action": "register", "name": "laptop"})
     assert name_only.status_code == 422, name_only.text
     fresh = settings(tmp_path / "fresh-revoked.db")
-    with TestClient(create_app(fresh, enable_scheduler=False), base_url="http://testserver") as fresh_spoke:
+    with _local_api_client(fresh) as fresh_spoke:
         joined = fresh_spoke.post("/api/setup/account", headers=UI, json={
             "mode": "login", "username": "owner@example.com", "password": PASSWORD,
             "computerName": "laptop", "testSync": False,
@@ -328,7 +338,7 @@ def test_fresh_setup_account_enables_owner_view(pair, tmp_path, monkeypatch):
     _, hub, _, _ = pair
     monkeypatch.setenv("BURNRATE_HUB_URL", HUB)
     fresh = settings(tmp_path / "fresh.db")
-    with TestClient(create_app(fresh, enable_scheduler=False), base_url="http://testserver") as spoke:
+    with _local_api_client(fresh) as spoke:
         seed(fresh.database_path, "fresh-event", 3000)
         response = spoke.post("/api/setup/account", headers=UI, json={"mode": "login", "username": "owner@example.com",
             "password": PASSWORD, "computerName": "Fresh laptop", "testSync": True})
@@ -403,38 +413,44 @@ def test_hud_fallback_excludes_old_hub_imports_and_shows_signin(pair):
     assert removed.json()["error"]["code"] == "REQ-404"
 
 
-def test_local_token_protected_first_registration_requires_owner(tmp_path, monkeypatch):
+def test_first_local_registration_requires_the_installation_credential(tmp_path, monkeypatch):
     monkeypatch.delenv("BURNRATE_CENTRAL_SERVER", raising=False)
     recovery = secrets.token_urlsafe(32)
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", recovery)
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
-    app = create_app(settings(tmp_path / "protected.db"), enable_scheduler=False)
+    local = settings(tmp_path / "protected.db")
+    app = create_app(local, enable_scheduler=False)
+    key = read_local_key(local.database_path)
+    assert key
     payload = {"username": "owner@example.com", "password": PASSWORD, "sessionOnly": True}
     with TestClient(app) as client:
         denied = client.post("/api/account/register", headers={"X-BURNRATE-Request": "1"}, json=payload)
         assert denied.status_code in (401, 403), denied.text
         assert "sessionToken" not in denied.text
-        registered = client.post("/api/account/register", json=payload,
+        legacy = client.post("/api/account/register", json=payload,
             headers={"Authorization": "Bearer " + recovery, "X-BURNRATE-Request": "1"})
+        assert legacy.status_code == 401 and "sessionToken" not in legacy.text
+        registered = client.post("/api/account/register", json=payload,
+            headers={"Authorization": "Bearer " + key, "X-BURNRATE-Request": "1"})
         assert registered.status_code == 200, registered.text
         assert "sessionToken" not in registered.text
         assert registered.cookies[auth_model.COOKIE].startswith("br_s_")
 
 
 def test_rotated_recovery_remains_protected_after_environment_removed(tmp_path, monkeypatch):
-    monkeypatch.delenv("BURNRATE_CENTRAL_SERVER", raising=False)
+    monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
     recovery = secrets.token_urlsafe(32)
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", recovery)
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     local = settings(tmp_path / "restart.db")
-    with TestClient(create_app(local, enable_scheduler=False)) as client:
-        rotated = client.post("/api/auth/rotate", headers={"Authorization": "Bearer " + recovery})
+    with TestClient(create_app(local, enable_scheduler=False), base_url="https://testserver") as client:
+        with monkeypatch.context() as scope:
+            scope.delenv("BURNRATE_CENTRAL_SERVER")
+            rotated = client.post("/api/auth/rotate", headers={"Authorization": "Bearer " + recovery})
         assert rotated.status_code == 200, rotated.text
         new = rotated.json()["token"]
     monkeypatch.delenv("BURNRATE_ACCESS_TOKEN", raising=False)
-    with TestClient(create_app(local, enable_scheduler=False)) as client:
+    with TestClient(create_app(local, enable_scheduler=False), base_url="https://testserver") as client:
         assert client.get("/api/machines").status_code == 401
         denied = client.post("/api/account/register", headers={"X-BURNRATE-Request": "1"}, json={"username": "owner@example.com", "password": PASSWORD, "sessionOnly": True})
         assert denied.status_code in (401, 403) and "sessionToken" not in denied.text
@@ -445,11 +461,35 @@ def test_rotated_recovery_remains_protected_after_environment_removed(tmp_path, 
         assert fresh.cookies[auth_model.COOKIE].startswith("br_s_")
 
 
+def test_local_key_bootstraps_a_session_and_cannot_issue_hub_recovery(tmp_path, monkeypatch):
+    monkeypatch.delenv("BURNRATE_CENTRAL_SERVER", raising=False)
+    monkeypatch.delenv("BURNRATE_ACCESS_TOKEN", raising=False)
+    local = settings(tmp_path / "local.db")
+    app = create_app(local, enable_scheduler=False)
+    key = read_local_key(local.database_path)
+    assert key
+    monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
+    with TestClient(app, base_url="https://testserver") as client:
+        headers = {"Authorization": f"Bearer {key}"}
+        bootstrap = client.post("/api/auth/bootstrap", headers=headers)
+        assert bootstrap.status_code == 200
+        session = bootstrap.cookies[auth_model.COOKIE]
+        client.cookies.clear()
+        session_headers = {"Authorization": f"Bearer {session}"}
+        assert client.get("/api/auth/context", headers=session_headers).status_code == 200
+        for local_headers in (headers, session_headers):
+            denied = client.post("/api/auth/rotate", headers=local_headers)
+            assert denied.status_code == 403
+            assert "token" not in denied.json()
+    with connect(local.database_path) as conn:
+        assert conn.execute("SELECT 1 FROM app_meta WHERE key='auth.break_glass.v1'").fetchone() is None
+
+
 def test_concurrent_breakglass_rotation_is_single_winner(tmp_path, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
 
-    monkeypatch.delenv("BURNRATE_CENTRAL_SERVER", raising=False)
+    monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
     recovery = secrets.token_urlsafe(32)
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", recovery)
     gate = Barrier(2, timeout=10)
@@ -483,6 +523,10 @@ def test_session_rotation_and_revocation_failures_are_audited_once(pair):
             return [dict(row) for row in conn.execute(
                 "SELECT * FROM admin_audit WHERE action=? ORDER BY id", (action,))]
 
+    assert rows("session.rotate") == []
+    assert hub.app.state.unauthenticated_denials >= 1
+    missing_session = hub.post("/api/auth/session/rotate", headers=ADMIN, json={})
+    assert missing_session.status_code == 401
     rotations = rows("session.rotate")
     assert len(rotations) == 1 and rotations[0]["outcome"] == "failure"
     assert rotations[0]["target"] == "/api/auth/session/rotate"

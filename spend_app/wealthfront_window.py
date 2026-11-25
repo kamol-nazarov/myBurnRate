@@ -1358,14 +1358,14 @@ class DesktopBridge:
         if not self._demo:
             self._migrate_legacy_secrets()
 
-    def attach(self, window, hwnd_getter) -> None:
+    def _attach(self, window, hwnd_getter) -> None:
         self._window = window
         self._hwnd_getter = hwnd_getter
 
-    def attach_host(self, host: WindowHost) -> None:
+    def _attach_host(self, host: WindowHost) -> None:
         self._host = host
 
-    def attach_surfaces(self, surfaces: SurfaceController) -> None:
+    def _attach_surfaces(self, surfaces: SurfaceController) -> None:
         self._surfaces = surfaces
 
     @property
@@ -1409,7 +1409,7 @@ class DesktopBridge:
     def demo(self) -> bool:
         return self._demo
 
-    def set_tray_available(self, available: bool) -> None:
+    def _set_tray_available(self, available: bool) -> None:
         self._tray_available = bool(available)
 
     def _read_preferences(self) -> dict:
@@ -1472,8 +1472,13 @@ class DesktopBridge:
             self._host.apply_theme(resolve_dark(self._theme))
         return {"ok": True, "theme": self._theme}
 
-    def report_effective_theme(self, dark: bool) -> dict:
-        self._effective_dark = bool(dark)
+    def publish_effective_theme(self, dark: bool) -> dict:
+        if not isinstance(dark, bool):
+            return {"ok": False}
+        return self._report_effective_theme(dark)
+
+    def _report_effective_theme(self, dark: bool) -> dict:
+        self._effective_dark = dark
         if self._host is not None:
             self._host.apply_theme(self._effective_dark)
         self._tab_model.refresh()
@@ -1519,7 +1524,7 @@ class DesktopBridge:
                 LOGGER.debug("Service notification mirror skipped", exc_info=True)
         return {"ok": True, "lowQuotaAlerts": self._low_quota_alerts}
 
-    def service_owns_plan_alerts(self) -> bool:
+    def _service_owns_plan_alerts(self) -> bool:
         """Whether the service notifier raises plan-window alerts right now.
 
         Asked of ``GET /api/setup/notifications`` and cached briefly: it is
@@ -1725,7 +1730,7 @@ class DesktopBridge:
 
     # -- alerts ------------------------------------------------------------
 
-    def fetch_alert_providers(self) -> list[dict] | None:
+    def _fetch_alert_providers(self) -> list[dict] | None:
         """Merged providers for the alert watcher; ``None`` while unavailable.
 
         Reads only the quota capacity feed: alerts need remaining percentages
@@ -2493,6 +2498,7 @@ class DesktopBridge:
         db_token: str | None = None
         db_expires_at: str | None = None
         db_gen: int | None = None
+        requires_sign_in = False
         if db_path is not None and db_path.is_file():
             try:
                 from spend_app.db import connect
@@ -2502,6 +2508,7 @@ class DesktopBridge:
                     state = read_setup_state(conn)
                 spoke = state.get("spokeConfig") or {}
                 db_gen = int(spoke.get("credentialGeneration") or 0)
+                requires_sign_in = bool(spoke.get("requiresHubSignIn"))
                 db_token = str(spoke.get("ownerSession") or "").strip() or None
                 db_expires_at = spoke.get("ownerSessionExpiresAt")
             except Exception:
@@ -2510,6 +2517,11 @@ class DesktopBridge:
                 db_gen = None
 
         with self._owner_session_lock:
+            if requires_sign_in:
+                self._owner_session = None
+                self._owner_session_expires_at = None
+                self._owner_session_gen = db_gen
+                return None, None, db_gen
             if (
                 db_gen is not None
                 and self._owner_session_gen is not None
@@ -2662,6 +2674,7 @@ class DesktopBridge:
         flush_pending: bool = True,
     ) -> tuple[dict | None, object | None, dict | None]:
         import httpx
+        from spend_app.connection_secrets import credential_origin_allowed
         from spend_app.setup_wizard import _hub_protocol_handshake
         from spend_app.sync import _HUB_TEST_CLIENTS
 
@@ -2673,6 +2686,20 @@ class DesktopBridge:
         if json_body is not None:
             headers["Content-Type"] = "application/json"
 
+        if token and not fresh_session:
+            db_path = self._db_path()
+            if db_path is not None and db_path.is_file():
+                from spend_app.db import connect
+                from spend_app.setup_wizard import read_setup_state
+
+                try:
+                    with connect(db_path) as connection:
+                        spoke = read_setup_state(connection)["spokeConfig"]
+                    if not credential_origin_allowed(db_path, token, hub_url, spoke, vault=self._resolve_vault()):
+                        raise ValueError("Hub credential is outside its issuing origin.")
+                except (OSError, ValueError):
+                    return None, None, {"ok": False, "code": "AUTH-107",
+                                        "error": format_error("AUTH-107")}
         try:
             if handshake:
                 _hub_protocol_handshake(hub_url, test_client)
@@ -2734,12 +2761,14 @@ class DesktopBridge:
                         for cookie in saved_jar:
                             cookies.jar.set_cookie(cookie)
             else:
+                from spend_app.hub_response import bounded_request
+
                 with httpx.Client(timeout=10.0, trust_env=False, follow_redirects=False) as http:
                     url = f"{hub_url}{path}"
                     if method == "GET":
-                        res = http.get(url, headers=headers)
+                        res = bounded_request(http, "GET", url, headers=headers)
                     else:
-                        res = http.post(url, json=json_body, headers=headers)
+                        res = bounded_request(http, "POST", url, json=json_body, headers=headers)
         except CodedError as exc:
             if token and not fresh_session and exc.code == "AUTH-107":
                 with self._owner_session_lock:
@@ -2987,6 +3016,11 @@ class DesktopBridge:
         payload["accountEmail"] = acct_email
         payload["computerName"] = comp_name
         payload["syncState"] = sync_state
+        hub, _error = self._resolve_hub_origin()
+        if hub:
+            from urllib.parse import urlsplit
+
+            payload["hubHost"] = urlsplit(hub).netloc
         if "machines" in payload and isinstance(payload["machines"], list):
             payload["machines"] = self._annotate_machines(payload["machines"], current_mid)
         return payload
@@ -3059,6 +3093,7 @@ class DesktopBridge:
         email: str,
         password: str,
         computer_name: str = "",
+        setup_token: str = "",
     ) -> dict:
         if self._demo:
             return self._h5_err("HUB-501", message="Account actions are disabled in demo mode.")
@@ -3130,6 +3165,8 @@ class DesktopBridge:
             "computerName": clean_comp,
             "deviceLabel": clean_comp,
         }
+        if endpoint == "/api/account/register" and setup_token:
+            auth_body["setupToken"] = setup_token
         deferred_history = attach_sign_in_history(auth_body, local_history) if local_history is not None else False
         auth_data, auth_res, call_err = self._call_hub(
             hub_url,
@@ -3283,6 +3320,7 @@ class DesktopBridge:
                         db_path,
                         owner_session=session_token,
                         machine_token=machine_token,
+                        authenticated_origin=hub_url,
                         vault=vault,
                         prepare_state=_prepare_auth_state,
                         apply_state=_apply_auth_state,
@@ -3393,12 +3431,14 @@ class DesktopBridge:
         email: str,
         password: str,
         computer_name: str = "",
+        setup_token: str = "",
     ) -> dict:
         return self._authenticate_and_register(
             endpoint="/api/account/register",
             email=email,
             password=password,
             computer_name=computer_name,
+            setup_token=setup_token,
         )
 
     def sign_out(self) -> dict:
@@ -4181,11 +4221,15 @@ def _png_to_cf_dib(png_bytes: bytes) -> bytes:
     if not saw_ihdr or not idat_parts:
         raise ValueError("Missing PNG image data.")
 
-    raw = zlib.decompress(b"".join(idat_parts))
     bpp = 4 if color_type == 6 else 3
     stride = width * bpp
     expected = height * (1 + stride)
-    if len(raw) != expected:
+    max_clipboard_bytes = 64 * 1024 * 1024
+    if expected > max_clipboard_bytes or width * height * 4 > max_clipboard_bytes:
+        raise ValueError("The PNG is too large for the clipboard.")
+    inflater = zlib.decompressobj()
+    raw = inflater.decompress(b"".join(idat_parts), expected + 1)
+    if len(raw) != expected or not inflater.eof or inflater.unused_data:
         raise ValueError("Corrupt PNG scanline length.")
 
     rows: list[bytes] = []
@@ -4779,7 +4823,7 @@ class WindowHost:
         if tray.create():
             LOGGER.info("Notification-area icon created")
             self.tray = tray
-            self.bridge.set_tray_available(True)
+            self.bridge._set_tray_available(True)
 
     def _install_form_hooks(self, native) -> None:
         import System.Windows.Forms as WinForms  # type: ignore[import-not-found]
@@ -4822,12 +4866,12 @@ class WindowHost:
         self._settle_geometry()
         if self._alerts_enabled and self.tray_ready() and self.watcher is None:
             self.watcher = QuotaWatcher(
-                self.bridge.fetch_alert_providers,
+                self.bridge._fetch_alert_providers,
                 self._store,
                 self._notify,
                 self.tray.set_tooltip,
                 alerts_enabled=lambda: self.bridge.low_quota_alerts,
-                plan_windows_service_owned=self.bridge.service_owns_plan_alerts,
+                plan_windows_service_owned=self.bridge._service_owns_plan_alerts,
             )
             self.watcher.start()
         if self._updates_enabled and self.updater is None:
@@ -4955,6 +4999,8 @@ def run_webview(
     passes ``None`` (nothing saved); a test may pass a temporary file."""
     import webview
 
+    webview.settings["ALLOW_FILE_URLS"] = False
+
     if not demo and not smoke_test and _focus_existing_window("BURNRATE"):
         return 0
     if not demo and not smoke_test:
@@ -5002,7 +5048,7 @@ def run_webview(
     )
 
     hwnd_box = [0]
-    bridge.attach(window, lambda: hwnd_box[0])
+    bridge._attach(window, lambda: hwnd_box[0])
     opacity_ctl = WindowOpacityController(bridge, lambda: hwnd_box[0])
     persist = preferences is not None and not smoke_test
     tracker = native_geometry.GeometryTracker(store, lambda: hwnd_box[0])
@@ -5023,7 +5069,7 @@ def run_webview(
         store=store,
         icon_path=_find_icon(),
     )
-    bridge.attach_host(host)
+    bridge._attach_host(host)
     tab_host = TabHost(
         tab_window_obj,
         store=store,
@@ -5045,12 +5091,12 @@ def run_webview(
     )
     tab_host.on_shown = lambda: opacity_ctl.wake(2.5, fade_target)
     host.surfaces = surfaces
-    bridge.attach_surfaces(surfaces)
-    tab_bridge.attach_controller(surfaces)
+    bridge._attach_surfaces(surfaces)
+    tab_bridge._attach_controller(surfaces)
     saved_tab = store.read().get(TAB_PREFERENCE_KEY) if persist else None
 
     def push_tab() -> None:
-        payload = tab_bridge.build_payload()
+        payload = tab_bridge._build_payload()
         tab_host.set_base(payload["layout"]["width"], revision=payload["revision"])
         tab_host.push(payload)
 

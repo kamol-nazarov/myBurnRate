@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -10,9 +11,24 @@ import tempfile
 import time
 from pathlib import Path
 from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class NoRedirects(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def local_api_headers(key_path):
+    # Read the disposable install's credential in this process. Neither the
+    # key nor any authenticated request URL is passed in a child command.
+    with Path(key_path).open("rb") as stream:
+        value = stream.read(67)
+    if re.fullmatch(rb"[0-9a-f]{64}(?:\r?\n)?", value) is None:
+        raise ValueError("Invalid local smoke-test credential")
+    return {"Authorization": "Bearer " + value[:64].decode("ascii")}
 
 
 def main():
@@ -39,6 +55,7 @@ def main():
         }
         env.update(
             SPEND_DATABASE_PATH=str(work / "data" / "spend.db"),
+            BURNRATE_DATA_ROOT=str(work / "data"),
             LOCALAPPDATA=str(work),
             HOME=str(work),
             USERPROFILE=str(work),
@@ -112,11 +129,12 @@ def main():
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+        opener = build_opener(ProxyHandler({}), NoRedirects())
         try:
             base = f"http://127.0.0.1:{port}"
             for _ in range(100):
                 try:
-                    with urlopen(base + "/healthz", timeout=1) as response:
+                    with opener.open(base + "/healthz", timeout=1) as response:
                         assert response.status == 200
                     break
                 except OSError:
@@ -128,7 +146,7 @@ def main():
             # Web pages were removed: non-API paths return 404 JSON with REQ-404.
             for removed_path in ("/", "/hud", "/setup", "/auth", "/connections"):
                 try:
-                    urlopen(base + removed_path)
+                    opener.open(base + removed_path, timeout=5)
                     raise AssertionError(f"Expected 404 for {removed_path}")
                 except HTTPError as exc:
                     assert exc.code == 404, (removed_path, exc.code)
@@ -141,6 +159,22 @@ def main():
                 "from spend_app.wealthfront_window import load_ui_html; print(len(load_ui_html()))",
             ).stdout.strip()
             assert int(desktop_html) > 10000
+            try:
+                opener.open(base + "/api/spend", timeout=5)
+                raise AssertionError(
+                    "Expected anonymous local API access to be refused"
+                )
+            except HTTPError as exc:
+                assert exc.code == 401
+
+            # Use the installed package to resolve the current key location.
+            key_path = run(
+                "-c",
+                "from spend_app.config import default_database_path; "
+                "from spend_app.local_access import key_path; "
+                "print(key_path(default_database_path()))",
+            ).stdout.strip()
+            headers = local_api_headers(key_path)
             for endpoint in (
                 "/api/spend",
                 "/api/spend/summary?window=1d",
@@ -151,7 +185,9 @@ def main():
                 "/api/subscriptions",
                 "/api/onboarding",
             ):
-                with urlopen(base + endpoint) as response:
+                with opener.open(
+                    Request(base + endpoint, headers=headers), timeout=5
+                ) as response:
                     payload = json.load(response)
                 if endpoint == "/api/spend":
                     assert payload["version"] == version
@@ -160,11 +196,13 @@ def main():
                 if endpoint == "/api/onboarding":
                     assert payload["hasHistory"] is False
             print(
-                f"SMOKE PASS: {version}; init/readonly doctor; desktop HTML; 404 pages; safe reads"
+                f"SMOKE PASS: {version}; init/readonly doctor; desktop HTML; 404 pages; authenticated reads"
             )
         finally:
             try:
-                with urlopen(Request(base + "/_smoke/stop", method="POST"), timeout=5):
+                with opener.open(
+                    Request(base + "/_smoke/stop", method="POST"), timeout=5
+                ):
                     pass
                 process.wait(timeout=20)
                 assert process.returncode == 0, "Smoke server did not shut down cleanly"

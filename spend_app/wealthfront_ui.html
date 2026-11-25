@@ -2,6 +2,7 @@
 <html lang="en" data-theme-pref="system">
 <head>
 <meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>BURNRATE</title>
@@ -6013,7 +6014,7 @@ const BRAND_STYLES = {
 
 function resolveBrand(rawKey) {
   const k = String(rawKey || "").toLowerCase().trim();
-  if (BRAND_STYLES[k]) return BRAND_STYLES[k];
+  if (Object.hasOwn(BRAND_STYLES, k)) return BRAND_STYLES[k];
   if (k.startsWith("opencode-go")) return BRAND_STYLES["opencode-go"];
   if (k.includes("deepseek")) return BRAND_STYLES["deepseek"];
   if (k.includes("anthropic")) return BRAND_STYLES["anthropic"];
@@ -9322,9 +9323,11 @@ function h5MachinesListHtml(machines, currentMachineId, canRemove) {
 
 function h5HubAccountHtml(context = "settings") {
   const ctx = context === "onboarding" ? "onboarding" : "settings";
+  const hubHost = ctx === "onboarding" ? state.onboarding?.data?.hubHost : state.settingsData?.hubHost;
   const prefix = ctx === "onboarding" ? "ob_" : "";
   const idUser = ctx === "onboarding" ? "obHubAccountUser" : "hubAccountUser";
   const idPass = ctx === "onboarding" ? "obHubAccountPass" : "hubAccountPass";
+  const idSetup = ctx === "onboarding" ? "obHubSetupToken" : "hubSetupToken";
   const idComp = ctx === "onboarding" ? "obHubAccountComp" : "hubAccountComp";
   const idBtn = ctx === "onboarding" ? "obHubSignInBtn" : "hubSignInBtn";
 
@@ -9399,6 +9402,7 @@ function h5HubAccountHtml(context = "settings") {
       <span class="state-badge">Not signed in</span>
     </div>
     ${!state.accountError ? '<div class="h5-hint">Sign in on every computer you want to track. Usage from all of them comes together in this app.</div>' : ""}
+    ${hubHost ? `<div class="h5-hint">Hub ${esc(hubHost)}</div>` : ""}
     <div class="h5-seg" role="tablist" aria-label="Account mode">
       <button class="h5-seg-btn ${mode === "login" ? "on" : ""}" id="${prefix}authMode_login" type="button" role="tab" aria-selected="${mode === "login"}" onclick="setAccountAuthMode('login')">Sign in</button>
       <button class="h5-seg-btn ${mode === "register" ? "on" : ""}" id="${prefix}authMode_register" type="button" role="tab" aria-selected="${mode === "register"}" onclick="setAccountAuthMode('register')">Create account</button>
@@ -9413,6 +9417,10 @@ function h5HubAccountHtml(context = "settings") {
         <label for="${idPass}">Password</label>
         <input class="text-input" id="${idPass}" type="password" autocomplete="new-password" placeholder="At least 12 characters" value="${esc(state.accountDraft.password || "")}" oninput="h5UpdateDraft('password', this.value)"/>
       </div>
+      ${mode === "register" ? `<div class="h5-field">
+        <label for="${idSetup}">Hub setup token</label>
+        <input class="text-input" id="${idSetup}" type="password" autocomplete="off"/>
+      </div>` : ""}
       <div class="h5-field">
         <label for="${idComp}">This computer's name</label>
         <input class="text-input" id="${idComp}" type="text" autocomplete="off" placeholder="e.g. Desktop-Office" value="${esc(compVal)}" oninput="h5UpdateDraft('computerName', this.value)"/>
@@ -9454,9 +9462,11 @@ window.submitHubAccount = async function(context = "settings") {
   const ctx = context === "onboarding" ? "onboarding" : "settings";
   const idUser = ctx === "onboarding" ? "obHubAccountUser" : "hubAccountUser";
   const idPass = ctx === "onboarding" ? "obHubAccountPass" : "hubAccountPass";
+  const idSetup = ctx === "onboarding" ? "obHubSetupToken" : "hubSetupToken";
   const idComp = ctx === "onboarding" ? "obHubAccountComp" : "hubAccountComp";
   const email = (document.getElementById(idUser)?.value ?? state.accountDraft.email ?? "").trim();
   const password = document.getElementById(idPass)?.value ?? state.accountDraft.password ?? "";
+  const setupToken = document.getElementById(idSetup)?.value ?? "";
   const computerName = (document.getElementById(idComp)?.value ?? state.accountDraft.computerName ?? "").trim();
   state.accountDraft = { email, password, computerName };
 
@@ -9483,7 +9493,7 @@ window.submitHubAccount = async function(context = "settings") {
   try {
     let res;
     if (state.accountAuthMode === "register") {
-      if (apiHas("create_account")) res = await window.pywebview.api.create_account(email, password, computerName);
+      if (apiHas("create_account")) res = await window.pywebview.api.create_account(email, password, computerName, setupToken);
       else res = await window.pywebview.api.connect_hub_account(email, password, computerName, "register");
     } else {
       if (apiHas("sign_in")) res = await window.pywebview.api.sign_in(email, password, computerName);
@@ -12183,8 +12193,8 @@ bindH9Events();
 
 /* Theme: the head script resolved it before first paint; tell the host whenever the resolved value changes. */
 function reportEffectiveTheme() {
-  if (apiHas("report_effective_theme")) {
-    try { window.pywebview.api.report_effective_theme(document.documentElement.dataset.theme === "dark"); } catch (err) {}
+  if (apiHas("publish_effective_theme")) {
+    try { window.pywebview.api.publish_effective_theme(document.documentElement.dataset.theme === "dark"); } catch (err) {}
   }
 }
 window.burnrateTheme.onChange(reportEffectiveTheme);

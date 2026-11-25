@@ -16,6 +16,7 @@ from spend_app.config import Settings, load_settings
 from spend_app.connection_api import access_allowed
 from spend_app.db import connect, initialize, prune_quotas, prune_usage_changes
 from spend_app.sync import register_machine
+from tests_spend.local_client_fixture import local_client
 
 
 def _make_settings(tmp_path: Path) -> Settings:
@@ -66,7 +67,8 @@ def test_csrf_and_dns_rebinding_guard_blocks_untrusted_mutations(tmp_path: Path,
         )
         assert rebinding.status_code == 403
 
-        trusted_req = client.post(
+    with local_client(app, settings.database_path, base_url="http://127.0.0.1:17331") as authorized:
+        trusted_req = authorized.post(
             "/api/spend/quotas/refresh",
             headers={
                 "Origin": "http://127.0.0.1:17331",
@@ -78,6 +80,7 @@ def test_csrf_and_dns_rebinding_guard_blocks_untrusted_mutations(tmp_path: Path,
 
 
 def test_spoke_hud_reads_require_owner_session_and_cookie_is_scoped(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "hub-secret-token-123")
     settings = _make_settings(tmp_path)
     initialize(settings.database_path)

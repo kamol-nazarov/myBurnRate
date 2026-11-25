@@ -77,16 +77,19 @@ HTTPS over your tailnet; do not put credentials in URLs or shell history.
 
 ### First-run setup right after deploy
 
-1. **Create the owner account immediately** from the desktop app (or via
-   `POST /api/account/register`). No setup token is needed (`BURNRATE_SETUP_TOKEN` and
-   `BURNRATE_ALLOW_REGISTRATION` are deprecated and ignored). Once the first
-   account exists, registration closes permanently.
+1. **Create the owner account immediately.** Set a random `BURNRATE_SETUP_TOKEN`
+   and enter it in the desktop's Create account form. The hub also accepts its
+   break-glass bearer on `POST /api/account/register`. To create the owner
+   locally, run `burnrate hub create-owner owner@example.com` in the hub
+   environment. Once the first account exists, registration closes permanently.
+   Remove the setup token after enrollment.
 2. **Connect other computers:** Sign in with your owner email and password in
-   the desktop app on each computer; owner sessions last 30 days and machine
-   sync tokens last 90 days with automatic rotation.
+   the desktop app on each computer. Owner sessions roll for up to 30 days at
+   a time, with a 90-day limit from sign-in. Machine sync tokens last 90 days
+   with automatic rotation.
 3. **Recovery and automation:** Use `POST /api/auth/bootstrap` with `BURNRATE_ACCESS_TOKEN`
    to create a recovery session, or `POST /api/auth/rotate` on the hub to rotate credentials.
-   The static bearer is restricted to bootstrap and rotation by default; set
+   The static bearer is restricted to initial registration, bootstrap and rotation by default. Set
    `BURNRATE_ALLOW_ADMIN_BEARER=1` only while automation still needs it for
    other API calls. Credential rotation happens on the hub and stores only the
    replacement hash in SQLite; updating the environment variable alone does not
@@ -193,10 +196,14 @@ tailnet interface (for example `:8449` or `:443` on the Tailscale IP) or
 Tailscale Serve. Immediately after starting the service, create the owner
 account.
 
-`burnrate hub update --ssh <host>` updates a git-checkout hub from your own
-computer: it requires a clean checkout, fast-forwards it, installs its Python
-dependencies, checks the installed trust bundle, and runs an installed host
-security gate before restarting the service. It checks the public `/healthz`
+`burnrate hub update --ssh <host> --tag vX.Y.Z` updates a Git-checkout hub from
+your computer. It checks the owner-signed tag and deploys its exact commit from
+a clean checkout. Provision the reviewed SSH signing identities at
+`/etc/burnrate/release-allowed-signers` before deploying. The updater builds
+the package in an isolated build environment, installs the hashed runtime
+dependencies, checks the installed trust bundle, and runs the host security
+gate before restarting. Use `--require-host-preflight` if the host requires the
+gate and is reached through an alias other than `tk-server`. It checks the public `/healthz`
 liveness endpoint and reads the installed build over SSH, so the post-restart
 check needs no API credential; the detailed `?supervisor=1` response is
 owner-only on a hub. Keep `BURNRATE_SUMMARY_PREWARM=0` on the central hub so

@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from tests_spend.local_client_fixture import local_client
 import pytest
 
 from spend_app import api, native_launch
@@ -219,7 +220,7 @@ def _hud_client(tmp_path: Path, monkeypatch) -> tuple[TestClient, Path, Path]:
     settings = _settings(tmp_path)
     initialize(settings.database_path)
     app = api.create_app(settings, enable_scheduler=False)
-    return TestClient(app, base_url="http://127.0.0.1:17331"), local_app_data, fake_repo
+    return local_client(app, settings.database_path, base_url="http://127.0.0.1:17331"), local_app_data, fake_repo
 
 
 @pytest.mark.parametrize("dev_mode", ["0", "1"])

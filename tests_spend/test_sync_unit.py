@@ -8,10 +8,12 @@ from fastapi.testclient import TestClient
 
 from spend_app import aggregate
 from spend_app.api import create_app
+from spend_app.auth_model import Principal, create_session, extract_cookie
 from spend_app.config import Settings
 from spend_app.db import UsageEvent, connect, initialize, upsert_agent_run, upsert_session, upsert_usage_event
 from spend_app.pricing import PricingEngine
 from spend_app.sync import apply_sync_push, rename_machine, sync_once
+from tests_spend.local_client_fixture import local_client
 
 
 NOW = datetime.now(timezone.utc)
@@ -32,8 +34,36 @@ def _make_settings(tmp_path: Path, name: str = "hub.db") -> Settings:
     )
 
 
+def _hub_client(
+    settings: Settings, monkeypatch, *, origin: str = "https://testserver",
+    setup_proof: str | None = None, recovery_token: str | None = None,
+) -> TestClient:
+    with monkeypatch.context() as hub_env:
+        hub_env.setenv("BURNRATE_CENTRAL_SERVER", "1")
+        for name, value in (
+            ("BURNRATE_SETUP_TOKEN", setup_proof),
+            ("BURNRATE_ACCESS_TOKEN", recovery_token),
+        ):
+            if value is None:
+                hub_env.delenv(name, raising=False)
+            else:
+                hub_env.setenv(name, value)
+        app = create_app(settings, enable_scheduler=False)
+    return TestClient(app, base_url=origin)
+
+
+def _owner_headers(settings: Settings) -> dict[str, str]:
+    with connect(settings.database_path) as connection:
+        session = create_session(
+            connection, Principal("owner", "synthetic-owner", "owner"),
+            "Synthetic sync test", password_authenticated=True,
+        )
+    return {**SETUP_HEADERS, "Authorization": f"Bearer {session['sessionToken']}"}
+
+
 def test_machine_registry_lifecycle_and_token_auth(tmp_path: Path, monkeypatch) -> None:
     aggregate.reset_memo()
+    monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "hub-admin-secret")
     settings = _make_settings(tmp_path)
     pricing = PricingEngine.load(PRICING_PATH)
@@ -66,7 +96,8 @@ def test_machine_registry_lifecycle_and_token_auth(tmp_path: Path, monkeypatch) 
     assert "--token " not in reg_body["syncCommand"]
     assert token not in reg_body["syncCommand"]
     assert reg_body["syncHint"]
-    assert len(reg_body["machines"]) == 2
+    # A central hub lists only active peers once one is registered.
+    assert [machine["id"] for machine in reg_body["machines"]] == [machine_id]
 
     # /api/sync/push accepts the machine bearer token even when BURNRATE_ACCESS_TOKEN is set
     push_res = client.post(
@@ -98,6 +129,7 @@ def test_machine_registry_lifecycle_and_token_auth(tmp_path: Path, monkeypatch) 
         json={"action": "revoke", "id": machine_id},
     )
     assert rev.status_code == 200
+    assert [machine["id"] for machine in rev.json()["machines"]] == ["local"]
     rejected = client.post(
         "/api/sync/push",
         headers={"Authorization": f"Bearer {token}"},
@@ -110,6 +142,7 @@ def test_machine_rename_and_sync_push_reject_case_insensitive_collisions(
     tmp_path: Path, monkeypatch
 ) -> None:
     aggregate.reset_memo()
+    monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "hub-admin-secret")
     monkeypatch.setenv("BURNRATE_ALLOW_ADMIN_BEARER", "1")
     settings = _make_settings(tmp_path)
@@ -237,7 +270,7 @@ def test_machine_rename_and_sync_push_reject_case_insensitive_collisions(
     assert machines_by_id[delta["machine"]["id"]]["name"] == "EPSILONBOX"
 
 
-def test_multi_machine_push_and_filtered_summary_and_entity(tmp_path: Path) -> None:
+def test_multi_machine_push_and_filtered_summary_and_entity(tmp_path: Path, monkeypatch) -> None:
     aggregate.reset_memo()
     settings = _make_settings(tmp_path)
     pricing = PricingEngine.load(PRICING_PATH)
@@ -295,11 +328,11 @@ def test_multi_machine_push_and_filtered_summary_and_entity(tmp_path: Path) -> N
             last_seen_at=(NOW - timedelta(minutes=1)).isoformat(),
         )
 
-    app = create_app(settings, enable_scheduler=False)
-    client = TestClient(app)
+    client = _hub_client(settings, monkeypatch)
+    owner_headers = _owner_headers(settings)
 
     # Register remote computer and push usage + live agent
-    reg = client.post("/api/machines", headers=SETUP_HEADERS, json={"action": "register", "name": "Studio Desktop", "os": "win32"}).json()
+    reg = client.post("/api/machines", headers=owner_headers, json={"action": "register", "name": "Studio Desktop", "os": "win32"}).json()
     remote_id = reg["machine"]["id"]
     token = reg["token"]
 
@@ -335,7 +368,7 @@ def test_multi_machine_push_and_filtered_summary_and_entity(tmp_path: Path) -> N
             ],
             "agentRuns": [
                 {
-                    "id": "agent-remote",
+                    "id": "claude:agent-remote",
                     "name": "Studio Claude Agent",
                     "model_key": "claude-opus-4-6",
                     "state": "live",
@@ -350,7 +383,7 @@ def test_multi_machine_push_and_filtered_summary_and_entity(tmp_path: Path) -> N
     assert push.json()["eventsWritten"] == 1
 
     # 1. Summary across all machines includes both computers
-    all_summary = client.get("/api/spend/summary?window=1d&tool=all").json()
+    all_summary = client.get("/api/spend/summary?window=1d&tool=all", headers=owner_headers).json()
     assert all_summary["selectedMachine"] == "all"
     assert {m["id"] for m in all_summary["machines"]} == {"local", remote_id}
     assert all_summary["totals"]["records"] == 2
@@ -358,19 +391,21 @@ def test_multi_machine_push_and_filtered_summary_and_entity(tmp_path: Path) -> N
     assert len(all_summary["activity"]) == 2
     by_agent = {item["name"]: item for item in all_summary["activity"]}
     assert by_agent["Hub Codex Agent"]["machineId"] == "local"
-    assert by_agent["Studio Claude Agent"]["machineId"] == remote_id
-    assert by_agent["Studio Claude Agent"]["machineName"] == "Studio Desktop"
+    assert by_agent["Claude Code"]["machineId"] == remote_id
+    assert by_agent["Claude Code"]["machineName"] == "Studio Desktop"
 
     # 2. Summary filtered to remote machine only
-    remote_summary = client.get(f"/api/spend/summary?window=1d&tool=all&machine={remote_id}").json()
+    remote_summary = client.get(
+        f"/api/spend/summary?window=1d&tool=all&machine={remote_id}", headers=owner_headers,
+    ).json()
     assert remote_summary["selectedMachine"] == remote_id
     assert remote_summary["totals"]["records"] == 1
     assert remote_summary["totals"]["tokens"] == 24_000
     assert [m["key"] for m in remote_summary["models"]] == ["claude-opus-4-6"]
-    assert [a["name"] for a in remote_summary["activity"]] == ["Studio Claude Agent"]
+    assert [a["name"] for a in remote_summary["activity"]] == ["Claude Code"]
 
     # 3. Summary filtered to local machine only
-    local_summary = client.get("/api/spend/summary?window=1d&tool=all&machine=local").json()
+    local_summary = client.get("/api/spend/summary?window=1d&tool=all&machine=local", headers=owner_headers).json()
     assert local_summary["selectedMachine"] == "local"
     assert local_summary["totals"]["records"] == 1
     assert local_summary["totals"]["tokens"] == 11_000
@@ -378,19 +413,24 @@ def test_multi_machine_push_and_filtered_summary_and_entity(tmp_path: Path) -> N
     assert [a["name"] for a in local_summary["activity"]] == ["Hub Codex Agent"]
 
     # 4. Entity drilldown respects machine filter
-    entity_remote = client.get(f"/api/spend/entity?kind=tool&key=claude-code&window=1d&machine={remote_id}").json()
+    entity_remote = client.get(
+        f"/api/spend/entity?kind=tool&key=claude-code&window=1d&machine={remote_id}", headers=owner_headers,
+    ).json()
     assert entity_remote["tokens"] == 24_000
-    entity_local = client.get("/api/spend/entity?kind=tool&key=claude-code&window=1d&machine=local").json()
+    entity_local = client.get(
+        "/api/spend/entity?kind=tool&key=claude-code&window=1d&machine=local", headers=owner_headers,
+    ).json()
     assert entity_local["tokens"] == 0
 
-    # 5. SSE stream endpoint emits initial ready frame
-    stream_res = client.get("/api/spend/stream?once=1")
+    # 5. The JSON API's event stream requires an owner credential.
+    assert client.get("/api/spend/stream?once=1").status_code == 401
+    stream_res = client.get("/api/spend/stream?once=1", headers=owner_headers)
     assert stream_res.status_code == 200
     assert "event: ready" in stream_res.text
     assert remote_id in stream_res.text
 
 
-def test_end_to_end_sync_once_client_to_hub(tmp_path: Path) -> None:
+def test_end_to_end_sync_once_client_to_hub(tmp_path: Path, monkeypatch) -> None:
     aggregate.reset_memo()
     hub_settings = _make_settings(tmp_path, "hub.db")
     remote_settings = _make_settings(tmp_path, "remote.db")
@@ -431,11 +471,11 @@ def test_end_to_end_sync_once_client_to_hub(tmp_path: Path) -> None:
             ),
         )
 
-    hub_app = create_app(hub_settings, enable_scheduler=False)
-    hub_client = TestClient(hub_app, base_url="https://testserver")
+    hub_client = _hub_client(hub_settings, monkeypatch)
+    owner_headers = _owner_headers(hub_settings)
     reg = hub_client.post(
         "/api/machines",
-        headers={"X-BURNRATE-Request": "1", "Origin": "https://testserver"},
+        headers={**owner_headers, "Origin": "https://testserver"},
         json={"action": "register", "name": "Field Laptop"},
     ).json()
 
@@ -465,7 +505,7 @@ def test_end_to_end_sync_once_client_to_hub(tmp_path: Path) -> None:
     assert second_sync["ok"] is True
     assert second_sync["eventsWritten"] == 0
 
-    summary = hub_client.get("/api/spend/summary?window=1d&tool=all").json()
+    summary = hub_client.get("/api/spend/summary?window=1d&tool=all", headers=owner_headers).json()
     assert summary["totals"]["records"] == 1
     assert summary["totals"]["tokens"] == 4_500
 
@@ -494,17 +534,18 @@ SETUP_HEADERS = {"X-BURNRATE-Request": "1"}
 def test_setup_wizard_account_and_complete(tmp_path: Path, monkeypatch) -> None:
     from spend_app.setup_wizard import maybe_run_configured_spoke_sync
 
-    monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
+    setup_proof = "synthetic-setup-proof"
+    recovery_token = "synthetic-wizard-recovery"
     hub_settings = _make_settings(tmp_path / "hub")
-    monkeypatch.delenv("BURNRATE_CENTRAL_SERVER", raising=False)
     spoke_settings = _make_settings(tmp_path / "spoke")
     pricing = PricingEngine.load(hub_settings.pricing_path)
 
-    hub_app = create_app(hub_settings, enable_scheduler=False)
-    hub_client = TestClient(hub_app, base_url="https://testserver")
+    hub_client = _hub_client(
+        hub_settings, monkeypatch, setup_proof=setup_proof, recovery_token=recovery_token,
+    )
 
     spoke_app = create_app(spoke_settings, enable_scheduler=False)
-    spoke_client = TestClient(spoke_app)
+    spoke_client = local_client(spoke_app, spoke_settings.database_path)
 
     # 1. Removed web pages and static browser assets return REQ-404 JSON
     for path in ("/", "/setup", "/?setup=1", "/?app=1", "/favicon.ico"):
@@ -513,7 +554,9 @@ def test_setup_wizard_account_and_complete(tmp_path: Path, monkeypatch) -> None:
         assert res.json()["error"]["code"] == "REQ-404"
 
     # 2. Initial setup state
-    state_res = hub_client.get("/api/setup/state").json()
+    state_res = hub_client.get(
+        "/api/setup/state", headers={"Authorization": f"Bearer {recovery_token}"}
+    ).json()
     assert state_res["setup"]["completed"] is False
     assert len(state_res["presets"]) >= 4
 
@@ -524,10 +567,14 @@ def test_setup_wizard_account_and_complete(tmp_path: Path, monkeypatch) -> None:
         json={
             "username": "owner@example.com",
             "password": "synthetic-wizard-password",
+            "setupToken": setup_proof,
             "sessionOnly": True,
         },
     )
     assert reg_owner.status_code == 200, reg_owner.text
+    session = extract_cookie(reg_owner)
+    assert session
+    owner_headers = {**SETUP_HEADERS, "Origin": "https://testserver", "Authorization": f"Bearer {session}"}
     hub_client.cookies.clear()
 
     from spend_app.sync import register_hub_test_client
@@ -584,7 +631,7 @@ def test_setup_wizard_account_and_complete(tmp_path: Path, monkeypatch) -> None:
     # 5. Complete setup wizard on Hub with preset & custom subscriptions + computer name
     complete_res = hub_client.post(
         "/api/setup/complete",
-        headers=SETUP_HEADERS,
+        headers=owner_headers,
         json={
             "computerName": "Main Workstation",
             "role": "hub",
@@ -602,7 +649,7 @@ def test_setup_wizard_account_and_complete(tmp_path: Path, monkeypatch) -> None:
     assert complete_data["setup"]["computerName"] == "Main Workstation"
     assert len(complete_data["subscriptions"]) == 3
 
-    onboarding = hub_client.get("/api/onboarding").json()
+    onboarding = hub_client.get("/api/onboarding", headers=owner_headers).json()
     assert onboarding["setupCompleted"] is True
     local_machine = next(m for m in onboarding["machines"] if m["id"] == "local")
     assert local_machine["name"] == "Main Workstation"
@@ -627,20 +674,19 @@ def test_central_server_account_login_subscriptions_and_multi_computer_sync(
 
     aggregate.reset_memo()
     monkeypatch.setattr(sync, "_default_hub_name", lambda: "Synthetic Hub")
-    monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
+    setup_proof = "synthetic-setup-proof"
 
     central_settings = _make_settings(tmp_path / "hub")
     desktop_settings = _make_settings(tmp_path / "mydesktop")
     laptop_settings = _make_settings(tmp_path / "macbook")
     pricing = PricingEngine.load(central_settings.pricing_path)
 
-    central_client = TestClient(create_app(central_settings, enable_scheduler=False))
-    # The hub fails closed without an admin token; spokes are ordinary installs.
-    monkeypatch.delenv("BURNRATE_CENTRAL_SERVER")
-    desktop_client = TestClient(create_app(desktop_settings, enable_scheduler=False))
-    laptop_client = TestClient(create_app(laptop_settings, enable_scheduler=False))
-
     central_url = "https://hub.test"
+    central_client = _hub_client(central_settings, monkeypatch, origin=central_url, setup_proof=setup_proof)
+    # The hub fails closed without an admin token; spokes are ordinary installs.
+    desktop_client = local_client(create_app(desktop_settings, enable_scheduler=False), desktop_settings.database_path)
+    laptop_client = local_client(create_app(laptop_settings, enable_scheduler=False), laptop_settings.database_path)
+
     monkeypatch.setenv("BURNRATE_HUB_URL", central_url)
     register_hub_test_client(central_url, central_client)
 
@@ -691,6 +737,7 @@ def test_central_server_account_login_subscriptions_and_multi_computer_sync(
             "mode": "register",
             "username": "alex@example.com",
             "password": "secret-password",
+            "setupToken": setup_proof,
             "computerName": "MyDesktop",
             "presetKeys": ["claude_max", "grok_super"],
             "customPlans": [
@@ -842,10 +889,12 @@ def test_central_server_spoke_heartbeat_keeps_hud_status_live(
     assert summary["status"] == "live"
 
 
-def test_usability_roadmap_endpoints_and_ui_controls(tmp_path: Path) -> None:
+def test_usability_roadmap_endpoints_and_ui_controls(tmp_path: Path, monkeypatch) -> None:
     settings = _make_settings(tmp_path / "usability")
+    monkeypatch.setattr("spend_app.quotas.nudge_quota_lanes", lambda **_kwargs: None)
+    monkeypatch.setattr("spend_app.quotas.poll_quotas", lambda **_kwargs: {"polledProviders": []})
     app = create_app(settings, enable_scheduler=False)
-    client = TestClient(app)
+    client = local_client(app, settings.database_path)
 
     # 1. Quota refresh endpoint
     refresh_res = client.post("/api/spend/quotas/refresh")
@@ -875,7 +924,8 @@ def test_usability_roadmap_endpoints_and_ui_controls(tmp_path: Path) -> None:
             assert "polledAt" in row
 
     # 5. /hud web page route is removed and returns REQ-404 JSON
-    hud_res = client.get("/hud")
+    with TestClient(app) as anonymous:
+        hud_res = anonymous.get("/hud")
     assert hud_res.status_code == 404
     assert hud_res.json()["error"]["code"] == "REQ-404"
 
@@ -1118,7 +1168,7 @@ def test_cached_hub_payload_is_remasked_and_never_mutated() -> None:
     assert cached["providers"][0]["windows"][0]["usedPct"] == 77.0
 
 
-def test_apply_sync_push_caps_agent_run_name(tmp_path: Path) -> None:
+def test_apply_sync_push_discards_agent_title_when_tool_is_unknown(tmp_path: Path) -> None:
     from spend_app.sync import apply_sync_push, register_machine
 
     settings = _make_settings(tmp_path / "cap-sync")
@@ -1157,7 +1207,4 @@ def test_apply_sync_push_caps_agent_run_name(tmp_path: Path) -> None:
         ).fetchone()
     assert row is not None
     stored_name = row[0]
-    assert len(stored_name) <= 120
-    assert len(stored_name) == 120
-    assert stored_name.endswith("\u2026")
-    assert stored_name == ("z" * 119) + "\u2026"
+    assert stored_name == "Coding tool"

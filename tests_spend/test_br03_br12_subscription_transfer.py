@@ -2,6 +2,7 @@
 
 from datetime import date
 from pathlib import Path
+import secrets
 
 import pytest
 from fastapi.testclient import TestClient
@@ -16,6 +17,7 @@ from spend_app.plan_service import (
     effective_terms,
     list_plans,
 )
+from tests_spend.local_client_fixture import local_client
 
 HUB = "https://hub.test"
 UI = {"Origin": "http://testserver", "X-BURNRATE-Request": "1"}
@@ -38,23 +40,25 @@ def _settings(path):
 @pytest.fixture
 def clients(tmp_path, monkeypatch):
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
     aggregate.reset_memo()
     hs, ss = (_settings(tmp_path / path) for path in ("hub.db", "spoke.db"))
     monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "synthetic-local-admin")
+    setup_credential = secrets.token_urlsafe(24)
+    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", setup_credential)
     hub = TestClient(create_app(hs, enable_scheduler=False), base_url=HUB)
     assert (
-        hub.post("/api/account/register", headers=HUB_UI, json=OWNER).status_code == 200
+        hub.post("/api/account/register", headers=HUB_UI, json=OWNER | {"setupToken": setup_credential}).status_code == 200
     )
     hub.cookies.clear()
     monkeypatch.setitem(sync._HUB_TEST_CLIENTS, HUB, hub)
     monkeypatch.setenv("BURNRATE_HUB_URL", HUB)
     monkeypatch.delenv("BURNRATE_CENTRAL_SERVER")
     monkeypatch.delenv("BURNRATE_ACCESS_TOKEN")
-    spoke = TestClient(
-        create_app(ss, enable_scheduler=False), base_url="http://testserver"
+    monkeypatch.delenv("BURNRATE_SETUP_TOKEN")
+    spoke = local_client(
+        create_app(ss, enable_scheduler=False), ss.database_path, base_url="http://testserver"
     )
     yield hs, hub, ss, spoke
     spoke.close()

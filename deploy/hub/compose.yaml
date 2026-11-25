@@ -1,10 +1,8 @@
 # Tailnet-only BURNRATE hub with Caddy reverse proxy (see docs/self-hosting.md).
 #
 # A hub MUST be reachable on your tailnet (or private network) ONLY — never expose
-# it on the public Internet:
-#   1. First-account registration is open with no setup token until the first
-#      owner account is created.
-#   2. Release builds embed the hub address, so the hub URL itself is public.
+# it on the public Internet. Use a one-time setup token to create the first
+# owner from a desktop, or create the account locally on the hub.
 #
 # Create the owner account immediately after starting the hub.
 #
@@ -17,7 +15,7 @@ services:
   # Refuse to publish ports on empty, wildcard (0.0.0.0 / ::), public, or
   # hostname targets unless BURNRATE_HUB_ALLOW_PUBLIC=1 is explicitly set.
   publish-check:
-    image: ${BURNRATE_HUB_IMAGE:-ghcr.io/kamol-nazarov/myburnrate-hub:0.6.10-rc.31@sha256:dfc2168801e57f36134990546b246e7df5fcc346d5fee7d23a274e3380a23e82}
+    image: ${BURNRATE_HUB_IMAGE:-ghcr.io/kamol-nazarov/myburnrate-hub:0.6.11-rc.33@sha256:0ab6195bcc3112d1001a26f7ea87f7356b0826c6726fd702b5838ccccec5e2ff}
     restart: "no"
     environment:
       BURNRATE_TAILNET_IP: ${BURNRATE_TAILNET_IP:?Set BURNRATE_TAILNET_IP to this machine's Tailscale IP (e.g. 100.x.y.z)}
@@ -25,8 +23,8 @@ services:
     command: ["sh", "-c", "exec python -m spend_app.exposure check-publish \"$BURNRATE_TAILNET_IP\""]
 
   hub:
-    # The v0.6.10 tag promotes this candidate digest to the 0.6.10 image.
-    image: ${BURNRATE_HUB_IMAGE:-ghcr.io/kamol-nazarov/myburnrate-hub:0.6.10-rc.31@sha256:dfc2168801e57f36134990546b246e7df5fcc346d5fee7d23a274e3380a23e82}
+    # The v0.6.11 tag promotes this candidate digest to the 0.6.11 image.
+    image: ${BURNRATE_HUB_IMAGE:-ghcr.io/kamol-nazarov/myburnrate-hub:0.6.11-rc.33@sha256:0ab6195bcc3112d1001a26f7ea87f7356b0826c6726fd702b5838ccccec5e2ff}
     restart: unless-stopped
     depends_on:
       publish-check:
@@ -37,6 +35,7 @@ services:
       BURNRATE_DATA_ROOT: /data
       # Required: the hub refuses anonymous API access. Generate a long random value.
       BURNRATE_ACCESS_TOKEN: ${BURNRATE_ACCESS_TOKEN:?Set BURNRATE_ACCESS_TOKEN to a long random value}
+      BURNRATE_SETUP_TOKEN: ${BURNRATE_SETUP_TOKEN:-}
       # The tailnet hostname Caddy forwards, so the Host guard accepts it.
       BURNRATE_ALLOWED_HOSTS: ${BURNRATE_DOMAIN:?Set BURNRATE_DOMAIN to the hub's tailnet name}
       BURNRATE_ALLOWED_ORIGINS: https://${BURNRATE_DOMAIN}

@@ -904,6 +904,7 @@ def enabled_profiles(database_path: str | Path) -> list[Profile]:
     except FileNotFoundError:
         return []
     with closing(sqlite3.connect(path.absolute().as_uri() + "?mode=ro", uri=True)) as db:
+        db.execute("PRAGMA query_only=ON")
         state = load(db)
     return [profile for profile in profiles(state) if profile.enabled]
 

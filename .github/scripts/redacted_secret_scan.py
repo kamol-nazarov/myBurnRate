@@ -2,13 +2,14 @@
 """Redacted secret scan for CI.
 
 Reports filename, rule ID, and a redacted snippet only. Never prints a full
-secret value. Synthetic pytest fixtures under tests_spend/ that match
-ASSIGNED_SECRET are allowlisted by path+rule (fixture values are not copied
-into this file). Any other match fails the process.
+secret value. Reviewed synthetic fixtures are pinned by path, rule and digest.
+Any other match fails the process.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
 import re
 import sys
@@ -53,6 +54,9 @@ RULES: list[tuple[str, re.Pattern[str]]] = [
     ("SLACK_TOKEN", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b")),
     ("JWT_LIKE", re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")),
     ("PRIVATE_KEY_HEADER", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----")),
+    ("MINISIGN_SECRET_KEY", re.compile(r"^untrusted comment: minisign encrypted secret key", re.I)),
+    ("TAILSCALE_KEY", re.compile(r"\btskey-[a-z]+-[A-Za-z0-9_-]{12,}\b")),
+    ("GOOGLE_API_KEY", re.compile(r"\bAIza[A-Za-z0-9_-]{35}\b")),
     ("GENERIC_BEARER", re.compile(r"\bBearer\s+[A-Za-z0-9._\-+=/]{24,}\b")),
     (
         "ASSIGNED_SECRET",
@@ -70,10 +74,11 @@ RULES: list[tuple[str, re.Pattern[str]]] = [
 ]
 
 
-def redact(value: str) -> str:
-    if len(value) <= 8:
-        return "***REDACTED***"
-    return f"{value[:4]}…{value[-2:]} (len={len(value)})"
+_FIXTURE_ALLOWLIST = frozenset(
+    tuple(row) for row in json.loads(
+        Path(__file__).with_name("secret_scan_fixtures.json").read_text(encoding="utf-8")
+    )
+)
 
 
 def iter_files(root: Path) -> list[Path]:
@@ -99,12 +104,14 @@ def scan_file(path: Path, root: Path) -> list[dict]:
     for i, line in enumerate(text.splitlines(), 1):
         for rule_id, pattern in RULES:
             for match in pattern.finditer(line):
+                matched = match.group(0)
                 findings.append(
                     {
                         "file": rel,
                         "line": i,
                         "rule": rule_id,
-                        "redacted": redact(match.group(0)),
+                        "redacted": f"***REDACTED*** (len={len(matched)})",
+                        "fingerprint": hashlib.sha256(matched.encode()).hexdigest(),
                     }
                 )
     return findings
@@ -112,9 +119,7 @@ def scan_file(path: Path, root: Path) -> list[dict]:
 
 def is_allowlisted(item: dict) -> bool:
     rel = item["file"].replace("\\", "/")
-    if rel.startswith("tests_spend/") and item["rule"] == "ASSIGNED_SECRET":
-        return True
-    return False
+    return (rel, item["rule"], item["fingerprint"]) in _FIXTURE_ALLOWLIST
 
 
 def main() -> int:
@@ -137,7 +142,7 @@ def main() -> int:
         f"- Root: `{root}`",
         f"- Files scanned: {len(files)}",
         f"- Findings: {len(findings)}",
-        f"- Allowlisted (tests_spend ASSIGNED_SECRET): {len(allowed)}",
+        f"- Allowlisted exact synthetic fixtures: {len(allowed)}",
         f"- Blocking: {len(blocked)}",
         "",
     ]

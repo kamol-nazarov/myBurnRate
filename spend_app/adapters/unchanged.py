@@ -86,7 +86,7 @@ def replay(database_path: Path, source: str, cache_key: tuple, current: tuple) -
     with connect(database_path) as connection:
         run = IngestRun.start(connection, source)
         run.finish(status=result["status"], error=error)
-    return {**result, "eventsWritten": 0, "unpricedEventsWritten": 0, "unchanged": True}
+    return {**result, "eventsWritten": 0, "unpricedEventsWritten": 0, "coverageGapsWritten": 0, "unchanged": True}
 
 
 def remember(database_path: Path, source: str, cache_key: tuple, current: tuple, result: dict) -> None:

@@ -43,9 +43,9 @@ maintainer's computer, so every download traces back to a tagged commit.
    (`## [<version>] - YYYY-MM-DD`) and commit on `release/<version>`. The
    security tests allow a tag-only pin only while the changelog heading is
    still `- Unreleased`, and forbid dating the changelog without a digest pin.
-6. Tag the release branch and push the tag:
-   `git tag -a v<version> -m "BURNRATE v<version>"` then
-   `git push origin v<version>`.
+6. Open a pull request from the release branch to prod and wait for the required checks.
+   After merging, the owner signs the exact reviewed commit using their release signing key
+   and publishes the signed version tag. The release jobs require the protected release environment.
    On the tag push, [`.github/workflows/hub-image.yml`](../.github/workflows/hub-image.yml)
    verifies that the candidate image's digest matches the digest pinned in
    `deploy/hub/compose.yaml`, re-tags that identical digest as `:<version>` and
@@ -67,40 +67,26 @@ maintainer's computer, so every download traces back to a tagged commit.
 8. Check the draft and publish it as the latest release. Installed native apps
    find the update after launch or daily, or at once from **Settings → General →
    Check for updates**.
-9. Once both the release workflow and the tag's Hub image build pass (verify
-   with `docker buildx imagetools inspect ghcr.io/kamol-nazarov/myburnrate-hub:<version>`
-   that `:<version>` matches the pinned `sha256:<digest>` in
-   `deploy/hub/compose.yaml`), move `prod` to the release:
-   `git push origin v<version>^{commit}:refs/heads/prod` (a fast-forward; it
-   fails rather than rewrite history). Do not guess an image digest before the
-   candidate dispatch publishes it.
+9. Verify the Hub promotion matches the pinned image digest. The Hub image
+   is built from the reviewed release branch candidate and promoted by digest
+   on the signed tag. The release workflow's Windows and Python assets are built
+   from the tag commit. For the PowerShell helper, run with `-PrepareCandidate`
+   on the release branch, complete the pull request and sign the tag, then run
+   again to verify the tag and assets before deployment.
 
-## Built-in hub address
+## Hub address in builds
 
-Release builds read `BURNRATE_BUILTIN_HUB_URL` at build time and embed it into the
-git-ignored `spend_app/_build_config.py` (`BUILTIN_HUB_URL`) via `packaging/build_config.py`:
+Public release workflows set `BURNRATE_PUBLIC_BUILD=1`. Their desktop builds
+contain no built-in hub address. Set `BURNRATE_HUB_URL` in the per-user settings
+on each device that should connect to a particular hub.
 
-- **Wheel builds:** `hatch_build.py` (configured under `[tool.hatch.build.hooks.custom]` in
-  `pyproject.toml`) validates `BURNRATE_BUILTIN_HUB_URL` for all targets and writes
-  `spend_app/_build_config.py` into non-editable wheels without leaving generated files
-  in the source tree.
-- **Native Windows builds:** `packaging/build_native.py` validates and writes
-  `spend_app/_build_config.py` before invoking PyInstaller and removes it in a `finally`
-  block afterwards.
-- **Release workflow:** `.github/workflows/release.yml` sets `BURNRATE_BUILTIN_HUB_URL`
-  from the `BURNRATE_BUILTIN_HUB_URL` repository **secret** in the native Windows installer
-  step and the wheel/sdist step, and fails if the secret is missing. It is a secret, not a
-  variable, so the address is masked in the public workflow logs and never committed:
-  `gh secret set BURNRATE_BUILTIN_HUB_URL`.
-
-The build fails if `BURNRATE_BUILTIN_HUB_URL` is set to anything other than a bare
-`https://` origin (non-HTTPS schemes, embedded credentials, paths, query strings, and
-fragments are rejected). Leaving it empty or unset builds an app with no built-in hub.
+Private builds may still set `BURNRATE_BUILTIN_HUB_URL` to a bare HTTPS origin.
+The packaging helper rejects credentials, paths, query strings, and fragments.
 
 ## The update-signing key
 
 In-app updates and `scripts/install-native.ps1` are verified with an Ed25519
-minisign updater key. The private key and its password are the repository secrets
+minisign updater key. The private key and its password are secrets in the protected release environment
 `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. The
 corresponding public key is pinned in `spend_app/native_update.py`
 (`PUBLIC_KEY_B64`) and `scripts/minisign-verify.ps1` (`$MinisignPublicKey`).

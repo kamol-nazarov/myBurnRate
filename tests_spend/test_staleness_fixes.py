@@ -8,7 +8,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from spend_app import aggregate, freshness
 from spend_app.api import create_app
@@ -18,6 +17,7 @@ from spend_app.db import UsageEvent, connect, initialize, upsert_quota, upsert_u
 from spend_app.hud_data import DATA_STALE_AFTER_SECONDS, lane_usage_pace, live_snapshot, recorded_usage
 from spend_app.pricing import PricingEngine
 from spend_app.scheduler import create_scheduler
+from tests_spend.local_client_fixture import local_client
 
 ROOT = Path(__file__).resolve().parents[1]
 NOW = datetime(2026, 10, 24, 12, tzinfo=UTC)
@@ -151,7 +151,8 @@ def test_hud_payloads_report_their_data_age(tmp_path: Path) -> None:
 
 def test_hud_api_surfaces_data_age(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
-    client = TestClient(create_app(settings, enable_scheduler=False, now=NOW))
+    app = create_app(settings, enable_scheduler=False, now=NOW)
+    client = local_client(app, settings.database_path)
     with connect(settings.database_path) as connection:
         _record_pass(connection, NOW - timedelta(seconds=30))
     live = client.get("/api/spend/hud").json()

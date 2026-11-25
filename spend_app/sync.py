@@ -16,6 +16,8 @@ import sqlite3
 import sys
 import threading
 import time
+from collections import OrderedDict, deque
+from contextlib import closing
 from dataclasses import fields
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -41,7 +43,6 @@ from spend_app.db import (
     UsageEvent,
     connect,
     initialize,
-    cap_agent_run_name,
     prune_ingest_runs,
     prune_usage_changes,
     upsert_agent_run,
@@ -55,7 +56,9 @@ from spend_app.capacity_forecast import apply_balance_runway, record_balance_sam
 from spend_app.ingest import IngestRun
 from spend_app.organization import ORGANIZATION_SOURCES, admin_event_metadata, admin_row_pricing_args
 from spend_app.pricing import PricingEngine, UnpricedModelError
-from spend_app.provider_cost_sync import COST_SEQ, apply_provider_costs, cost_acknowledgement, export_provider_costs
+from spend_app.provider_cost_sync import (
+    COST_SEQ, apply_provider_costs, cost_acknowledgement, export_provider_costs, validate_provider_costs,
+)
 from spend_app.sync_continuity import (
     can_rebase,
     choose_usage_window,
@@ -67,6 +70,11 @@ from spend_app.sync_continuity import (
     retain_legacy_conflict,
     verified_reply,
 )
+from spend_app.sync_privacy import synced_activity_name
+from spend_app.sync_validation import (
+    MAX_COST, clean_quota_numbers, clean_usage_cost, finite_amount, reject_json_constant,
+    validate_push,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -76,7 +84,42 @@ SYNC_CURSOR_PREFIX = "sync.cursor.v1:"
 MACHINE_ONLINE_SECONDS = 90
 _MACHINE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 _DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}$")
+_MACHINE_BEARER_RE = re.compile(r"br_m_([a-z0-9][a-z0-9_-]{0,47})_[A-Za-z0-9_-]{43}")
 _USAGE_EVENT_FIELDS = {field.name for event in (UsageEvent, UnpricedUsageEvent) for field in fields(event)}
+
+
+class _RequestWindow:
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.lock = threading.Lock()
+        self.hits: OrderedDict[tuple[Path, str], deque[float]] = OrderedDict()
+
+    def allow(self, key: tuple[Path, str], *, record: bool = False) -> bool:
+        now = time.monotonic()
+        with self.lock:
+            bucket = self.hits.get(key)
+            if bucket is not None:
+                while bucket and bucket[0] <= now - 60:
+                    bucket.popleft()
+                if len(bucket) >= self.limit:
+                    return False
+            if record:
+                if bucket is None:
+                    bucket = deque()
+                    self.hits[key] = bucket
+                self.hits.move_to_end(key)
+                bucket.append(now)
+                if len(self.hits) > 4096:
+                    self.hits.popitem(last=False)
+        return True
+
+
+_PUSH_WINDOW = _RequestWindow(60)  # A desktop can send 15 pages in one cycle.
+_FAILED_BEARER_WINDOW = _RequestWindow(30)
+
+
+def machine_bearer_allowed(database_path: Path, address: str, *, failed: bool = False) -> bool:
+    return _FAILED_BEARER_WINDOW.allow((database_path, address), record=failed)
 
 
 def _clean_device_id(value: object) -> str | None:
@@ -318,8 +361,9 @@ def _register_in_connection(
     reconnect=False,
     machine_id=None,
     allow_new_id=False,
+    actor=None,
 ):
-    from spend_app.auth_model import MACHINE_DAYS, moment, stamp
+    from spend_app.auth_model import MACHINE_DAYS, moment, registered_machine_session, stamp
     clean_name = (name or "").strip()
     if not clean_name or len(clean_name) > 64:
         raise ValueError("Machine name must be between 1 and 64 characters.")
@@ -372,6 +416,11 @@ def _register_in_connection(
     token = f"br_m_{matched_id}_{secrets.token_urlsafe(32)}"
     if reconnect and prev.get("revoked") and not matched_by_device_id:
         raise ValueError("This machine is revoked; sign in again on that computer or specify its machine ID.")
+    if actor is not None or prev.get("revoked"):
+        registered_machine_session(
+            connection, actor, machine_id=matched_id,
+            revoked_at=(prev.get("revoked_at") or "") if prev.get("revoked") else None, now=now,
+        )
     stored_device_id = clean_device_id or prev.get("device_id")
     record = {
         "id": matched_id, "name": display_name, "reported_name": clean_name,
@@ -401,7 +450,7 @@ def register_or_reconnect_machine(
     with connect(database_path) as connection:
         connection.execute("BEGIN IMMEDIATE")
         result = _register_in_connection(
-            connection, name=name, os_name=os_name, device_id=device_id, now=now, reconnect=True
+            connection, name=name, os_name=os_name, device_id=device_id, now=now, reconnect=True, actor=actor
         )
         if actor:
             from spend_app.auth_model import audit
@@ -416,7 +465,7 @@ def register_machine(
     initialize(database_path)
     with connect(database_path) as connection:
         connection.execute("BEGIN IMMEDIATE")
-        result = _register_in_connection(connection, name=name, os_name=os_name, device_id=device_id, now=now)
+        result = _register_in_connection(connection, name=name, os_name=os_name, device_id=device_id, now=now, actor=actor)
         if actor:
             from spend_app.auth_model import audit
             audit(connection, actor, "machine.register", result["machine"]["id"], now=now)
@@ -462,10 +511,12 @@ def revoke_machine(
         state = _read_state(connection)
         if machine_id not in state["machines"]:
             raise ValueError(f"Unknown machine: {machine_id}")
-        state["machines"][machine_id].update(revoked=True, revoked_at=utc_now(), token_hash="")
+        from spend_app.auth_model import Principal, audit, revoke_machine_sessions, stamp
+
+        state["machines"][machine_id].update(revoked=True, revoked_at=stamp(now), token_hash="")
         _write_state(connection, state)
+        revoke_machine_sessions(connection, actor or Principal("system", "local"), machine_id, now=now)
         if actor:
-            from spend_app.auth_model import audit
             audit(connection, actor, "machine.revoke", machine_id, now=now)
         machines = list_machines(connection, now=now)
     STREAM_BROKER.publish({"type": "machines", "machineId": machine_id, "at": utc_now()})
@@ -500,32 +551,57 @@ def rename_machine(
 
 def authenticate_machine_token(database_path: Path, token: str, *, now=None) -> str | None:
     from spend_app.auth_model import moment, parse, stamp
+
     raw = (token or "").strip()
-    if not raw.startswith("br_m_"):
+    match = _MACHINE_BEARER_RE.fullmatch(raw)
+    if match is None or not database_path.is_file():
         return None
+    machine_id = match[1]
     digest = _token_hash(raw)
-    with connect(database_path) as connection:
-        connection.execute("BEGIN IMMEDIATE")
-        state = _read_state(connection)
-        for machine_id, rec in state["machines"].items():
-            if not isinstance(rec, dict) or rec.get("revoked"):
-                continue
-            expected = str(rec.get("token_hash") or "")
-            if not expected or not hmac.compare_digest(digest, expected):
-                continue
-            if rec.get("rotation_required"):
-                deadline = parse(rec.get("rotation_deadline"))
-                if not deadline or deadline <= moment(now):
-                    return None
-            expires = parse(rec.get("expires_at"))
-            if expires and expires > moment(now):
-                last = parse(rec.get("last_used_at"))
-                if last is None or (moment(now) - last) >= timedelta(seconds=60):
-                    rec["last_used_at"] = stamp(now)
-                    _write_state(connection, state)
-                _MACHINE_LAST_SEEN_MEM[machine_id] = stamp(now)
-                return machine_id
-    return None
+    current_time = moment(now)
+
+    def valid(record: object) -> bool:
+        if not isinstance(record, dict) or record.get("revoked"):
+            return False
+        expected = str(record.get("token_hash") or "")
+        if not expected or not hmac.compare_digest(digest, expected):
+            return False
+        expires = parse(record.get("expires_at"))
+        if expires is None or expires <= current_time:
+            return False
+        if record.get("rotation_required"):
+            deadline = parse(record.get("rotation_deadline"))
+            return deadline is not None and deadline > current_time
+        return True
+
+    def usage_due(record: dict) -> bool:
+        last = parse(record.get("last_used_at"))
+        return last is None or current_time - last >= timedelta(seconds=60)
+
+    uri = database_path.resolve().as_uri() + "?mode=ro"
+    try:
+        with closing(sqlite3.connect(uri, uri=True, timeout=5)) as reader:
+            match = reader.execute(
+                "SELECT json_extract(value, ?) FROM app_meta WHERE key=? AND json_valid(value)",
+                (f'$.machines."{machine_id}"', MACHINES_META_KEY),
+            ).fetchone()
+        record = json.loads(match[0]) if match and isinstance(match[0], str) else None
+    except (sqlite3.DatabaseError, ValueError):
+        return None
+    if not valid(record):
+        return None
+    if usage_due(record):
+        with connect(database_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            state = _read_state(connection)
+            record = state["machines"].get(machine_id)
+            if not valid(record):
+                return None
+            if usage_due(record):
+                record["last_used_at"] = stamp(current_time)
+                _write_state(connection, state)
+    _MACHINE_LAST_SEEN_MEM[machine_id] = stamp(current_time)
+    return machine_id
 
 
 class StreamBroker:
@@ -600,7 +676,10 @@ def _price_pushed_event(pricing: PricingEngine, item: dict) -> tuple[float, bool
     )
     if source in ORGANIZATION_SOURCES:
         is_exact = pricing.resolve(str(item["model_key"]), occurred).is_exact
-    return float(cost), is_exact
+    value = float(cost)
+    if not finite_amount(value, 0, MAX_COST):
+        raise ValueError("Invalid computed sync usage cost.")
+    return value, is_exact
 
 
 def _pushed_telemetry_complete(item: dict) -> bool:
@@ -759,9 +838,11 @@ def apply_sync_push(
 ) -> dict:
     from spend_app.adapters.grok_native import drop_covered_calls, pushed_turn_elapsed_ms
 
-    if not _MACHINE_ID_RE.match(machine_id) or machine_id in {"local", "all"}:
+    if not _MACHINE_ID_RE.fullmatch(machine_id) or machine_id in {"local", "all"}:
         raise ValueError("Invalid machine identifier.")
     moment = (now or datetime.now(UTC)).astimezone(UTC)
+    validate_push(body, moment)
+    provider_cost_batch = validate_provider_costs(body["providerCosts"], moment) if "providerCosts" in body else None
     stamp = moment.isoformat().replace("+00:00", "Z")
     initialize(database_path)
 
@@ -827,8 +908,10 @@ def apply_sync_push(
                     raw_id = prefix_machine_id(machine_id, identifier)
                     for table in ("usage_events", "unpriced_usage_events", "coverage_gap_events", "pricing_gap_events"):
                         connection.execute(f"DELETE FROM {table} WHERE raw_id=?", (raw_id,))
-            if "providerCosts" in body:
-                cost_ack, costs_changed = apply_provider_costs(connection, machine_id, body["providerCosts"])
+            if provider_cost_batch is not None:
+                cost_ack, costs_changed = apply_provider_costs(
+                    connection, machine_id, provider_cost_batch, now=moment,
+                )
             for item in usage_items:
                 _validate_usage_timestamp(item)
                 raw_id = prefix_machine_id(machine_id, str(item["raw_id"]))
@@ -972,7 +1055,7 @@ def apply_sync_push(
                     if upsert_agent_run(
                         connection,
                         id=rid,
-                        name=cap_agent_run_name(str(item["name"])),
+                        name=synced_activity_name(rid),
                         model_key=item.get("model_key") or item.get("modelKey"),
                         state=str(item.get("state") or "LIVE"),
                         started_at=str(item.get("started_at") or item.get("startedAt") or stamp),
@@ -980,11 +1063,11 @@ def apply_sync_push(
                     ):
                         agents_changed = True
                 if body.get("replaceAgentRuns", True):
-                    prefix = f"m:{machine_id}:%"
+                    prefix = f"m:{machine_id}:*"
                     existing_ids = [
                         row[0]
                         for row in connection.execute(
-                            "SELECT id FROM agent_runs WHERE id LIKE ?", (prefix,)
+                            "SELECT id FROM agent_runs WHERE id GLOB ?", (prefix,)
                         )
                     ]
                     for old_id in existing_ids:
@@ -1006,12 +1089,14 @@ def apply_sync_push(
                 polled_at = _parse_iso(str(item.get("polled_at") or stamp))
                 if polled_at is None:
                     raise ValueError("Quota reading requires a valid timestamp.")
+                polled_at = min(polled_at, moment + timedelta(minutes=5))
                 polled_val = polled_at.isoformat(timespec="microseconds").replace("+00:00", "Z")
                 existing = connection.execute(
                     "SELECT id, label, used, allowance, unit, pct, resets_at, source, is_payg, polled_at "
                     "FROM quotas WHERE provider_key=? AND limit_key=? AND source=? "
+                    "AND julianday(polled_at) <= julianday(?) "
                     "ORDER BY julianday(polled_at) DESC, id DESC LIMIT 1",
-                    (provider_key, limit_key, sync_source),
+                    (provider_key, limit_key, sync_source, (moment + timedelta(minutes=5)).isoformat()),
                 ).fetchone()
                 previous_poll = _parse_iso(existing["polled_at"]) if existing else None
                 if previous_poll is not None and (
@@ -1204,7 +1289,7 @@ def export_sync_batch(
                                       ("unpriced_usage_events", "unpriced", unpriced_rows)):
                 row = connection.execute(f"SELECT * FROM {table} WHERE raw_id=?", (raw_id,)).fetchone()
                 if row is not None:
-                    event = dict(row)
+                    event = clean_usage_cost(dict(row))
                     if _parse_iso(str(event.get("occurred_at") or "")) is None:
                         change.update(kind="skip", reason="invalid_timestamp")
                         break
@@ -1232,6 +1317,8 @@ def export_sync_batch(
                            if _parse_iso(str(row.get("occurred_at") or "")) is not None}.values())
         unpriced_rows = list({row["raw_id"]: row for row in unpriced_rows
                               if _parse_iso(str(row.get("occurred_at") or "")) is not None}.values())
+        for row in (*usage_rows, *unpriced_rows):
+            clean_usage_cost(row)
         uncertain_admin_ids: set[str] = set()
         if pricing is not None:
             for row in usage_rows:
@@ -1266,9 +1353,9 @@ def export_sync_batch(
                 )
             ]
         agent_runs = [
-            dict(row)
+            {**dict(row), "name": synced_activity_name(row["id"])}
             for row in connection.execute(
-                "SELECT * FROM agent_runs WHERE id NOT LIKE 'm:%'"
+                "SELECT id,model_key,state,started_at,last_seen_at FROM agent_runs WHERE id NOT GLOB 'm:*'"
             )
         ]
         raw_quotas = [
@@ -1295,7 +1382,7 @@ def export_sync_batch(
         except Exception:
             verified_quotas = raw_quotas
         quota_rows = [
-            {
+            clean_quota_numbers({
                 "provider_key": r["provider_key"],
                 "limit_key": r["limit_key"],
                 "label": r["label"],
@@ -1307,7 +1394,7 @@ def export_sync_batch(
                 "source": r.get("source") or "",
                 "polled_at": r.get("polled_at"),
                 "is_payg": r.get("is_payg"),
-            }
+            })
             for r in verified_quotas
             if r.get("provider_key") != "cursor"
         ]
@@ -1320,8 +1407,9 @@ def export_sync_batch(
         "change_seq": next_change_seq,
         "usage_stream": usage_stream,
     }
-    if last_cost_seq or cost_batch["changes"]:
-        next_cursor[COST_SEQ] = cost_batch["through"]
+    cost_resume_at = cost_batch.pop("resumeAt")
+    if cost_resume_at:
+        next_cursor[COST_SEQ] = cost_resume_at
     for row in usage_rows:
         row.pop("id", None)
         row.pop("occurred_epoch_us", None)
@@ -1722,7 +1810,7 @@ def migrate_legacy_spoke_secrets(database_path: Path, *, vault=None) -> dict[str
         mark_cleanup_pending_in_tx,
         verified_vault_put,
     )
-    from spend_app.setup_wizard import read_setup_state, write_setup_state
+    from spend_app.setup_wizard import SETUP_META_KEY, read_setup_state, write_setup_state
 
     with db_secret_lock(db_file):
         try:
@@ -1739,7 +1827,12 @@ def migrate_legacy_spoke_secrets(database_path: Path, *, vault=None) -> dict[str
                 ).fetchone()
                 has_marker = marker_row is not None
 
-                if not legacy_token and not legacy_session and not has_marker:
+                raw_row = connection.execute("SELECT value FROM app_meta WHERE key=?", (SETUP_META_KEY,)).fetchone()
+                raw_state = json.loads(raw_row[0]) if raw_row else {}
+                raw_spoke = raw_state.get("spokeConfig", {}) if isinstance(raw_state, dict) else {}
+                had_token = isinstance(raw_spoke, dict) and "token" in raw_spoke
+                had_session = isinstance(raw_spoke, dict) and "ownerSession" in raw_spoke
+                if not had_token and not had_session and not has_marker:
                     return outcome
 
                 use_vault = None
@@ -1748,12 +1841,8 @@ def migrate_legacy_spoke_secrets(database_path: Path, *, vault=None) -> dict[str
                         use_vault = vault if vault is not None else get_vault(db_file)
                     except Exception:
                         use_vault = None
-                    if use_vault is None:
-                        return outcome
 
-                changed = False
-                token_migrated = False
-                owner_migrated = False
+                changed = had_token or had_session
                 prev_gen = int(latest_spoke.get("credentialGeneration") or 0)
 
                 if legacy_token:
@@ -1762,8 +1851,6 @@ def migrate_legacy_spoke_secrets(database_path: Path, *, vault=None) -> dict[str
                         outcome["token"] = True
                         latest_spoke.pop("token", None)
                         latest_spoke["rotationRequired"] = True
-                        token_migrated = True
-                        changed = True
                     except Exception:
                         outcome["token"] = False
 
@@ -1773,19 +1860,22 @@ def migrate_legacy_spoke_secrets(database_path: Path, *, vault=None) -> dict[str
                         outcome["ownerSession"] = True
                         latest_spoke.pop("ownerSession", None)
                         latest_spoke["ownerSessionRotationRequired"] = True
-                        owner_migrated = True
-                        changed = True
                     except Exception:
                         outcome["ownerSession"] = False
 
                 if changed:
+                    latest_spoke.pop("token", None)
+                    latest_spoke.pop("ownerSession", None)
+                    if ((legacy_token and not outcome["token"]) or
+                            (legacy_session and not outcome["ownerSession"])):
+                        latest_spoke["signedOut"] = True
                     latest_spoke["credentialGeneration"] = prev_gen + 1
                     latest["spokeConfig"] = latest_spoke
                     write_setup_state(connection, latest)
                     mark_cleanup_pending_in_tx(
                         connection,
-                        token_migrated=token_migrated,
-                        owner_migrated=owner_migrated,
+                        token_migrated=bool(legacy_token),
+                        owner_migrated=bool(legacy_session),
                         state=latest,
                     )
                     connection.commit()
@@ -1868,8 +1958,10 @@ def _hub_post_with_cookie_isolation(hub_url: str, path: str, headers: dict, *, j
                 for cookie in saved_jar:
                     cookies.jar.set_cookie(cookie)
     import httpx
+    from spend_app.hub_response import bounded_request
     with httpx.Client(timeout=timeout, trust_env=False, follow_redirects=False) as http:
-        return http.post(f"{hub_url}{path}", json=(json_body if json_body is not None else {}), headers=headers)
+        return bounded_request(http, "POST", f"{hub_url}{path}",
+                               json=(json_body if json_body is not None else {}), headers=headers)
 
 
 def ensure_fresh_owner_session(
@@ -1898,6 +1990,7 @@ def ensure_fresh_owner_session(
     from spend_app.connection_secrets import (
         OWNER_SESSION_VAULT_REF,
         clear_spoke_credentials,
+        credential_origin_allowed,
         mark_cleanup_pending_in_tx,
         publish_spoke_credentials,
         read_vault_secret,
@@ -1925,6 +2018,8 @@ def ensure_fresh_owner_session(
         captured_gen = int(spoke.get("credentialGeneration") or 0)
         if not spoke.get("ownerSessionRotationRequired"):
             if stored_tok and stored_tok != clean_token:
+                if not credential_origin_allowed(db_file, stored_tok, hub_url, spoke, vault=vault):
+                    raise CodedError("AUTH-107", status_code=401)
                 return stored_tok
             if not stored_tok:
                 raise CodedError("AUTH-107", status_code=401)
@@ -2130,11 +2225,11 @@ def post_to_configured_hub(
     if not spoke.get("enabled"):
         return None
     from spend_app.config import resolve_hub_url
-    from spend_app.hub_origin import hub_origin
+    from spend_app.connection_secrets import credential_origin_allowed
+    from spend_app.hub_origin import bound_hub_origin
 
     try:
-        raw_hub_url = resolve_hub_url() or str(spoke.get("hubUrl") or "").strip()
-        hub_url = hub_origin(raw_hub_url) if raw_hub_url else ""
+        hub_url = bound_hub_origin(spoke, resolve_hub_url())
     except ValueError as exc:
         if strict:
             raise HubMutationError(str(exc), 422) from exc
@@ -2152,7 +2247,7 @@ def post_to_configured_hub(
             _vault_get_secret(settings.database_path, "burnrate-machine-token") or ""
         )
         using_owner_session = False
-    if not hub_url or not token:
+    if not credential_origin_allowed(settings.database_path, token, hub_url, spoke):
         if strict:
             raise HubMutationError("Reconnect this computer to its hub before saving plans.")
         return None
@@ -2178,8 +2273,7 @@ def post_to_configured_hub(
                 current = read_setup_state(connection)
             current_spoke = current["spokeConfig"]
             try:
-                raw_url = resolve_hub_url() or str(current_spoke.get("hubUrl") or "").strip()
-                current_url = hub_origin(raw_url) if raw_url else ""
+                current_url = bound_hub_origin(current_spoke, resolve_hub_url())
             except ValueError as exc:
                 raise HubMutationError(scope_changed, 409) from exc
             current_owner = str(current_spoke.get("ownerSession") or "").strip() or (
@@ -2204,9 +2298,10 @@ def post_to_configured_hub(
             response = test_client.post(path, json=body, headers=headers)
         else:
             import httpx
+            from spend_app.hub_response import bounded_request
 
             with httpx.Client(timeout=5.0, trust_env=False) as http:
-                response = http.post(f"{hub_url}{path}", json=body, headers=headers)
+                response = bounded_request(http, "POST", f"{hub_url}{path}", json=body, headers=headers)
         if not 200 <= response.status_code < 300:
             if strict:
                 status = response.status_code
@@ -2526,13 +2621,11 @@ def fetch_from_configured_hub(
     if not spoke.get("enabled"):
         return None
     from spend_app.config import resolve_hub_url
-    from spend_app.hub_origin import hub_origin
+    from spend_app.connection_secrets import credential_origin_allowed
+    from spend_app.hub_origin import bound_hub_origin
 
     try:
-        raw_hub_url = resolve_hub_url() or str(spoke.get("hubUrl") or "").strip()
-        if not raw_hub_url:
-            return None
-        hub_url = hub_origin(raw_hub_url)
+        hub_url = bound_hub_origin(spoke, resolve_hub_url())
     except ValueError:
         return None
     from spend_app.auth_model import digest, moment, parse
@@ -2542,7 +2635,7 @@ def fetch_from_configured_hub(
     expiry = parse(spoke.get("ownerSessionExpiresAt"))
     if expiry is not None and expiry <= moment():
         return None
-    if not hub_url or not token:
+    if not credential_origin_allowed(settings.database_path, token, hub_url, spoke):
         return None
     try:
         from spend_app.connection_secrets import flush_pending_revokes
@@ -2617,9 +2710,10 @@ def _read_hub_copy(cache_key: tuple, hub_url: str, token: str, path: str, params
             response = test_client.get(path, params=params, headers=headers)
         else:
             import httpx
+            from spend_app.hub_response import bounded_request
 
             with httpx.Client(timeout=timeout, trust_env=False) as http:
-                response = http.get(f"{hub_url}{path}", params=params, headers=headers)
+                response = bounded_request(http, "GET", f"{hub_url}{path}", params=params, headers=headers)
         if response.status_code in {401, 403}:
             from spend_app.auth_model import digest
             key = digest(token)
@@ -2783,6 +2877,22 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
                 return error_response("DEV-301", status_code=422)
             return error_response("DEV-302", status_code=422)
 
+    @router.post("/api/machines/{machine_id}/data/delete")
+    async def remove_machine_data(request: Request, machine_id: str, confirm: str = Query(default="")):
+        from spend_app.connection_api import central_server
+        from spend_app.machine_data import delete_machine_data
+
+        actor = getattr(request.state, "principal", None)
+        if not central_server() or actor is None or not actor.permits("admin.write"):
+            return error_response("AUTH-107", status_code=403)
+        if confirm != machine_id:
+            return error_response("APP-901", status_code=422)
+        try:
+            result = await run_in_threadpool(delete_machine_data, settings.database_path, machine_id, actor=actor)
+        except ValueError:
+            return error_response("APP-901", status_code=422)
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
     @router.post("/api/machines/self/revoke")
     async def self_revoke_machine(request: Request):
         proto_err = check_protocol_version(request.headers.get("x-burnrate-protocol"))
@@ -2884,19 +2994,33 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
     async def sync_push(request: Request):
         auth = request.headers.get("authorization", "")
         token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
-        machine_id = authenticate_machine_token(settings.database_path, token)
+        principal = getattr(request.state, "principal", None)
+        if principal is not None and principal.kind == "machine":
+            machine_id = principal.id
+        else:
+            machine_id = await run_in_threadpool(authenticate_machine_token, settings.database_path, token)
         if not machine_id:
-            return error_response("DEV-301", status_code=401)
+                return error_response("DEV-301", status_code=401)
+        if not _PUSH_WINDOW.allow((settings.database_path, machine_id), record=True):
+            return JSONResponse(
+                {"error": "Sync rate limit exceeded."}, status_code=429, headers={"Retry-After": "60"},
+            )
         try:
             raw = bytearray()
             async for chunk in request.stream():
                 if len(raw) + len(chunk) > 8 * 1024 * 1024:
                     return JSONResponse({"error": "Sync payload too large."}, status_code=413)
                 raw.extend(chunk)
-            body = json.loads(raw)
+            body = json.loads(raw, parse_constant=reject_json_constant)
             if not isinstance(body, dict):
                 raise ValueError("Expected a JSON object.")
-            claimed = str(body.get("machineId") or (body.get("machine") or {}).get("id") or machine_id)
+            machine = body.get("machine", {})
+            if not isinstance(machine, dict):
+                raise ValueError("Expected machine metadata to be an object.")
+            for identifier in (body.get("machineId"), machine.get("id")):
+                if identifier is not None and not isinstance(identifier, str):
+                    raise ValueError("Expected a string computer identifier.")
+            claimed = str(body.get("machineId") or machine.get("id") or machine_id)
             if claimed != machine_id:
                 return JSONResponse({"error": "Cannot push as another machine."}, status_code=403)
 
@@ -2911,8 +3035,6 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
 
             if foreign_identifier(body):
                 return JSONResponse({"error": "Cannot write another machine's identifiers."}, status_code=403)
-            from starlette.concurrency import run_in_threadpool
-
             result = await run_in_threadpool(
                 lambda: apply_sync_push(
                     settings.database_path,
@@ -2925,7 +3047,7 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
             return JSONResponse(result, headers={"Cache-Control": "no-store"})
         except PermissionError:
             return error_response("DEV-301", status_code=401)
-        except (ValueError, KeyError, TypeError) as exc:
+        except (ValueError, KeyError, TypeError, OverflowError, RecursionError) as exc:
             if "already exists" in str(exc).lower():
                 return error_response("DEV-302", status_code=422)
             return error_response("HUB-501", status_code=422)

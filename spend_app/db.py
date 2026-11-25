@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import tempfile
 import threading
 from contextlib import contextmanager, closing
 from contextvars import ContextVar
@@ -380,9 +381,16 @@ def backup_database(src: Path, dst: Path) -> Path:
     if not source_path.is_file():
         raise FileNotFoundError(source_path)
     dest_path.parent.mkdir(parents=True, exist_ok=True)
-    with closing(sqlite3.connect(source_path, timeout=30)) as source:
-        with closing(sqlite3.connect(dest_path, timeout=30)) as dest:
-            source.backup(dest)
+    fd, name = tempfile.mkstemp(prefix=".burnrate-backup-", dir=dest_path.parent)
+    os.close(fd)
+    temporary = Path(name)
+    try:
+        with closing(sqlite3.connect(source_path, timeout=30)) as source:
+            with closing(sqlite3.connect(temporary, timeout=30)) as dest:
+                source.backup(dest)
+        temporary.replace(dest_path)
+    finally:
+        temporary.unlink(missing_ok=True)
     return dest_path
 
 
@@ -727,6 +735,8 @@ def prune_usage_changes(
         """
     )
     removed += int(cur_dedup.rowcount or 0)
+    from spend_app.sync_continuity import prune_received_journal
+    prune_received_journal(connection)
     return removed
 
 
@@ -935,8 +945,12 @@ def redact_legacy_ingest_errors(
 
 
 def migrate_setup_hub_url(path: Path) -> bool:
-    """Migrate saved setup state to the resolved hub URL and drop legacy serverUrl."""
+    """Update the configured origin without transferring credentials to it."""
     from spend_app.config import resolve_hub_url
+    from spend_app.connection_secrets import (
+        MACHINE_TOKEN_VAULT_REF, OWNER_SESSION_VAULT_REF, db_secret_lock, get_vault,
+    )
+    from spend_app.hub_origin import hub_origin
     from spend_app.setup_wizard import SETUP_META_KEY
 
     try:
@@ -954,7 +968,7 @@ def migrate_setup_hub_url(path: Path) -> bool:
                 return True
         return False
 
-    with connect(path) as connection:
+    with db_secret_lock(path), connect(path) as connection:
         row = connection.execute(
             "SELECT value FROM app_meta WHERE key=?", (SETUP_META_KEY,)
         ).fetchone()
@@ -983,6 +997,30 @@ def migrate_setup_hub_url(path: Path) -> bool:
             account.pop("serverUrl", None)
         spoke = parsed.get("spokeConfig")
         if resolved and isinstance(spoke, dict) and (spoke.get("hubUrl") or spoke.get("enabled")):
+            old_url = spoke.get("credentialOrigin") or spoke.get("hubUrl")
+            try:
+                same_origin = bool(old_url and hub_origin(old_url) == resolved)
+            except ValueError:
+                same_origin = False
+            if not same_origin:
+                connection.execute("PRAGMA secure_delete = ON")
+                spoke.pop("token", None)
+                spoke.pop("ownerSession", None)
+                spoke.pop("ownerSessionExpiresAt", None)
+                spoke.pop("tokenExpiresAt", None)
+                spoke["credentialOrigin"] = old_url or None
+                spoke["credentialGeneration"] = int(spoke.get("credentialGeneration") or 0) + 1
+                spoke["enabled"] = False
+                spoke["signedOut"] = True
+                spoke["requiresHubSignIn"] = True
+                try:
+                    vault = get_vault(path)
+                    for reference in (MACHINE_TOKEN_VAULT_REF, OWNER_SESSION_VAULT_REF):
+                        vault.delete(reference)
+                except Exception:
+                    # The persisted scope still prevents a failed vault
+                    # deletion from authorizing a credential at the new hub.
+                    pass
             spoke["hubUrl"] = resolved
         connection.execute(
             "INSERT INTO app_meta(key, value) VALUES(?, ?) "
@@ -1000,16 +1038,66 @@ def initialize(path: Path) -> None:
     from spend_app.provider_cost_sync import ensure_provider_cost_journal
     ensure_provider_cost_journal(path)
     ensure_usage_cache_revisions(path)
+    ensure_sync_storage(path)
     migrate_usage_keys(path)
     retire_cursor_usage(path)
     dedupe_grok_calls(path)
     retire_muse_rollup_events(path)
     redact_legacy_ingest_errors(path)
+    from spend_app.sync_privacy import scrub_synced_activity_titles
+    scrub_synced_activity_titles(path)
     migrate_setup_hub_url(path)
     from spend_app.auth_model import ensure_schema
     ensure_schema(path)
     from spend_app.connections import Store
     Store(path).bootstrap()
+
+
+def ensure_sync_storage(path: Path) -> None:
+    """Age sync receipts and keep corrupt stored amounts eligible for repricing."""
+    from spend_app.organization import PROVIDER_COST_ID_SQL
+
+    marker = "sync.safe_storage.v1"
+    with connect(path) as connection:
+        if connection.execute("SELECT 1 FROM app_meta WHERE key=?", (marker,)).fetchone():
+            return
+        connection.execute("BEGIN IMMEDIATE")
+        if connection.execute("SELECT 1 FROM app_meta WHERE key=?", (marker,)).fetchone():
+            return
+        for table in ("sync_usage_receipts", "sync_usage_conflicts"):
+            columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+            if "received_at" not in columns:
+                connection.execute(
+                    f"ALTER TABLE {table} ADD COLUMN received_at INTEGER NOT NULL DEFAULT 0"
+                )
+            connection.execute(f"UPDATE {table} SET received_at=unixepoch() WHERE received_at=0")
+            connection.execute(
+                f"CREATE INDEX IF NOT EXISTS idx_{table}_received ON {table}(machine_id, received_at, mark)"
+            )
+        connection.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_provider_cost_buckets_identity "
+            f"ON provider_cost_buckets(({PROVIDER_COST_ID_SQL})) WHERE organization_scope IS NOT NULL"
+        )
+        invalid_price = (
+            "(typeof(computed_cost_usd) NOT IN ('integer','real') "
+            "OR abs(computed_cost_usd) > 1.7976931348623157e308)"
+        )
+        event_fields = (
+            "source,tool_key,model_key,occurred_at,session_id,project,input_tokens,cached_input_tokens,"
+            "cache_write_tokens,cache_write_1h_tokens,output_tokens,reasoning_tokens,raw_id,ingested_at,"
+            "admin_request_count,admin_context_window,organization_scope,occurred_epoch_us,grok_turn_elapsed_ms"
+        )
+        connection.execute(
+            f"INSERT OR IGNORE INTO unpriced_usage_events({event_fields},telemetry_complete,unclassified_tokens,cost_usd) "
+            f"SELECT {event_fields},1,0,cost_usd FROM usage_events WHERE {invalid_price}"
+        )
+        connection.execute(f"DELETE FROM usage_events WHERE {invalid_price}")
+        for table in ("usage_events", "unpriced_usage_events"):
+            connection.execute(
+                f"UPDATE {table} SET cost_usd=NULL WHERE cost_usd IS NOT NULL AND "
+                "(typeof(cost_usd) NOT IN ('integer','real') OR abs(cost_usd) > 1.7976931348623157e308)"
+            )
+        connection.execute("INSERT INTO app_meta(key,value) VALUES(?, '1')", (marker,))
 
 
 def ensure_quota_origin_uniqueness(path: Path) -> None:

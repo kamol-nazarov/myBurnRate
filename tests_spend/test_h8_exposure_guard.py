@@ -28,6 +28,7 @@ from spend_app.connection_paths import LocationError
 from spend_app.connection_secrets import set_vault_factory
 from spend_app.db import connect, initialize
 from spend_app.error_codes import HUB_PROTOCOL_VERSION
+from tests_spend.local_client_fixture import local_client
 
 ROOT = Path(__file__).resolve().parents[1]
 HUB_URL = "https://hub.example.com"
@@ -43,6 +44,7 @@ LOCAL_SPOKE_HEADERS = {
 }
 PASSWORD = "synthetic-password-long-123"
 NEW_PASSWORD = "synthetic-password-rotated-456"
+SETUP_PROOF = "synthetic-owner-enrollment-proof"
 
 
 class MemoryVault:
@@ -85,7 +87,6 @@ def _settings(db_path: Path) -> Settings:
 @pytest.fixture(autouse=True)
 def _reset_h8_state(monkeypatch: pytest.MonkeyPatch):
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
     sync._HUB_REJECTED_CREDENTIALS.clear()
     sync._HUB_CREDENTIAL_GENERATIONS.clear()
@@ -97,12 +98,12 @@ def _reset_h8_state(monkeypatch: pytest.MonkeyPatch):
         "BURNRATE_HOST",
         "BURNRATE_HUB_URL",
         "BURNRATE_ACCESS_TOKEN",
+        "BURNRATE_SETUP_TOKEN",
         "BURNRATE_ALLOWED_ORIGINS",
     ):
         monkeypatch.delenv(env_key, raising=False)
     yield
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
     sync._HUB_REJECTED_CREDENTIALS.clear()
     sync._HUB_CREDENTIAL_GENERATIONS.clear()
@@ -439,6 +440,7 @@ def test_h8_middleware_trusts_loopback_proxy_and_sets_secure_cookie(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
+    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", SETUP_PROOF)
     monkeypatch.setenv("BURNRATE_ALLOWED_HOSTS", "hub.example.com")
     monkeypatch.setenv("BURNRATE_ALLOWED_ORIGINS", HUB_URL)
 
@@ -468,11 +470,12 @@ def test_h8_middleware_trusts_loopback_proxy_and_sets_secure_cookie(
                 "X-Forwarded-For": "100.64.0.15",
                 "X-Forwarded-Proto": "https",
             },
-            json={"username": "owner@example.com", "password": PASSWORD},
+            json={"username": "owner@example.com", "password": PASSWORD, "setupToken": SETUP_PROOF},
         )
         assert reg.status_code == 200, reg.text
-        set_cookie = reg.headers.get("set-cookie", "")
-        assert "Secure" in set_cookie
+        cookies = reg.headers.get_list("set-cookie")
+        assert {value.partition("=")[0] for value in cookies} == {auth_model.COOKIE, auth_model.LEGACY_COOKIE}
+        assert all("; secure" in value.lower() and "; httponly" in value.lower() for value in cookies)
 
     with TestClient(app, base_url="http://hub.example.com", client=("::1", 50000)) as v6_client:
         info_v6 = v6_client.get(
@@ -491,6 +494,7 @@ def test_h8_middleware_ignores_spoofed_headers_from_untrusted_peer(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
+    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", SETUP_PROOF)
     monkeypatch.setenv("BURNRATE_ALLOWED_HOSTS", "hub.example.com")
     monkeypatch.setenv("BURNRATE_ALLOWED_ORIGINS", "http://hub.example.com")
 
@@ -525,11 +529,15 @@ def test_h8_middleware_ignores_spoofed_headers_from_untrusted_peer(
                 "X-Forwarded-For": "100.64.0.25",
                 "X-Forwarded-Proto": "https",
             },
-            json={"username": "owner@example.com", "password": PASSWORD},
+            json={"username": "owner@example.com", "password": PASSWORD, "setupToken": SETUP_PROOF},
         )
         assert reg.status_code == 200, reg.text
-        set_cookie = reg.headers.get("set-cookie", "")
-        assert "Secure" not in set_cookie
+        # Central sessions require Secure cookies even when the peer cannot
+        # establish HTTPS. The legacy compatibility cookie is withheld.
+        cookies = reg.headers.get_list("set-cookie")
+        assert {value.partition("=")[0] for value in cookies} == {auth_model.COOKIE}
+        assert all("; secure" in value.lower() and "; httponly" in value.lower() for value in cookies)
+        assert client.get("/api/auth/context").status_code == 401
 
 
 def test_h8_resolve_client_ip_walks_right_to_left_and_ignores_injection(
@@ -577,7 +585,7 @@ def _register_owner(client: TestClient, *, headers: dict[str, str] | None = None
     res = client.post(
         "/api/account/register",
         headers=merged,
-        json={"username": "owner@example.com", "password": PASSWORD},
+        json={"username": "owner@example.com", "password": PASSWORD, "setupToken": SETUP_PROOF},
     )
     assert res.status_code == 200, res.text
     client.cookies.clear()
@@ -600,6 +608,7 @@ def _create_hub_and_paired_spoke(
     previous_factory = set_vault_factory(_vault_factory)
 
     monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
+    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", SETUP_PROOF)
     monkeypatch.setenv("BURNRATE_ALLOWED_HOSTS", "hub.example.com")
     monkeypatch.setenv("BURNRATE_ALLOWED_ORIGINS", HUB_URL)
     hub_settings = _settings(tmp_path / f"hub_{name_suffix}.db")
@@ -610,13 +619,18 @@ def _create_hub_and_paired_spoke(
     monkeypatch.setenv("BURNRATE_HUB_URL", HUB_URL)
     spoke_settings = _settings(tmp_path / f"spoke_{name_suffix}.db")
     spoke_app = create_app(spoke_settings, enable_scheduler=False)
-    spoke_client = TestClient(spoke_app, base_url=LOCAL_SPOKE_URL, client=("127.0.0.1", 50001))
+    spoke_client = local_client(
+        spoke_app,
+        spoke_settings.database_path,
+        base_url=LOCAL_SPOKE_URL,
+        client=("127.0.0.1", 50001),
+    )
 
     if legacy_username is None:
         reg = hub_client.post(
             "/api/account/register",
             headers=HUB_HEADERS,
-            json={"username": username, "password": PASSWORD, "sessionOnly": True},
+            json={"username": username, "password": PASSWORD, "sessionOnly": True, "setupToken": SETUP_PROOF},
         )
         assert reg.status_code == 200, reg.text
         owner_session = reg.cookies[auth_model.COOKIE]
@@ -684,6 +698,7 @@ def test_h8_login_throttle_isolates_spokes_behind_trusted_proxy(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
+    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", SETUP_PROOF)
     monkeypatch.setenv("BURNRATE_ALLOWED_HOSTS", "hub.example.com")
     monkeypatch.setenv("BURNRATE_ALLOWED_ORIGINS", HUB_URL)
 
@@ -750,6 +765,7 @@ def test_h8_untrusted_peer_cannot_bypass_login_throttle_by_spoofing_xff(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
+    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", SETUP_PROOF)
     monkeypatch.setenv("BURNRATE_ALLOWED_HOSTS", "hub.example.com")
     monkeypatch.setenv("BURNRATE_ALLOWED_ORIGINS", HUB_URL)
 
@@ -805,6 +821,7 @@ def test_h8_closed_registration_throttles_per_client_ip_across_distinct_emails(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
+    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", SETUP_PROOF)
     monkeypatch.setenv("BURNRATE_ALLOWED_HOSTS", "hub.example.com")
     monkeypatch.setenv("BURNRATE_ALLOWED_ORIGINS", HUB_URL)
 
@@ -934,7 +951,6 @@ def test_s3_login_lockout_blocks_direct_and_spoke_password_and_email_changes_wit
                 assert "attacker@example.com" not in users
 
             auth_throttle.reset()
-            setup_wizard._GLOBAL_THROTTLE.reset()
             assert (
                 hub_client.post(
                     "/api/account/login",
@@ -1008,7 +1024,6 @@ def test_s3_wrong_password_and_email_guesses_share_budget_and_lock_out_login_per
 
             # 2) Anonymous spoke relay /api/setup/account/{password,email} also shares and triggers lockout
             auth_throttle.reset()
-            setup_wizard._GLOBAL_THROTTLE.reset()
             for idx in range(2):
                 s_pw = spoke_client.post(
                     "/api/setup/account/password",
@@ -1045,44 +1060,6 @@ def test_s3_wrong_password_and_email_guesses_share_budget_and_lock_out_login_per
             assert other_ip_login_2.status_code == 200, other_ip_login_2.text
             hub_client.cookies.clear()
 
-            # 3) Shared global budget across password/email guesses and login probes
-            auth_throttle.reset()
-            monkeypatch.setattr(
-                setup_wizard,
-                "_GLOBAL_THROTTLE",
-                auth_throttle.Throttle(window=60, max_failures=3, lockout=60),
-            )
-            assert (
-                hub_client.post(
-                    "/api/account/password",
-                    headers=bearer_headers,
-                    json={"currentPassword": "wrong-global-1", "newPassword": NEW_PASSWORD},
-                ).status_code
-                == 401
-            )
-            assert (
-                spoke_client.post(
-                    "/api/setup/account/email",
-                    headers=LOCAL_SPOKE_HEADERS,
-                    json={"email": "new@example.com", "password": "wrong-global-2"},
-                ).status_code
-                == 401
-            )
-            global_locked = hub_client.post(
-                "/api/account/login",
-                headers={**HUB_HEADERS, "X-Forwarded-For": "100.64.0.99"},
-                json={"username": "stranger@example.com", "password": "wrong-global-3"},
-            )
-            _assert_locked_out(global_locked)
-
-            # Even a different client IP with the right password is blocked by global lockout
-            _assert_locked_out(
-                hub_client.post(
-                    "/api/account/password",
-                    headers=bearer_headers,
-                    json={"currentPassword": PASSWORD, "newPassword": NEW_PASSWORD},
-                )
-            )
     finally:
         set_vault_factory(prev_factory)
 
@@ -1183,7 +1160,6 @@ def test_s3_legacy_username_and_email_share_guessing_budget_both_directions(
 
             # Direction 1b: Lock out login via email -> password & email changes blocked
             auth_throttle.reset()
-            setup_wizard._GLOBAL_THROTTLE.reset()
             for _ in range(4):
                 assert (
                     hub_client.post(
@@ -1217,7 +1193,6 @@ def test_s3_legacy_username_and_email_share_guessing_budget_both_directions(
 
             # Direction 2: Lock out via password/email guesses -> locks out login via BOTH identifiers
             auth_throttle.reset()
-            setup_wizard._GLOBAL_THROTTLE.reset()
             for idx in range(4):
                 assert (
                     hub_client.post(
@@ -1292,7 +1267,7 @@ def validate_compose_image_pins(
         )
 
 
-def test_h8_deploy_compose_is_tailnet_only_and_drops_deprecated_registration_vars() -> None:
+def test_h8_deploy_compose_is_tailnet_only_and_scopes_first_owner_setup() -> None:
     compose_path = ROOT / "deploy" / "hub" / "compose.yaml"
     raw = compose_path.read_text(encoding="utf-8")
     data = yaml.safe_load(raw)
@@ -1322,10 +1297,12 @@ def test_h8_deploy_compose_is_tailnet_only_and_drops_deprecated_registration_var
     assert "BURNRATE_ACCESS_TOKEN" in env
     assert "BURNRATE_ALLOWED_HOSTS" in env
     assert "BURNRATE_TRUSTED_PROXIES" in env
-    assert "BURNRATE_SETUP_TOKEN" not in env
+    assert env["BURNRATE_SETUP_TOKEN"] == "${BURNRATE_SETUP_TOKEN:-}"
+    assert "BURNRATE_SETUP_TOKEN" not in publish_check["environment"]
+    assert "BURNRATE_SETUP_TOKEN" not in caddy["environment"]
     assert "BURNRATE_ALLOW_REGISTRATION" not in env
-    assert "BURNRATE_SETUP_TOKEN" not in raw
     assert "BURNRATE_ALLOW_REGISTRATION" not in raw
+    assert "BURNRATE_BUILTIN_HUB_URL" not in raw
 
     ports = hub["ports"]
     assert ports
@@ -1334,8 +1311,7 @@ def test_h8_deploy_compose_is_tailnet_only_and_drops_deprecated_registration_var
 
     lowered = raw.lower()
     assert "tailnet" in lowered
-    assert "no setup token" in lowered
-    assert "embed" in lowered and "hub address" in lowered
+    assert "one-time setup token" in lowered
     assert "create the owner account immediately" in lowered
 
 
@@ -1414,20 +1390,16 @@ def test_h8_self_hosting_and_releasing_docs_cover_publish_check_and_digest_pin()
     lowered = doc.lower()
 
     assert "tailnet-only" in lowered
-    assert "no setup token" in lowered
-    assert "embed the hub address" in lowered or "_build_config.py" in doc
-    assert "create the owner account right after deploying" in lowered
+    assert "Set a random `BURNRATE_SETUP_TOKEN`" in doc
+    assert "Remove the setup token after enrollment." in doc
+    assert "burnrate hub create-owner" in doc
+    assert "registration closes permanently" in lowered
     assert "BURNRATE_HUB_ALLOW_PUBLIC" in doc
     assert "BURNRATE_TRUSTED_PROXIES" in doc
     assert "publish-check" in doc
     assert "0.5.9" in doc
 
-    # Deprecated vars must only appear as deprecated/ignored notices, never as setup instructions
-    assert "BURNRATE_SETUP_TOKEN` and\n   `BURNRATE_ALLOW_REGISTRATION` are deprecated and ignored" in doc
-    assert "export BURNRATE_SETUP_TOKEN" not in doc
-    assert "export BURNRATE_ALLOW_REGISTRATION" not in doc
-    assert "BURNRATE_SETUP_TOKEN=" not in doc
-    assert "BURNRATE_ALLOW_REGISTRATION=" not in doc
+    assert "BURNRATE_ALLOW_REGISTRATION" not in doc
 
     releasing = (ROOT / "docs" / "releasing.md").read_text(encoding="utf-8")
     assert "deploy/hub/compose.yaml" in releasing
@@ -1435,10 +1407,13 @@ def test_h8_self_hosting_and_releasing_docs_cover_publish_check_and_digest_pin()
     assert "<version>-rc.<run_number>@sha256:<digest>" in releasing
     assert "0.5.9-rc.<run_number>@sha256:<digest>" in releasing
     assert "forbid dating the changelog without a digest pin" in releasing
-    assert "git tag -a v<version>" in releasing
+    assert "the protected release environment" in releasing
+    signing = "the owner signs the exact reviewed commit using their release signing key"
+    assert signing in releasing
 
     dispatch_idx = releasing.index("manually dispatch")
     pin_idx = releasing.index("0.5.9-rc.<run_number>@sha256:<digest>")
     date_idx = releasing.index("then date `CHANGELOG.md`")
-    tag_idx = releasing.index("git tag -a v<version>")
-    assert dispatch_idx < pin_idx < date_idx < tag_idx
+    review_idx = releasing.index("Open a pull request from the release branch to prod")
+    tag_idx = releasing.index(signing)
+    assert dispatch_idx < pin_idx < date_idx < review_idx < tag_idx

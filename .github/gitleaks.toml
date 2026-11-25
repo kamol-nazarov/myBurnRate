@@ -1,15 +1,27 @@
 # BURNRATE gitleaks config.
-# Allowlists are path/rule based. Do not copy fixture secret values here.
+# Keep any test exceptions scoped to their exact synthetic fixtures.
 title = "BURNRATE"
 
 [extend]
 useDefault = true
 
-[[allowlists]]
-description = "Synthetic pytest fixtures under tests_spend (path allowlist; not live credentials)"
-paths = [
-    '''(^|/)tests_spend/''',
-]
+[[rules]]
+id = "burnrate-minisign-secret-key"
+description = "Minisign encrypted secret key file"
+regex = '''(?i)^untrusted comment: minisign encrypted secret key'''
+keywords = ["minisign"]
+
+[[rules]]
+id = "burnrate-tailscale-key"
+description = "Tailscale credential"
+regex = '''\btskey-[a-z]+-[A-Za-z0-9_-]{12,}\b'''
+keywords = ["tskey-"]
+
+[[rules]]
+id = "burnrate-google-api-key"
+description = "Google API key"
+regex = '''\bAIza[A-Za-z0-9_-]{35}\b'''
+keywords = ["AIza"]
 
 [[allowlists]]
 description = "Settings-store key name in capacity_forecast.py (not a credential)"
@@ -30,3 +42,80 @@ regexTarget = "line"
 regexes = [
     '''CLAUDE_OAUTH_CLIENT_ID\s*=''',
 ]
+
+[[allowlists]]
+description = "Reviewed public pricing identifier or synthetic fixture in pricing/anthropic.yaml"
+condition = "AND"
+regexTarget = "line"
+paths = ["(^|/)pricing/anthropic\\.yaml$"]
+regexes = ["^\\ \\ \\-\\ model_key:\\ claude\\-mythos\\-5$", "^\\ \\ \\-\\ model_key:\\ claude\\-mythos\\-5\\-1$", "^\\ \\ \\-\\ model_key:\\ claude\\-mythos\\-5\\-2$"]
+
+[[allowlists]]
+description = "Reviewed public pricing identifier or synthetic fixture in pricing/openai.yaml"
+condition = "AND"
+regexTarget = "line"
+paths = ["(^|/)pricing/openai\\.yaml$"]
+regexes = ["^\\ \\ \\-\\ model_key:\\ gpt\\-6\\-rosalind$"]
+
+[[allowlists]]
+description = "Reviewed public pricing identifier or synthetic fixture in tests_spend/fixtures/attention_response.json"
+condition = "AND"
+regexTarget = "line"
+paths = ["(^|/)tests_spend/fixtures/attention_response\\.json$"]
+regexes = ["^\\ \\ \\ \\ \\ \\ \"key\":\\ \"3cb4a3cf0811147b3dc225f5cce109cb\",$", "^\\ \\ \\ \\ \\ \\ \"key\":\\ \"8c0ccd6a4c83101ecc9267a9d78f4d6a\",$"]
+
+[[allowlists]]
+description = "Reviewed public pricing identifier or synthetic fixture in tests_spend/test_059_security_fixes.py"
+condition = "AND"
+regexTarget = "line"
+paths = ["(^|/)tests_spend/test_059_security_fixes\\.py$"]
+regexes = ["^\\ \\ \\ \\ \\ \\ \\ \\ res_app903\\ =\\ bridge_fail_reg\\.sign_in\\(\"owner@example\\.com\",\\ PASSWORD,\\ \"S12App903Pair\"\\)$"]
+
+[[allowlists]]
+description = "Reviewed public pricing identifier or synthetic fixture in tests_spend/test_connections_profiles_api.py"
+condition = "AND"
+regexTarget = "line"
+paths = ["(^|/)tests_spend/test_connections_profiles_api\\.py$"]
+regexes = ["^\\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \"secret\":\\ \"sk\\-or\\-v1\\-must\\-never\\-leak\",$"]
+
+[[allowlists]]
+description = "Reviewed public pricing identifier or synthetic fixture in tests_spend/test_error_redaction.py"
+condition = "AND"
+regexTarget = "line"
+paths = ["(^|/)tests_spend/test_error_redaction\\.py$"]
+regexes = ["^\\ \\ \\ \\ \\(\"api_key_eq_short\",\\ \"api_key=short\",\\ \\(\"short\",\\)\\),$", "^\\ \\ \\ \\ \\(\"apikey_eq_short\",\\ \"apikey=short1\",\\ \\(\"short1\",\\)\\),$", "^\\ \\ \\ \\ \\(\"token_colon_safe_dot_secret\",\\ \"token:\\ missing\\.secret123\",\\ \\(\"missing\\.secret123\",\\)\\),$", "^\\ \\ \\ \\ \\(\"token_colon_safe_underscore_secret\",\\ \"token:\\ missing_secret123\",\\ \\(\"missing_secret123\",\\)\\),$", "^\\ \\ \\ \\ raw_secret\\ =\\ \"sk\\-proj_rev0secret999\"$"]
+
+[[allowlists]]
+description = "Reviewed public pricing identifier or synthetic fixture in tests_spend/test_h10_ops_hud.py"
+condition = "AND"
+regexTarget = "line"
+paths = ["(^|/)tests_spend/test_h10_ops_hud\\.py$"]
+regexes = ["^\\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \"modelKey\":\\ \"claude\\-opus\\-4\\-1\\-20260101\\-long\\-identifier\",$"]
+
+[[allowlists]]
+description = "Reviewed public pricing identifier or synthetic fixture in tests_spend/test_h8_exposure_guard.py"
+condition = "AND"
+regexTarget = "line"
+paths = ["(^|/)tests_spend/test_h8_exposure_guard\\.py$"]
+regexes = ["^\\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ json=\\{\"email\":\\ \"new@example\\.com\",\\ \"password\":\\ \"spoke\\-wrong\\-5th\"\\},$"]
+
+[[allowlists]]
+description = "Reviewed public pricing identifier or synthetic fixture in tests_spend/test_observed_model_pricing.py"
+condition = "AND"
+regexTarget = "line"
+paths = ["(^|/)tests_spend/test_observed_model_pricing\\.py$"]
+regexes = ["^\\ \\ \\ \\ \\ \\ \\ \\ model_key=\"claude\\-mythos\\-5\\-2\",$"]
+
+[[allowlists]]
+description = "Reviewed public pricing identifier or synthetic fixture in tests_spend/test_security_hardening.py"
+condition = "AND"
+regexTarget = "line"
+paths = ["(^|/)tests_spend/test_security_hardening\\.py$"]
+regexes = ["^\\ \\ \\ \\ \\ \\ \\ \\ \"long\\-enough\\-password\",\\ iterations=LEGACY_PBKDF2_ITERATIONS$"]
+
+[[allowlists]]
+description = "Reviewed public pricing identifier or synthetic fixture in tests_spend/test_setup_flow.py"
+condition = "AND"
+regexTarget = "line"
+paths = ["(^|/)tests_spend/test_setup_flow\\.py$"]
+regexes = ["^\\ \\ \\ \\ sample\\ =\\ \\(\"Authorization:\\ Bearer\\ abc\\.def\\-123\\\\nkey=sk\\-or\\-v1\\-0123456789abcdef\\ api_key=\\\\\"plainsecret\\\\\"\\\\n\"$"]

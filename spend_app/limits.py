@@ -23,6 +23,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+from spend_app.child_environment import child_environment
 from typing import Callable
 from urllib.parse import urlparse
 
@@ -1354,7 +1356,7 @@ def _traycer_profile_rate_limits_uncached(harness: str) -> dict:
     if sender is None or not executable.is_file():
         raise RuntimeError("Experimental Traycer CLI profile-rate-limits is unavailable")
     epic_id, agent_id = sender
-    environment = os.environ.copy()
+    environment = child_environment()
     environment["TRAYCER_EPIC_ID"] = epic_id
     environment["TRAYCER_AGENT_ID"] = agent_id
     try:
@@ -1956,7 +1958,7 @@ def _traycer_active_agents_uncached(epic_id: str, sender_agent_id: str) -> dict:
     executable = Path.home() / ".traycer" / "cli" / "bin" / platform_executable("traycer")
     if not executable.is_file():
         raise RuntimeError("Experimental Traycer CLI agent list is unavailable")
-    environment = os.environ.copy()
+    environment = child_environment()
     environment["TRAYCER_EPIC_ID"] = epic_id
     environment["TRAYCER_AGENT_ID"] = sender_agent_id
     result = subprocess.run(

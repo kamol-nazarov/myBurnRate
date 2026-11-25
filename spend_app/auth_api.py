@@ -7,14 +7,14 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from spend_app.auth_model import (
-    COOKIE, Principal, audit, create_session, digest, owner_id,
-    revoke_session, set_session_cookie,
+    COOKIE, LEGACY_COOKIE, Principal, audit, create_session, digest, owner_id, parse,
+    revoke_session, session_is_live, set_session_cookie,
 )
 from spend_app.db import connect
 from spend_app.error_codes import error_response
 
 
-def auth_router(settings):
+def auth_router(settings, *, central: bool):
     router = APIRouter()
 
     def spoke_enabled() -> bool:
@@ -35,10 +35,11 @@ def auth_router(settings):
     @router.post("/api/auth/bootstrap")
     def bootstrap(request: Request):
         actor = request.state.principal
-        if actor.via != "break-glass":
+        if actor.via not in {"break-glass", "local-bootstrap"}:
             return JSONResponse({"error": "Use the configured break-glass bearer."}, status_code=403)
         with connect(settings.database_path) as connection:
-            data = create_session(connection, actor, "Recovery session", subject_id=owner_id(connection))
+            subject = actor.id if actor.via == "local-bootstrap" else owner_id(connection)
+            data = create_session(connection, actor, "Recovery session", subject_id=subject)
             audit(connection, actor, "login", "bootstrap")
         return set_session_cookie(JSONResponse(
             {"ok": True, "sessionId": data["sessionId"], "expiresAt": data["expiresAt"]},
@@ -53,8 +54,11 @@ def auth_router(settings):
             return JSONResponse({"error": "Owner session required."}, status_code=403)
         with connect(settings.database_path) as connection:
             rows = [dict(row) for row in connection.execute(
-                "SELECT id,role,created_at,last_used_at,expires_at,revoked_at,device_label FROM owner_sessions ORDER BY created_at DESC"
+                "SELECT id,role,created_at,last_used_at,expires_at,revoked_at,device_label,machine_id,auth_time "
+                "FROM owner_sessions ORDER BY created_at DESC"
             )]
+        for row in rows:
+            row["machine_binding"] = "bound" if row["machine_id"] else "not tied to a computer"
         return {"sessions": rows, "currentSessionId": request.state.principal.session_id}
 
     @router.post("/api/auth/sessions/revoke")
@@ -83,7 +87,8 @@ def auth_router(settings):
             if actor.session_id:
                 request.state.audit_recorded = revoke_session(connection, actor, actor.session_id)
         response = JSONResponse({"ok": True})
-        response.delete_cookie(COOKIE, path="/")
+        response.delete_cookie(COOKIE, path="/", secure=True, httponly=True)
+        response.delete_cookie(LEGACY_COOKIE, path="/", secure=request.url.scheme == "https", httponly=True)
         return response
 
     @router.post("/api/auth/session/rotate")
@@ -95,10 +100,13 @@ def auth_router(settings):
             return JSONResponse({"error": "Current owner session required."}, status_code=401)
         with connect(settings.database_path) as connection:
             connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute("SELECT device_label FROM owner_sessions WHERE id=? AND revoked_at IS NULL", (actor.session_id,)).fetchone()
-            if not row or not revoke_session(connection, actor, actor.session_id):
+            row = connection.execute("SELECT * FROM owner_sessions WHERE id=?", (actor.session_id,)).fetchone()
+            if not session_is_live(row) or not revoke_session(connection, actor, actor.session_id):
                 return JSONResponse({"error": "Session already rotated."}, status_code=401)
-            data = create_session(connection, actor, row[0])
+            data = create_session(
+                connection, actor, row["device_label"], auth_time=parse(row["auth_time"]),
+                machine_id=row["machine_id"], password_authenticated=bool(row["password_authenticated"]),
+            )
         return set_session_cookie(JSONResponse(
             {"ok": True, "sessionId": data["sessionId"], "expiresAt": data["expiresAt"]},
             headers={"Cache-Control": "no-store"},
@@ -106,11 +114,11 @@ def auth_router(settings):
 
     @router.post("/api/auth/rotate")
     def rotate_credentials(request: Request):
-        # The break-glass credential is hub authority; a paired computer must
-        # never relay it. Rotate it on the hub directly.
-        if spoke_enabled():
+        # Only the hub accepts a break-glass credential. Local installations
+        # recover through the installation key and its bootstrap session.
+        if not central or spoke_enabled():
             return JSONResponse(
-                {"error": "Rotate the break-glass credential on the hub, not from a paired computer."},
+                {"error": "Break-glass credentials can only be rotated on the hub."},
                 status_code=403,
             )
         actor = request.state.principal

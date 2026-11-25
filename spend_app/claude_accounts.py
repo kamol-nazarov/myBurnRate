@@ -272,6 +272,7 @@ def _store_profiles(database_path: Path | str | None = None, *, include_default:
         return []
     try:
         with closing(sqlite3.connect(db_path.absolute().as_uri() + "?mode=ro", uri=True)) as db:
+            db.execute("PRAGMA query_only=ON")
             state = profile_store.load_config_if_present(db)
     except Exception:
         return []

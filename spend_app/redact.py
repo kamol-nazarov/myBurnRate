@@ -78,7 +78,7 @@ _SAFE_TRAILING_PUNCT_CHARS = ".,;:!?)]"
 _TRAILING_FIELD_KEY = re.compile(rf"(?i){_FIELD_KEY}$")
 _TRAILING_SCHEME = re.compile(r"(?i)\b(?:bearer|basic)$")
 
-_URL_USERINFO = re.compile(r"(://)[^\s/:@]+:[^\s/:@]+(@)")
+_URL_USERINFO = re.compile(r"(://)[^\s/:@?#]+:[^\s/?#]+(@)")
 
 _CREDENTIAL_TOKENS = re.compile(
     r"(?i)(?:bearer|basic)[^\S\r\n]+\S+"
@@ -91,6 +91,9 @@ _CREDENTIAL_TOKENS = re.compile(
     r"|(?<![A-Za-z0-9])br_(?:m|s|p|bg|l)_[A-Za-z0-9_-]{6,}"
     r"|(?<![A-Za-z0-9])brpair_[A-Za-z0-9_=-]{6,}"
     r"|(?<![A-Za-z0-9])(?-i:eyJ)[A-Za-z0-9_-]{6,}(?:\.[A-Za-z0-9_-]*)*"
+    r"|(?<![A-Za-z0-9])(?-i:AIza)[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])"
+    r"|(?<![A-Za-z0-9])tskey-[a-z0-9_-]+"
+    r"|(?<![0-9a-f])[0-9a-f]{32}\.[A-Za-z0-9_-]+"
     r"|[A-Fa-f0-9]{32,}"
 )
 

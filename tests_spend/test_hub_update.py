@@ -19,6 +19,8 @@ from spend_app.hub_update import update_hub
 
 
 def update(**kwargs):
+    if not kwargs.get("push_local"):
+        kwargs.setdefault("tag", "v0.6.10")
     return update_hub(ssh="synthetic-hub", path="/opt/burnrate", service="burnrate-hub",
                       branch="main", **kwargs)
 
@@ -31,6 +33,7 @@ def generated_command():
 
 
 def test_generated_probe_works_on_a_protected_hub(tmp_path, monkeypatch):
+    monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "synthetic-secret")
     settings = Settings(database_path=tmp_path / "test.db", pricing_path=Path(__file__).resolve().parents[1] / "pricing",
                         anthropic_admin_key=None, openai_admin_key=None, timezone="UTC",
@@ -195,7 +198,7 @@ class _DisposableHub:
             return subprocess.CompletedProcess(step, 255, "", "synthetic SSH disconnect")
 
         remote = step[-1]
-        source, marker, _ = remote.partition(" && .venv/bin/python -m pip install")
+        source, marker, _ = remote.partition(" && sh scripts/install-hub-runtime.sh")
         if marker and self.before_ssh:
             self.before_ssh(self)
         assert source.startswith("cd -- /opt/burnrate")
@@ -341,9 +344,9 @@ def test_concurrent_updates_respect_shared_repository_lock(disposable_hub):
     assert pair.runtime_invocations == 1
 
 
-def test_upstream_update_still_fast_forwards(disposable_hub):
+def test_upstream_update_without_the_requested_tag_stops(disposable_hub):
     pair = disposable_hub
-    assert pair.update(push_local=False) == 0, pair.messages
-    assert pair.head() == pair.intended
+    assert pair.update(push_local=False) != 0, pair.messages
+    assert pair.head() == pair.base
     assert pair.stage_refs() == []
-    assert pair.runtime_invocations == 1
+    assert pair.runtime_invocations == 0

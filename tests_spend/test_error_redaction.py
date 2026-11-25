@@ -13,7 +13,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
+from tests_spend.local_client_fixture import local_client
 
 from spend_app import (
     attention_store,
@@ -587,7 +587,7 @@ def test_support_report_and_diagnostics_endpoint_scrub_db_and_long_log_lines(
     # POST /api/setup/diagnostics end-to-end
     monkeypatch.setattr("spend_app.service.log_dir", lambda: logs)
     app = create_app(settings, enable_scheduler=False)
-    with TestClient(app) as client:
+    with local_client(app, settings.database_path) as client:
         resp = client.post("/api/setup/diagnostics", headers={"X-BURNRATE-Request": "1"})
     assert resp.status_code == 200
     body_text = resp.json()["text"]
@@ -925,7 +925,7 @@ def test_review_regressions_through_ingest_run_and_diagnostics(
 
     monkeypatch.setattr("spend_app.service.log_dir", lambda: logs)
     app = create_app(settings, enable_scheduler=False)
-    with TestClient(app) as client:
+    with local_client(app, settings.database_path) as client:
         resp = client.post("/api/setup/diagnostics", headers={"X-BURNRATE-Request": "1"})
     assert resp.status_code == 200
     diag_text = resp.json()["text"]
@@ -1209,7 +1209,7 @@ def test_suffix_leak_and_multiline_json_regressions(
 
     monkeypatch.setattr("spend_app.service.log_dir", lambda: logs)
     app = create_app(settings, enable_scheduler=False)
-    with TestClient(app) as client:
+    with local_client(app, settings.database_path) as client:
         resp = client.post("/api/setup/diagnostics", headers={"X-BURNRATE-Request": "1"})
     assert resp.status_code == 200
     diag_text = resp.json()["text"]
@@ -1431,7 +1431,7 @@ def test_legacy_last_sync_error_scrubbed_on_initialize_and_hidden_everywhere(
 
     # Endpoints and diagnostics report never expose the legacy string.
     app = create_app(settings, enable_scheduler=False)
-    with TestClient(app) as client:
+    with local_client(app, settings.database_path) as client:
         setup_resp = client.get("/api/setup/state")
         settings_resp = client.get("/api/onboarding")
     assert setup_resp.status_code == 200

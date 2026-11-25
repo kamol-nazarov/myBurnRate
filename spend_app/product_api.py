@@ -215,7 +215,12 @@ def product_router(settings, pricing=None):
                         raise PlanConflict("The plan account changed. Reload plans.")
                     return apply_mutation(connection, body, today())
 
-            return await run_in_threadpool(apply_change)
+            result = await run_in_threadpool(apply_change)
+            if body.get("preview") is not True:
+                request.state.audit_action = "subscription.change"
+                if type(result.get("id")) is int:
+                    request.state.audit_target = str(result["id"])
+            return result
         except HubMutationError as exc:
             return JSONResponse({"error": str(exc)}, status_code=exc.status_code)
         except PlanConflict as exc:

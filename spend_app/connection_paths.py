@@ -153,6 +153,35 @@ def _has_surrogate_ancestor(path: Path) -> bool:
     return False
 
 
+def _check_local_link_targets(path: Path) -> None:
+    """Inspect link targets lexically before resolving or opening them."""
+    visited = set()
+    for _ in range(40):
+        spelling = str(path).replace("/", "\\")
+        if spelling.casefold().startswith(("\\??\\unc\\", "\\\\?\\unc\\")) or _plain_path(spelling).startswith("\\\\"):
+            raise LocationError("Network locations are not supported.")
+        for node in (*reversed(path.parents), path):
+            if not node.is_symlink() and not is_name_surrogate(node):
+                continue
+            if node in visited:
+                raise LocationError("The source contains a symbolic link cycle.")
+            visited.add(node)
+            try:
+                target = os.readlink(node)
+            except OSError as exc:
+                if not _long_path_error(exc,node):
+                    raise LocationError("The source link could not be inspected.") from None
+                target = os.readlink(_extended_path(node))
+            normalized = target.replace("/", "\\").casefold()
+            if normalized.startswith(("\\??\\unc\\", "\\\\?\\unc\\")) or _plain_path(normalized).startswith("\\\\"):
+                raise LocationError("Network locations are not supported.")
+            path = node.parent / Path(_plain_path(target)) / path.relative_to(node)
+            break
+        else:
+            return
+    raise LocationError("The source contains too many symbolic links.")
+
+
 def normalize(raw, meta):
     if not isinstance(raw, str) or not raw.strip() or len(raw) > 2048:
         raise LocationError("Enter a local folder or file on the computer running BURNRATE.")
@@ -167,6 +196,7 @@ def normalize(raw, meta):
     if path.name.lower() == meta.home_name.lower() and meta.child:
         path = path / meta.child
     try:
+        _check_local_link_targets(path)
         path = path.resolve(strict=True)
     except PermissionError:
         raise LocationError("Permission denied. Grant this user read access.") from None
@@ -195,6 +225,7 @@ def identity(path):
 
 def _resolve(path, *, strict):
     """Resolve a path. Windows MAX_PATH failures retry with the extended prefix."""
+    _check_local_link_targets(Path(path))
     try:
         resolved = Path(path).resolve(strict=strict)
     except OSError as exc:

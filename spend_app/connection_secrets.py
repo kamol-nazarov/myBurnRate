@@ -156,6 +156,25 @@ def read_vault_secret(database_path: Path | str | None, ref: str, *, vault=None)
         return None
 
 
+def credential_origin_ref(token: str) -> str:
+    return "burnrate-origin-" + hashlib.sha256(token.encode()).hexdigest()
+
+
+def credential_origin_allowed(database_path, token: str, origin: str, spoke: dict, *, vault=None) -> bool:
+    from spend_app.hub_origin import bound_hub_origin
+
+    if not token:
+        return False
+    try:
+        expected = bound_hub_origin(spoke, origin)
+    except ValueError:
+        return False
+    recorded = read_vault_secret(database_path, credential_origin_ref(token), vault=vault)
+    if recorded is None:
+        return not bool(spoke.get("credentialOrigin"))
+    return recorded == expected
+
+
 def verified_vault_put(vault, secret: str, ref: str) -> str:
     """Write ``secret`` to ``vault`` at ``ref`` and verify readback matches."""
     if vault is None:
@@ -1209,6 +1228,7 @@ def publish_spoke_credentials(
     *,
     owner_session: str | None = None,
     machine_token: str | None = None,
+    authenticated_origin: str | None = None,
     vault=None,
     prepare_state=None,
     apply_state=None,
@@ -1221,6 +1241,7 @@ def publish_spoke_credentials(
     """
     from spend_app.db import connect, initialize
     from spend_app.error_codes import CodedError
+    from spend_app.hub_origin import hub_origin
     from spend_app.setup_wizard import read_setup_state, write_setup_state
 
     db_file = Path(database_path)
@@ -1280,9 +1301,9 @@ def publish_spoke_credentials(
                     raise CodedError("APP-903", status_code=503) from exc
 
                 # B3: migrate untouched legacy counterparts in the same transaction
-                # before removing them from SQLite; preserve them if migration fails.
+                # before removing them from SQLite. Failed migration discards plaintext.
                 migrated_legacy_machine = False
-                preserve_legacy_machine = False
+                discarded_legacy_machine = False
                 if not clean_machine and legacy_machine:
                     if prev_machine:
                         migrated_legacy_machine = True
@@ -1293,10 +1314,10 @@ def publish_spoke_credentials(
                             written_machine_val = legacy_machine
                             migrated_legacy_machine = True
                         except Exception:
-                            preserve_legacy_machine = True
+                            discarded_legacy_machine = True
 
                 migrated_legacy_owner = False
-                preserve_legacy_owner = False
+                discarded_legacy_owner = False
                 if not clean_owner and legacy_owner:
                     if prev_owner:
                         migrated_legacy_owner = True
@@ -1307,46 +1328,65 @@ def publish_spoke_credentials(
                             written_owner_val = legacy_owner
                             migrated_legacy_owner = True
                         except Exception:
-                            preserve_legacy_owner = True
+                            discarded_legacy_owner = True
 
                 spoke = dict(state.get("spokeConfig") or {})
-                if clean_machine or migrated_legacy_machine:
+                if clean_machine or migrated_legacy_machine or discarded_legacy_machine:
                     spoke.pop("token", None)
                     if migrated_legacy_machine and not clean_machine:
                         spoke["rotationRequired"] = True
-                if clean_owner or migrated_legacy_owner:
+                if clean_owner or migrated_legacy_owner or discarded_legacy_owner:
                     spoke.pop("ownerSession", None)
                     if migrated_legacy_owner and not clean_owner:
                         spoke["ownerSessionRotationRequired"] = True
                 if clean_owner:
                     spoke.pop("signedOut", None)
+                elif discarded_legacy_owner or discarded_legacy_machine:
+                    spoke["signedOut"] = True
                 state["spokeConfig"] = spoke
 
                 if apply_state is not None:
                     apply_state(connection, state)
 
                 spoke = dict(state.get("spokeConfig") or {})
-                if clean_machine or migrated_legacy_machine:
+                issuing_origin = authenticated_origin or spoke.get("credentialOrigin") or spoke.get("hubUrl")
+                if (clean_owner or clean_machine) and issuing_origin:
+                    new_origin = hub_origin(issuing_origin)
+                    old_origin = orig_spoke.get("credentialOrigin") or orig_spoke.get("hubUrl")
+                    issued = {value for value in (clean_owner, clean_machine) if value}
+                    if old_origin and hub_origin(old_origin) == new_origin:
+                        issued.update(value for value in (
+                            prev_owner if not clean_owner else None,
+                            prev_machine if not clean_machine else None,
+                        ) if value)
+                    for value in issued:
+                        ref = credential_origin_ref(value)
+                        existing = read_vault_secret(db_file, ref, vault=use_vault)
+                        if existing and existing != new_origin:
+                            raise CodedError("AUTH-107", status_code=401)
+                        if existing is None:
+                            verified_vault_put(use_vault, new_origin, ref)
+                    spoke["credentialOrigin"] = new_origin
+                    spoke.pop("requiresHubSignIn", None)
+                if clean_machine or migrated_legacy_machine or discarded_legacy_machine:
                     spoke.pop("token", None)
                     if migrated_legacy_machine and not clean_machine:
                         spoke["rotationRequired"] = True
-                elif preserve_legacy_machine:
-                    spoke["token"] = legacy_machine
 
-                if clean_owner or migrated_legacy_owner:
+                if clean_owner or migrated_legacy_owner or discarded_legacy_owner:
                     spoke.pop("ownerSession", None)
                     if migrated_legacy_owner and not clean_owner:
                         spoke["ownerSessionRotationRequired"] = True
-                elif preserve_legacy_owner:
-                    spoke["ownerSession"] = legacy_owner
 
                 if clean_owner:
                     spoke.pop("signedOut", None)
+                elif discarded_legacy_owner or discarded_legacy_machine:
+                    spoke["signedOut"] = True
 
                 spoke["credentialGeneration"] = max(prev_gen, int(spoke.get("credentialGeneration") or 0)) + 1
                 state["spokeConfig"] = spoke
 
-                if migrated_legacy_machine or migrated_legacy_owner or (clean_machine and legacy_machine) or (clean_owner and legacy_owner):
+                if legacy_machine or legacy_owner:
                     mark_cleanup_pending_in_tx(
                         connection,
                         token_migrated=bool(legacy_machine),

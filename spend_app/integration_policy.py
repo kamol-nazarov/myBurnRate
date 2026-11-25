@@ -8,15 +8,11 @@ is read or any request is transmitted:
 - ``configured`` — a dedicated API credential the user explicitly configured
   for this application (admin keys in the BURNRATE environment). Permitted
   when the credential exists; documented interface only.
-- ``opt-in-native`` — reuse of another application's native credentials or
-  undocumented/private endpoints (Z.AI quota endpoint with OpenCode's stored
-  key, OpenCode Go usage with OpenCode's sign-in). Claude's sign-in is never
-  reused. Each is gated on its consent variable. The desktop service turns
-  these on at first start
-  (``config.load_user_env``) and setup's "What we found" step shows each as a
-  switch that writes ``1``/``0`` to the per-user ``.env``; the CLI and tests
-  leave them unset, so they stay off there. Enabling never impersonates a
-  native client: requests identify as BURNRATE.
+- ``opt-in-native`` — quota reads using credentials stored by another tool.
+  The desktop service and CLI load the same per-user switches via
+  ``config.load_user_env`` and enable Z.AI, OpenCode Go and Muse by default.
+  Setup shows these switches and persists changes in the per-user ``.env``.
+  These requests identify as BURNRATE. Claude's sign-in is never reused.
 
 Policy is checked by :func:`authorize` before collectors touch credentials;
 a denied lane returns an actionable reason and never performs I/O.
@@ -44,6 +40,7 @@ class LanePolicy:
     description: str
     allowed_hosts: tuple[str, ...] = ()
     consent_env: str | None = None
+    default_enabled: bool = False
 
 
 # Shipped lane registry. Hosts are exact suffix allowlists; a lane must never
@@ -78,10 +75,12 @@ LANES: dict[str, LanePolicy] = {
     ),
     "muse_quota_endpoint": LanePolicy(
         "muse_quota_endpoint",
-        Lane.LOCAL,
+        Lane.OPT_IN_NATIVE,
         "Queries the Muse Code key/usage endpoint using the locally stored "
         "Muse Code session token.",
         allowed_hosts=("api.meta.ai",),
+        consent_env="BURNRATE_ENABLE_MUSE_QUOTA",
+        default_enabled=True,
     ),
     "openrouter_credits": LanePolicy(
         "openrouter_credits",
@@ -126,17 +125,13 @@ LANES: dict[str, LanePolicy] = {
 }
 
 _DISABLED_REASON = (
-    "disabled by default — {description} Enable with {env}=1 only if you accept the "
+    "{state} — {description} Enable with {env}=1 only if you accept the "
     "provider-terms responsibility for reusing that credential."
 )
 
 
 class PolicyDenied(PermissionError):
     """Raised before any credential read or network transmission."""
-
-
-def _env(name: str) -> str:
-    return os.environ.get(name, "").strip().lower()
 
 
 def authorize(lane_key: str, *, environ: dict[str, str] | None = None) -> tuple[bool, str | None]:
@@ -160,10 +155,11 @@ def authorize(lane_key: str, *, environ: dict[str, str] | None = None) -> tuple[
     if env is None:
         return False, "no consent path is defined for this lane"
     source = environ if environ is not None else os.environ
-    consent = (source.get(env, "").strip().lower() if environ is not None else _env(env))
+    consent = source.get(env, "1" if policy.default_enabled else "").strip().lower()
     if consent in {"1", "true", "yes", "on"}:
         return True, None
-    return False, _DISABLED_REASON.format(description=policy.description, env=env)
+    state = "disabled" if env in source or policy.default_enabled else "disabled by default"
+    return False, _DISABLED_REASON.format(state=state, description=policy.description, env=env)
 
 
 def require(lane_key: str, *, environ: dict[str, str] | None = None) -> None:

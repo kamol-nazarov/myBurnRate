@@ -142,7 +142,9 @@ class NativeClient:
         if not path.startswith("/api/"):
             raise ValueError("Only local BURNRATE API paths are supported")
         headers = {"Origin": self.base_url, "X-BURNRATE-Request": "1"}
-        token = os.getenv("BURNRATE_ACCESS_TOKEN", "").strip()
+        from spend_app.local_access import read_local_key
+
+        token = read_local_key(self.settings.database_path) or os.getenv("BURNRATE_ACCESS_TOKEN", "").strip()
         try:
             with httpx.Client(
                 timeout=httpx.Timeout(
@@ -235,12 +237,16 @@ class NativeClient:
         return data
 
     def ensure_service(self) -> None:
+        from spend_app.local_access import read_local_key
+
         def health():
             try:
+                key = read_local_key(self.settings.database_path)
+                options = {"headers": {"Authorization": "Bearer " + key}} if key else {}
                 with httpx.Client(
                     timeout=2, trust_env=False, follow_redirects=False
                 ) as client:
-                    result = client.get(self.base_url + "/healthz?supervisor=1")
+                    result = client.get(self.base_url + "/healthz?supervisor=1", **options)
                     if result.status_code != 200:
                         raise DesktopError(
                             "Another service is using BURNRATE's local port."

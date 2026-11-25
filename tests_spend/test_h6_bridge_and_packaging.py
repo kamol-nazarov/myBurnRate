@@ -19,6 +19,7 @@ from spend_app.db import connect, initialize
 from spend_app.error_codes import HUB_PROTOCOL_VERSION
 from spend_app.native_desktop import DemoClient, NativeClient
 from spend_app.wealthfront_window import DesktopBridge
+from tests_spend.local_client_fixture import local_client
 
 ROOT = Path(__file__).resolve().parents[1]
 HUB_URL = "https://hub.test"
@@ -97,7 +98,6 @@ def _make_settings(db_path: Path) -> Settings:
 @pytest.fixture(autouse=True)
 def _clean_shared_state(monkeypatch: pytest.MonkeyPatch):
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
     sync._HUB_REJECTED_CREDENTIALS.clear()
     sync._HUB_CREDENTIAL_GENERATIONS.clear()
@@ -110,7 +110,6 @@ def _clean_shared_state(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("BURNRATE_BUILTIN_HUB_URL", raising=False)
     yield
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
     sync._HUB_REJECTED_CREDENTIALS.clear()
     sync._HUB_CREDENTIAL_GENERATIONS.clear()
@@ -206,24 +205,24 @@ def test_desktop_bridge_public_method_allowlist_and_removed_setup_routes(
     import inspect
 
     expected_methods = {
-        "add_profile", "attach", "attach_host", "attach_surfaces", "begin_resize", "browse_location",
+        "add_profile", "begin_resize", "browse_location",
         "call_page", "change_password", "change_plan", "check_for_update", "close_window",
         "complete_onboarding", "confirm_suggested_plan", "connect_hub_account",
         "connect_source", "copy_image_to_clipboard", "create_account",
         "defer_onboarding", "disconnect_source", "dismiss_candidate",
-        "dismiss_email_prompt", "fetch_alert_providers", "fetch_analytics_summary",
+        "dismiss_email_prompt", "fetch_analytics_summary",
         "fetch_entity_detail", "fetch_usage", "get_diagnostics_data",
         "get_diagnostics_report", "get_initial_state", "get_notification_settings",
         "get_onboarding_data", "get_plan_settings", "get_settings_data", "get_setup_check",
         "get_setup_progress", "get_setup_scan", "get_week_share_data",
         "install_update", "list_computers", "minimize_window", "opacity_state",
         "open_external", "quit_app", "remove_computer", "remove_profile",
-        "rename_profile", "report_effective_theme", "run_setup_scan",
+        "rename_profile", "publish_effective_theme", "run_setup_scan",
         "save_analytics_window", "save_period", "save_provider_order",
-        "send_test_notification", "service_owns_plan_alerts", "set_account_email",
-        "set_auto_fade", "set_close_to_tray", "set_hud_density", "set_hud_mini",
+        "send_test_notification", "set_account_email",
+        "set_auto_fade", "set_close_to_tray", "set_close_to_tab", "set_hide_from_taskbar", "set_hud_density", "set_hud_mini",
         "set_idle_opacity", "set_low_quota_alerts", "set_notification_kind", "set_pill_limit",
-        "set_setup_consent", "set_theme", "set_topmost", "set_tray_available",
+        "set_setup_consent", "set_theme", "set_topmost",
         "set_ui_busy", "show_tab", "sign_in", "sign_out", "trigger_sync", "update_summary",
     }
     actual_methods = {
@@ -233,10 +232,13 @@ def test_desktop_bridge_public_method_allowlist_and_removed_setup_routes(
     }
     assert actual_methods == expected_methods
 
-    _, _, _, spoke_app = _create_paired_hub_and_spoke(tmp_path, monkeypatch)
-    with TestClient(spoke_app, base_url="http://127.0.0.1:17331") as spoke_client:
-        hdrs = {"Origin": "http://127.0.0.1:17331", "X-BURNRATE-Request": "1"}
+    _, _, spoke_settings, spoke_app = _create_paired_hub_and_spoke(tmp_path, monkeypatch)
+    origin = "http://127.0.0.1:17331"
+    anonymous = TestClient(spoke_app, base_url=origin)
+    with local_client(spoke_app, spoke_settings.database_path, base_url=origin) as spoke_client:
+        hdrs = {"Origin": origin, "X-BURNRATE-Request": "1"}
         for path in ("/api/setup/owner-session", "/api/setup/rotate-machine"):
+            assert anonymous.post(path, headers=hdrs, json={}).status_code == 401
             res = spoke_client.post(path, headers=hdrs, json={})
             assert res.status_code == 404
             assert res.json() == {"detail": "Not Found"}

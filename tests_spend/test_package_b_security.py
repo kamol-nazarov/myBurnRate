@@ -7,7 +7,7 @@ Covers audit items M1, L2, L3, L5, L7, L15, L16, and N1:
 - L5: value_error_handler logging + fixed error body vs. UserFacingError pass-through
 - L7: Cookie-only sessions, no machine token on register/login, spoke join & NativeClient
 - L15: hub_origin.hub_origin HTTPS enforcement for non-loopback hosts
-- L16: Setup token min length, non-ASCII safety, and per-user + global throttling
+- L16: First-owner setup proof, non-ASCII safety, and per-user throttling
 - N1: Static bearer disabled by default without conftest override
 """
 from __future__ import annotations
@@ -25,6 +25,7 @@ from spend_app.api import create_app
 from spend_app.config import Settings
 from spend_app.connection_paths import LocationError
 from spend_app.db import UsageEvent, connect, initialize, upsert_usage_event
+from spend_app.local_access import read_local_key
 from spend_app.native_desktop import DesktopError, NativeClient
 from spend_app.wealthfront_window import DesktopBridge
 
@@ -34,6 +35,7 @@ ACCESS_TOKEN = "synthetic-break-glass-token-00"
 SETUP_TOKEN = "synthetic-setup-token-32-chars-00"
 PASSWORD = "synthetic-long-password-123"
 HUB_UI = {"Origin": HUB_URL, "X-BURNRATE-Request": "1"}
+LOCAL_UI = {"Origin": "http://127.0.0.1:17331", "X-BURNRATE-Request": "1"}
 
 
 class _MemoryVault:
@@ -98,13 +100,11 @@ def _seed_event(db_path: Path, raw_id: str, tokens: int) -> None:
 @pytest.fixture(autouse=True)
 def _clean_package_b_state():
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
     sync._HUB_TEST_CLIENTS.clear()
     aggregate.reset_memo()
     yield
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
     sync._HUB_TEST_CLIENTS.clear()
     aggregate.reset_memo()
@@ -148,6 +148,22 @@ def _make_local_client(
     settings = _settings(tmp_path, db_name)
     app = create_app(settings, enable_scheduler=False)
     return settings, TestClient(app, base_url=base_url)
+
+
+def _local_bearer(settings: Settings) -> dict[str, str]:
+    key = read_local_key(settings.database_path)
+    assert key is not None
+    return {"Authorization": f"Bearer {key}"}
+
+
+def _assert_hub_session_cookie(response: httpx.Response) -> None:
+    assert auth_model.COOKIE.startswith("__Host-")
+    assert any(
+        value.startswith(f"{auth_model.COOKIE}=br_s_")
+        and "; secure" in value.lower()
+        and "; httponly" in value.lower()
+        for value in response.headers.get_list("set-cookie")
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +271,7 @@ def test_m1_cookie_authenticated_account_post_requires_same_origin(
             json={
                 "username": "owner@example.com",
                 "password": PASSWORD,
+                "setupToken": SETUP_TOKEN,
                 "sessionOnly": True,
             },
         )
@@ -329,22 +346,21 @@ def test_m1_bounded_json_gates_across_account_and_setup_account(
             )
             assert wrong_ct.status_code == 415, (path, wrong_ct.text)
 
-    _, local_client = _make_local_client(tmp_path, monkeypatch)
+    local_settings, local_client = _make_local_client(tmp_path, monkeypatch)
     with local_client:
+        anonymous = local_client.post("/api/setup/account", headers=LOCAL_UI, json={})
+        assert anonymous.status_code == 401
+        bearer = _local_bearer(local_settings)
         missing_hdr = local_client.post(
             "/api/setup/account",
-            headers={"Origin": "http://127.0.0.1:17331", "Content-Type": "application/json"},
+            headers={**bearer, "Origin": LOCAL_UI["Origin"], "Content-Type": "application/json"},
             content="{}",
         )
         assert missing_hdr.status_code == 403
 
         wrong_ct = local_client.post(
             "/api/setup/account",
-            headers={
-                "Origin": "http://127.0.0.1:17331",
-                "X-BURNRATE-Request": "1",
-                "Content-Type": "text/plain",
-            },
+            headers={**bearer, **LOCAL_UI, "Content-Type": "text/plain"},
             content="{}",
         )
         assert wrong_ct.status_code == 415
@@ -405,8 +421,8 @@ def test_l3_openapi_and_docs_disabled(tmp_path: Path, monkeypatch: pytest.Monkey
 def test_l5_user_facing_error_passes_message_through(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _, client = _make_local_client(tmp_path, monkeypatch)
-    headers = {"Origin": "http://127.0.0.1:17331", "X-BURNRATE-Request": "1"}
+    settings, client = _make_local_client(tmp_path, monkeypatch)
+    headers = {**LOCAL_UI, **_local_bearer(settings)}
     with client:
         bad_threshold = client.post(
             "/api/capacity/forecast-preferences",
@@ -436,8 +452,8 @@ def test_l5_user_facing_error_passes_message_through(
 def test_l5_internal_value_error_logged_and_masked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    _, client = _make_local_client(tmp_path, monkeypatch)
-    headers = {"Origin": "http://127.0.0.1:17331", "X-BURNRATE-Request": "1"}
+    settings, client = _make_local_client(tmp_path, monkeypatch)
+    headers = {**LOCAL_UI, **_local_bearer(settings)}
     with client:
         with caplog.at_level(logging.ERROR, logger="burnrate.api"):
             non_numeric = client.post(
@@ -492,6 +508,7 @@ def test_l7_auth_endpoints_omit_session_token_and_machine_fields(
             json={
                 "username": "owner@example.com",
                 "password": PASSWORD,
+                "setupToken": SETUP_TOKEN,
                 "sessionOnly": False,
             },
         )
@@ -500,7 +517,7 @@ def test_l7_auth_endpoints_omit_session_token_and_machine_fields(
         assert "sessionToken" not in reg_json
         for forbidden in ("machine", "token", "machines"):
             assert forbidden not in reg_json
-        assert "burnrate_access=br_s_" in reg_full.headers.get("set-cookie", "")
+        _assert_hub_session_cookie(reg_full)
 
         # Subsequent register fails closed (AUTH-103) and leaks nothing
         client.cookies.clear()
@@ -530,7 +547,7 @@ def test_l7_auth_endpoints_omit_session_token_and_machine_fields(
         assert "sessionToken" not in login_json
         for forbidden in ("machine", "token", "machines"):
             assert forbidden not in login_json
-        assert "burnrate_access=br_s_" in login_full.headers.get("set-cookie", "")
+        _assert_hub_session_cookie(login_full)
 
         # Login with sessionOnly=True
         client.cookies.clear()
@@ -543,7 +560,7 @@ def test_l7_auth_endpoints_omit_session_token_and_machine_fields(
         assert "sessionToken" not in login_sess.json()
         for forbidden in ("machine", "token", "machines"):
             assert forbidden not in login_sess.json()
-        assert "burnrate_access=br_s_" in login_sess.headers.get("set-cookie", "")
+        _assert_hub_session_cookie(login_sess)
 
         # Neither register nor login created any remote machine
         with connect(settings.database_path) as conn:
@@ -563,7 +580,7 @@ def test_l7_auth_endpoints_omit_session_token_and_machine_fields(
         boot_json = boot.json()
         assert "sessionToken" not in boot_json
         assert boot_json["ok"] is True and boot_json["sessionId"] and boot_json["expiresAt"]
-        assert "burnrate_access=br_s_" in boot.headers.get("set-cookie", "")
+        _assert_hub_session_cookie(boot)
 
         # /api/auth/session/rotate omits sessionToken and sets new cookie
         rotated = client.post("/api/auth/session/rotate", headers=HUB_UI, json={})
@@ -571,13 +588,14 @@ def test_l7_auth_endpoints_omit_session_token_and_machine_fields(
         rot_json = rotated.json()
         assert "sessionToken" not in rot_json
         assert rot_json["ok"] is True and rot_json["sessionId"] != boot_json["sessionId"]
-        assert "burnrate_access=br_s_" in rotated.headers.get("set-cookie", "")
+        _assert_hub_session_cookie(rotated)
 
 
 def test_l7_spoke_join_register_login_owner_session_and_rotate_end_to_end(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    hub_settings, hub_client = _make_hub_client(tmp_path, monkeypatch, db_name="hub.db")
+    setup_proof = "synthetic-first-owner-proof"
+    hub_settings, hub_client = _make_hub_client(tmp_path, monkeypatch, db_name="hub.db", setup_token=setup_proof)
     _seed_event(hub_settings.database_path, "hub-evt-1", 5000)
 
     spoke1_settings, spoke1 = _make_local_client(tmp_path, monkeypatch, db_name="spoke1.db")
@@ -598,12 +616,13 @@ def test_l7_spoke_join_register_login_owner_session_and_rotate_end_to_end(
         # 1) Spoke 1 joins via /api/setup/account (mode=register)
         res1 = spoke1.post(
             "/api/setup/account",
-            headers=local_ui,
+            headers={**local_ui, "Authorization": f"Bearer {read_local_key(spoke1_settings.database_path)}"},
             json={
                 "mode": "register",
                 "username": "owner@example.com",
                 "password": PASSWORD,
                 "computerName": "Spoke One",
+                "setupToken": setup_proof,
                 "testSync": True,
             },
         )
@@ -634,7 +653,7 @@ def test_l7_spoke_join_register_login_owner_session_and_rotate_end_to_end(
         # 2) Spoke 2 joins via /api/setup/account (mode=login)
         res2 = spoke2.post(
             "/api/setup/account",
-            headers=local_ui,
+            headers={**local_ui, "Authorization": f"Bearer {read_local_key(spoke2_settings.database_path)}"},
             json={
                 "mode": "login",
                 "username": "owner@example.com",
@@ -812,30 +831,44 @@ def test_l15_hub_origin_allows_https_and_loopback(good_url: str, expected: str) 
 # ---------------------------------------------------------------------------
 
 
-def test_l16_deprecated_setup_env_vars_warn_without_blocking_startup(
+def test_l16_deprecated_registration_flag_warns_but_setup_proof_is_active(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
-    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", "x" * 31)
     monkeypatch.setenv("BURNRATE_ALLOW_REGISTRATION", "1")
     with caplog.at_level(logging.WARNING, logger="burnrate.setup"):
-        create_app(_settings(tmp_path, "deprecated_hub.db"), enable_scheduler=False)
+        _, hub_client = _make_hub_client(tmp_path, monkeypatch)
     messages = [rec.message for rec in caplog.records if rec.name == "burnrate.setup"]
-    assert any("BURNRATE_SETUP_TOKEN" in m and "deprecated" in m.lower() for m in messages)
+    assert not any("BURNRATE_SETUP_TOKEN" in m and "deprecated" in m.lower() for m in messages)
     assert any("BURNRATE_ALLOW_REGISTRATION" in m and "deprecated" in m.lower() for m in messages)
 
+    with hub_client:
+        enrollment = {"username": "owner@example.com", "password": PASSWORD}
+        refused = hub_client.post("/api/account/register", headers=HUB_UI, json=enrollment)
+        assert refused.status_code == 403
+        assert refused.json()["error"] == {"code": "AUTH-110"}
+        allowed = hub_client.post(
+            "/api/account/register", headers=HUB_UI, json={**enrollment, "setupToken": SETUP_TOKEN}
+        )
+        assert allowed.status_code == 200, allowed.text
+
     caplog.clear()
-    monkeypatch.delenv("BURNRATE_CENTRAL_SERVER", raising=False)
     with caplog.at_level(logging.WARNING, logger="burnrate.setup"):
-        create_app(_settings(tmp_path, "local_short.db"), enable_scheduler=False)
+        _, local_client = _make_local_client(tmp_path, monkeypatch)
+    assert any(
+        "BURNRATE_ALLOW_REGISTRATION" in rec.message and "deprecated" in rec.message.lower()
+        for rec in caplog.records
+        if rec.name == "burnrate.setup"
+    )
+    with local_client:
+        assert local_client.get("/healthz").status_code == 200
 
 
 def test_l16_non_ascii_setup_token_never_returns_500(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _, client = _make_hub_client(tmp_path, monkeypatch)
+    settings, client = _make_hub_client(tmp_path, monkeypatch)
     with client:
-        # Non-ASCII UTF-8 in JSON body setupToken -> ignored on first registration (200), never 500
+        # Wrong UTF-8 proof fails the setup gate.
         res_body = client.post(
             "/api/account/register",
             headers=HUB_UI,
@@ -845,18 +878,22 @@ def test_l16_non_ascii_setup_token_never_returns_500(
                 "setupToken": "tökën-ünicode-🔑-32-chars-padding",
             },
         )
-        assert res_body.status_code == 200
+        assert res_body.status_code == 403
+        assert res_body.json()["error"] == {"code": "AUTH-110"}
 
-        # Non-ASCII latin-1 in header X-BURNRATE-Setup-Token -> 403 AUTH-103 (closed), never 500
+        # Legacy headers cannot satisfy the setup gate.
         res_hdr = client.post(
             "/api/account/register",
             headers=[(b"origin", HUB_URL.encode()), (b"x-burnrate-request", b"1"), (b"x-burnrate-setup-token", b"tok\xe9n-non-ascii-header")],
             json={"username": "owner@example.com", "password": PASSWORD},
         )
         assert res_hdr.status_code == 403
+        assert res_hdr.json()["error"] == {"code": "AUTH-110"}
+        with connect(settings.database_path) as conn:
+            assert setup_wizard._read_accounts(conn)["users"] == {}
 
 
-def test_l16_failed_login_throttles_per_user_and_global(
+def test_l16_failed_login_throttles_per_user(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _, client = _make_hub_client(tmp_path, monkeypatch)
@@ -864,7 +901,7 @@ def test_l16_failed_login_throttles_per_user_and_global(
         assert client.post(
             "/api/account/register",
             headers=HUB_UI,
-            json={"username": "owner@example.com", "password": PASSWORD},
+            json={"username": "owner@example.com", "password": PASSWORD, "setupToken": SETUP_TOKEN},
         ).status_code == 200
         client.cookies.clear()
 
@@ -885,27 +922,6 @@ def test_l16_failed_login_throttles_per_user_and_global(
         assert locked.status_code == 429
         assert int(locked.headers["Retry-After"]) >= 1
 
-        # Reset throttles and verify _GLOBAL_THROTTLE (max_failures=30 across distinct users)
-        auth_throttle.reset()
-        setup_wizard._GLOBAL_THROTTLE.reset()
-        for idx in range(29):
-            res = client.post(
-                "/api/account/login",
-                headers=HUB_UI,
-                json={
-                    "username": f"user-{idx:02d}@example.com",
-                    "password": "wrong-password",
-                },
-            )
-            assert res.status_code == 401, (idx, res.text)
-
-        global_locked = client.post(
-            "/api/account/login",
-            headers=HUB_UI,
-            json={"username": "brand-new-user@example.com", "password": "wrong-password"},
-        )
-        assert global_locked.status_code == 429
-        assert int(global_locked.headers["Retry-After"]) >= 1
 
 
 # ---------------------------------------------------------------------------
@@ -1006,7 +1022,7 @@ def test_l15_setup_account_rejects_plain_http_without_outbound_call_or_persisten
         httpx_calls, test_client_calls = _install_recording_hub_transport(monkeypatch, "http://hub.example")
         res = spoke_client.post(
             "/api/setup/account",
-            headers={"Origin": "http://127.0.0.1:17331", "X-BURNRATE-Request": "1"},
+            headers={**LOCAL_UI, **_local_bearer(spoke_settings)},
             json={
                 "mode": mode,
                 "username": "owner@example.com",
@@ -1047,7 +1063,7 @@ def test_l15_saved_plain_http_config_blocked_at_egress_without_sending_tokens(
 
     with spoke_client:
         httpx_calls, test_client_calls = _install_recording_hub_transport(monkeypatch, "http://hub.example")
-        local_headers = {"Origin": "http://127.0.0.1:17331", "X-BURNRATE-Request": "1"}
+        local_headers = {**LOCAL_UI, **_local_bearer(spoke_settings)}
 
         # 1) Direct post_to_configured_hub strict/non-strict
         with pytest.raises(sync.HubMutationError, match="HTTPS") as exc_info:
@@ -1072,7 +1088,7 @@ def test_l15_saved_plain_http_config_blocked_at_egress_without_sending_tokens(
         assert "HTTPS" in sub_res.json()["error"]
 
         # 3) Spoke HTTP auth routes are closed locally (401 AUTH-107) and DesktopBridge fails closed with NET-003
-        sessions_res = spoke_client.get("/api/auth/sessions")
+        sessions_res = spoke_client.get("/api/auth/sessions", headers=local_headers)
         assert sessions_res.status_code == 401
         assert sessions_res.json()["error"] == {"code": "AUTH-107"}
 
@@ -1099,13 +1115,12 @@ def test_l15_saved_plain_http_config_blocked_at_egress_without_sending_tokens(
         assert sync.fetch_from_configured_hub(spoke_settings, "/api/spend/hud", ttl_seconds=0) is None
 
         # 5) Background machine rotation / background sync / sync_once
-        with pytest.raises(ValueError, match="HTTPS"):
-            setup_wizard.rotate_spoke_machine_token(spoke_settings)
+        assert setup_wizard.rotate_spoke_machine_token(spoke_settings) is None
 
         bg_res = setup_wizard.maybe_run_configured_spoke_sync(
             spoke_settings, PricingEngine.load(spoke_settings.pricing_path)
         )
-        assert bg_res is not None and bg_res["ok"] is False and bg_res["error"] == "sync_failed"
+        assert bg_res is None
 
         with pytest.raises(ValueError, match="HTTPS"):
             sync.sync_once(
@@ -1130,19 +1145,19 @@ def test_l15_loopback_http_stays_allowed_across_setup_and_egress(
 
     loopback_url = "http://127.0.0.1:8449"
     _, hub_client = _make_hub_client(tmp_path, monkeypatch, db_name="loopback_hub.db", base_url=loopback_url)
-    _, spoke_client = _make_local_client(tmp_path, monkeypatch, db_name="loopback_spoke.db")
-    spoke_settings = _settings(tmp_path, "loopback_spoke.db")
-    with hub_client, spoke_client:
+    spoke_settings, spoke_client = _make_local_client(tmp_path, monkeypatch, db_name="loopback_spoke.db")
+    with TestClient(hub_client.app), closing(hub_client), spoke_client:
         monkeypatch.setenv("BURNRATE_HUB_URL", loopback_url)
         monkeypatch.setitem(sync._HUB_TEST_CLIENTS, loopback_url, hub_client)
 
         acct_res = spoke_client.post(
             "/api/setup/account",
-            headers={"Origin": "http://127.0.0.1:17331", "X-BURNRATE-Request": "1"},
+            headers={**LOCAL_UI, **_local_bearer(spoke_settings)},
             json={
                 "mode": "register",
                 "username": "owner@example.com",
                 "password": PASSWORD,
+                "setupToken": SETUP_TOKEN,
                 "computerName": "Loopback Spoke",
                 "testSync": True,
             },

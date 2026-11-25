@@ -94,13 +94,13 @@ def access_allowed(
                      if isinstance(token, str) and _bearer_matches(request, token) else Principal())
     if request.url.path == "/api/hub/info" and getattr(request, "method", "GET") in {"GET", "HEAD"}:
         return True
-    if request.url.path in _PUBLIC_ACCOUNT_PATHS and getattr(request, "method", "GET") == "POST":
-        return True
     if not request.url.path.startswith("/api/"):
         return True
     if central is None:
         central = central_server()
     method = getattr(request, "method", "GET")
+    if central and request.url.path in _PUBLIC_ACCOUNT_PATHS and method == "POST":
+        return True
     if principal.kind == "machine":
         if request.url.path in {"/api/sync/push", "/api/auth/machine/rotate", "/api/machines/self/revoke"}:
             return method == "POST"
@@ -115,8 +115,6 @@ def access_allowed(
     if principal.kind == "owner":
         permission = "hub.read" if method in {"GET", "HEAD"} else "admin.write"
         return principal.permits(permission)
-    if not token:
-        return not central
     return False
 
 
@@ -192,13 +190,26 @@ def connection_router(settings):
             return JSONResponse({"error": "Use the configured BURNRATE origin."}, status_code=403)
         return JSONResponse(service.list(), headers={"Cache-Control": "no-store"})
 
-    async def action(request, method):
+    async def action(request, method, *, track_mutation=False):
         try:
             body = await payload(request)
             # Run bounded filesystem/vault calls outside the event loop using
             # FastAPI's existing worker pool, not a connection-specific worker.
             from starlette.concurrency import run_in_threadpool
             result = await run_in_threadpool(method, body)
+            if track_mutation:
+                from spend_app.connections import source_spec
+
+                operation = body.get("operation", "connect")
+                if operation in {"connect", "disable", "reconnect", "add_profile", "rename_profile", "remove_profile"}:
+                    if operation in {"disable", "remove_profile"}:
+                        verb = "delete"
+                    elif operation == "add_profile" or (operation == "connect" and body.get("revision") == 0):
+                        verb = "create"
+                    else:
+                        verb = "update"
+                    request.state.audit_action = "provider.connection." + verb
+                    request.state.audit_target = source_spec(body.get("source")).key
             return JSONResponse(result, headers={"Cache-Control": "no-store"})
         except PermissionError as exc:
             return JSONResponse({"error": str(exc)}, status_code=403)
@@ -225,6 +236,6 @@ def connection_router(settings):
 
     @router.post("/api/connections")
     async def mutate(request: Request):
-        return await action(request, service.mutate)
+        return await action(request, service.mutate, track_mutation=True)
 
     return router

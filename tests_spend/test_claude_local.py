@@ -162,7 +162,8 @@ def test_replaying_old_duplicate_charges_journals_correction_to_hub(tmp_path, mo
     pricing = PricingEngine.load(ROOT / "pricing")
     fixture = tmp_path / "duplicate.jsonl"
     legacy, explicit = _assistant(), _assistant(request_id="explicit")
-    now = datetime(2026, 9, 2, tzinfo=UTC)
+    # The importer stamps ingested_at with the process clock.
+    now = max(datetime.now(UTC), datetime(2026, 9, 2, tzinfo=UTC))
     # Simulate the pre-repair parser's persisted usage rows and file cache,
     # while leaving both underlying transcript records available for replay.
     with monkeypatch.context() as old:

@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 import math
 import re
 import uuid
@@ -14,6 +15,7 @@ from spend_app.plan_service import (
     _validate_overlap,
     iso_date,
     list_plans,
+    validate_term,
 )
 
 _STORE_KEY = "subscription_store.v1"
@@ -171,8 +173,18 @@ def _read_history(history, *, from_hub):
         terms = plan.get("terms")
         if not isinstance(terms, list) or not terms:
             raise PlanError("Subscription history must include its effective terms.")
-        validated = [_history_term(values) for values in terms]
-        _validate_overlap(validated)
+        try:
+            validated = [_history_term(values) for values in terms]
+            if from_hub:
+                validated = [validate_term(term) for term in validated]
+            _validate_overlap(validated)
+        except (PlanError, TypeError, KeyError):
+            if not from_hub:
+                raise
+            # A plan is a complete effective history. Skipping only a bad term
+            # would silently drop effective dates when replacing an older copy.
+            logging.getLogger(__name__).warning("Skipped an invalid hub plan during sync.")
+            continue
         decoded.append((identity, version, end_date, validated))
     return sender, decoded
 

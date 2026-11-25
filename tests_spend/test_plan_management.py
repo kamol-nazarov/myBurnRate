@@ -4,7 +4,6 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pytest
-from fastapi.testclient import TestClient
 
 from spend_app.aggregate import (
     _range_fingerprint,
@@ -21,6 +20,7 @@ from spend_app.plan_service import (
     list_plans,
 )
 from spend_app.subscriptions import daily_cost, materialize_subscription_days
+from tests_spend.local_client_fixture import local_client
 from tests_spend.test_api import make_settings
 
 TODAY = date(2026, 9, 1)
@@ -335,7 +335,7 @@ def test_current_terms_do_not_reenter_legacy_normalization(tmp_path, monkeypatch
 def test_api_write_boundaries_and_safe_reads(tmp_path, monkeypatch):
     db = tmp_path / "http.db"
     app = create_app(make_settings(db), enable_scheduler=False)
-    client = TestClient(app, base_url="http://localhost")
+    client = local_client(app, db, base_url="http://localhost")
     headers = {"Origin": "http://localhost", "X-BURNRATE-Request": "1"}
     body = {
         "operation": "add",
@@ -382,8 +382,9 @@ def test_api_write_boundaries_and_safe_reads(tmp_path, monkeypatch):
 def test_configured_tls_termination_origin(tmp_path, monkeypatch):
     monkeypatch.setenv("BURNRATE_ALLOWED_HOSTS", "dashboard.example.invalid")
     monkeypatch.setenv("BURNRATE_ALLOWED_ORIGINS", "https://dashboard.example.invalid")
-    app = create_app(make_settings(tmp_path / "proxy.db"), enable_scheduler=False)
-    client = TestClient(app, base_url="http://dashboard.example.invalid")
+    db = tmp_path / "proxy.db"
+    app = create_app(make_settings(db), enable_scheduler=False)
+    client = local_client(app, db, base_url="http://dashboard.example.invalid")
     headers = {"Origin": "https://dashboard.example.invalid", "X-BURNRATE-Request": "1"}
     body = {"operation": "add", "request_id": "proxy-add-123", "values": values()}
     assert (
@@ -406,7 +407,7 @@ def test_managed_plans_follow_the_same_authority_for_reads_and_writes(
 
     db = tmp_path / "managed.db"
     app = create_app(make_settings(db), enable_scheduler=False)
-    client = TestClient(app, base_url="http://localhost")
+    client = local_client(app, db, base_url="http://localhost")
     headers = {"Origin": "http://localhost", "X-BURNRATE-Request": "1"}
     list_path = "/api/subscriptions?manage=true"
     local_write = "/api/subscriptions?authority=local"

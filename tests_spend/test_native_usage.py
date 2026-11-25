@@ -17,6 +17,7 @@ from spend_app.db import (
 )
 from spend_app.native_usage import period_start, usage_report
 from spend_app.pricing import PricingEngine
+from tests_spend.local_client_fixture import local_client
 from tests_spend.test_api import make_settings
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -295,7 +296,7 @@ def test_usage_api_hub_proxy_uses_owner_session_and_spoke_fallback_is_labeled(
     tmp_path, monkeypatch
 ):
     from spend_app import sync
-    from spend_app.setup_wizard import read_setup_state, write_setup_state
+    from spend_app.connection_secrets import publish_spoke_credentials
 
     hub_settings = make_settings(tmp_path / "hub.db")
     spoke_settings = make_settings(tmp_path / "spoke.db")
@@ -310,20 +311,29 @@ def test_usage_api_hub_proxy_uses_owner_session_and_spoke_fallback_is_labeled(
     from spend_app.auth_model import Principal, create_session
     with connect(hub_settings.database_path) as connection:
         owner_session = create_session(connection, Principal("owner", "synthetic-owner", "owner"), "Test spoke")
-    hub_client = TestClient(create_app(hub_settings, enable_scheduler=False))
-    spoke_client = TestClient(create_app(spoke_settings, enable_scheduler=False))
-    with connect(spoke_settings.database_path) as connection:
-        state = read_setup_state(connection)
+    with monkeypatch.context() as hub_env:
+        hub_env.setenv("BURNRATE_CENTRAL_SERVER", "1")
+        hub_app = create_app(hub_settings, enable_scheduler=False)
+    hub_client = TestClient(hub_app)
+
+    def pair(_connection, state):
         state["role"] = "spoke"
         state["spokeConfig"] = {
             "hubUrl": "https://hub.invalid",
-            "token": token,
-            "ownerSession": owner_session["sessionToken"],
             "ownerSessionExpiresAt": owner_session["expiresAt"],
             "enabled": True,
         }
         state["account"] = {"machineId": "machine-test"}
-        write_setup_state(connection, state)
+
+    publish_spoke_credentials(
+        spoke_settings.database_path,
+        machine_token=token,
+        owner_session=owner_session["sessionToken"],
+        apply_state=pair,
+    )
+    spoke_client = local_client(
+        create_app(spoke_settings, enable_scheduler=False), spoke_settings.database_path
+    )
 
     class RecordingHub:
         def __init__(self):
@@ -379,17 +389,19 @@ def test_spoke_fallback_uses_own_id_and_excludes_stale_hub_rows(
     from spend_app.setup_wizard import read_setup_state
 
     hub_url = "https://hub.invalid"
-    monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
+    setup_proof = "synthetic-first-owner-proof"
     hub_settings = make_settings(tmp_path / "pair-hub.db")
-    monkeypatch.delenv("BURNRATE_CENTRAL_SERVER", raising=False)
     spoke_settings = make_settings(tmp_path / "pair-spoke.db")
     initialize(hub_settings.database_path)
     initialize(spoke_settings.database_path)
     now = datetime(2026, 11, 13, 15, tzinfo=UTC)
-    hub_app = create_app(hub_settings, enable_scheduler=False, now=now)
+    with monkeypatch.context() as hub_env:
+        hub_env.setenv("BURNRATE_CENTRAL_SERVER", "1")
+        hub_env.setenv("BURNRATE_SETUP_TOKEN", setup_proof)
+        hub_app = create_app(hub_settings, enable_scheduler=False, now=now)
     spoke_app = create_app(spoke_settings, enable_scheduler=False, now=now)
     hub_client = TestClient(hub_app, base_url=hub_url)
-    spoke_client = TestClient(spoke_app)
+    spoke_client = local_client(spoke_app, spoke_settings.database_path)
     headers = {"X-BURNRATE-Request": "1"}
     try:
         monkeypatch.setenv("BURNRATE_HUB_URL", hub_url)
@@ -435,6 +447,7 @@ def test_spoke_fallback_uses_own_id_and_excludes_stale_hub_rows(
                 "mode": "register",
                 "username": "owner@example.com",
                 "password": "synthetic-spoke-password",
+                "setupToken": setup_proof,
                 "computerName": "Travel computer",
                 "testSync": False,
             },
@@ -534,6 +547,7 @@ def test_configured_br_m_admin_token_precedes_machine_token_validation(
     from spend_app.sync import register_machine, revoke_machine
 
     admin_token = "br_m_admin-custom"
+    monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", admin_token)
     settings = make_settings(tmp_path / "configured-machine-prefix-token.db")
     initialize(settings.database_path)

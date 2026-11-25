@@ -25,6 +25,8 @@ env:
 
 jobs:
   image:
+    if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/release/') || github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
+    environment: ${{ github.ref_type == 'tag' && 'release' || 'hub-image-candidate' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -124,6 +126,7 @@ jobs:
         with:
           context: .
           platforms: linux/amd64,linux/arm64
+          build-args: BURNRATE_PUBLIC_BUILD=1
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

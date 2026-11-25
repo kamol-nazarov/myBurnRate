@@ -48,9 +48,15 @@ def explicitly_stopped() -> bool:
     return stop_marker().exists()
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        return None
+
+
 def _get(url: str, timeout: float, token: str | None = None) -> dict:
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"} if token else {})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+    with opener.open(request, timeout=timeout) as response:
         if response.status != 200:
             raise urllib.error.HTTPError(url, response.status, "unexpected status", response.headers, None)
         return json.loads(response.read().decode("utf-8"))
@@ -188,12 +194,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=int(os.environ.get("BURNRATE_PORT", str(service.DEFAULT_PORT))))
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
-    from spend_app.config import load_user_env
+    from spend_app.config import load_settings, load_user_env
+    from spend_app.local_access import read_local_key
 
     load_user_env()
     _configure_logging()
-    token = os.environ.get("BURNRATE_ACCESS_TOKEN", "").strip() or None
     try:
+        token = read_local_key(load_settings().database_path) or os.environ.get("BURNRATE_ACCESS_TOKEN", "").strip() or None
         outcome = check_once(port=args.port, dry_run=args.dry_run, token=token)
     except Exception:
         LOG.exception("watchdog run failed")

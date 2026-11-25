@@ -115,6 +115,8 @@ def test_stop_interrupts_active_pass_and_prevents_worker_restart():
 
 
 def test_api_owns_worker_and_stops_it_before_reads_and_resources(tmp_path, monkeypatch):
+    from spend_app.local_access import read_local_key
+
     calls = []
     class Worker:
         def stop(self):
@@ -127,12 +129,15 @@ def test_api_owns_worker_and_stops_it_before_reads_and_resources(tmp_path, monke
         calls.append("reads")
         original_close(self)
     monkeypatch.setattr(api.BoundedReadExecutor, "close", close_reads)
-    app = api.create_app(settings_for(tmp_path))
+    settings = settings_for(tmp_path)
+    app = api.create_app(settings)
     app.state._resource_stack.callback(lambda: calls.append("resources"))
     assert app.state.collector_worker is worker
     with TestClient(app) as client:
         assert client.get("/healthz").json() == {"status": "ok"}
-        health = client.get("/healthz?supervisor=1").json()
+        health = client.get("/healthz?supervisor=1", headers={
+            "Authorization": "Bearer " + read_local_key(settings.database_path)
+        }).json()
         assert health["application"] == "burnrate" and health["pid"] == os.getpid()
         assert health["collectorEnabled"] is True
         assert isinstance(health["ingest"]["stalled"], bool)
@@ -141,7 +146,12 @@ def test_api_owns_worker_and_stops_it_before_reads_and_resources(tmp_path, monke
 
 
 def test_supervisor_health_does_not_claim_collection_when_disabled(tmp_path):
-    app = api.create_app(settings_for(tmp_path), enable_scheduler=False)
+    from spend_app.local_access import read_local_key
+
+    settings = settings_for(tmp_path)
+    app = api.create_app(settings, enable_scheduler=False)
     with TestClient(app) as client:
-        result = client.get("/healthz?supervisor=1").json()
+        result = client.get("/healthz?supervisor=1", headers={
+            "Authorization": "Bearer " + read_local_key(settings.database_path)
+        }).json()
         assert result["collectorEnabled"] is False and result["ingest"] is None

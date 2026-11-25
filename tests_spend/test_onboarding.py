@@ -84,9 +84,8 @@ def test_metadata_detection_is_bounded_to_supplied_home(tmp_path):
 
 
 def test_onboarding_health_reads_do_not_probe_or_mutate(tmp_path, monkeypatch):
-    from fastapi.testclient import TestClient
-
     from spend_app.api import create_app
+    from tests_spend.local_client_fixture import local_client
     from tests_spend.test_api import add_fixture_event, make_settings
 
     db = tmp_path / "s.db"
@@ -97,7 +96,7 @@ def test_onboarding_health_reads_do_not_probe_or_mutate(tmp_path, monkeypatch):
 
     monkeypatch.setattr("spend_app.api.snapshot_limits", forbidden)
     monkeypatch.setattr("spend_app.diagnostics.detect_local_sources", forbidden)
-    client = TestClient(app)
+    client = local_client(app, db)
     with connect(db) as c:
         before = c.execute("SELECT COUNT(*) FROM ingest_runs").fetchone()[0]
     setup = client.get("/api/onboarding").json()

@@ -9,6 +9,18 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+## [0.6.11] - 2026-11-25
+
+### Security
+
+- Bind hub session and machine credentials to their issuing context and enforce first-owner setup proof.
+- Validate and bound sync inputs, preserve provider billing authority, and keep activity titles on the originating desktop.
+- Require a private installation credential for the local API and verify versioned hub releases before deployment.
+
+### Fixed
+
+- Report zero coverage writes on a cached ingest replay and harden desktop handling of credentials and local media.
+
 ## [0.6.10] - 2026-11-25
 
 ### Added

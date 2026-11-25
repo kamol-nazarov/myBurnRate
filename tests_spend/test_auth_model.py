@@ -34,19 +34,17 @@ def hub(tmp_path, monkeypatch):
     monkeypatch.setenv("BURNRATE_SETUP_TOKEN", SETUP_TOKEN)
     monkeypatch.setenv("BURNRATE_ALLOW_ADMIN_BEARER", "1")
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
     settings = settings_at(tmp_path)
     with TestClient(create_app(settings, enable_scheduler=False), base_url=ORIGIN) as client:
         yield settings, client
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
 
 
 def owner(client):
     result = client.post("/api/account/register", headers=UI, json={"username": "synthetic-owner@example.com", "password": PASSWORD,
-                         "sessionOnly": True, "deviceLabel": "Synthetic browser"})
+                         "sessionOnly": True, "deviceLabel": "Synthetic browser", "setupToken": SETUP_TOKEN})
     assert result.status_code == 200, result.text
     return result
 
@@ -353,7 +351,8 @@ def test_legacy_migration_once_and_055_spoke_push_without_new_setup_token(tmp_pa
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "synthetic-break-glass")
     monkeypatch.delenv("BURNRATE_SETUP_TOKEN", raising=False)
     settings = settings_at(tmp_path)
-    token = "br_m_legacy_synthetic-legacy-value"
+    fixture_secret = "s" * 43
+    token = f"br_m_legacy_{fixture_secret}"
     created = auth.moment() - timedelta(days=5)
     salt, pw_hash = setup_wizard._hash_password(PASSWORD, iterations=setup_wizard.LEGACY_PBKDF2_ITERATIONS)
     from spend_app.db import _initialize_base
@@ -387,7 +386,8 @@ def test_rotation_required_backfill_api_surface_and_deadline_enforcement(tmp_pat
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "synthetic-break-glass")
     monkeypatch.setenv("BURNRATE_ALLOW_ADMIN_BEARER", "1")
     settings = settings_at(tmp_path)
-    legacy_token = "br_m_legacy_synthetic-grace-token"
+    fixture_secret = "g" * 43
+    legacy_token = f"br_m_legacy_{fixture_secret}"
     fixed_deadline = auth.stamp(auth.moment() + timedelta(days=3))
     created = auth.moment() - timedelta(days=10)
     from spend_app.db import _initialize_base
@@ -527,16 +527,22 @@ def test_owner_session_machines_register_follows_reconnect_rules(hub):
     assert client.post("/api/sync/push", headers={"Authorization": "Bearer " + first_token}, json={}).status_code == 401
     assert client.post("/api/sync/push", headers={"Authorization": "Bearer " + second_token}, json={}).status_code == 200
 
-    # Revoked match -> refused with 422 (must re-pair by machine ID).
+    # The owner session associated with the revoked machine is no longer valid.
     sync.revoke_machine(settings.database_path, machine_id=first_id)
     revoked_reg = client.post(
         "/api/machines",
         headers=bearer_headers,
         json={"action": "register", "name": "Owner Box", "os": "win32"},
     )
-    assert revoked_reg.status_code == 422
+    assert revoked_reg.status_code == 401
 
     # Multiple active legacy matches -> refused with 422.
+    signed_in = client.post(
+        "/api/account/login", headers=UI,
+        json={"username": "synthetic-owner@example.com", "password": PASSWORD, "sessionOnly": True},
+    )
+    assert signed_in.status_code == 200
+    bearer_headers["Authorization"] = "Bearer " + signed_in.cookies[auth.COOKIE]
     a = sync.register_machine(settings.database_path, name="Dup Owner")
     dup_id = "machine-legacy-owner-dup"
     with connect(settings.database_path) as connection:

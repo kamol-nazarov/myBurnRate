@@ -226,7 +226,8 @@ def _charges(settings, machine="all"):
         )
 
 
-def test_verified_org_buckets_are_deduplicated_after_machine_selection(tmp_path):
+def test_verified_org_buckets_are_deduplicated_after_machine_selection(tmp_path, monkeypatch):
+    monkeypatch.setattr("spend_app.adapters.common.utc_now", lambda: iso_utc(START))
     hub = make_settings(tmp_path / "hub.db")
     pricing = PricingEngine.load(hub.pricing_path)
     one = make_settings(tmp_path / "one.db")

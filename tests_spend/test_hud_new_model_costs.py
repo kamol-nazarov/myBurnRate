@@ -4,12 +4,11 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
-from fastapi.testclient import TestClient
-
 from spend_app.adapters.common import UsageRow, persist_rows
 from spend_app.api import create_app
 from spend_app.config import Settings
 from spend_app.pricing import PricingEngine
+from tests_spend.local_client_fixture import local_client
 
 
 def test_hud_revalues_previously_unpriced_models(tmp_path):
@@ -28,8 +27,10 @@ def test_hud_revalues_previously_unpriced_models(tmp_path):
     settings = Settings(database_path=db, pricing_path=root / "pricing",
                         anthropic_admin_key=None, openai_admin_key=None, timezone="UTC",
                         cache_hit_threshold=0.75, over_routing_token_ceiling=40000)
-    client = TestClient(create_app(settings, enable_scheduler=False,
-                                  now=datetime(2026, 11, 9, 18, tzinfo=UTC)))
+    client = local_client(
+        create_app(settings, enable_scheduler=False, now=datetime(2026, 11, 9, 18, tzinfo=UTC)),
+        settings.database_path,
+    )
     nav = client.get("/api/spend/hud/usage").json()["navigation"]
     # Opus .116 + Argon .058 twice + Fable .216 + Ember .00282.
     assert Decimal(str(nav["todayUsd"])) == Decimal("0.45082")

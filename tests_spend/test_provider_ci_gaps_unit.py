@@ -1,4 +1,4 @@
-"""Compatibility/CI-gap units; storage, filesystem and HTTP are fake boundaries."""
+"""Provider compatibility checks using synthetic files and test doubles."""
 import os
 import copy
 import io
@@ -14,6 +14,7 @@ from test_connections_unit import service, body
 from test_provider_compat_unit import message
 from spend_app import connections as c
 from spend_app.connection_paths import MissingLocation, LocationError, normalize
+from spend_app.db import initialize
 from spend_app.providers import REGISTRY
 from spend_app.adapters import opencode_granular as oc, zcode_schema as zc
 
@@ -95,13 +96,17 @@ BASE={'source':'opencode_local','status':'success','eventsSeen':2,'eventsAccepte
 
 
 @pytest.mark.parametrize('partial',[False,True])
-def test_cumulative_single_result_is_preserved(monkeypatch,partial):
+def test_cumulative_single_result_is_preserved(monkeypatch,tmp_path,partial):
     child={**copy.deepcopy(BASE),'customMetadata':'retained'}
     if partial: child.update(status='partial',unpricedModels=['opencode:missing'],unpricedEventsWritten=1)
-    monkeypatch.setattr(Path,'exists',lambda p:True)
-    monkeypatch.setattr(oc,'read_source',lambda p:([],[Path('C:/fake/a.db')],[],['cumulative']))
+    source=tmp_path/'a.db'
+    source.touch()
+    database=tmp_path/'app.db'
+    initialize(database)
+    monkeypatch.setattr(oc,'read_source',lambda p:([],[source],[],['cumulative']))
+    monkeypatch.setattr('spend_app.adapters.opencode_local.read_session_snapshots',lambda path:[])
     monkeypatch.setattr('spend_app.adapters.opencode_local._ingest_cumulative',lambda **kw:child)
-    assert oc.ingest(database_path=Path('C:/fake/app.db'),pricing=object(),source_database=Path('C:/fake/a.db'))=={**child,'formats':['cumulative']}
+    assert oc.ingest(database_path=database,pricing=object(),source_database=source)=={**child,'formats':['cumulative']}
 
 
 def test_multiple_cumulative_results_keep_partial_pricing_and_counts():
@@ -124,14 +129,18 @@ def test_failure_and_deferred_evidence_do_not_erase_success():
     assert oc.combine_results([replay])=={**replay,'formats':[]}
 
 
-def test_mixed_granular_and_cumulative_keeps_both_results(monkeypatch):
+def test_mixed_granular_and_cumulative_keeps_both_results(monkeypatch,tmp_path):
     from spend_app.adapters.opencode_schema import parse_message
-    monkeypatch.setattr(Path,'exists',lambda p:True)
-    monkeypatch.setattr(oc,'read_source',lambda p:([parse_message(message())],[Path('C:/fake/a.db')],[],['v1','cumulative']))
+    source=tmp_path/'a.db'
+    source.touch()
+    database=tmp_path/'app.db'
+    initialize(database)
+    monkeypatch.setattr(oc,'read_source',lambda p:([parse_message(message())],[source],[],['v1','cumulative']))
+    monkeypatch.setattr('spend_app.adapters.opencode_local.read_session_snapshots',lambda path:[])
     child={**BASE,'status':'partial','unpricedModels':['opencode:x']}
     monkeypatch.setattr('spend_app.adapters.opencode_local._ingest_cumulative',lambda **kw:child)
     monkeypatch.setattr(oc,'persist_rows',lambda **kw:{**BASE,'eventsSeen':1,'eventsAccepted':1})
-    result=oc.ingest(database_path=Path('C:/fake/app.db'),pricing=object(),source_database=Path('C:/fake/a.db'))
+    result=oc.ingest(database_path=database,pricing=object(),source_database=source)
     assert result['status']=='partial' and result['unpricedModels']==['opencode:x']
     assert result['eventsSeen']==3 and result['eventsAccepted']==3 and result['eventsWritten']==2
 
@@ -207,8 +216,10 @@ def test_grok_append_reads_only_new_records_and_rotation_resets(monkeypatch):
     assert third[0].model_key=='supergrok:unknown' and third[0].input_tokens==5
 
 
-def test_traycer_projection_versions_reparse_only_changed_chat(monkeypatch):
+def test_traycer_projection_versions_reparse_only_changed_chat(monkeypatch,tmp_path):
     from spend_app.adapters import traycer_local as adapter
+    source=tmp_path/'chat.db'
+    source.touch()
     versions={'a':1,'b':1}
     def projection(chat):
         return json.dumps({'settings':{'harnessId':'grok','model':'grok-a'},'events':[
@@ -222,20 +233,18 @@ def test_traycer_projection_versions_reparse_only_changed_chat(monkeypatch):
         return SimpleNamespace(fetchone=lambda:(projection(args[0]),))
     monkeypatch.setattr(adapter,'sqlite_read_only',lambda p:SimpleNamespace(execute=execute,close=lambda:None))
     monkeypatch.setattr(adapter,'_PROJECTION_CACHE',{})
-    monkeypatch.setattr(Path,'stat',lambda p:SimpleNamespace(st_dev=1,st_ino=2,st_mtime_ns=sum(versions.values())))
-    monkeypatch.setattr(Path,'resolve',lambda p,**kw:p)
     original=adapter.parse_projection
     calls=[]
     def spy(**kwargs):
         calls.append(kwargs['chat_id'])
         return original(**kwargs)
     monkeypatch.setattr(adapter,'parse_projection',spy)
-    first=adapter.parse_database(Path('C:/fake/chat.db'))
+    first=adapter.parse_database(source)
     assert len(first)==2 and calls==['a','b']
-    assert adapter.parse_database(Path('C:/fake/chat.db'))==first
+    assert adapter.parse_database(source)==first
     assert calls==['a','b']
     versions['b']=2
-    assert len(adapter.parse_database(Path('C:/fake/chat.db')))==3
+    assert len(adapter.parse_database(source))==3
     assert calls==['a','b','b']
 
 

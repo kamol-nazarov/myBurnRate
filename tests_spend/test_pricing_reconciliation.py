@@ -314,12 +314,18 @@ def test_a_hub_drops_calls_only_with_a_proven_turn_interval(tmp_path: Path, elap
 
     apply_sync_push(database, _engine(), machine_id="laptop-1", body={"unpricedEvents": [
         item("grok-local:1", t, 100, 10), item("grok-local:2", t + timedelta(seconds=5), 200, 20)]})
-    apply_sync_push(database, _engine(), machine_id="laptop-1", body={"unpricedEvents": [
+    turn = {"unpricedEvents": [
         {**item("grok-native-usage:1", t + timedelta(seconds=6), 300, 30, model="supergrok:grok-4.7-build"),
-         "grok_turn_elapsed_ms": elapsed}]})
+         "grok_turn_elapsed_ms": elapsed}]}
+    invalid = elapsed is not None and (type(elapsed) is not int or elapsed < 0 or elapsed > 10**12)
+    if invalid:
+        with pytest.raises(ValueError, match="Invalid sync usage count"):
+            apply_sync_push(database, _engine(), machine_id="laptop-1", body=turn)
+    else:
+        apply_sync_push(database, _engine(), machine_id="laptop-1", body=turn)
     with connect(database) as connection:
         left = [row[0] for row in connection.execute("SELECT raw_id FROM unpriced_usage_events WHERE tool_key='grok'")]
-    expected = {"m:laptop-1:grok-native-usage:1"}
+    expected = set() if invalid else {"m:laptop-1:grok-native-usage:1"}
     if elapsed != 60_000:
         expected.update({"m:laptop-1:grok-local:1", "m:laptop-1:grok-local:2"})
     assert set(left) == expected

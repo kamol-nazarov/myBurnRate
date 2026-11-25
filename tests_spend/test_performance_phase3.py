@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from fastapi.testclient import TestClient
+from tests_spend.local_client_fixture import local_client
 
 from spend_app import aggregate
 from spend_app.aggregate import (
@@ -137,7 +137,7 @@ def test_live_requests_use_the_data_clock_and_injected_clock_is_untouched(tmp_pa
     database = tmp_path / "spend.db"
     add_fixture_event(database)
     settings = _settings(tmp_path, database)
-    live = TestClient(create_app(settings, enable_scheduler=False))
+    live = local_client(create_app(settings, enable_scheduler=False), settings.database_path)
     # No completed cycle yet: the real clock is used and the just-written row is visible.
     body = live.get("/api/spend/summary", params={"window": "1d"}).json()
     assert body["totals"]["records"] == 1
@@ -152,7 +152,7 @@ def test_live_requests_use_the_data_clock_and_injected_clock_is_untouched(tmp_pa
     assert entity["sessions"]["rows"][0]["id"] == "api-session"
     assert ("1d", "all") in recently_requested_summaries(), "two polls mark the window as watched"
 
-    pinned = TestClient(create_app(settings, enable_scheduler=False, now=NOW))
+    pinned = local_client(create_app(settings, enable_scheduler=False, now=NOW), settings.database_path)
     assert pinned.get("/api/spend/summary", params={"window": "1d"}).json()["generatedAt"] == "2026-08-30T23:00:00Z"
     aggregate.reset_memo()
 
@@ -240,7 +240,7 @@ def test_health_is_reused_per_clock_and_invalidated_by_its_inputs(tmp_path: Path
 def test_json_endpoints_are_gzip_compressed_and_no_store(tmp_path: Path) -> None:
     database = tmp_path / "spend.db"
     add_fixture_event(database)
-    client = TestClient(create_app(_settings(tmp_path, database), enable_scheduler=False, now=datetime.now(UTC)))
+    client = local_client(create_app(_settings(tmp_path, database), enable_scheduler=False, now=datetime.now(UTC)), database)
 
     summary_gz = client.get("/api/spend/summary?window=1d&tool=all", headers={"Accept-Encoding": "gzip"})
     assert summary_gz.status_code == 200

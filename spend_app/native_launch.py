@@ -7,9 +7,9 @@ Authenticode signature and refuse tampered, foreign, or unverifiable binaries.
 
 A signature is considered ``valid`` only when its Authenticode status is
 ``Valid`` **and** the signing certificate's thumbprint matches a pinned
-thumbprint. A validly signed file whose thumbprint is not pinned is classified
-as ``untrusted`` (allowed by default while release signing is pending, and
-refused when ``BURNRATE_REQUIRE_SIGNED_NATIVE=1``). ``foreign``, ``tampered``,
+thumbprint. While no publisher is enrolled, a validly signed file is classified
+as ``untrusted``. After enrollment a valid signature from another publisher is
+``foreign``. ``foreign``, ``tampered``,
 and ``unknown`` (verification failures or unrecognized statuses) are always
 refused. Extra pinned thumbprints may be supplied via
 ``BURNRATE_NATIVE_THUMBPRINTS`` (comma-separated, case-insensitive hex with
@@ -27,12 +27,16 @@ import sys
 from contextlib import contextmanager
 from pathlib import Path
 
+from spend_app.child_environment import child_environment
+
 LOG = logging.getLogger("burnrate.native_launch")
 
 THUMBPRINTS_ENV = "BURNRATE_NATIVE_THUMBPRINTS"
 REQUIRE_SIGNED_ENV = "BURNRATE_REQUIRE_SIGNED_NATIVE"
-# TODO(signpath): pin the official SignPath release certificate thumbprint(s) once enrolled.
-DEFAULT_THUMBPRINTS: tuple[str, ...] = ()
+try:
+    from spend_app._build_config import NATIVE_THUMBPRINTS as DEFAULT_THUMBPRINTS
+except ImportError:
+    DEFAULT_THUMBPRINTS: tuple[str, ...] = ()
 
 VALID = "valid"
 UNSIGNED = "unsigned"
@@ -133,6 +137,7 @@ def _authenticode(path: Path) -> tuple[str, str, str]:
         text=True,
         timeout=15,
         check=False,
+        env=child_environment(),
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     if completed.returncode != 0:
@@ -152,7 +157,9 @@ def signature_state(path: Path) -> str:
     if normalized == "valid":
         pinned = _pinned_thumbprints()
         thumb = _normalize_thumbprint(thumbprint)
-        return VALID if (thumb and thumb in pinned) else UNTRUSTED
+        if thumb and thumb in pinned:
+            return VALID
+        return FOREIGN if pinned else UNTRUSTED
     if normalized in {"notsigned", "notsupported"}:
         return UNSIGNED
     if normalized == "hashmismatch":
@@ -168,10 +175,10 @@ def evaluate(path: Path) -> tuple[bool, str]:
 
     Returns ``(allowed, state)``. ``valid`` is always allowed; ``foreign``,
     ``tampered``, and ``unknown`` (including verification failures) are always
-    refused. ``unsigned`` and ``untrusted`` are allowed by default and refused
-    when ``BURNRATE_REQUIRE_SIGNED_NATIVE`` is set.
+    refused. ``unsigned`` and ``untrusted`` are allowed while no publisher is
+    enrolled, unless ``BURNRATE_REQUIRE_SIGNED_NATIVE`` is set.
     """
-    strict = _truthy(os.getenv(REQUIRE_SIGNED_ENV))
+    strict = bool(_pinned_thumbprints()) or _truthy(os.getenv(REQUIRE_SIGNED_ENV))
     try:
         state = signature_state(path)
     except Exception as exc:  # pragma: no cover - depends on the host shell
@@ -184,10 +191,8 @@ def evaluate(path: Path) -> tuple[bool, str]:
         return False, state
     if strict:
         LOG.warning(
-            "Refusing to launch %s: %s signature and %s is set",
-            path,
-            state,
-            REQUIRE_SIGNED_ENV,
+            "Refusing to launch %s: %s signature under the enrolled signing policy",
+            path, state,
         )
         return False, state
     if state == UNSIGNED:

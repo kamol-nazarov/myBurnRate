@@ -35,10 +35,7 @@ jobs:
       - name: Verify native accounting, client and updater
         run: python -m pytest tests_spend/test_native_usage.py tests_spend/test_native_desktop.py tests_spend/test_native_frame.py tests_spend/test_native_update.py tests_spend/test_packaging.py -q
       - name: Ensure NSIS is available
-        run: |
-          if (-not (Get-Command makensis -ErrorAction SilentlyContinue) -and -not (Test-Path "${env:ProgramFiles(x86)}\NSIS\makensis.exe")) {
-            choco install nsis -y --no-progress
-          }
+        run: ./.github/scripts/prepare-nsis.ps1
       # Unsigned here: only the release workflow signs, and only from a version tag.
       - name: Build portable native app and installer
         run: python packaging/build_native.py --require-installer

@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
+from tests_spend.local_client_fixture import local_client
 
 from spend_app.api import create_app
 from spend_app.capacity_forecast import (
@@ -541,7 +541,7 @@ def test_preferences_endpoint_is_on_the_summary(tmp_path: Path):
         cache_hit_threshold=0.75,
         over_routing_token_ceiling=40000,
     )
-    client = TestClient(create_app(settings, enable_scheduler=False))
+    client = local_client(create_app(settings, enable_scheduler=False), settings.database_path)
     saved = client.post("/api/capacity/forecast-preferences", json={
         "threshold": 85,
         "escalate": True,

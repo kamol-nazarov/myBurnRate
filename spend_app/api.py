@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 
 import logging
 import os
@@ -115,6 +116,9 @@ def create_app(
 
     trusted_proxies()
     initialize(settings.database_path)
+    from spend_app.sync import migrate_legacy_spoke_secrets
+
+    migrate_legacy_spoke_secrets(settings.database_path)
     from spend_app.db import connect
     from spend_app.setup_wizard import deprecated_account_env_warnings
 
@@ -202,7 +206,8 @@ def create_app(
     app.state.collector_worker = getattr(scheduler, "collector_worker", None)
     from spend_app.connections import Store
     Store(settings.database_path).bootstrap()
-    from spend_app.connection_api import connection_router
+    from spend_app.connection_api import central_server, connection_router
+    _central = central_server()
     app.include_router(connection_router(settings))
     from spend_app.product_api import product_router
     app.include_router(product_router(settings, pricing=pricing))
@@ -213,7 +218,7 @@ def create_app(
     from spend_app.sync import sync_router
     app.include_router(sync_router(settings, pricing))
     from spend_app.auth_api import auth_router
-    app.include_router(auth_router(settings))
+    app.include_router(auth_router(settings, central=_central))
     from spend_app.redact import install_log_redaction
     install_log_redaction()
     from spend_app.setup_wizard import setup_router
@@ -262,24 +267,22 @@ def create_app(
             return boundary_error(403, "Request rejected: unrecognized Host header.", code="NET-002")
         return await call_next(request)
 
-    # Explicit application boundary (Release A A13): when BURNRATE_ACCESS_TOKEN
-    # is configured, every /api read and write requires it as a bearer token.
-    # The default remains loopback-only with no token; a request claiming a
-    # trusted Host is never authentication by itself. A central server without
-    # a token fails closed instead of serving anonymous reads.
+    # The local listener and the central hub have distinct credentials.
     _access_token = os.getenv("BURNRATE_ACCESS_TOKEN", "").strip()
-    from spend_app.connection_api import central_server
+    _local_key = ""
+    local_subject = ""
+    if not _central:
+        from spend_app.auth_model import digest
+        from spend_app.local_access import ensure_local_key, remove_hub_credentials
 
-    _central = central_server()
-    with connect(settings.database_path) as connection:
-        _protected = bool(_access_token or connection.execute(
-            "SELECT 1 FROM app_meta WHERE key='auth.break_glass.v1'"
-        ).fetchone())
+        _local_key = ensure_local_key(settings.database_path)
+        local_subject = "local-install-" + digest(_local_key)
+        remove_hub_credentials(settings.database_path)
 
     @app.middleware("http")
     async def access_boundary(request, call_next):
         from spend_app.auth_model import (
-            COOKIE, Principal, authenticate_session, audit, break_glass_matches,
+            COOKIE, LEGACY_COOKIE, Principal, authenticate_session, audit, break_glass_matches,
             scoped_machine_read,
         )
         from spend_app.connection_api import (
@@ -289,17 +292,29 @@ def create_app(
             return boundary_error(403, "Request rejected: unrecognized Host header.", code="NET-002")
         auth = request.headers.get("authorization", "")
         bearer = auth[7:].strip() if auth.startswith("Bearer ") else ""
-        cookie = request.cookies.get(COOKIE, "")
+        cookie = request.cookies.get(COOKIE) or request.cookies.get(LEGACY_COOKIE, "")
         principal = Principal()
         request.state.principal = principal
         request.state.machine_id = None
 
-        async def recorded(response):
+        async def recorded(response, *, routed=False):
             path = request.url.path
             action = None
+            anonymous = request.state.principal.kind == "unauthenticated"
+            account_attempt = path in {"/api/account/login", "/api/account/register"}
+            if anonymous and response.status_code in {401, 403}:
+                app.state.unauthenticated_denials = min(
+                    getattr(app.state, "unauthenticated_denials", 0) + 1, 2**31 - 1
+                )
+                if not routed or not account_attempt:
+                    return response
+            elif anonymous:
+                return response
             if request.method == "POST":
-                if path in {"/api/account/login", "/api/account/register"}:
+                if account_attempt:
                     action = "login" if path.endswith("login") else "account.register"
+                elif path in {"/api/account/subscriptions", "/api/connections", "/api/subscriptions"}:
+                    action = getattr(request.state, "audit_action", None)
                 elif path == "/api/account/password":
                     action = "account.password_change"
                 elif path == "/api/account/email":
@@ -323,16 +338,33 @@ def create_app(
             if getattr(request.state, "audit_recorded", False):
                 action = None
             if action:
+                from spend_app.exposure import resolve_client_ip
+
                 with connect(settings.database_path) as connection:
                     audit(connection, request.state.principal, action,
                           getattr(request.state, "audit_target", "setup" if action == "setup.change" else path),
-                          "success" if response.status_code < 400 else "failure")
+                          "success" if response.status_code < 400 else "failure", source=resolve_client_ip(request))
             return response
 
-        if bearer:
+        if _local_key and bearer and hmac.compare_digest(bearer.encode("utf-8"), _local_key.encode("ascii")):
+            via = "local-bootstrap" if request.url.path == "/api/auth/bootstrap" else "bearer"
+            principal = Principal("owner", local_subject, "owner", via=via)
+        elif bearer and not _central:
+            principal = await asyncio.to_thread(authenticate_session, settings.database_path, bearer)
+            if not principal or principal.id != local_subject:
+                return await recorded(boundary_error(401, "Invalid local credential.", code="AUTH-107"))
+        elif bearer:
+            machine_address = None
+            if bearer.startswith("br_m_"):
+                from spend_app.exposure import resolve_client_ip
+                from spend_app.sync import machine_bearer_allowed
+
+                machine_address = resolve_client_ip(request)
+                if not machine_bearer_allowed(settings.database_path, machine_address):
+                    return boundary_error(429, "Too many invalid machine credentials.", retry_after="60")
             if await asyncio.to_thread(break_glass_matches, settings.database_path, bearer, _access_token):
                 automation = os.getenv("BURNRATE_ALLOW_ADMIN_BEARER", "0").lower() in {"1", "true", "yes"}
-                if automation or request.url.path in {"/api/auth/bootstrap", "/api/auth/rotate"}:
+                if automation or request.url.path in {"/api/auth/bootstrap", "/api/auth/rotate", "/api/account/register"}:
                     principal = Principal("owner", "break-glass", "owner", via="break-glass")
             elif bearer.startswith("br_m_"):
                 from spend_app.sync import authenticate_machine_token
@@ -342,11 +374,13 @@ def create_app(
             elif bearer.startswith("br_s_"):
                 principal = await asyncio.to_thread(authenticate_session, settings.database_path, bearer)
             if not principal or principal.kind == "unauthenticated":
+                if machine_address is not None:
+                    machine_bearer_allowed(settings.database_path, machine_address, failed=True)
                 err_code = "DEV-301" if bearer.startswith("br_m_") else "AUTH-107"
                 return await recorded(boundary_error(401, "Invalid, expired or revoked credential.", code=err_code))
         elif cookie:
             principal = await asyncio.to_thread(authenticate_session, settings.database_path, cookie, via="cookie")
-            if not principal:
+            if not principal or (not _central and principal.id != local_subject):
                 # Login remains available when a browser's previous session expires.
                 if request.url.path not in {"/api/account/login", "/api/account/register"} and request.url.path.startswith("/api/"):
                     return await recorded(boundary_error(401, "Session expired or revoked. Sign in again.", code="AUTH-107"))
@@ -354,17 +388,13 @@ def create_app(
         request.state.principal = principal
         request.state.machine_id = principal.id if principal.kind == "machine" else None
         request.state.auth_kind = "machine" if principal.kind == "machine" else principal.kind
-        bearer_ok = principal.via in {"bearer", "break-glass"}
+        bearer_ok = principal.via in {"bearer", "break-glass", "local-bootstrap"}
         if not csrf_mutation_allowed(request, bearer_ok=bearer_ok):
             return await recorded(boundary_error(403, "Request rejected: use the configured BURNRATE origin.", code="NET-002"))
         if (principal.via == "cookie" and request.method not in {"GET", "HEAD", "OPTIONS"}
                 and (not trusted(request) or urlsplit(request.headers.get("origin", "")).scheme != request.url.scheme)):
             return await recorded(boundary_error(403, "Cookie mutations require the same origin."))
-        protected = _protected
-        if not protected:
-            with connect(settings.database_path) as connection:
-                protected = bool(connection.execute("SELECT 1 FROM app_meta WHERE key='auth.break_glass.v1'").fetchone())
-        if not access_allowed(request, protected, central=_central, principal=principal):
+        if not access_allowed(request, None, central=_central, principal=principal):
             return await recorded(boundary_error(
                 403 if principal.kind != "unauthenticated" else 401,
                 "Permission denied." if principal.kind != "unauthenticated" else "Authentication required for the API",
@@ -374,7 +404,7 @@ def create_app(
             data = await asyncio.to_thread(scoped_machine_read, settings, pricing, principal, request)
             return JSONResponse(data, headers={"Cache-Control": "no-store"})
         response = await call_next(request)
-        return await recorded(response)
+        return await recorded(response, routed=True)
 
     @app.exception_handler(StarletteHTTPException)
     async def http_not_found_handler(request: Request, exc: StarletteHTTPException):
@@ -740,8 +770,8 @@ def create_app(
     async def healthz(request: Request, supervisor: bool = False) -> dict:
         if not supervisor:
             return {"status": "ok"}
-        if _central and not request.state.principal.permits("hub.read"):
-            # Liveness stays public; process and ingest detail is owner-only on a hub.
+        if not request.state.principal.permits("hub.read"):
+            # Liveness stays public. Process and ingest detail is owner-only.
             raise HTTPException(status_code=401, detail="Authentication required for supervisor health")
         from spend_app.freshness import heartbeat
 
@@ -761,10 +791,13 @@ def create_app(
         # A demo in a browser must not open or control the real desktop HUD.
         if demo_mode():
             return {"ok": False, "reason": "demo"}
+        from spend_app.setup_wizard import RequestTooLargeError, _bounded_json
         try:
-            body = await request.json()
-        except Exception:
-            body = {}
+            body = await _bounded_json(request, require_mutation_header=False)
+        except RequestTooLargeError:
+            return error_response("REQ-401", status_code=422)
+        except ValueError:
+            return error_response("APP-901", status_code=422)
         action = str((body or {}).get("action") or "open").strip().lower()
         if action not in {"open", "show", "pin"}:
             return {"ok": False, "reason": "unsupported_action"}

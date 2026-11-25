@@ -23,12 +23,14 @@ from spend_app.connection_secrets import (
     MACHINE_TOKEN_VAULT_REF,
     OWNER_SESSION_VAULT_REF,
     clear_spoke_credentials,
+    credential_origin_ref,
     publish_spoke_credentials,
     read_vault_secret,
     set_vault_factory,
 )
 from spend_app.db import connect, initialize
 from spend_app.error_codes import HUB_PROTOCOL_VERSION, CodedError, error_message
+from spend_app.local_access import read_local_key
 from spend_app.native_desktop import NativeClient
 from spend_app.pricing import PricingEngine
 from spend_app.wealthfront_window import DesktopBridge
@@ -40,6 +42,7 @@ from tests_spend.test_h5_desktop_account_ui import (
 from tests_spend.test_h6_bridge_and_packaging import (
     HUB_URL,
     PASSWORD,
+    SETUP_TOKEN,
     _MemoryVault,
     _create_paired_hub_and_spoke,
     _make_settings,
@@ -61,7 +64,6 @@ ROOT = Path(__file__).resolve().parent.parent
 @pytest.fixture(autouse=True)
 def _isolated_059_env(monkeypatch: pytest.MonkeyPatch):
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
     sync._HUB_REJECTED_CREDENTIALS.clear()
     sync._HUB_CREDENTIAL_GENERATIONS.clear()
@@ -73,7 +75,6 @@ def _isolated_059_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("BURNRATE_BUILTIN_HUB_URL", raising=False)
     yield
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
     sync._HUB_REJECTED_CREDENTIALS.clear()
     sync._HUB_CREDENTIAL_GENERATIONS.clear()
@@ -202,10 +203,13 @@ def test_s2_all_credential_writers_enforce_vault_only_and_app903(
     )
     _patch_native_to_local(monkeypatch, spoke_app, port=17360)
     spoke_client = TestClient(spoke_app, base_url="http://127.0.0.1:17360")
+    local_key = read_local_key(spoke_settings.database_path)
+    assert local_key
     local_headers = {
         "Host": "127.0.0.1:17360",
         "Origin": "http://127.0.0.1:17360",
         "X-BURNRATE-Request": "1",
+        "Authorization": f"Bearer {local_key}",
     }
 
     bad_vault = None if vault_mode == "unavailable" else _MismatchVault()
@@ -289,8 +293,13 @@ def test_s2_all_credential_writers_enforce_vault_only_and_app903(
 
         # 2. setup_wizard.rotate_spoke_machine_token -> ok=False APP-903, zero DB token
         orig_tok2, orig_sess2 = _connect_cleanly()
+        bindings = {
+            ref: read_vault_secret(spoke_settings.database_path, ref)
+            for ref in (credential_origin_ref(orig_tok2), credential_origin_ref(orig_sess2))
+        }
+        assert all(value == HUB_URL for value in bindings.values())
         rot_vault_2 = _ReadExistingWriteFailVault(
-            {MACHINE_TOKEN_VAULT_REF: orig_tok2, OWNER_SESSION_VAULT_REF: orig_sess2},
+            {MACHINE_TOKEN_VAULT_REF: orig_tok2, OWNER_SESSION_VAULT_REF: orig_sess2, **bindings},
             vault_mode,
         )
         prev = set_vault_factory(lambda _db: rot_vault_2)
@@ -316,16 +325,18 @@ def test_s2_all_credential_writers_enforce_vault_only_and_app903(
 
             # DesktopBridge.create_account on a fresh hub with no account yet
             monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
+            monkeypatch.setenv("BURNRATE_SETUP_TOKEN", SETUP_TOKEN)
             fresh_hub = create_app(
                 _make_settings(tmp_path / f"fresh_hub_{vault_mode}.db"),
                 enable_scheduler=False,
             )
             monkeypatch.delenv("BURNRATE_CENTRAL_SERVER", raising=False)
+            monkeypatch.delenv("BURNRATE_SETUP_TOKEN", raising=False)
             fresh_hub_client = TestClient(fresh_hub, base_url=HUB_URL)
             sync._HUB_TEST_CLIENTS[HUB_URL] = fresh_hub_client
             try:
                 with fresh_hub_client:
-                    res_ca = bridge.create_account("first@example.com", PASSWORD, "BadBridgeCreate")
+                    res_ca = bridge.create_account("first@example.com", PASSWORD, "BadBridgeCreate", SETUP_TOKEN)
                     assert res_ca["ok"] is False
                     assert res_ca["code"] == "APP-903"
             finally:
@@ -643,7 +654,15 @@ def test_s7_hostile_404_error_detail_never_reaches_bridge_output(
     spoke_settings = _make_settings(tmp_path / "s7_spoke.db")
     initialize(spoke_settings.database_path)
     vault = _MemoryVault()
-    vault.put("br_s_valid_local", OWNER_SESSION_VAULT_REF)
+
+    def _configure_fixture_spoke(_connection, state):
+        state["role"] = "spoke"
+        state["spokeConfig"].update(enabled=True, hubConfigured=True)
+
+    publish_spoke_credentials(
+        spoke_settings.database_path, owner_session="br_s_valid_local",
+        authenticated_origin=HUB_URL, vault=vault, apply_state=_configure_fixture_spoke,
+    )
 
     bridge = DesktopBridge(
         NativeClient(spoke_settings, port=17363),
@@ -1144,7 +1163,7 @@ def test_s8_fresh_sign_in_uses_supplied_session_even_when_revoked_legacy_stored(
 # ---------------------------------------------------------------------------
 
 
-def test_b3_partial_publish_migrates_untouched_legacy_and_preserves_on_failure(
+def test_b3_partial_publish_migrates_untouched_legacy_or_discards_on_failure(
     tmp_path: Path,
 ) -> None:
     # 1) Legacy machine-only upgrade: publishing owner_session migrates DB token cleanly.
@@ -1195,7 +1214,7 @@ def test_b3_partial_publish_migrates_untouched_legacy_and_preserves_on_failure(
         assert "ownerSession" not in sc
         assert sc.get("ownerSessionRotationRequired") is True
 
-    # 3) Counterpart migration failure must preserve the unmigrated DB secret rather than dropping it.
+    # 3) Counterpart migration failure removes the remaining plaintext.
     db_fail = tmp_path / "b3_counterpart_fail.db"
     initialize(db_fail)
     with connect(db_fail) as conn:
@@ -1219,7 +1238,7 @@ def test_b3_partial_publish_migrates_untouched_legacy_and_preserves_on_failure(
     assert v3.get(OWNER_SESSION_VAULT_REF) == "br_s_owner_ok"
     with connect(db_fail) as conn:
         sc = setup_wizard.read_setup_state(conn).get("spokeConfig") or {}
-        assert sc.get("token") == "br_m_must_not_be_lost"
+        assert not sc.get("token")
 
 
 # ---------------------------------------------------------------------------
@@ -2641,12 +2660,18 @@ def test_s12_r5_stale_machine_rotation_after_full_sign_out_revokes_or_queues_suc
 
         monkeypatch.setattr(setup_wizard, "_call_central_server_account", _wrap_acct_call)
         acct_resps: list[object] = []
+        local_key = read_local_key(spoke_db)
+        assert local_key
         with TestClient(spoke_app) as spoke_client:
             t_acct = threading.Thread(
                 target=lambda: acct_resps.append(
                     spoke_client.post(
                         "/api/setup/account",
-                        headers={"X-BURNRATE-Request": "1", "X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION)},
+                        headers={
+                            "Authorization": f"Bearer {local_key}",
+                            "X-BURNRATE-Request": "1",
+                            "X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION),
+                        },
                         json={"mode": "login", "username": "owner@example.com", "password": PASSWORD, "computerName": "S12FenceAcct", "testSync": False},
                     )
                 )
@@ -3279,10 +3304,26 @@ def test_b8_r6_failed_cleanup_and_queue_retains_in_memory_warns_and_flushes(
             # Flush with live hub revokes retained machine token (over batches) and clears warning
             monkeypatch.setattr(sync, "_hub_post_with_cookie_isolation", real_post)
             flushed = False
-            for _ in range(12):
-                if flush_pending_revokes(db_path, secret_hub, vault=v_full, client=hub_client, ignore_backoff=True):
-                    flushed = True
-                    break
+
+            class _RetryClock:
+                elapsed = 0
+
+                def monotonic(self):
+                    return time.monotonic() + self.elapsed
+
+                def __getattr__(self, name):
+                    return getattr(time, name)
+
+            # Existing stale credentials contribute to the hub's failed-bearer
+            # limit. Model successive retry windows without waiting in the test.
+            clock = _RetryClock()
+            with monkeypatch.context() as fixture:
+                fixture.setattr(sync, "time", clock)
+                for _ in range(12):
+                    if flush_pending_revokes(db_path, secret_hub, vault=v_full, client=hub_client, ignore_backoff=True):
+                        flushed = True
+                        break
+                    clock.elapsed += 61
             assert flushed is True
             assert sync.authenticate_machine_token(hub_settings.database_path, issued_m[0]) is None
             assert retained_pending_revoke_count() == 0

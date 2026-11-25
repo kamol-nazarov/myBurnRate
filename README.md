@@ -15,7 +15,7 @@ code or responses are ever stored.
 [![Python 3.12](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)](pyproject.toml)
 [![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-4c566a)](#install)
 
-> **Current release:** `v0.6.10` · [Release notes](docs/releases/RELEASE-0.6.10.md) · [Changelog](CHANGELOG.md)
+> **Current release:** `v0.6.11` · [Release notes](docs/releases/RELEASE-0.6.11.md) · [Changelog](CHANGELOG.md)
 
 <p align="center">
   <img src="docs/images/native-desktop.png" width="760" alt="The myBurnRate v0.6.4 desktop window in Light and Dark themes: sticky daily-spend header with Limits, Spend and Plans tabs, urgency-sorted pace timelines, two-column calm provider cards, an expanded Claude Code breakdown, and a docked bottom utility bar">
@@ -44,7 +44,7 @@ code or responses are ever stored.
 Run this in PowerShell. It installs for your user account, so there is no administrator prompt:
 
 ```powershell
-irm https://raw.githubusercontent.com/kamol-nazarov/myBurnRate/prod/scripts/install-native.ps1 | iex
+irm https://github.com/kamol-nazarov/myBurnRate/releases/latest/download/install-native.ps1 | iex
 ```
 
 The script reads `native-latest.json` from the latest GitHub Release, checks the release URL, the
@@ -255,7 +255,7 @@ burnrate machines list|revoke               manage connected computers on a hub
 burnrate subscription add|list|apply        effective-dated plans
 burnrate backfill                           advanced historical import
 burnrate pricing-refresh | pricing-audit    review rate cards and expiring prices
-burnrate hub update --ssh HOST              update a self-hosted hub over SSH
+burnrate hub update --ssh HOST --tag vX.Y.Z  update to a signed hub release over SSH
 ```
 
 Try the interface without collecting anything:
@@ -277,7 +277,7 @@ including `SPEND_DATABASE_PATH`, `SPEND_TIMEZONE` and `BURNRATE_NO_UPDATE_CHECK`
   (never `pip install burnrate`, which is an unrelated PyPI package), then restart
   `burnrate desktop` or `burnrate serve`:
   `python -m pip install --upgrade "https://github.com/kamol-nazarov/myBurnRate/releases/download/v<version>/burnrate-<version>-py3-none-any.whl"`.
-- **Self-hosted hub:** `burnrate hub update`, or pull a newer container tag.
+- **Self-hosted hub:** `burnrate hub update --tag vX.Y.Z`, or pull the reviewed container digest.
 - **Uninstall:** remove **myBurnRate** from Windows' installed apps. The uninstaller removes the
   program and shortcuts and offers, unticked and only interactively, to delete your data too. To
   wipe manually, stop the service and delete `%LOCALAPPDATA%\BURNRATE`.

@@ -63,7 +63,6 @@ from tests_spend.test_wealthfront_ui import (
 @pytest.fixture(autouse=True)
 def _isolated_h5_env(monkeypatch: pytest.MonkeyPatch):
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
     sync._HUB_REJECTED_CREDENTIALS.clear()
     sync._HUB_CREDENTIAL_GENERATIONS.clear()
@@ -77,7 +76,6 @@ def _isolated_h5_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("BURNRATE_BUILTIN_HUB_URL", raising=False)
     yield
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
     sync._HUB_REJECTED_CREDENTIALS.clear()
     sync._HUB_CREDENTIAL_GENERATIONS.clear()
@@ -173,7 +171,7 @@ def test_h5_create_account_registers_device_nonblocking_and_rejects_second_accou
 
     try:
         with hub_client:
-            res = bridge.create_account("Owner@Example.com", PASSWORD, "Studio PC")
+            res = bridge.create_account("Owner@Example.com", PASSWORD, "Studio PC", SETUP_TOKEN)
             assert res["ok"] is True, res
             assert res["computerName"] == "Studio PC"
             assert res["account"]["email"] == "owner@example.com"
@@ -392,8 +390,12 @@ def test_h5_vault_secret_isolation_and_zero_hub_url_or_token_leakage(
 
         # 3. Every bridge return value stays free of br_s_, br_m_, and HUB_URL
         _assert_no_secrets_or_hub_url(bridge.list_computers(), label="list_computers")
-        _assert_no_secrets_or_hub_url(bridge.get_settings_data(), label="get_settings_data")
-        _assert_no_secrets_or_hub_url(bridge.get_onboarding_data(), label="get_onboarding_data")
+        settings_data = bridge.get_settings_data()
+        assert settings_data.pop("hubHost") == "hub.test"
+        _assert_no_secrets_or_hub_url(settings_data, label="get_settings_data")
+        onboarding_data = bridge.get_onboarding_data()
+        assert onboarding_data.pop("hubHost") == "hub.test"
+        _assert_no_secrets_or_hub_url(onboarding_data, label="get_onboarding_data")
         _assert_no_secrets_or_hub_url(
             bridge.change_password("wrong-pass-xyz", "new-password-1234"),
             label="change_password error",
@@ -728,7 +730,7 @@ def test_h5_failing_vault_returns_app_903_and_preserves_tokens(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     from spend_app.connection_paths import LocationError
-    from spend_app.connection_secrets import get_vault, set_vault_factory
+    from spend_app.connection_secrets import credential_origin_ref, get_vault, set_vault_factory
 
     class _RefusingPutVault:
         def available(self) -> bool:
@@ -771,7 +773,7 @@ def test_h5_failing_vault_returns_app_903_and_preserves_tokens(
                 NativeClient(spoke_empty, port=17352),
                 preferences=tmp_path / "empty" / "prefs.json",
             )
-            res_create = b_empty.create_account("owner@example.com", PASSWORD, "Locked Box")
+            res_create = b_empty.create_account("owner@example.com", PASSWORD, "Locked Box", SETUP_TOKEN)
             assert res_create["ok"] is False
             assert res_create["code"] == "APP-903"
             assert "keychain" in res_create["message"].lower()
@@ -856,6 +858,10 @@ def test_h5_failing_vault_returns_app_903_and_preserves_tokens(
                 DesktopBridge.OWNER_SESSION_VAULT_REF
             ),
         }
+        for value in tuple(backing_store.values()):
+            ref = credential_origin_ref(value)
+            backing_store[ref] = real_vault.get(ref)
+            assert backing_store[ref] == HUB_URL
         prev_factory = set_vault_factory(lambda _db: _MismatchReadbackVault(backing_store))
         try:
             rot_fail = setup_wizard.rotate_spoke_machine_token(spoke_settings, client=hub_client)
@@ -872,7 +878,7 @@ def test_h5_failing_vault_returns_app_903_and_preserves_tokens(
             set_vault_factory(prev_factory)
 
 
-def test_h5_legacy_sqlite_secrets_migrate_on_startup_and_fallback_when_vault_unavailable(
+def test_h5_legacy_sqlite_secrets_migrate_or_require_sign_in(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     from spend_app.connection_secrets import get_vault, set_vault_factory
@@ -928,7 +934,7 @@ def test_h5_legacy_sqlite_secrets_migrate_on_startup_and_fallback_when_vault_una
         )
         assert sync_res is not None and sync_res.get("ok") is True, sync_res
 
-    # Case B: Vault unavailable -> leave secrets in SQLite DB and keep syncing
+    # Case B: Vault unavailable -> remove the old secrets and require sign-in.
     hub_b, hub_client_b, spoke_b, _ = _create_paired_hub_and_spoke(
         tmp_path / "mig_no_vault", monkeypatch
     )
@@ -963,12 +969,13 @@ def test_h5_legacy_sqlite_secrets_migrate_on_startup_and_fallback_when_vault_una
             sync_res_b = setup_wizard.maybe_run_configured_spoke_sync(
                 spoke_b, PricingEngine([]), client=hub_client_b
             )
-            assert sync_res_b is not None and sync_res_b.get("ok") is True, sync_res_b
+            assert sync_res_b is None
         with connect(spoke_b.database_path) as conn:
             kept_st = setup_wizard.read_setup_state(conn)
-        assert kept_st["spokeConfig"].get("token") == legacy_token_b
-        assert kept_st["spokeConfig"].get("ownerSession") == legacy_session_b
-        assert bridge_b._get_machine_token() == legacy_token_b
+        assert not kept_st["spokeConfig"].get("token")
+        assert not kept_st["spokeConfig"].get("ownerSession")
+        assert kept_st["spokeConfig"]["signedOut"] is True
+        assert not bridge_b._get_machine_token()
     finally:
         set_vault_factory(prev_factory)
 
@@ -1557,6 +1564,7 @@ def test_h5_ui_change_password_validation_error_success_and_sign_out(tmp_path: P
 def test_h5_ui_shared_onboarding_hub_account_form(tmp_path: Path):
     settings = _h5_settings_fixture(signed_in=False, computer_name="New-Laptop")
     onboarding = _h5_onboarding_fixture(signed_in=False, computer_name="New-Laptop")
+    onboarding["hubHost"] = "hub.test"
     probe_js = """
     await until(() => document.querySelector('.ob .h11-ob-account'));
     await wait(40);
@@ -1569,7 +1577,8 @@ def test_h5_ui_shared_onboarding_hub_account_form(tmp_path: Path):
     out.compPrefill = document.getElementById('obHubAccountComp').value;
     out.hasBtn = !!document.getElementById('obHubSignInBtn');
     out.hasLegacyOwnerLink = /owner access/i.test(card.textContent);
-    out.hasHubAddr = /https?:\\/\\//i.test(card.textContent) || /hub\\.test/i.test(card.textContent);
+    out.hasHubHost = /Hub hub\\.test/i.test(card.textContent);
+    out.hasOriginUrl = /https?:\\/\\//i.test(card.textContent);
 
     document.getElementById('obHubAccountUser').value = 'onb@example.com';
     document.getElementById('obHubAccountPass').value = 'long-valid-password-123';
@@ -1586,7 +1595,7 @@ def test_h5_ui_shared_onboarding_hub_account_form(tmp_path: Path):
         report=empty_report(),
         init={"demo": False},
         onboarding=onboarding,
-        settings=settings,
+        settings=None,
         api_js=_h5_api_js(settings=settings, onboarding=onboarding),
         probe=probe_js,
         extra_css=FAST,
@@ -1595,7 +1604,8 @@ def test_h5_ui_shared_onboarding_hub_account_form(tmp_path: Path):
     assert r["hasUser"] and r["hasPass"] and r["hasComp"] and r["hasBtn"]
     assert r["compPrefill"] == "New-Laptop"
     assert r["hasLegacyOwnerLink"] is False
-    assert r["hasHubAddr"] is False
+    assert r["hasHubHost"] is True
+    assert r["hasOriginUrl"] is False
     assert r["signInCalls"] == [
         ["sign_in", "onb@example.com", "long-valid-password-123", "Onb-PC"]
     ]

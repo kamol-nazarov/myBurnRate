@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
+from datetime import UTC, datetime, timedelta
 
 from spend_app.db import ProviderCostBucket, connect, upsert_cost_bucket
 from spend_app.organization import ORGANIZATION_SOURCES, clean_scope
+from spend_app.sync_validation import MAX_COST, MAX_PAGE, MAX_SQLITE_INT, finite_amount, read_timestamp
 from spend_app.timeutil import iso_utc, parse_utc
 
 COST_SEQ = "provider_cost_seq"
@@ -82,12 +83,16 @@ def export_provider_costs(connection, after: int, limit: int) -> dict:
         "WHERE change.seq>? ORDER BY change.seq LIMIT ?",
         (after, limit + 1),
     ).fetchall()
-    changes = [dict(row) for row in rows[:limit]]
+    page = rows[:limit]
+    # The local bucket schema already enforces non-negative amounts. A
+    # malformed amount has no representation in the legacy cost journal.
+    changes = [dict(row) for row in page if finite_amount(row["cost_usd"], 0, MAX_COST)]
     return {
         "after": after,
         "through": changes[-1]["seq"] if changes else after,
         "changes": changes,
         "hasMore": len(rows) > limit,
+        "resumeAt": page[-1]["seq"] if page else after,
     }
 
 
@@ -101,11 +106,11 @@ def cost_acknowledgement(batch: dict) -> dict:
     }
 
 
-def _nullable_text(value: object) -> bool:
-    return value is None or (isinstance(value, str) and len(value) <= 1024)
+def _nullable_text(value: object, limit: int) -> bool:
+    return value is None or (isinstance(value, str) and len(value) <= limit)
 
 
-def apply_provider_costs(connection, machine_id: str, batch: dict) -> tuple[dict, bool]:
+def validate_provider_costs(batch: object, now: datetime) -> tuple[dict, list]:
     if not isinstance(batch, dict):
         raise ValueError("Invalid provider cost batch.")
     after, through, changes = (
@@ -116,14 +121,15 @@ def apply_provider_costs(connection, machine_id: str, batch: dict) -> tuple[dict
     if (
         type(after) is not int
         or type(through) is not int
-        or not 0 <= after <= through
+        or not 0 <= after <= through <= MAX_SQLITE_INT
         or not isinstance(changes, list)
-        or len(changes) > 1_000
+        or len(changes) > MAX_PAGE
     ):
         raise ValueError("Invalid provider cost batch.")
     previous = after
     seen: set[str] = set()
-    changed = False
+    validated = []
+    moment = now.astimezone(UTC)
     for item in changes:
         if not isinstance(item, dict) or not all(field in item for field in _FIELDS):
             raise ValueError("Invalid provider cost observation.")
@@ -135,32 +141,38 @@ def apply_provider_costs(connection, machine_id: str, batch: dict) -> tuple[dict
             or source not in ORGANIZATION_SOURCES
             or not isinstance(raw_id, str)
             or not raw_id
-            or len(raw_id) > 256
+            or len(raw_id) > 512
             or raw_id.startswith("m:")
             or raw_id in seen
-            or not all(
-                _nullable_text(item[key])
-                for key in ("project_id", "line_item", "model_key")
-            )
+            or not _nullable_text(item["project_id"], 256)
+            or not _nullable_text(item["line_item"], 1024)
+            or not _nullable_text(item["model_key"], 128)
+            or not _nullable_text(item["organization_scope"], 64)
         ):
             raise ValueError("Invalid provider cost observation.")
         previous = seq
         seen.add(raw_id)
-        starting = parse_utc(item["starting_at"])
-        ending = parse_utc(item["ending_at"])
-        observed = parse_utc(item["ingested_at"])
+        starting = read_timestamp(item["starting_at"], moment)
+        ending = read_timestamp(item["ending_at"], moment)
+        observed = read_timestamp(item["ingested_at"], moment, upper=timedelta(minutes=5))
         amount = item["cost_usd"]
         if (
-            starting is None
-            or ending is None
-            or ending <= starting
-            or observed is None
-            or type(amount) not in (int, float)
-            or not 0 <= amount <= 1e15
-            or not math.isfinite(amount)
+            ending <= starting
+            or not finite_amount(amount, 0, MAX_COST)
         ):
             raise ValueError("Invalid provider cost period or amount.")
-        imported_id = f"m:{machine_id}:{raw_id}"
+        validated.append((item, starting, ending, observed))
+    if previous != through:
+        raise ValueError("Invalid provider cost sequence.")
+    return cost_acknowledgement(batch), validated
+
+
+def apply_provider_costs(connection, machine_id: str, batch: tuple[dict, list], *, now: datetime) -> tuple[dict, bool]:
+    acknowledgement, observations = batch
+    moment = now.astimezone(UTC)
+    changed = False
+    for item, starting, ending, observed in observations:
+        imported_id = f"m:{machine_id}:{item['raw_id']}"
         existing = connection.execute(
             "SELECT ingested_at FROM provider_cost_buckets WHERE raw_id=?",
             (imported_id,),
@@ -168,6 +180,7 @@ def apply_provider_costs(connection, machine_id: str, batch: dict) -> tuple[dict
         if (
             existing is not None
             and (stored := parse_utc(existing[0])) is not None
+            and stored <= moment + timedelta(minutes=5)
             and stored >= observed
         ):
             continue
@@ -175,19 +188,17 @@ def apply_provider_costs(connection, machine_id: str, batch: dict) -> tuple[dict
         upsert_cost_bucket(
             connection,
             ProviderCostBucket(
-                source=source,
+                source=item["source"],
                 raw_id=imported_id,
                 starting_at=iso_utc(starting),
                 ending_at=iso_utc(ending),
                 project_id=item["project_id"],
                 line_item=item["line_item"],
                 model_key=item["model_key"],
-                cost_usd=float(amount),
+                cost_usd=float(item["cost_usd"]),
                 ingested_at=iso_utc(observed),
-                organization_scope=clean_scope(source, item["organization_scope"]),
+                organization_scope=clean_scope(item["source"], item["organization_scope"]),
             ),
         )
         changed |= connection.total_changes != before
-    if previous != through:
-        raise ValueError("Invalid provider cost sequence.")
-    return cost_acknowledgement(batch), changed
+    return acknowledgement, changed

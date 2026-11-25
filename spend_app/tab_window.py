@@ -964,7 +964,7 @@ class TabBridge:
         self._payload_lock = threading.Lock()
         self._revision = 0
 
-    def attach_controller(self, controller) -> None:
+    def _attach_controller(self, controller) -> None:
         self._controller = controller
 
     def _dark(self) -> bool:
@@ -973,7 +973,7 @@ class TabBridge:
         effective = getattr(self._bridge, "effective_dark", None)
         return bool(effective) if effective is not None else resolve_dark(self._bridge.theme)
 
-    def build_payload(self) -> dict:
+    def _build_payload(self) -> dict:
         # Push callbacks and page polls share one snapshot order, including changes
         # to layout, time-sensitive readings and theme. A new page has a new bridge.
         with self._payload_lock:
@@ -987,7 +987,7 @@ class TabBridge:
         """The current payload. If a refresh is already in flight, wait for its
         result instead of reading stale data; never start one."""
         self._bridge._wait_for_refresh(self.REFRESH_WAIT)
-        return self.build_payload()
+        return self._build_payload()
 
     def open_full(self) -> dict:
         if self._controller is not None:
@@ -1009,7 +1009,7 @@ class TabBridge:
             chosen = result.get("pillLimit") if isinstance(result, dict) else normalize_pill_limit(value)
         else:
             chosen = self._model.set_pill_limit(value)
-        return {"ok": True, "pillLimit": chosen, "state": self.build_payload()}
+        return {"ok": True, "pillLimit": chosen, "state": self._build_payload()}
 
     def begin_drag(self) -> None:
         if self._controller is not None:
