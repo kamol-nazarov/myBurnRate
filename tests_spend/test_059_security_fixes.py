@@ -654,7 +654,15 @@ def test_s7_hostile_404_error_detail_never_reaches_bridge_output(
     spoke_settings = _make_settings(tmp_path / "s7_spoke.db")
     initialize(spoke_settings.database_path)
     vault = _MemoryVault()
-    vault.put("br_s_valid_local", OWNER_SESSION_VAULT_REF)
+
+    def _configure_fixture_spoke(_connection, state):
+        state["role"] = "spoke"
+        state["spokeConfig"].update(enabled=True, hubConfigured=True)
+
+    publish_spoke_credentials(
+        spoke_settings.database_path, owner_session="br_s_valid_local",
+        authenticated_origin=HUB_URL, vault=vault, apply_state=_configure_fixture_spoke,
+    )
 
     bridge = DesktopBridge(
         NativeClient(spoke_settings, port=17363),

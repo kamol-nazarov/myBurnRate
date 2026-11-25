@@ -728,7 +728,7 @@ def test_h5_failing_vault_returns_app_903_and_preserves_tokens(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     from spend_app.connection_paths import LocationError
-    from spend_app.connection_secrets import get_vault, set_vault_factory
+    from spend_app.connection_secrets import credential_origin_ref, get_vault, set_vault_factory
 
     class _RefusingPutVault:
         def available(self) -> bool:
@@ -856,6 +856,10 @@ def test_h5_failing_vault_returns_app_903_and_preserves_tokens(
                 DesktopBridge.OWNER_SESSION_VAULT_REF
             ),
         }
+        for value in tuple(backing_store.values()):
+            ref = credential_origin_ref(value)
+            backing_store[ref] = real_vault.get(ref)
+            assert backing_store[ref] == HUB_URL
         prev_factory = set_vault_factory(lambda _db: _MismatchReadbackVault(backing_store))
         try:
             rot_fail = setup_wizard.rotate_spoke_machine_token(spoke_settings, client=hub_client)
