@@ -19,6 +19,7 @@ from spend_app.db import connect, initialize
 from spend_app.error_codes import HUB_PROTOCOL_VERSION
 from spend_app.native_desktop import DemoClient, NativeClient
 from spend_app.wealthfront_window import DesktopBridge
+from tests_spend.local_client_fixture import local_client
 
 ROOT = Path(__file__).resolve().parents[1]
 HUB_URL = "https://hub.test"
@@ -231,10 +232,13 @@ def test_desktop_bridge_public_method_allowlist_and_removed_setup_routes(
     }
     assert actual_methods == expected_methods
 
-    _, _, _, spoke_app = _create_paired_hub_and_spoke(tmp_path, monkeypatch)
-    with TestClient(spoke_app, base_url="http://127.0.0.1:17331") as spoke_client:
-        hdrs = {"Origin": "http://127.0.0.1:17331", "X-BURNRATE-Request": "1"}
+    _, _, spoke_settings, spoke_app = _create_paired_hub_and_spoke(tmp_path, monkeypatch)
+    origin = "http://127.0.0.1:17331"
+    anonymous = TestClient(spoke_app, base_url=origin)
+    with local_client(spoke_app, spoke_settings.database_path, base_url=origin) as spoke_client:
+        hdrs = {"Origin": origin, "X-BURNRATE-Request": "1"}
         for path in ("/api/setup/owner-session", "/api/setup/rotate-machine"):
+            assert anonymous.post(path, headers=hdrs, json={}).status_code == 401
             res = spoke_client.post(path, headers=hdrs, json={})
             assert res.status_code == 404
             assert res.json() == {"detail": "Not Found"}

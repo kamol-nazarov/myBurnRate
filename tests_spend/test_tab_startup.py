@@ -127,6 +127,7 @@ def test_a_second_launch_is_logged_so_a_surprise_full_window_can_be_explained(ca
     from spend_app.native_desktop import DemoClient
 
     fake = types.ModuleType("webview")
+    fake.settings = {"ALLOW_FILE_URLS": True}
     fake.windows = []
     created = []
 
@@ -135,6 +136,7 @@ def test_a_second_launch_is_logged_so_a_surprise_full_window_can_be_explained(ca
             return self
 
     def create_window(title, **kwargs):
+        assert fake.settings["ALLOW_FILE_URLS"] is False
         window = types.SimpleNamespace(
             title=title, native=None,
             events=types.SimpleNamespace(before_show=Event(), shown=Event(), loaded=Event(), closed=Event(),

@@ -8,10 +8,12 @@ from fastapi.testclient import TestClient
 
 from spend_app import auth_throttle, setup_wizard, sync
 from spend_app.api import create_app
+from spend_app.auth_model import COOKIE
 from spend_app.config import Settings
 
 ROOT = Path(__file__).resolve().parents[1]
 PASSWORD = "synthetic-long-password"
+SETUP_TOKEN = "synthetic-setup-token-32-chars-00"
 
 
 def settings_at(tmp_path: Path) -> Settings:
@@ -39,10 +41,10 @@ def _clean_throttles():
 def hub(tmp_path, monkeypatch):
     monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "synthetic-break-glass")
-    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", "synthetic-setup-token-32-chars-00")
+    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", SETUP_TOKEN)
     monkeypatch.setenv("BURNRATE_ALLOW_ADMIN_BEARER", "1")
     app = create_app(settings_at(tmp_path), enable_scheduler=False)
-    with TestClient(app, base_url="http://hub.test") as client:
+    with TestClient(app, base_url="https://hub.test") as client:
         yield client
 
 
@@ -56,14 +58,20 @@ def test_anonymous_hub_removed_pages_return_404_and_health_is_minimal(hub):
 
 
 def test_owner_session_unlocks_supervisor_health_while_pages_stay_404(hub):
-    registered = hub.post("/api/account/register", headers={"X-BURNRATE-Request": "1"}, json={
+    headers = {"X-BURNRATE-Request": "1"}
+    credentials = {
         "username": "synthetic-owner@example.com",
         "password": PASSWORD,
         "sessionOnly": True,
-    })
+    }
+    denied = hub.post("/api/account/register", headers=headers, json=credentials)
+    assert denied.status_code == 403
+    assert denied.json()["error"]["code"] == "AUTH-110"
+    assert COOKIE not in hub.cookies
+    registered = hub.post("/api/account/register", headers=headers, json={**credentials, "setupToken": SETUP_TOKEN})
     assert registered.status_code == 200, registered.text
     assert "sessionToken" not in registered.json()
-    session = registered.cookies["burnrate_access"]
+    session = registered.cookies[COOKIE]
     for path in ("/hud", "/setup", "/auth", "/connections"):
         res = hub.get(path, follow_redirects=False)
         assert res.status_code == 404
