@@ -34,6 +34,8 @@ import time
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+
+from spend_app.child_environment import child_environment
 from typing import Any, BinaryIO, Protocol
 from urllib.parse import urljoin, urlsplit
 
@@ -675,7 +677,7 @@ def powershell_authenticode(path: Path) -> dict[str, str] | None:
         return None
     root = os.environ.get("SystemRoot") or r"C:\Windows"
     shell = Path(root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
-    env = dict(os.environ, BURNRATE_AUTHCHECK_PATH=str(path))
+    env = child_environment(BURNRATE_AUTHCHECK_PATH=str(path))
     try:
         result = subprocess.run(
             [

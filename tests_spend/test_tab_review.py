@@ -364,7 +364,7 @@ def test_the_bridge_builds_its_payload_against_the_hosts_budget(monkeypatch):
     host, _ = host_with_monitor(monkeypatch, 1366, 144)
     monkeypatch.setattr(surfaces, "tab", host)
     bridge.fetch_usage("today", "all")
-    data = TabBridge(bridge, bridge._tab_model, surfaces).build_payload()
+    data = TabBridge(bridge, bridge._tab_model, surfaces)._build_payload()
     assert data["layout"]["budget"] == pytest.approx(894, abs=1)
     assert data["layout"]["width"] <= 894
 
@@ -407,7 +407,7 @@ def test_the_physical_window_never_exceeds_the_physical_work_area(monkeypatch, w
     report = dict(report, providers=items)
     bridge._tab_model.publish_report(report, today_report=report)
     bridge._tab_model.publish_error("Can't reach your hub. Check that this computer is on your network.", "NET-001")
-    data = TabBridge(bridge, bridge._tab_model, surfaces).build_payload()
+    data = TabBridge(bridge, bridge._tab_model, surfaces)._build_payload()
     host.set_base(data["layout"]["width"])
     physical_width, _ = host._target_size()
     assert physical_width <= monitors[0].work.width  # compared with the real work area

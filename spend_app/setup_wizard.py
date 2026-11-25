@@ -195,6 +195,11 @@ def write_setup_state(connection, state: dict) -> dict:
     }
     if isinstance(clean.get("account"), dict):
         clean["account"] = {k: v for k, v in clean["account"].items() if k != "serverUrl"}
+    if isinstance(clean.get("spokeConfig"), dict):
+        clean["spokeConfig"] = dict(clean["spokeConfig"])
+        for key in ("token", "ownerSession"):
+            if key in clean["spokeConfig"] and not clean["spokeConfig"][key]:
+                clean["spokeConfig"].pop(key)
     connection.execute(
         "INSERT INTO app_meta(key, value) VALUES(?, ?) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",

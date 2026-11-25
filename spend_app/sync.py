@@ -1810,7 +1810,7 @@ def migrate_legacy_spoke_secrets(database_path: Path, *, vault=None) -> dict[str
         mark_cleanup_pending_in_tx,
         verified_vault_put,
     )
-    from spend_app.setup_wizard import read_setup_state, write_setup_state
+    from spend_app.setup_wizard import SETUP_META_KEY, read_setup_state, write_setup_state
 
     with db_secret_lock(db_file):
         try:
@@ -1827,7 +1827,12 @@ def migrate_legacy_spoke_secrets(database_path: Path, *, vault=None) -> dict[str
                 ).fetchone()
                 has_marker = marker_row is not None
 
-                if not legacy_token and not legacy_session and not has_marker:
+                raw_row = connection.execute("SELECT value FROM app_meta WHERE key=?", (SETUP_META_KEY,)).fetchone()
+                raw_state = json.loads(raw_row[0]) if raw_row else {}
+                raw_spoke = raw_state.get("spokeConfig", {}) if isinstance(raw_state, dict) else {}
+                had_token = isinstance(raw_spoke, dict) and "token" in raw_spoke
+                had_session = isinstance(raw_spoke, dict) and "ownerSession" in raw_spoke
+                if not had_token and not had_session and not has_marker:
                     return outcome
 
                 use_vault = None
@@ -1836,12 +1841,8 @@ def migrate_legacy_spoke_secrets(database_path: Path, *, vault=None) -> dict[str
                         use_vault = vault if vault is not None else get_vault(db_file)
                     except Exception:
                         use_vault = None
-                    if use_vault is None:
-                        return outcome
 
-                changed = False
-                token_migrated = False
-                owner_migrated = False
+                changed = had_token or had_session
                 prev_gen = int(latest_spoke.get("credentialGeneration") or 0)
 
                 if legacy_token:
@@ -1850,8 +1851,6 @@ def migrate_legacy_spoke_secrets(database_path: Path, *, vault=None) -> dict[str
                         outcome["token"] = True
                         latest_spoke.pop("token", None)
                         latest_spoke["rotationRequired"] = True
-                        token_migrated = True
-                        changed = True
                     except Exception:
                         outcome["token"] = False
 
@@ -1861,19 +1860,22 @@ def migrate_legacy_spoke_secrets(database_path: Path, *, vault=None) -> dict[str
                         outcome["ownerSession"] = True
                         latest_spoke.pop("ownerSession", None)
                         latest_spoke["ownerSessionRotationRequired"] = True
-                        owner_migrated = True
-                        changed = True
                     except Exception:
                         outcome["ownerSession"] = False
 
                 if changed:
+                    latest_spoke.pop("token", None)
+                    latest_spoke.pop("ownerSession", None)
+                    if ((legacy_token and not outcome["token"]) or
+                            (legacy_session and not outcome["ownerSession"])):
+                        latest_spoke["signedOut"] = True
                     latest_spoke["credentialGeneration"] = prev_gen + 1
                     latest["spokeConfig"] = latest_spoke
                     write_setup_state(connection, latest)
                     mark_cleanup_pending_in_tx(
                         connection,
-                        token_migrated=token_migrated,
-                        owner_migrated=owner_migrated,
+                        token_migrated=bool(legacy_token),
+                        owner_migrated=bool(legacy_session),
                         state=latest,
                     )
                     connection.commit()

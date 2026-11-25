@@ -2,6 +2,7 @@
 <html lang="en" data-theme-pref="system">
 <head>
 <meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>BURNRATE</title>
@@ -6013,7 +6014,7 @@ const BRAND_STYLES = {
 
 function resolveBrand(rawKey) {
   const k = String(rawKey || "").toLowerCase().trim();
-  if (BRAND_STYLES[k]) return BRAND_STYLES[k];
+  if (Object.hasOwn(BRAND_STYLES, k)) return BRAND_STYLES[k];
   if (k.startsWith("opencode-go")) return BRAND_STYLES["opencode-go"];
   if (k.includes("deepseek")) return BRAND_STYLES["deepseek"];
   if (k.includes("anthropic")) return BRAND_STYLES["anthropic"];
@@ -12191,8 +12192,8 @@ bindH9Events();
 
 /* Theme: the head script resolved it before first paint; tell the host whenever the resolved value changes. */
 function reportEffectiveTheme() {
-  if (apiHas("report_effective_theme")) {
-    try { window.pywebview.api.report_effective_theme(document.documentElement.dataset.theme === "dark"); } catch (err) {}
+  if (apiHas("publish_effective_theme")) {
+    try { window.pywebview.api.publish_effective_theme(document.documentElement.dataset.theme === "dark"); } catch (err) {}
   }
 }
 window.burnrateTheme.onChange(reportEffectiveTheme);

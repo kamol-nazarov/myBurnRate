@@ -1358,14 +1358,14 @@ class DesktopBridge:
         if not self._demo:
             self._migrate_legacy_secrets()
 
-    def attach(self, window, hwnd_getter) -> None:
+    def _attach(self, window, hwnd_getter) -> None:
         self._window = window
         self._hwnd_getter = hwnd_getter
 
-    def attach_host(self, host: WindowHost) -> None:
+    def _attach_host(self, host: WindowHost) -> None:
         self._host = host
 
-    def attach_surfaces(self, surfaces: SurfaceController) -> None:
+    def _attach_surfaces(self, surfaces: SurfaceController) -> None:
         self._surfaces = surfaces
 
     @property
@@ -1409,7 +1409,7 @@ class DesktopBridge:
     def demo(self) -> bool:
         return self._demo
 
-    def set_tray_available(self, available: bool) -> None:
+    def _set_tray_available(self, available: bool) -> None:
         self._tray_available = bool(available)
 
     def _read_preferences(self) -> dict:
@@ -1472,8 +1472,13 @@ class DesktopBridge:
             self._host.apply_theme(resolve_dark(self._theme))
         return {"ok": True, "theme": self._theme}
 
-    def report_effective_theme(self, dark: bool) -> dict:
-        self._effective_dark = bool(dark)
+    def publish_effective_theme(self, dark: bool) -> dict:
+        if not isinstance(dark, bool):
+            return {"ok": False}
+        return self._report_effective_theme(dark)
+
+    def _report_effective_theme(self, dark: bool) -> dict:
+        self._effective_dark = dark
         if self._host is not None:
             self._host.apply_theme(self._effective_dark)
         self._tab_model.refresh()
@@ -1519,7 +1524,7 @@ class DesktopBridge:
                 LOGGER.debug("Service notification mirror skipped", exc_info=True)
         return {"ok": True, "lowQuotaAlerts": self._low_quota_alerts}
 
-    def service_owns_plan_alerts(self) -> bool:
+    def _service_owns_plan_alerts(self) -> bool:
         """Whether the service notifier raises plan-window alerts right now.
 
         Asked of ``GET /api/setup/notifications`` and cached briefly: it is
@@ -1725,7 +1730,7 @@ class DesktopBridge:
 
     # -- alerts ------------------------------------------------------------
 
-    def fetch_alert_providers(self) -> list[dict] | None:
+    def _fetch_alert_providers(self) -> list[dict] | None:
         """Merged providers for the alert watcher; ``None`` while unavailable.
 
         Reads only the quota capacity feed: alerts need remaining percentages
@@ -4215,11 +4220,15 @@ def _png_to_cf_dib(png_bytes: bytes) -> bytes:
     if not saw_ihdr or not idat_parts:
         raise ValueError("Missing PNG image data.")
 
-    raw = zlib.decompress(b"".join(idat_parts))
     bpp = 4 if color_type == 6 else 3
     stride = width * bpp
     expected = height * (1 + stride)
-    if len(raw) != expected:
+    max_clipboard_bytes = 64 * 1024 * 1024
+    if expected > max_clipboard_bytes or width * height * 4 > max_clipboard_bytes:
+        raise ValueError("The PNG is too large for the clipboard.")
+    inflater = zlib.decompressobj()
+    raw = inflater.decompress(b"".join(idat_parts), expected + 1)
+    if len(raw) != expected or not inflater.eof or inflater.unused_data:
         raise ValueError("Corrupt PNG scanline length.")
 
     rows: list[bytes] = []
@@ -4813,7 +4822,7 @@ class WindowHost:
         if tray.create():
             LOGGER.info("Notification-area icon created")
             self.tray = tray
-            self.bridge.set_tray_available(True)
+            self.bridge._set_tray_available(True)
 
     def _install_form_hooks(self, native) -> None:
         import System.Windows.Forms as WinForms  # type: ignore[import-not-found]
@@ -4856,12 +4865,12 @@ class WindowHost:
         self._settle_geometry()
         if self._alerts_enabled and self.tray_ready() and self.watcher is None:
             self.watcher = QuotaWatcher(
-                self.bridge.fetch_alert_providers,
+                self.bridge._fetch_alert_providers,
                 self._store,
                 self._notify,
                 self.tray.set_tooltip,
                 alerts_enabled=lambda: self.bridge.low_quota_alerts,
-                plan_windows_service_owned=self.bridge.service_owns_plan_alerts,
+                plan_windows_service_owned=self.bridge._service_owns_plan_alerts,
             )
             self.watcher.start()
         if self._updates_enabled and self.updater is None:
@@ -4989,6 +4998,8 @@ def run_webview(
     passes ``None`` (nothing saved); a test may pass a temporary file."""
     import webview
 
+    webview.settings["ALLOW_FILE_URLS"] = False
+
     if not demo and not smoke_test and _focus_existing_window("BURNRATE"):
         return 0
     if not demo and not smoke_test:
@@ -5036,7 +5047,7 @@ def run_webview(
     )
 
     hwnd_box = [0]
-    bridge.attach(window, lambda: hwnd_box[0])
+    bridge._attach(window, lambda: hwnd_box[0])
     opacity_ctl = WindowOpacityController(bridge, lambda: hwnd_box[0])
     persist = preferences is not None and not smoke_test
     tracker = native_geometry.GeometryTracker(store, lambda: hwnd_box[0])
@@ -5057,7 +5068,7 @@ def run_webview(
         store=store,
         icon_path=_find_icon(),
     )
-    bridge.attach_host(host)
+    bridge._attach_host(host)
     tab_host = TabHost(
         tab_window_obj,
         store=store,
@@ -5079,12 +5090,12 @@ def run_webview(
     )
     tab_host.on_shown = lambda: opacity_ctl.wake(2.5, fade_target)
     host.surfaces = surfaces
-    bridge.attach_surfaces(surfaces)
-    tab_bridge.attach_controller(surfaces)
+    bridge._attach_surfaces(surfaces)
+    tab_bridge._attach_controller(surfaces)
     saved_tab = store.read().get(TAB_PREFERENCE_KEY) if persist else None
 
     def push_tab() -> None:
-        payload = tab_bridge.build_payload()
+        payload = tab_bridge._build_payload()
         tab_host.set_base(payload["layout"]["width"], revision=payload["revision"])
         tab_host.push(payload)
 

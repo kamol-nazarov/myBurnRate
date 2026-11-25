@@ -99,9 +99,9 @@ def test_effective_theme_report_recolours_the_chrome(monkeypatch):
     seen = []
     host = type("Host", (), {"apply_theme": lambda self, dark: seen.append(dark)})()
     bridge = DesktopBridge(DemoClient(), demo=True)
-    bridge.attach_host(host)
-    assert bridge.report_effective_theme(True) == {"ok": True}
-    assert bridge.report_effective_theme(False) == {"ok": True}
+    bridge._attach_host(host)
+    assert bridge.publish_effective_theme(True) == {"ok": True}
+    assert bridge.publish_effective_theme(False) == {"ok": True}
     bridge.set_theme("dark")
     assert seen == [True, False, True]
 
@@ -594,16 +594,16 @@ class AlertClient:
 def test_service_ownership_is_checked_cached_and_falls_back_on_failure():
     client = AlertClient({"available": True, "kinds": []})
     bridge = DesktopBridge(client)
-    assert bridge.service_owns_plan_alerts() is True
-    assert bridge.service_owns_plan_alerts() is True
+    assert bridge._service_owns_plan_alerts() is True
+    assert bridge._service_owns_plan_alerts() is True
     assert len([c for c in client.calls if c[0] == "/api/setup/notifications"]) == 1
     bridge._service_alerts = None  # cache expired: asked again
     client.notifications = {"available": False, "kinds": []}
-    assert bridge.service_owns_plan_alerts() is False
+    assert bridge._service_owns_plan_alerts() is False
     bridge._service_alerts = None
     client.notifications = DesktopError("offline")
-    assert bridge.service_owns_plan_alerts() is False
-    assert DesktopBridge(client, demo=True).service_owns_plan_alerts() is False
+    assert bridge._service_owns_plan_alerts() is False
+    assert DesktopBridge(client, demo=True)._service_owns_plan_alerts() is False
 
 
 def test_low_quota_switch_mirrors_to_the_service_but_never_fails(tmp_path):
@@ -655,17 +655,17 @@ def test_alert_provider_feed_reads_the_hud_and_is_empty_in_demo():
         ]
     }
     bridge = DesktopBridge(AlertClient(hud=hud))
-    providers = bridge.fetch_alert_providers()
+    providers = bridge._fetch_alert_providers()
     assert {p["key"] for p in providers} == {"codex", "openrouter"}
     notes, _ = run(providers, plan_windows_service_owned=False)
     assert {n["provider"] for n in notes} == {"codex", "openrouter"}
-    assert DesktopBridge(DemoClient(), demo=True).fetch_alert_providers() is None
+    assert DesktopBridge(DemoClient(), demo=True)._fetch_alert_providers() is None
 
     class Down:
         def request(self, path, body=None):
             raise DesktopError("offline")
 
-    assert DesktopBridge(Down()).fetch_alert_providers() is None
+    assert DesktopBridge(Down())._fetch_alert_providers() is None
 
 
 # --- onboarding --------------------------------------------------------------
@@ -1106,7 +1106,7 @@ def make_host(*, demo=False, tray=True, close_to_tray=True, tmp_path=None):
     )
     if tray is not None:
         host.tray = FakeTray(available=bool(tray))
-    bridge.attach_host(host)
+    bridge._attach_host(host)
     return bridge, host, window, tracker, opacity
 
 
@@ -1428,7 +1428,7 @@ def make_hint_host(tmp_path, *, demo=False, tray_enabled=True):
     host.tray.notify = lambda title, message, **kw: host.tray.notes.append(
         (title, message, kw)
     )
-    bridge.attach_host(host)
+    bridge._attach_host(host)
     return bridge, host
 
 
@@ -1498,23 +1498,23 @@ def test_service_ownership_cache_is_not_fooled_by_a_freshly_booted_clock(
     monkeypatch.setattr(host_module.time, "monotonic", lambda: 12.0)
     client = AlertClient({"available": True, "kinds": []})
     bridge = DesktopBridge(client, preferences=tmp_path / "p.json")
-    assert bridge.service_owns_plan_alerts() is True  # first call asks the service
+    assert bridge._service_owns_plan_alerts() is True  # first call asks the service
     asked = [c for c in client.calls if c[0] == "/api/setup/notifications"]
     assert len(asked) == 1
-    assert bridge.service_owns_plan_alerts() is True  # now genuinely cached
+    assert bridge._service_owns_plan_alerts() is True  # now genuinely cached
     assert len([c for c in client.calls if c[1] is None]) == 1
 
     # Invalidation after the mirror forces a re-ask even at a tiny clock value.
     client.notifications = {"available": False, "kinds": []}
     bridge.set_low_quota_alerts(False)
-    assert bridge.service_owns_plan_alerts() is False
+    assert bridge._service_owns_plan_alerts() is False
     gets = [c for c in client.calls if c == ("/api/setup/notifications", None)]
     assert len(gets) == 2
 
     # The re-asked answer is cached again.
     monkeypatch.setattr(host_module.time, "monotonic", lambda: 13.0)
     client.request = lambda path, body=None: pytest.fail("cache should answer")
-    assert bridge.service_owns_plan_alerts() is False
+    assert bridge._service_owns_plan_alerts() is False
 
 
 # --- P6: multi-profile mutations, merge, and fetch_usage ---------------------

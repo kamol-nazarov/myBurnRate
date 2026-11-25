@@ -86,11 +86,11 @@ def make(tmp_path=None, *, surface=None, demo=True, tray=True, controller=SyncSu
     )
     host.tray = type("T", (), {"available": tray, "dispose": lambda self: None})() if tray else None
     host.is_visible = lambda: main_win.visible
-    bridge.attach_host(host)
+    bridge._attach_host(host)
     tab = TabHost(tab_win, store=PreferenceStore(prefs), persist=False)
     surfaces = controller(host, tab, bridge, PreferenceStore(prefs))
     host.surfaces = surfaces
-    bridge.attach_surfaces(surfaces)
+    bridge._attach_surfaces(surfaces)
     return bridge, host, tab, surfaces, main_win, tab_win, prefs
 
 
@@ -263,9 +263,9 @@ def test_the_theme_the_page_reports_reaches_the_tab():
     bridge, *_ = make()
     tab_bridge = TabBridge(bridge, bridge._tab_model)
     heard = []
-    bridge._tab_model.subscribe(lambda: heard.append(tab_bridge.build_payload()["dark"]))
-    bridge.report_effective_theme(True)
-    bridge.report_effective_theme(False)
+    bridge._tab_model.subscribe(lambda: heard.append(tab_bridge._build_payload()["dark"]))
+    bridge.publish_effective_theme(True)
+    bridge.publish_effective_theme(False)
     assert heard == [True, False]
 
 
@@ -287,10 +287,10 @@ def test_tab_push_and_poll_share_a_revision_including_theme_changes():
     bridge, _, _, surfaces, *_ = make()
     tab_bridge = TabBridge(bridge, bridge._tab_model, surfaces)
     pushed = []
-    bridge._tab_model.subscribe(lambda: pushed.append(tab_bridge.build_payload()))
+    bridge._tab_model.subscribe(lambda: pushed.append(tab_bridge._build_payload()))
     initial = tab_bridge.get_state()
     bridge.fetch_usage("today", "all")
-    bridge.report_effective_theme(not initial["dark"])
+    bridge.publish_effective_theme(not initial["dark"])
     latest = tab_bridge.get_state()
     assert [item["state"] for item in pushed] == ["ready", "ready"]
     revisions = [initial["revision"], *(item["revision"] for item in pushed), latest["revision"]]

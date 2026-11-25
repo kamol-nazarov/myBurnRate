@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 from urllib.parse import urlsplit
 
 BUILTIN_HUB_ENV = "BURNRATE_BUILTIN_HUB_URL"
+NATIVE_THUMBPRINTS_ENV = "BURNRATE_NATIVE_BUILD_THUMBPRINTS"
 
 
 def validate_builtin_hub_url(value: str | None) -> str:
@@ -43,11 +45,17 @@ def validate_builtin_hub_url(value: str | None) -> str:
     return f"https://{parsed.netloc.lower()}"
 
 
-def render_build_config(url: str) -> str:
+def render_build_config(url: str, native_thumbprints: str = "") -> str:
     clean = validate_builtin_hub_url(url)
+    thumbprints = tuple(dict.fromkeys(
+        "".join(part.split()).lower() for part in native_thumbprints.split(",") if part.strip()
+    ))
+    if any(not re.fullmatch(r"[0-9a-f]{40}", thumbprint) for thumbprint in thumbprints):
+        raise ValueError(f"{NATIVE_THUMBPRINTS_ENV} requires comma-separated 40-digit certificate thumbprints.")
     return (
         '"""Generated at build time; do not commit."""\n\n'
         f"BUILTIN_HUB_URL = {clean!r}\n"
+        f"NATIVE_THUMBPRINTS = {thumbprints!r}\n"
     )
 
 
@@ -55,5 +63,5 @@ def write_build_config(path: Path, url: str | None = None) -> tuple[Path, str]:
     raw = os.environ.get(BUILTIN_HUB_ENV, "") if url is None else url
     clean = validate_builtin_hub_url(raw)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(render_build_config(clean), encoding="utf-8")
+    path.write_text(render_build_config(clean, os.environ.get(NATIVE_THUMBPRINTS_ENV, "")), encoding="utf-8")
     return path, clean

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import tempfile
 import threading
 from contextlib import contextmanager, closing
 from contextvars import ContextVar
@@ -380,9 +381,16 @@ def backup_database(src: Path, dst: Path) -> Path:
     if not source_path.is_file():
         raise FileNotFoundError(source_path)
     dest_path.parent.mkdir(parents=True, exist_ok=True)
-    with closing(sqlite3.connect(source_path, timeout=30)) as source:
-        with closing(sqlite3.connect(dest_path, timeout=30)) as dest:
-            source.backup(dest)
+    fd, name = tempfile.mkstemp(prefix=".burnrate-backup-", dir=dest_path.parent)
+    os.close(fd)
+    temporary = Path(name)
+    try:
+        with closing(sqlite3.connect(source_path, timeout=30)) as source:
+            with closing(sqlite3.connect(temporary, timeout=30)) as dest:
+                source.backup(dest)
+        temporary.replace(dest_path)
+    finally:
+        temporary.unlink(missing_ok=True)
     return dest_path
 
 

@@ -116,6 +116,9 @@ def create_app(
 
     trusted_proxies()
     initialize(settings.database_path)
+    from spend_app.sync import migrate_legacy_spoke_secrets
+
+    migrate_legacy_spoke_secrets(settings.database_path)
     from spend_app.db import connect
     from spend_app.setup_wizard import deprecated_account_env_warnings
 

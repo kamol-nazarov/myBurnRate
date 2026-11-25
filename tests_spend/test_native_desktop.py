@@ -1094,7 +1094,7 @@ def test_pin_preserves_the_independent_fade_preference(tmp_path, monkeypatch):
     prefs = tmp_path / "native-window.json"
     bridge = DesktopBridge(DemoClient(), preferences=prefs, demo=True)
     window = Window()
-    bridge.attach(window, lambda: 0)
+    bridge._attach(window, lambda: 0)
     bridge.set_idle_opacity(0.70)
 
     assert bridge.opacity_state()[0] is True
@@ -1123,7 +1123,7 @@ def test_pin_preserves_the_independent_fade_preference(tmp_path, monkeypatch):
         def on_top(self, value):
             raise RuntimeError("window refused pin")
 
-    bridge.attach(RejectedWindow(), lambda: 0)
+    bridge._attach(RejectedWindow(), lambda: 0)
     assert bridge.set_topmost(True)["ok"] is False
     assert bridge.get_initial_state()["topmost"] is False
     assert bridge.opacity_state()[0] is True

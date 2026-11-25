@@ -139,7 +139,7 @@ window.__calls = [];
     set_ui_busy: function () {},
     set_topmost: async function (v) { return { ok: true }; },
     set_theme: async function (t) { window.__calls.push(["set_theme", t]); return { ok: true, theme: t }; },
-    report_effective_theme: async function (d) { window.__calls.push(["report_effective_theme", d]); return { ok: true }; },
+    publish_effective_theme: async function (d) { window.__calls.push(["publish_effective_theme", d]); return { ok: true }; },
     set_close_to_tray: async function (v) { window.__calls.push(["set_close_to_tray", v]); return { ok: true, closeToTray: v }; },
     set_low_quota_alerts: async function (v) { window.__calls.push(["set_low_quota_alerts", v]); return { ok: true, lowQuotaAlerts: v }; },
     quit_app: function () { window.__calls.push(["quit_app"]); },
@@ -1157,8 +1157,8 @@ def test_general_tab_theme_tray_alerts_and_updates(tmp_path, kind):
     assert "set_close_to_tray:false" in calls and "set_low_quota_alerts:true" in calls
     assert "set_theme:dark" in calls and "set_theme:light" in calls
     assert (
-        "report_effective_theme:true" in calls
-        and "report_effective_theme:false" in calls
+        "publish_effective_theme:true" in calls
+        and "publish_effective_theme:false" in calls
     )
     assert r["quit"] is True
 
@@ -1178,7 +1178,7 @@ report({ ids: [...document.querySelectorAll('.switch')].map(s => s.id),
 def test_general_tab_degrades_when_host_methods_are_absent(tmp_path):
     api_js = """
     ['set_close_to_tray', 'set_low_quota_alerts', 'check_for_update', 'install_update', 'quit_app', 'set_theme',
-     'report_effective_theme'].forEach(function (m) { delete api[m]; });
+     'publish_effective_theme'].forEach(function (m) { delete api[m]; });
     """
     init = {
         "trayAvailable": False,
@@ -1213,7 +1213,7 @@ def test_system_theme_follows_the_os_preference_live(tmp_path):
     window.__mq.listeners.forEach(f => f({ matches: false }));
     await wait(30);
     out.second = document.documentElement.dataset.theme;
-    out.reported = window.__calls.filter(c => c[0] === 'report_effective_theme').map(c => c[1]);
+    out.reported = window.__calls.filter(c => c[0] === 'publish_effective_theme').map(c => c[1]);
     selectTheme('dark');                       // an explicit choice stops following the OS
     window.__mq.matches = true;
     window.__mq.listeners.forEach(f => f({ matches: true }));

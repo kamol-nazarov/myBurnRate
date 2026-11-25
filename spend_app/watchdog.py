@@ -48,9 +48,15 @@ def explicitly_stopped() -> bool:
     return stop_marker().exists()
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        return None
+
+
 def _get(url: str, timeout: float, token: str | None = None) -> dict:
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"} if token else {})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+    with opener.open(request, timeout=timeout) as response:
         if response.status != 200:
             raise urllib.error.HTTPError(url, response.status, "unexpected status", response.headers, None)
         return json.loads(response.read().decode("utf-8"))
