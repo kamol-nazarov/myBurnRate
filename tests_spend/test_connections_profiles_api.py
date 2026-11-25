@@ -1205,15 +1205,22 @@ def test_post_dismiss_candidate_existing_ops_and_security_guards(
         ).status_code
         == 403
     )
-    # Sec-Fetch-Site: cross-site -> 403
-    assert (
-        client.post(
-            "/api/connections",
-            json=dismiss_req,
-            headers={**API_HEADERS, "Sec-Fetch-Site": "cross-site"},
-        ).status_code
-        == 403
-    )
+    # Exercise browser CSRF with its ambient session cookie. The native
+    # client's explicitly supplied installation bearer is a separate boundary.
+    session = client.post("/api/auth/bootstrap", json={})
+    assert session.status_code == 200
+    with TestClient(client.app) as browser:
+        assert browser.post("/api/connections", json=dismiss_req, headers=API_HEADERS).status_code == 401
+        browser.cookies.update(session.cookies)
+        assert browser.get("/api/connections").status_code == 200
+        assert (
+            browser.post(
+                "/api/connections",
+                json=dismiss_req,
+                headers={**API_HEADERS, "Sec-Fetch-Site": "cross-site"},
+            ).status_code
+            == 403
+        )
     # Missing X-BURNRATE-Request: 1 -> 403
     assert (
         client.post(
