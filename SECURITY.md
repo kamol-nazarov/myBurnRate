@@ -172,8 +172,8 @@ These are invariants, not aspirations. A change that breaks one is a security bu
   expiry or rejected access, show this computer's recorded usage and a sign-in notice. A freshly
   cached view can persist until its freshness TTL, which defaults to one second and varies by
   endpoint. Authentication rejection purges the credential's cache. Offline fallback uses
-  previously authenticated data only before the session's known expiry. Protect the spoke's
-  OS account and private data directory.
+  previously authenticated data and stops at a recorded session expiry when present.
+  Protect the spoke's OS account and private data directory.
   A stolen active machine token can refresh itself until revoked; expiry bounds inactive leakage,
   not an active token thief. Revoke the computer after exposure. Monitor audit-table disk growth.
 - **Allowlisted network egress.** Provider meters use HTTPS, explicit destination allowlists,
@@ -181,8 +181,8 @@ These are invariants, not aspirations. A change that breaks one is a security bu
   sign-ins and can be disabled in Sources. The Antigravity language service is local. See the
   [privacy disclosure](docs/privacy.md) for hosts and credentials.
 - **Update verification before execution.** Desktop updates verify the URL, byte size,
-  SHA-256, minisign signature and version. A signed Windows installation also requires the
-  update to satisfy its installed publisher check. Failed downloads are deleted.
+  SHA-256, minisign signature and version. Windows installer updates also apply the installed
+  publisher check when the current application is signed. Failed downloads are deleted.
 - **Checked desktop launch.** `/api/hud/native` only starts the installed desktop binary
   (`%LOCALAPPDATA%\Programs\BURNRATE\BURNRATE.exe`) after an Authenticode check. A binary is trusted as `valid` only when
   Authenticode validation succeeds and its certificate thumbprint matches an enrolled pin.
