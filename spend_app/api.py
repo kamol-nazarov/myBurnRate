@@ -206,7 +206,8 @@ def create_app(
     app.state.collector_worker = getattr(scheduler, "collector_worker", None)
     from spend_app.connections import Store
     Store(settings.database_path).bootstrap()
-    from spend_app.connection_api import connection_router
+    from spend_app.connection_api import central_server, connection_router
+    _central = central_server()
     app.include_router(connection_router(settings))
     from spend_app.product_api import product_router
     app.include_router(product_router(settings, pricing=pricing))
@@ -217,7 +218,7 @@ def create_app(
     from spend_app.sync import sync_router
     app.include_router(sync_router(settings, pricing))
     from spend_app.auth_api import auth_router
-    app.include_router(auth_router(settings))
+    app.include_router(auth_router(settings, central=_central))
     from spend_app.redact import install_log_redaction
     install_log_redaction()
     from spend_app.setup_wizard import setup_router
@@ -268,9 +269,6 @@ def create_app(
 
     # The local listener and the central hub have distinct credentials.
     _access_token = os.getenv("BURNRATE_ACCESS_TOKEN", "").strip()
-    from spend_app.connection_api import central_server
-
-    _central = central_server()
     _local_key = ""
     local_subject = ""
     if not _central:

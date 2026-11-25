@@ -14,7 +14,7 @@ from spend_app.db import connect
 from spend_app.error_codes import error_response
 
 
-def auth_router(settings):
+def auth_router(settings, *, central: bool):
     router = APIRouter()
 
     def spoke_enabled() -> bool:
@@ -114,11 +114,11 @@ def auth_router(settings):
 
     @router.post("/api/auth/rotate")
     def rotate_credentials(request: Request):
-        # The break-glass credential is hub authority; a paired computer must
-        # never relay it. Rotate it on the hub directly.
-        if spoke_enabled():
+        # Only the hub accepts a break-glass credential. Local installations
+        # recover through the installation key and its bootstrap session.
+        if not central or spoke_enabled():
             return JSONResponse(
-                {"error": "Rotate the break-glass credential on the hub, not from a paired computer."},
+                {"error": "Break-glass credentials can only be rotated on the hub."},
                 status_code=403,
             )
         actor = request.state.principal

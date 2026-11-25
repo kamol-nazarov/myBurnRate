@@ -444,7 +444,9 @@ def test_rotated_recovery_remains_protected_after_environment_removed(tmp_path, 
     auth_throttle.reset()
     local = settings(tmp_path / "restart.db")
     with TestClient(create_app(local, enable_scheduler=False), base_url="https://testserver") as client:
-        rotated = client.post("/api/auth/rotate", headers={"Authorization": "Bearer " + recovery})
+        with monkeypatch.context() as scope:
+            scope.delenv("BURNRATE_CENTRAL_SERVER")
+            rotated = client.post("/api/auth/rotate", headers={"Authorization": "Bearer " + recovery})
         assert rotated.status_code == 200, rotated.text
         new = rotated.json()["token"]
     monkeypatch.delenv("BURNRATE_ACCESS_TOKEN", raising=False)
@@ -457,6 +459,30 @@ def test_rotated_recovery_remains_protected_after_environment_removed(tmp_path, 
         fresh = client.post("/api/auth/bootstrap", headers={"Authorization": "Bearer " + new})
         assert fresh.status_code == 200 and "sessionToken" not in fresh.text
         assert fresh.cookies[auth_model.COOKIE].startswith("br_s_")
+
+
+def test_local_key_bootstraps_a_session_and_cannot_issue_hub_recovery(tmp_path, monkeypatch):
+    monkeypatch.delenv("BURNRATE_CENTRAL_SERVER", raising=False)
+    monkeypatch.delenv("BURNRATE_ACCESS_TOKEN", raising=False)
+    local = settings(tmp_path / "local.db")
+    app = create_app(local, enable_scheduler=False)
+    key = read_local_key(local.database_path)
+    assert key
+    monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
+    with TestClient(app, base_url="https://testserver") as client:
+        headers = {"Authorization": f"Bearer {key}"}
+        bootstrap = client.post("/api/auth/bootstrap", headers=headers)
+        assert bootstrap.status_code == 200
+        session = bootstrap.cookies[auth_model.COOKIE]
+        client.cookies.clear()
+        session_headers = {"Authorization": f"Bearer {session}"}
+        assert client.get("/api/auth/context", headers=session_headers).status_code == 200
+        for local_headers in (headers, session_headers):
+            denied = client.post("/api/auth/rotate", headers=local_headers)
+            assert denied.status_code == 403
+            assert "token" not in denied.json()
+    with connect(local.database_path) as conn:
+        assert conn.execute("SELECT 1 FROM app_meta WHERE key='auth.break_glass.v1'").fetchone() is None
 
 
 def test_concurrent_breakglass_rotation_is_single_winner(tmp_path, monkeypatch):
