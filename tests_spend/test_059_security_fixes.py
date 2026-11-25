@@ -3304,10 +3304,26 @@ def test_b8_r6_failed_cleanup_and_queue_retains_in_memory_warns_and_flushes(
             # Flush with live hub revokes retained machine token (over batches) and clears warning
             monkeypatch.setattr(sync, "_hub_post_with_cookie_isolation", real_post)
             flushed = False
-            for _ in range(12):
-                if flush_pending_revokes(db_path, secret_hub, vault=v_full, client=hub_client, ignore_backoff=True):
-                    flushed = True
-                    break
+
+            class _RetryClock:
+                elapsed = 0
+
+                def monotonic(self):
+                    return time.monotonic() + self.elapsed
+
+                def __getattr__(self, name):
+                    return getattr(time, name)
+
+            # Existing stale credentials contribute to the hub's failed-bearer
+            # limit. Model successive retry windows without waiting in the test.
+            clock = _RetryClock()
+            with monkeypatch.context() as fixture:
+                fixture.setattr(sync, "time", clock)
+                for _ in range(12):
+                    if flush_pending_revokes(db_path, secret_hub, vault=v_full, client=hub_client, ignore_backoff=True):
+                        flushed = True
+                        break
+                    clock.elapsed += 61
             assert flushed is True
             assert sync.authenticate_machine_token(hub_settings.database_path, issued_m[0]) is None
             assert retained_pending_revoke_count() == 0
