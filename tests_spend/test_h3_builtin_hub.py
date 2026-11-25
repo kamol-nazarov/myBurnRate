@@ -383,6 +383,7 @@ def test_load_user_env_hermetic_under_pytest_and_dotenv_overrides_builtin(
     saved_hub = os.environ.get("BURNRATE_HUB_URL")
     saved_zai = os.environ.get("BURNRATE_ENABLE_ZAI_QUOTA")
     saved_oc = os.environ.get("BURNRATE_ENABLE_OPENCODE_GO_QUOTA")
+    saved_muse = os.environ.get("BURNRATE_ENABLE_MUSE_QUOTA")
     try:
         os.environ.pop("PYTEST_CURRENT_TEST", None)
         os.environ.pop("BURNRATE_HUB_URL", None)
@@ -393,6 +394,7 @@ def test_load_user_env_hermetic_under_pytest_and_dotenv_overrides_builtin(
             ("BURNRATE_HUB_URL", saved_hub),
             ("BURNRATE_ENABLE_ZAI_QUOTA", saved_zai),
             ("BURNRATE_ENABLE_OPENCODE_GO_QUOTA", saved_oc),
+            ("BURNRATE_ENABLE_MUSE_QUOTA", saved_muse),
         ):
             if prev is None:
                 os.environ.pop(key, None)
