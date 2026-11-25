@@ -9,6 +9,13 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+## [0.6.9] - Unreleased
+
+### Changed
+
+- **Copilot Pulse desktop redesign.** Upgraded the main desktop window (`wealthfront_ui.html`), 40px corner edge-tab (`tab_ui.html`), and native window chrome with bundled offline **Inter** and **JetBrains Mono** fonts, WCAG AA Copilot Pulse Light and Dark palettes, a frameless topbar, a glowing Hero spend card first on Overview, stacked floating provider cards, and a floating frosted-glass bottom capsule dock with true **Overview**, **Spend**, and **Plans** tab views.
+- **Custom frosted dropdowns, opaque FLIP drag-and-drop, and depth transitions.** Replaced native `<select>` menus with custom keyboard-accessible frosted dropdowns, upgraded provider card drag-and-drop so grabbed cards stay 100% solid with spring FLIP reorder and velocity tilt, added depth push on slide-over Settings, and removed the redundant Compact/Comfy density toggle.
+
 ## [0.6.8] - 2026-11-24
 
 ### Fixed
