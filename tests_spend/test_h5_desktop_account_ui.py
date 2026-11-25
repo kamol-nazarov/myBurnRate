@@ -171,7 +171,7 @@ def test_h5_create_account_registers_device_nonblocking_and_rejects_second_accou
 
     try:
         with hub_client:
-            res = bridge.create_account("Owner@Example.com", PASSWORD, "Studio PC")
+            res = bridge.create_account("Owner@Example.com", PASSWORD, "Studio PC", SETUP_TOKEN)
             assert res["ok"] is True, res
             assert res["computerName"] == "Studio PC"
             assert res["account"]["email"] == "owner@example.com"
@@ -390,7 +390,9 @@ def test_h5_vault_secret_isolation_and_zero_hub_url_or_token_leakage(
 
         # 3. Every bridge return value stays free of br_s_, br_m_, and HUB_URL
         _assert_no_secrets_or_hub_url(bridge.list_computers(), label="list_computers")
-        _assert_no_secrets_or_hub_url(bridge.get_settings_data(), label="get_settings_data")
+        settings_data = bridge.get_settings_data()
+        assert settings_data.pop("hubHost") == "hub.test"
+        _assert_no_secrets_or_hub_url(settings_data, label="get_settings_data")
         _assert_no_secrets_or_hub_url(bridge.get_onboarding_data(), label="get_onboarding_data")
         _assert_no_secrets_or_hub_url(
             bridge.change_password("wrong-pass-xyz", "new-password-1234"),
@@ -769,7 +771,7 @@ def test_h5_failing_vault_returns_app_903_and_preserves_tokens(
                 NativeClient(spoke_empty, port=17352),
                 preferences=tmp_path / "empty" / "prefs.json",
             )
-            res_create = b_empty.create_account("owner@example.com", PASSWORD, "Locked Box")
+            res_create = b_empty.create_account("owner@example.com", PASSWORD, "Locked Box", SETUP_TOKEN)
             assert res_create["ok"] is False
             assert res_create["code"] == "APP-903"
             assert "keychain" in res_create["message"].lower()

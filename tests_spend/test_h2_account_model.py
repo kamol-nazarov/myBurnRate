@@ -40,6 +40,15 @@ LOCAL_HEADERS = {
 }
 PASSWORD = "synthetic-password-long-123"
 NEW_PASSWORD = "synthetic-password-rotated-456"
+SETUP_CREDENTIAL = "synthetic-h2-enrollment-token"
+
+
+def _local_headers(settings: Settings):
+    from spend_app.local_access import read_local_key
+
+    key = read_local_key(settings.database_path)
+    assert key
+    return {**LOCAL_HEADERS, "Authorization": f"Bearer {key}"}
 
 
 def _settings(db_path: Path) -> Settings:
@@ -113,11 +122,13 @@ def _reset_shared(monkeypatch: pytest.MonkeyPatch):
 def _setup_hub_and_spoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, hub_env: bool = True):
     if hub_env:
         monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
+        monkeypatch.setenv("BURNRATE_SETUP_TOKEN", SETUP_CREDENTIAL)
     hub_settings = _settings(tmp_path / "hub.db")
     hub_app = create_app(hub_settings, enable_scheduler=False)
     hub_client = TestClient(hub_app, base_url=HUB_URL)
 
     monkeypatch.delenv("BURNRATE_CENTRAL_SERVER", raising=False)
+    monkeypatch.delenv("BURNRATE_SETUP_TOKEN", raising=False)
     monkeypatch.setenv("BURNRATE_HUB_URL", HUB_URL)
     monkeypatch.setitem(sync._HUB_TEST_CLIENTS, HUB_URL, hub_client)
 
@@ -196,12 +207,13 @@ def test_h2_registration_lowercases_trims_email_and_populates_account_fields(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
+    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", SETUP_CREDENTIAL)
     hub_settings = _settings(tmp_path / "hub.db")
     with TestClient(create_app(hub_settings, enable_scheduler=False), base_url=HUB_URL) as client:
         res = client.post(
             "/api/account/register",
             headers=HUB_HEADERS,
-            json={"username": "  Owner.Name+Tag@Example.COM  ", "password": PASSWORD},
+            json={"username": "  Owner.Name+Tag@Example.COM  ", "password": PASSWORD, "setupToken": SETUP_CREDENTIAL},
         )
         assert res.status_code == 200, res.text
         data = res.json()
@@ -256,7 +268,7 @@ def test_h2_legacy_non_email_account_signs_in_and_migrates_via_hub_spoke_and_bri
         # 2. Spoke /api/setup/account signs in and persists needsEmail=True
         join_res = spoke_client.post(
             "/api/setup/account",
-            headers=LOCAL_HEADERS,
+            headers=_local_headers(ss),
             json={
                 "mode": "login",
                 "username": "owner",
@@ -272,7 +284,7 @@ def test_h2_legacy_non_email_account_signs_in_and_migrates_via_hub_spoke_and_bri
 
         # 3. Dismiss email prompt on spoke via both HTTP and DesktopBridge
         dismiss_http = spoke_client.post(
-            "/api/setup/account/dismiss-email-prompt", headers=LOCAL_HEADERS, json={}
+            "/api/setup/account/dismiss-email-prompt", headers=_local_headers(ss), json={}
         )
         assert dismiss_http.status_code == 200, dismiss_http.text
         assert dismiss_http.json()["setup"]["account"]["emailPromptDismissed"] is True
@@ -317,7 +329,7 @@ def test_h2_legacy_non_email_account_signs_in_and_migrates_via_hub_spoke_and_bri
         # Also validate /api/setup/account/email invalid email directly
         bad_spoke_email = spoke_client.post(
             "/api/setup/account/email",
-            headers=LOCAL_HEADERS,
+            headers=_local_headers(ss),
             json={"email": "still-bad", "password": PASSWORD},
         )
         assert bad_spoke_email.status_code == 422
@@ -395,7 +407,7 @@ def test_h2_email_change_requires_owner_session_and_bridge_validates_register_lo
         # Standalone spoke /api/setup/account/email -> 409 AUTH-107
         standalone_res = spoke_client.post(
             "/api/setup/account/email",
-            headers=LOCAL_HEADERS,
+            headers=_local_headers(ss),
             json={"email": "new@example.com", "password": PASSWORD},
         )
         assert standalone_res.status_code == 409
@@ -419,6 +431,7 @@ def test_h2_empty_hub_login_returns_auth_104_and_registration_closes_permanently
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
+    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", SETUP_CREDENTIAL)
     hub_settings = _settings(tmp_path / "hub.db")
     with TestClient(create_app(hub_settings, enable_scheduler=False), base_url=HUB_URL) as client:
         empty_login = client.post(
@@ -432,7 +445,7 @@ def test_h2_empty_hub_login_returns_auth_104_and_registration_closes_permanently
         first = client.post(
             "/api/account/register",
             headers=HUB_HEADERS,
-            json={"username": "owner@example.com", "password": PASSWORD},
+            json={"username": "owner@example.com", "password": PASSWORD, "setupToken": SETUP_CREDENTIAL},
         )
         assert first.status_code == 200, first.text
         client.cookies.clear()
@@ -470,6 +483,7 @@ def test_h2_concurrent_first_account_registration_allows_single_winner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
+    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", SETUP_CREDENTIAL)
     hub_settings = _settings(tmp_path / "race.db")
     hub_app = create_app(hub_settings, enable_scheduler=False)
     n_racers = 4
@@ -481,7 +495,7 @@ def test_h2_concurrent_first_account_registration_allows_single_winner(
             return c.post(
                 "/api/account/register",
                 headers=HUB_HEADERS,
-                json={"username": f"racer{idx}@example.com", "password": PASSWORD},
+                json={"username": f"racer{idx}@example.com", "password": PASSWORD, "setupToken": SETUP_CREDENTIAL},
             )
 
     with ThreadPoolExecutor(max_workers=n_racers) as pool:
@@ -512,14 +526,14 @@ def test_h2_deprecated_account_env_warnings_and_startup_logs(
     monkeypatch.setenv("BURNRATE_SETUP_TOKEN", "legacy-token")
     monkeypatch.setenv("BURNRATE_ALLOW_REGISTRATION", "1")
     warnings = setup_wizard.deprecated_account_env_warnings()
-    assert len(warnings) == 2
-    assert any("BURNRATE_SETUP_TOKEN" in w for w in warnings)
+    assert len(warnings) == 1
+    assert all("BURNRATE_SETUP_TOKEN" not in w for w in warnings)
     assert any("BURNRATE_ALLOW_REGISTRATION" in w for w in warnings)
 
     with caplog.at_level(logging.WARNING, logger="burnrate.setup"):
         create_app(_settings(tmp_path / "warn.db"), enable_scheduler=False)
     logged = "\n".join(r.message for r in caplog.records if r.name == "burnrate.setup")
-    assert "BURNRATE_SETUP_TOKEN" in logged
+    assert "BURNRATE_SETUP_TOKEN" not in logged
     assert "BURNRATE_ALLOW_REGISTRATION" in logged
 
 
@@ -558,12 +572,13 @@ def test_h2_machines_register_keys_by_device_id_and_blocks_name_clash(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
+    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", SETUP_CREDENTIAL)
     hub_settings = _settings(tmp_path / "hub.db")
     with TestClient(create_app(hub_settings, enable_scheduler=False), base_url=HUB_URL) as client:
         reg_owner = client.post(
             "/api/account/register",
             headers=HUB_HEADERS,
-            json={"username": "owner@example.com", "password": PASSWORD},
+            json={"username": "owner@example.com", "password": PASSWORD, "setupToken": SETUP_CREDENTIAL},
         )
         assert reg_owner.status_code == 200
 
@@ -709,7 +724,7 @@ def test_h2_password_change_validates_rotates_and_revokes_other_sessions(
         # Connect spoke (gets s3)
         spoke_join = spoke_client.post(
             "/api/setup/account",
-            headers=LOCAL_HEADERS,
+            headers=_local_headers(ss),
             json={
                 "mode": "login",
                 "username": "owner@example.com",
@@ -743,7 +758,7 @@ def test_h2_password_change_validates_rotates_and_revokes_other_sessions(
         # Spoke relays /api/setup/account/password with s3_token: wrong password -> 401 AUTH-101
         spoke_wrong = spoke_client.post(
             "/api/setup/account/password",
-            headers=LOCAL_HEADERS,
+            headers=_local_headers(ss),
             json={"currentPassword": "wrong-current-password", "newPassword": NEW_PASSWORD},
         )
         assert spoke_wrong.status_code == 401 and spoke_wrong.json() == {"error": {"code": "AUTH-101"}}
@@ -753,7 +768,7 @@ def test_h2_password_change_validates_rotates_and_revokes_other_sessions(
             before_rec = dict(setup_wizard._read_accounts(conn)["users"]["owner@example.com"])
         ok_spoke = spoke_client.post(
             "/api/setup/account/password",
-            headers=LOCAL_HEADERS,
+            headers=_local_headers(ss),
             json={"currentPassword": PASSWORD, "newPassword": NEW_PASSWORD},
         )
         assert ok_spoke.status_code == 200 and ok_spoke.json() == {"ok": True}
@@ -918,12 +933,13 @@ def test_h2_audit_logs_never_leak_emails_usernames_or_passwords(
     pw1 = "SuperSecretPassword-111"
     pw2 = "SuperSecretPassword-222"
     pw3 = "SuperSecretPassword-333"
+    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", SETUP_CREDENTIAL)
 
     with TestClient(create_app(hub_settings, enable_scheduler=False), base_url=HUB_URL) as client:
         assert client.post(
             "/api/account/register",
             headers=HUB_HEADERS,
-            json={"username": initial_email, "password": pw1},
+            json={"username": initial_email, "password": pw1, "setupToken": SETUP_CREDENTIAL},
         ).status_code == 200
 
         # Failed login + successful login
@@ -1021,13 +1037,13 @@ def test_h2_maybe_run_configured_spoke_sync_auto_rotates_near_expiry_and_on_flag
         assert hub_client.post(
             "/api/account/register",
             headers=HUB_HEADERS,
-            json={"username": "owner@example.com", "password": PASSWORD},
+            json={"username": "owner@example.com", "password": PASSWORD, "setupToken": SETUP_CREDENTIAL},
         ).status_code == 200
         hub_client.cookies.clear()
 
         joined = spoke_client.post(
             "/api/setup/account",
-            headers=LOCAL_HEADERS,
+            headers=_local_headers(ss),
             json={
                 "mode": "login",
                 "username": "owner@example.com",

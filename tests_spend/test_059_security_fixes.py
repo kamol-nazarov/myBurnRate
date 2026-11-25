@@ -23,12 +23,14 @@ from spend_app.connection_secrets import (
     MACHINE_TOKEN_VAULT_REF,
     OWNER_SESSION_VAULT_REF,
     clear_spoke_credentials,
+    credential_origin_ref,
     publish_spoke_credentials,
     read_vault_secret,
     set_vault_factory,
 )
 from spend_app.db import connect, initialize
 from spend_app.error_codes import HUB_PROTOCOL_VERSION, CodedError, error_message
+from spend_app.local_access import read_local_key
 from spend_app.native_desktop import NativeClient
 from spend_app.pricing import PricingEngine
 from spend_app.wealthfront_window import DesktopBridge
@@ -40,6 +42,7 @@ from tests_spend.test_h5_desktop_account_ui import (
 from tests_spend.test_h6_bridge_and_packaging import (
     HUB_URL,
     PASSWORD,
+    SETUP_TOKEN,
     _MemoryVault,
     _create_paired_hub_and_spoke,
     _make_settings,
@@ -200,10 +203,13 @@ def test_s2_all_credential_writers_enforce_vault_only_and_app903(
     )
     _patch_native_to_local(monkeypatch, spoke_app, port=17360)
     spoke_client = TestClient(spoke_app, base_url="http://127.0.0.1:17360")
+    local_key = read_local_key(spoke_settings.database_path)
+    assert local_key
     local_headers = {
         "Host": "127.0.0.1:17360",
         "Origin": "http://127.0.0.1:17360",
         "X-BURNRATE-Request": "1",
+        "Authorization": f"Bearer {local_key}",
     }
 
     bad_vault = None if vault_mode == "unavailable" else _MismatchVault()
@@ -287,8 +293,13 @@ def test_s2_all_credential_writers_enforce_vault_only_and_app903(
 
         # 2. setup_wizard.rotate_spoke_machine_token -> ok=False APP-903, zero DB token
         orig_tok2, orig_sess2 = _connect_cleanly()
+        bindings = {
+            ref: read_vault_secret(spoke_settings.database_path, ref)
+            for ref in (credential_origin_ref(orig_tok2), credential_origin_ref(orig_sess2))
+        }
+        assert all(value == HUB_URL for value in bindings.values())
         rot_vault_2 = _ReadExistingWriteFailVault(
-            {MACHINE_TOKEN_VAULT_REF: orig_tok2, OWNER_SESSION_VAULT_REF: orig_sess2},
+            {MACHINE_TOKEN_VAULT_REF: orig_tok2, OWNER_SESSION_VAULT_REF: orig_sess2, **bindings},
             vault_mode,
         )
         prev = set_vault_factory(lambda _db: rot_vault_2)
@@ -314,16 +325,18 @@ def test_s2_all_credential_writers_enforce_vault_only_and_app903(
 
             # DesktopBridge.create_account on a fresh hub with no account yet
             monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
+            monkeypatch.setenv("BURNRATE_SETUP_TOKEN", SETUP_TOKEN)
             fresh_hub = create_app(
                 _make_settings(tmp_path / f"fresh_hub_{vault_mode}.db"),
                 enable_scheduler=False,
             )
             monkeypatch.delenv("BURNRATE_CENTRAL_SERVER", raising=False)
+            monkeypatch.delenv("BURNRATE_SETUP_TOKEN", raising=False)
             fresh_hub_client = TestClient(fresh_hub, base_url=HUB_URL)
             sync._HUB_TEST_CLIENTS[HUB_URL] = fresh_hub_client
             try:
                 with fresh_hub_client:
-                    res_ca = bridge.create_account("first@example.com", PASSWORD, "BadBridgeCreate")
+                    res_ca = bridge.create_account("first@example.com", PASSWORD, "BadBridgeCreate", SETUP_TOKEN)
                     assert res_ca["ok"] is False
                     assert res_ca["code"] == "APP-903"
             finally:
@@ -2639,12 +2652,18 @@ def test_s12_r5_stale_machine_rotation_after_full_sign_out_revokes_or_queues_suc
 
         monkeypatch.setattr(setup_wizard, "_call_central_server_account", _wrap_acct_call)
         acct_resps: list[object] = []
+        local_key = read_local_key(spoke_db)
+        assert local_key
         with TestClient(spoke_app) as spoke_client:
             t_acct = threading.Thread(
                 target=lambda: acct_resps.append(
                     spoke_client.post(
                         "/api/setup/account",
-                        headers={"X-BURNRATE-Request": "1", "X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION)},
+                        headers={
+                            "Authorization": f"Bearer {local_key}",
+                            "X-BURNRATE-Request": "1",
+                            "X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION),
+                        },
                         json={"mode": "login", "username": "owner@example.com", "password": PASSWORD, "computerName": "S12FenceAcct", "testSync": False},
                     )
                 )
