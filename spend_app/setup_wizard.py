@@ -1182,6 +1182,9 @@ def _api_connections(settings) -> dict:
 
 def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRouter:
     router = APIRouter()
+    # Enrollment must use the same startup role as the enclosing access boundary.
+    central_accounts = central_server_for_accounts()
+    setup_credential = os.getenv(SETUP_TOKEN_ENV, "").strip().encode()
 
     @router.get("/api/setup/state")
     def get_setup_state(request: Request):
@@ -1509,11 +1512,10 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                         if reg_retry or retry_after:
                             return None, _throttled(max(reg_retry, retry_after))
                         return None, error_response("AUTH-103", status_code=403)
-                    if central_server_for_accounts():
-                        expected = os.getenv(SETUP_TOKEN_ENV, "").strip()
+                    if central_accounts:
                         presented = body.get("setupToken")
-                        setup_matches = bool(expected and isinstance(presented, str)
-                                             and hmac.compare_digest(expected.encode(), presented.encode()))
+                        setup_matches = bool(setup_credential and isinstance(presented, str)
+                                             and hmac.compare_digest(setup_credential, presented.encode()))
                         if existing_principal.via != "break-glass" and not setup_matches:
                             retry_after = max(auth_throttle.fail(reg_ip_key), auth_throttle.fail(key))
                             if retry_after:

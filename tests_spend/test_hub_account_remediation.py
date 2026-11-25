@@ -55,6 +55,14 @@ def test_setup_requires_an_independent_credential(hub):
         assert setup_wizard._read_accounts(connection)["users"] == {}
 
 
+def test_hub_enrollment_retains_its_startup_role_when_another_app_starts(hub, monkeypatch):
+    _, client = hub
+    monkeypatch.delenv("BURNRATE_CENTRAL_SERVER")
+    monkeypatch.delenv("BURNRATE_SETUP_TOKEN")
+    assert client.post("/api/account/register", headers=WEB, json=ACCOUNT).status_code == 403
+    assert client.post("/api/account/register", headers=WEB, json={**ACCOUNT, "setupToken": SETUP}).status_code == 200
+
+
 def test_local_owner_command_prompts_and_refuses_a_second_account(hub):
     path, _ = hub
     invoke = lambda email: create_hub_owner(path, email, prompt_fn=lambda _: PASSWORD, echo=lambda _: None)
