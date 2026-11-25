@@ -1027,6 +1027,27 @@ def test_h2_audit_logs_never_leak_emails_usernames_or_passwords(
 # ---------------------------------------------------------------------------
 
 
+def test_h2_same_hub_setup_sign_in_reuses_its_registered_machine(tmp_path: Path, monkeypatch):
+    hs, _app, hub_client, ss, _spoke, spoke_client = _setup_hub_and_spoke(tmp_path, monkeypatch)
+    with hub_client, spoke_client:
+        assert hub_client.post(
+            "/api/account/register", headers=HUB_HEADERS,
+            json={"username": "owner@example.com", "password": PASSWORD, "setupToken": SETUP_CREDENTIAL},
+        ).status_code == 200
+        hub_client.cookies.clear()
+        payload = {
+            "mode": "login", "username": "owner@example.com", "password": PASSWORD,
+            "computerName": "Repeat Sign-in", "testSync": False,
+        }
+        first = spoke_client.post("/api/setup/account", headers=_local_headers(ss), json=payload)
+        assert first.status_code == 200
+        second = spoke_client.post("/api/setup/account", headers=_local_headers(ss), json=payload)
+        assert second.status_code == 200
+        assert first.json()["account"]["machineId"] == second.json()["account"]["machineId"]
+        with connect(hs.database_path) as connection:
+            assert len(sync._read_state(connection)["machines"]) == 1
+
+
 def test_h2_maybe_run_configured_spoke_sync_auto_rotates_near_expiry_and_on_flag(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
