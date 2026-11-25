@@ -163,7 +163,9 @@ def settings(tmp_path: Path, isolated_env: Path) -> Settings:
 
 @pytest.fixture
 def client(settings: Settings) -> TestClient:
-    return TestClient(create_app(settings, enable_scheduler=False))
+    from tests_spend.local_client_fixture import local_client
+
+    return local_client(create_app(settings, enable_scheduler=False), settings.database_path)
 
 
 # ---------------------------------------------------------------------------

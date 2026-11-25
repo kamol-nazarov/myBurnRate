@@ -180,30 +180,30 @@ def test_correction_preview_uses_old_plan_end_for_before_cost(tmp_path):
 def paired_clients(tmp_path, monkeypatch):
     from spend_app import sync
     from spend_app.api import create_app
-    from spend_app.setup_wizard import read_setup_state, write_setup_state
+    from spend_app.auth_model import Principal, create_session
+    from spend_app.connection_secrets import publish_spoke_credentials
+    from tests_spend.local_client_fixture import local_client
     from tests_spend.test_api import make_settings
 
+    origin = "https://hub.example.invalid"
     hub = make_settings(tmp_path / "hub.db")
     spoke = make_settings(tmp_path / "spoke.db")
-    hub_client = TestClient(create_app(hub, enable_scheduler=False))
-    spoke_client = TestClient(create_app(spoke, enable_scheduler=False))
-    token = sync.register_machine(hub.database_path, name="Laptop", os_name="win32")[
-        "token"
-    ]
-    from spend_app.auth_model import Principal, create_session
+    with monkeypatch.context() as hub_environment:
+        hub_environment.setenv("BURNRATE_CENTRAL_SERVER", "1")
+        hub_client = TestClient(create_app(hub, enable_scheduler=False), base_url=origin)
+    spoke_client = local_client(create_app(spoke, enable_scheduler=False), spoke.database_path)
+    token = sync.register_machine(hub.database_path, name="Laptop", os_name="win32")["token"]
     with connect(hub.database_path) as connection:
-        owner_session = create_session(connection, Principal("owner", "synthetic-owner", "owner"), "Test spoke")
-    with connect(spoke.database_path) as connection:
-        state = read_setup_state(connection)
+        session = create_session(connection, Principal("owner", "synthetic-owner", "owner"), "Test spoke")
+
+    def apply_pair(_connection, state):
         state["role"] = "spoke"
-        state["spokeConfig"] = {
-            "hubUrl": "https://hub.example.invalid",
-            "token": token,
-            "ownerSession": owner_session["sessionToken"],
-            "ownerSessionExpiresAt": owner_session["expiresAt"],
-            "enabled": True,
-        }
-        write_setup_state(connection, state)
+        state["spokeConfig"].update(enabled=True, hubConfigured=True, ownerSessionExpiresAt=session["expiresAt"])
+
+    publish_spoke_credentials(
+        spoke.database_path, owner_session=session["sessionToken"], machine_token=token,
+        authenticated_origin=origin, apply_state=apply_pair,
+    )
     monkeypatch.setattr(
         sync, "_HUB_TEST_CLIENTS", {"https://hub.example.invalid": hub_client}
     )
