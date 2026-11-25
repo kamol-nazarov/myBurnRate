@@ -19,8 +19,9 @@ COPY packaging/build_config.py ./packaging/build_config.py
 COPY spend_app ./spend_app
 COPY pricing ./pricing
 COPY assets/icons ./assets/icons
-RUN pip install --require-hashes -r requirements-build.txt \
-    && pip install --no-deps --no-build-isolation . \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    PIP_NO_CACHE_DIR=0 pip install --require-hashes -r requirements-build.txt \
+    && PIP_NO_CACHE_DIR=0 pip install --no-deps --no-build-isolation . \
     && python -c "from importlib.metadata import version; assert tuple(map(int, version('certifi').split('.'))) >= (2026, 10, 23); from spend_app.bounded_reads import BoundedReadExecutor" \
     && useradd --system --uid 10001 --home-dir /data --shell /usr/sbin/nologin burnrate \
     && mkdir -p /data && chown burnrate /data

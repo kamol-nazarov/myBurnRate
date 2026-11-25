@@ -9,6 +9,21 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+## [0.6.10] - Unreleased
+
+### Added
+
+- **Keep desktop pill visible when closing the taskbar icon & optional hide-from-taskbar mode.** Closing BURNRATE from the Windows taskbar or X button now shrinks to the floating desktop pill by default (`closeToTab`), removing the taskbar button while keeping BURNRATE visible on your desktop. Added an optional **Hide full window from Windows taskbar** (`hideFromTaskbar`) switch in **Settings → General**, and hardened `TabHost.hide_taskbar_button()` with `SWP_FRAMECHANGED` so the floating pill never leaks onto the taskbar.
+- **One-command production deploy script & faster release pipeline.** Added `scripts/deploy-prod.ps1`, BuildKit/pip/npm caching across `Dockerfile`, `hub-image.yml`, and `release.yml`, and parallel wheel + Windows installer release jobs.
+
+### Changed
+
+- **Major local ingest and dashboard query speedups.** Added lightweight per-session watermarks for large OpenCode SQLite databases (skipping multi-GB `data` JSON scans on unchanged sessions), incremental tail parsing for active Claude Code `.jsonl` logs, unchanged-pass replay for Traycer with native-duplicate invalidation, no-op write skipping in `usage_keys`, latest-row quota loading, indexed `active_provider_keys` and day-coverage lookups, single-pass pricing enrichment, and shared event slices in `aggregate_summary`.
+
+### Fixed
+
+- **Fix Windows Settings wheel auto-update errors.** Added `pyvenv.cfg`'s `home` and `sys.base_prefix` to `basePythonDirs` so `uv`-managed Python junctions match running collectors, fixed post-kill WAL recovery during SQLite backups in `wheel_update.ps1`, accepted `-I` on collector command lines, increased the worker ready timeout to 45s, and cleared stale update errors on fresh checks.
+
 ## [0.6.9] - 2026-11-25
 
 ### Changed

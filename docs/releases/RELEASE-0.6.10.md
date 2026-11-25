@@ -1,0 +1,6 @@
+# BURNRATE 0.6.10
+
+- **Major local ingest & summary speedups.** Incremental session watermarks cut active OpenCode ingestion on multi-GB databases by ~50–100x; incremental tail parsing cuts active Claude Code log updates on 100–300 MB transcripts from seconds to milliseconds (eliminating SQLite lock contention); Traycer skips unchanged passes cleanly; and dashboard summary, quota, forecast, and pricing queries run 3–9x faster.
+- **Close taskbar icon while staying on your desktop.** Closing BURNRATE from the Windows taskbar or X button now shrinks to the floating desktop pill by default (removing the taskbar icon while keeping BURNRATE on your desktop), plus a new **Hide full window from Windows taskbar** switch in **Settings → General** and hardened taskbar hiding on the floating pill.
+- **Fix Settings wheel auto-updates on Windows.** Includes `pyvenv.cfg` `home` and `sys.base_prefix` in `basePythonDirs` for `uv`-managed Python junctions, fixes WAL crash recovery during pre-update SQLite backups, accepts `-I` on collector processes, extends the worker startup timeout to 45s, and clears stale errors on fresh update checks.
+- **Faster production release pipeline.** Adds pip/npm/BuildKit caching, parallel wheel & Windows installer release jobs, and the one-command `scripts/deploy-prod.ps1` release script.
