@@ -3320,6 +3320,7 @@ class DesktopBridge:
                         db_path,
                         owner_session=session_token,
                         machine_token=machine_token,
+                        authenticated_origin=hub_url,
                         vault=vault,
                         prepare_state=_prepare_auth_state,
                         apply_state=_apply_auth_state,
