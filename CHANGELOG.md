@@ -9,7 +9,7 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
-## [0.6.9] - Unreleased
+## [0.6.9] - 2026-11-25
 
 ### Changed
 
