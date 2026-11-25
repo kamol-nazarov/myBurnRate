@@ -109,12 +109,14 @@ def read_local_key(database_path: Path) -> str | None:
                                      or stat.S_IMODE(information.st_mode) != 0o600)
             ):
                 raise PermissionError("The local credential file must be private.")
-            value = source.read(66).strip()
+            if information.st_size not in {64, 65, 66}:
+                raise ValueError("The local credential file is invalid.")
+            value = source.read(67)
     except FileNotFoundError:
         return None
-    if not re.fullmatch(rb"[0-9a-f]{64}", value):
+    if not re.fullmatch(rb"[0-9a-f]{64}(?:\r?\n)?", value):
         raise ValueError("The local credential file is invalid.")
-    return value.decode("ascii")
+    return value[:64].decode("ascii")
 
 
 def ensure_local_key(database_path: Path) -> str:

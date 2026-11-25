@@ -1988,6 +1988,7 @@ def ensure_fresh_owner_session(
     from spend_app.connection_secrets import (
         OWNER_SESSION_VAULT_REF,
         clear_spoke_credentials,
+        credential_origin_allowed,
         mark_cleanup_pending_in_tx,
         publish_spoke_credentials,
         read_vault_secret,
@@ -2015,6 +2016,8 @@ def ensure_fresh_owner_session(
         captured_gen = int(spoke.get("credentialGeneration") or 0)
         if not spoke.get("ownerSessionRotationRequired"):
             if stored_tok and stored_tok != clean_token:
+                if not credential_origin_allowed(db_file, stored_tok, hub_url, spoke, vault=vault):
+                    raise CodedError("AUTH-107", status_code=401)
                 return stored_tok
             if not stored_tok:
                 raise CodedError("AUTH-107", status_code=401)
