@@ -80,19 +80,24 @@ def _settings(tmp_path: Path, name: str = "hub.db") -> Settings:
 
 
 def test_reads_reject_an_unrecognized_host(tmp_path, monkeypatch) -> None:
+    from spend_app.local_access import read_local_key
+
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     monkeypatch.delenv("BURNRATE_ALLOWED_HOSTS", raising=False)
     monkeypatch.setenv("BURNRATE_TEST_HOSTS", "0")
     settings = _settings(tmp_path)
     initialize(settings.database_path)
     app = create_app(settings=settings, enable_scheduler=False)
+    key = read_local_key(settings.database_path)
+    assert key
     with TestClient(app, base_url="http://attacker.invalid:17331") as client:
         assert client.get("/api/spend/summary?window=1d").status_code == 403
         assert client.get("/healthz").status_code == 403
+        assert client.get("/api/spend/summary?window=1d", headers={"Host": "127.0.0.1:17331"}).status_code == 401
         assert (
             client.get(
                 "/api/spend/summary?window=1d",
-                headers={"Host": "127.0.0.1:17331"},
+                headers={"Host": "127.0.0.1:17331", "Authorization": f"Bearer {key}"},
             ).status_code
             == 200
         )
@@ -139,7 +144,7 @@ def test_central_server_with_token_authenticates_reads_and_cookie_mutations(tmp_
     settings = _settings(tmp_path)
     initialize(settings.database_path)
     app = create_app(settings=settings, enable_scheduler=False)
-    with TestClient(app, base_url="http://127.0.0.1:17331") as client:
+    with TestClient(app, base_url="https://127.0.0.1:17331") as client:
         assert client.get("/api/spend/summary?window=1d").status_code == 401
         assert (
             client.get(
@@ -156,15 +161,17 @@ def test_central_server_with_token_authenticates_reads_and_cookie_mutations(tmp_
             "/api/auth/bootstrap",
             headers={
                 "Authorization": "Bearer admin-secret",
-                "Origin": "http://127.0.0.1:17331",
+                "Origin": "https://127.0.0.1:17331",
                 "X-BURNRATE-Request": "1",
             },
             json={},
         )
         assert boot.status_code == 200
+        primary = next(cookie for cookie in boot.headers.get_list("set-cookie") if cookie.startswith("__Host-"))
+        assert "Secure" in primary and "HttpOnly" in primary and "Path=/" in primary
         created = client.post(
             "/api/machines",
-            headers={"Origin": "http://127.0.0.1:17331", "X-BURNRATE-Request": "1"},
+            headers={"Origin": "https://127.0.0.1:17331", "X-BURNRATE-Request": "1"},
             json={"action": "register", "name": "Cookie Computer"},
         )
         assert created.status_code == 200
