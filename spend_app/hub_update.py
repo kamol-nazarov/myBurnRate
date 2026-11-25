@@ -1,7 +1,7 @@
 """Update a self-hosted Hub over ssh: ``burnrate hub update``.
 
-The Hub is a git checkout run by systemd. Updating means fast-forwarding it to
-its tracked branch (or, with ``--push-local``, to this checkout's commit) and
+The Hub is a git checkout run by systemd. Updating means selecting a
+verified signed tag (or, with ``--push-local``, this checkout's commit) and
 restarting the service, checking its health, and reading the installed build.
 Nothing here runs from the web UI: deploying code to another machine stays a
 deliberate command its owner types.
@@ -20,6 +20,8 @@ from pathlib import Path
 
 _SAFE = re.compile(r"[A-Za-z0-9_.@:/+-]+")
 _GIT_OID = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
+_RELEASE_TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(?:(?:a|b|rc)[0-9]+)?")
+_ALLOWED_SIGNERS = "/etc/burnrate/release-allowed-signers"
 
 _VERIFY_HEALTH = """import json
 import sys
@@ -179,7 +181,8 @@ def _try_staging_cleanup(ssh: str, checkout: str, cleanup: str, run) -> None:
         pass
 
 
-def update_hub(*, ssh: str, path: str, service: str, branch: str, push_local: bool = False,
+def update_hub(*, ssh: str, path: str, service: str, branch: str, tag: str = "", push_local: bool = False,
+               require_host_preflight: bool = False,
                dry_run: bool = False, port: int = 17331, run=subprocess.run, echo=print) -> int:
     if not ssh:
         echo("Name the hub's ssh host with --ssh or BURNRATE_HUB_SSH (for example: --ssh my-hub).")
@@ -188,6 +191,9 @@ def update_hub(*, ssh: str, path: str, service: str, branch: str, push_local: bo
         if not _SAFE.fullmatch(value or "") or value.startswith("-"):
             echo(f"Refusing an unusual {label}: {value!r}")
             return 2
+    if (push_local and tag) or (not push_local and not _RELEASE_TAG.fullmatch(tag)):
+        echo("Select a signed release with --tag vX.Y.Z, or use --push-local explicitly for unpublished work.")
+        return 2
 
     def execute(step: list[str]) -> subprocess.CompletedProcess:
         echo("$ " + " ".join(shlex.quote(part) for part in step))
@@ -255,13 +261,15 @@ def update_hub(*, ssh: str, path: str, service: str, branch: str, push_local: bo
             f" && current_commit=$(git rev-parse --verify HEAD) && test \"$current_commit\" = {expected}"
         )
     else:
-        upstream = shlex.quote(f"refs/remotes/origin/{branch}")
-        remote += f" && {lock} && {clean_worktree} && git fetch origin && git checkout {branch_name} && git merge --ff-only {upstream}"
+        remote += f" && {lock} && {clean_worktree} && {_release_checkout(tag)}"
+    preflight = "/usr/local/sbin/tk-security-preflight"
+    if require_host_preflight or ssh == "tk-server":
+        remote += f' && (test -x {preflight} || {{ echo "Missing required hub security preflight." >&2; exit 1; }})'
     # Updating source alone leaves the old dependency/trust bundle installed.
     # Stop before restart unless both the installed package and host guard pass.
-    remote += " && .venv/bin/python -m pip install --require-hashes -r requirements-build.txt && .venv/bin/python -m pip install --no-deps --no-build-isolation . && .venv/bin/python -m pip check"
+    remote += " && sh scripts/install-hub-runtime.sh"
     remote += " && .venv/bin/python -I -B scripts/verify-runtime.py"
-    remote += " && (test ! -x /usr/local/sbin/tk-security-preflight || sudo /usr/local/sbin/tk-security-preflight burnrate)"
+    remote += f" && (test ! -x {preflight} || sudo {preflight} burnrate)"
     # Liveness is public even on a protected hub. Read build metadata over the
     # already-authorized SSH connection instead of passing an API credential.
     health_url = shlex.quote(f"http://127.0.0.1:{port}/healthz")
@@ -290,6 +298,25 @@ def update_hub(*, ssh: str, path: str, service: str, branch: str, push_local: bo
     return 0
 
 
+def _release_checkout(tag: str) -> str:
+    if not _RELEASE_TAG.fullmatch(tag):
+        raise ValueError("A version tag is required.")
+    ref = shlex.quote(f"refs/tags/{tag}")
+    allowed_signers = shlex.quote(_ALLOWED_SIGNERS)
+    # Pin both the exact fetched tag object and its target, then switch to the
+    # verified commit. Fetch without force so a moved local tag is refused.
+    return (
+        f"git fetch --no-tags origin {ref}:{ref}"
+        f' && tag_object=$(git rev-parse --verify {ref}) && test "$(git cat-file -t "$tag_object")" = tag'
+        f" && test -r {allowed_signers} && test ! -L {allowed_signers}"
+        f' && git -c gpg.ssh.allowedSignersFile={allowed_signers} -c gpg.minTrustLevel=fully verify-tag "$tag_object"'
+        f' && expected_commit=$(git rev-parse --verify "$tag_object^{{commit}}")'
+        f' && test "$(git rev-parse --verify {ref})" = "$tag_object"'
+        ' && git checkout --detach "$expected_commit"'
+        ' && test "$(git rev-parse --verify HEAD)" = "$expected_commit"'
+    )
+
+
 def add_parser(subparsers) -> None:
     hub = subparsers.add_parser("hub", help="Manage the hub this computer syncs to")
     commands = hub.add_subparsers(dest="hub_command", required=True)
@@ -297,7 +324,9 @@ def add_parser(subparsers) -> None:
     update.add_argument("--ssh", default=os.getenv("BURNRATE_HUB_SSH", ""), help="ssh host or alias of the hub")
     update.add_argument("--path", default=os.getenv("BURNRATE_HUB_PATH", "/opt/burnrate"), help="Hub checkout path")
     update.add_argument("--service", default=os.getenv("BURNRATE_HUB_SERVICE", "burnrate-hub"), help="systemd unit")
-    update.add_argument("--branch", default=os.getenv("BURNRATE_HUB_BRANCH", "prod"), help="Branch the hub tracks")
+    update.add_argument("--tag", default="", help="The signed release tag to deploy, for example v0.6.10")
+    update.add_argument("--branch", default=os.getenv("BURNRATE_HUB_BRANCH", "prod"), help="Branch used only by --push-local")
+    update.add_argument("--require-host-preflight", action="store_true", help="Require the host's security preflight")
     update.add_argument("--push-local", action="store_true", help="Deploy this checkout's commit (unpublished work)")
     update.add_argument("--dry-run", action="store_true", help="Print the steps without running them")
     reset_pw = commands.add_parser(

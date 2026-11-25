@@ -44,7 +44,7 @@ code or responses are ever stored.
 Run this in PowerShell. It installs for your user account, so there is no administrator prompt:
 
 ```powershell
-irm https://raw.githubusercontent.com/kamol-nazarov/myBurnRate/prod/scripts/install-native.ps1 | iex
+irm https://github.com/kamol-nazarov/myBurnRate/releases/latest/download/install-native.ps1 | iex
 ```
 
 The script reads `native-latest.json` from the latest GitHub Release, checks the release URL, the
@@ -255,7 +255,7 @@ burnrate machines list|revoke               manage connected computers on a hub
 burnrate subscription add|list|apply        effective-dated plans
 burnrate backfill                           advanced historical import
 burnrate pricing-refresh | pricing-audit    review rate cards and expiring prices
-burnrate hub update --ssh HOST              update a self-hosted hub over SSH
+burnrate hub update --ssh HOST --tag vX.Y.Z  update to a signed hub release over SSH
 ```
 
 Try the interface without collecting anything:
@@ -277,7 +277,7 @@ including `SPEND_DATABASE_PATH`, `SPEND_TIMEZONE` and `BURNRATE_NO_UPDATE_CHECK`
   (never `pip install burnrate`, which is an unrelated PyPI package), then restart
   `burnrate desktop` or `burnrate serve`:
   `python -m pip install --upgrade "https://github.com/kamol-nazarov/myBurnRate/releases/download/v<version>/burnrate-<version>-py3-none-any.whl"`.
-- **Self-hosted hub:** `burnrate hub update`, or pull a newer container tag.
+- **Self-hosted hub:** `burnrate hub update --tag vX.Y.Z`, or pull the reviewed container digest.
 - **Uninstall:** remove **myBurnRate** from Windows' installed apps. The uninstaller removes the
   program and shortcuts and offers, unticked and only interactively, to delete your data too. To
   wipe manually, stop the service and delete `%LOCALAPPDATA%\BURNRATE`.

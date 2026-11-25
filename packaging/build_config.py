@@ -61,6 +61,8 @@ def render_build_config(url: str, native_thumbprints: str = "") -> str:
 
 def write_build_config(path: Path, url: str | None = None) -> tuple[Path, str]:
     raw = os.environ.get(BUILTIN_HUB_ENV, "") if url is None else url
+    if os.environ.get("BURNRATE_PUBLIC_BUILD") == "1":
+        raw = ""
     clean = validate_builtin_hub_url(raw)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(render_build_config(clean, os.environ.get(NATIVE_THUMBPRINTS_ENV, "")), encoding="utf-8")

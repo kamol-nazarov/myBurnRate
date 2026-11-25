@@ -411,7 +411,17 @@ class TrustedProxyHeadersMiddleware:
                         if resolved:
                             scope["client"] = (resolved, 0)
 
-        await self.app(scope, receive, send)
+        if scope["type"] == "http" and scope.get("scheme") == "https":
+            async def send_https(message):
+                if message["type"] == "http.response.start":
+                    from starlette.datastructures import MutableHeaders
+
+                    MutableHeaders(scope=message)["Strict-Transport-Security"] = "max-age=31536000"
+                await send(message)
+
+            await self.app(scope, receive, send_https)
+        else:
+            await self.app(scope, receive, send)
 
 
 def main(argv: list[str] | None = None) -> int:

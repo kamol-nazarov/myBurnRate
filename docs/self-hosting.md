@@ -196,10 +196,14 @@ tailnet interface (for example `:8449` or `:443` on the Tailscale IP) or
 Tailscale Serve. Immediately after starting the service, create the owner
 account.
 
-`burnrate hub update --ssh <host>` updates a git-checkout hub from your own
-computer: it requires a clean checkout, fast-forwards it, installs its Python
-dependencies, checks the installed trust bundle, and runs an installed host
-security gate before restarting the service. It checks the public `/healthz`
+`burnrate hub update --ssh <host> --tag vX.Y.Z` updates a Git-checkout hub from
+your computer. It checks the owner-signed tag and deploys its exact commit from
+a clean checkout. Provision the reviewed SSH signing identities at
+`/etc/burnrate/release-allowed-signers` before deploying. The updater builds
+the package in an isolated build environment, installs the hashed runtime
+dependencies, checks the installed trust bundle, and runs the host security
+gate before restarting. Use `--require-host-preflight` if the host requires the
+gate and is reached through an alias other than `tk-server`. It checks the public `/healthz`
 liveness endpoint and reads the installed build over SSH, so the post-restart
 check needs no API credential; the detailed `?supervisor=1` response is
 owner-only on a hub. Keep `BURNRATE_SUMMARY_PREWARM=0` on the central hub so

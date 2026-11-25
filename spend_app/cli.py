@@ -543,7 +543,8 @@ def _main() -> int:
     if args.command == "hub" and args.hub_command == "update":
         from spend_app.hub_update import update_hub
         return update_hub(ssh=args.ssh, path=args.path, service=args.service, branch=args.branch,
-                          push_local=args.push_local, dry_run=args.dry_run)
+                          tag=args.tag, push_local=args.push_local,
+                          require_host_preflight=args.require_host_preflight, dry_run=args.dry_run)
     if args.command == "hub" and args.hub_command == "reset-password":
         from spend_app.hub_update import reset_hub_password
         return reset_hub_password(settings.database_path, args.email)
