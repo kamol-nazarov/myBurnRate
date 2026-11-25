@@ -871,8 +871,10 @@ def test_wealthfront_bridge_hub_account_sign_in_and_spoke_sync(tmp_path, monkeyp
             ),
         )
 
+    setup_proof = "synthetic-native-enrollment-proof"
     with monkeypatch.context() as hub_env:
         hub_env.setenv("BURNRATE_CENTRAL_SERVER", "1")
+        hub_env.setenv("BURNRATE_SETUP_TOKEN", setup_proof)
         hub_client = TestClient(create_app(hub_settings, enable_scheduler=False))
     spoke_client = TestClient(
         create_app(spoke_settings, enable_scheduler=False),
@@ -915,6 +917,7 @@ def test_wealthfront_bridge_hub_account_sign_in_and_spoke_sync(tmp_path, monkeyp
                 "password": "correct-horse-88",
                 "computerName": "MyDesktop",
                 "os": "win32",
+                "setupToken": setup_proof,
             },
         )
         assert reg_res.status_code == 200, reg_res.text

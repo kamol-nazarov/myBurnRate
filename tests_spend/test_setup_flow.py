@@ -382,17 +382,23 @@ def test_plan_cleanup_ends_retired_plans_and_links_custom_ones(client: TestClien
                                   "WHERE s.name='Curso Ultra'").fetchone()[0] is not None
 
 
-def test_the_hub_applies_a_plan_change_forwarded_by_a_spoke(client: TestClient, settings: Settings) -> None:
+def test_the_hub_applies_a_plan_change_forwarded_by_a_spoke(settings: Settings, monkeypatch) -> None:
     from spend_app.sync import register_machine
 
+    secret = "synthetic-plan-operator"
+    monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
+    monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", secret)
+    client = TestClient(create_app(settings, enable_scheduler=False), base_url="https://testserver")
+    operator = {"Authorization": f"Bearer {secret}", "X-BURNRATE-Request": "1"}
     _add_plan(settings, "Muse Code", "custom", "15")
     token = register_machine(settings.database_path, name="Laptop", os_name="win32")["token"]
-    plan = client.get("/api/subscriptions").json()["plans"][0]
+    plan = client.get("/api/subscriptions", headers=operator).json()["plans"][0]
     response = client.post("/api/account/subscriptions", headers={"Authorization": f"Bearer {token}", "X-BURNRATE-Request": "1"}, json={
         "action": "plan", "operation": "end", "request_id": "spoke-end-muse", "plan_id": plan["id"],
         "expected_version": plan["version"], "end_date": "2026-10-26"})
     assert response.status_code == 403
-    registered = client.post("/api/account/register", headers=SETUP, json={"username": "owner@example.com", "password": "synthetic-long-password", "sessionOnly": True})
+    registered = client.post("/api/account/register", headers=operator, json={"username": "owner@example.com", "password": "synthetic-long-password", "sessionOnly": True})
+    assert registered.status_code == 200
     assert "sessionToken" not in registered.json()
     session = registered.cookies["burnrate_access"]
     response = client.post("/api/account/subscriptions", headers={"Authorization": f"Bearer {session}", "X-BURNRATE-Request": "1"}, json={
@@ -432,11 +438,11 @@ def test_hub_update_runs_the_deploy_steps_and_refuses_odd_arguments() -> None:
 
     class Done:
         returncode = 0
-        stdout = '{"service": "BURNRATE", "version": "0.3.0-beta.18", "build": "0.3.0-beta.18+abc123"}\n'
+        stdout = '{"service": "BURNRATE", "version": "0.6.10", "build": "0.6.10+abc123"}\n'
         stderr = ""
 
     assert update_hub(ssh="my-hub", path="/opt/burnrate", service="burnrate-hub", branch="main",
-                      tag="v0.3.0-beta.18", require_host_preflight=True,
+                      tag="v0.6.10", require_host_preflight=True,
                       run=lambda step, **kwargs: calls.append(step) or Done(), echo=lines.append) == 0
     assert calls[0][:2] == ["ssh", "my-hub"]
     command = calls[0][2]
@@ -448,7 +454,7 @@ def test_hub_update_runs_the_deploy_steps_and_refuses_odd_arguments() -> None:
     assert "tk-security-preflight burnrate" in command
     assert "curl --fail" in command
     assert "checkout -f" not in command
-    assert lines[-1] == "Hub is healthy; installed build 0.3.0-beta.18+abc123."
+    assert lines[-1] == "Hub is healthy; installed build 0.6.10+abc123."
     calls.clear()
     assert update_hub(ssh="invalid host", path="/opt/burnrate", service="burnrate-hub", branch="main",
                       run=lambda step, **kwargs: calls.append(step), echo=lines.append) == 2
