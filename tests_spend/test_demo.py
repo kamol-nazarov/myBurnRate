@@ -5,12 +5,11 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi.testclient import TestClient
-
 from spend_app import demo
 from spend_app.api import create_app
 from spend_app.config import Settings
 from spend_app.db import connect
+from tests_spend.local_client_fixture import local_client
 
 ROOT = Path(__file__).resolve().parents[1]
 NOW = datetime(2026, 10, 22, 18, 30, tzinfo=UTC)
@@ -58,7 +57,7 @@ def test_the_same_seed_draws_the_same_month(tmp_path: Path) -> None:
 def test_the_demo_hud_shows_meters_repos_and_a_week_worth_more_than_its_plans(tmp_path: Path) -> None:
     database = tmp_path / "spend.db"
     demo.seed(database, now=NOW)
-    client = TestClient(create_app(_settings(database), enable_scheduler=False, now=NOW))
+    client = local_client(create_app(_settings(database), enable_scheduler=False, now=NOW), database)
     hud = client.get("/api/spend/hud", params={"machine": "all"}).json()
     meters = {(card["providerKey"], row["limitKey"]): row["pct"] for card in hud["capacity"] for row in card["rows"]}
     assert meters[("claude-code", "weekly")] == 61.0 and meters[("codex", "weekly")] == 38.0
@@ -78,6 +77,6 @@ def test_demo_mode_reads_and_moves_nothing_on_this_computer(tmp_path: Path, monk
     monkeypatch.setattr(quotas, "poll_quotas", lambda **_: (_ for _ in ()).throw(AssertionError("polled")))
     database = tmp_path / "spend.db"
     demo.seed(database, now=NOW)
-    client = TestClient(create_app(_settings(database), enable_scheduler=False, now=NOW))
+    client = local_client(create_app(_settings(database), enable_scheduler=False, now=NOW), database)
     assert client.post("/api/hud/native", json={"action": "resize"}).json() == {"ok": False, "reason": "demo"}
     assert client.post("/api/spend/quotas/refresh").json()["providersPolled"] == 0

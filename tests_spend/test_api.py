@@ -10,6 +10,7 @@ import spend_app.api as api_module
 from spend_app.config import Settings
 from spend_app.db import UsageEvent, connect, initialize, upsert_usage_event
 from spend_app.pricing import PricingEngine
+from tests_spend.local_client_fixture import local_client
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -67,7 +68,7 @@ def add_fixture_event(database: Path) -> None:
 def test_api_contracts_and_generated_at(tmp_path: Path) -> None:
     database = tmp_path / "spend.db"
     add_fixture_event(database)
-    client = TestClient(create_app(make_settings(database), enable_scheduler=False))
+    client = local_client(create_app(make_settings(database), enable_scheduler=False), database)
     summary = client.get("/api/spend/summary")
     assert summary.status_code == 200
     body = summary.json()
@@ -107,7 +108,7 @@ def test_api_summary_json_over_threshold_is_gzip_compressed(tmp_path: Path) -> N
     database = tmp_path / "spend.db"
     add_fixture_event(database)
     frozen = datetime.now(UTC)
-    client = TestClient(create_app(make_settings(database), enable_scheduler=False, now=frozen))
+    client = local_client(create_app(make_settings(database), enable_scheduler=False, now=frozen), database)
 
     raw = client.get("/api/spend/summary?window=1d&tool=all", headers={"Accept-Encoding": "identity"})
     assert raw.status_code == 200
@@ -125,7 +126,7 @@ def test_api_summary_json_over_threshold_is_gzip_compressed(tmp_path: Path) -> N
 def test_summary_ignores_removed_hud_referer_compat(tmp_path: Path) -> None:
     database = tmp_path / "spend.db"
     add_fixture_event(database)
-    client = TestClient(create_app(make_settings(database), enable_scheduler=False))
+    client = local_client(create_app(make_settings(database), enable_scheduler=False), database)
     for referer in ("http://127.0.0.1:17331/hud", "http://127.0.0.1:17331/?hud=1"):
         res = client.get("/api/spend/summary", headers={"Referer": referer})
         assert res.status_code == 200
@@ -137,7 +138,7 @@ def test_summary_ignores_removed_hud_referer_compat(tmp_path: Path) -> None:
 def test_subscriptions_value_and_attention_api_roundtrip(tmp_path: Path) -> None:
     database = tmp_path / "spend.db"
     add_fixture_event(database)
-    client = TestClient(create_app(make_settings(database), enable_scheduler=False))
+    client = local_client(create_app(make_settings(database), enable_scheduler=False), database)
 
     value_res = client.get("/api/subscriptions/value", params={"period": "this_month"})
     assert value_res.status_code == 200
@@ -157,7 +158,7 @@ def test_subscriptions_value_and_attention_api_roundtrip(tmp_path: Path) -> None
 def test_api_rejects_unknown_window(tmp_path: Path) -> None:
     database = tmp_path / "spend.db"
     initialize(database)
-    client = TestClient(create_app(make_settings(database), enable_scheduler=False))
+    client = local_client(create_app(make_settings(database), enable_scheduler=False), database)
     response = client.get("/api/spend/summary", params={"window": "24h"})
     assert response.status_code == 400
 
@@ -165,7 +166,7 @@ def test_api_rejects_unknown_window(tmp_path: Path) -> None:
 def test_api_accepts_requested_windows(tmp_path: Path) -> None:
     database = tmp_path / "spend.db"
     add_fixture_event(database)
-    client = TestClient(create_app(make_settings(database), enable_scheduler=False))
+    client = local_client(create_app(make_settings(database), enable_scheduler=False), database)
     for window in ("15m", "30m", "1h", "3h", "6h", "12h", "1d", "1w", "1mo", "mtd", "ytd", "all", "7d", "30d"):
         response = client.get("/api/spend/summary", params={"window": window})
         assert response.status_code == 200, window
@@ -179,7 +180,7 @@ def test_summary_does_not_call_collect_limits(tmp_path: Path, monkeypatch) -> No
         raise AssertionError("collect_limits must not run for summary")
 
     monkeypatch.setattr(api_module, "snapshot_limits", boom)
-    client = TestClient(create_app(make_settings(database), enable_scheduler=False))
+    client = local_client(create_app(make_settings(database), enable_scheduler=False), database)
     response = client.get("/api/spend/summary")
     assert response.status_code == 200
     assert "capacity" in response.json()
@@ -191,7 +192,7 @@ def test_api_frozen_payload_keys_and_injected_now(tmp_path: Path) -> None:
     frozen = datetime(2026, 8, 30, 23, tzinfo=UTC)
     with connect(database) as connection:
         before = connection.execute("SELECT COUNT(*) FROM ingest_runs").fetchone()[0]
-    client = TestClient(create_app(make_settings(database), enable_scheduler=False, now=frozen))
+    client = local_client(create_app(make_settings(database), enable_scheduler=False, now=frozen), database)
     summary = client.get("/api/spend/summary").json()
     entity = client.get(
         "/api/spend/entity",
@@ -266,12 +267,13 @@ def test_api_window_bucket_counts_are_frozen(tmp_path: Path) -> None:
 
     database = tmp_path / "spend.db"
     add_fixture_event(database)
-    client = TestClient(
+    client = local_client(
         create_app(
             make_settings(database),
             enable_scheduler=False,
             now=datetime(2026, 8, 30, 23, tzinfo=UTC),
-        )
+        ),
+        database,
     )
     expected = {
         "15m": 15,
@@ -311,7 +313,7 @@ def test_limits_endpoint_contract(tmp_path: Path, monkeypatch) -> None:
             ],
         },
     )
-    client = TestClient(create_app(make_settings(database), enable_scheduler=False))
+    client = local_client(create_app(make_settings(database), enable_scheduler=False), database)
     response = client.get("/api/spend/limits")
     assert response.status_code == 200
     assert response.json()["providers"][0]["windows"][0]["usedPct"] == 11
@@ -323,7 +325,7 @@ def test_api_title_is_burnrate(tmp_path: Path) -> None:
     app = create_app(make_settings(database), enable_scheduler=False)
     assert app.title == "BURNRATE"
     assert app.version == __version__
-    client = TestClient(app)
+    client = local_client(app, database)
     payload = client.get("/api/spend").json()
     assert payload["service"] == "BURNRATE"
     assert payload["version"] == __version__

@@ -10,13 +10,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from spend_app import auth_model, sync as sync_module
 from spend_app.api import HUD_HUB_STALE_SECONDS, create_app
 from spend_app.config import Settings
 from spend_app.db import connect, initialize
 from spend_app.setup_wizard import write_setup_state
+from tests_spend.local_client_fixture import local_client
 
 ROOT = Path(__file__).resolve().parents[1]
 NOW = datetime(2026, 10, 22, 16, tzinfo=UTC)
@@ -207,7 +207,8 @@ def test_stale_hub_copy_past_stale_seconds_is_not_served_on_recovery_or_failure(
         assert len(calls) == 3
 
         # Through the /api/spend/hud endpoint, an aged-out copy + 503 falls back to local-only.
-        with TestClient(create_app(settings, enable_scheduler=False, now=NOW)) as client:
+        app = create_app(settings, enable_scheduler=False, now=NOW)
+        with local_client(app, settings.database_path) as client:
             hud_res = client.get("/api/spend/hud", params={"machine": "all"})
             assert hud_res.status_code == 200
             assert hud_res.json()["scope"] == "local-fallback"
