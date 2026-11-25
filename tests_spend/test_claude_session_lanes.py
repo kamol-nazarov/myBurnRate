@@ -240,7 +240,10 @@ def test_reingest_moves_existing_rows_in_place_and_journals_the_change(world: Wo
 
     from spend_app.sync import apply_sync_push, export_sync_batch
 
-    hub, now = world.database.parent / "hub.db", datetime(2026, 11, 13, tzinfo=UTC)
+    hub = world.database.parent / "hub.db"
+    # Import stamps ingested_at using the process clock. The hub should use a
+    # matching clock while accepting the fixture's historical transcripts.
+    now = max(datetime.now(UTC), datetime(2026, 11, 13, tzinfo=UTC))
     initialize(hub)
     path = _transcript(world.projects / "app" / f"{SID_TOP}.jsonl", SID_TOP, "top")
     _transcript(world.projects / "app" / f"{SID_PERSONAL}.jsonl", SID_PERSONAL, "mine")

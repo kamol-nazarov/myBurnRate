@@ -13,10 +13,9 @@ def test_heatmap_excludes_unknown_values_without_losing_known_spend(monkeypatch)
         {"when": when.replace(hour=13), "spend": None},
         {"when": when.replace(hour=14), "spend": Decimal("0")},
     ]
-    monkeypatch.setattr(aggregate, "_load_events", lambda *args: [])
-    monkeypatch.setattr(aggregate, "_load_unpriced_events", lambda *args: [])
+    monkeypatch.setattr(aggregate, "_load_usage_events", lambda *args: (enriched[:2], enriched[2:]))
     monkeypatch.setattr(aggregate, "_cost_buckets", lambda *args: {})
-    monkeypatch.setattr(aggregate, "_enrich", lambda *args: enriched)
+    monkeypatch.setattr(aggregate, "_enrich", lambda events, *_args: events)
     monkeypatch.setattr(aggregate, "_connection_identity", lambda *args: "unit")
     monkeypatch.setattr(aggregate, "_range_fingerprint", lambda *args: "unit")
     monkeypatch.setattr(aggregate, "_memo", lambda name, key, compute: compute())
