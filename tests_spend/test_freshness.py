@@ -195,7 +195,7 @@ def test_watchdog_waits_for_configured_collection_interval(tmp_path: Path, monke
     assert check() == "ok"
     assert restarts == []
     wall = NOW + timedelta(seconds=2401)
-    assert watchdog.probe(get=get) == (False, "collection stalled (last pass 2401s ago)")
+    assert watchdog.probe(get=get, token=local_key) == (False, "collection stalled (last pass 2401s ago)")
     assert check() == "restarted"
     assert restarts == [wall]
 
