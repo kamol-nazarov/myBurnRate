@@ -366,9 +366,11 @@ def test_tab_bridge_only_exposes_the_methods_the_page_uses():
 
     public = {n for n, v in inspect.getmembers(TabBridge) if not n.startswith("_") and callable(v)}
     assert public == {
-        "attach_controller", "begin_drag", "build_payload", "collapse", "expand",
-        "get_state", "open_full", "press", "refresh_now", "set_focus", "set_pill_limit",
+        "begin_drag", "collapse", "expand", "get_state", "open_full", "press",
+        "refresh_now", "set_focus", "set_pill_limit",
     }
+    assert callable(TabBridge._attach_controller)
+    assert callable(TabBridge._build_payload)
 
 
 def test_tab_bridge_refresh_now_triggers_main_page_refresh_without_opening_full():
@@ -436,8 +438,10 @@ class FakeWebviewWindow:
 def install_fake_webview(monkeypatch, *, tab_page_ok=True):
     fake = types.ModuleType("webview")
     fake.windows = []
+    fake.settings = {"ALLOW_FILE_URLS": True}
 
     def create_window(title, **kwargs):
+        assert fake.settings["ALLOW_FILE_URLS"] is False
         window = FakeWebviewWindow(kwargs, title)
         fake.windows.append(window)
         return window

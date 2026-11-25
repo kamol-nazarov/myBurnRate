@@ -543,18 +543,26 @@ def test_run_webview_sets_up_the_log_for_real_runs_only(monkeypatch, tmp_path):
     monkeypatch.setattr(ww, "_focus_existing_window", lambda title: False)
     fake = types.ModuleType("webview")
     fake.windows = []
-    fake.create_window = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("stop here"))
+    fake.settings = {"ALLOW_FILE_URLS": True}
+
+    def stop_after_hardening(*_args, **_kwargs):
+        assert fake.settings["ALLOW_FILE_URLS"] is False
+        raise RuntimeError("stop here")
+
+    fake.create_window = stop_after_hardening
     monkeypatch.setitem(sys.modules, "webview", fake)
     from spend_app.native_desktop import DemoClient
 
     for demo, smoke, expected in ((True, False, 0), (True, True, 0)):
         seen.clear()
-        with pytest.raises(RuntimeError):
+        fake.settings["ALLOW_FILE_URLS"] = True
+        with pytest.raises(RuntimeError, match="stop here"):
             ww.run_webview(DemoClient(), demo=demo, smoke_test=smoke)
         assert len(seen) == expected
     monkeypatch.setattr(ww.DesktopBridge, "_migrate_legacy_secrets", lambda self: None)
     seen.clear()
-    with pytest.raises(RuntimeError):
+    fake.settings["ALLOW_FILE_URLS"] = True
+    with pytest.raises(RuntimeError, match="stop here"):
         ww.run_webview(DemoClient(), demo=False, smoke_test=False)
     assert seen == [1]
 
