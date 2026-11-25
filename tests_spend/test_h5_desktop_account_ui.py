@@ -870,7 +870,7 @@ def test_h5_failing_vault_returns_app_903_and_preserves_tokens(
             set_vault_factory(prev_factory)
 
 
-def test_h5_legacy_sqlite_secrets_migrate_on_startup_and_fallback_when_vault_unavailable(
+def test_h5_legacy_sqlite_secrets_migrate_or_require_sign_in(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     from spend_app.connection_secrets import get_vault, set_vault_factory
@@ -926,7 +926,7 @@ def test_h5_legacy_sqlite_secrets_migrate_on_startup_and_fallback_when_vault_una
         )
         assert sync_res is not None and sync_res.get("ok") is True, sync_res
 
-    # Case B: Vault unavailable -> leave secrets in SQLite DB and keep syncing
+    # Case B: Vault unavailable -> remove the old secrets and require sign-in.
     hub_b, hub_client_b, spoke_b, _ = _create_paired_hub_and_spoke(
         tmp_path / "mig_no_vault", monkeypatch
     )
@@ -961,12 +961,13 @@ def test_h5_legacy_sqlite_secrets_migrate_on_startup_and_fallback_when_vault_una
             sync_res_b = setup_wizard.maybe_run_configured_spoke_sync(
                 spoke_b, PricingEngine([]), client=hub_client_b
             )
-            assert sync_res_b is not None and sync_res_b.get("ok") is True, sync_res_b
+            assert sync_res_b is None
         with connect(spoke_b.database_path) as conn:
             kept_st = setup_wizard.read_setup_state(conn)
-        assert kept_st["spokeConfig"].get("token") == legacy_token_b
-        assert kept_st["spokeConfig"].get("ownerSession") == legacy_session_b
-        assert bridge_b._get_machine_token() == legacy_token_b
+        assert not kept_st["spokeConfig"].get("token")
+        assert not kept_st["spokeConfig"].get("ownerSession")
+        assert kept_st["spokeConfig"]["signedOut"] is True
+        assert not bridge_b._get_machine_token()
     finally:
         set_vault_factory(prev_factory)
 

@@ -1142,7 +1142,7 @@ def test_s8_fresh_sign_in_uses_supplied_session_even_when_revoked_legacy_stored(
 # ---------------------------------------------------------------------------
 
 
-def test_b3_partial_publish_migrates_untouched_legacy_and_preserves_on_failure(
+def test_b3_partial_publish_migrates_untouched_legacy_or_discards_on_failure(
     tmp_path: Path,
 ) -> None:
     # 1) Legacy machine-only upgrade: publishing owner_session migrates DB token cleanly.
@@ -1193,7 +1193,7 @@ def test_b3_partial_publish_migrates_untouched_legacy_and_preserves_on_failure(
         assert "ownerSession" not in sc
         assert sc.get("ownerSessionRotationRequired") is True
 
-    # 3) Counterpart migration failure must preserve the unmigrated DB secret rather than dropping it.
+    # 3) Counterpart migration failure removes the remaining plaintext.
     db_fail = tmp_path / "b3_counterpart_fail.db"
     initialize(db_fail)
     with connect(db_fail) as conn:
@@ -1217,7 +1217,7 @@ def test_b3_partial_publish_migrates_untouched_legacy_and_preserves_on_failure(
     assert v3.get(OWNER_SESSION_VAULT_REF) == "br_s_owner_ok"
     with connect(db_fail) as conn:
         sc = setup_wizard.read_setup_state(conn).get("spokeConfig") or {}
-        assert sc.get("token") == "br_m_must_not_be_lost"
+        assert not sc.get("token")
 
 
 # ---------------------------------------------------------------------------
