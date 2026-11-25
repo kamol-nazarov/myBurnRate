@@ -15,7 +15,7 @@ services:
   # Refuse to publish ports on empty, wildcard (0.0.0.0 / ::), public, or
   # hostname targets unless BURNRATE_HUB_ALLOW_PUBLIC=1 is explicitly set.
   publish-check:
-    image: ${BURNRATE_HUB_IMAGE:-ghcr.io/kamol-nazarov/myburnrate-hub:0.6.11}
+    image: ${BURNRATE_HUB_IMAGE:-ghcr.io/kamol-nazarov/myburnrate-hub:0.6.11-rc.33@sha256:0ab6195bcc3112d1001a26f7ea87f7356b0826c6726fd702b5838ccccec5e2ff}
     restart: "no"
     environment:
       BURNRATE_TAILNET_IP: ${BURNRATE_TAILNET_IP:?Set BURNRATE_TAILNET_IP to this machine's Tailscale IP (e.g. 100.x.y.z)}
@@ -24,7 +24,7 @@ services:
 
   hub:
     # The v0.6.11 tag promotes this candidate digest to the 0.6.11 image.
-    image: ${BURNRATE_HUB_IMAGE:-ghcr.io/kamol-nazarov/myburnrate-hub:0.6.11}
+    image: ${BURNRATE_HUB_IMAGE:-ghcr.io/kamol-nazarov/myburnrate-hub:0.6.11-rc.33@sha256:0ab6195bcc3112d1001a26f7ea87f7356b0826c6726fd702b5838ccccec5e2ff}
     restart: unless-stopped
     depends_on:
       publish-check:
