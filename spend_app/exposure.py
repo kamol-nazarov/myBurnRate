@@ -287,7 +287,6 @@ def _resolve_forwarded_client_ip(
     hosts: set[ipaddress.IPv4Address | ipaddress.IPv6Address],
     networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network],
 ) -> str | None:
-    leftmost_valid: str | None = None
     tokens = [part.strip() for part in x_forwarded_for.split(",") if part.strip()]
     parsed_ips: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
     for token in tokens:
@@ -296,11 +295,10 @@ def _resolve_forwarded_client_ip(
             parsed_ips.append(candidate)
     if not parsed_ips:
         return None
-    leftmost_valid = str(parsed_ips[0])
     for candidate in reversed(parsed_ips):
         if not _ip_in_trusted(candidate, hosts, networks):
             return str(candidate)
-    return leftmost_valid
+    return None
 
 
 def _header_values(headers: object, target_name: str) -> list[str]:

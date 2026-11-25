@@ -7,13 +7,19 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_DIR_NAME = "BURNRATE"
 BUILTIN_HUB_MODULE = "spend_app._build_config"
 HUB_URL_ENV = "BURNRATE_HUB_URL"
+_SECURITY_ENV = {
+    HUB_URL_ENV, "BURNRATE_ALLOWED_HOSTS", "BURNRATE_ALLOWED_ORIGINS",
+    "BURNRATE_ALLOW_ADMIN_BEARER", "BURNRATE_TRUSTED_PROXIES", "SPEND_DATABASE_PATH",
+    "BURNRATE_REQUIRE_SIGNED_NATIVE", "BURNRATE_ACCESS_TOKEN", "BURNRATE_SETUP_TOKEN",
+    "BURNRATE_CENTRAL_SERVER", "BURNRATE_DATA_ROOT", "BURNRATE_TEST_HOSTS",
+}
 
 LOCAL_INGEST_INTERVAL_SECONDS = 15
 ADMIN_INGEST_INTERVAL_MINUTES = 15
@@ -178,7 +184,10 @@ def resolve_hub_url() -> str:
 
 
 def load_settings(env_path: Path | None = None) -> Settings:
-    load_dotenv(env_path or ROOT / ".env", override=False)
+    load_user_env()
+    for key, value in dotenv_values(env_path or ROOT / ".env").items():
+        if value is not None and key.upper() not in _SECURITY_ENV:
+            os.environ.setdefault(key, value)
     return Settings(
         database_path=default_database_path(),
         pricing_path=Path(os.getenv("SPEND_PRICING_PATH", ROOT / "pricing")),

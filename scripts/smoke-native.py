@@ -82,11 +82,15 @@ def smoke(app: Path) -> None:
         try:
             deadline = time.monotonic() + 25
             health = None
+            from spend_app.local_access import read_local_key
+
             with httpx.Client(trust_env=False, timeout=2) as http:
                 while time.monotonic() < deadline:
                     try:
+                        key = read_local_key(database)
                         response = http.get(
-                            f"http://127.0.0.1:{port}/healthz?supervisor=1"
+                            f"http://127.0.0.1:{port}/healthz?supervisor=1",
+                            headers={"Authorization": "Bearer " + key} if key else {},
                         )
                         if response.status_code == 200:
                             health = response.json()

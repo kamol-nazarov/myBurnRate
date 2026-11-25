@@ -165,8 +165,8 @@ def test_native_client_renews_expired_local_recovery_session(tmp_path, monkeypat
 
     import spend_app.native_desktop as desktop
     from spend_app.api import create_app
-    from spend_app.auth_model import digest
     from spend_app.db import connect
+    from spend_app.local_access import key_path
 
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "synthetic-local-recovery-authority")
     monkeypatch.delenv("BURNRATE_ALLOW_ADMIN_BEARER", raising=False)
@@ -209,10 +209,7 @@ def test_native_client_renews_expired_local_recovery_session(tmp_path, monkeypat
         with connect(client.settings.database_path) as db:
             assert db.execute("SELECT count(*) FROM owner_sessions").fetchone()[0] == 2
             db.execute("UPDATE owner_sessions SET expires_at='2000-01-01T00:00:00Z'")
-            db.execute(
-                "INSERT INTO app_meta(key, value) VALUES ('auth.break_glass.v1', ?)",
-                (digest("rotated-synthetic-authority"),),
-            )
+        key_path(client.settings.database_path).write_text("0" * 64, encoding="ascii")
 
         calls.clear()
         with pytest.raises(DesktopError, match="Error AUTH-107"):
@@ -286,7 +283,7 @@ def test_native_client_does_not_replay_unauthorized_mutation(tmp_path, monkeypat
     ]
 
 
-def test_machine_bearer_must_be_valid_for_native_usage_endpoint(tmp_path, monkeypatch):
+def test_native_usage_accepts_install_key_instead_of_machine_bearers(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
     import spend_app.native_desktop as desktop
@@ -318,12 +315,10 @@ def test_machine_bearer_must_be_valid_for_native_usage_endpoint(tmp_path, monkey
     monkeypatch.setattr(desktop.httpx, "Client", lambda **kwargs: LocalClient())
     client = _client(tmp_path)
     try:
-        monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "br_m_bogus-revoked")
-        with pytest.raises(DesktopError, match="Error DEV-301"):
-            client.snapshot("all", "all")
+        denied = application.get("/api/spend/hud/usage", headers={"Authorization": "Bearer " + valid_token})
+        assert denied.status_code == 401
         monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", valid_token)
-        with pytest.raises(DesktopError, match="Error DEV-301"):
-            client.snapshot("all", "all")
+        assert client.snapshot("all", "all")["tools"] == []
     finally:
         application.close()
 
@@ -377,7 +372,11 @@ def test_service_health_accepts_real_burnrate_supervisor_response(
         lambda *args, **kwargs: pytest.fail("healthy BURNRATE service must be reused"),
     )
     try:
-        probe = application.get("/healthz?supervisor=1")
+        from spend_app.local_access import read_local_key
+
+        probe = application.get("/healthz?supervisor=1", headers={
+            "Authorization": "Bearer " + read_local_key(settings.database_path)
+        })
         assert probe.status_code == 200
         assert probe.json()["protocolVersion"] == HUB_PROTOCOL_VERSION
         _client(tmp_path).ensure_service()
@@ -715,6 +714,9 @@ def test_source_mutation_retries_committed_connection_with_same_id_and_rotates_o
     server = TestClient(
         create_app(settings, enable_scheduler=False), base_url="http://127.0.0.1:17331"
     )
+    from spend_app.local_access import read_local_key
+
+    server.headers["Authorization"] = "Bearer " + read_local_key(settings.database_path)
 
     class CommitThenLoseFirstReply:
         def __init__(self):
@@ -869,7 +871,9 @@ def test_wealthfront_bridge_hub_account_sign_in_and_spoke_sync(tmp_path, monkeyp
             ),
         )
 
-    hub_client = TestClient(create_app(hub_settings, enable_scheduler=False))
+    with monkeypatch.context() as hub_env:
+        hub_env.setenv("BURNRATE_CENTRAL_SERVER", "1")
+        hub_client = TestClient(create_app(hub_settings, enable_scheduler=False))
     spoke_client = TestClient(
         create_app(spoke_settings, enable_scheduler=False),
         base_url="http://127.0.0.1:17331",

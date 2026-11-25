@@ -608,7 +608,10 @@ def _create_hub_and_paired_spoke(
     monkeypatch.setenv("BURNRATE_HUB_URL", HUB_URL)
     spoke_settings = _settings(tmp_path / f"spoke_{name_suffix}.db")
     spoke_app = create_app(spoke_settings, enable_scheduler=False)
-    spoke_client = TestClient(spoke_app, base_url=LOCAL_SPOKE_URL, client=("127.0.0.1", 50001))
+    from spend_app.local_access import read_local_key
+
+    spoke_client = TestClient(spoke_app, base_url=LOCAL_SPOKE_URL, client=("127.0.0.1", 50001),
+                              headers={"Authorization": "Bearer " + read_local_key(spoke_settings.database_path)})
 
     if legacy_username is None:
         reg = hub_client.post(

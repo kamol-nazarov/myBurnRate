@@ -35,10 +35,11 @@ def auth_router(settings):
     @router.post("/api/auth/bootstrap")
     def bootstrap(request: Request):
         actor = request.state.principal
-        if actor.via != "break-glass":
+        if actor.via not in {"break-glass", "local-bootstrap"}:
             return JSONResponse({"error": "Use the configured break-glass bearer."}, status_code=403)
         with connect(settings.database_path) as connection:
-            data = create_session(connection, actor, "Recovery session", subject_id=owner_id(connection))
+            subject = actor.id if actor.via == "local-bootstrap" else owner_id(connection)
+            data = create_session(connection, actor, "Recovery session", subject_id=subject)
             audit(connection, actor, "login", "bootstrap")
         return set_session_cookie(JSONResponse(
             {"ok": True, "sessionId": data["sessionId"], "expiresAt": data["expiresAt"]},

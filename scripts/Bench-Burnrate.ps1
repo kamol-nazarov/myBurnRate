@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$BaseUrl = 'http://127.0.0.1:17331',
+    [string]$KeyPath,
     [int]$Requests = 20,
     [string]$Baseline = (Join-Path (Split-Path -Parent $PSScriptRoot) 'docs\perf-baseline.json')
 )
@@ -10,6 +11,22 @@ param(
 # A baseline JSON is optional; without it the script still prints p50/p95.
 
 $ErrorActionPreference = 'Stop'
+$origin = [Uri]$BaseUrl
+if (-not $origin.IsLoopback -or $origin.Scheme -notin 'http', 'https' -or $origin.UserInfo -or
+    $origin.AbsolutePath -ne '/' -or $origin.Query -or $origin.Fragment) {
+    throw 'Benchmark credentials are only sent to a loopback origin.'
+}
+$BaseUrl = $origin.GetLeftPart([UriPartial]::Authority)
+if (-not $KeyPath) {
+    . (Join-Path $PSScriptRoot 'BurnrateRuntime.ps1')
+    $database = if ($env:SPEND_DATABASE_PATH) { $env:SPEND_DATABASE_PATH } else { Get-BurnrateDbPath }
+    $KeyPath = Join-Path (Split-Path -Parent $database) '.burnrate-auth\access.key'
+}
+$bearer = (Get-Content -Raw -LiteralPath $KeyPath).Trim()
+if ($bearer -cnotmatch '^[a-f0-9]{64}$') {
+    throw 'The local credential file has an invalid format.'
+}
+$apiHeaders = @{ Authorization = "Bearer $bearer" }
 $limits = $null
 if (Test-Path -LiteralPath $Baseline) {
     $limits = Get-Content -Raw -LiteralPath $Baseline | ConvertFrom-Json
@@ -19,7 +36,7 @@ function Measure-Endpoint([string]$Uri, [int]$Count) {
     $samples = @()
     for ($i = 0; $i -lt $Count; $i++) {
         $sw = [Diagnostics.Stopwatch]::StartNew()
-        $null = Invoke-WebRequest -UseBasicParsing -Uri $Uri
+        $null = Invoke-WebRequest -UseBasicParsing -MaximumRedirection 0 -Headers $apiHeaders -Uri $Uri
         $sw.Stop()
         $samples += $sw.Elapsed.TotalMilliseconds
     }
@@ -35,8 +52,11 @@ function Measure-Endpoint([string]$Uri, [int]$Count) {
 }
 
 function Measure-Transfer([string]$Uri) {
-    $gzip = & curl.exe -s -o NUL -w '%{size_download}' -H 'Accept-Encoding: gzip' $Uri
-    $raw = & curl.exe -s -o NUL -w '%{size_download}' -H 'Accept-Encoding: identity' $Uri
+    $cfg = if (([Uri]$Uri).AbsolutePath.StartsWith('/api/')) {
+        'header = "Authorization: Bearer ' + $bearer + '"'
+    } else { '' }
+    $gzip = $cfg | & curl.exe --config - -s -o NUL -w '%{size_download}' -H 'Accept-Encoding: gzip' $Uri
+    $raw = $cfg | & curl.exe --config - -s -o NUL -w '%{size_download}' -H 'Accept-Encoding: identity' $Uri
     [pscustomobject]@{ gzip = [int]$gzip; raw = [int]$raw }
 }
 

@@ -937,8 +937,12 @@ def redact_legacy_ingest_errors(
 
 
 def migrate_setup_hub_url(path: Path) -> bool:
-    """Migrate saved setup state to the resolved hub URL and drop legacy serverUrl."""
+    """Update the configured origin without transferring credentials to it."""
     from spend_app.config import resolve_hub_url
+    from spend_app.connection_secrets import (
+        MACHINE_TOKEN_VAULT_REF, OWNER_SESSION_VAULT_REF, db_secret_lock, get_vault,
+    )
+    from spend_app.hub_origin import hub_origin
     from spend_app.setup_wizard import SETUP_META_KEY
 
     try:
@@ -956,7 +960,7 @@ def migrate_setup_hub_url(path: Path) -> bool:
                 return True
         return False
 
-    with connect(path) as connection:
+    with db_secret_lock(path), connect(path) as connection:
         row = connection.execute(
             "SELECT value FROM app_meta WHERE key=?", (SETUP_META_KEY,)
         ).fetchone()
@@ -985,6 +989,30 @@ def migrate_setup_hub_url(path: Path) -> bool:
             account.pop("serverUrl", None)
         spoke = parsed.get("spokeConfig")
         if resolved and isinstance(spoke, dict) and (spoke.get("hubUrl") or spoke.get("enabled")):
+            old_url = spoke.get("credentialOrigin") or spoke.get("hubUrl")
+            try:
+                same_origin = bool(old_url and hub_origin(old_url) == resolved)
+            except ValueError:
+                same_origin = False
+            if not same_origin:
+                connection.execute("PRAGMA secure_delete = ON")
+                spoke.pop("token", None)
+                spoke.pop("ownerSession", None)
+                spoke.pop("ownerSessionExpiresAt", None)
+                spoke.pop("tokenExpiresAt", None)
+                spoke["credentialOrigin"] = old_url or None
+                spoke["credentialGeneration"] = int(spoke.get("credentialGeneration") or 0) + 1
+                spoke["enabled"] = False
+                spoke["signedOut"] = True
+                spoke["requiresHubSignIn"] = True
+                try:
+                    vault = get_vault(path)
+                    for reference in (MACHINE_TOKEN_VAULT_REF, OWNER_SESSION_VAULT_REF):
+                        vault.delete(reference)
+                except Exception:
+                    # The persisted scope still prevents a failed vault
+                    # deletion from authorizing a credential at the new hub.
+                    pass
             spoke["hubUrl"] = resolved
         connection.execute(
             "INSERT INTO app_meta(key, value) VALUES(?, ?) "

@@ -156,6 +156,25 @@ def read_vault_secret(database_path: Path | str | None, ref: str, *, vault=None)
         return None
 
 
+def credential_origin_ref(token: str) -> str:
+    return "burnrate-origin-" + hashlib.sha256(token.encode()).hexdigest()
+
+
+def credential_origin_allowed(database_path, token: str, origin: str, spoke: dict, *, vault=None) -> bool:
+    from spend_app.hub_origin import bound_hub_origin
+
+    if not token:
+        return False
+    try:
+        expected = bound_hub_origin(spoke, origin)
+    except ValueError:
+        return False
+    recorded = read_vault_secret(database_path, credential_origin_ref(token), vault=vault)
+    if recorded is None:
+        return not bool(spoke.get("credentialOrigin"))
+    return recorded == expected
+
+
 def verified_vault_put(vault, secret: str, ref: str) -> str:
     """Write ``secret`` to ``vault`` at ``ref`` and verify readback matches."""
     if vault is None:
@@ -1221,6 +1240,7 @@ def publish_spoke_credentials(
     """
     from spend_app.db import connect, initialize
     from spend_app.error_codes import CodedError
+    from spend_app.hub_origin import hub_origin
     from spend_app.setup_wizard import read_setup_state, write_setup_state
 
     db_file = Path(database_path)
@@ -1326,6 +1346,24 @@ def publish_spoke_credentials(
                     apply_state(connection, state)
 
                 spoke = dict(state.get("spokeConfig") or {})
+                if (clean_owner or clean_machine) and spoke.get("hubUrl"):
+                    new_origin = hub_origin(spoke["hubUrl"])
+                    old_origin = orig_spoke.get("credentialOrigin") or orig_spoke.get("hubUrl")
+                    issued = {value for value in (clean_owner, clean_machine) if value}
+                    if old_origin and hub_origin(old_origin) == new_origin:
+                        issued.update(value for value in (
+                            prev_owner if not clean_owner else None,
+                            prev_machine if not clean_machine else None,
+                        ) if value)
+                    for value in issued:
+                        ref = credential_origin_ref(value)
+                        existing = read_vault_secret(db_file, ref, vault=use_vault)
+                        if existing and existing != new_origin:
+                            raise CodedError("AUTH-107", status_code=401)
+                        if existing is None:
+                            verified_vault_put(use_vault, new_origin, ref)
+                    spoke["credentialOrigin"] = new_origin
+                    spoke.pop("requiresHubSignIn", None)
                 if clean_machine or migrated_legacy_machine:
                     spoke.pop("token", None)
                     if migrated_legacy_machine and not clean_machine:

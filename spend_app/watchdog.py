@@ -188,12 +188,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=int(os.environ.get("BURNRATE_PORT", str(service.DEFAULT_PORT))))
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
-    from spend_app.config import load_user_env
+    from spend_app.config import load_settings, load_user_env
+    from spend_app.local_access import read_local_key
 
     load_user_env()
     _configure_logging()
-    token = os.environ.get("BURNRATE_ACCESS_TOKEN", "").strip() or None
     try:
+        token = read_local_key(load_settings().database_path) or os.environ.get("BURNRATE_ACCESS_TOKEN", "").strip() or None
         outcome = check_once(port=args.port, dry_run=args.dry_run, token=token)
     except Exception:
         LOG.exception("watchdog run failed")

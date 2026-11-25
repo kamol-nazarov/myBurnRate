@@ -220,13 +220,14 @@ def normalize_spoke_sync_error(value: object) -> str | None:
 
 def public_setup_state(state: dict, *, database_path: Path | None = None) -> dict:
     spoke = dict(state.get("spokeConfig") or {})
+    spoke.pop("credentialOrigin", None)
     raw_hub_url = str(spoke.pop("hubUrl", "") or "").strip()
     spoke["hubConfigured"] = bool(raw_hub_url or spoke.get("hubConfigured"))
     raw_token = str(spoke.get("token") or "")
     raw_session = spoke.pop("ownerSession", None)
     has_token = bool(raw_token)
     has_session = bool(raw_session)
-    if database_path is not None:
+    if database_path is not None and not spoke.get("requiresHubSignIn"):
         from spend_app.connection_secrets import (
             MACHINE_TOKEN_VAULT_REF,
             OWNER_SESSION_VAULT_REF,
@@ -235,7 +236,7 @@ def public_setup_state(state: dict, *, database_path: Path | None = None) -> dic
 
         if not has_token:
             has_token = bool(read_vault_secret(database_path, MACHINE_TOKEN_VAULT_REF))
-        if not has_session:
+        if not has_session and not spoke.get("signedOut"):
             has_session = bool(read_vault_secret(database_path, OWNER_SESSION_VAULT_REF))
     spoke["hasToken"] = has_token
     spoke.pop("token", None)
@@ -613,9 +614,10 @@ def _should_auto_rotate_token(
 def rotate_spoke_machine_token(settings, *, client=None) -> dict | None:
     """Exchange the configured spoke's machine bearer for a fresh one on the hub."""
     from spend_app.config import resolve_hub_url
-    from spend_app.hub_origin import hub_origin
+    from spend_app.hub_origin import bound_hub_origin
     from spend_app.connection_secrets import (
         MACHINE_TOKEN_VAULT_REF,
+        credential_origin_allowed,
         mark_cleanup_pending_in_tx,
         publish_spoke_credentials,
         read_vault_secret,
@@ -639,10 +641,12 @@ def rotate_spoke_machine_token(settings, *, client=None) -> dict | None:
     )
     if not token:
         return None
-    raw_hub_url = resolve_hub_url() or str(spoke.get("hubUrl") or "").strip()
-    if not raw_hub_url:
+    try:
+        hub_url = bound_hub_origin(spoke, resolve_hub_url())
+    except ValueError:
         return None
-    hub_url = hub_origin(raw_hub_url)
+    if not credential_origin_allowed(settings.database_path, token, hub_url, spoke):
+        return None
     prior_generation = read_sync_cursor(settings.database_path, hub_url).get("generation")
     headers = {
         "Authorization": f"Bearer {token}",
@@ -748,8 +752,9 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
     if state.get("role") != "spoke" or not spoke.get("enabled"):
         return None
     from spend_app.config import resolve_hub_url
-    from spend_app.hub_origin import hub_origin
+    from spend_app.hub_origin import bound_hub_origin
     from spend_app.sync import _vault_get_secret, migrate_legacy_spoke_secrets
+    from spend_app.connection_secrets import credential_origin_allowed
 
     migrated = migrate_legacy_spoke_secrets(settings.database_path)
     if migrated.get("token") or migrated.get("ownerSession"):
@@ -766,10 +771,12 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
     if not token:
         return None
     try:
-        configured_hub_url = resolve_hub_url() or str(spoke.get("hubUrl") or "").strip().rstrip("/")
-        if not configured_hub_url:
-            return None
-        hub_url = hub_origin(configured_hub_url)
+        hub_url = bound_hub_origin(spoke, resolve_hub_url())
+    except ValueError:
+        return None
+    if not credential_origin_allowed(settings.database_path, token, hub_url, spoke):
+        return None
+    try:
         resolved_client = client or _HUB_TEST_CLIENTS.get(hub_url)
         result = sync_once(
             settings,
@@ -791,7 +798,7 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
             latest_tok = str(latest["spokeConfig"].get("token") or "").strip() or (
                 _vault_get_secret(settings.database_path, "burnrate-machine-token") or ""
             )
-            if latest_tok != token or latest_hub != configured_hub_url:
+            if latest_tok != token or latest_hub != hub_url:
                 return {"ok": False, "error": "Hub connection changed; retry sync with the current configuration."}
             latest["spokeConfig"]["lastSyncAt"] = utc_now()
             latest["spokeConfig"]["lastSyncError"] = None
@@ -840,7 +847,7 @@ def maybe_run_configured_spoke_sync(settings, pricing: PricingEngine, *, client=
             latest_tok = str(latest["spokeConfig"].get("token") or "").strip() or (
                 _vault_get_secret(settings.database_path, "burnrate-machine-token") or ""
             )
-            if latest_tok != token or latest_hub != configured_hub_url:
+            if latest_tok != token or latest_hub != hub_url:
                 return {"ok": False, "error": "Hub connection changed; retry sync with the current configuration."}
             latest["spokeConfig"]["lastSyncError"] = code
             write_setup_state(connection, latest)
@@ -1085,9 +1092,10 @@ def _call_central_server_account(
                             cookies.jar.set_cookie(cookie)
             else:
                 import httpx
+                from spend_app.hub_response import bounded_request
 
                 with httpx.Client(timeout=8.0, trust_env=False) as http:
-                    res = http.post(f"{base_url}{endpoint_path}", json=payload, headers=headers)
+                    res = bounded_request(http, "POST", f"{base_url}{endpoint_path}", json=payload, headers=headers)
             try:
                 data = res.json() if getattr(res, "content", b"") else {}
             except ValueError:
@@ -2106,8 +2114,10 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                                         cookies.jar.set_cookie(cookie)
                         else:
                             import httpx
+                            from spend_app.hub_response import bounded_request
                             with httpx.Client(timeout=8.0, trust_env=False) as http:
-                                reg_res = http.post(f"{working_url}/api/machines", json=reg_payload, headers=reg_headers)
+                                reg_res = bounded_request(http, "POST", f"{working_url}/api/machines",
+                                                          json=reg_payload, headers=reg_headers)
                     except Exception as exc:
                         err_code, err_status = map_transport_error(exc)
                         raise CodedError(err_code, status_code=err_status) from exc

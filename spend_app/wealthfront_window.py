@@ -2052,6 +2052,11 @@ class DesktopBridge:
                 "setup": setup.get("setup") or {},
                 "hubAvailable": bool(setup.get("hubAvailable", False)),
             }
+            hub, _error = self._resolve_hub_origin()
+            if hub:
+                from urllib.parse import urlsplit
+
+                payload["hubHost"] = urlsplit(hub).netloc
             return self._enrich_account_payload(payload, fetch_remote_machines=True)
         except DesktopError as exc:
             out = {"ok": False, "error": str(exc)}
@@ -2493,6 +2498,7 @@ class DesktopBridge:
         db_token: str | None = None
         db_expires_at: str | None = None
         db_gen: int | None = None
+        requires_sign_in = False
         if db_path is not None and db_path.is_file():
             try:
                 from spend_app.db import connect
@@ -2502,6 +2508,7 @@ class DesktopBridge:
                     state = read_setup_state(conn)
                 spoke = state.get("spokeConfig") or {}
                 db_gen = int(spoke.get("credentialGeneration") or 0)
+                requires_sign_in = bool(spoke.get("requiresHubSignIn"))
                 db_token = str(spoke.get("ownerSession") or "").strip() or None
                 db_expires_at = spoke.get("ownerSessionExpiresAt")
             except Exception:
@@ -2510,6 +2517,11 @@ class DesktopBridge:
                 db_gen = None
 
         with self._owner_session_lock:
+            if requires_sign_in:
+                self._owner_session = None
+                self._owner_session_expires_at = None
+                self._owner_session_gen = db_gen
+                return None, None, db_gen
             if (
                 db_gen is not None
                 and self._owner_session_gen is not None
@@ -2662,6 +2674,7 @@ class DesktopBridge:
         flush_pending: bool = True,
     ) -> tuple[dict | None, object | None, dict | None]:
         import httpx
+        from spend_app.connection_secrets import credential_origin_allowed
         from spend_app.setup_wizard import _hub_protocol_handshake
         from spend_app.sync import _HUB_TEST_CLIENTS
 
@@ -2673,6 +2686,20 @@ class DesktopBridge:
         if json_body is not None:
             headers["Content-Type"] = "application/json"
 
+        if token and not fresh_session:
+            db_path = self._db_path()
+            if db_path is not None and db_path.is_file():
+                from spend_app.db import connect
+                from spend_app.setup_wizard import read_setup_state
+
+                try:
+                    with connect(db_path) as connection:
+                        spoke = read_setup_state(connection)["spokeConfig"]
+                    if not credential_origin_allowed(db_path, token, hub_url, spoke, vault=self._resolve_vault()):
+                        raise ValueError("Hub credential is outside its issuing origin.")
+                except (OSError, ValueError):
+                    return None, None, {"ok": False, "code": "AUTH-107",
+                                        "error": format_error("AUTH-107")}
         try:
             if handshake:
                 _hub_protocol_handshake(hub_url, test_client)
@@ -2734,12 +2761,14 @@ class DesktopBridge:
                         for cookie in saved_jar:
                             cookies.jar.set_cookie(cookie)
             else:
+                from spend_app.hub_response import bounded_request
+
                 with httpx.Client(timeout=10.0, trust_env=False, follow_redirects=False) as http:
                     url = f"{hub_url}{path}"
                     if method == "GET":
-                        res = http.get(url, headers=headers)
+                        res = bounded_request(http, "GET", url, headers=headers)
                     else:
-                        res = http.post(url, json=json_body, headers=headers)
+                        res = bounded_request(http, "POST", url, json=json_body, headers=headers)
         except CodedError as exc:
             if token and not fresh_session and exc.code == "AUTH-107":
                 with self._owner_session_lock:

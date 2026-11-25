@@ -47,6 +47,23 @@ def _make_settings(db_path: Path) -> Settings:
     )
 
 
+def _local_client(settings):
+    from spend_app.local_access import read_local_key
+
+    app = create_app(settings, enable_scheduler=False)
+    headers = {"Authorization": "Bearer " + read_local_key(settings.database_path)}
+    return TestClient(app, headers=headers)
+
+
+def _configured_test_hub(settings, monkeypatch):
+    token = "configured-test-hub-recovery"
+    with monkeypatch.context() as env:
+        env.setenv("BURNRATE_CENTRAL_SERVER", "1")
+        env.setenv("BURNRATE_ACCESS_TOKEN", token)
+        app = create_app(settings, enable_scheduler=False)
+    return TestClient(app, headers={"Authorization": "Bearer " + token})
+
+
 # ---------------------------------------------------------------------------
 # Build-time packaging/build_config.py
 # ---------------------------------------------------------------------------
@@ -323,7 +340,7 @@ def test_resolve_hub_url_precedence_and_no_hub_clean(
 
     settings = _make_settings(tmp_path / "nohub.db")
     initialize(settings.database_path)
-    with TestClient(create_app(settings, enable_scheduler=False)) as client:
+    with _local_client(settings) as client:
         res = client.get("/api/setup/state")
         assert res.status_code == 200
         payload = res.json()
@@ -513,7 +530,7 @@ def test_machines_sync_command_omits_hub_url(
     initialize(settings.database_path)
 
     monkeypatch.setenv("BURNRATE_HUB_URL", "https://hub.example:8449")
-    with TestClient(create_app(settings, enable_scheduler=False)) as client:
+    with _local_client(settings) as client:
         machine_res = client.post(
             "/api/machines",
             headers=SETUP_HEADERS,
@@ -541,10 +558,7 @@ def test_setup_account_ignores_server_url_in_request_body(
     configured_hub = "https://configured-hub.example:8449"
     monkeypatch.setenv("BURNRATE_HUB_URL", configured_hub)
 
-    with (
-        TestClient(create_app(hub_settings, enable_scheduler=False)) as hub_client,
-        TestClient(create_app(spoke_settings, enable_scheduler=False), base_url="http://testserver") as spoke_client,
-    ):
+    with _configured_test_hub(hub_settings, monkeypatch) as hub_client, _local_client(spoke_settings) as spoke_client:
         monkeypatch.setitem(sync._HUB_TEST_CLIENTS, configured_hub, hub_client)
         reg = hub_client.post(
             "/api/account/register",
@@ -662,10 +676,7 @@ def test_acceptance_sentinel_hub_url_never_leaks(
     initialize(hub_settings.database_path)
     initialize(spoke_settings.database_path)
 
-    with (
-        TestClient(create_app(hub_settings, enable_scheduler=False)) as hub_client,
-        TestClient(create_app(spoke_settings, enable_scheduler=False), base_url="http://testserver") as spoke_client,
-    ):
+    with _configured_test_hub(hub_settings, monkeypatch) as hub_client, _local_client(spoke_settings) as spoke_client:
         # 1. /api/setup/state
         state_res = spoke_client.get("/api/setup/state")
         assert state_res.status_code == 200

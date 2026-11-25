@@ -90,10 +90,14 @@ def test_saturated_reads_leave_health_responsive(tmp_path, monkeypatch):
 
     monkeypatch.setattr(hud, "live_snapshot", slow_snapshot)
     app = create_app(settings, enable_scheduler=False)
+    from spend_app.local_access import read_local_key
+
+    bearer = "Bearer " + read_local_key(settings.database_path)
 
     async def exercise():
         async with app.router.lifespan_context(app), httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+            headers={"Authorization": bearer},
         ) as client:
             pending = asyncio.create_task(client.get("/api/spend/hud"))
             try:

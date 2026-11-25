@@ -9400,6 +9400,7 @@ function h5HubAccountHtml(context = "settings") {
       <span class="state-badge">Not signed in</span>
     </div>
     ${!state.accountError ? '<div class="h5-hint">Sign in on every computer you want to track. Usage from all of them comes together in this app.</div>' : ""}
+    ${state.settingsData.hubHost ? `<div class="h5-hint">Hub ${esc(state.settingsData.hubHost)}</div>` : ""}
     <div class="h5-seg" role="tablist" aria-label="Account mode">
       <button class="h5-seg-btn ${mode === "login" ? "on" : ""}" id="${prefix}authMode_login" type="button" role="tab" aria-selected="${mode === "login"}" onclick="setAccountAuthMode('login')">Sign in</button>
       <button class="h5-seg-btn ${mode === "register" ? "on" : ""}" id="${prefix}authMode_register" type="button" role="tab" aria-selected="${mode === "register"}" onclick="setAccountAuthMode('register')">Create account</button>

@@ -1956,8 +1956,10 @@ def _hub_post_with_cookie_isolation(hub_url: str, path: str, headers: dict, *, j
                 for cookie in saved_jar:
                     cookies.jar.set_cookie(cookie)
     import httpx
+    from spend_app.hub_response import bounded_request
     with httpx.Client(timeout=timeout, trust_env=False, follow_redirects=False) as http:
-        return http.post(f"{hub_url}{path}", json=(json_body if json_body is not None else {}), headers=headers)
+        return bounded_request(http, "POST", f"{hub_url}{path}",
+                               json=(json_body if json_body is not None else {}), headers=headers)
 
 
 def ensure_fresh_owner_session(
@@ -2218,11 +2220,11 @@ def post_to_configured_hub(
     if not spoke.get("enabled"):
         return None
     from spend_app.config import resolve_hub_url
-    from spend_app.hub_origin import hub_origin
+    from spend_app.connection_secrets import credential_origin_allowed
+    from spend_app.hub_origin import bound_hub_origin
 
     try:
-        raw_hub_url = resolve_hub_url() or str(spoke.get("hubUrl") or "").strip()
-        hub_url = hub_origin(raw_hub_url) if raw_hub_url else ""
+        hub_url = bound_hub_origin(spoke, resolve_hub_url())
     except ValueError as exc:
         if strict:
             raise HubMutationError(str(exc), 422) from exc
@@ -2240,7 +2242,7 @@ def post_to_configured_hub(
             _vault_get_secret(settings.database_path, "burnrate-machine-token") or ""
         )
         using_owner_session = False
-    if not hub_url or not token:
+    if not credential_origin_allowed(settings.database_path, token, hub_url, spoke):
         if strict:
             raise HubMutationError("Reconnect this computer to its hub before saving plans.")
         return None
@@ -2266,8 +2268,7 @@ def post_to_configured_hub(
                 current = read_setup_state(connection)
             current_spoke = current["spokeConfig"]
             try:
-                raw_url = resolve_hub_url() or str(current_spoke.get("hubUrl") or "").strip()
-                current_url = hub_origin(raw_url) if raw_url else ""
+                current_url = bound_hub_origin(current_spoke, resolve_hub_url())
             except ValueError as exc:
                 raise HubMutationError(scope_changed, 409) from exc
             current_owner = str(current_spoke.get("ownerSession") or "").strip() or (
@@ -2292,9 +2293,10 @@ def post_to_configured_hub(
             response = test_client.post(path, json=body, headers=headers)
         else:
             import httpx
+            from spend_app.hub_response import bounded_request
 
             with httpx.Client(timeout=5.0, trust_env=False) as http:
-                response = http.post(f"{hub_url}{path}", json=body, headers=headers)
+                response = bounded_request(http, "POST", f"{hub_url}{path}", json=body, headers=headers)
         if not 200 <= response.status_code < 300:
             if strict:
                 status = response.status_code
@@ -2614,13 +2616,11 @@ def fetch_from_configured_hub(
     if not spoke.get("enabled"):
         return None
     from spend_app.config import resolve_hub_url
-    from spend_app.hub_origin import hub_origin
+    from spend_app.connection_secrets import credential_origin_allowed
+    from spend_app.hub_origin import bound_hub_origin
 
     try:
-        raw_hub_url = resolve_hub_url() or str(spoke.get("hubUrl") or "").strip()
-        if not raw_hub_url:
-            return None
-        hub_url = hub_origin(raw_hub_url)
+        hub_url = bound_hub_origin(spoke, resolve_hub_url())
     except ValueError:
         return None
     from spend_app.auth_model import digest, moment, parse
@@ -2630,7 +2630,7 @@ def fetch_from_configured_hub(
     expiry = parse(spoke.get("ownerSessionExpiresAt"))
     if expiry is not None and expiry <= moment():
         return None
-    if not hub_url or not token:
+    if not credential_origin_allowed(settings.database_path, token, hub_url, spoke):
         return None
     try:
         from spend_app.connection_secrets import flush_pending_revokes
@@ -2705,9 +2705,10 @@ def _read_hub_copy(cache_key: tuple, hub_url: str, token: str, path: str, params
             response = test_client.get(path, params=params, headers=headers)
         else:
             import httpx
+            from spend_app.hub_response import bounded_request
 
             with httpx.Client(timeout=timeout, trust_env=False) as http:
-                response = http.get(f"{hub_url}{path}", params=params, headers=headers)
+                response = bounded_request(http, "GET", f"{hub_url}{path}", params=params, headers=headers)
         if response.status_code in {401, 403}:
             from spend_app.auth_model import digest
             key = digest(token)

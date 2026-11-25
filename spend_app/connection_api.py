@@ -94,13 +94,13 @@ def access_allowed(
                      if isinstance(token, str) and _bearer_matches(request, token) else Principal())
     if request.url.path == "/api/hub/info" and getattr(request, "method", "GET") in {"GET", "HEAD"}:
         return True
-    if request.url.path in _PUBLIC_ACCOUNT_PATHS and getattr(request, "method", "GET") == "POST":
-        return True
     if not request.url.path.startswith("/api/"):
         return True
     if central is None:
         central = central_server()
     method = getattr(request, "method", "GET")
+    if central and request.url.path in _PUBLIC_ACCOUNT_PATHS and method == "POST":
+        return True
     if principal.kind == "machine":
         if request.url.path in {"/api/sync/push", "/api/auth/machine/rotate", "/api/machines/self/revoke"}:
             return method == "POST"
@@ -115,8 +115,6 @@ def access_allowed(
     if principal.kind == "owner":
         permission = "hub.read" if method in {"GET", "HEAD"} else "admin.write"
         return principal.permits(permission)
-    if not token:
-        return not central
     return False
 
 

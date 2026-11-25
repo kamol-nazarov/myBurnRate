@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 
 import logging
 import os
@@ -262,19 +263,20 @@ def create_app(
             return boundary_error(403, "Request rejected: unrecognized Host header.", code="NET-002")
         return await call_next(request)
 
-    # Explicit application boundary (Release A A13): when BURNRATE_ACCESS_TOKEN
-    # is configured, every /api read and write requires it as a bearer token.
-    # The default remains loopback-only with no token; a request claiming a
-    # trusted Host is never authentication by itself. A central server without
-    # a token fails closed instead of serving anonymous reads.
+    # The local listener and the central hub have distinct credentials.
     _access_token = os.getenv("BURNRATE_ACCESS_TOKEN", "").strip()
     from spend_app.connection_api import central_server
 
     _central = central_server()
-    with connect(settings.database_path) as connection:
-        _protected = bool(_access_token or connection.execute(
-            "SELECT 1 FROM app_meta WHERE key='auth.break_glass.v1'"
-        ).fetchone())
+    _local_key = ""
+    local_subject = ""
+    if not _central:
+        from spend_app.auth_model import digest
+        from spend_app.local_access import ensure_local_key, remove_hub_credentials
+
+        _local_key = ensure_local_key(settings.database_path)
+        local_subject = "local-install-" + digest(_local_key)
+        remove_hub_credentials(settings.database_path)
 
     @app.middleware("http")
     async def access_boundary(request, call_next):
@@ -343,7 +345,14 @@ def create_app(
                           "success" if response.status_code < 400 else "failure", source=resolve_client_ip(request))
             return response
 
-        if bearer:
+        if _local_key and bearer and hmac.compare_digest(bearer.encode("utf-8"), _local_key.encode("ascii")):
+            via = "local-bootstrap" if request.url.path == "/api/auth/bootstrap" else "bearer"
+            principal = Principal("owner", local_subject, "owner", via=via)
+        elif bearer and not _central:
+            principal = await asyncio.to_thread(authenticate_session, settings.database_path, bearer)
+            if not principal or principal.id != local_subject:
+                return await recorded(boundary_error(401, "Invalid local credential.", code="AUTH-107"))
+        elif bearer:
             machine_address = None
             if bearer.startswith("br_m_"):
                 from spend_app.exposure import resolve_client_ip
@@ -370,7 +379,7 @@ def create_app(
                 return await recorded(boundary_error(401, "Invalid, expired or revoked credential.", code=err_code))
         elif cookie:
             principal = await asyncio.to_thread(authenticate_session, settings.database_path, cookie, via="cookie")
-            if not principal:
+            if not principal or (not _central and principal.id != local_subject):
                 # Login remains available when a browser's previous session expires.
                 if request.url.path not in {"/api/account/login", "/api/account/register"} and request.url.path.startswith("/api/"):
                     return await recorded(boundary_error(401, "Session expired or revoked. Sign in again.", code="AUTH-107"))
@@ -378,17 +387,13 @@ def create_app(
         request.state.principal = principal
         request.state.machine_id = principal.id if principal.kind == "machine" else None
         request.state.auth_kind = "machine" if principal.kind == "machine" else principal.kind
-        bearer_ok = principal.via in {"bearer", "break-glass"}
+        bearer_ok = principal.via in {"bearer", "break-glass", "local-bootstrap"}
         if not csrf_mutation_allowed(request, bearer_ok=bearer_ok):
             return await recorded(boundary_error(403, "Request rejected: use the configured BURNRATE origin.", code="NET-002"))
         if (principal.via == "cookie" and request.method not in {"GET", "HEAD", "OPTIONS"}
                 and (not trusted(request) or urlsplit(request.headers.get("origin", "")).scheme != request.url.scheme)):
             return await recorded(boundary_error(403, "Cookie mutations require the same origin."))
-        protected = _protected
-        if not protected:
-            with connect(settings.database_path) as connection:
-                protected = bool(connection.execute("SELECT 1 FROM app_meta WHERE key='auth.break_glass.v1'").fetchone())
-        if not access_allowed(request, protected, central=_central, principal=principal):
+        if not access_allowed(request, None, central=_central, principal=principal):
             return await recorded(boundary_error(
                 403 if principal.kind != "unauthenticated" else 401,
                 "Permission denied." if principal.kind != "unauthenticated" else "Authentication required for the API",
@@ -764,8 +769,8 @@ def create_app(
     async def healthz(request: Request, supervisor: bool = False) -> dict:
         if not supervisor:
             return {"status": "ok"}
-        if _central and not request.state.principal.permits("hub.read"):
-            # Liveness stays public; process and ingest detail is owner-only on a hub.
+        if not request.state.principal.permits("hub.read"):
+            # Liveness stays public. Process and ingest detail is owner-only.
             raise HTTPException(status_code=401, detail="Authentication required for supervisor health")
         from spend_app.freshness import heartbeat
 
