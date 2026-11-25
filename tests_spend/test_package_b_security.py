@@ -578,8 +578,7 @@ def test_l7_spoke_join_register_login_owner_session_and_rotate_end_to_end(
     from spend_app.local_access import read_local_key
 
     setup_proof = "synthetic-first-owner-proof"
-    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", setup_proof)
-    hub_settings, hub_client = _make_hub_client(tmp_path, monkeypatch, db_name="hub.db")
+    hub_settings, hub_client = _make_hub_client(tmp_path, monkeypatch, db_name="hub.db", setup_token=setup_proof)
     _seed_event(hub_settings.database_path, "hub-evt-1", 5000)
 
     spoke1_settings, spoke1 = _make_local_client(tmp_path, monkeypatch, db_name="spoke1.db")
