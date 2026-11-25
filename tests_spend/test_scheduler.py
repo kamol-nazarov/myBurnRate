@@ -2,7 +2,7 @@ import inspect
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
+from tests_spend.local_client_fixture import local_client
 
 from spend_app.config import (
     ACTIVITY_POLL_SECONDS,
@@ -340,6 +340,7 @@ def test_disabled_scheduler_does_not_call_pollers(tmp_path: Path, monkeypatch) -
 
     monkeypatch.setattr("spend_app.scheduler.poll_quotas", fake_quotas)
     monkeypatch.setattr("spend_app.scheduler.poll_activity", fake_activity)
-    client = TestClient(create_app(make_settings(tmp_path), enable_scheduler=False))
+    settings = make_settings(tmp_path)
+    client = local_client(create_app(settings, enable_scheduler=False), settings.database_path)
     assert client.get("/api/spend/summary").status_code == 200
     assert calls == []

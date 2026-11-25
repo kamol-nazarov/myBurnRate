@@ -6,6 +6,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from tests_spend.local_client_fixture import local_client
 import pytest
 
 from spend_app.adapters.common import UsageRow, persist_rows
@@ -132,7 +133,7 @@ def make_settings(database: Path) -> Settings:
 
 
 def client_for(database: Path, now: datetime = NOW) -> TestClient:
-    return TestClient(create_app(make_settings(database), enable_scheduler=False, now=now))
+    return local_client(create_app(make_settings(database), enable_scheduler=False, now=now), database)
 
 
 def _usage(**overrides) -> UsageRow:

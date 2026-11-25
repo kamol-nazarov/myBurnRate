@@ -12,6 +12,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from tests_spend.local_client_fixture import local_client
 
 from spend_app.api import create_app
 from spend_app.config import Settings
@@ -430,7 +431,7 @@ def gap_world(tmp_path: Path) -> tuple[Path, PricingEngine]:
 
 def client_for(database: Path, monkeypatch) -> TestClient:
     freeze_clock(monkeypatch)
-    return TestClient(create_app(make_settings(database), enable_scheduler=False))
+    return local_client(create_app(make_settings(database), enable_scheduler=False), database)
 
 
 def require_keys(payload: dict, keys: list[str], *, where: str) -> None:

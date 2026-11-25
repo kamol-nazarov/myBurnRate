@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from tests_spend.local_client_fixture import local_client
 
 from spend_app import claude_accounts
 from spend_app.api import create_app
@@ -38,7 +39,7 @@ def settings(tmp_path: Path, monkeypatch) -> Settings:
 
 @pytest.fixture
 def client(settings: Settings) -> TestClient:
-    return TestClient(create_app(settings, enable_scheduler=False))
+    return local_client(create_app(settings, enable_scheduler=False), settings.database_path)
 
 
 def test_setup_changes_need_the_burnrate_header(client: TestClient) -> None:
@@ -435,21 +436,21 @@ def test_hub_update_runs_the_deploy_steps_and_refuses_odd_arguments() -> None:
         stderr = ""
 
     assert update_hub(ssh="my-hub", path="/opt/burnrate", service="burnrate-hub", branch="main",
+                      tag="v0.3.0-beta.18", require_host_preflight=True,
                       run=lambda step, **kwargs: calls.append(step) or Done(), echo=lines.append) == 0
     assert calls[0][:2] == ["ssh", "my-hub"]
     command = calls[0][2]
     dirty_guard = 'worktree_status=$(git status --porcelain) && test -z "$worktree_status"'
-    fast_forward = "git merge --ff-only refs/remotes/origin/main"
-    assert command.index("flock -n 9") < command.index(dirty_guard) < command.index("git fetch origin")
-    assert command.index(fast_forward) < command.index("pip install --require-hashes")
-    assert command.index("pip install --require-hashes") < command.index("scripts/verify-runtime.py") < command.index("systemctl restart")
-    assert "pip check" in command
+    assert command.index("flock -n 9") < command.index(dirty_guard) < command.index("git fetch --no-tags origin")
+    assert command.index("verify-tag") < command.index("git checkout --detach") < command.index("scripts/install-hub-runtime.sh")
+    assert command.index("scripts/install-hub-runtime.sh") < command.index("scripts/verify-runtime.py") < command.index("systemctl restart")
+    assert "test -x /usr/local/sbin/tk-security-preflight" in command
     assert "tk-security-preflight burnrate" in command
     assert "curl --fail" in command
     assert "checkout -f" not in command
     assert lines[-1] == "Hub is healthy; installed build 0.3.0-beta.18+abc123."
     calls.clear()
-    assert update_hub(ssh="my-hub; rm -rf /", path="/opt/burnrate", service="burnrate-hub", branch="main",
+    assert update_hub(ssh="invalid host", path="/opt/burnrate", service="burnrate-hub", branch="main",
                       run=lambda step, **kwargs: calls.append(step), echo=lines.append) == 2
     assert calls == []
     assert update_hub(ssh="", path="/opt/burnrate", service="s", branch="main", echo=lines.append) == 2

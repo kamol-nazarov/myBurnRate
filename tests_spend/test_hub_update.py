@@ -33,6 +33,7 @@ def generated_command():
 
 
 def test_generated_probe_works_on_a_protected_hub(tmp_path, monkeypatch):
+    monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "synthetic-secret")
     settings = Settings(database_path=tmp_path / "test.db", pricing_path=Path(__file__).resolve().parents[1] / "pricing",
                         anthropic_admin_key=None, openai_admin_key=None, timezone="UTC",
