@@ -981,20 +981,26 @@ def register_forecast(scheduler, settings) -> None:
 
 
 def forecast_router(settings):
+    from spend_app.setup_wizard import RequestTooLargeError, _bounded_json
+
     router = APIRouter()
+
+    async def bounded_body(request):
+        try:
+            return await _bounded_json(request, require_mutation_header=False)
+        except RequestTooLargeError:
+            raise UserFacingError("Request too large.") from None
+        except ValueError:
+            raise UserFacingError("Expected a JSON object") from None
 
     @router.post("/api/capacity/forecast-preferences")
     async def update_preferences(request: Request):
-        body = await request.json()
-        if not isinstance(body, dict):
-            raise UserFacingError("Expected a JSON object")
+        body = await bounded_body(request)
         return save_preferences(settings.database_path, body)
 
     @router.post("/api/capacity/forecast-alerts/dismiss")
     async def dismiss(request: Request):
-        body = await request.json()
-        if not isinstance(body, dict):
-            raise UserFacingError("Expected a JSON object")
+        body = await bounded_body(request)
         alert_id = body.get("id")
         if not isinstance(alert_id, str) or not alert_id.strip():
             raise UserFacingError("Missing alert id")

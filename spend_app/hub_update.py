@@ -55,6 +55,42 @@ def _find_account_entry(accounts: dict, target: str) -> tuple[str, dict] | None:
     return None
 
 
+def create_hub_owner(database_path: Path, email: str, *, prompt_fn=None, echo=print) -> int:
+    from spend_app.auth_model import Principal, audit
+    from spend_app.db import connect, initialize
+    from spend_app.setup_wizard import (
+        MIN_PASSWORD_LENGTH, _new_owner_record, _read_accounts, _write_accounts,
+        central_server_for_accounts, normalize_email,
+    )
+
+    clean = normalize_email(email)
+    if not central_server_for_accounts() or clean is None:
+        echo("Run on the hub with BURNRATE_CENTRAL_SERVER enabled and provide a valid email address.")
+        return 2
+    prompt = getpass.getpass if prompt_fn is None else prompt_fn
+    password = prompt(f"Owner password (at least {MIN_PASSWORD_LENGTH} characters): ")
+    if len(password) < MIN_PASSWORD_LENGTH or password != prompt("Confirm owner password: "):
+        echo("Use a matching password of the required length.")
+        return 2
+    initialize(database_path)
+    with connect(database_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            accounts = _read_accounts(connection, strict=True)
+        except ValueError:
+            echo("The owner account record is corrupt. Restore it before continuing.")
+            return 2
+        if accounts["users"]:
+            echo("A hub owner already exists. Sign in or reset that owner's password.")
+            return 2
+        record = _new_owner_record(clean, password)
+        accounts["users"][clean] = record
+        _write_accounts(connection, accounts)
+        audit(connection, Principal("system", "local-cli"), "account.register", record["id"])
+    echo("Hub owner created. Sign in on the desktop with the new account.")
+    return 0
+
+
 def reset_hub_password(
     database_path: Path,
     email: str,
@@ -269,3 +305,5 @@ def add_parser(subparsers) -> None:
         help="Reset the hub owner password locally on the server",
     )
     reset_pw.add_argument("email", help="Account email address")
+    create_owner = commands.add_parser("create-owner", help="Create the first account locally on the hub")
+    create_owner.add_argument("email", help="Owner email address")

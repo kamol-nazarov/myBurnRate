@@ -192,13 +192,26 @@ def connection_router(settings):
             return JSONResponse({"error": "Use the configured BURNRATE origin."}, status_code=403)
         return JSONResponse(service.list(), headers={"Cache-Control": "no-store"})
 
-    async def action(request, method):
+    async def action(request, method, *, track_mutation=False):
         try:
             body = await payload(request)
             # Run bounded filesystem/vault calls outside the event loop using
             # FastAPI's existing worker pool, not a connection-specific worker.
             from starlette.concurrency import run_in_threadpool
             result = await run_in_threadpool(method, body)
+            if track_mutation:
+                from spend_app.connections import source_spec
+
+                operation = body.get("operation", "connect")
+                if operation in {"connect", "disable", "reconnect", "add_profile", "rename_profile", "remove_profile"}:
+                    if operation in {"disable", "remove_profile"}:
+                        verb = "delete"
+                    elif operation == "add_profile" or (operation == "connect" and body.get("revision") == 0):
+                        verb = "create"
+                    else:
+                        verb = "update"
+                    request.state.audit_action = "provider.connection." + verb
+                    request.state.audit_target = source_spec(body.get("source")).key
             return JSONResponse(result, headers={"Cache-Control": "no-store"})
         except PermissionError as exc:
             return JSONResponse({"error": str(exc)}, status_code=403)
@@ -225,6 +238,6 @@ def connection_router(settings):
 
     @router.post("/api/connections")
     async def mutate(request: Request):
-        return await action(request, service.mutate)
+        return await action(request, service.mutate, track_mutation=True)
 
     return router

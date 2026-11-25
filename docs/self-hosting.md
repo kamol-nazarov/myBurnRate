@@ -77,16 +77,19 @@ HTTPS over your tailnet; do not put credentials in URLs or shell history.
 
 ### First-run setup right after deploy
 
-1. **Create the owner account immediately** from the desktop app (or via
-   `POST /api/account/register`). No setup token is needed (`BURNRATE_SETUP_TOKEN` and
-   `BURNRATE_ALLOW_REGISTRATION` are deprecated and ignored). Once the first
-   account exists, registration closes permanently.
+1. **Create the owner account immediately.** Set a random `BURNRATE_SETUP_TOKEN`
+   and enter it in the desktop's Create account form. The hub also accepts its
+   break-glass bearer on `POST /api/account/register`. To create the owner
+   locally, run `burnrate hub create-owner owner@example.com` in the hub
+   environment. Once the first account exists, registration closes permanently.
+   Remove the setup token after enrollment.
 2. **Connect other computers:** Sign in with your owner email and password in
-   the desktop app on each computer; owner sessions last 30 days and machine
-   sync tokens last 90 days with automatic rotation.
+   the desktop app on each computer. Owner sessions roll for up to 30 days at
+   a time, with a 90-day limit from sign-in. Machine sync tokens last 90 days
+   with automatic rotation.
 3. **Recovery and automation:** Use `POST /api/auth/bootstrap` with `BURNRATE_ACCESS_TOKEN`
    to create a recovery session, or `POST /api/auth/rotate` on the hub to rotate credentials.
-   The static bearer is restricted to bootstrap and rotation by default; set
+   The static bearer is restricted to initial registration, bootstrap and rotation by default. Set
    `BURNRATE_ALLOW_ADMIN_BEARER=1` only while automation still needs it for
    other API calls. Credential rotation happens on the hub and stores only the
    replacement hash in SQLite; updating the environment variable alone does not

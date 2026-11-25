@@ -547,6 +547,9 @@ def _main() -> int:
     if args.command == "hub" and args.hub_command == "reset-password":
         from spend_app.hub_update import reset_hub_password
         return reset_hub_password(settings.database_path, args.email)
+    if args.command == "hub" and args.hub_command == "create-owner":
+        from spend_app.hub_update import create_hub_owner
+        return create_hub_owner(settings.database_path, args.email)
     if args.command == "machines":
         from spend_app.sync import list_machines, revoke_machine
 

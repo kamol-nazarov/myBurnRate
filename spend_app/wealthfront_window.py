@@ -3059,6 +3059,7 @@ class DesktopBridge:
         email: str,
         password: str,
         computer_name: str = "",
+        setup_token: str = "",
     ) -> dict:
         if self._demo:
             return self._h5_err("HUB-501", message="Account actions are disabled in demo mode.")
@@ -3130,6 +3131,8 @@ class DesktopBridge:
             "computerName": clean_comp,
             "deviceLabel": clean_comp,
         }
+        if endpoint == "/api/account/register" and setup_token:
+            auth_body["setupToken"] = setup_token
         deferred_history = attach_sign_in_history(auth_body, local_history) if local_history is not None else False
         auth_data, auth_res, call_err = self._call_hub(
             hub_url,
@@ -3393,12 +3396,14 @@ class DesktopBridge:
         email: str,
         password: str,
         computer_name: str = "",
+        setup_token: str = "",
     ) -> dict:
         return self._authenticate_and_register(
             endpoint="/api/account/register",
             email=email,
             password=password,
             computer_name=computer_name,
+            setup_token=setup_token,
         )
 
     def sign_out(self) -> dict:

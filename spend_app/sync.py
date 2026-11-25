@@ -361,8 +361,9 @@ def _register_in_connection(
     reconnect=False,
     machine_id=None,
     allow_new_id=False,
+    actor=None,
 ):
-    from spend_app.auth_model import MACHINE_DAYS, moment, stamp
+    from spend_app.auth_model import MACHINE_DAYS, moment, registered_machine_session, stamp
     clean_name = (name or "").strip()
     if not clean_name or len(clean_name) > 64:
         raise ValueError("Machine name must be between 1 and 64 characters.")
@@ -415,6 +416,11 @@ def _register_in_connection(
     token = f"br_m_{matched_id}_{secrets.token_urlsafe(32)}"
     if reconnect and prev.get("revoked") and not matched_by_device_id:
         raise ValueError("This machine is revoked; sign in again on that computer or specify its machine ID.")
+    if actor is not None or prev.get("revoked"):
+        registered_machine_session(
+            connection, actor, machine_id=matched_id,
+            revoked_at=(prev.get("revoked_at") or "") if prev.get("revoked") else None, now=now,
+        )
     stored_device_id = clean_device_id or prev.get("device_id")
     record = {
         "id": matched_id, "name": display_name, "reported_name": clean_name,
@@ -444,7 +450,7 @@ def register_or_reconnect_machine(
     with connect(database_path) as connection:
         connection.execute("BEGIN IMMEDIATE")
         result = _register_in_connection(
-            connection, name=name, os_name=os_name, device_id=device_id, now=now, reconnect=True
+            connection, name=name, os_name=os_name, device_id=device_id, now=now, reconnect=True, actor=actor
         )
         if actor:
             from spend_app.auth_model import audit
@@ -459,7 +465,7 @@ def register_machine(
     initialize(database_path)
     with connect(database_path) as connection:
         connection.execute("BEGIN IMMEDIATE")
-        result = _register_in_connection(connection, name=name, os_name=os_name, device_id=device_id, now=now)
+        result = _register_in_connection(connection, name=name, os_name=os_name, device_id=device_id, now=now, actor=actor)
         if actor:
             from spend_app.auth_model import audit
             audit(connection, actor, "machine.register", result["machine"]["id"], now=now)
@@ -505,10 +511,12 @@ def revoke_machine(
         state = _read_state(connection)
         if machine_id not in state["machines"]:
             raise ValueError(f"Unknown machine: {machine_id}")
-        state["machines"][machine_id].update(revoked=True, revoked_at=utc_now(), token_hash="")
+        from spend_app.auth_model import Principal, audit, revoke_machine_sessions, stamp
+
+        state["machines"][machine_id].update(revoked=True, revoked_at=stamp(now), token_hash="")
         _write_state(connection, state)
+        revoke_machine_sessions(connection, actor or Principal("system", "local"), machine_id, now=now)
         if actor:
-            from spend_app.auth_model import audit
             audit(connection, actor, "machine.revoke", machine_id, now=now)
         machines = list_machines(connection, now=now)
     STREAM_BROKER.publish({"type": "machines", "machineId": machine_id, "at": utc_now()})

@@ -20,7 +20,9 @@ MACHINE_DAYS = 90
 LEGACY_MACHINE_DAYS = 180
 ROTATION_GRACE_DAYS = 14
 SESSION_DAYS = 30
-COOKIE = "burnrate_access"
+SESSION_ABSOLUTE_DAYS = 90
+COOKIE = "__Host-burnrate_access"
+LEGACY_COOKIE = "burnrate_access"
 MARKER = "auth_model.v1"
 
 
@@ -59,12 +61,12 @@ class Principal:
         }
 
 
-def audit(connection, actor, action, target, outcome="success", *, now=None):
+def audit(connection, actor, action, target, outcome="success", *, now=None, source=None):
     """Callers pass only fixed action/target names or server-issued opaque IDs."""
     connection.execute(
-        "INSERT INTO admin_audit(actor_type,actor_id,action,target,outcome,timestamp) "
-        "VALUES(?,?,?,?,?,?)",
-        (actor.kind, actor.id, action, target, outcome, stamp(now)),
+        "INSERT INTO admin_audit(actor_type,actor_id,action,target,outcome,timestamp,source) "
+        "VALUES(?,?,?,?,?,?,?)",
+        (actor.kind, actor.id, action, target, outcome, stamp(now), source),
     )
 
 
@@ -76,6 +78,50 @@ def _stamp_missing_rotation_deadlines(data, *, deadline=None):
             rec["rotation_deadline"] = target
             changed = True
     return changed
+
+
+def _ensure_session_binding_schema(connection):
+    columns = {
+        "admin_audit": {"source": "TEXT"},
+        "owner_sessions": {
+            "machine_id": "TEXT",
+            "auth_time": "TEXT",
+            "password_authenticated": "INTEGER NOT NULL DEFAULT 0",
+        },
+    }
+    if all(names.keys() <= {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
+           for table, names in columns.items()):
+        return
+    connection.execute("BEGIN IMMEDIATE")
+    for table, definitions in columns.items():
+        existing = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
+        for name, definition in definitions.items():
+            if name not in existing:
+                connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+    connection.execute("UPDATE owner_sessions SET auth_time=created_at WHERE auth_time IS NULL")
+    connection.execute("CREATE INDEX IF NOT EXISTS owner_sessions_machine ON owner_sessions(machine_id)")
+    row = connection.execute("SELECT value FROM app_meta WHERE key='machines.v1'").fetchone()
+    if row:
+        by_label = {}
+        for machine_id, machine in json.loads(row[0]).get("machines", {}).items():
+            if isinstance(machine, dict):
+                for label in (machine.get("name"), machine.get("reported_name")):
+                    if isinstance(label, str) and label:
+                        by_label.setdefault(label, set()).add(machine_id)
+        for label, candidates in by_label.items():
+            if len(candidates) == 1:
+                connection.execute(
+                    "UPDATE owner_sessions SET machine_id=? WHERE device_label=? AND machine_id IS NULL",
+                    (next(iter(candidates)), label),
+                )
+        # A pre-upgrade session tied to an already revoked machine must not survive.
+        for machine_id, machine in json.loads(row[0]).get("machines", {}).items():
+            if isinstance(machine, dict) and machine.get("revoked"):
+                connection.execute(
+                    "UPDATE owner_sessions SET revoked_at=? WHERE machine_id=? AND revoked_at IS NULL",
+                    (machine.get("revoked_at") or stamp(), machine_id),
+                )
+    connection.commit()
 
 
 def ensure_schema(path):
@@ -90,8 +136,12 @@ def ensure_schema(path):
             "BEGIN SELECT RAISE(ABORT, 'admin audit is append-only'); END",
             "CREATE TRIGGER IF NOT EXISTS admin_audit_no_delete BEFORE DELETE ON admin_audit "
             "BEGIN SELECT RAISE(ABORT, 'admin audit is append-only'); END",
+            "CREATE TABLE IF NOT EXISTS owner_sessions (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, "
+            "role TEXT NOT NULL, token_hash TEXT NOT NULL, created_at TEXT NOT NULL, "
+            "last_used_at TEXT, expires_at TEXT NOT NULL, revoked_at TEXT, device_label TEXT NOT NULL)",
         ):
             connection.execute(sql)
+        _ensure_session_binding_schema(connection)
         if connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pairing_grants'"
         ).fetchone():
@@ -117,12 +167,6 @@ def ensure_schema(path):
         connection.execute("BEGIN IMMEDIATE")
         if connection.execute("SELECT 1 FROM app_meta WHERE key=?", (MARKER,)).fetchone():
             return
-        for sql in (
-            "CREATE TABLE IF NOT EXISTS owner_sessions (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, "
-            "role TEXT NOT NULL, token_hash TEXT NOT NULL, created_at TEXT NOT NULL, "
-            "last_used_at TEXT, expires_at TEXT NOT NULL, revoked_at TEXT, device_label TEXT NOT NULL)",
-        ):
-            connection.execute(sql)
         changed = False
         for key in ("machines.v1", "accounts.v1"):
             row = connection.execute("SELECT value FROM app_meta WHERE key=?", (key,)).fetchone()
@@ -159,16 +203,43 @@ def owner_id(connection):
     return "bootstrap"
 
 
-def create_session(connection, actor, device_label="Browser", *, subject_id=None, now=None):
+def find_machine_by_label(connection, device_label):
+    """Associate compatible session-only sign-ins with an unambiguous device."""
+    row = connection.execute("SELECT value FROM app_meta WHERE key='machines.v1'").fetchone()
+    if not row:
+        return None
+    matches = [
+        machine_id for machine_id, machine in json.loads(row[0]).get("machines", {}).items()
+        if isinstance(machine, dict) and device_label in (machine.get("name"), machine.get("reported_name"))
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def create_session(connection, actor, device_label="Browser", *, subject_id=None, now=None,
+                   auth_time=None, machine_id=None, password_authenticated=False):
     sid = secrets.token_hex(16)
     token = f"br_s_{sid}_{secrets.token_urlsafe(32)}"
-    expiry = stamp(moment(now) + timedelta(days=SESSION_DAYS))
+    created = moment(now)
+    authenticated = auth_time or created
+    expiry = stamp(min(created + timedelta(days=SESSION_DAYS),
+                       authenticated + timedelta(days=SESSION_ABSOLUTE_DAYS)))
     connection.execute(
-        "INSERT INTO owner_sessions VALUES(?,?,?,?,?,?,?,?,?)",
-        (sid, subject_id or actor.id, actor.role, digest(token), stamp(now), None, expiry, None, str(device_label)[:80]),
+        "INSERT INTO owner_sessions(id,owner_id,role,token_hash,created_at,last_used_at,expires_at,"
+        "revoked_at,device_label,machine_id,auth_time,password_authenticated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+        (sid, subject_id or actor.id, actor.role, digest(token), stamp(created), None, expiry, None,
+         str(device_label)[:80], machine_id, stamp(authenticated), password_authenticated),
     )
     audit(connection, actor, "session.create", sid, now=now)
     return {"sessionToken": token, "sessionId": sid, "expiresAt": expiry}
+
+
+def session_is_live(row, now=None):
+    if row is None or row["revoked_at"] or row["role"] != "owner":
+        return False
+    expires = parse(row["expires_at"])
+    authenticated = parse(row["auth_time"])
+    return bool(expires and authenticated and authenticated <= moment(now)
+                < min(expires, authenticated + timedelta(days=SESSION_ABSOLUTE_DAYS)))
 
 
 def authenticate_session(path, token, *, via="bearer", now=None):
@@ -177,15 +248,37 @@ def authenticate_session(path, token, *, via="bearer", now=None):
     sid = token[5:].split("_", 1)[0]
     with connect(path) as connection:
         row = connection.execute("SELECT * FROM owner_sessions WHERE id=?", (sid,)).fetchone()
-        if (not row or not hmac.compare_digest(digest(token), row["token_hash"])
-                or row["revoked_at"] or not parse(row["expires_at"])
-                or parse(row["expires_at"]) <= moment(now) or row["role"] != "owner"):
+        if not session_is_live(row, now) or not hmac.compare_digest(digest(token), row["token_hash"]):
             return None
         # Read traffic should not contend on the SQLite writer for every GET.
         last = parse(row["last_used_at"])
         if last is None or (moment(now) - last) >= timedelta(seconds=60):
             connection.execute("UPDATE owner_sessions SET last_used_at=? WHERE id=?", (stamp(now), sid))
         return Principal("owner", row["owner_id"], row["role"], sid, via)
+
+
+def registered_machine_session(connection, actor, *, machine_id, revoked_at=None, now=None):
+    session_id = getattr(actor, "session_id", None)
+    row = connection.execute("SELECT * FROM owner_sessions WHERE id=?", (session_id,)).fetchone() if session_id else None
+    if session_id and not session_is_live(row, now):
+        raise ValueError("This machine registration requires a current owner session.")
+    if revoked_at is not None:
+        revoked = parse(revoked_at)
+        if not (row and row["password_authenticated"] and revoked and parse(row["auth_time"]) > revoked):
+            raise ValueError("This machine is revoked; sign in again with the account password.")
+    if row:
+        # Keep the first machine association for this session chain. An owner
+        # managing another computer must not transfer their existing binding.
+        connection.execute(
+            "UPDATE owner_sessions SET machine_id=? WHERE id=? AND machine_id IS NULL", (machine_id, session_id)
+        )
+
+
+def revoke_machine_sessions(connection, actor, machine_id, *, now=None):
+    for row in connection.execute(
+        "SELECT id FROM owner_sessions WHERE machine_id=? AND revoked_at IS NULL", (machine_id,)
+    ).fetchall():
+        revoke_session(connection, actor, row["id"], now=now)
 
 
 def revoke_session(connection, actor, sid, *, now=None):
@@ -235,12 +328,19 @@ def extract_cookie(response, name=COOKIE):
                 parsed.load(raw)
                 if name in parsed and parsed[name].value:
                     return parsed[name].value
-    return ""
+    return extract_cookie(response, LEGACY_COOKIE) if name == COOKIE else ""
 
 
 def set_session_cookie(response, request, data):
+    max_age = max(0, int((parse(data["expiresAt"]) - moment()).total_seconds()))
     response.set_cookie(COOKIE, data["sessionToken"], httponly=True, samesite="lax", path="/",
-                        secure=request.url.scheme == "https", max_age=SESSION_DAYS * 86400)
+                        secure=True, max_age=max_age)
+    # Retain the old name for clients from 0.6.10 for one release. Local HTTP
+    # dashboards still consume it until their paired desktop flow is updated.
+    from spend_app.connection_api import central_server
+    if request.url.scheme == "https" or not central_server():
+        response.set_cookie(LEGACY_COOKIE, data["sessionToken"], httponly=True, samesite="lax", path="/",
+                            secure=request.url.scheme == "https", max_age=max_age)
     return response
 
 

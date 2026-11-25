@@ -9325,6 +9325,7 @@ function h5HubAccountHtml(context = "settings") {
   const prefix = ctx === "onboarding" ? "ob_" : "";
   const idUser = ctx === "onboarding" ? "obHubAccountUser" : "hubAccountUser";
   const idPass = ctx === "onboarding" ? "obHubAccountPass" : "hubAccountPass";
+  const idSetup = ctx === "onboarding" ? "obHubSetupToken" : "hubSetupToken";
   const idComp = ctx === "onboarding" ? "obHubAccountComp" : "hubAccountComp";
   const idBtn = ctx === "onboarding" ? "obHubSignInBtn" : "hubSignInBtn";
 
@@ -9413,6 +9414,10 @@ function h5HubAccountHtml(context = "settings") {
         <label for="${idPass}">Password</label>
         <input class="text-input" id="${idPass}" type="password" autocomplete="new-password" placeholder="At least 12 characters" value="${esc(state.accountDraft.password || "")}" oninput="h5UpdateDraft('password', this.value)"/>
       </div>
+      ${mode === "register" ? `<div class="h5-field">
+        <label for="${idSetup}">Hub setup token</label>
+        <input class="text-input" id="${idSetup}" type="password" autocomplete="off"/>
+      </div>` : ""}
       <div class="h5-field">
         <label for="${idComp}">This computer's name</label>
         <input class="text-input" id="${idComp}" type="text" autocomplete="off" placeholder="e.g. Desktop-Office" value="${esc(compVal)}" oninput="h5UpdateDraft('computerName', this.value)"/>
@@ -9454,9 +9459,11 @@ window.submitHubAccount = async function(context = "settings") {
   const ctx = context === "onboarding" ? "onboarding" : "settings";
   const idUser = ctx === "onboarding" ? "obHubAccountUser" : "hubAccountUser";
   const idPass = ctx === "onboarding" ? "obHubAccountPass" : "hubAccountPass";
+  const idSetup = ctx === "onboarding" ? "obHubSetupToken" : "hubSetupToken";
   const idComp = ctx === "onboarding" ? "obHubAccountComp" : "hubAccountComp";
   const email = (document.getElementById(idUser)?.value ?? state.accountDraft.email ?? "").trim();
   const password = document.getElementById(idPass)?.value ?? state.accountDraft.password ?? "";
+  const setupToken = document.getElementById(idSetup)?.value ?? "";
   const computerName = (document.getElementById(idComp)?.value ?? state.accountDraft.computerName ?? "").trim();
   state.accountDraft = { email, password, computerName };
 
@@ -9483,7 +9490,7 @@ window.submitHubAccount = async function(context = "settings") {
   try {
     let res;
     if (state.accountAuthMode === "register") {
-      if (apiHas("create_account")) res = await window.pywebview.api.create_account(email, password, computerName);
+      if (apiHas("create_account")) res = await window.pywebview.api.create_account(email, password, computerName, setupToken);
       else res = await window.pywebview.api.connect_hub_account(email, password, computerName, "register");
     } else {
       if (apiHas("sign_in")) res = await window.pywebview.api.sign_in(email, password, computerName);

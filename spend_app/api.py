@@ -279,7 +279,7 @@ def create_app(
     @app.middleware("http")
     async def access_boundary(request, call_next):
         from spend_app.auth_model import (
-            COOKIE, Principal, authenticate_session, audit, break_glass_matches,
+            COOKIE, LEGACY_COOKIE, Principal, authenticate_session, audit, break_glass_matches,
             scoped_machine_read,
         )
         from spend_app.connection_api import (
@@ -289,17 +289,29 @@ def create_app(
             return boundary_error(403, "Request rejected: unrecognized Host header.", code="NET-002")
         auth = request.headers.get("authorization", "")
         bearer = auth[7:].strip() if auth.startswith("Bearer ") else ""
-        cookie = request.cookies.get(COOKIE, "")
+        cookie = request.cookies.get(COOKIE) or request.cookies.get(LEGACY_COOKIE, "")
         principal = Principal()
         request.state.principal = principal
         request.state.machine_id = None
 
-        async def recorded(response):
+        async def recorded(response, *, routed=False):
             path = request.url.path
             action = None
+            anonymous = request.state.principal.kind == "unauthenticated"
+            account_attempt = path in {"/api/account/login", "/api/account/register"}
+            if anonymous and response.status_code in {401, 403}:
+                app.state.unauthenticated_denials = min(
+                    getattr(app.state, "unauthenticated_denials", 0) + 1, 2**31 - 1
+                )
+                if not routed or not account_attempt:
+                    return response
+            elif anonymous:
+                return response
             if request.method == "POST":
-                if path in {"/api/account/login", "/api/account/register"}:
+                if account_attempt:
                     action = "login" if path.endswith("login") else "account.register"
+                elif path in {"/api/account/subscriptions", "/api/connections", "/api/subscriptions"}:
+                    action = getattr(request.state, "audit_action", None)
                 elif path == "/api/account/password":
                     action = "account.password_change"
                 elif path == "/api/account/email":
@@ -323,10 +335,12 @@ def create_app(
             if getattr(request.state, "audit_recorded", False):
                 action = None
             if action:
+                from spend_app.exposure import resolve_client_ip
+
                 with connect(settings.database_path) as connection:
                     audit(connection, request.state.principal, action,
                           getattr(request.state, "audit_target", "setup" if action == "setup.change" else path),
-                          "success" if response.status_code < 400 else "failure")
+                          "success" if response.status_code < 400 else "failure", source=resolve_client_ip(request))
             return response
 
         if bearer:
@@ -340,7 +354,7 @@ def create_app(
                     return boundary_error(429, "Too many invalid machine credentials.", retry_after="60")
             if await asyncio.to_thread(break_glass_matches, settings.database_path, bearer, _access_token):
                 automation = os.getenv("BURNRATE_ALLOW_ADMIN_BEARER", "0").lower() in {"1", "true", "yes"}
-                if automation or request.url.path in {"/api/auth/bootstrap", "/api/auth/rotate"}:
+                if automation or request.url.path in {"/api/auth/bootstrap", "/api/auth/rotate", "/api/account/register"}:
                     principal = Principal("owner", "break-glass", "owner", via="break-glass")
             elif bearer.startswith("br_m_"):
                 from spend_app.sync import authenticate_machine_token
@@ -384,7 +398,7 @@ def create_app(
             data = await asyncio.to_thread(scoped_machine_read, settings, pricing, principal, request)
             return JSONResponse(data, headers={"Cache-Control": "no-store"})
         response = await call_next(request)
-        return await recorded(response)
+        return await recorded(response, routed=True)
 
     @app.exception_handler(StarletteHTTPException)
     async def http_not_found_handler(request: Request, exc: StarletteHTTPException):
@@ -771,10 +785,13 @@ def create_app(
         # A demo in a browser must not open or control the real desktop HUD.
         if demo_mode():
             return {"ok": False, "reason": "demo"}
+        from spend_app.setup_wizard import RequestTooLargeError, _bounded_json
         try:
-            body = await request.json()
-        except Exception:
-            body = {}
+            body = await _bounded_json(request, require_mutation_header=False)
+        except RequestTooLargeError:
+            return error_response("REQ-401", status_code=422)
+        except ValueError:
+            return error_response("APP-901", status_code=422)
         action = str((body or {}).get("action") or "open").strip().lower()
         if action not in {"open", "show", "pin"}:
             return {"ok": False, "reason": "unsupported_action"}

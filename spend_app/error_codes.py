@@ -51,6 +51,10 @@ ERROR_CATALOG: dict[str, dict[str, object]] = {
         "message": "You've been signed out. Sign in again.",
         "status": 401,
     },
+    "AUTH-110": {
+        "message": "First-time hub registration requires its setup token or a local burnrate hub create-owner operation.",
+        "status": 403,
+    },
     "DEV-301": {
         "message": "This computer was removed from your account. Sign in to add it again.",
         "status": 401,
