@@ -231,14 +231,14 @@ jobs:
           GITLEAKS_ENABLE_COMMENTS: "false"
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
 
-      - name: Gitleaks CLI fallback
-        if: steps.gitleaks_action.outcome != 'success'
+      - name: Gitleaks snapshot and Git fallback
+        env:
+          ACTION_OUTCOME: ${{ steps.gitleaks_action.outcome }}
         run: |
           $ver = "8.30.1"
           $zip = Join-Path $env:RUNNER_TEMP "gitleaks.zip"
           $dir = Join-Path $env:RUNNER_TEMP "gitleaks"
           $url = "https://github.com/gitleaks/gitleaks/releases/download/v$ver/gitleaks_${ver}_windows_x64.zip"
-          Write-Host "gitleaks-action did not succeed; running CLI $ver"
           Invoke-WebRequest -Uri $url -OutFile $zip
           $expected = "d29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332afc4e"
           if ((Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash -ne $expected) {
@@ -246,5 +246,9 @@ jobs:
           }
           Expand-Archive -Path $zip -DestinationPath $dir -Force
           $exe = Join-Path $dir "gitleaks.exe"
-          & $exe detect --source . --config .github/gitleaks.toml --redact --no-banner --exit-code 1
+          & $exe dir . --config .github/gitleaks.toml --redact=100 --no-banner --exit-code 1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($env:ACTION_OUTCOME -ne 'success') {
+            & $exe git . --config .github/gitleaks.toml --gitleaks-ignore-path .gitleaksignore --redact=100 --no-banner --exit-code 1
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
