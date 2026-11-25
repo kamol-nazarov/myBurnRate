@@ -393,7 +393,9 @@ def test_h5_vault_secret_isolation_and_zero_hub_url_or_token_leakage(
         settings_data = bridge.get_settings_data()
         assert settings_data.pop("hubHost") == "hub.test"
         _assert_no_secrets_or_hub_url(settings_data, label="get_settings_data")
-        _assert_no_secrets_or_hub_url(bridge.get_onboarding_data(), label="get_onboarding_data")
+        onboarding_data = bridge.get_onboarding_data()
+        assert onboarding_data.pop("hubHost") == "hub.test"
+        _assert_no_secrets_or_hub_url(onboarding_data, label="get_onboarding_data")
         _assert_no_secrets_or_hub_url(
             bridge.change_password("wrong-pass-xyz", "new-password-1234"),
             label="change_password error",
@@ -1562,6 +1564,7 @@ def test_h5_ui_change_password_validation_error_success_and_sign_out(tmp_path: P
 def test_h5_ui_shared_onboarding_hub_account_form(tmp_path: Path):
     settings = _h5_settings_fixture(signed_in=False, computer_name="New-Laptop")
     onboarding = _h5_onboarding_fixture(signed_in=False, computer_name="New-Laptop")
+    onboarding["hubHost"] = "hub.test"
     probe_js = """
     await until(() => document.querySelector('.ob .h11-ob-account'));
     await wait(40);
@@ -1574,7 +1577,8 @@ def test_h5_ui_shared_onboarding_hub_account_form(tmp_path: Path):
     out.compPrefill = document.getElementById('obHubAccountComp').value;
     out.hasBtn = !!document.getElementById('obHubSignInBtn');
     out.hasLegacyOwnerLink = /owner access/i.test(card.textContent);
-    out.hasHubAddr = /https?:\\/\\//i.test(card.textContent) || /hub\\.test/i.test(card.textContent);
+    out.hasHubHost = /Hub hub\\.test/i.test(card.textContent);
+    out.hasOriginUrl = /https?:\\/\\//i.test(card.textContent);
 
     document.getElementById('obHubAccountUser').value = 'onb@example.com';
     document.getElementById('obHubAccountPass').value = 'long-valid-password-123';
@@ -1591,7 +1595,7 @@ def test_h5_ui_shared_onboarding_hub_account_form(tmp_path: Path):
         report=empty_report(),
         init={"demo": False},
         onboarding=onboarding,
-        settings=settings,
+        settings=None,
         api_js=_h5_api_js(settings=settings, onboarding=onboarding),
         probe=probe_js,
         extra_css=FAST,
@@ -1600,7 +1604,8 @@ def test_h5_ui_shared_onboarding_hub_account_form(tmp_path: Path):
     assert r["hasUser"] and r["hasPass"] and r["hasComp"] and r["hasBtn"]
     assert r["compPrefill"] == "New-Laptop"
     assert r["hasLegacyOwnerLink"] is False
-    assert r["hasHubAddr"] is False
+    assert r["hasHubHost"] is True
+    assert r["hasOriginUrl"] is False
     assert r["signInCalls"] == [
         ["sign_in", "onb@example.com", "long-valid-password-123", "Onb-PC"]
     ]

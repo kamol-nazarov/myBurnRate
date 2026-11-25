@@ -2057,11 +2057,6 @@ class DesktopBridge:
                 "setup": setup.get("setup") or {},
                 "hubAvailable": bool(setup.get("hubAvailable", False)),
             }
-            hub, _error = self._resolve_hub_origin()
-            if hub:
-                from urllib.parse import urlsplit
-
-                payload["hubHost"] = urlsplit(hub).netloc
             return self._enrich_account_payload(payload, fetch_remote_machines=True)
         except DesktopError as exc:
             out = {"ok": False, "error": str(exc)}
@@ -3021,6 +3016,11 @@ class DesktopBridge:
         payload["accountEmail"] = acct_email
         payload["computerName"] = comp_name
         payload["syncState"] = sync_state
+        hub, _error = self._resolve_hub_origin()
+        if hub:
+            from urllib.parse import urlsplit
+
+            payload["hubHost"] = urlsplit(hub).netloc
         if "machines" in payload and isinstance(payload["machines"], list):
             payload["machines"] = self._annotate_machines(payload["machines"], current_mid)
         return payload
