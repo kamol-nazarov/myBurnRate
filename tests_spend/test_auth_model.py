@@ -351,7 +351,8 @@ def test_legacy_migration_once_and_055_spoke_push_without_new_setup_token(tmp_pa
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "synthetic-break-glass")
     monkeypatch.delenv("BURNRATE_SETUP_TOKEN", raising=False)
     settings = settings_at(tmp_path)
-    token = "br_m_legacy_" + ("s" * 43)
+    fixture_secret = "s" * 43
+    token = f"br_m_legacy_{fixture_secret}"
     created = auth.moment() - timedelta(days=5)
     salt, pw_hash = setup_wizard._hash_password(PASSWORD, iterations=setup_wizard.LEGACY_PBKDF2_ITERATIONS)
     from spend_app.db import _initialize_base
@@ -385,7 +386,8 @@ def test_rotation_required_backfill_api_surface_and_deadline_enforcement(tmp_pat
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "synthetic-break-glass")
     monkeypatch.setenv("BURNRATE_ALLOW_ADMIN_BEARER", "1")
     settings = settings_at(tmp_path)
-    legacy_token = "br_m_legacy_" + ("g" * 43)
+    fixture_secret = "g" * 43
+    legacy_token = f"br_m_legacy_{fixture_secret}"
     fixed_deadline = auth.stamp(auth.moment() + timedelta(days=3))
     created = auth.moment() - timedelta(days=10)
     from spend_app.db import _initialize_base
