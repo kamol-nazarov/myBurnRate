@@ -193,6 +193,7 @@ def audit(database: Path, pricing: PricingEngine, *, now: datetime) -> dict:
     with sqlite3.connect(
         database.resolve().as_uri() + "?mode=ro", uri=True
     ) as connection:
+        connection.execute("PRAGMA query_only=ON")
         by_source = coverage_by_source(connection, pricing, now=now)
     models = {}
     for source in by_source.values():

@@ -1,6 +1,6 @@
 # Privacy
 
-BURNRATE is local-first. The default install makes **no provider network calls**, binds only `127.0.0.1`, and stores usage metadata — not conversation content.
+BURNRATE is local-first. Its default listener binds to `127.0.0.1`. Quota meters can read existing sign-ins and contact the provider when the relevant switch is enabled. Pairing a computer enables metadata sync to the hub you configure.
 
 This page is the disclosure. Pair it with [providers.md](providers.md) for hosts and file patterns.
 
@@ -11,13 +11,28 @@ Column-level, in the BURNRATE database only:
 | Kind | Fields |
 | --- | --- |
 | Identity | `source`, `tool_key`, `model_key`, opaque `session_id` / `raw_id`, project **name** (folder basename, not a full home path) |
-| Live cards | `agent_runs.name` may copy a harness session/chat **title** (not the prompt body). Titles appear on `/api/spend/summary` activity rows. |
+| Live cards | On the originating computer, `agent_runs.name` may contain a harness session title. A paired hub receives and stores the fixed tool label. |
 | Time | `occurred_at`, `ingested_at`, quota `resets_at`, session start/end |
 | Tokens | `input_tokens`, `cached_input_tokens`, `cache_write_tokens`, `cache_write_1h_tokens`, `output_tokens`, optional `reasoning_tokens`, `unclassified_tokens` |
 | Money | optional provider-reported `cost_usd`, YAML `computed_cost_usd`, `is_exact`, subscription amounts you entered |
 | Coverage | `telemetry_complete`, priced vs unpriced flags, gap issue codes |
 | Quota | `used`, `allowance`, `unit`, `pct`, `is_payg`, NULL when unknown |
 | Operations | ingest `status`, redacted `error`, event counts |
+| Hub access | Owner account details, password and credential hashes, paired computer records, audit action/target/outcome, and resolved caller address for relevant audit events |
+
+## What a paired computer sends to its hub
+
+| Data | Fields |
+| --- | --- |
+| Computer | Display name, which may start as the operating system's host name, operating system label, and persistent device ID |
+| Usage and sessions | Source, tool, model, project or folder name, opaque event and session IDs, observation and session times, token counts, coverage flags, and reported or calculated costs |
+| Activity | Opaque run ID, fixed tool label, model, state, and start/last-seen times |
+| Provider billing | Provider/organization and bucket identifiers, project/model/line item where available, billing period, amount, and reported time |
+| Quotas | Provider, limit, label, used/allowed values, unit, percentage, pay-as-you-go flag, reset and poll times, and reading source |
+| Sync progress | Journal positions and proofs, including event IDs needed to acknowledge changes or deletions |
+| Account and plan actions | Sign-in or registration inputs sent to the selected hub over HTTPS, and plan IDs, names, effective dates, amounts, cadence and terms exchanged during owner plan synchronization |
+
+The desktop keeps session titles in its local activity store. An upgraded hub also replaces titles received from older desktops and cleans the titles in its active database. Existing backup archives follow their own retention policy.
 
 ## What is never stored
 
@@ -34,27 +49,31 @@ Some adapters parse a larger record in memory (a Claude JSONL line, a Traycer pr
 
 Harness stores are read-only:
 
-- SQLite: `file:<path>?mode=ro` plus `PRAGMA query_only=ON`
+- SQLite: adapters and schema inspection use `file:<path>?mode=ro` plus `PRAGMA query_only=ON`; so do the Claude, OpenCode, quota and saved-profile readers, the pricing audit, and the subscription-upgrade source reader
 - JSONL / logs / CSV: open for read (`r` / `rb`)
 - No writes to Codex, Claude transcripts, OpenCode, ZCode, Grok logs, Traycer `chat.db`, or Antigravity logs
 
-There are no exceptions: BURNRATE never writes another tool's files. It also never reads, reuses or refreshes Claude's sign-in (`%USERPROFILE%\.claude\.credentials.json`). Claude meters come from the plan usage Claude Code and Claude Desktop cache on disk themselves, or from Traycer.
+BURNRATE opens these tool files for reading. Claude account discovery reads account IDs, plan tiers and cached usage from `.claude.json`. BURNRATE leaves Claude sign-in tokens and credential files untouched. Claude meters come from cached local plan usage or the Traycer CLI.
 
 Traycer CLI (`profile-rate-limits`, `agent list`) is a local process spawn, not a file write. BURNRATE captures stdout JSON and does not feed prompts. Side effects inside `traycer.exe` are outside BURNRATE’s control; the spawn is **experimental**.
 
 ## Network
 
-Default: none, apart from the installed native app's update check (see [Update checks](#update-checks-native-app)).
-
-Opt-in destinations are HTTPS only, host-allowlisted, timed out, and not inference completions:
+The desktop service and CLI load the same user settings. Z.AI, OpenCode Go and Muse quota meters are enabled by default. Each uses its named switch in Sources or the per-user `.env`. Reused-sign-in meters need an existing local sign-in. Other network lanes require their own configuration or a running local tool.
 
 | When | Host | Credential |
 | --- | --- | --- |
 | `OPENAI_ADMIN_KEY` set | `api.openai.com` | Bearer admin key |
 | `ANTHROPIC_ADMIN_KEY` set | `api.anthropic.com` | `x-api-key` |
 | `OPENROUTER_MANAGEMENT_KEY` set | `openrouter.ai` | dedicated management key |
-| Z.AI Coding Plan key found on disk | `api.z.ai` | Coding Plan API key |
-| Antigravity running (experimental) | `https://127.0.0.1:<port>/` | ephemeral localhost CSRF |
+| DeepSeek balance account connected or `DEEPSEEK_BALANCE_KEY` set | `api.deepseek.com` | dedicated balance key |
+| Z.AI quota enabled by default with `BURNRATE_ENABLE_ZAI_QUOTA` | `api.z.ai` | existing Coding Plan key found on disk |
+| OpenCode Go quota enabled by default with `BURNRATE_ENABLE_OPENCODE_GO_QUOTA` | `opencode.ai` | OpenCode Console key from the selected profile |
+| Muse quota enabled by default with `BURNRATE_ENABLE_MUSE_QUOTA` | `api.meta.ai` | saved Muse Code session |
+| Antigravity running (experimental) | `127.0.0.1` over HTTPS on its local language-server port | ephemeral localhost CSRF |
+| Traycer installed and available for activity or plan readings | Local Traycer CLI process | Traycer manages its own sign-in and side effects |
+| Hub paired or sign-in requested | The HTTPS origin shown for your configured hub | Machine bearer for sync or owner credentials for account/owner actions |
+| Native update checks and release asset downloads | `github.com`, `objects.githubusercontent.com`, `release-assets.githubusercontent.com` | Release requests and app version identifier |
 
 Empty admin keys skip with a named reason, exit 0, and never log the key. Credential-bearing HTTP clients set `trust_env=False` so `HTTP_PROXY` cannot redirect secrets.
 
@@ -62,8 +81,7 @@ BURNRATE does not post prompts or chat completions to a model endpoint.
 
 ## Update checks (native app)
 
-The native Windows app can look for a newer version. It is the one request BURNRATE makes by
-itself that is not to a provider or a hub you set up:
+The native Windows app can look for a newer version.
 
 - **Who checks, and when.** Only a copy installed with `myBurnRate_<version>_x64-setup.exe`
   checks on its own: once about a minute after it starts, then once a day. A portable zip, a
@@ -95,12 +113,13 @@ Optional Tailscale Serve is an operator choice and is never enabled by BURNRATE.
 
 | Rule | Detail |
 | --- | --- |
-| In memory only | Keys are read from the environment or from the provider’s own local store |
+| Provider key storage | In-app keys use the OS credential store. Keys supplied through the per-user `.env` remain plaintext in that file. |
+| Paired credentials | The desktop uses the OS credential store for the machine token and owner session and sends them only to their issuing hub origin. |
 | Never in SQLite | Not in `usage_events`, `quotas`, or `ingest_runs` |
 | Never in API JSON | Including `/api/spend/limits` error strings (redacted) |
 | Never in doctor output | Paths may be generic; secrets are not echoed |
 | OpenRouter | Inference key ≠ `OPENROUTER_MANAGEMENT_KEY` |
-| Claude | Claude Code's cached plan usage, Claude Desktop history and Traycer; Claude's sign-in is never read |
+| Claude | Cached plan usage and account metadata, Claude Desktop history, and the local Traycer CLI. Claude sign-in tokens and credential files are outside the read path. |
 
 `GET /api/spend/limits` can fire every quota collector, including the experimental Traycer CLI. Keep it off any public reverse proxy.
 

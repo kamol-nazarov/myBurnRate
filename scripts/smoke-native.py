@@ -67,6 +67,7 @@ def smoke(app: Path) -> None:
             "BURNRATE_COLLECTOR_PROCESS": "0",
             "BURNRATE_ENABLE_ZAI_QUOTA": "0",
             "BURNRATE_ENABLE_OPENCODE_GO_QUOTA": "0",
+            "BURNRATE_ENABLE_MUSE_QUOTA": "0",
             "BURNRATE_SUMMARY_PREWARM": "0",
             "PYTHONNOUSERSITE": "1",
         }

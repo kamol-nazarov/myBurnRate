@@ -1044,6 +1044,8 @@ def initialize(path: Path) -> None:
     dedupe_grok_calls(path)
     retire_muse_rollup_events(path)
     redact_legacy_ingest_errors(path)
+    from spend_app.sync_privacy import scrub_synced_activity_titles
+    scrub_synced_activity_titles(path)
     migrate_setup_hub_url(path)
     from spend_app.auth_model import ensure_schema
     ensure_schema(path)

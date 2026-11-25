@@ -2,7 +2,7 @@
 
 Each row says whether the tool's usage is being read and whether its plan
 meter has a current reading, and what to do when it does not. The module also
-owns the two switches for meters that reuse another app's sign-in, the plan
+owns switches for meters that reuse another app's sign-in, the plan
 suggestions taken from what the meters already report, and the per-source
 progress of the first collection. Everything here reads local state; only
 ``write_consent`` changes anything (the per-user ``.env`` and the process
@@ -17,6 +17,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from spend_app.db import connect
+from spend_app.integration_policy import authorize
 
 # Meters that reuse another application's sign-in. They are on by default for
 # a new install (see config.load_user_env); the wizard shows them so the
@@ -24,6 +25,7 @@ from spend_app.db import connect
 CONSENT_SWITCHES = (
     {
         "key": "zai",
+        "policy": "zai_quota_endpoint",
         "env": ("BURNRATE_ENABLE_ZAI_QUOTA",),
         "label": "Read Z.AI credits with your Coding Plan key",
         "detail": "Uses the Z.AI key that OpenCode, ZCode or glm-acp-agent already stores to ask Z.AI for your "
@@ -32,10 +34,19 @@ CONSENT_SWITCHES = (
     },
     {
         "key": "opencode_go",
+        "policy": "opencode_go_quota",
         "env": ("BURNRATE_ENABLE_OPENCODE_GO_QUOTA",),
         "label": "Read OpenCode Go usage with OpenCode's sign-in",
         "detail": "Uses the OpenCode Console key each OpenCode profile stores to ask opencode.ai for its Go usage.",
         "lanes": ("opencode-go", "opencode-go-*"),
+    },
+    {
+        "key": "muse",
+        "policy": "muse_quota_endpoint",
+        "env": ("BURNRATE_ENABLE_MUSE_QUOTA",),
+        "label": "Read Muse quota with Muse Code's sign-in",
+        "detail": "Uses the saved Muse Code session to ask Meta for Muse quota readings.",
+        "lanes": ("muse",),
     },
 )
 
@@ -125,10 +136,6 @@ DEFAULT_PLANS = {
 REASON_SEPARATOR = " — "
 
 
-def _truthy(value) -> bool:
-    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
-
-
 def consent_state(environ=None) -> list[dict]:
     env = os.environ if environ is None else environ
     return [
@@ -137,7 +144,7 @@ def consent_state(environ=None) -> list[dict]:
             "label": switch["label"],
             "detail": switch["detail"],
             # The first variable is the switch; the rest follow it.
-            "enabled": _truthy(env.get(switch["env"][0])),
+            "enabled": authorize(switch["policy"], environ=env)[0],
             "lanes": list(switch["lanes"]),
         }
         for switch in CONSENT_SWITCHES

@@ -79,6 +79,7 @@ def _is_codex_profile_key(
         from spend_app import profile_store
 
         with closing(sqlite3.connect(db_path.absolute().as_uri() + "?mode=ro", uri=True)) as db:
+            db.execute("PRAGMA query_only=ON")
             state = profile_store.load_config_if_present(db)
         if not state:
             return False

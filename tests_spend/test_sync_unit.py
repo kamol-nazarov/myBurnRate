@@ -335,7 +335,7 @@ def test_multi_machine_push_and_filtered_summary_and_entity(tmp_path: Path) -> N
             ],
             "agentRuns": [
                 {
-                    "id": "agent-remote",
+                    "id": "claude:agent-remote",
                     "name": "Studio Claude Agent",
                     "model_key": "claude-opus-4-6",
                     "state": "live",
@@ -358,8 +358,8 @@ def test_multi_machine_push_and_filtered_summary_and_entity(tmp_path: Path) -> N
     assert len(all_summary["activity"]) == 2
     by_agent = {item["name"]: item for item in all_summary["activity"]}
     assert by_agent["Hub Codex Agent"]["machineId"] == "local"
-    assert by_agent["Studio Claude Agent"]["machineId"] == remote_id
-    assert by_agent["Studio Claude Agent"]["machineName"] == "Studio Desktop"
+    assert by_agent["Claude Code"]["machineId"] == remote_id
+    assert by_agent["Claude Code"]["machineName"] == "Studio Desktop"
 
     # 2. Summary filtered to remote machine only
     remote_summary = client.get(f"/api/spend/summary?window=1d&tool=all&machine={remote_id}").json()
@@ -367,7 +367,7 @@ def test_multi_machine_push_and_filtered_summary_and_entity(tmp_path: Path) -> N
     assert remote_summary["totals"]["records"] == 1
     assert remote_summary["totals"]["tokens"] == 24_000
     assert [m["key"] for m in remote_summary["models"]] == ["claude-opus-4-6"]
-    assert [a["name"] for a in remote_summary["activity"]] == ["Studio Claude Agent"]
+    assert [a["name"] for a in remote_summary["activity"]] == ["Claude Code"]
 
     # 3. Summary filtered to local machine only
     local_summary = client.get("/api/spend/summary?window=1d&tool=all&machine=local").json()
@@ -1118,7 +1118,7 @@ def test_cached_hub_payload_is_remasked_and_never_mutated() -> None:
     assert cached["providers"][0]["windows"][0]["usedPct"] == 77.0
 
 
-def test_apply_sync_push_caps_agent_run_name(tmp_path: Path) -> None:
+def test_apply_sync_push_discards_agent_title_when_tool_is_unknown(tmp_path: Path) -> None:
     from spend_app.sync import apply_sync_push, register_machine
 
     settings = _make_settings(tmp_path / "cap-sync")
@@ -1157,7 +1157,4 @@ def test_apply_sync_push_caps_agent_run_name(tmp_path: Path) -> None:
         ).fetchone()
     assert row is not None
     stored_name = row[0]
-    assert len(stored_name) <= 120
-    assert len(stored_name) == 120
-    assert stored_name.endswith("\u2026")
-    assert stored_name == ("z" * 119) + "\u2026"
+    assert stored_name == "Coding tool"

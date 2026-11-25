@@ -10,8 +10,8 @@ Security fixes are shipped for the latest released minor line.
 
 | Version | Supported | Notes |
 | --- | --- | --- |
-| `0.5.x` | Yes | Current stable line. Fixes ship in the next `0.5.x` release. |
-| `0.4.x` and earlier | No | Upgrade to `0.5.x`; older lines receive no fixes. |
+| `0.6.x` | Yes | Current stable line. Fixes ship in the next `0.6.x` release. |
+| `0.5.x` and earlier | No | Upgrade to the current stable line. |
 
 Pre-release tags and unreleased branches are supported on a best-effort basis only. Every packaged
 release is built by the tagged release workflow; there are no private hotfix builds. Always confirm
@@ -108,30 +108,42 @@ computer.
 
 These are invariants, not aspirations. A change that breaks one is a security bug.
 
-- **Loopback by default.** The service binds `127.0.0.1:17331`. There is no built-in remote access,
-  no cloud account and no relay. A hub (`BURNRATE_CENTRAL_SERVER=1`) denies anonymous API access;
-  creating its first account requires `BURNRATE_SETUP_TOKEN`. Existing owners sign in without it.
-- **Read-only harness access.** Another tool's SQLite database is opened with `mode=ro` and
-  `PRAGMA query_only=ON`; JSONL and log files are opened for reading. myBurnRate never writes another
-  tool's files and never reads, reuses or refreshes Claude's sign-in.
+- **Loopback by default.** The service binds `127.0.0.1:17331`. On a desktop, API requests require the
+  local installation credential except for minimal hub discovery. Basic `/healthz` remains available
+  for local supervision. A hub (`BURNRATE_CENTRAL_SERVER=1`) requires authentication for protected
+  API access. Creating its first owner through the API requires the configured
+  `BURNRATE_SETUP_TOKEN` or a valid recovery bearer. The hub administrator can instead use
+  `burnrate hub create-owner` locally. Supported hub ingress uses an HTTP reverse proxy to
+  carry the client address. A raw TCP forward presents all clients as loopback.
+- **Read-only harness access.** The shared SQLite reader used by local adapters and SQLite schema
+  inspection use `mode=ro` and `PRAGMA query_only=ON`. The saved-profile readers for Claude,
+  OpenCode and quota discovery use both on their BURNRATE config database, as do the pricing
+  audit and subscription-upgrade reader. JSONL and log files are opened for reading.
+  Claude account discovery reads account IDs, plan tiers and cached usage from `.claude.json`.
+  BURNRATE does not read Claude sign-in tokens or credential files. It may invoke the local
+  Traycer CLI for quota and activity metadata.
 - **No conversation content.** Prompts, responses, reasoning text, diffs, attachments, code, tool
   arguments and tool results are parsed in memory where a format requires it and then discarded.
   Only metadata is persisted.
-- **Provider credentials stay out of SQLite and API responses.** Optional provider keys live in Windows
-  Credential Manager, the macOS Keychain or the Secret Service. Credential-shaped strings are
-  stripped before ingest errors are written.
-- **Explicit principals.** Owner, machine and unauthenticated requests share a default-deny permission
-  boundary. The only enabled human role is `owner`; future roles require an explicit permission set.
+- **Provider credentials stay out of SQLite and API responses.** Keys added in BURNRATE use Windows
+  Credential Manager, the macOS Keychain or the Secret Service. Keys supplied through a per-user
+  `.env` are plaintext in that file. Credential-shaped strings are stripped before ingest errors
+  are written.
+- **Explicit principals.** The desktop installation key authorizes local API access. The hub
+  separates owner sessions, paired machine credentials and unauthenticated callers. Protected
+  routes require a principal with the matching permission. The human role on the hub is `owner`.
 - **Machine tokens are read-isolated and expire.** Machine tokens push only as themselves and read
   only an own-machine usage projection (`usage`, `summary`, `entity` with one exact `machine` ID)
   and their own registry entry. They cannot read hub aggregates, plans, accounts or settings.
   New tokens expire after **90 days**, record creation/last use/expiry, and store only SHA-256 hashes
   on the hub. Refresh requires the current unexpired token, succeeds once and invalidates it.
   Expired/revoked/unknown credentials get 401; authenticated scope violations get 403.
-- **Expiring owner sessions.** Owner access uses independent **30-day** sessions, generated
-  from 32 random bytes, hashed on the hub, with device label, creation/last-use/expiry and revocation.
+- **Expiring owner sessions.** Owner credentials use **30-day** sessions capped at **90 days** from
+  password sign-in, including rotations. The hub stores hashes, device binding where available,
+  authentication time, creation/last-use/expiry, and revocation. Repeated unsuccessful password
+  checks throttle the account and caller address together.
   `/api/account/*` and `/api/auth/*` provide sign-in, session listing/revocation, logout and credential rotation.
-- **Spoke session management.** A connected computer's loopback API is anonymous for local data, and
+- **Spoke session management.** A connected computer's loopback API requires its local key, and
   spoke `/api/auth/*` routes return 401 (`AUTH-107`); hub owner session management runs through the
   native desktop bridge (`DesktopBridge`), which holds the spoke's owner session. Break-glass rotation
   is refused on a spoke and must happen on the hub.
@@ -142,37 +154,42 @@ These are invariants, not aspirations. A change that breaks one is a security bu
   environment value cannot regain access on restart. The replacement is returned once.
   A connected computer never relays break-glass rotation; do it on the hub.
 - **Machine credentials.** Each connected computer registers with its persistent device ID for a
-  90-day machine token (auto-rotated in the background before expiry). Revoking a computer
-  invalidates its machine token immediately; signing in again on that computer issues a new one.
-- **Admin audit.** `admin_audit` records actor type/ID, fixed action, target ID, outcome and UTC time
+  90-day machine token (auto-rotated in the background before expiry). Revocation invalidates its
+  machine token and owner sessions bound to the device. A new password sign-in can re-enroll it.
+  The owner can see and revoke sessions without a device binding.
+- **Admin audit.** `admin_audit` records actor type/ID, fixed action, target ID, outcome, UTC time and
+  the resolved source address for relevant request events
   for login, sessions, machine management, setup/registration and credential rotation.
   SQLite triggers reject UPDATE/DELETE. Tokens, hashes, passwords, labels, request
   bodies and conversation content are never audit payloads. This is a local append-only record,
   not a tamper-proof external ledger against a database administrator.
 - **Owner view on spokes.** A machine token grants sync and own-machine reads. For All computers, the owner
-  signs in once on each spoke; a separate revocable owner session is saved in the spoke's private
-  SQLite configuration and used as a bearer to the hub. The hub stores its hash. On sign-out,
+  signs in on each spoke. The OS credential store holds the owner session and machine token for the
+  issuing hub origin. The hub stores their hashes. On sign-out,
   expiry or rejected access, show this computer's recorded usage and a sign-in notice. A freshly
   cached view can persist until its normal one-second TTL; authentication rejection purges that
   credential's cache instead of serving stale aggregate data. Offline cached owner data is valid
   only until the session's known expiry. Protect the spoke's OS account and private data directory.
   A stolen active machine token can refresh itself until revoked; expiry bounds inactive leakage,
   not an active token thief. Revoke the computer after exposure. Monitor audit-table disk growth.
-- **Allowlisted network egress.** Credential-bearing HTTP clients use an explicit host allowlist,
-  HTTPS only, timeouts, and `trust_env=False` so `HTTP_PROXY` cannot redirect secrets. Meters that
-  reuse a key another tool stores are on by default with a switch; every other provider call needs a
-  key the user adds. There is no inference proxy.
+- **Allowlisted network egress.** Provider meters use HTTPS, explicit destination allowlists,
+  timeouts and `trust_env=False`. The default-on Z.AI, OpenCode Go and Muse meters reuse those tools'
+  sign-ins and can be disabled in Sources. The Antigravity language service is local. See the
+  [privacy disclosure](docs/privacy.md) for hosts and credentials.
 - **Update verification before execution.** A native update is rejected unless the URL, byte size,
   SHA-256, signer and version all match the pinned expectations, and failed downloads are deleted.
 - **Checked desktop launch.** `/api/hud/native` only starts the installed desktop binary
   (`%LOCALAPPDATA%\Programs\BURNRATE\BURNRATE.exe`) after an Authenticode check. A binary is trusted as `valid` only when
   Authenticode validation succeeds and its certificate thumbprint matches `BURNRATE_NATIVE_THUMBPRINTS`
-  (empty by default until SignPath enrolment). Signed-but-unpinned binaries (`untrusted`) and
-  `unsigned` builds are allowed while signing is pending and reported in the response; set
-  `BURNRATE_REQUIRE_SIGNED_NATIVE=1` to refuse them. `foreign`, `tampered`, and `unknown`
-  verification results are always refused.
-- **Reproducible releases.** Artifacts are built on GitHub Actions from a tagged commit, listed in
-  `SHA256SUMS`, and carry build provenance attestations.
+  (empty by default until publisher enrolment). While that list is empty, `untrusted` and
+  `unsigned` development builds can launch unless `BURNRATE_REQUIRE_SIGNED_NATIVE=1`.
+  A valid signature from a different publisher is `foreign` after enrolment. The launcher refuses
+  foreign, tampered and unknown verification results.
+- **Release provenance.** Desktop assets are built from the release tag. The Compose hub image is
+  built from the release branch and promoted by digest in the signed release. The Compose
+  operator verifies the image's build provenance and the wheel signature before installation.
+  The source-based hub operator verifies the tag signature and exact commit. The repository owner
+  must configure the release environment, rulesets and trusted signers before relying on these gates.
 - **Continuous checks.** CI runs a hermetic test suite on Windows, macOS and Linux, Python and
   npm dependency audits, and a secret scan on every push.
 

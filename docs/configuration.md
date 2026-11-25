@@ -34,8 +34,9 @@ Optional keys in `.env` (all empty by default — copy `.env.example` to `.env` 
 | `OPENAI_ADMIN_KEY` | OpenAI organization usage + cost |
 | `ANTHROPIC_ADMIN_KEY` | Anthropic organization usage + cost |
 | `OPENROUTER_MANAGEMENT_KEY` | OpenRouter credits (dedicated; not the inference key) |
-| `BURNRATE_ENABLE_ZAI_QUOTA` | Z.AI credit reads using a stored Coding Plan key. On by default in the desktop service, which sets it to `1` on first start; desktop **Settings → Sources** (and first-run scan) shows it as a switch that writes `1`/`0` to the per-user `.env`. Unset (off) for the CLI |
-| `BURNRATE_ENABLE_OPENCODE_GO_QUOTA` | OpenCode Go usage reads using OpenCode's stored Console key. On by default in the desktop service, which sets it to `1` on first start; desktop **Settings → Sources** (and first-run scan) shows it as a switch that writes `1`/`0` to the per-user `.env`. Unset (off) for the CLI |
+| `BURNRATE_ENABLE_ZAI_QUOTA` | Default-on Z.AI credit reads use a stored Coding Plan key. Set to `0` or use **Settings → Sources** to disable in both the desktop service and CLI. |
+| `BURNRATE_ENABLE_OPENCODE_GO_QUOTA` | Default-on OpenCode Go reads use the selected profile's stored Console key. Set to `0` or use **Settings → Sources** to disable. |
+| `BURNRATE_ENABLE_MUSE_QUOTA` | Default-on Muse quota reads use the saved Muse Code session. Set to `0` or use **Settings → Sources** to disable. |
 | `DEEPSEEK_BALANCE_KEY` | DeepSeek key for the balance card (prefer connecting it in **Settings → Sources**) |
 | `BURNRATE_ACCESS_TOKEN` | Bootstrap/break-glass credential and explicitly configured legacy bearer automation. Normal UI uses a 30-day owner session. Rotation persists only a hash and invalidates the old environment value |
 | `BURNRATE_ALLOW_ADMIN_BEARER` | Default `0` restricts the static credential to `/api/auth/bootstrap` and `/api/auth/rotate`. Set `1` only when automation must use the static bearer for other API calls |

@@ -43,7 +43,6 @@ from spend_app.db import (
     UsageEvent,
     connect,
     initialize,
-    cap_agent_run_name,
     prune_ingest_runs,
     prune_usage_changes,
     upsert_agent_run,
@@ -71,6 +70,7 @@ from spend_app.sync_continuity import (
     retain_legacy_conflict,
     verified_reply,
 )
+from spend_app.sync_privacy import synced_activity_name
 from spend_app.sync_validation import (
     MAX_COST, clean_quota_numbers, clean_usage_cost, finite_amount, reject_json_constant,
     validate_push,
@@ -1055,7 +1055,7 @@ def apply_sync_push(
                     if upsert_agent_run(
                         connection,
                         id=rid,
-                        name=cap_agent_run_name(str(item["name"])),
+                        name=synced_activity_name(rid),
                         model_key=item.get("model_key") or item.get("modelKey"),
                         state=str(item.get("state") or "LIVE"),
                         started_at=str(item.get("started_at") or item.get("startedAt") or stamp),
@@ -1353,9 +1353,9 @@ def export_sync_batch(
                 )
             ]
         agent_runs = [
-            dict(row)
+            {**dict(row), "name": synced_activity_name(row["id"])}
             for row in connection.execute(
-                "SELECT * FROM agent_runs WHERE id NOT LIKE 'm:%'"
+                "SELECT id,model_key,state,started_at,last_seen_at FROM agent_runs WHERE id NOT GLOB 'm:*'"
             )
         ]
         raw_quotas = [

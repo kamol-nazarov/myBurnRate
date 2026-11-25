@@ -32,6 +32,7 @@ def upgrade_database(path: Path, initialize_base):
         with closing(
             sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
         ) as source:
+            source.execute("PRAGMA query_only=ON")
             try:
                 version = int(
                     source.execute(
