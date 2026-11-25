@@ -17,6 +17,7 @@ from spend_app.api import create_app
 from spend_app.config import Settings
 from spend_app.db import initialize
 from spend_app.quotas import default_quota_collectors, poll_quotas
+from tests_spend.local_client_fixture import local_client
 
 NOW = "2026-09-06T12:00:00Z"
 
@@ -72,7 +73,8 @@ def test_safe_reads_and_app_boot_never_probe(poisoned, tmp_path, monkeypatch):
     # Legacy flags must be inert.
     monkeypatch.setenv("BURNRATE_REFRESH_CLAUDE", "1")
     monkeypatch.setenv("SPEND_ENABLE_CURSOR_QUOTA", "1")
-    client = TestClient(create_app(_settings(tmp_path), enable_scheduler=False))
+    settings = _settings(tmp_path)
+    client = local_client(create_app(settings, enable_scheduler=False), settings.database_path)
     for path in ("/api/spend/summary", "/api/spend/nav", "/api/spend/health", "/api/onboarding", "/api/spend/limits"):
         response = client.get(path)
         assert response.status_code == 200, path
@@ -137,15 +139,15 @@ def test_consent_unlocks_only_the_named_lane(poisoned, tmp_path, monkeypatch):
     assert poisoned == []  # no network, no native token access
 
 
-def test_access_token_boundary(tmp_path, monkeypatch):
+def test_local_access_requires_the_installation_key(tmp_path, monkeypatch):
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "secret-token")
-    client = TestClient(create_app(_settings(tmp_path), enable_scheduler=False))
+    settings = _settings(tmp_path)
+    app = create_app(settings, enable_scheduler=False)
+    client = TestClient(app)
     assert client.get("/api/spend/summary").status_code == 401
     assert client.get("/api/spend/summary", headers={"Authorization": "Bearer wrong"}).status_code == 401
-    assert (
-        client.get("/api/spend/summary", headers={"Authorization": "Bearer secret-token"}).status_code
-        == 200
-    )
+    assert client.get("/api/spend/summary", headers={"Authorization": "Bearer secret-token"}).status_code == 401
+    assert local_client(app, settings.database_path).get("/api/spend/summary").status_code == 200
 
 
 def test_limits_snapshot_reports_persisted_rows(tmp_path):

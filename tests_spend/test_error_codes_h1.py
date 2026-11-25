@@ -27,6 +27,7 @@ from spend_app.error_codes import (
 from spend_app.native_desktop import DesktopError, NativeClient
 from spend_app.setup_wizard import _call_central_server_account
 from spend_app.wealthfront_window import DesktopBridge
+from tests_spend.local_client_fixture import local_client as authenticated_local_client
 
 ROOT = Path(__file__).resolve().parents[1]
 HUB_URL = "https://hub.test"
@@ -47,6 +48,7 @@ EXPECTED_CODES = {
     "AUTH-105",
     "AUTH-106",
     "AUTH-107",
+    "AUTH-110",
     "DEV-301",
     "DEV-302",
     "REQ-401",
@@ -215,7 +217,7 @@ def _create_hub_and_local(tmp_path: Path, monkeypatch, *, register_owner: bool =
     monkeypatch.delenv("BURNRATE_SETUP_TOKEN", raising=False)
     local_settings = _make_settings(tmp_path / "local.db")
     local_app = create_app(local_settings, enable_scheduler=False)
-    local_client = TestClient(local_app, base_url="http://testserver")
+    local_client = authenticated_local_client(local_app, local_settings.database_path, base_url="http://testserver")
     monkeypatch.setenv("BURNRATE_HUB_URL", HUB_URL)
     monkeypatch.setitem(sync._HUB_TEST_CLIENTS, HUB_URL, hub_client)
     return hub_settings, hub_app, hub_client, local_settings, local_app, local_client
@@ -259,9 +261,9 @@ def _patch_httpx_for_fake_responses(monkeypatch, handler):
 # ---------------------------------------------------------------------------
 
 
-def test_error_catalog_has_all_20_codes() -> None:
+def test_error_catalog_has_all_21_codes() -> None:
     assert set(ERROR_CATALOG) == EXPECTED_CODES
-    assert len(ERROR_CATALOG) == 20
+    assert len(ERROR_CATALOG) == 21
     msg = error_message("APP-903")
     assert "keychain" in msg.lower()
     assert format_error("APP-903") == f"{msg} Error APP-903"
@@ -287,7 +289,7 @@ def test_req_404_catalog_and_error_response() -> None:
 def test_net_001_transport_and_invalid_url_paths(tmp_path: Path, monkeypatch) -> None:
     local_settings = _make_settings(tmp_path / "local.db")
     local_app = create_app(local_settings, enable_scheduler=False)
-    local_client = TestClient(local_app, base_url="http://testserver")
+    local_client = authenticated_local_client(local_app, local_settings.database_path, base_url="http://testserver")
     bridge, _native, _tc = _make_bridge(local_settings, monkeypatch, local_app)
 
     # 1a. Missing / invalid BURNRATE_HUB_URL on DesktopBridge.connect_hub_account
@@ -396,7 +398,7 @@ def test_net_002_host_and_origin_rejection(tmp_path: Path, monkeypatch) -> None:
 def test_net_003_tls_ssl_error_and_plain_http_rejection(tmp_path: Path, monkeypatch) -> None:
     local_settings = _make_settings(tmp_path / "local.db")
     local_app = create_app(local_settings, enable_scheduler=False)
-    local_client = TestClient(local_app, base_url="http://testserver")
+    local_client = authenticated_local_client(local_app, local_settings.database_path, base_url="http://testserver")
     bridge, _native, _tc = _make_bridge(local_settings, monkeypatch, local_app)
 
     # 3a. ssl.SSLError during _call_central_server_account / /api/setup/account
@@ -786,14 +788,15 @@ def test_dev_301_revoked_invalid_machine_token(tmp_path: Path, monkeypatch) -> N
     assert hub_rot.json() == {"error": {"code": "DEV-301"}}
     assert setup_wizard.rotate_spoke_machine_token(local_settings, client=hub_client) == {"ok": False, "status": 401}
 
-    # 11c. NativeClient.request bootstrap with br_m_ token against real hub app -> DesktopError DEV-301
-    # Hub has a distinct break-glass secret while NativeClient holds the revoked br_m_ token.
+    # 11c. A legacy native client without an installation key still maps the
+    # real hub's rejection of its configured revoked token to DEV-301.
     monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "hub-distinct-admin-secret-999")
     hub_app_2 = create_app(hs, enable_scheduler=False)
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", revoked_token)
     _patch_native_to_local(monkeypatch, hub_app_2, port=17332)
-    native = NativeClient(hs, port=17332)
+    legacy_native_settings = _make_settings(tmp_path / "legacy-native" / "spend.db")
+    native = NativeClient(legacy_native_settings, port=17332)
     with pytest.raises(DesktopError) as exc_info:
         native.request("/api/spend/usage")
     assert exc_info.value.code == "DEV-301"
@@ -821,14 +824,20 @@ def test_dev_302_duplicate_machine_name_propagation(tmp_path: Path, monkeypatch)
     mid1 = reg1.json()["machine"]["id"]
     sync.revoke_machine(hs.database_path, machine_id=mid1)
 
+    duplicate = {"action": "register", "name": "SharedName"}
+    prior_headers = {
+        **HUB_HEADERS,
+        "Authorization": f"Bearer {owner_cookie}",
+        "X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION),
+    }
+    # Revoking a computer also revokes the owner session bound during
+    # enrollment. The duplicate-name check must use a fresh owner sign-in.
+    assert hub_client.post("/api/machines", headers=prior_headers, json=duplicate).status_code == 401
+    owner_cookie = _login_owner_token(hub_client)
     dup_reg = hub_client.post(
         "/api/machines",
-        headers={
-            **HUB_HEADERS,
-            "Authorization": f"Bearer {owner_cookie}",
-            "X-BURNRATE-Protocol": str(HUB_PROTOCOL_VERSION),
-        },
-        json={"action": "register", "name": "SharedName"},
+        headers={**prior_headers, "Authorization": f"Bearer {owner_cookie}"},
+        json=duplicate,
     )
     assert dup_reg.status_code == 422
     assert dup_reg.json() == {"error": {"code": "DEV-302"}}
@@ -915,7 +924,7 @@ def test_sync_201_initial_sync_failure_warning(tmp_path: Path, monkeypatch) -> N
 def test_hub_501_server_error_and_invalid_json(tmp_path: Path, monkeypatch) -> None:
     local_settings = _make_settings(tmp_path / "local.db")
     local_app = create_app(local_settings, enable_scheduler=False)
-    local_client = TestClient(local_app, base_url="http://testserver")
+    local_client = authenticated_local_client(local_app, local_settings.database_path, base_url="http://testserver")
     bridge, _native, _tc = _make_bridge(local_settings, monkeypatch, local_app)
 
     for fake_resp in (
@@ -1157,7 +1166,7 @@ def test_never_leak_raw_hub_text(
 ) -> None:
     local_settings = _make_settings(tmp_path / "local.db")
     local_app = create_app(local_settings, enable_scheduler=False)
-    local_client = TestClient(local_app, base_url="http://testserver")
+    local_client = authenticated_local_client(local_app, local_settings.database_path, base_url="http://testserver")
     bridge, _native, _tc = _make_bridge(local_settings, monkeypatch, local_app)
 
     class _LeakyHub:

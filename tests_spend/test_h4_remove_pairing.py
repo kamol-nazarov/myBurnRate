@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from tests_spend.local_client_fixture import local_client
 
 from spend_app import aggregate, auth_model, auth_throttle, cli, hub_origin, redact, setup_wizard, sync
 from spend_app.api import create_app
@@ -92,20 +93,22 @@ def test_removed_pairing_endpoints_return_404_or_405(
 ) -> None:
     auth_throttle.reset()
 
-    # Localhost app without bearer gating -> 404/405 directly
+    # An authorized local client reaches routing and sees the old routes are gone.
     monkeypatch.delenv("BURNRATE_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("BURNRATE_CENTRAL_SERVER", raising=False)
     local_settings = _make_settings(tmp_path / "local.db")
     initialize(local_settings.database_path)
-    with TestClient(create_app(local_settings, enable_scheduler=False), base_url="http://testserver") as local_client:
+    with local_client(create_app(local_settings, enable_scheduler=False), local_settings.database_path) as client:
         local_res = (
-            local_client.get(path, headers=UI)
+            client.get(path, headers=UI)
             if method == "GET"
-            else local_client.post(path, headers=UI, json=body)
+            else client.post(path, headers=UI, json=body)
         )
         assert local_res.status_code in (404, 405), (path, local_res.status_code, local_res.text)
 
     # Hub with bearer gating: unauthenticated returns 401 (no longer in _PUBLIC_ACCOUNT_PATHS), admin returns 404/405.
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "synthetic-admin")
+    monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
     hs = _make_settings(tmp_path / "hub.db")
     initialize(hs.database_path)
     with TestClient(create_app(hs, enable_scheduler=False), base_url=HUB_URL) as hub_client:
@@ -129,7 +132,7 @@ def test_setup_state_html_ui_and_bridge_omit_pairing_controls(tmp_path: Path) ->
 
     ss = _make_settings(tmp_path / "local.db")
     initialize(ss.database_path)
-    with TestClient(create_app(ss, enable_scheduler=False), base_url="http://testserver") as client:
+    with local_client(create_app(ss, enable_scheduler=False), ss.database_path) as client:
         state_res = client.get("/api/setup/state")
         assert state_res.status_code == 200
         state_json = state_res.json()
@@ -291,6 +294,7 @@ def test_upgrade_drops_pairing_grants_idempotently_and_preserves_paired_machine(
     hub_settings = _make_settings(hub_db)
     spoke_settings = _make_settings(spoke_db)
     monkeypatch.setenv("BURNRATE_HUB_URL", HUB_URL)
+    monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
     with TestClient(create_app(hub_settings, enable_scheduler=False), base_url=HUB_URL) as hub_client:
         monkeypatch.setitem(sync._HUB_TEST_CLIENTS, HUB_URL, hub_client)
         res = setup_wizard.maybe_run_configured_spoke_sync(
