@@ -29,11 +29,9 @@ def settings_at(tmp_path: Path) -> Settings:
 @pytest.fixture(autouse=True)
 def _clean_throttles():
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
     yield
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
 
 

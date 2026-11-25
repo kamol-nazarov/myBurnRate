@@ -34,19 +34,17 @@ def hub(tmp_path, monkeypatch):
     monkeypatch.setenv("BURNRATE_SETUP_TOKEN", SETUP_TOKEN)
     monkeypatch.setenv("BURNRATE_ALLOW_ADMIN_BEARER", "1")
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
     settings = settings_at(tmp_path)
     with TestClient(create_app(settings, enable_scheduler=False), base_url=ORIGIN) as client:
         yield settings, client
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
 
 
 def owner(client):
     result = client.post("/api/account/register", headers=UI, json={"username": "synthetic-owner@example.com", "password": PASSWORD,
-                         "sessionOnly": True, "deviceLabel": "Synthetic browser"})
+                         "sessionOnly": True, "deviceLabel": "Synthetic browser", "setupToken": SETUP_TOKEN})
     assert result.status_code == 200, result.text
     return result
 
@@ -527,16 +525,22 @@ def test_owner_session_machines_register_follows_reconnect_rules(hub):
     assert client.post("/api/sync/push", headers={"Authorization": "Bearer " + first_token}, json={}).status_code == 401
     assert client.post("/api/sync/push", headers={"Authorization": "Bearer " + second_token}, json={}).status_code == 200
 
-    # Revoked match -> refused with 422 (must re-pair by machine ID).
+    # The owner session associated with the revoked machine is no longer valid.
     sync.revoke_machine(settings.database_path, machine_id=first_id)
     revoked_reg = client.post(
         "/api/machines",
         headers=bearer_headers,
         json={"action": "register", "name": "Owner Box", "os": "win32"},
     )
-    assert revoked_reg.status_code == 422
+    assert revoked_reg.status_code == 401
 
     # Multiple active legacy matches -> refused with 422.
+    signed_in = client.post(
+        "/api/account/login", headers=UI,
+        json={"username": "synthetic-owner@example.com", "password": PASSWORD, "sessionOnly": True},
+    )
+    assert signed_in.status_code == 200
+    bearer_headers["Authorization"] = "Bearer " + signed_in.cookies[auth.COOKIE]
     a = sync.register_machine(settings.database_path, name="Dup Owner")
     dup_id = "machine-legacy-owner-dup"
     with connect(settings.database_path) as connection:

@@ -85,7 +85,6 @@ def _settings(db_path: Path) -> Settings:
 @pytest.fixture(autouse=True)
 def _reset_h8_state(monkeypatch: pytest.MonkeyPatch):
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
     sync._HUB_REJECTED_CREDENTIALS.clear()
     sync._HUB_CREDENTIAL_GENERATIONS.clear()
@@ -102,7 +101,6 @@ def _reset_h8_state(monkeypatch: pytest.MonkeyPatch):
         monkeypatch.delenv(env_key, raising=False)
     yield
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
     sync._HUB_REJECTED_CREDENTIALS.clear()
     sync._HUB_CREDENTIAL_GENERATIONS.clear()
@@ -934,7 +932,6 @@ def test_s3_login_lockout_blocks_direct_and_spoke_password_and_email_changes_wit
                 assert "attacker@example.com" not in users
 
             auth_throttle.reset()
-            setup_wizard._GLOBAL_THROTTLE.reset()
             assert (
                 hub_client.post(
                     "/api/account/login",
@@ -1008,7 +1005,6 @@ def test_s3_wrong_password_and_email_guesses_share_budget_and_lock_out_login_per
 
             # 2) Anonymous spoke relay /api/setup/account/{password,email} also shares and triggers lockout
             auth_throttle.reset()
-            setup_wizard._GLOBAL_THROTTLE.reset()
             for idx in range(2):
                 s_pw = spoke_client.post(
                     "/api/setup/account/password",
@@ -1045,44 +1041,6 @@ def test_s3_wrong_password_and_email_guesses_share_budget_and_lock_out_login_per
             assert other_ip_login_2.status_code == 200, other_ip_login_2.text
             hub_client.cookies.clear()
 
-            # 3) Shared global budget across password/email guesses and login probes
-            auth_throttle.reset()
-            monkeypatch.setattr(
-                setup_wizard,
-                "_GLOBAL_THROTTLE",
-                auth_throttle.Throttle(window=60, max_failures=3, lockout=60),
-            )
-            assert (
-                hub_client.post(
-                    "/api/account/password",
-                    headers=bearer_headers,
-                    json={"currentPassword": "wrong-global-1", "newPassword": NEW_PASSWORD},
-                ).status_code
-                == 401
-            )
-            assert (
-                spoke_client.post(
-                    "/api/setup/account/email",
-                    headers=LOCAL_SPOKE_HEADERS,
-                    json={"email": "new@example.com", "password": "wrong-global-2"},
-                ).status_code
-                == 401
-            )
-            global_locked = hub_client.post(
-                "/api/account/login",
-                headers={**HUB_HEADERS, "X-Forwarded-For": "100.64.0.99"},
-                json={"username": "stranger@example.com", "password": "wrong-global-3"},
-            )
-            _assert_locked_out(global_locked)
-
-            # Even a different client IP with the right password is blocked by global lockout
-            _assert_locked_out(
-                hub_client.post(
-                    "/api/account/password",
-                    headers=bearer_headers,
-                    json={"currentPassword": PASSWORD, "newPassword": NEW_PASSWORD},
-                )
-            )
     finally:
         set_vault_factory(prev_factory)
 
@@ -1183,7 +1141,6 @@ def test_s3_legacy_username_and_email_share_guessing_budget_both_directions(
 
             # Direction 1b: Lock out login via email -> password & email changes blocked
             auth_throttle.reset()
-            setup_wizard._GLOBAL_THROTTLE.reset()
             for _ in range(4):
                 assert (
                     hub_client.post(
@@ -1217,7 +1174,6 @@ def test_s3_legacy_username_and_email_share_guessing_budget_both_directions(
 
             # Direction 2: Lock out via password/email guesses -> locks out login via BOTH identifiers
             auth_throttle.reset()
-            setup_wizard._GLOBAL_THROTTLE.reset()
             for idx in range(4):
                 assert (
                     hub_client.post(

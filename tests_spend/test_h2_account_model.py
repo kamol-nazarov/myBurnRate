@@ -93,7 +93,6 @@ def _make_bridge(local_settings: Settings, monkeypatch: pytest.MonkeyPatch, loca
 @pytest.fixture(autouse=True)
 def _reset_shared(monkeypatch: pytest.MonkeyPatch):
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
     sync._HUB_REJECTED_CREDENTIALS.clear()
     sync._HUB_CREDENTIAL_GENERATIONS.clear()
@@ -105,7 +104,6 @@ def _reset_shared(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("BURNRATE_HUB_URL", raising=False)
     yield
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
     sync._HUB_REJECTED_CREDENTIALS.clear()
     sync._HUB_CREDENTIAL_GENERATIONS.clear()

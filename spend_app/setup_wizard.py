@@ -1617,6 +1617,9 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                 initialize(settings.database_path)
                 with connect(settings.database_path) as connection:
                     connection.execute("BEGIN IMMEDIATE")
+                    retry_after = auth_throttle.retry_after(key)
+                    if retry_after:
+                        return None, _throttled(retry_after)
                     accounts = _read_accounts(connection)
                     user_rec = accounts["users"].get(user_key)
                     if not isinstance(user_rec, dict):

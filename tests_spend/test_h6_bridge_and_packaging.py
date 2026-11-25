@@ -97,7 +97,6 @@ def _make_settings(db_path: Path) -> Settings:
 @pytest.fixture(autouse=True)
 def _clean_shared_state(monkeypatch: pytest.MonkeyPatch):
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
     sync._HUB_REJECTED_CREDENTIALS.clear()
     sync._HUB_CREDENTIAL_GENERATIONS.clear()
@@ -110,7 +109,6 @@ def _clean_shared_state(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("BURNRATE_BUILTIN_HUB_URL", raising=False)
     yield
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
     sync._HUB_REJECTED_CREDENTIALS.clear()
     sync._HUB_CREDENTIAL_GENERATIONS.clear()

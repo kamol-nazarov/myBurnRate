@@ -38,7 +38,6 @@ def _settings(path):
 @pytest.fixture
 def clients(tmp_path, monkeypatch):
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
     aggregate.reset_memo()
     hs, ss = (_settings(tmp_path / path) for path in ("hub.db", "spoke.db"))

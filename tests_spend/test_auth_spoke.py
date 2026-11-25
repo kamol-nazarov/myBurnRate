@@ -71,7 +71,6 @@ def pair(tmp_path, monkeypatch):
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "synthetic-admin")
     monkeypatch.setenv("BURNRATE_SETUP_TOKEN", SETUP_TOKEN)
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
     aggregate.reset_memo()
     hs = settings(tmp_path / "hub.db")
@@ -105,7 +104,6 @@ def pair(tmp_path, monkeypatch):
     sync.clear_hub_proxy_cache()
     aggregate.reset_memo()
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
 
 
 def state(settings):
@@ -408,7 +406,6 @@ def test_local_token_protected_first_registration_requires_owner(tmp_path, monke
     recovery = secrets.token_urlsafe(32)
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", recovery)
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     app = create_app(settings(tmp_path / "protected.db"), enable_scheduler=False)
     payload = {"username": "owner@example.com", "password": PASSWORD, "sessionOnly": True}
     with TestClient(app) as client:
@@ -427,7 +424,6 @@ def test_rotated_recovery_remains_protected_after_environment_removed(tmp_path, 
     recovery = secrets.token_urlsafe(32)
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", recovery)
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     local = settings(tmp_path / "restart.db")
     with TestClient(create_app(local, enable_scheduler=False)) as client:
         rotated = client.post("/api/auth/rotate", headers={"Authorization": "Bearer " + recovery})

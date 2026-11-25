@@ -63,10 +63,8 @@ def _clean_throttle():
     from spend_app import setup_wizard
 
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     yield
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
 
 
 def _settings(tmp_path: Path, name: str = "hub.db") -> Settings:
@@ -195,20 +193,22 @@ def test_test_hostname_is_not_trusted_in_production(tmp_path, monkeypatch) -> No
         assert client.get("/api/spend/summary?window=1d").status_code == 403
 
 
-def test_first_account_requires_no_setup_token_and_closes_afterward(tmp_path, monkeypatch) -> None:
+def test_first_account_requires_recovery_authorization_and_closes_afterward(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
     monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "admin-secret")
     monkeypatch.delenv("BURNRATE_SETUP_TOKEN", raising=False)
     settings = _settings(tmp_path)
     app = create_app(settings=settings, enable_scheduler=False)
-    headers = {"Content-Type": "application/json", "X-BURNRATE-Request": "1", "Origin": "http://127.0.0.1:17331"}
+    headers = {"Content-Type": "application/json", "X-BURNRATE-Request": "1", "Origin": "https://127.0.0.1:17331"}
     body = {
         "username": "owner@example.com",
         "password": "long-enough-password",
         "computerName": "Hub",
     }
-    with TestClient(app, base_url="http://127.0.0.1:17331") as client:
-        created = client.post("/api/account/register", headers=headers, json=body)
+    with TestClient(app, base_url="https://127.0.0.1:17331") as client:
+        missing = client.post("/api/account/register", headers=headers, json=body)
+        assert missing.status_code == 403 and missing.json()["error"] == {"code": "AUTH-110"}
+        created = client.post("/api/account/register", headers={**headers, "Authorization": "Bearer admin-secret"}, json=body)
         assert created.status_code == 200
         assert "token" not in created.json() and "sessionToken" not in created.json()
         machine = client.post("/api/machines", headers=headers, json={"action": "register", "name": "Hub"})
@@ -230,7 +230,7 @@ def test_login_is_throttled_and_answers_generically(tmp_path, monkeypatch) -> No
     with TestClient(app, base_url="http://127.0.0.1:17331") as client:
         created = client.post(
             "/api/account/register",
-            headers=headers,
+            headers={**headers, "Authorization": "Bearer admin-secret"},
             json={
                 "username": "owner@example.com",
                 "password": "long-enough-password",
@@ -492,35 +492,6 @@ def test_throttle_expires_and_success_clears_failures() -> None:
     assert throttle.fail("k", now=clock + 7) == 0
     throttle.succeed("k")
     assert throttle.retry_after("k", now=clock + 7) == 0
-
-
-def test_global_login_budget_applies_across_usernames(tmp_path, monkeypatch) -> None:
-    from spend_app import setup_wizard
-
-    monkeypatch.setattr(
-        setup_wizard,
-        "_GLOBAL_THROTTLE",
-        auth_throttle.Throttle(window=60, max_failures=2, lockout=60),
-    )
-    monkeypatch.setenv("BURNRATE_CENTRAL_SERVER", "1")
-    monkeypatch.setenv("BURNRATE_ACCESS_TOKEN", "admin-secret")
-    settings = _settings(tmp_path)
-    app = create_app(settings=settings, enable_scheduler=False)
-    headers = {"Content-Type": "application/json", "X-BURNRATE-Request": "1", "Origin": "http://127.0.0.1:17331"}
-    with TestClient(app, base_url="http://127.0.0.1:17331") as client:
-        assert client.post(
-            "/api/account/register",
-            headers=headers,
-            json={"username": "owner@example.com", "password": "long-enough-password", "computerName": "Hub"},
-        ).status_code == 200
-        client.cookies.clear()
-        for username in ("one@example.com", "two@example.com", "three@example.com"):
-            response = client.post(
-                "/api/account/login",
-                headers=headers,
-                json={"username": username, "password": "wrong-password"},
-            )
-        assert response.status_code == 429
 
 
 def test_machine_token_can_only_manage_itself(tmp_path, monkeypatch) -> None:

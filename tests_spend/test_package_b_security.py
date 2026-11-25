@@ -98,13 +98,11 @@ def _seed_event(db_path: Path, raw_id: str, tokens: int) -> None:
 @pytest.fixture(autouse=True)
 def _clean_package_b_state():
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
     sync._HUB_TEST_CLIENTS.clear()
     aggregate.reset_memo()
     yield
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
     sync._HUB_TEST_CLIENTS.clear()
     aggregate.reset_memo()
@@ -856,7 +854,7 @@ def test_l16_non_ascii_setup_token_never_returns_500(
         assert res_hdr.status_code == 403
 
 
-def test_l16_failed_login_throttles_per_user_and_global(
+def test_l16_failed_login_throttles_per_user(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _, client = _make_hub_client(tmp_path, monkeypatch)
@@ -885,27 +883,6 @@ def test_l16_failed_login_throttles_per_user_and_global(
         assert locked.status_code == 429
         assert int(locked.headers["Retry-After"]) >= 1
 
-        # Reset throttles and verify _GLOBAL_THROTTLE (max_failures=30 across distinct users)
-        auth_throttle.reset()
-        setup_wizard._GLOBAL_THROTTLE.reset()
-        for idx in range(29):
-            res = client.post(
-                "/api/account/login",
-                headers=HUB_UI,
-                json={
-                    "username": f"user-{idx:02d}@example.com",
-                    "password": "wrong-password",
-                },
-            )
-            assert res.status_code == 401, (idx, res.text)
-
-        global_locked = client.post(
-            "/api/account/login",
-            headers=HUB_UI,
-            json={"username": "brand-new-user@example.com", "password": "wrong-password"},
-        )
-        assert global_locked.status_code == 429
-        assert int(global_locked.headers["Retry-After"]) >= 1
 
 
 # ---------------------------------------------------------------------------

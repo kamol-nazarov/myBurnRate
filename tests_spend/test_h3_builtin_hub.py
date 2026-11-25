@@ -530,7 +530,6 @@ def test_setup_account_ignores_server_url_in_request_body(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
     aggregate.reset_memo()
 
@@ -654,7 +653,6 @@ def test_acceptance_sentinel_hub_url_never_leaks(
             assert term.lower() not in lowered, f"Leaked {term!r} in {context}: {text}"
 
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
     aggregate.reset_memo()
 

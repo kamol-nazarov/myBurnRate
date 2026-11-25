@@ -91,7 +91,6 @@ def test_removed_pairing_endpoints_return_404_or_405(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, method: str, path: str, body: dict | None
 ) -> None:
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
 
     # Localhost app without bearer gating -> 404/405 directly
     monkeypatch.delenv("BURNRATE_ACCESS_TOKEN", raising=False)
@@ -213,7 +212,6 @@ def test_upgrade_drops_pairing_grants_idempotently_and_preserves_paired_machine(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
     aggregate.reset_memo()
 

@@ -63,7 +63,6 @@ from tests_spend.test_wealthfront_ui import (
 @pytest.fixture(autouse=True)
 def _isolated_h5_env(monkeypatch: pytest.MonkeyPatch):
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
     sync._HUB_REJECTED_CREDENTIALS.clear()
     sync._HUB_CREDENTIAL_GENERATIONS.clear()
@@ -77,7 +76,6 @@ def _isolated_h5_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("BURNRATE_BUILTIN_HUB_URL", raising=False)
     yield
     auth_throttle.reset()
-    setup_wizard._GLOBAL_THROTTLE.reset()
     sync.clear_hub_proxy_cache()
     sync._HUB_REJECTED_CREDENTIALS.clear()
     sync._HUB_CREDENTIAL_GENERATIONS.clear()
