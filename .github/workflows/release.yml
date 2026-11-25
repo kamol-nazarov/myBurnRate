@@ -97,13 +97,12 @@ jobs:
           cache-dependency-path: tools/tauri/package-lock.json
       - name: Install pinned updater signer CLI
         run: npm ci --prefix tools/tauri --ignore-scripts --no-audit --no-fund
+      - name: Ensure NSIS is available
+        run: ./.github/scripts/prepare-nsis.ps1
       - name: Build the native app and its installer (unsigned)
         run: |
           python -m pip install --require-hashes -r requirements-build.txt
           python -m pip install --no-deps --no-build-isolation -e .
-          if (-not (Get-Command makensis -ErrorAction SilentlyContinue) -and -not (Test-Path "${env:ProgramFiles(x86)}\NSIS\makensis.exe")) {
-            choco install nsis -y --no-progress
-          }
           python packaging/build_native.py --require-installer
       - name: Smoke-test the frozen native app
         run: |
