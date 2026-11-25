@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import shutil
 import sys
 import tempfile
@@ -16,13 +15,13 @@ PACKAGING_DIR = ROOT / "packaging"
 if str(PACKAGING_DIR) not in sys.path:
     sys.path.insert(0, str(PACKAGING_DIR))
 
-from build_config import BUILTIN_HUB_ENV, validate_builtin_hub_url, write_build_config
+from build_config import configured_builtin_hub_url, write_build_config
 
 
 class CustomBuildHook(BuildHookInterface):
     def initialize(self, version: str, build_data: dict[str, Any]) -> None:
         self._temp_dir: str | None = None
-        validate_builtin_hub_url(os.environ.get(BUILTIN_HUB_ENV, ""))
+        configured_builtin_hub_url()
         if self.target_name == "wheel" and version != "editable":
             temp_dir = tempfile.mkdtemp(prefix="burnrate-build-config-")
             self._temp_dir = temp_dir

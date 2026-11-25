@@ -28,7 +28,7 @@ def validate_builtin_hub_url(value: str | None) -> str:
     parsed = urlsplit(raw)
     if parsed.scheme.lower() != "https" or not parsed.hostname:
         raise ValueError(
-            f"{BUILTIN_HUB_ENV} must be an https:// origin with a host (got {raw!r})."
+            f"{BUILTIN_HUB_ENV} must be an https:// origin with a host."
         )
     if parsed.username or parsed.password:
         raise ValueError(f"{BUILTIN_HUB_ENV} must not contain credentials.")
@@ -59,11 +59,15 @@ def render_build_config(url: str, native_thumbprints: str = "") -> str:
     )
 
 
-def write_build_config(path: Path, url: str | None = None) -> tuple[Path, str]:
+def configured_builtin_hub_url(url: str | None = None) -> str:
     raw = os.environ.get(BUILTIN_HUB_ENV, "") if url is None else url
     if os.environ.get("BURNRATE_PUBLIC_BUILD") == "1":
-        raw = ""
-    clean = validate_builtin_hub_url(raw)
+        return ""
+    return validate_builtin_hub_url(raw)
+
+
+def write_build_config(path: Path, url: str | None = None) -> tuple[Path, str]:
+    clean = configured_builtin_hub_url(url)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(render_build_config(clean, os.environ.get(NATIVE_THUMBPRINTS_ENV, "")), encoding="utf-8")
     return path, clean
