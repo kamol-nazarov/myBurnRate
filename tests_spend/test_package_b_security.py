@@ -575,6 +575,10 @@ def test_l7_auth_endpoints_omit_session_token_and_machine_fields(
 def test_l7_spoke_join_register_login_owner_session_and_rotate_end_to_end(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from spend_app.local_access import read_local_key
+
+    setup_proof = "synthetic-first-owner-proof"
+    monkeypatch.setenv("BURNRATE_SETUP_TOKEN", setup_proof)
     hub_settings, hub_client = _make_hub_client(tmp_path, monkeypatch, db_name="hub.db")
     _seed_event(hub_settings.database_path, "hub-evt-1", 5000)
 
@@ -596,12 +600,13 @@ def test_l7_spoke_join_register_login_owner_session_and_rotate_end_to_end(
         # 1) Spoke 1 joins via /api/setup/account (mode=register)
         res1 = spoke1.post(
             "/api/setup/account",
-            headers=local_ui,
+            headers={**local_ui, "Authorization": f"Bearer {read_local_key(spoke1_settings.database_path)}"},
             json={
                 "mode": "register",
                 "username": "owner@example.com",
                 "password": PASSWORD,
                 "computerName": "Spoke One",
+                "setupToken": setup_proof,
                 "testSync": True,
             },
         )
@@ -632,7 +637,7 @@ def test_l7_spoke_join_register_login_owner_session_and_rotate_end_to_end(
         # 2) Spoke 2 joins via /api/setup/account (mode=login)
         res2 = spoke2.post(
             "/api/setup/account",
-            headers=local_ui,
+            headers={**local_ui, "Authorization": f"Bearer {read_local_key(spoke2_settings.database_path)}"},
             json={
                 "mode": "login",
                 "username": "owner@example.com",
