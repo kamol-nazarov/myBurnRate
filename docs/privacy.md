@@ -34,7 +34,7 @@ Column-level, in the BURNRATE database only:
 
 The desktop keeps session titles in its local activity store. An upgraded hub also replaces titles received from older desktops and cleans the titles in its active database. Existing backup archives follow their own retention policy.
 
-## What is never stored
+## What is excluded from usage records and sync
 
 - Prompts, responses, reasoning text, diffs, attachments
 - Tool names with arguments or results

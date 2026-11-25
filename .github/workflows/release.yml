@@ -79,6 +79,7 @@ jobs:
       VERSION: ${{ needs.check.outputs.version }}
       INSTALLER: myBurnRate_${{ needs.check.outputs.version }}_x64-setup.exe
       BURNRATE_PUBLIC_BUILD: "1"
+      BURNRATE_NATIVE_BUILD_THUMBPRINTS: ${{ vars.BURNRATE_NATIVE_BUILD_THUMBPRINTS }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -177,6 +178,7 @@ jobs:
     env:
       VERSION: ${{ needs.check.outputs.version }}
       BURNRATE_PUBLIC_BUILD: "1"
+      BURNRATE_NATIVE_BUILD_THUMBPRINTS: ${{ vars.BURNRATE_NATIVE_BUILD_THUMBPRINTS }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
