@@ -62,7 +62,7 @@ def default_timezone() -> str:
 
 
 def dashboard_enabled() -> bool:
-    """The HUD is the product; the full dashboard returns with BURNRATE_ENABLE_DASHBOARD=1."""
+    """Report the legacy display preference without exposing any browser UI."""
     return os.getenv("BURNRATE_ENABLE_DASHBOARD", "").strip().lower() in {"1", "true", "yes"}
 
 

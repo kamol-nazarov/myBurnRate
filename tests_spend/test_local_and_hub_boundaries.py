@@ -1,5 +1,6 @@
 import base64
 import os
+from pathlib import Path
 import stat
 import subprocess
 from types import SimpleNamespace
@@ -11,12 +12,14 @@ from fastapi.testclient import TestClient
 
 def test_local_api_requires_install_key(tmp_path, monkeypatch):
     from spend_app.api import create_app
+    from spend_app.auth_model import extract_cookie
     from spend_app.config import load_settings
     from spend_app.local_access import key_path, read_local_key
 
     monkeypatch.delenv("BURNRATE_CENTRAL_SERVER", raising=False)
     monkeypatch.delenv("BURNRATE_ACCESS_TOKEN", raising=False)
     monkeypatch.setenv("SPEND_DATABASE_PATH", str(tmp_path / "test.db"))
+    monkeypatch.setenv("BURNRATE_ENABLE_DASHBOARD", "1")
     settings = load_settings()
     app = create_app(settings, enable_scheduler=False)
     key = read_local_key(settings.database_path)
@@ -43,6 +46,10 @@ def test_local_api_requires_install_key(tmp_path, monkeypatch):
         )
         assert result.returncode == 0, "Local key ACL must allow exactly the current user, SYSTEM and Administrators."
     with TestClient(app) as client:
+        for page in ("/", "/hud", "/setup", "/auth", "/connections"):
+            missing = client.get(page)
+            assert missing.status_code == 404
+            assert missing.json()["error"]["code"] == "REQ-404"
         assert client.get("/healthz").status_code == 200
         assert client.get("/api/hub/info").status_code == 200
         assert client.get("/healthz?supervisor=1").status_code == 401
@@ -51,6 +58,14 @@ def test_local_api_requires_install_key(tmp_path, monkeypatch):
         headers = {"Authorization": f"Bearer {key}"}
         assert client.get("/api/auth/context", headers=headers).status_code == 200
         assert client.get("/healthz?supervisor=1", headers=headers).status_code == 200
+        bootstrap = client.post("/api/auth/bootstrap", headers=headers)
+        assert bootstrap.status_code == 200
+        assert "httponly" in bootstrap.headers["set-cookie"].lower()
+        assert key not in bootstrap.content.decode("utf-8")
+        session = extract_cookie(bootstrap)
+        assert session and session != key
+        client.cookies.clear()
+        assert client.get("/api/auth/context", headers={"Authorization": f"Bearer {session}"}).status_code == 200
 
 
 def test_all_trusted_proxy_hops_use_peer():
@@ -61,6 +76,57 @@ def test_all_trusted_proxy_hops_use_peer():
     assert resolve_client_ip(request, proxies=["127.0.0.0/8"]) == "127.0.0.1"
     request.headers["x-forwarded-for"] = "192.0.2.10, 127.0.0.3"
     assert resolve_client_ip(request, proxies=["127.0.0.0/8"]) == "192.0.2.10"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="The operations benchmark is a Windows script.")
+def test_benchmark_uses_authorized_json_api(tmp_path):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+
+    token = "b" * 64
+    received = []
+    expected = {"summary", "health"}
+
+    class FixtureHandler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_GET(self):
+            resource = self.path.split("?", 1)[0].removeprefix("/api/spend/")
+            if resource not in expected or self.headers.get("Authorization") != "Bearer " + token:
+                self.send_error(401)
+                return
+            received.append((resource, self.headers.get("Accept-Encoding")))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+    key = tmp_path / ".burnrate-auth" / "access.key"
+    key.parent.mkdir()
+    key.write_text(token, encoding="ascii")
+    script = Path(__file__).resolve().parents[1] / "scripts" / "Bench-Burnrate.ps1"
+    fixture_env = {name: os.environ[name] for name in ("PATH", "SYSTEMROOT", "TEMP", "TMP")
+                   if name in os.environ}
+    fixture_env["BURNRATE_DATA_ROOT"] = str(tmp_path)
+    with ThreadingHTTPServer(("127.0.0.1", 0), FixtureHandler) as server:
+        serving = Thread(target=server.serve_forever, daemon=True)
+        serving.start()
+        try:
+            result = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                 "-File", str(script),
+                 "-BaseUrl", f"http://127.0.0.1:{server.server_port}", "-Requests", "2"],
+                capture_output=True, text=True, timeout=30,
+                env=fixture_env,
+            )
+        finally:
+            server.shutdown()
+            serving.join(timeout=5)
+    assert result.returncode == 0, result.stderr
+    assert {resource for resource, _ in received} == expected
+    assert ("summary", "identity") in received
+    assert ("summary", "gzip") in received
+    assert token not in result.stdout + result.stderr
 
 
 def test_install_folder_cannot_supply_security_settings(tmp_path, monkeypatch):

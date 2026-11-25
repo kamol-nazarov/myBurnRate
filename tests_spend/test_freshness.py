@@ -155,6 +155,8 @@ def test_heartbeat_marks_a_stalled_collection_loop(monkeypatch) -> None:
 
 
 def test_watchdog_waits_for_configured_collection_interval(tmp_path: Path, monkeypatch) -> None:
+    from spend_app.local_access import read_local_key
+
     settings = replace(_settings(tmp_path), local_ingest_interval_seconds=1800)
     monkeypatch.setenv("BURNRATE_DATA_ROOT", str(tmp_path / "data"))
     wall = NOW + timedelta(seconds=905)
@@ -166,9 +168,11 @@ def test_watchdog_waits_for_configured_collection_interval(tmp_path: Path, monke
 
     monkeypatch.setattr(freshness, "datetime", Clock)
     client = TestClient(create_app(settings, enable_scheduler=False))
+    local_key = read_local_key(settings.database_path)
 
-    def get(url, _timeout, _token=None):
-        response = client.get(url)
+    def get(url, _timeout, token=None):
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        response = client.get(url, headers=headers)
         response.raise_for_status()
         return response.json()
 
@@ -182,6 +186,7 @@ def test_watchdog_waits_for_configured_collection_interval(tmp_path: Path, monke
         return watchdog.check_once(
             port=17331,
             probe_fn=lambda port, token=None: watchdog.probe(port, get=get, token=token),
+            token=local_key,
             restart_fn=restart,
             sleep=lambda _seconds: None,
             now=wall,
@@ -196,9 +201,13 @@ def test_watchdog_waits_for_configured_collection_interval(tmp_path: Path, monke
 
 
 def test_supervisor_health_uses_configured_collection_interval(tmp_path: Path) -> None:
+    from spend_app.local_access import read_local_key
+
     settings = replace(_settings(tmp_path), local_ingest_interval_seconds=1800)
     client = TestClient(create_app(settings, now=NOW + timedelta(seconds=905)))
-    response = client.get("/healthz", params={"supervisor": "1"})
+    response = client.get("/healthz", params={"supervisor": "1"}, headers={
+        "Authorization": "Bearer " + read_local_key(settings.database_path)
+    })
     assert response.status_code == 200
     payload = response.json()
     assert payload["collectorEnabled"]
@@ -266,14 +275,19 @@ def test_spoke_reports_sync_and_hub_version(tmp_path: Path, monkeypatch) -> None
 
 
 def test_freshness_route_answers_locally(tmp_path: Path, monkeypatch) -> None:
+    from spend_app.local_access import read_local_key
+
     def no_hub(*args, **kwargs):
         raise AssertionError("freshness must never be proxied to the hub")
 
     monkeypatch.setattr("spend_app.sync.fetch_from_configured_hub", no_hub)
     freshness.pass_finished({}, [], 1.0)
     freshness.pass_finished({}, [], 1.0)
-    client = TestClient(create_app(_settings(tmp_path), enable_scheduler=False))
-    payload = client.get("/api/spend/freshness").json()
+    settings = _settings(tmp_path)
+    client = TestClient(create_app(settings, enable_scheduler=False))
+    payload = client.get("/api/spend/freshness", headers={
+        "Authorization": "Bearer " + read_local_key(settings.database_path)
+    }).json()
     assert payload["status"] == "ok" and payload["issues"] == []
     assert set(payload["ingest"]) >= {"lastPassAt", "stalled", "uptimeSeconds"}
 

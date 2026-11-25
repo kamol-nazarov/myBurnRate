@@ -80,13 +80,20 @@ def test_legacy_token_url_returns_404_and_mints_no_cookie(hub):
     assert "synthetic-break-glass" not in response.text
 
 
-def test_local_install_keeps_supervisor_health_public_and_pages_404(tmp_path, monkeypatch):
+def test_local_install_keeps_liveness_public_and_pages_404(tmp_path, monkeypatch):
+    from spend_app.local_access import read_local_key
+
     monkeypatch.delenv("BURNRATE_CENTRAL_SERVER", raising=False)
     monkeypatch.delenv("BURNRATE_ACCESS_TOKEN", raising=False)
-    app = create_app(settings_at(tmp_path), enable_scheduler=False)
+    settings = settings_at(tmp_path)
+    app = create_app(settings, enable_scheduler=False)
     with TestClient(app, base_url="http://127.0.0.1:17331") as client:
         for path in ("/", "/hud", "/setup", "/auth", "/connections"):
             res = client.get(path, follow_redirects=False)
             assert res.status_code == 404
             assert res.json()["error"]["code"] == "REQ-404"
-        assert client.get("/healthz?supervisor=1").status_code == 200
+        assert client.get("/healthz").json() == {"status": "ok"}
+        assert client.get("/healthz?supervisor=1").status_code == 401
+        assert client.get("/healthz?supervisor=1", headers={
+            "Authorization": "Bearer " + read_local_key(settings.database_path)
+        }).status_code == 200
