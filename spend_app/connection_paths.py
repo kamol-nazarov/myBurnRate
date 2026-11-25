@@ -288,8 +288,9 @@ def _database_identity(database):
     return found
 
 
-def cache_identity(database, path, parser_version="0.3.0"):
-    return (_database_identity(database), identity(_resolve(path, strict=False)), APPROVED_REVISION.get(), parser_version)
+def cache_identity(database, path, parser_version="0.3.0", *, resolved: bool = False):
+    path_id = identity(path) if resolved else identity(_resolve(path, strict=False))
+    return (_database_identity(database), path_id, APPROVED_REVISION.get(), parser_version)
 
 
 def file_signature(path, stat=None):

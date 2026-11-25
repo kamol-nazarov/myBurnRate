@@ -231,9 +231,41 @@ def mask_expired_synced(rows, now):
     return rows
 
 
-def read_rows(connection, *, now=None, rows=None):
+def latest_raw_rows(connection):
+    """Fetch only the newest quota row per (provider_key, limit_key, origin).
+
+    For small tables (<= 200 rows) returns all rows directly; for large
+    append-only histories avoids materializing tens of thousands of obsolete
+    snapshots into Python dicts on every summary request.
+    """
+    count = connection.execute("SELECT COUNT(*) FROM quotas").fetchone()[0]
+    if count <= 200:
+        return [dict(row) for row in connection.execute("SELECT * FROM quotas")]
+    rows = []
+    for row in connection.execute(
+        """
+        SELECT * FROM (
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY provider_key, limit_key,
+                             CASE WHEN source LIKE 'sync:%' OR limit_key='balance' THEN source ELSE '' END
+                ORDER BY REPLACE(polled_at, '+00:00', 'Z') DESC, id DESC
+            ) AS _rn
+            FROM quotas
+        ) WHERE _rn = 1
+        """
+    ):
+        item = dict(row)
+        item.pop("_rn", None)
+        rows.append(item)
+    return rows
+
+
+def read_rows(connection, *, now=None, rows=None, latest_only=False):
     """Mask unproven/expired Codex rows and expired synced rows at read time, including pre-fix rows."""
-    rows = [dict(row) for row in (connection.execute("SELECT * FROM quotas") if rows is None else rows)]
+    if rows is None:
+        rows = latest_raw_rows(connection) if latest_only else [dict(row) for row in connection.execute("SELECT * FROM quotas")]
+    else:
+        rows = [dict(row) for row in rows]
     now = now or datetime.now(UTC)
     mask_expired_synced(rows, now)
     non_sync_rows = [row for row in rows if not str(row.get('source') or '').startswith('sync:')]

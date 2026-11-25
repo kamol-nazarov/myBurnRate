@@ -1240,6 +1240,7 @@ class TabHost:
             self.note_moved()  # still dragging: look again later
             return
         try:
+            self.hide_taskbar_button()
             with self._lock:
                 self.fit()
             self.tracker.notify_changed()
@@ -1680,9 +1681,11 @@ class TabHost:
             user32 = ctypes.windll.user32
             gwl_exstyle, tool_window, app_window = -20, 0x00000080, 0x00040000
             style = user32.GetWindowLongW(self.hwnd, gwl_exstyle)
-            user32.SetWindowLongW(
-                self.hwnd, gwl_exstyle, (style | tool_window) & ~app_window
-            )
+            desired = (style | tool_window) & ~app_window
+            if desired != style:
+                user32.SetWindowLongW(self.hwnd, gwl_exstyle, desired)
+                # SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED
+                user32.SetWindowPos(self.hwnd, 0, 0, 0, 0, 0, 0x0037)
         except OSError:
             LOGGER.debug("Could not hide the tab's taskbar button", exc_info=True)
 
@@ -1772,6 +1775,7 @@ class TabHost:
         if self.quitting:
             return
         try:
+            self.hide_taskbar_button()
             with self._lock:
                 self.fit()
             if activate:

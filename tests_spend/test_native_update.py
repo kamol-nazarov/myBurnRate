@@ -1868,3 +1868,35 @@ def test_nsis_presents_as_myburnrate_but_keeps_the_internal_ids():
     assert (
         "CreateShortCut" in text and 'CreateShortCut "$SMPROGRAMS\\${LEGACY' not in text
     )
+
+
+def test_managed_runtime_includes_pyvenv_home_and_wheel_worker_handles_wal_and_isolated_flag(tmp_path, monkeypatch):
+    wheel = b"synthetic release wheel"
+    name = nu.wheel_name(NEW_VERSION)
+    url = f"{GH}/download/v{NEW_VERSION}/{name}"
+    pub, feed = make_feed()
+    _, signature = minisign(
+        KEY_SEED, wheel, alg=b"ED", trusted=f"timestamp:1\tfile:{name}".encode()
+    )
+    feed["wheel"] = {"url": url, "signature": signature, "sha256": hashlib.sha256(wheel).hexdigest(), "size": len(wheel)}
+    net = feed_routes(feed, **{url: lambda: Resp(200, wheel)})
+    runtime = tmp_path / "native-python"
+    runtime.mkdir()
+    uv_junction = tmp_path / "uv" / "cpython-3.12-windows-x86_64-none"
+    uv_junction.mkdir(parents=True)
+    (runtime / "pyvenv.cfg").write_text(f"home = {uv_junction}\nversion = 3.12.13\n", encoding="utf-8")
+    captured = {}
+
+    def launch(_path, args):
+        job = Path(args[-1]).parent
+        captured["request"] = json.loads((job / "request.json").read_text(encoding="utf-8"))
+        (job / "ready").touch()
+
+    fx = Fixture(tmp_path, net, pub, frozen=False, launcher=launch)
+    monkeypatch.setattr(fx.updater, "_managed_runtime", lambda: runtime)
+    assert fx.updater.install()["ok"] is True
+    assert str(uv_junction) in captured["request"]["basePythonDirs"]
+
+    script = (ROOT / "spend_app" / "wheel_update.ps1").read_text(encoding="utf-8")
+    assert "(?:-I\\s+)?" in script
+    assert "?mode=ro" not in script

@@ -25,8 +25,11 @@ Live-session rule:
 
 from __future__ import annotations
 
+from collections import OrderedDict
 import glob
-from spend_app.connection_paths import adapter_files
+import hashlib
+import os
+from spend_app.connection_paths import APPROVED_ROOT, adapter_files, confined, readonly_fd
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -48,6 +51,12 @@ _FILE_SIGNATURES: dict[str, tuple[int, int]] = {}
 # identical bytes cannot change that, so the file is cached like a clean one
 # and its count is replayed so the pass still reports it as partial.
 _FILE_QUARANTINED: dict = {}
+# Bounded in-memory tail state for large active append-only transcripts (>= 256 KiB).
+# Lets a 15-second pass read and reconcile only newly appended turns instead of
+# re-parsing 100–300 MB files from byte 0.
+_TAIL_MIN_BYTES = 256 * 1024
+_TAIL_MAX_ENTRIES = 64
+_TAIL_STATE: OrderedDict[tuple, dict] = OrderedDict()
 
 
 def reset_file_cache() -> None:
@@ -56,6 +65,7 @@ def reset_file_cache() -> None:
     _FILE_SIGNATURES.clear()
     _FILE_COUNTS.clear()
     _FILE_QUARANTINED.clear()
+    _TAIL_STATE.clear()
     file_cache.forget(SOURCE)
 
 
@@ -103,6 +113,26 @@ def parse_file(path: Path) -> tuple[dict, list[ParsedEvent]]:
     return session, events
 
 
+def _events_from_observations(observations) -> list[ParsedEvent]:
+    return [
+        ParsedEvent(
+            session_id=o.row.session_id,
+            project=o.row.project,
+            model_key=o.row.model_key,
+            occurred_at=o.row.occurred_at,
+            input_tokens=o.row.input_tokens,
+            cached_input_tokens=o.row.cached_input_tokens,
+            cache_write_tokens=o.row.cache_write_tokens,
+            cache_write_1h_tokens=o.row.cache_write_1h_tokens,
+            output_tokens=o.row.output_tokens,
+            reasoning_tokens=o.row.reasoning_tokens,
+            raw_id=o.row.raw_id,
+            observation=o,
+        )
+        for o in observations
+    ]
+
+
 def parse_file_with_health(path: Path) -> tuple[dict, list[ParsedEvent], SourceHealth]:
     from spend_app.adapters.claude_records import reduce_records
     health = SourceHealth()
@@ -116,12 +146,166 @@ def parse_file_with_health(path: Path) -> tuple[dict, list[ParsedEvent], SourceH
     session, observations = reduce_records(records, health, path.stem)
     # The reducer's accepted-observation accounting is separate from JSON lines.
     health.parsed = parsed_lines
-    events = [ParsedEvent(session_id=o.row.session_id, project=o.row.project, model_key=o.row.model_key,
-                          occurred_at=o.row.occurred_at, input_tokens=o.row.input_tokens, cached_input_tokens=o.row.cached_input_tokens,
-                          cache_write_tokens=o.row.cache_write_tokens, cache_write_1h_tokens=o.row.cache_write_1h_tokens,
-                          output_tokens=o.row.output_tokens, reasoning_tokens=o.row.reasoning_tokens,
-                          raw_id=o.row.raw_id, observation=o) for o in observations]
-    return session, events, health
+    return session, _events_from_observations(observations), health
+
+
+_DEFAULT_PARSE_FILE_WITH_HEALTH = parse_file_with_health
+
+
+def _parse_for_ingest(path: Path, stat, tail: dict | None) -> tuple[dict, list[ParsedEvent], int, int, bool, int, dict | None]:
+    """Parse a transcript, reading only newly appended bytes when safe.
+
+    Returns ``(session, changed_events, total_events, total_unusable, is_partial, raw_usage_lines, next_tail)``.
+    """
+    from spend_app.adapters.claude_records import reduce_records_into
+
+    # Respect tests that monkeypatch parse_file_with_health, and keep small files
+    # on the simple path so we never retain tail state for tiny transcripts.
+    if parse_file_with_health is not _DEFAULT_PARSE_FILE_WITH_HEALTH or (
+        tail is None and stat.st_size < _TAIL_MIN_BYTES
+    ):
+        session, events, health = parse_file_with_health(path)
+        unusable = health.quarantined + health.skipped
+        return session, events, len(events), unusable, health.partial, health.parsed, None
+
+    ino = getattr(stat, "st_ino", 0)
+    ctime_ns = getattr(stat, "st_ctime_ns", 0)
+
+    # Incremental tail fast path: file grew in place with matching identity and prefix.
+    if (
+        tail is not None
+        and stat.st_size > tail["offset"]
+        and ino == tail["ino"]
+        and ctime_ns == tail["ctime_ns"]
+    ):
+        try:
+            with os.fdopen(readonly_fd(confined(path)), "rb") as raw_handle:
+                first = raw_handle.read(4096)
+                if hashlib.blake2b(first, digest_size=16).hexdigest() == tail["prefix_hash"]:
+                    raw_handle.seek(tail["offset"])
+                    delta_health = SourceHealth()
+                    new_records = []
+                    offset = tail["offset"]
+                    line_num = tail["line_number"]
+                    last_ended_nl = True
+                    saw_bytes = False
+                    for raw_line in raw_handle:
+                        saw_bytes = True
+                        offset += len(raw_line)
+                        last_ended_nl = raw_line.endswith(b"\n")
+                        line_num += 1
+                        record, _ = parse_jsonl_record(
+                            raw_line.decode("utf-8", errors="replace"),
+                            line_number=line_num,
+                            location="claude",
+                            health=delta_health,
+                        )
+                        if record is not None:
+                            new_records.append(record)
+                    if saw_bytes and last_ended_nl:
+                        delta_parsed_lines = delta_health.parsed
+                        observations = dict(tail["observations"])
+                        known_scope = dict(tail["known_scope"])
+                        session = dict(tail["session"])
+                        touched = reduce_records_into(
+                            new_records,
+                            delta_health,
+                            path.stem,
+                            observations=observations,
+                            known_scope=known_scope,
+                            session=session,
+                        )
+                        changed_events = _events_from_observations(observations[k] for k in touched)
+                        latest_time = tail["latest_time"]
+                        for ev in changed_events:
+                            if latest_time is None or ev.occurred_at > latest_time:
+                                latest_time = ev.occurred_at
+                        total_unusable = tail["unusable"] + delta_health.quarantined + delta_health.skipped
+                        total_partial = tail["partial"] or delta_health.partial
+                        total_parsed_lines = tail["parsed_lines"] + delta_parsed_lines
+                        next_tail = {
+                            "ino": ino,
+                            "ctime_ns": ctime_ns,
+                            "offset": offset,
+                            "prefix_hash": tail["prefix_hash"],
+                            "line_number": line_num,
+                            "session": session,
+                            "observations": observations,
+                            "known_scope": known_scope,
+                            "unusable": total_unusable,
+                            "partial": total_partial,
+                            "parsed_lines": total_parsed_lines,
+                            "latest_time": latest_time,
+                        }
+                        return (
+                            session,
+                            changed_events,
+                            len(observations),
+                            total_unusable,
+                            total_partial,
+                            delta_parsed_lines,
+                            next_tail,
+                        )
+        except OSError:
+            raise
+        except Exception:
+            pass
+
+    # Full parse path (also seeds tail state for large clean newline-terminated files).
+    health = SourceHealth()
+    records = []
+    prefix_buf = bytearray()
+    offset = 0
+    line_num = 0
+    last_ended_nl = True
+    with os.fdopen(readonly_fd(confined(path)), "rb") as raw_handle:
+        for raw_line in raw_handle:
+            if len(prefix_buf) < 4096:
+                prefix_buf.extend(raw_line[: 4096 - len(prefix_buf)])
+            offset += len(raw_line)
+            last_ended_nl = raw_line.endswith(b"\n")
+            line_num += 1
+            record, _ = parse_jsonl_record(
+                raw_line.decode("utf-8", errors="replace"),
+                line_number=line_num,
+                location="claude",
+                health=health,
+            )
+            if record is not None:
+                records.append(record)
+    parsed_lines = health.parsed
+    observations: dict = {}
+    known_scope: dict = {}
+    session: dict = {}
+    reduce_records_into(
+        records,
+        health,
+        path.stem,
+        observations=observations,
+        known_scope=known_scope,
+        session=session,
+    )
+    health.parsed = parsed_lines
+    events = _events_from_observations(observations.values())
+    unusable = health.quarantined + health.skipped
+    latest_time = max((ev.occurred_at for ev in events), default=None)
+    next_tail = None
+    if offset >= _TAIL_MIN_BYTES and last_ended_nl:
+        next_tail = {
+            "ino": ino,
+            "ctime_ns": ctime_ns,
+            "offset": offset,
+            "prefix_hash": hashlib.blake2b(bytes(prefix_buf), digest_size=16).hexdigest(),
+            "line_number": line_num,
+            "session": session,
+            "observations": observations,
+            "known_scope": known_scope,
+            "unusable": unusable,
+            "partial": health.partial,
+            "parsed_lines": parsed_lines,
+            "latest_time": latest_time,
+        }
+    return session, events, len(events), unusable, health.partial, parsed_lines, next_tail
 
 
 def ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -> dict:
@@ -153,13 +337,13 @@ def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -
     duplicates_removed = 0
     skipped_files = 0
     quarantined = 0
-    batch: dict[str, list] = {"usage_rows": [], "observations": [], "session_rows": [], "pending": [], "empty": []}
+    batch: dict[str, list] = {"usage_rows": [], "observations": [], "session_rows": [], "pending": [], "empty": [], "tails": []}
     attributed: dict[str, str] = {}
     results: list[dict] = []
 
     def flush() -> None:
         usage_rows, observations, session_rows = batch["usage_rows"], batch["observations"], batch["session_rows"]
-        pending, empty = batch["pending"], batch["empty"]
+        pending, empty, tails = batch["pending"], batch["empty"], batch["tails"]
         moved = dict(attributed)
         attributed.clear()
         for name in batch:
@@ -220,7 +404,16 @@ def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -
                 _FILE_QUARANTINED[cache_key] = unusable
             else:
                 _FILE_QUARANTINED.pop(cache_key, None)
+        for cache_key, next_tail in tails:
+            if next_tail is None:
+                _TAIL_STATE.pop(cache_key, None)
+            else:
+                _TAIL_STATE[cache_key] = next_tail
+                _TAIL_STATE.move_to_end(cache_key)
+                while len(_TAIL_STATE) > _TAIL_MAX_ENTRIES:
+                    _TAIL_STATE.popitem(last=False)
 
+    paths_resolved = bool(APPROVED_ROOT.get())
     for file_name in sorted(adapter_files(session_glob)):
         path = Path(file_name)
         try:
@@ -231,7 +424,12 @@ def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -
         tool_key = lanes.get(session_id, PRIMARY_KEY)
         # Only a non-default lane enters the cache identity: a file that moves lanes is
         # re-parsed once (its rows are updated in place), every other file keeps its cache.
-        cache_key = cache_identity(database_path, path, PARSER_VERSION if tool_key == PRIMARY_KEY else f"{PARSER_VERSION}+{tool_key}")
+        cache_key = cache_identity(
+            database_path,
+            path,
+            PARSER_VERSION if tool_key == PRIMARY_KEY else f"{PARSER_VERSION}+{tool_key}",
+            resolved=paths_resolved,
+        )
         cached = _FILE_SIGNATURES.get(cache_key)
         try:
             signature = cached if file_cache.unchanged(cached, stat) else file_signature(path, stat)
@@ -246,24 +444,27 @@ def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -
                 quarantined += _FILE_QUARANTINED[cache_key]
             continue
         try:
-            session, events, health = parse_file_with_health(path)
+            session, events, total_events, unusable, is_partial, raw_usage_lines, next_tail = _parse_for_ingest(
+                path, stat, _TAIL_STATE.get(cache_key)
+            )
         except OSError:
             issues.append("claude_file_unavailable")
             continue
-        raw_usage_lines = health.parsed
-        if health.partial:
+        if is_partial:
             issues.append("claude_partial_source_metadata")
-        quarantined += health.quarantined + health.skipped
+        quarantined += unusable
         if not session:
             _FILE_SIGNATURES[cache_key] = signature
             batch["empty"].append((cache_key, signature))
+            batch["tails"].append((cache_key, next_tail))
             continue
         parsed_files += 1
         if tool_key != PRIMARY_KEY:
             attributed[session_id] = tool_key
         duplicates_removed += max(0, raw_usage_lines - len(events))
         parsed_events += len(events)
-        latest_time: datetime | None = None
+        confirmed_events += max(0, total_events - len(events))
+        latest_time: datetime | None = next_tail["latest_time"] if next_tail is not None else None
         for parsed in events:
             if parsed.observation:
                 batch["observations"].append(
@@ -301,7 +502,8 @@ def _ingest(*, database_path: Path, pricing: PricingEngine, session_glob: str) -
                     "ended_at": _iso(latest_time),
                 }
             )
-        batch["pending"].append((cache_key, signature, len(events), health.quarantined + health.skipped))
+        batch["pending"].append((cache_key, signature, total_events, unusable))
+        batch["tails"].append((cache_key, next_tail))
         if len(batch["usage_rows"]) >= file_cache.BATCH_EVENTS:
             flush()
     # Always once more: records this pass's run, sessions and remaining files.

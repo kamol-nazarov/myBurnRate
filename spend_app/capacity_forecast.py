@@ -72,8 +72,14 @@ def stale_after_seconds(provider_key: str, *, active: bool) -> int:
 def _points(samples, *, resets_at: str, now: datetime) -> list[tuple[datetime, float]]:
     token = _reset_token(resets_at)
     points = []
+    seen_resets: dict[object, bool] = {resets_at: True, token: True}
     for sample in samples:
-        if _reset_token(sample.get("resets_at")) != token:
+        raw_reset = sample.get("resets_at")
+        matched = seen_resets.get(raw_reset)
+        if matched is None:
+            matched = _reset_token(raw_reset) == token
+            seen_resets[raw_reset] = matched
+        if not matched:
             continue
         stamp = parse_utc(sample.get("sampled_at"))
         if stamp is None or stamp > now:
@@ -432,8 +438,10 @@ def active_provider_keys(connection, now: datetime) -> set[str]:
     for table in ("usage_events", "unpriced_usage_events"):
         if not _table_exists(connection, table):
             continue
+        # Omit SQL DISTINCT so SQLite uses the occurred_at index range search
+        # instead of scanning the full tool_key index; Python deduplicates below.
         rows = connection.execute(
-            f"SELECT DISTINCT tool_key FROM {table} "
+            f"SELECT tool_key FROM {table} "
             "WHERE occurred_at >= ? AND source NOT IN (?, ?)",
             (since, *sorted(ORGANIZATION_SOURCES)),
         )

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import threading
 import time as time_module
+from bisect import bisect_right
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
@@ -18,10 +20,10 @@ from spend_app.organization import (
     bucket_observation_order,
     verified_bucket_id,
 )
-from spend_app.source_reconcile import reconcile_events
+from spend_app.source_reconcile import _CURSOR_EVENT_SOURCE_SET, reconcile_events
 from spend_app.sync import list_machines, machines_fingerprint, row_machine_id
 from spend_app.timeutil import epoch_micros, from_epoch_micros, next_month_start as _next_month_start_utc, parse_utc, previous_calendar_period
-from spend_app.pricing import PricingEngine, UnpricedModelError
+from spend_app.pricing import MILLION, PricingEngine, UnpricedModelError
 from spend_app.capacity_forecast import alert_fingerprint, apply_balance_runway, apply_forecasts, load_pace_samples, pace_fingerprint, read_forecast_view, active_provider_keys
 from spend_app.quotas import REQUIRED_LIMITS, split_quota_label
 from spend_app.subscriptions import daily_cost
@@ -864,18 +866,27 @@ def _load_events(connection, start: datetime, end: datetime, tool: str, machine:
     duplicates of one verified provider event collapse into one measured
     event (account-scoped; suppressed copies reported, never summed).
     """
-    rows = [
-        dict(row)
-        for row in connection.execute(
-            "SELECT * FROM usage_events "
-            "WHERE occurred_epoch_us IS NOT NULL AND occurred_epoch_us >= ? AND occurred_epoch_us < ?"
-            + (" AND tool_key = ?" if tool != "all" else "")
-            + " ORDER BY occurred_epoch_us",
-            _epoch_params(start, end, tool),
-        )
-    ]
+    cur = connection.cursor()
+    cur.row_factory = None
+    cur.execute(
+        "SELECT * FROM usage_events "
+        "WHERE occurred_epoch_us IS NOT NULL AND occurred_epoch_us >= ? AND occurred_epoch_us < ?"
+        + (" AND tool_key = ?" if tool != "all" else "")
+        + " ORDER BY occurred_epoch_us",
+        _epoch_params(start, end, tool),
+    )
+    cols = [d[0] for d in cur.description]
+    raw_rows = cur.fetchall()
+    cur.close()
     if machine != "all":
-        rows = [row for row in rows if row_machine_id(row.get("raw_id")) == machine]
+        raw_id_idx = cols.index("raw_id")
+        rows = [dict(zip(cols, row)) for row in raw_rows if row_machine_id(row[raw_id_idx]) == machine]
+    else:
+        rows = [dict(zip(cols, row)) for row in raw_rows]
+    # usage_events.raw_id is UNIQUE; cross-source collapsing only applies when
+    # organization buckets or Cursor dual-feed rows are present.
+    if not any(row.get("organization_scope") or row.get("source") in _CURSOR_EVENT_SOURCE_SET for row in rows):
+        return rows
     reconciled, _report = reconcile_events(rows)
     return [event.row for event in reconciled]
 
@@ -1184,10 +1195,18 @@ def _bucket_index(
     *,
     zone: ZoneInfo,
     buckets: list[BucketSpec],
+    bucket_starts: list[datetime] | None = None,
 ) -> int:
     if not buckets:
         return 0
-    when_utc = when.astimezone(UTC)
+    when_utc = when if when.tzinfo is UTC else when.astimezone(UTC)
+    if bucket_starts is not None:
+        idx = bisect_right(bucket_starts, when_utc) - 1
+        if idx < 0:
+            return 0
+        if idx >= len(buckets):
+            return len(buckets) - 1
+        return idx
     for index, bucket in enumerate(buckets):
         start, end = bucket[0], bucket[1]
         if start <= when_utc < end:
@@ -1250,6 +1269,16 @@ def _enrich_one(items: tuple, pricing: PricingEngine) -> dict:
     return _enrich([event], pricing, _cache=False)[0]
 
 
+def _event_when(event: dict) -> datetime:
+    existing = event.get("when")
+    if isinstance(existing, datetime):
+        return existing
+    epoch_us = event.get("occurred_epoch_us")
+    if epoch_us is not None:
+        return from_epoch_micros(epoch_us)
+    return _parse(event["occurred_at"])
+
+
 def _enrich(events: list[dict], pricing: PricingEngine, _authority=None, *, _cache=True) -> list[dict]:
     """Reference-value enrichment with graceful unpriced handling.
 
@@ -1263,17 +1292,46 @@ def _enrich(events: list[dict], pricing: PricingEngine, _authority=None, *, _cac
     (partial coverage) instead of failing the whole summary.
     """
     del _authority  # retained in the signature for caller compatibility
-    if _cache:
+    if _cache and len(events) <= 4096:
         return [_enrich_one(tuple(event.items()), pricing) for event in events]
     output = []
     for event in events:
-        when = event.get("when") if isinstance(event.get("when"), datetime) else _parse(event["occurred_at"])
-        computed_total, components = _try_price_event(pricing, event)
+        when = _event_when(event)
+        complete = bool(event.get("telemetry_complete", True))
         price = None
-        try:
-            price = pricing.resolve(event["model_key"], when)
-        except UnpricedModelError:
-            pass
+        computed_total: Decimal | None = None
+        components: dict[str, Decimal] | None = None
+        input_multiplier: Decimal | None = None
+        if complete and not event.get("unclassified_tokens"):
+            try:
+                price, components, input_multiplier = pricing.price_and_components(
+                    model_key=event["model_key"],
+                    occurred_at=when,
+                    input_tokens=event["input_tokens"],
+                    cached_input_tokens=event["cached_input_tokens"],
+                    cache_write_tokens=event["cache_write_tokens"],
+                    cache_write_1h_tokens=event.get("cache_write_1h_tokens", 0),
+                    output_tokens=event["output_tokens"],
+                    **admin_row_pricing_args(event),
+                )
+                computed_total = (
+                    components["fresh_input"]
+                    + components["cached_input"]
+                    + components["cache_write"]
+                    + components["output"]
+                )
+            except UnpricedModelError:
+                pass
+            except ValueError:
+                try:
+                    price = pricing.resolve(event["model_key"], when)
+                except UnpricedModelError:
+                    pass
+        else:
+            try:
+                price = pricing.resolve(event["model_key"], when)
+            except UnpricedModelError:
+                pass
         output.append(
             {
                 **event,
@@ -1282,7 +1340,8 @@ def _enrich(events: list[dict], pricing: PricingEngine, _authority=None, *, _cac
                 "spend": _reported_value(event, computed_total),
                 "components": components or {},
                 "price": price,
-                "telemetry_complete": bool(event.get("telemetry_complete", True)),
+                "_input_multiplier": input_multiplier,
+                "telemetry_complete": complete,
             }
         )
     return output
@@ -1304,11 +1363,13 @@ def _tracked_from_loaded(
     subscriptions: Decimal,
     pricing: PricingEngine,
     reported_charges: Decimal = Decimal(0),
+    enriched_unpriced: list[dict] | None = None,
 ) -> TrackedParts:
     parts = TrackedParts(subscriptions=subscriptions, reported_charges=reported_charges)
     # Storage placement is historical: a once-unpriced row may now have a
     # rate, or still lack complete token metadata. Both use one valuation.
-    for event in [*enriched, *_enrich(unpriced, pricing)]:
+    unpriced_list = enriched_unpriced if enriched_unpriced is not None else _enrich(unpriced, pricing)
+    for event in (*enriched, *unpriced_list):
         if event["spend"] is None:
             parts.complete = False
             parts.note_unpriced(_measured(event), event["model_key"])
@@ -1428,9 +1489,19 @@ def _cache_savings(*, events: list[dict], pricing: PricingEngine) -> float | Non
         if cached <= 0:
             continue
         cached_rows += 1
-        when = event.get("when")
-        if not isinstance(when, datetime):
-            when = _parse(event["occurred_at"])
+        price = event.get("price")
+        mult = event.get("_input_multiplier")
+        if price is not None and mult is not None and event.get("computed_total") is not None:
+            inp = event["input_tokens"]
+            without_fresh = Decimal(inp) / MILLION * price.input_per_mtok * mult
+            actual_fresh = Decimal(inp - cached) / MILLION * price.input_per_mtok * mult
+            actual_cached = Decimal(cached) / MILLION * price.cached_input_per_mtok * mult
+            priced_cached_rows += 1
+            diff = without_fresh - actual_fresh - actual_cached
+            if diff > 0:
+                saved += diff
+            continue
+        when = _event_when(event)
         try:
             actual = pricing.compute(
                 model_key=event["model_key"],
@@ -1613,6 +1684,26 @@ def _unavailable_limit_row(provider_key: str, limit_key: str, label: str) -> dic
     }
 
 
+def _table_activity_stamp(connection) -> tuple:
+    # Use only indexed O(1) metadata (no unindexed MAX(ingested_at) full table scan).
+    usage = tuple(
+        connection.execute(
+            "SELECT COUNT(*), MAX(id), MAX(occurred_at) FROM usage_events"
+        ).fetchone()
+    )
+    unpriced = tuple(
+        connection.execute(
+            "SELECT COUNT(*), MAX(id), MAX(occurred_at) FROM unpriced_usage_events"
+        ).fetchone()
+    )
+    revs = tuple(
+        connection.execute(
+            "SELECT COUNT(*), COALESCE(SUM(revision), 0) FROM usage_cache_revisions"
+        ).fetchone()
+    )
+    return usage, unpriced, revs
+
+
 def _attach_observed_grok_routes(capacity: list[dict], connection) -> None:
     """Expose OpenCode Grok activity without treating it as a Build quota.
 
@@ -1620,19 +1711,25 @@ def _attach_observed_grok_routes(capacity: list[dict], connection) -> None:
     linkage. This is intentionally an explanatory route marker, never an
     input to the Grok Build percentage.
     """
-    observed_at = connection.execute(
-        """
-        SELECT MAX(occurred_at) FROM (
-            SELECT occurred_at FROM usage_events
-            WHERE source='opencode_local'
-              AND lower(model_key) LIKE 'opencode:grok%'
-            UNION ALL
-            SELECT occurred_at FROM unpriced_usage_events
-            WHERE source='opencode_local'
-              AND lower(model_key) LIKE 'opencode:grok%'
-        )
-        """
-    ).fetchone()[0]
+    if not any(provider["providerKey"] == "grok" for provider in capacity):
+        return
+
+    def compute() -> str | None:
+        row_u = connection.execute(
+            "SELECT occurred_at FROM usage_events "
+            "WHERE source='opencode_local' AND lower(model_key) LIKE 'opencode:grok%' "
+            "ORDER BY occurred_at DESC LIMIT 1"
+        ).fetchone()
+        row_p = connection.execute(
+            "SELECT occurred_at FROM unpriced_usage_events "
+            "WHERE source='opencode_local' AND lower(model_key) LIKE 'opencode:grok%' "
+            "ORDER BY occurred_at DESC LIMIT 1"
+        ).fetchone()
+        candidates = [r[0] for r in (row_u, row_p) if r and r[0]]
+        return max(candidates) if candidates else None
+
+    key = (_connection_identity(connection), _table_activity_stamp(connection))
+    observed_at = _memo("observed_grok_routes", key, compute)
     if not observed_at:
         return
     for provider in capacity:
@@ -1877,8 +1974,16 @@ def _activity_from_rows(
 
 
 def _load_quota_rows(connection, *, now=None) -> list[dict]:
-    from spend_app.codex_quota import read_rows
-    return read_rows(connection, now=now)
+    from spend_app.codex_quota import latest_raw_rows, read_rows
+
+    if not isinstance(connection, sqlite3.Connection):
+        return read_rows(connection, now=now)
+    stamp = tuple(
+        connection.execute("SELECT COUNT(*), MAX(id), MAX(polled_at) FROM quotas").fetchone()
+    )
+    key = (_connection_identity(connection), stamp)
+    raw = _memo("latest_quota_raw_rows", key, lambda: tuple(latest_raw_rows(connection)))
+    return read_rows(connection, now=now, rows=raw)
 
 
 def _load_activity_rows(connection, machine: str = "all") -> list[dict]:
@@ -1966,25 +2071,36 @@ def _connection_identity(connection) -> str:
 def _seven_day_pace_uncached(
     connection, pricing: PricingEngine, local_now: datetime, today_start: datetime, timezone: str, machine: str = "all"
 ) -> tuple[Decimal | None, float | None]:
+    zone = ZoneInfo(timezone)
+    range_start = (today_start - timedelta(days=7)).astimezone(UTC)
+    range_end = today_start.astimezone(UTC)
+    events, unpriced = _load_usage_events(connection, range_start, range_end, "all", machine)
+    enriched = _enrich(events, pricing)
+    enriched_unpriced = _enrich(unpriced, pricing)
+    by_day: dict[date, list[dict]] = defaultdict(list)
+    for event in (*enriched, *enriched_unpriced):
+        by_day[event["when"].astimezone(zone).date()].append(event)
     values: list[Decimal | None] = []
     token_counts: list[int] = []
     for offset in range(7, 0, -1):
-        start_local = today_start - timedelta(days=offset)
-        end_local = start_local + timedelta(days=1)
-        parts = _tracked_value(
-            connection,
-            pricing,
-            start_local.astimezone(UTC),
-            end_local.astimezone(UTC),
-            "all",
-            timezone,
-            cap_date=local_now.date(),
-            machine=machine,
-        )
-        if parts.records == 0:
+        day_date = (today_start - timedelta(days=offset)).date()
+        day_events = by_day.get(day_date)
+        if not day_events:
             continue
-        values.append(parts.usage_value)
-        token_counts.append(parts.tokens)
+        day_tokens = 0
+        day_priced = Decimal(0)
+        day_published = Decimal(0)
+        day_complete = True
+        for event in day_events:
+            if event["spend"] is None:
+                day_complete = False
+            elif _event_is_exact(event):
+                day_priced += event["spend"]
+            else:
+                day_published += event["spend"]
+            day_tokens += _measured(event)
+        values.append((day_priced + day_published) if day_complete else None)
+        token_counts.append(day_tokens)
     if not values:
         return None, None
     return (
@@ -1996,41 +2112,52 @@ def _seven_day_pace_uncached(
 def _day_coverage(connection, timezone: str, now: datetime) -> list[dict]:
     zone = ZoneInfo(timezone)
     local_today = now.astimezone(zone).date()
-    earliest = connection.execute(
-        """
-        SELECT MIN(value) FROM (
-            SELECT MIN(occurred_at) AS value FROM usage_events
-            UNION ALL
-            SELECT MIN(occurred_at) AS value FROM unpriced_usage_events
-        ) WHERE value IS NOT NULL
-        """
-    ).fetchone()[0]
-    if not earliest:
-        return []
-    current = _parse(earliest).astimezone(zone).date()
-    output = []
-    while current < local_today:
-        day_start = datetime.combine(current, time.min, zone).astimezone(UTC)
-        day_end = datetime.combine(current + timedelta(days=1), time.min, zone).astimezone(UTC)
-        priced = connection.execute(
-            "SELECT COUNT(*) FROM usage_events WHERE occurred_at >= ? AND occurred_at < ?",
-            (_iso(day_start), _iso(day_end)),
+
+    def compute() -> tuple[dict, ...]:
+        earliest = connection.execute(
+            """
+            SELECT MIN(value) FROM (
+                SELECT MIN(occurred_at) AS value FROM usage_events
+                UNION ALL
+                SELECT MIN(occurred_at) AS value FROM unpriced_usage_events
+            ) WHERE value IS NOT NULL
+            """
         ).fetchone()[0]
-        unpriced = connection.execute(
-            "SELECT COUNT(*) FROM unpriced_usage_events WHERE occurred_at >= ? AND occurred_at < ?",
-            (_iso(day_start), _iso(day_end)),
-        ).fetchone()[0]
-        if priced == 0 and unpriced == 0:
-            status = "unavailable"
-        elif unpriced and priced:
-            status = "partial"
-        elif unpriced:
-            status = "unpriced"
-        else:
-            status = "priced"
-        output.append({"date": current.isoformat(), "status": status})
-        current += timedelta(days=1)
-    return output
+        if not earliest:
+            return ()
+        current = _parse(earliest).astimezone(zone).date()
+        output = []
+        while current < local_today:
+            day_start = datetime.combine(current, time.min, zone).astimezone(UTC)
+            day_end = datetime.combine(current + timedelta(days=1), time.min, zone).astimezone(UTC)
+            start_iso, end_iso = _iso(day_start), _iso(day_end)
+            priced = connection.execute(
+                "SELECT 1 FROM usage_events WHERE occurred_at >= ? AND occurred_at < ? LIMIT 1",
+                (start_iso, end_iso),
+            ).fetchone() is not None
+            unpriced = connection.execute(
+                "SELECT 1 FROM unpriced_usage_events WHERE occurred_at >= ? AND occurred_at < ? LIMIT 1",
+                (start_iso, end_iso),
+            ).fetchone() is not None
+            if not priced and not unpriced:
+                status = "unavailable"
+            elif unpriced and priced:
+                status = "partial"
+            elif unpriced:
+                status = "unpriced"
+            else:
+                status = "priced"
+            output.append({"date": current.isoformat(), "status": status})
+            current += timedelta(days=1)
+        return tuple(output)
+
+    key = (
+        _connection_identity(connection),
+        timezone,
+        local_today.isoformat(),
+        _table_activity_stamp(connection),
+    )
+    return [dict(item) for item in _memo("day_coverage", key, compute)]
 
 
 def _value_marker(is_exact: bool, value: float | None) -> str | None:
@@ -2210,12 +2337,14 @@ def _month_usage(
     def compute() -> tuple[TrackedParts, dict[str, Decimal], dict[str, bool]]:
         events, unpriced = _load_usage_events(connection, start, end, tool, machine)
         enriched = _enrich(events, pricing)
+        enriched_unpriced = _enrich(unpriced, pricing)
         parts = _tracked_from_loaded(
             events=events,
             unpriced=unpriced,
             enriched=enriched,
             subscriptions=Decimal(0),
             pricing=pricing,
+            enriched_unpriced=enriched_unpriced,
         )
         usage: dict[str, Decimal] = defaultdict(Decimal)
         complete: dict[str, bool] = defaultdict(lambda: True)
@@ -2224,9 +2353,8 @@ def _month_usage(
                 usage[event["tool_key"]] += event["spend"]
             else:
                 complete[event["tool_key"]] = False
-        for event in unpriced:
-            priced, _components = _try_price_event(pricing, event)
-            value = _reported_value(event, priced)
+        for event in enriched_unpriced:
+            value = event["spend"]
             if value is not None:
                 usage[event["tool_key"]] += value
             else:
@@ -2259,18 +2387,13 @@ def _heatmap_cells(
     def compute() -> dict[tuple[int, int], Decimal]:
         events, unpriced = _load_usage_events(connection, start, end, tool, machine)
         enriched = _enrich(events, pricing, _cost_buckets(connection, start, end, machine))
+        enriched_unpriced = _enrich(unpriced, pricing)
         heat: dict[tuple[int, int], Decimal] = defaultdict(Decimal)
-        for event in enriched:
+        for event in (*enriched, *enriched_unpriced):
             if event["spend"] is None:
                 continue
             local = event["when"].astimezone(zone)
             heat[(local.weekday(), local.hour)] += event["spend"]
-        for event in unpriced:
-            local = event["when"].astimezone(zone)
-            priced, _components = _try_price_event(pricing, event)
-            value = _reported_value(event, priced)
-            if value is not None:
-                heat[(local.weekday(), local.hour)] += value
         return dict(heat)
 
     key = (
@@ -2409,6 +2532,7 @@ def aggregate_summary(
         events, unpriced_events = _load_usage_events(connection, window.start, window.end, tool, machine)
         authority = _cost_buckets(connection, window.start, window.end, machine)
         enriched = _enrich(events, pricing, authority)
+        enriched_unpriced = _enrich(unpriced_events, pricing)
         local_now = now.astimezone(zone)
         account_view = machine == "all"
         subscription_total, subscription_by_tool = (
@@ -2425,8 +2549,10 @@ def aggregate_summary(
             enriched=enriched,
             subscriptions=subscription_total,
             pricing=pricing,
+            enriched_unpriced=enriched_unpriced,
         )
         buckets = _bucket_plan(window, zone)
+        bucket_starts = [b[0] for b in buckets]
         bucket_usd = [Decimal(0) for _ in buckets]
         bucket_has_value = [False] * len(buckets)
         bucket_complete = [True] * len(buckets)
@@ -2448,9 +2574,10 @@ def aggregate_summary(
 
         def ensure_model(model_key: str, tool_key: str) -> dict:
             model_key = reporting_model_key(model_key)
-            return model_stats.setdefault(
-                (model_key, tool_key),
-                {
+            key = (model_key, tool_key)
+            stat = model_stats.get(key)
+            if stat is None:
+                stat = {
                     "key": model_key,
                     "name": display_model(model_key),
                     "toolKey": tool_key,
@@ -2465,13 +2592,14 @@ def aggregate_summary(
                     "events": [],
                     "exactEvents": 0,
                     "derivedEvents": 0,
-                },
-            )
+                }
+                model_stats[key] = stat
+            return stat
 
         def ensure_tool(tool_key: str) -> dict:
-            return tool_stats.setdefault(
-                tool_key,
-                {
+            stat = tool_stats.get(tool_key)
+            if stat is None:
+                stat = {
                     "key": tool_key,
                     "name": tool_name(tool_key),
                     "value": Decimal(0),
@@ -2484,8 +2612,9 @@ def aggregate_summary(
                     "series": [0] * len(buckets),
                     "exactEvents": 0,
                     "derivedEvents": 0,
-                },
-            )
+                }
+                tool_stats[tool_key] = stat
+            return stat
 
         for event in enriched:
             model = ensure_model(event["model_key"], event["tool_key"])
@@ -2515,7 +2644,7 @@ def aggregate_summary(
             tool_stat["cached"] += event["cached_input_tokens"]
             tool_stat["fresh"] += _fresh(event)
             tool_stat["writes"] += int(event.get("cache_write_tokens") or 0)
-            index = _bucket_index(event["when"], window, zone=zone, buckets=buckets)
+            index = _bucket_index(event["when"], window, zone=zone, buckets=buckets, bucket_starts=bucket_starts)
             tool_stat["series"][index] += measured
             if tool != "all":
                 add_bucket_value(index, event["spend"])
@@ -2532,12 +2661,12 @@ def aggregate_summary(
                 ratio_acc += ratio * weight
                 ratio_weight += weight
 
-        for event in unpriced_events:
+        for event in enriched_unpriced:
             model = ensure_model(event["model_key"], event["tool_key"])
             model["events"].append(event)
             tool_stat = ensure_tool(event["tool_key"])
             measured = _measured(event)
-            published_price, _ = _try_price_event(pricing, event)
+            published_price = event["computed_total"]
             if published_price is None:
                 api_equivalent_complete = False
             else:
@@ -2567,10 +2696,10 @@ def aggregate_summary(
                 else:
                     model["value"] += published_price
                     tool_stat["value"] += published_price
-            index = _bucket_index(event["when"], window, zone=zone, buckets=buckets)
+            index = _bucket_index(event["when"], window, zone=zone, buckets=buckets, bucket_starts=bucket_starts)
             tool_stat["series"][index] += measured
             if tool != "all":
-                add_bucket_value(index, _reported_value(event, published_price))
+                add_bucket_value(index, event["spend"])
             mix.add_event(event)
 
         for tool_key, amount in subscription_by_tool.items():
@@ -2645,20 +2774,42 @@ def aggregate_summary(
             connection, now, cadence_seconds
         )
         today_start = datetime.combine(local_now.date(), time.min, zone).astimezone(UTC)
-        today = _tracked_value(
-            connection,
-            pricing,
-            today_start,
-            now,
-            "all",
-            timezone,
-            cap_date=local_now.date(),
-            machine=machine,
-        )
+        if tool == "all" and window.start <= today_start and window.end == now:
+            today_enriched = [e for e in enriched if today_start <= e["when"] < now]
+            today_unpriced = [e for e in enriched_unpriced if today_start <= e["when"] < now]
+            today = _tracked_from_loaded(
+                events=[],
+                unpriced=[],
+                enriched=today_enriched,
+                subscriptions=Decimal(0),
+                pricing=pricing,
+                enriched_unpriced=today_unpriced,
+            )
+        else:
+            today = _tracked_value(
+                connection,
+                pricing,
+                today_start,
+                now,
+                "all",
+                timezone,
+                cap_date=local_now.date(),
+                machine=machine,
+            )
         burn, tokens_per_day = _seven_day_pace(connection, pricing, now, timezone, machine)
         day_coverage = _day_coverage(connection, timezone, now)
         heat_start, heat_end, heat_fallback = _heatmap_window(window, now, timezone)
-        heat = _heatmap_cells(connection, pricing, heat_start, heat_end, tool, zone, machine)
+        if heat_start == window.start and heat_end == window.end:
+            heat_acc: dict[tuple[int, int], Decimal] = defaultdict(Decimal)
+            for event in (*enriched, *enriched_unpriced):
+                spend = event["spend"]
+                if spend is None:
+                    continue
+                local = event["when"].astimezone(zone)
+                heat_acc[(local.weekday(), local.hour)] += spend
+            heat = dict(heat_acc)
+        else:
+            heat = _heatmap_cells(connection, pricing, heat_start, heat_end, tool, zone, machine)
         heatmap = [
             {"weekday": weekday, "hour": hour, "value": float(value), "unit": "reference_usd"}
             for (weekday, hour), value in sorted(heat.items())
@@ -2869,7 +3020,7 @@ def aggregate_summary(
             "activity": activity_payload,
             "waste": waste,
             "cacheSavings": _cache_savings(
-                events=[*events, *unpriced_events],
+                events=[*enriched, *enriched_unpriced],
                 pricing=pricing,
             ),
             "projected": projected,

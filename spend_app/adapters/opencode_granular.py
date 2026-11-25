@@ -6,7 +6,7 @@ from pathlib import Path
 
 from spend_app.adapters.common import UsageRow, persist_rows, stable_id
 from spend_app.adapters.local_common import parse_iso_time, sqlite_read_only
-from spend_app.adapters.opencode_schema import merge_messages, parse_message, read_messages, recognize, schema_columns
+from spend_app.adapters.opencode_schema import merge_messages, parse_message, read_messages, read_session_watermarks, recognize, schema_columns
 from spend_app.adapters.usage_repair import COUNTS, coarse_remainder, delete_event, read_meta, write_meta
 from spend_app.connection_paths import confined, opencode_files
 from spend_app.db import TOOL_KEY_OVERRIDES, connect
@@ -245,6 +245,8 @@ def combine_results(results, *, issues=(), formats=()):
 # session produced persist with the collector's file record, so a restart does
 # not redo them either.
 SESSION_RECORD = "opencode_local:sessions:v1"
+SESSION_WATERMARK_RECORD = "opencode_local:session-wm:v1"
+WATERMARK_MIN_ROWS = 2000
 _PRICING_DIGESTS: dict[int, str] = {}
 
 
@@ -257,6 +259,247 @@ def _pricing_digest(pricing) -> str:
         _PRICING_DIGESTS.clear()
         _PRICING_DIGESTS[id(pricing)] = digest
     return digest
+
+
+def _watermark_digest(file_identity: str, table_marks: dict, pricing, snapshots_for_session=()) -> str:
+    import hashlib
+    from spend_app.adapters.opencode_schema import PARSER_VERSION
+
+    overrides = sorted((TOOL_KEY_OVERRIDES.get() or {}).items())
+    payload = [
+        file_identity,
+        _pricing_digest(pricing),
+        PARSER_VERSION,
+        overrides,
+        sorted((fmt, list(vals)) for fmt, vals in table_marks.items()),
+        [repr(s) for s in sorted(snapshots_for_session, key=lambda item: (item.provider_id, item.model_id))],
+    ]
+    return hashlib.blake2b(json.dumps(payload, separators=(",", ":")).encode("utf-8"), digest_size=16).hexdigest()
+
+
+def _load_watermark_records(database_path) -> dict:
+    db_path = Path(database_path)
+    if not db_path.is_file():
+        return {}
+    try:
+        with connect(db_path) as connection:
+            has_table = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='ingest_file_cache'"
+            ).fetchone()
+            if not has_table:
+                return {}
+            rows = connection.execute(
+                "SELECT cache_key, signature, events FROM ingest_file_cache WHERE source=?", (SESSION_WATERMARK_RECORD,)
+            ).fetchall()
+    except sqlite3.Error:
+        return {}
+    records = {}
+    for row in rows:
+        try:
+            digest, issues = json.loads(row["signature"])
+        except (ValueError, TypeError):
+            continue
+        records[row["cache_key"]] = (digest, list(issues), int(row["events"] or 0))
+    return records
+
+
+def _try_collect_watermarked(*, database_path, pricing, path, min_rows: int | None = None):
+    """Fast path for large SQLite OpenCode stores: scan lightweight per-session
+    (COUNT, MAX(time_updated), MAX(id)) first without touching the multi-GB
+    ``data`` column, and only read/parse messages for sessions whose watermark
+    actually changed. Returns None whenever a full scan is safer."""
+    from spend_app.adapters.opencode_local import _ingest_cumulative, read_session_snapshots
+    from spend_app.connection_paths import cache_identity
+
+    threshold = WATERMARK_MIN_ROWS if min_rows is None else min_rows
+    source_files = list(opencode_files(path))
+    if len(source_files) != 1 or source_files[0].suffix.lower() == ".json":
+        return None
+    db_file = source_files[0]
+    try:
+        db = sqlite_read_only(db_file)
+    except (OSError, ValueError, sqlite3.Error):
+        return None
+    try:
+        columns = schema_columns(db)
+        chosen_formats = recognize(columns)
+        if chosen_formats == ("cumulative",):
+            return None
+        wm_info = read_session_watermarks(db, columns)
+        if wm_info is None:
+            return None
+        watermarks, total_rows, force_full = wm_info
+        if total_rows < threshold:
+            return None
+        cumulative = [db_file] if "cumulative" in chosen_formats else []
+        formats = sorted(chosen_formats)
+        issues: list[str] = []
+        legacy_results = []
+        snapshots: dict | None = {}
+        for legacy in cumulative:
+            try:
+                legacy_snapshots = read_session_snapshots(legacy) if legacy.is_file() else []
+            except (OSError, ValueError, sqlite3.Error):
+                legacy_snapshots = None
+                snapshots = None
+            if snapshots is not None:
+                for snapshot in legacy_snapshots:
+                    snapshots.setdefault(snapshot.session_id, []).append(snapshot)
+            try:
+                res = _ingest_cumulative(
+                    database_path=database_path, pricing=pricing, source_database=legacy, snapshots=legacy_snapshots
+                )
+                legacy_results.append(res)
+                issues.extend(res.get("issues", []))
+            except (OSError, ValueError, sqlite3.Error):
+                issues.append("opencode_cumulative_source_unavailable")
+                from spend_app.adapters.common import failed_result
+
+                legacy_results.append(
+                    failed_result(
+                        database_path=database_path,
+                        source="opencode_local",
+                        reason="OpenCode cumulative source could not be read.",
+                    )
+                )
+        legacy_wrote = any(
+            (r.get("eventsWritten") or 0) + (r.get("unpricedEventsWritten") or 0) for r in legacy_results
+        )
+        if snapshots is None and legacy_wrote:
+            return None
+        file_ident = str(cache_identity(database_path, db_file, "opencode-wm-v1"))
+        prior_wms = _load_watermark_records(database_path)
+        current_wms = {
+            sid: _watermark_digest(file_ident, marks, pricing, (snapshots or {}).get(sid, ()))
+            for sid, marks in watermarks.items()
+        }
+        unchanged_wm = {
+            sid
+            for sid, digest in current_wms.items()
+            if sid not in force_full and prior_wms.get(sid, (None,))[0] == digest
+        }
+        dirty_sessions = sorted(sid for sid in watermarks if sid not in unchanged_wm)
+        raw_messages, bad = read_messages(db, columns, session_ids=dirty_sessions) if dirty_sessions else ([], 0)
+    except (OSError, ValueError, sqlite3.Error):
+        return None
+    finally:
+        db.close()
+
+    if bad:
+        issues.append("opencode_malformed_message")
+    chosen, ambiguous = merge_messages(raw_messages)
+    if ambiguous:
+        issues.append("opencode_equal_revision_conflict")
+
+    skipped_messages = sum(prior_wms[sid][2] for sid in unchanged_wm)
+    for sid in unchanged_wm:
+        issues.extend(prior_wms[sid][1])
+
+    # Run standard fingerprint check on the dirty subset too (handles identical
+    # content with a bumped time_updated cleanly without rewriting rows).
+    fingerprints = _session_fingerprints(chosen, pricing, snapshots) if chosen else {}
+    records = _load_session_records(database_path) if fingerprints else {}
+    unchanged_fp = {
+        sid
+        for sid, (fp, _cnt) in fingerprints.items()
+        if records.get(sid, (None,))[0] == fp
+    }
+    skipped_messages += sum(fingerprints[sid][1] for sid in unchanged_fp)
+    for sid in unchanged_fp:
+        issues.extend(records[sid][1])
+    changed = [m for m in chosen if m.row.session_id not in unchanged_fp]
+    session_issues: dict = {}
+    historical: dict = {}
+    repaired_sessions: set = set()
+
+    def prepare(connection, rows):
+        from spend_app.adapters.opencode_cumulative_repair import repair_retained_provider_switches
+
+        if not cumulative:
+            corrected, repaired, unresolved, pending = repair_retained_provider_switches(connection, pricing)
+            repaired_sessions.update(repaired)
+            historical["historicalCorrections"] = corrected
+            if unresolved:
+                issues.append("opencode_retained_provider_switches_could_not_be_verified")
+                historical["retainedHistoricalUnresolved"] = unresolved
+            if pending:
+                historical["historicalRepairPending"] = True
+        outputs = []
+        by_session = {}
+        for message in changed:
+            by_session.setdefault(message.row.session_id, []).append(message)
+        for session, group in by_session.items():
+            found = session_issues.setdefault(session, [])
+            outputs.extend(reconcile_messages(connection, group, found))
+            issues.extend(found)
+        return outputs
+
+    def finalize(connection):
+        from spend_app.adapters import file_cache
+        from spend_app.adapters.traycer_local import reconcile_opencode_mirrors
+
+        connection.executescript(file_cache.TABLE_SQL)
+        sessions_written = {m.row.session_id for m in changed}
+        if sessions_written:
+            connection.executemany(
+                "INSERT OR REPLACE INTO ingest_file_cache(source, cache_key, signature, events, quarantined) VALUES(?,?,?,?,0)",
+                [
+                    (
+                        SESSION_RECORD,
+                        sid,
+                        json.dumps([fingerprints[sid][0], sorted(set(session_issues.get(sid, [])))]),
+                        fingerprints[sid][1],
+                    )
+                    for sid in sessions_written
+                ],
+            )
+        # Only cache watermarks for clean dirty sessions (no malformed/ambiguous issues in batch).
+        if dirty_sessions and not bad and not ambiguous:
+            counts_by_sid: dict[str, int] = {}
+            for m in chosen:
+                counts_by_sid[m.row.session_id] = counts_by_sid.get(m.row.session_id, 0) + 1
+            wm_rows = []
+            for sid in dirty_sessions:
+                if sid in force_full:
+                    continue
+                if sid in unchanged_fp:
+                    sid_issues = sorted(set(records[sid][1]))
+                else:
+                    sid_issues = sorted(set(session_issues.get(sid, [])))
+                wm_rows.append(
+                    (
+                        SESSION_WATERMARK_RECORD,
+                        sid,
+                        json.dumps([current_wms[sid], sid_issues]),
+                        counts_by_sid.get(sid, 0),
+                    )
+                )
+            if wm_rows:
+                connection.executemany(
+                    "INSERT OR REPLACE INTO ingest_file_cache(source, cache_key, signature, events, quarantined) VALUES(?,?,?,?,0)",
+                    wm_rows,
+                )
+        if sessions_written or repaired_sessions:
+            reconcile_opencode_mirrors(connection, sessions_written | repaired_sessions)
+
+    result = persist_rows(
+        database_path=database_path,
+        pricing=pricing,
+        source="opencode_local",
+        usage_rows=[m.row for m in changed],
+        prepare=prepare,
+        finalize=finalize,
+        issues=issues,
+    )
+    result.update(historical)
+    if skipped_messages:
+        result = {
+            **result,
+            "eventsSeen": result.get("eventsSeen", 0) + skipped_messages,
+            "eventsAccepted": result.get("eventsAccepted", 0) + skipped_messages,
+            "sessionsSkippedUnchanged": len(unchanged_wm) + len(unchanged_fp),
+        }
+    return combine_results([*legacy_results, result], issues=issues, formats=formats)
 
 
 def _session_fingerprints(messages, pricing, snapshots: dict | None = None) -> dict:
@@ -285,12 +528,21 @@ def _session_fingerprints(messages, pricing, snapshots: dict | None = None) -> d
 
 
 def _load_session_records(database_path) -> dict:
-    from spend_app.adapters import file_cache
-
-    with connect(Path(database_path)) as connection:
-        connection.executescript(file_cache.TABLE_SQL)
-        rows = connection.execute(
-            "SELECT cache_key, signature FROM ingest_file_cache WHERE source=?", (SESSION_RECORD,)).fetchall()
+    db_path = Path(database_path)
+    if not db_path.is_file():
+        return {}
+    try:
+        with connect(db_path) as connection:
+            has_table = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='ingest_file_cache'"
+            ).fetchone()
+            if not has_table:
+                return {}
+            rows = connection.execute(
+                "SELECT cache_key, signature FROM ingest_file_cache WHERE source=?", (SESSION_RECORD,)
+            ).fetchall()
+    except sqlite3.Error:
+        return {}
     records = {}
     for row in rows:
         try:
@@ -319,6 +571,9 @@ def ingest(*, database_path, pricing, source_database):
 
 
 def _collect(*, database_path, pricing, path):
+    fast = _try_collect_watermarked(database_path=database_path, pricing=pricing, path=path)
+    if fast is not None:
+        return fast
     messages, cumulative, issues, formats = read_source(path)
     from spend_app.adapters.opencode_local import _ingest_cumulative, read_session_snapshots
     legacy_results = []
@@ -390,8 +645,10 @@ def _collect(*, database_path, pricing, path):
         return outputs
 
     def finalize(connection):
+        from spend_app.adapters import file_cache
         from spend_app.adapters.traycer_local import reconcile_opencode_mirrors
 
+        connection.executescript(file_cache.TABLE_SQL)
         sessions = {message.row.session_id for message in changed}
         connection.executemany(
             "INSERT OR REPLACE INTO ingest_file_cache(source, cache_key, signature, events, quarantined) VALUES(?,?,?,?,0)",

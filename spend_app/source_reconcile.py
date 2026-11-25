@@ -23,6 +23,8 @@ from spend_app.organization import bucket_observation_order, verified_bucket_id
 # ``<canonical-source>:<event id>``. A row from any of these maps to
 # ``cursor-usage:<event id>``.
 _CURSOR_EVENT_SOURCES = ("cursor_admin", "cursor_csv")
+_CURSOR_EVENT_SOURCE_SET = frozenset(_CURSOR_EVENT_SOURCES)
+_LOCAL_SCOPE = object()
 
 
 @dataclass(frozen=True)
@@ -77,25 +79,28 @@ def reconcile_events(rows: Sequence[dict]) -> tuple[list[ReconciledEvent], dict]
     reported (never silently destroyed) and their totals are returned so
     callers can show unresolved overlap explicitly.
     """
-    groups: dict[tuple[str | None, str], list[dict]] = {}
-    order: list[tuple[str | None, str]] = []
+    groups: dict[tuple[object, str], list[dict]] = {}
+    order: list[tuple[object, str]] = []
     suppressed_events = 0
     suppressed_by_source: dict[str, int] = {}
     for row in rows:
-        organization_bucket = verified_bucket_id(row)
-        canonical = canonical_event_id(str(row.get("source", "")), str(row.get("raw_id", "")))
+        organization_bucket = verified_bucket_id(row) if row.get("organization_scope") else None
+        source = str(row.get("source", ""))
+        canonical = canonical_event_id(source, str(row.get("raw_id", ""))) if source in _CURSOR_EVENT_SOURCE_SET else None
         if organization_bucket is not None:
-            key = (row["organization_scope"], organization_bucket)
+            key: tuple[object, str] = (row["organization_scope"], organization_bucket)
         elif canonical is None:
-            key = (None, f"__local__{row.get('raw_id', '')}")
+            key = (_LOCAL_SCOPE, str(row.get("raw_id", "")))
         else:
             # Different accounts/modes with the same provider event id remain
             # different events; scope participates in identity.
             key = (row.get("account_key"), canonical)
-        if key not in groups:
-            groups[key] = []
+        members = groups.get(key)
+        if members is None:
+            groups[key] = [row]
             order.append(key)
-        groups[key].append(row)
+        else:
+            members.append(row)
     output: list[ReconciledEvent] = []
     for key in order:
         members = groups[key]

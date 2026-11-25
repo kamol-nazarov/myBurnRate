@@ -6134,6 +6134,8 @@ const state = {
   planSettings: { data: null, loading: false, saving: false, editor: null, error: "" },
   theme: window.burnrateTheme ? window.burnrateTheme.pref() : "system",
   closeToTray: false,
+  closeToTab: true,
+  hideFromTaskbar: false,
   lowQuotaAlerts: false,
   trayAvailable: false,
   version: "",
@@ -8230,7 +8232,8 @@ function updatesHtml() {
   const canCheck = apiHas("check_for_update");
   const busy = chk.status === "checking" || chk.status === "installing" || chk.status === "restarting";
   let body = "";
-  if (chk.error || u.lastError) body += `<div class="setting-note err" role="alert">${esc(chk.error || u.lastError)}</div>`;
+  const showLastErr = !!(u.lastError && chk.status === "idle");
+  if (chk.error || showLastErr) body += `<div class="setting-note err" role="alert">${esc(chk.error || u.lastError)}</div>`;
   if (chk.status === "restarting") {
     body += `<div class="setting-note" role="status">Restarting BURNRATE to finish the update\u2026</div>`;
   } else if (info && info.available) {
@@ -8555,7 +8558,9 @@ function paintSettingsBody() {
           </div>
         </div>
       ` : ""}
-      ${showTray ? switchRow("sw_tray", "Keep running in the tray when closed", "Closing the window hides BURNRATE instead of quitting", state.closeToTray, "toggleCloseToTray") : ""}
+      ${showTray ? switchRow("sw_tray", "Keep running in the tray when closed", "Closing the window keeps BURNRATE running instead of quitting", state.closeToTray, "toggleCloseToTray") : ""}
+      ${showTray && state.closeToTray && apiHas("set_close_to_tab") ? switchRow("sw_close_to_tab", "Keep desktop pill visible when closed", "Closing the taskbar icon shrinks BURNRATE to the floating desktop pill", state.closeToTab, "toggleCloseToTab") : ""}
+      ${apiHas("set_hide_from_taskbar") ? switchRow("sw_hide_taskbar", "Hide full window from Windows taskbar", "Keep BURNRATE on your desktop without a taskbar icon", state.hideFromTaskbar, "toggleHideFromTaskbar") : ""}
       ${showAlerts ? switchRow("sw_alerts", "Low-quota notifications", "Warn when a plan or balance is about to run out", state.lowQuotaAlerts, "toggleLowQuotaAlerts") : ""}
       ${apiHas("set_pill_limit") ? `
         <div class="toggle-row wrap">
@@ -8595,7 +8600,9 @@ function paintSettingsBody() {
     </div>
     <div class="wf-card" style="padding:10px 12px;font-size:11px;color:var(--ink-secondary);line-height:1.45">
       ${state.trayAvailable && state.closeToTray
-        ? "Closing this window keeps BURNRATE in the tray. Background collection and live quota polling continue automatically; use Quit to exit."
+        ? (state.closeToTab
+          ? "Closing this window removes the taskbar icon, keeps BURNRATE in the tray, and leaves the floating pill on your desktop. Use Quit to exit."
+          : "Closing this window keeps BURNRATE in the tray. Background collection and live quota polling continue automatically; use Quit to exit.")
         : "Background collection and live quota polling continue automatically when you close this window."}
     </div>
     ${apiHas("get_notification_settings") ? h11NotificationsCardHtml() : ""}
@@ -9764,6 +9771,8 @@ async function toggleHostFlag(stateKey, method, resultKey, failMessage) {
   renderSettingsBody();
 }
 window.toggleCloseToTray = () => toggleHostFlag("closeToTray", "set_close_to_tray", "closeToTray", "Could not change tray behavior");
+window.toggleCloseToTab = () => toggleHostFlag("closeToTab", "set_close_to_tab", "closeToTab", "Could not change close behavior");
+window.toggleHideFromTaskbar = () => toggleHostFlag("hideFromTaskbar", "set_hide_from_taskbar", "hideFromTaskbar", "Could not change taskbar visibility");
 window.toggleLowQuotaAlerts = () => toggleHostFlag("lowQuotaAlerts", "set_low_quota_alerts", "lowQuotaAlerts", "Could not change notifications");
 
 window.quitApp = function() {
@@ -9785,6 +9794,7 @@ function normalizeUpdate(res) {
 function updateGearDot() {
   const has = !!(state.updateInfo && state.updateInfo.available);
   const btn = document.getElementById("settingsBtn");
+  if (!btn) return;
   btn.classList.toggle("has-update", has);
   btn.setAttribute("aria-label", has ? "Settings and sources, update available" : "Settings and sources");
 }
@@ -12210,6 +12220,8 @@ async function boot() {
       window.burnrateTheme.apply(init.theme);
     }
     state.closeToTray = !!init.closeToTray;
+    state.closeToTab = init.closeToTab !== undefined ? !!init.closeToTab : true;
+    state.hideFromTaskbar = !!init.hideFromTaskbar;
     state.lowQuotaAlerts = !!init.lowQuotaAlerts;
     state.trayAvailable = !!init.trayAvailable;
     state.version = init.version ? String(init.version) : "";

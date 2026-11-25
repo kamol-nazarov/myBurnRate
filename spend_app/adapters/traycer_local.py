@@ -163,9 +163,11 @@ def parse_facts(path: Path, *, observations: bool = False) -> list | None:
     return rows
 
 
-def covered_sessions(database_path: Path | None) -> set[tuple[str, str]]:
+def covered_sessions(database_path: Path | None, session_ids: set[str] | None = None) -> set[tuple[str, str]]:
     path = Path(database_path) if database_path else None
     if path is None or not path.is_file():
+        return set()
+    if session_ids is not None and not session_ids:
         return set()
     found: set[tuple[str, str]] = set()
     try:
@@ -175,18 +177,33 @@ def covered_sessions(database_path: Path | None) -> set[tuple[str, str]]:
         return found
     try:
         tables = _table_names(connection)
+        scoped = sorted(session_ids) if session_ids is not None else None
         for table in ("usage_events", "unpriced_usage_events"):
             if table not in tables:
                 continue
-            for tool, sources in NATIVE_SOURCES.items():
-                marks = ",".join("?" for _ in sources)
-                query = (
-                    f"SELECT session_id FROM {table} "
-                    f"WHERE tool_key=? AND source IN ({marks}) AND session_id IS NOT NULL"
-                )
-                for (session_id,) in connection.execute(query, (tool, *sources)):
-                    if session_id:
-                        found.add((tool, str(session_id)))
+            if scoped is not None:
+                for start in range(0, len(scoped), 400):
+                    batch = scoped[start : start + 400]
+                    s_marks = ",".join("?" for _ in batch)
+                    for tool, sources in NATIVE_SOURCES.items():
+                        marks = ",".join("?" for _ in sources)
+                        query = (
+                            f"SELECT DISTINCT session_id FROM {table} "
+                            f"WHERE session_id IN ({s_marks}) AND tool_key=? AND source IN ({marks})"
+                        )
+                        for (session_id,) in connection.execute(query, (*batch, tool, *sources)):
+                            if session_id:
+                                found.add((tool, str(session_id)))
+            else:
+                for tool, sources in NATIVE_SOURCES.items():
+                    marks = ",".join("?" for _ in sources)
+                    query = (
+                        f"SELECT DISTINCT session_id FROM {table} "
+                        f"WHERE tool_key=? AND source IN ({marks}) AND session_id IS NOT NULL"
+                    )
+                    for (session_id,) in connection.execute(query, (tool, *sources)):
+                        if session_id:
+                            found.add((tool, str(session_id)))
     except sqlite3.Error:
         return found
     finally:
@@ -200,20 +217,84 @@ def drop_native_duplicates(connection: sqlite3.Connection) -> None:
             connection.execute(
                 f"""
                 DELETE FROM {table}
-                WHERE source=? AND rowid IN (
-                    SELECT traycer.rowid FROM {table} traycer
-                    JOIN {table} native
-                      ON native.source != traycer.source
-                     AND native.tool_key = traycer.tool_key
-                     AND native.session_id = traycer.session_id
-                    WHERE traycer.source=? AND traycer.session_id IS NOT NULL
-                      AND traycer.tool_key != 'opencode'
-                )
+                WHERE source=?
+                  AND session_id IS NOT NULL
+                  AND tool_key != 'opencode'
+                  AND EXISTS (
+                      SELECT 1 FROM {table} native
+                      WHERE native.session_id = {table}.session_id
+                        AND native.tool_key = {table}.tool_key
+                        AND native.source != ?
+                  )
                 """,
                 (SOURCE, SOURCE),
             )
         except sqlite3.OperationalError:
             continue
+
+
+def _traycer_native_overlap_token(database_path: Path | None) -> tuple | None:
+    """Fast read-only check whether stored Traycer rows now overlap native rows."""
+    path = Path(database_path) if database_path else None
+    if path is None or not path.is_file():
+        return None
+    try:
+        connection = store_read_only(path)
+    except (OSError, sqlite3.Error):
+        return None
+    try:
+        tables = _table_names(connection)
+        has_native_dup = False
+        opencode_markers = []
+        for table in ("usage_events", "unpriced_usage_events"):
+            if table not in tables:
+                continue
+            if not has_native_dup:
+                hit = connection.execute(
+                    f"""
+                    SELECT 1 FROM {table} t
+                    WHERE t.source=?
+                      AND t.session_id IS NOT NULL
+                      AND t.tool_key != 'opencode'
+                      AND EXISTS (
+                          SELECT 1 FROM {table} n
+                          WHERE n.session_id = t.session_id
+                            AND n.tool_key = t.tool_key
+                            AND n.source != ?
+                      )
+                    LIMIT 1
+                    """,
+                    (SOURCE, SOURCE),
+                ).fetchone()
+                if hit is not None:
+                    has_native_dup = True
+            oc_sessions = [
+                row[0]
+                for row in connection.execute(
+                    f"SELECT DISTINCT session_id FROM {table} "
+                    "WHERE source=? AND tool_key='opencode' AND session_id IS NOT NULL",
+                    (SOURCE,),
+                )
+            ]
+            if oc_sessions:
+                count_sum = 0
+                max_id = 0
+                for start in range(0, len(oc_sessions), 400):
+                    batch = oc_sessions[start : start + 400]
+                    ph = ",".join("?" for _ in batch)
+                    c, m = connection.execute(
+                        f"SELECT COUNT(*), COALESCE(MAX(id), 0) FROM {table} "
+                        f"WHERE source='opencode_local' AND session_id IN ({ph})",
+                        tuple(batch),
+                    ).fetchone()
+                    count_sum += int(c or 0)
+                    max_id = max(max_id, int(m or 0))
+                opencode_markers.append((table, count_sum, max_id))
+        return (has_native_dup, tuple(opencode_markers))
+    except sqlite3.Error:
+        return None
+    finally:
+        connection.close()
 
 
 def _opencode_observations(connection, session_ids, source: str) -> dict[str, UsageRow]:
@@ -519,36 +600,63 @@ def ingest(
     database_glob: str,
     grok_covered_from: datetime | None = None,
 ) -> dict:
+    from spend_app.adapters import unchanged
+
+    db_files = [path for path in iter_databases(database_glob) if path.is_file()]
+    cache_key = None
+    current = None
+    if db_files:
+        try:
+            overlap_token = _traycer_native_overlap_token(database_path)
+            if overlap_token is not None and not overlap_token[0]:
+                cache_key = unchanged.key(database_path, Path(database_glob), SOURCE)
+                current = (
+                    unchanged.signature(db_files, pricing),
+                    grok_covered_from.isoformat() if grok_covered_from is not None else None,
+                    overlap_token,
+                )
+                replayed = unchanged.replay(database_path, SOURCE, cache_key, current)
+                if replayed is not None:
+                    return replayed
+        except Exception:
+            cache_key = None
+            current = None
+
     usage_rows: list[UsageRow] = []
     files = 0
     mirrored = 0
     issues, observations = [], []
-    already = covered_sessions(database_path)
-    for path in iter_databases(database_glob):
-        if not path.is_file():
-            continue
+    parsed_all = []
+    candidate_sessions: set[str] = set()
+    for path in db_files:
         files += 1
         try:
             parsed = parse_database(path, database_path=database_path, observations=True, issues=issues)
         except (OSError, ValueError, sqlite3.DatabaseError):
             issues.append("traycer_source_unavailable_or_incompatible")
             continue
+        parsed_all.extend(parsed)
         for observation in parsed:
-            row = observation.row
-            # Traycer runs Grok through the grok CLI, whose own log (grok_local)
-            # records every call. Where that log exists, it is the authority;
-            # emitting the projection's copy too would count each turn twice.
-            if row.tool_key == "grok" and grok_covered_from is not None and row.occurred_at >= grok_covered_from:
-                mirrored += 1
-                continue
-            # BURNRATE no longer tracks Cursor, including runs Traycer launches.
-            if row.tool_key == "cursor":
-                continue
-            if row.session_id and (row.tool_key, row.session_id) in already:
-                mirrored += 1
-                continue
-            usage_rows.append(row)
-            observations.append(observation)
+            sid = observation.row.session_id
+            if sid and observation.row.tool_key in NATIVE_SOURCES:
+                candidate_sessions.add(sid)
+    already = covered_sessions(database_path, candidate_sessions) if candidate_sessions else set()
+    for observation in parsed_all:
+        row = observation.row
+        # Traycer runs Grok through the grok CLI, whose own log (grok_local)
+        # records every call. Where that log exists, it is the authority;
+        # emitting the projection's copy too would count each turn twice.
+        if row.tool_key == "grok" and grok_covered_from is not None and row.occurred_at >= grok_covered_from:
+            mirrored += 1
+            continue
+        # BURNRATE no longer tracks Cursor, including runs Traycer launches.
+        if row.tool_key == "cursor":
+            continue
+        if row.session_id and (row.tool_key, row.session_id) in already:
+            mirrored += 1
+            continue
+        usage_rows.append(row)
+        observations.append(observation)
     from spend_app.adapters.event_identity import reconcile
 
     def prepare(connection, _rows):
@@ -569,7 +677,7 @@ def ingest(
         usage_rows=usage_rows, issues=issues,
         prepare=prepare,
     )
-    return {
+    output = {
         **result,
         "files": files,
         "issues": sorted(set(issues)),
@@ -577,3 +685,17 @@ def ingest(
         "mirroredGrokEvents": mirrored,
         "unclassifiedEvents": sum(not row.telemetry_complete for row in usage_rows),
     }
+    if db_files and not output["issues"]:
+        try:
+            overlap_after = _traycer_native_overlap_token(database_path)
+            if overlap_after is not None and not overlap_after[0]:
+                remember_key = cache_key or unchanged.key(database_path, Path(database_glob), SOURCE)
+                remember_sig = (
+                    unchanged.signature(db_files, pricing),
+                    grok_covered_from.isoformat() if grok_covered_from is not None else None,
+                    overlap_after,
+                )
+                unchanged.remember(database_path, SOURCE, remember_key, remember_sig, output)
+        except Exception:
+            pass
+    return output

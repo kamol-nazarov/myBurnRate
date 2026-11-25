@@ -201,6 +201,12 @@ class PricingEngine:
             for alias in price.aliases:
                 index.setdefault(alias, []).append(price)
         self._index = {key: tuple(value) for key, value in index.items()}
+        # Fast path for the common case: a model key/alias with a single open-ended revision.
+        self._single_open: dict[str, Price] = {
+            key: entries[0]
+            for key, entries in self._index.items()
+            if len(entries) == 1 and entries[0].effective_to is None
+        }
 
     @classmethod
     def load(cls, directory: Path) -> "PricingEngine":
@@ -300,20 +306,26 @@ class PricingEngine:
                 )
         return cls(prices)
 
-    @lru_cache(maxsize=65536)
     def resolve(self, model_key: str, occurred_at: datetime) -> Price:
-        when = occurred_at.astimezone(UTC)
-        candidates = [
-            price
-            for price in self._index.get(model_key, ())
-            if price.effective_from <= when
-            and (price.effective_to is None or when < price.effective_to)
-        ]
-        if not candidates:
+        when = occurred_at if occurred_at.tzinfo is UTC else occurred_at.astimezone(UTC)
+        single = self._single_open.get(model_key)
+        if single is not None:
+            if single.effective_from <= when:
+                return single
             raise UnpricedModelError(f"No effective price for {model_key!r} at {when.isoformat()}")
-        return max(candidates, key=lambda price: price.effective_from)
+        entries = self._index.get(model_key)
+        if not entries:
+            raise UnpricedModelError(f"No effective price for {model_key!r} at {when.isoformat()}")
+        best: Price | None = None
+        for price in entries:
+            if price.effective_from <= when and (price.effective_to is None or when < price.effective_to):
+                if best is None or price.effective_from > best.effective_from:
+                    best = price
+        if best is None:
+            raise UnpricedModelError(f"No effective price for {model_key!r} at {when.isoformat()}")
+        return best
 
-    def compute(
+    def price_and_components(
         self,
         *,
         model_key: str,
@@ -325,44 +337,23 @@ class PricingEngine:
         cache_write_1h_tokens: int = 0,
         request_bucket: bool = False,
         request_count: int | None = None,
-    ) -> Decimal:
-        return sum(
-            self.components(
-                model_key=model_key,
-                occurred_at=occurred_at,
-                input_tokens=input_tokens,
-                cached_input_tokens=cached_input_tokens,
-                cache_write_tokens=cache_write_tokens,
-                output_tokens=output_tokens,
-                cache_write_1h_tokens=cache_write_1h_tokens,
-                request_bucket=request_bucket,
-                request_count=request_count,
-            ).values(),
-            Decimal(0),
-        )
-
-    def components(
-        self,
-        *,
-        model_key: str,
-        occurred_at: datetime,
-        input_tokens: int,
-        cached_input_tokens: int,
-        cache_write_tokens: int,
-        output_tokens: int,
-        cache_write_1h_tokens: int = 0,
-        request_bucket: bool = False,
-        request_count: int | None = None,
-    ) -> dict[str, Decimal]:
-        for name, value in (
-            ("input_tokens", input_tokens),
-            ("cached_input_tokens", cached_input_tokens),
-            ("cache_write_tokens", cache_write_tokens),
-            ("cache_write_1h_tokens", cache_write_1h_tokens),
-            ("output_tokens", output_tokens),
+    ) -> tuple[Price, dict[str, Decimal], Decimal]:
+        if (
+            type(input_tokens) is not int or input_tokens < 0
+            or type(cached_input_tokens) is not int or cached_input_tokens < 0
+            or type(cache_write_tokens) is not int or cache_write_tokens < 0
+            or type(cache_write_1h_tokens) is not int or cache_write_1h_tokens < 0
+            or type(output_tokens) is not int or output_tokens < 0
         ):
-            if type(value) is not int or value < 0:
-                raise ValueError(f"{name} must be a nonnegative integer")
+            for name, value in (
+                ("input_tokens", input_tokens),
+                ("cached_input_tokens", cached_input_tokens),
+                ("cache_write_tokens", cache_write_tokens),
+                ("cache_write_1h_tokens", cache_write_1h_tokens),
+                ("output_tokens", output_tokens),
+            ):
+                if type(value) is not int or value < 0:
+                    raise ValueError(f"{name} must be a nonnegative integer")
         if cached_input_tokens > input_tokens:
             raise ValueError("cached_input_tokens cannot exceed input_tokens")
         if cache_write_1h_tokens > cache_write_tokens:
@@ -386,7 +377,7 @@ class PricingEngine:
             raise UncertainAggregatePriceError("Reporting bucket does not determine a request pricing tier.")
         input_multiplier = price.long_input_multiplier if is_long else Decimal(1)
         output_multiplier = price.long_output_multiplier if is_long else Decimal(1)
-        if price.is_peak(occurred_at):
+        if price.peak_hours_utc and price.is_peak(occurred_at):
             input_multiplier *= price.peak_multiplier
             output_multiplier *= price.peak_multiplier
         cache_write_5m_tokens = cache_write_tokens - cache_write_1h_tokens
@@ -395,19 +386,75 @@ class PricingEngine:
             if price.cache_write_1h_per_mtok is None
             else price.cache_write_1h_per_mtok
         )
-        return {
-            "fresh_input": Decimal(fresh_input) / MILLION * price.input_per_mtok * input_multiplier,
-            "cached_input": Decimal(cached_input_tokens)
-            / MILLION
-            * price.cached_input_per_mtok
-            * input_multiplier,
-            "cache_write": (
-                Decimal(cache_write_5m_tokens) / MILLION * price.cache_write_per_mtok
-                + Decimal(cache_write_1h_tokens) / MILLION * cache_write_1h_rate
-            )
-            * input_multiplier,
-            "output": Decimal(output_tokens) / MILLION * price.output_per_mtok * output_multiplier,
-        }
+        return (
+            price,
+            {
+                "fresh_input": Decimal(fresh_input) / MILLION * price.input_per_mtok * input_multiplier,
+                "cached_input": Decimal(cached_input_tokens)
+                / MILLION
+                * price.cached_input_per_mtok
+                * input_multiplier,
+                "cache_write": (
+                    Decimal(cache_write_5m_tokens) / MILLION * price.cache_write_per_mtok
+                    + Decimal(cache_write_1h_tokens) / MILLION * cache_write_1h_rate
+                )
+                * input_multiplier,
+                "output": Decimal(output_tokens) / MILLION * price.output_per_mtok * output_multiplier,
+            },
+            input_multiplier,
+        )
+
+    def compute(
+        self,
+        *,
+        model_key: str,
+        occurred_at: datetime,
+        input_tokens: int,
+        cached_input_tokens: int,
+        cache_write_tokens: int,
+        output_tokens: int,
+        cache_write_1h_tokens: int = 0,
+        request_bucket: bool = False,
+        request_count: int | None = None,
+    ) -> Decimal:
+        _, comps, _ = self.price_and_components(
+            model_key=model_key,
+            occurred_at=occurred_at,
+            input_tokens=input_tokens,
+            cached_input_tokens=cached_input_tokens,
+            cache_write_tokens=cache_write_tokens,
+            output_tokens=output_tokens,
+            cache_write_1h_tokens=cache_write_1h_tokens,
+            request_bucket=request_bucket,
+            request_count=request_count,
+        )
+        return comps["fresh_input"] + comps["cached_input"] + comps["cache_write"] + comps["output"]
+
+    def components(
+        self,
+        *,
+        model_key: str,
+        occurred_at: datetime,
+        input_tokens: int,
+        cached_input_tokens: int,
+        cache_write_tokens: int,
+        output_tokens: int,
+        cache_write_1h_tokens: int = 0,
+        request_bucket: bool = False,
+        request_count: int | None = None,
+    ) -> dict[str, Decimal]:
+        _, comps, _ = self.price_and_components(
+            model_key=model_key,
+            occurred_at=occurred_at,
+            input_tokens=input_tokens,
+            cached_input_tokens=cached_input_tokens,
+            cache_write_tokens=cache_write_tokens,
+            output_tokens=output_tokens,
+            cache_write_1h_tokens=cache_write_1h_tokens,
+            request_bucket=request_bucket,
+            request_count=request_count,
+        )
+        return comps
 
 
 def _require_source_url(

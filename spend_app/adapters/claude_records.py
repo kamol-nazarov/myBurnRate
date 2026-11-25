@@ -124,9 +124,9 @@ def merge_observations(group, *, saved=(), issues=None):
                    field_conflicts=tuple(conflicts.items()), request_envelopes=envelopes)
 
 
-def reduce_records(records, health, fallback_session):
-    observations, known_scope = {}, {}
-    session = {}
+def reduce_records_into(records, health, fallback_session, *, observations: dict, known_scope: dict, session: dict) -> set[str]:
+    """Fold ``records`` into existing reducer state; return touched observation keys."""
+    touched: set[str] = set()
     for outer in records:
         message = outer.get("message")
         if not isinstance(message, dict) or not isinstance(message.get("usage"), dict) or outer.get("type") not in {None, "assistant"}:
@@ -203,10 +203,18 @@ def reduce_records(records, health, fallback_session):
                                tuple(values.items()), request_envelopes=request_envelopes)
         errors = []
         observations[key] = merge_observations(([previous] if previous else []) + [incoming], issues=errors)
+        touched.add(key)
         for error in errors:
             health.note(quarantine(error))
         health.note_ok()
         if not session:
-            session = {"id": sid, "project": project, "started_at": when,
-                       "model_key": observations[key].row.model_key}
+            session.update({"id": sid, "project": project, "started_at": when,
+                            "model_key": observations[key].row.model_key})
+    return touched
+
+
+def reduce_records(records, health, fallback_session):
+    observations, known_scope = {}, {}
+    session = {}
+    reduce_records_into(records, health, fallback_session, observations=observations, known_scope=known_scope, session=session)
     return session, list(observations.values())

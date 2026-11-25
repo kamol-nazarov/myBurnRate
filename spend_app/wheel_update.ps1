@@ -22,6 +22,11 @@ function Get-ProcessRecord([int]$ProcessId) {
     Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId"
 }
 
+function Get-NormalizedPath([string]$PathValue) {
+    if ([string]::IsNullOrWhiteSpace($PathValue)) { return '' }
+    try { return [IO.Path]::GetFullPath($PathValue).TrimEnd('\', '/') } catch { return $PathValue.TrimEnd('\', '/') }
+}
+
 function Get-CollectorRecords {
     $listeners = @(Get-NetTCPConnection -State Listen | Where-Object {
         $_.LocalPort -eq 17331 -and $_.LocalAddress -in '127.0.0.1','::1','0.0.0.0','::','::ffff:127.0.0.1'
@@ -30,24 +35,27 @@ function Get-CollectorRecords {
     if ($owners.Count -eq 0) { return }
     if ($owners.Count -ne 1) { throw 'Several processes are listening on the collector port.' }
     $record = Get-ProcessRecord $owners[0]
-    $pattern = '^(?:"[^"]+"|\S+)\s+-m\s+spend_app\.service\s+--port\s+17331\s*$'
+    $pattern = '^(?:"[^"]+"|\S+)\s+(?:-I\s+)?-m\s+spend_app\.service\s+--port\s+17331\s*$'
     if (-not $record -or $record.CommandLine -notmatch $pattern) { throw 'The collector could not be identified.' }
-    if ($record.ExecutablePath -in @($python, $pythonw)) { return $record }
-    $baseDirs = @((Split-Path $request.basePython -Parent))
+    $managedExes = @((Get-NormalizedPath $python), (Get-NormalizedPath $pythonw))
+    $recordExe = Get-NormalizedPath $record.ExecutablePath
+    if ($recordExe -in $managedExes) { return $record }
+    $baseDirs = @((Get-NormalizedPath (Split-Path $request.basePython -Parent)))
     if ($request.basePythonDirs) {
         foreach ($dir in @($request.basePythonDirs)) {
-            if ($dir) { $baseDirs += [string]$dir }
+            if ($dir) { $baseDirs += (Get-NormalizedPath ([string]$dir)) }
         }
     }
-    $allowedBase = @($baseDirs | Sort-Object -Unique | ForEach-Object {
-        (Join-Path $_ 'python.exe')
-        (Join-Path $_ 'pythonw.exe')
+    $allowedBase = @($baseDirs | Where-Object { $_ } | Sort-Object -Unique | ForEach-Object {
+        (Get-NormalizedPath (Join-Path $_ 'python.exe'))
+        (Get-NormalizedPath (Join-Path $_ 'pythonw.exe'))
     })
-    if ($record.ExecutablePath -notin $allowedBase) {
+    if ($recordExe -notin $allowedBase) {
         throw 'The listener is outside the managed Python runtime.'
     }
     $parent = Get-ProcessRecord $record.ParentProcessId
-    if (-not $parent -or $parent.ExecutablePath -notin @($python, $pythonw) -or
+    $parentExe = if ($parent) { Get-NormalizedPath $parent.ExecutablePath } else { '' }
+    if (-not $parent -or $parentExe -notin $managedExes -or
         $parent.CommandLine -notmatch $pattern -or $parent.CreationDate -gt $record.CreationDate) {
         throw 'The listener is outside the managed Python runtime.'
     }
@@ -130,8 +138,8 @@ stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
 backup = folder / f"pre-wheel-update-{stamp}.db"
 with backup.open("xb"):
     pass
-with closing(sqlite3.connect(db.as_uri() + "?mode=ro", uri=True, timeout=10)) as source:
-    with closing(sqlite3.connect(backup, timeout=10)) as dest:
+with closing(sqlite3.connect(str(db), timeout=30)) as source:
+    with closing(sqlite3.connect(str(backup), timeout=30)) as dest:
         source.backup(dest, pages=1024)
         if dest.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
             raise SystemExit("The backup failed its integrity check")
@@ -150,6 +158,7 @@ if prefs.is_file():
     $phase = 'rebuilding the desktop runtime'
     $sha256 = [Security.Cryptography.SHA256]::Create()
     try {
+        $wheelLock.Position = 0
         $digest = [BitConverter]::ToString($sha256.ComputeHash($wheelLock)).Replace('-', '')
     } finally {
         $sha256.Dispose()

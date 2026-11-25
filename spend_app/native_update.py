@@ -1046,9 +1046,37 @@ class Updater:
                 shutil.copyfile(Path(__file__).with_name("wheel_update.ps1"), worker)
                 raw_base = Path(sys._base_executable)
                 resolved_base = raw_base.resolve()
-                base_dirs = [str(resolved_base.parent)]
-                if str(raw_base.parent) not in base_dirs:
-                    base_dirs.append(str(raw_base.parent))
+                base_dirs: list[str] = []
+                seen_dirs: set[str] = set()
+
+                def add_base_dir(candidate: Path | str | None) -> None:
+                    if not candidate:
+                        return
+                    text = str(candidate).strip().rstrip("\\/")
+                    if not text:
+                        return
+                    key = os.path.normcase(text)
+                    if key not in seen_dirs:
+                        seen_dirs.add(key)
+                        base_dirs.append(text)
+
+                add_base_dir(resolved_base.parent)
+                add_base_dir(raw_base.parent)
+                raw_prefix = Path(sys.base_prefix)
+                add_base_dir(raw_prefix)
+                with contextlib.suppress(OSError):
+                    add_base_dir(raw_prefix.resolve())
+                # uv venvs often point pyvenv.cfg `home` at a versionless junction
+                # (e.g. cpython-3.12-...) while sys._base_executable resolves to
+                # cpython-3.12.13-.... Include both so the collector matches.
+                with contextlib.suppress(OSError, UnicodeError):
+                    for line in (runtime / "pyvenv.cfg").read_text(encoding="utf-8", errors="replace").splitlines():
+                        key, sep, value = line.partition("=")
+                        if sep and key.strip().lower() == "home" and value.strip():
+                            home_dir = Path(value.strip())
+                            add_base_dir(home_dir)
+                            with contextlib.suppress(OSError):
+                                add_base_dir(home_dir.resolve())
                 (job / "request.json").write_text(json.dumps({
                     "runtime": str(runtime), "wheel": wheel.name, "version": feed.version,
                     "sha256": feed.wheel.sha256, "database": str(default_database_path().resolve()),
@@ -1060,7 +1088,7 @@ class Updater:
                 self._launcher(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(worker)])
                 ready = job / "ready"
                 failure = job / "failed"
-                deadline = time.monotonic() + 20
+                deadline = time.monotonic() + 45
                 while not ready.is_file():
                     if failure.is_file() or time.monotonic() >= deadline:
                         detail = ""

@@ -2310,3 +2310,37 @@ def test_unresolved_timeout_reuses_request_id_until_confirmed_then_retires(
         assert "claude_local:add" not in bridge._mutations
     finally:
         profile_detect.reset_cache()
+
+
+def test_close_to_tab_keeps_desktop_pill_visible_and_hide_from_taskbar_persists(tmp_path):
+    from types import SimpleNamespace
+
+    prefs_file = tmp_path / "native-window.json"
+    store = PreferenceStore(prefs_file)
+    bridge, host, win, _tray, _opacity = make_host(tmp_path=tmp_path)
+    bridge._prefs = store
+    shown_tab = []
+    host.surfaces = SimpleNamespace(show_tab=lambda: shown_tab.append("tab"), shutdown=lambda: None)
+
+    # Default closeToTab=True: closing the window/taskbar icon shrinks to the floating desktop pill.
+    assert bridge.close_to_tab is True
+    assert host.close() is True
+    assert shown_tab == ["tab"]
+    assert "hide" not in win.calls
+
+    # Turning closeToTab off falls back to hiding to the tray only.
+    res = bridge.set_close_to_tab(False)
+    assert res == {"ok": True, "closeToTab": False}
+    assert store.read()["closeToTab"] is False
+    assert host.close() is True
+    assert len(shown_tab) == 1 and "hide" in win.calls
+
+    # hideFromTaskbar persists and toggles host taskbar visibility without recreating the handle.
+    taskbar_calls = []
+    host.apply_taskbar_visibility = lambda show: taskbar_calls.append(show)
+    res_tb = bridge.set_hide_from_taskbar(True)
+    assert res_tb == {"ok": True, "hideFromTaskbar": True}
+    assert store.read()["hideFromTaskbar"] is True
+    assert taskbar_calls == [False]
+    assert bridge.get_initial_state()["hideFromTaskbar"] is True
+    assert bridge.get_initial_state()["closeToTab"] is False

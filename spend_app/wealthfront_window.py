@@ -1329,6 +1329,8 @@ class DesktopBridge:
         )
         self._theme = normalize_theme(saved.get("theme"))
         self._close_to_tray = bool(saved.get("closeToTray", True))
+        self._close_to_tab = bool(saved.get("closeToTab", True))
+        self._hide_from_taskbar = bool(saved.get("hideFromTaskbar", False))
         self._low_quota_alerts = bool(saved.get("lowQuotaAlerts", True))
         self._analytics_window = normalize_analytics_window(saved.get("analyticsWindow") or self._period)
         # Which window was last up. The old in-page mini bar becomes the tab.
@@ -1392,6 +1394,14 @@ class DesktopBridge:
         return self._close_to_tray
 
     @property
+    def close_to_tab(self) -> bool:
+        return self._close_to_tab
+
+    @property
+    def hide_from_taskbar(self) -> bool:
+        return self._hide_from_taskbar
+
+    @property
     def low_quota_alerts(self) -> bool:
         return self._low_quota_alerts
 
@@ -1417,6 +1427,8 @@ class DesktopBridge:
                 "providerOrder": self._provider_order,
                 "theme": self._theme,
                 "closeToTray": self._close_to_tray,
+                "closeToTab": self._close_to_tab,
+                "hideFromTaskbar": self._hide_from_taskbar,
                 "lowQuotaAlerts": self._low_quota_alerts,
                 "analyticsWindow": self._analytics_window,
                 "hudMini": None,
@@ -1437,6 +1449,8 @@ class DesktopBridge:
             "demo": self._demo,
             "theme": self._theme,
             "closeToTray": self._close_to_tray,
+            "closeToTab": self._close_to_tab,
+            "hideFromTaskbar": self._hide_from_taskbar,
             "lowQuotaAlerts": self._low_quota_alerts,
             "trayAvailable": self._tray_available,
             "version": __version__,
@@ -1471,6 +1485,18 @@ class DesktopBridge:
         self._close_to_tray = bool(enabled)
         self._write_preferences()
         return {"ok": True, "closeToTray": self._close_to_tray}
+
+    def set_close_to_tab(self, enabled: bool) -> dict:
+        self._close_to_tab = bool(enabled)
+        self._write_preferences()
+        return {"ok": True, "closeToTab": self._close_to_tab}
+
+    def set_hide_from_taskbar(self, enabled: bool) -> dict:
+        self._hide_from_taskbar = bool(enabled)
+        self._write_preferences()
+        if self._host is not None:
+            self._host.apply_taskbar_visibility(not self._hide_from_taskbar)
+        return {"ok": True, "hideFromTaskbar": self._hide_from_taskbar}
 
     def set_low_quota_alerts(self, enabled: bool) -> dict:
         self._low_quota_alerts = bool(enabled)
@@ -4579,9 +4605,48 @@ class WindowHost:
         return False
 
     def hide_for_close(self) -> None:
-        """Hide because the user closed the window; hint once, ever, why it lives on."""
+        """Hide because the user closed the window.
+
+        When ``close_to_tab`` is enabled and the floating tab surface is
+        available, shrink to the desktop pill so the taskbar icon closes while
+        BURNRATE stays visible on the desktop. Otherwise hide to the tray and
+        hint once why it lives on.
+        """
+        if self.bridge.close_to_tab and self.surfaces is not None:
+            self.surfaces.show_tab()
+            return
         self.hide()
         self._show_tray_hint()
+
+    def apply_taskbar_visibility(self, show_in_taskbar: bool) -> None:
+        """Show or hide the full window's Windows taskbar button without
+        recreating the WinForms handle (which would abort WebView2).
+        """
+        if sys.platform != "win32" or not self.hwnd:
+            return
+        try:
+            import ctypes
+
+            user32 = ctypes.windll.user32
+            gwl_exstyle, tool_window, app_window = -20, 0x00000080, 0x00040000
+            style = user32.GetWindowLongW(self.hwnd, gwl_exstyle)
+            desired = (
+                (style & ~tool_window) | app_window
+                if show_in_taskbar
+                else (style | tool_window) & ~app_window
+            )
+            if desired == style:
+                return
+            was_visible = bool(user32.IsWindowVisible(self.hwnd))
+            if was_visible:
+                user32.ShowWindow(self.hwnd, 0)  # SW_HIDE so Explorer refreshes taskbar
+            user32.SetWindowLongW(self.hwnd, gwl_exstyle, desired)
+            # SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED
+            user32.SetWindowPos(self.hwnd, 0, 0, 0, 0, 0, 0x0037)
+            if was_visible:
+                user32.ShowWindow(self.hwnd, 4)  # SW_SHOWNOACTIVATE
+        except OSError:
+            LOGGER.debug("Could not update taskbar visibility", exc_info=True)
 
     def _show_tray_hint(self) -> None:
         if self.bridge.demo or not self._tray_enabled or self.tray is None:
@@ -4676,6 +4741,8 @@ class WindowHost:
         _apply_win11_chrome(
             self.window, self._icon_path, resolve_dark(self.bridge.theme)
         )
+        if self.bridge.hide_from_taskbar:
+            self.apply_taskbar_visibility(False)
         if self._saved_geometry is not None:
             try:
                 plan = native_geometry.plan_restore(

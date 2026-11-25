@@ -197,7 +197,8 @@ def reconcile(connection, observations, issues=None, *, claude_models=None):
             existing = stored_event(connection, alias)
             if existing and existing["source"] in allowed_sources:
                 found.append(alias)
-            write_meta(connection, owner_key, canonical)
+            if owner != canonical:
+                write_meta(connection, owner_key, canonical)
         if not record and found:
             # Keep a stored 0.3.0 ID instead of minting another accepted row.
             target = found[0]
@@ -217,8 +218,18 @@ def reconcile(connection, observations, issues=None, *, claude_models=None):
                 previous = claude_models.get(row.session_id)
                 if model_rank is not None and (previous is None or model_rank >= previous[0]):
                     claude_models[row.session_id] = (model_rank, row.model_key)
-        write_meta(connection, key, {"raw_id": target, "rank": rank, **({"components": components} if components else {}),
-            **({"field_ranks": dict(observation.field_ranks), "field_conflicts": dict(observation.field_conflicts)} if source == "claude_local" else {})})
+        new_record = {
+            "raw_id": target,
+            "rank": rank,
+            **({"components": components} if components else {}),
+            **(
+                {"field_ranks": dict(observation.field_ranks), "field_conflicts": dict(observation.field_conflicts)}
+                if source == "claude_local"
+                else {}
+            ),
+        }
+        if new_record != record:
+            write_meta(connection, key, new_record)
     return rows
 
 

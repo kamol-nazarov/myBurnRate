@@ -140,9 +140,44 @@ def merge_messages(messages):
     return sorted(chosen.values(), key=lambda m: (m.row.occurred_at, m.row.raw_id)), ambiguous
 
 
-def read_messages(connection, columns, limit=None):
+def read_session_watermarks(connection, columns):
+    """Lightweight per-session change markers without touching the multi-GB ``data`` column.
+
+    Returns ``(watermarks, total_rows, force_full_sessions)`` or ``None`` if any
+    detected granular table lacks ``time_updated`` (so callers fall back cleanly).
+    """
+    formats = [fmt for fmt in recognize(columns) if fmt != "cumulative"]
+    if not formats:
+        return None
+    for fmt in formats:
+        table = "session_message" if fmt == "v2" else "message"
+        if "time_updated" not in columns.get(table, ()):
+            return None
+    watermarks: dict[str, dict[str, tuple[int, object, object]]] = {}
+    force_full: set[str] = set()
+    total_rows = 0
+    for fmt in formats:
+        table = "session_message" if fmt == "v2" else "message"
+        for session_id, row_count, max_updated, max_id, null_updated in connection.execute(
+            f'SELECT session_id, COUNT(*), MAX(time_updated), MAX(id), '
+            f'MAX(CASE WHEN time_updated IS NULL THEN 1 ELSE 0 END) '
+            f'FROM "{table}" GROUP BY +session_id'
+        ):
+            total_rows += int(row_count or 0)
+            if not isinstance(session_id, str) or not session_id:
+                return None
+            if null_updated:
+                force_full.add(session_id)
+            watermarks.setdefault(session_id, {})[fmt] = (int(row_count), max_updated, max_id)
+    return watermarks, total_rows, force_full
+
+
+def read_messages(connection, columns, limit=None, session_ids=None):
     formats = recognize(columns)
     messages, malformed = [], 0
+    session_list = sorted(set(session_ids)) if session_ids is not None else None
+    if session_list is not None and not session_list:
+        return messages, malformed
     for format in formats:
         if format == "cumulative":
             continue
@@ -152,22 +187,34 @@ def read_messages(connection, columns, limit=None):
         projection = "CASE WHEN json_valid(data) THEN json_object(" + ",".join(
             "'" + field + "',json_extract(data,'$." + field + "')" for field in ("id", "sessionID", "role", "modelID", "providerID", "model", "tokens", "time", "cost")) + ") ELSE NULL END"
         updated = "time_updated" if "time_updated" in columns[table] else "NULL"
-        sql = f'SELECT id,session_id,{role},{updated},{projection} FROM "{table}"'
-        if limit is not None:
-            sql += " LIMIT ?"
-        for row_id, session, role_value, updated_at, payload in connection.execute(sql, (limit,) if limit is not None else ()):
-            message = parse_message(payload, row_id=row_id, session_id=session, role=role_value, format=format, updated_at=updated_at)
-            if message:
-                messages.append(message)
-            elif payload is None:
-                malformed += 1
-            else:
-                decoded = json.loads(payload)
-                model = decoded.get("model") if isinstance(decoded.get("model"), dict) else {}
-                provider = decoded.get("providerID") or model.get("providerID")
-                effective_role = role_value if format == "v2" else decoded.get("role")
-                if effective_role == "assistant" and decoded.get("tokens") is not None and provider != "traycer-openrouter":
+        base_sql = f'SELECT id,session_id,{role},{updated},{projection} FROM "{table}"'
+        if session_list is not None:
+            batches = [session_list[i : i + 500] for i in range(0, len(session_list), 500)]
+        else:
+            batches = [None]
+        for batch in batches:
+            sql = base_sql
+            params: tuple = ()
+            if batch is not None:
+                placeholders = ",".join("?" for _ in batch)
+                sql += f" WHERE session_id IN ({placeholders})"
+                params = tuple(batch)
+            if limit is not None:
+                sql += " LIMIT ?"
+                params = (*params, limit)
+            for row_id, session, role_value, updated_at, payload in connection.execute(sql, params):
+                message = parse_message(payload, row_id=row_id, session_id=session, role=role_value, format=format, updated_at=updated_at)
+                if message:
+                    messages.append(message)
+                elif payload is None:
                     malformed += 1
+                else:
+                    decoded = json.loads(payload)
+                    model = decoded.get("model") if isinstance(decoded.get("model"), dict) else {}
+                    provider = decoded.get("providerID") or model.get("providerID")
+                    effective_role = role_value if format == "v2" else decoded.get("role")
+                    if effective_role == "assistant" and decoded.get("tokens") is not None and provider != "traycer-openrouter":
+                        malformed += 1
     return messages, malformed
 
 
