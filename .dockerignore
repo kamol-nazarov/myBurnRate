@@ -4,6 +4,7 @@
 !LICENSE
 !NOTICE
 !requirements-build.txt
+!requirements-runtime.txt
 !hatch_build.py
 !packaging/build_config.py
 !spend_app/**

@@ -86,3 +86,18 @@ def test_public_build_omits_private_hub_origin(tmp_path, monkeypatch):
     path, selected = module.write_build_config(tmp_path / "_build_config.py")
     assert selected == ""
     assert "hub.example.invalid" not in path.read_text()
+
+
+def test_new_test_file_is_included_in_secret_scanning(tmp_path):
+    script = Path(__file__).resolve().parents[1] / ".github" / "scripts" / "redacted_secret_scan.py"
+    spec = importlib.util.spec_from_file_location("release_secret_scan", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    folder = tmp_path / "tests_spend"
+    folder.mkdir()
+    source = folder / "test_added_example.py"
+    example = "AIza" + "x" * 35
+    source.write_text(example, encoding="utf-8")
+    findings = module.scan_file(source, tmp_path)
+    assert any(row["rule"] == "GOOGLE_API_KEY" and not module.is_allowlisted(row) for row in findings)
+    assert example not in repr(findings)

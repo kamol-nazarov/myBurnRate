@@ -196,6 +196,12 @@ def test_b1_docker_context_copy_sources_admitted_and_omit_spend_web() -> None:
         )
 
     for line_no, src in copy_sources:
+        if src == "requirements-runtime.txt":
+            # The runtime export belongs to the final stage, after the build
+            # stage creates the wheel and before its own dependencies install.
+            assert dockerfile_text.splitlines()[line_no].startswith("COPY requirements-runtime.txt")
+            assert dockerfile_text.index("COPY requirements-runtime.txt") < dockerfile_text.index("-r requirements-runtime.txt")
+            continue
         assert line_no < pip_install_line, (
             f"COPY {src} (line {line_no + 1}) must appear before pip install (line {pip_install_line + 1})"
         )
