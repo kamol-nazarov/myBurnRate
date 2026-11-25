@@ -727,6 +727,8 @@ def prune_usage_changes(
         """
     )
     removed += int(cur_dedup.rowcount or 0)
+    from spend_app.sync_continuity import prune_received_journal
+    prune_received_journal(connection)
     return removed
 
 
@@ -1000,6 +1002,7 @@ def initialize(path: Path) -> None:
     from spend_app.provider_cost_sync import ensure_provider_cost_journal
     ensure_provider_cost_journal(path)
     ensure_usage_cache_revisions(path)
+    ensure_sync_storage(path)
     migrate_usage_keys(path)
     retire_cursor_usage(path)
     dedupe_grok_calls(path)
@@ -1010,6 +1013,53 @@ def initialize(path: Path) -> None:
     ensure_schema(path)
     from spend_app.connections import Store
     Store(path).bootstrap()
+
+
+def ensure_sync_storage(path: Path) -> None:
+    """Age sync receipts and keep corrupt stored amounts eligible for repricing."""
+    from spend_app.organization import PROVIDER_COST_ID_SQL
+
+    marker = "sync.safe_storage.v1"
+    with connect(path) as connection:
+        if connection.execute("SELECT 1 FROM app_meta WHERE key=?", (marker,)).fetchone():
+            return
+        connection.execute("BEGIN IMMEDIATE")
+        if connection.execute("SELECT 1 FROM app_meta WHERE key=?", (marker,)).fetchone():
+            return
+        for table in ("sync_usage_receipts", "sync_usage_conflicts"):
+            columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+            if "received_at" not in columns:
+                connection.execute(
+                    f"ALTER TABLE {table} ADD COLUMN received_at INTEGER NOT NULL DEFAULT 0"
+                )
+            connection.execute(f"UPDATE {table} SET received_at=unixepoch() WHERE received_at=0")
+            connection.execute(
+                f"CREATE INDEX IF NOT EXISTS idx_{table}_received ON {table}(machine_id, received_at, mark)"
+            )
+        connection.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_provider_cost_buckets_identity "
+            f"ON provider_cost_buckets(({PROVIDER_COST_ID_SQL})) WHERE organization_scope IS NOT NULL"
+        )
+        invalid_price = (
+            "(typeof(computed_cost_usd) NOT IN ('integer','real') "
+            "OR abs(computed_cost_usd) > 1.7976931348623157e308)"
+        )
+        event_fields = (
+            "source,tool_key,model_key,occurred_at,session_id,project,input_tokens,cached_input_tokens,"
+            "cache_write_tokens,cache_write_1h_tokens,output_tokens,reasoning_tokens,raw_id,ingested_at,"
+            "admin_request_count,admin_context_window,organization_scope,occurred_epoch_us,grok_turn_elapsed_ms"
+        )
+        connection.execute(
+            f"INSERT OR IGNORE INTO unpriced_usage_events({event_fields},telemetry_complete,unclassified_tokens,cost_usd) "
+            f"SELECT {event_fields},1,0,cost_usd FROM usage_events WHERE {invalid_price}"
+        )
+        connection.execute(f"DELETE FROM usage_events WHERE {invalid_price}")
+        for table in ("usage_events", "unpriced_usage_events"):
+            connection.execute(
+                f"UPDATE {table} SET cost_usd=NULL WHERE cost_usd IS NOT NULL AND "
+                "(typeof(cost_usd) NOT IN ('integer','real') OR abs(cost_usd) > 1.7976931348623157e308)"
+            )
+        connection.execute("INSERT INTO app_meta(key,value) VALUES(?, '1')", (marker,))
 
 
 def ensure_quota_origin_uniqueness(path: Path) -> None:

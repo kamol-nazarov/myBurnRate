@@ -8,7 +8,7 @@ from bisect import bisect_right
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
-from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_HALF_UP
 from pathlib import Path
 from functools import lru_cache
 from zoneinfo import ZoneInfo
@@ -16,8 +16,8 @@ from zoneinfo import ZoneInfo
 from spend_app.db import EXACT_USAGE_SOURCES, connect, usage_cache_revision
 from spend_app.organization import (
     ORGANIZATION_SOURCES,
+    PROVIDER_COST_ID_SQL,
     admin_row_pricing_args,
-    bucket_observation_order,
     verified_bucket_id,
 )
 from spend_app.source_reconcile import _CURSOR_EVENT_SOURCE_SET, reconcile_events
@@ -829,21 +829,40 @@ def _monthly_subscription_cost(connection, tool: str, on_date: date) -> Decimal:
 def _load_cost_buckets(connection, start: datetime, end: datetime, machine: str = "all") -> list[dict]:
     chosen: dict[str, dict] = {}
     for result in connection.execute(
-        "SELECT source, raw_id, organization_scope, project_id, starting_at, ending_at, cost_usd, ingested_at "
+        "SELECT source, raw_id, organization_scope, project_id, starting_at, ending_at, "
+        "cost_usd, line_item, model_key, ingested_at "
         "FROM provider_cost_buckets "
-        "WHERE starting_at < ? AND ending_at > ?",
-        (_iso(end), _iso(start)),
+        "WHERE (starting_at < ? AND ending_at > ?) "
+        f"OR (organization_scope IS NOT NULL AND ({PROVIDER_COST_ID_SQL}) IN ("
+        f"SELECT ({PROVIDER_COST_ID_SQL}) FROM provider_cost_buckets "
+        "WHERE organization_scope IS NOT NULL AND starting_at < ? AND ending_at > ?"
+        ")) ORDER BY id",
+        (_iso(end), _iso(start), _iso(end), _iso(start)),
     ):
         row = dict(result)
         if machine != "all" and row_machine_id(row["raw_id"]) != machine:
             continue
+        if _stored_cost(row["cost_usd"]) is None:
+            continue
         key = verified_bucket_id(row) or row["raw_id"]
-        if key not in chosen or bucket_observation_order(row) > bucket_observation_order(chosen[key]):
+        if key not in chosen:
             chosen[key] = row
-    return list(chosen.values())
+        elif any(
+            row[field] != chosen[key][field]
+            for field in ("cost_usd", "starting_at", "ending_at", "project_id", "line_item", "model_key")
+        ):
+            # A provider bucket's first reporter stays authoritative. Its own
+            # corrections update its row without changing its original id.
+            chosen[key]["conflicting"] = True
+    return [
+        row for row in chosen.values()
+        if _parse(row["starting_at"]) < end and _parse(row["ending_at"]) > start
+    ]
 
 
-def _cost_buckets(connection, start: datetime, end: datetime, machine: str = "all") -> dict[str, Decimal]:
+def _cost_buckets(
+    connection, start: datetime, end: datetime, machine: str = "all", *, conflicts: list[str] | None = None,
+) -> dict[str, Decimal]:
     totals: dict[str, Decimal] = defaultdict(Decimal)
     for row in _load_cost_buckets(connection, start, end, machine):
         bucket_start = _parse(row["starting_at"])
@@ -854,6 +873,8 @@ def _cost_buckets(connection, start: datetime, end: datetime, machine: str = "al
         overlap = (min(end, bucket_end) - max(start, bucket_start)).total_seconds()
         if overlap <= 0:
             continue
+        if conflicts is not None and row.get("conflicting"):
+            conflicts.append(row["source"])
         totals[row["source"]] += Decimal(str(row["cost_usd"])) * Decimal(str(overlap / span))
     return dict(totals)
 
@@ -910,8 +931,12 @@ def _load_unpriced_events(connection, start: datetime, end: datetime, tool: str,
     output = []
     for row in rows:
         row["when"] = from_epoch_micros(row["occurred_epoch_us"])
-        row["cost_usd"] = Decimal(str(row["cost_usd"])) if row["cost_usd"] is not None else None
-        row["telemetry_complete"] = bool(row.get("telemetry_complete", 1)) and not row["unclassified_tokens"]
+        cost = _stored_cost(row["cost_usd"])
+        valid_cost = row["cost_usd"] is None or cost is not None
+        row["cost_usd"] = cost
+        row["telemetry_complete"] = (
+            valid_cost and bool(row.get("telemetry_complete", 1)) and not row["unclassified_tokens"]
+        )
         output.append(row)
     return output
 
@@ -1224,9 +1249,19 @@ def _bucket_index(
 ESTIMATED_COST_SOURCES = frozenset({"opencode_local"})
 
 
+def _stored_cost(value: object) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        cost = Decimal(str(value))
+    except InvalidOperation:
+        return None
+    return cost if cost.is_finite() else None
+
+
 def _uses_reported(event: dict, computed: Decimal | None) -> bool:
     """True when the event's own cost_usd is its value instead of the card's."""
-    if event.get("cost_usd") is None:
+    if _stored_cost(event.get("cost_usd")) is None:
         return False
     if event.get("source") in ESTIMATED_COST_SOURCES and not event.get("telemetry_complete", True):
         return False
@@ -1235,7 +1270,7 @@ def _uses_reported(event: dict, computed: Decimal | None) -> bool:
 
 def _reported_value(event: dict, computed: Decimal | None) -> Decimal | None:
     """The amount an event is worth: see docs/pricing.md, "Methodology"."""
-    return Decimal(str(event["cost_usd"])) if _uses_reported(event, computed) else computed
+    return _stored_cost(event["cost_usd"]) if _uses_reported(event, computed) else computed
 
 
 def _try_price_event(pricing: PricingEngine, event: dict) -> tuple[Decimal | None, dict[str, Decimal] | None]:
@@ -1256,8 +1291,9 @@ def _try_price_event(pricing: PricingEngine, event: dict) -> tuple[Decimal | Non
             output_tokens=event["output_tokens"],
             **admin_row_pricing_args(event),
         )
-        return sum(components.values(), Decimal(0)), components
-    except (UnpricedModelError, ValueError):
+        amount = sum(components.values(), Decimal(0))
+        return (amount, components) if amount.is_finite() else (None, None)
+    except (UnpricedModelError, ValueError, ArithmeticError):
         return None, None
 
 
@@ -1297,7 +1333,11 @@ def _enrich(events: list[dict], pricing: PricingEngine, _authority=None, *, _cac
     output = []
     for event in events:
         when = _event_when(event)
-        complete = bool(event.get("telemetry_complete", True))
+        corrupt_cost = any(
+            event.get(key) is not None and _stored_cost(event[key]) is None
+            for key in ("cost_usd", "computed_cost_usd")
+        )
+        complete = bool(event.get("telemetry_complete", True)) and not corrupt_cost
         price = None
         computed_total: Decimal | None = None
         components: dict[str, Decimal] | None = None
@@ -1320,8 +1360,14 @@ def _enrich(events: list[dict], pricing: PricingEngine, _authority=None, *, _cac
                     + components["cache_write"]
                     + components["output"]
                 )
+                if not computed_total.is_finite():
+                    computed_total = None
+                    components = None
+                    complete = False
             except UnpricedModelError:
                 pass
+            except ArithmeticError:
+                complete = False
             except ValueError:
                 try:
                     price = pricing.resolve(event["model_key"], when)
@@ -1335,9 +1381,11 @@ def _enrich(events: list[dict], pricing: PricingEngine, _authority=None, *, _cac
         output.append(
             {
                 **event,
+                "cost_usd": None if corrupt_cost else event.get("cost_usd"),
+                "computed_cost_usd": None if corrupt_cost else event.get("computed_cost_usd"),
                 "when": when,
                 "computed_total": computed_total,
-                "spend": _reported_value(event, computed_total),
+                "spend": None if corrupt_cost else _reported_value(event, computed_total),
                 "components": components or {},
                 "price": price,
                 "_input_multiplier": input_multiplier,
@@ -2530,7 +2578,8 @@ def aggregate_summary(
     with connect(database_path) as connection:
         window = _actualize_all_window(connection, window, timezone)
         events, unpriced_events = _load_usage_events(connection, window.start, window.end, tool, machine)
-        authority = _cost_buckets(connection, window.start, window.end, machine)
+        charge_conflicts: list[str] = []
+        authority = _cost_buckets(connection, window.start, window.end, machine, conflicts=charge_conflicts)
         enriched = _enrich(events, pricing, authority)
         enriched_unpriced = _enrich(unpriced_events, pricing)
         local_now = now.astimezone(zone)
@@ -2987,6 +3036,7 @@ def aggregate_summary(
                 "publishedRate": float(parts.published),
                 "subscriptionUsd": float(parts.subscriptions) if account_view else None,
                 "reportedChargesUsd": float(sum(authority.values(), Decimal(0))) if authority and tool == "all" else (float(authority[tool]) if tool in authority else None),
+                "reportedChargeConflictBuckets": len(charge_conflicts),
                 "unpricedTokens": parts.unpriced_tokens,
                 "effectiveCostPerMillionTokens": (
                     _money(effective_cost_per_million)

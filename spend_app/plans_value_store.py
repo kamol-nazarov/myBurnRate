@@ -524,7 +524,7 @@ def _stored_resets_by_provider(connection) -> dict[str, list[tuple[str, str | No
         rows = _rows(
             connection.execute(
                 "SELECT provider_key, limit_key, resets_at, is_payg, polled_at, id "
-                "FROM quotas ORDER BY polled_at DESC, id DESC"
+                "FROM quotas ORDER BY (source LIKE 'sync:%'), julianday(polled_at) DESC, id DESC"
             )
         )
     except Exception:

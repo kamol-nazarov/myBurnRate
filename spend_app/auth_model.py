@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import sqlite3
 import json
 import secrets
 from dataclasses import dataclass
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 
 from spend_app.db import connect
@@ -197,8 +199,13 @@ def revoke_session(connection, actor, sid, *, now=None):
 def break_glass_matches(path, candidate, configured):
     if not candidate:
         return False
-    with connect(path) as connection:
-        row = connection.execute("SELECT value FROM app_meta WHERE key='auth.break_glass.v1'").fetchone()
+    try:
+        uri = path.resolve().as_uri() + "?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True, timeout=5)) as connection:
+            row = connection.execute("SELECT value FROM app_meta WHERE key='auth.break_glass.v1'").fetchone()
+    except sqlite3.DatabaseError:
+        # A missing or unreadable credential store cannot restore an old token.
+        return False
     expected = row[0] if row else (digest(configured) if configured else "")
     return bool(expected and hmac.compare_digest(digest(candidate), expected))
 

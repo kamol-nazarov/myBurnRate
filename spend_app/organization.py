@@ -9,6 +9,10 @@ from uuid import UUID
 from spend_app.timeutil import EPOCH, parse_utc
 
 ORGANIZATION_SOURCES = frozenset({"openai_admin", "anthropic_admin"})
+PROVIDER_COST_ID_SQL = (
+    "CASE WHEN substr(raw_id,1,2)='m:' "
+    "THEN substr(raw_id,3+instr(substr(raw_id,3),':')) ELSE raw_id END"
+)
 _SCOPE = re.compile(r"^[a-f0-9]{64}$")
 _BUCKET = re.compile(
     r"^(?:openai|anthropic)-(?:usage|cost):[a-f0-9]{64}:org:[a-f0-9]{64}$"

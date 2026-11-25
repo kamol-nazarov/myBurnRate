@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass
 
 
 _MARK = re.compile(r"[0-9a-f]{32}")
 _STREAM = re.compile(r"(?:dev-)?[0-9a-f]{32}")
 _HUB_HEAD_PREFIX = "sync.received.usage_head.v1:"
+_MAX_RECEIVED_MARKS = 100_000
+_MARK_RETENTION_SECONDS = 90 * 24 * 60 * 60
+_RECEIVED_TABLES = ("sync_usage_receipts", "sync_usage_conflicts")
 
 
 def journal_mark(connection, seq: int) -> str | None:
@@ -143,8 +147,8 @@ def received_revision(connection, machine_id: str, mark: str) -> bool:
 
 def retain_legacy_conflict(connection, machine_id: str, mark: str, change: dict) -> None:
     connection.execute(
-        "INSERT OR IGNORE INTO sync_usage_conflicts(machine_id,mark,raw_id,change) VALUES(?,?,?,?)",
-        (machine_id, bytes.fromhex(mark), change["raw_id"], json.dumps(change)),
+        "INSERT OR IGNORE INTO sync_usage_conflicts(machine_id,mark,raw_id,change,received_at) VALUES(?,?,?,?,?)",
+        (machine_id, bytes.fromhex(mark), change["raw_id"], json.dumps(change), int(time.time())),
     )
 
 
@@ -163,13 +167,39 @@ def count_legacy_conflicts(connection, machine_id: str) -> int:
 def commit_usage_window(connection, machine_id: str, window: UsageWindow) -> None:
     marks = set(window.marks.values()) | {mark for _, mark in window.revisions.values()}
     connection.executemany(
-        "INSERT OR IGNORE INTO sync_usage_receipts(machine_id,mark) VALUES(?,?)",
-        ((machine_id, bytes.fromhex(mark)) for mark in marks),
+        "INSERT OR IGNORE INTO sync_usage_receipts(machine_id,mark,received_at) VALUES(?,?,?)",
+        ((machine_id, bytes.fromhex(mark), int(time.time())) for mark in marks),
     )
     connection.execute(
         "INSERT INTO app_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         (_HUB_HEAD_PREFIX + machine_id, json.dumps(window.head)),
     )
+    prune_received_journal(connection, machine_id)
+
+
+def prune_received_journal(connection, machine_id: str | None = None) -> None:
+    """Bound retained deduplication and recovery evidence independently of clients."""
+    now = int(time.time())
+    for table in _RECEIVED_TABLES:
+        if machine_id is None:
+            columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+            if "received_at" not in columns:
+                continue
+            connection.execute(
+                f"DELETE FROM {table} WHERE received_at < ?",
+                (now - _MARK_RETENTION_SECONDS,),
+            )
+            continue
+        connection.execute(
+            f"DELETE FROM {table} WHERE machine_id=? AND received_at < ?",
+            (machine_id, now - _MARK_RETENTION_SECONDS),
+        )
+        connection.execute(
+            f"DELETE FROM {table} WHERE machine_id=? AND mark IN ("
+            f"SELECT mark FROM {table} WHERE machine_id=? "
+            "ORDER BY received_at DESC, mark DESC LIMIT -1 OFFSET ?)",
+            (machine_id, machine_id, _MAX_RECEIVED_MARKS),
+        )
 
 
 def verified_reply(connection, head: object, offered: dict, after: int) -> bool:

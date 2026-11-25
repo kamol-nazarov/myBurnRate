@@ -330,6 +330,14 @@ def create_app(
             return response
 
         if bearer:
+            machine_address = None
+            if bearer.startswith("br_m_"):
+                from spend_app.exposure import resolve_client_ip
+                from spend_app.sync import machine_bearer_allowed
+
+                machine_address = resolve_client_ip(request)
+                if not machine_bearer_allowed(settings.database_path, machine_address):
+                    return boundary_error(429, "Too many invalid machine credentials.", retry_after="60")
             if await asyncio.to_thread(break_glass_matches, settings.database_path, bearer, _access_token):
                 automation = os.getenv("BURNRATE_ALLOW_ADMIN_BEARER", "0").lower() in {"1", "true", "yes"}
                 if automation or request.url.path in {"/api/auth/bootstrap", "/api/auth/rotate"}:
@@ -342,6 +350,8 @@ def create_app(
             elif bearer.startswith("br_s_"):
                 principal = await asyncio.to_thread(authenticate_session, settings.database_path, bearer)
             if not principal or principal.kind == "unauthenticated":
+                if machine_address is not None:
+                    machine_bearer_allowed(settings.database_path, machine_address, failed=True)
                 err_code = "DEV-301" if bearer.startswith("br_m_") else "AUTH-107"
                 return await recorded(boundary_error(401, "Invalid, expired or revoked credential.", code=err_code))
         elif cookie:

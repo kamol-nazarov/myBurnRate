@@ -76,7 +76,11 @@ def quota_fact(row, provenance, now, *, eligible_scope=True):
 def quota_facts(connection, config, now):
     # Each subquery seeks a declared provider/window in the existing unique index.
     pairs = [(provider, key) for provider, limits in REQUIRED_LIMITS.items() for key, _label in limits]
-    query = " UNION ALL ".join("SELECT * FROM (SELECT * FROM quotas WHERE provider_key=? AND limit_key=? ORDER BY polled_at DESC LIMIT 1)" for _ in pairs)
+    query = " UNION ALL ".join(
+        "SELECT * FROM (SELECT * FROM quotas WHERE provider_key=? AND limit_key=? "
+        "ORDER BY (source LIKE 'sync:%'), julianday(polled_at) DESC, id DESC LIMIT 1)"
+        for _ in pairs
+    )
     rows = [dict(r) for r in connection.execute(query, tuple(x for pair in pairs for x in pair))]
     provenance = meta(connection, codex_quota.KEY, {})
     # Reuse the released Codex scope/pool/freshness mask, restricted to these latest rows.

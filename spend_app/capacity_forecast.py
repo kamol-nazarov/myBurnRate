@@ -385,7 +385,9 @@ def balance_points(connection, provider_key: str, *, now: datetime, local_only: 
         where += " AND source NOT LIKE 'sync:%'"
     if source is None:
         latest = connection.execute(
-            f"SELECT source FROM quotas WHERE {where} ORDER BY polled_at DESC, id DESC LIMIT 1", (provider_key,)
+            f"SELECT source FROM quotas WHERE {where} "
+            "ORDER BY (source LIKE 'sync:%'), julianday(polled_at) DESC, id DESC LIMIT 1",
+            (provider_key,),
         ).fetchone()
         if latest is None:
             return []
