@@ -88,6 +88,8 @@ def test_benchmark_uses_authorized_json_api(tmp_path):
     expected = {"summary", "health"}
 
     class FixtureHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
         def log_message(self, *_args):
             pass
 
@@ -98,6 +100,8 @@ def test_benchmark_uses_authorized_json_api(tmp_path):
                 return
             received.append((resource, self.headers.get("Accept-Encoding")))
             self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", "2")
             self.end_headers()
             self.wfile.write(b"{}")
 
@@ -115,14 +119,18 @@ def test_benchmark_uses_authorized_json_api(tmp_path):
             result = subprocess.run(
                 ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
                  "-File", str(script),
-                 "-BaseUrl", f"http://127.0.0.1:{server.server_port}", "-Requests", "2"],
-                capture_output=True, text=True, timeout=30,
+                 "-BaseUrl", f"http://127.0.0.1:{server.server_port}", "-Requests", "2",
+                 "-Baseline", str(tmp_path / "unused-baseline.json")],
+                # Allow PowerShell startup and the benchmark's own HTTP timeout
+                # to finish independently on a loaded Windows runner.
+                capture_output=True, text=True, timeout=90,
                 env=fixture_env,
             )
         finally:
             server.shutdown()
             serving.join(timeout=5)
     assert result.returncode == 0, result.stderr
+    assert len(received) == 12
     assert {resource for resource, _ in received} == expected
     assert ("summary", "identity") in received
     assert ("summary", "gzip") in received
