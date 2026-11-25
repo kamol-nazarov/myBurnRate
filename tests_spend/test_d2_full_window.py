@@ -399,6 +399,8 @@ def test_an_older_service_headline_without_windows_is_a_summary_row_not_an_empty
 
 PLANS_PROBE = """
 await until(() => !document.getElementById('h9AnalyticsSection').hidden);
+document.querySelector('#viewNavBar [data-view="plans"]').click();
+await wait(40);
 const rows = () => [...document.querySelectorAll('#plansList li')].map(li => li.children[0].textContent + ' | ' + li.children[1].textContent);
 report({ rows: rows(), sub: document.getElementById('plansSub').textContent, shown: getComputedStyle(document.getElementById('plansCard')).display });
 """
@@ -610,7 +612,7 @@ def test_title_bar_shrinks_to_the_tab_and_the_pin_lives_in_the_footer(tmp_path):
     html = build_page(pref="light", api_js=api_js, probe=WINDOW_BUTTONS_PROBE, extra_css=FAST)
     r = probe(html, 440, tmp_path, height=640)
     assert r["top"] == ["refreshBtn", "tabBtn", "closeBtn"]
-    assert r["foot"] == ["diagBtn", "shareWeekBtn", "pinBtn", "densityBtn", "settingsBtn"]
+    assert r["foot"] == ["diagBtn", "shareWeekBtn", "pinBtn", "settingsBtn"]
     assert r["calls"] == ["show_tab", "set_topmost"]
 
 

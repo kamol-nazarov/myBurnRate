@@ -67,8 +67,8 @@ def test_background_follows_the_resolved_theme():
     assert resolve_dark("light", system_dark=True) is False
     assert resolve_dark("system", system_dark=True) is True
     assert resolve_dark("system", system_dark=False) is False
-    assert background_for(True) == "#101117"
-    assert background_for(False) == "#F5F6FA"
+    assert background_for(True) == "#0B0E14"
+    assert background_for(False) == "#F2F5FA"
 
 
 def test_system_theme_is_read_from_the_registry_value(monkeypatch):
@@ -131,8 +131,8 @@ def test_chrome_uses_dark_mode_flag_and_matching_border(monkeypatch):
     assert (77, 20, 1) in calls and (77, 20, 0) in calls
     assert (77, 34, host_module.DARK_BORDER) in calls
     assert (77, 34, host_module.LIGHT_BORDER) in calls
-    assert host_module.LIGHT_BORDER == 0x00EAE4E4  # #E4E4EA as 0x00BBGGRR
-    assert host_module.DARK_BORDER == 0x00372C2A  # #2A2C37 as 0x00BBGGRR
+    assert host_module.LIGHT_BORDER == 0x00EAE2DC  # #DCE2EA as 0x00BBGGRR
+    assert host_module.DARK_BORDER == 0x0036261E  # #1E2636 as 0x00BBGGRR
 
 
 # --- preferences -------------------------------------------------------------

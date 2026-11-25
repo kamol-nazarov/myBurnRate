@@ -1,1 +1,3 @@
-﻿Manrope Variable (Copyright 2018 The Manrope Project Authors, https://github.com/sharanda/manrope) - Licensed under the SIL Open Font License, Version 1.1 (https://openfontlicense.org).
+Inter Variable (Copyright 2020 The Inter Project Authors, https://github.com/rsms/inter) - Licensed under the SIL Open Font License, Version 1.1 (https://openfontlicense.org).
+JetBrains Mono Variable (Copyright 2020 JetBrains s.r.o., https://github.com/JetBrains/JetBrainsMono) - Licensed under the SIL Open Font License, Version 1.1 (https://openfontlicense.org).
+Manrope Variable (Copyright 2018 The Manrope Project Authors, https://github.com/sharanda/manrope) - Licensed under the SIL Open Font License, Version 1.1 (https://openfontlicense.org).

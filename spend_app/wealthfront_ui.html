@@ -42,207 +42,254 @@
 <style>
 /*__EMBEDDED_FONTS__*/
 
+/* Copilot Pulse Light: crisp cool-alabaster canvas, pure white cards, electric cobalt accent. */
 :root {
   --bg-hero: #ffffff;
-  --bg-canvas: #f5f6fa;
+  --bg-canvas: #f2f5fa;
   --surface: #ffffff;
-  --surface-subtle: #f7f7fb;
+  --surface-subtle: #f8fafd;
   --surface-raised: #ffffff;
-  --ink: #18172b;
-  --ink-secondary: #68677d;
-  --ink-tertiary: #9190a6;
-  --accent: #4840bb;
-  --accent-hover: #3c34a6;
-  --accent-soft: #ecebf9;
-  --accent-border: rgba(72, 64, 187, 0.22);
+  --pop-bg: rgba(255, 255, 255, 0.96);
+  --inner-hi: inset 0 1px 0 rgba(255, 255, 255, 0.94);
+  --hero-grad: linear-gradient(180deg, #ffffff 0%, #f7faff 100%);
+  --ink: #0f172a;
+  --ink-secondary: #475569;
+  --ink-tertiary: #64748b;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-soft: #eff6ff;
+  --accent-border: #bfdbfe;
+  --accent-glow: 0 0 0 3px rgba(37, 99, 235, 0.14);
   --on-accent: #ffffff;
-  --focus-ring: #4840bb;
-  --mint: #13795b;
-  --mint-bg: #e7f6f0;
+  --focus-ring: #2563eb;
+  --mint: #047857;
+  --mint-bg: #ecfdf5;
+  --mint-border: #a7f3d0;
   --warn: #b45309;
-  --warn-bg: #fdf3e7;
-  --warn-border: #f4d8bc;
+  --warn-bg: #fffbeb;
+  --warn-border: #fde68a;
   --amber: #d97706;
-  --danger: #d93848;
-  --danger-bg: #feecef;
-  --danger-border: rgba(217, 56, 72, 0.22);
+  --danger: #e11d48;
+  --danger-bg: #fff1f2;
+  --danger-border: rgba(225, 29, 72, 0.24);
   --danger-quiet-bg: #fff5f6;
-  --danger-ink: #b4232f;
+  --danger-ink: #be123c;
   --lane-name: 62px;
   --lane-pct: 40px;
   --lane-gap: 8px;
-  --lane-level: rgba(72, 64, 187, 0.35);
-  --border: rgba(24, 23, 43, 0.075);
-  --border-input: rgba(24, 23, 43, 0.15);
-  --divider: #f0f0f6;
-  --hair-faint: rgba(24, 23, 43, 0.04);
-  --hair: rgba(24, 23, 43, 0.05);
-  --hair-strong: rgba(24, 23, 43, 0.06);
-  --row-hover: #f9f9fe;
+  --lane-level: rgba(37, 99, 235, 0.26);
+  --border: rgba(15, 23, 42, 0.085);
+  --border-input: rgba(15, 23, 42, 0.15);
+  --divider: rgba(15, 23, 42, 0.065);
+  --hair-faint: rgba(15, 23, 42, 0.04);
+  --hair: rgba(15, 23, 42, 0.055);
+  --hair-strong: rgba(15, 23, 42, 0.075);
+  --row-hover: #f1f5fb;
   --input-bg: #ffffff;
-  --track: #ececf5;
-  --track-strong: #e7e7f2;
-  --track-muted: #c7c6d8;
-  --tab-bg: #eaeaf3;
-  --seg-bg: #ededf4;
+  --track: #e6ecf5;
+  --track-strong: #dde5f0;
+  --track-muted: #cbd5e1;
+  --tab-bg: #e9eff8;
+  --seg-bg: #e9eff8;
   --seg-thumb: #ffffff;
-  --seg-border: rgba(24, 23, 43, 0.08);
-  --seg-shadow: 0 1px 3px rgba(24, 23, 43, 0.09), 0 1px 1px rgba(24, 23, 43, 0.05);
-  --switch-off: #d8d7e6;
+  --seg-border: rgba(15, 23, 42, 0.08);
+  --seg-shadow: 0 2px 6px rgba(15, 23, 42, 0.08), 0 1px 2px rgba(15, 23, 42, 0.04);
+  --switch-off: #cbd5e1;
   --switch-knob: #ffffff;
-  --knob-shadow: rgba(0, 0, 0, 0.2);
-  --scroll-thumb: rgba(24, 23, 43, 0.14);
+  --knob-shadow: rgba(15, 23, 42, 0.20);
+  --scroll-thumb: rgba(15, 23, 42, 0.14);
   --live: #16a34a;
   --live-ring: rgba(22, 163, 74, 0.18);
-  --brand-1: #564ed1;
-  --brand-2: #4139b0;
+  --brand-1: #2563eb;
+  --brand-2: #4f46e5;
   --brand-ink: #ffffff;
-  --toast-bg: #18172b;
-  --toast-fg: #ffffff;
-  --toast-ring: transparent;
-  --chart-line: #4840bb;
-  --chart-fill-top: 0.17;
-  --chart-grid: #ececf4;
-  --chart-scrub: #c9c6ee;
-  --chart-bar-opacity: 0.18;
-  --preview-border: #e2e2ec;
-  --shadow-card: 0 1px 6px rgba(24, 23, 43, 0.03), 0 1px 2px rgba(24, 23, 43, 0.02);
-  --shadow-pop: 0 12px 28px rgba(24, 23, 43, 0.14), 0 2px 6px rgba(24, 23, 43, 0.06);
-  --shadow-drag: 0 14px 32px rgba(24, 23, 43, 0.16), 0 3px 8px rgba(72, 64, 187, 0.10);
-  --shadow-brand: 0 1px 4px rgba(72, 64, 187, 0.26);
-  --shadow-indicator: 0 1px 2px rgba(72, 64, 187, 0.08);
-  --shadow-preview: 0 10px 28px rgba(24, 23, 43, 0.08), 0 2px 6px rgba(24, 23, 43, 0.04);
+  --toast-bg: #0f172a;
+  --toast-fg: #f8fafc;
+  --toast-ring: rgba(255, 255, 255, 0.08);
+  --chart-line: #2563eb;
+  --chart-fill-top: 0.18;
+  --chart-grid: #e8eef6;
+  --chart-scrub: #93c5fd;
+  --chart-bar-opacity: 0.20;
+  --preview-border: #dce2ea;
+  --shadow-card: 0 3px 10px rgba(15, 23, 42, 0.045), 0 1px 2px rgba(15, 23, 42, 0.03);
+  --shadow-pop: 0 18px 40px rgba(15, 23, 42, 0.15), 0 4px 10px rgba(15, 23, 42, 0.07);
+  --shadow-drag: 0 22px 44px rgba(15, 23, 42, 0.18), 0 6px 14px rgba(37, 99, 235, 0.14);
+  --shadow-brand: 0 2px 8px rgba(37, 99, 235, 0.28);
+  --shadow-indicator: 0 1px 2px rgba(37, 99, 235, 0.10);
+  --shadow-preview: 0 12px 32px rgba(15, 23, 42, 0.09), 0 2px 8px rgba(15, 23, 42, 0.04);
+  --shadow-seg-inset: inset 0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow-btn-hover: 0 4px 12px rgba(37, 99, 235, 0.28);
+  --shadow-drop-settle: 0 0 0 2px var(--accent), 0 10px 26px rgba(37, 99, 235, 0.22);
+  --hero-glow: radial-gradient(circle, rgba(59, 130, 246, 0.16), transparent 70%);
+  --danger-card-grad: linear-gradient(95deg, rgba(225, 29, 72, 0.08), rgba(225, 29, 72, 0.01));
+  --dock-bg: rgba(255, 255, 255, 0.90);
+  --dock-bd: rgba(15, 23, 42, 0.11);
+  --dock-sep: rgba(15, 23, 42, 0.10);
+  --dock-fade: linear-gradient(180deg, rgba(242, 245, 250, 0), var(--bg-canvas) 38%);
+  --shadow-dock: 0 12px 30px rgba(15, 23, 42, 0.13), 0 2px 6px rgba(15, 23, 42, 0.05);
+  --shadow-dock-active: 0 4px 14px rgba(37, 99, 235, 0.34);
+  --dock-active-bg: #2563eb;
+  --dock-active-fg: #ffffff;
+  --dock-badge-bg: #e11d48;
+  --dock-badge-fg: #ffffff;
+  --dock-badge-on-bg: rgba(15, 23, 42, 0.24);
+  --bar-grad-roi: linear-gradient(90deg, #2563eb, #059669);
   --spring: cubic-bezier(0.22, 1, 0.36, 1);
-  --font: "Manrope", -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", system-ui, sans-serif;
-  --display: "Manrope", -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display", system-ui, sans-serif;
-  --h9-t-codex: #18172b;
+  --font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", system-ui, sans-serif;
+  --display: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --h9-t-codex: #0f172a;
   --h9-t-claude: #d97757;
-  --h9-t-cursor: #3a3759;
-  --h9-t-opencode: #13795b;
+  --h9-t-cursor: #4f46e5;
+  --h9-t-opencode: #059669;
   --h9-t-zcode: #2563eb;
-  --h9-t-grok: #4c4b63;
-  --h9-t-openrouter: #4840bb;
+  --h9-t-grok: #475569;
+  --h9-t-openrouter: #7c3aed;
   --h9-t-antigravity: #2563eb;
-  --h9-t-muse: #0064e0;
-  --h9-t-other: #68677d;
-  --h9-mix-cached: #13795b;
-  --h9-mix-fresh: #4840bb;
+  --h9-t-muse: #0284c7;
+  --h9-t-other: #64748b;
+  --h9-mix-cached: #059669;
+  --h9-mix-fresh: #2563eb;
   --h9-mix-output: #d97706;
-  --h9-mix-write: #2563eb;
-  --h9-heat-cell: #ececf5;
-  --h9-heat-fill: #4840bb;
-  --h9-heat-border: rgba(24, 23, 43, 0.08);
-  --h9-heat-peak: #18172b;
-  --h9-banner-exact-bg: #e7f6f0;
-  --h9-banner-exact-border: rgba(19, 121, 91, 0.22);
-  --h9-banner-partial-bg: #fdf3e7;
-  --h9-banner-partial-border: #f4d8bc;
-  --h9-banner-quiet-bg: #f7f7fb;
-  --h9-banner-quiet-border: rgba(24, 23, 43, 0.10);
-  --h9-cum-area-top: rgba(72, 64, 187, 0.22);
-  --h9-cum-area-bottom: rgba(72, 64, 187, 0.02);
-  --h9-tip-bg: #18172b;
+  --h9-mix-write: #6366f1;
+  --h9-heat-cell: #e9eff8;
+  --h9-heat-fill: #2563eb;
+  --h9-heat-border: rgba(15, 23, 42, 0.08);
+  --h9-heat-peak: #0f172a;
+  --h9-banner-exact-bg: #ecfdf5;
+  --h9-banner-exact-border: rgba(5, 150, 105, 0.24);
+  --h9-banner-partial-bg: #fffbeb;
+  --h9-banner-partial-border: #fde68a;
+  --h9-banner-quiet-bg: #f8fafd;
+  --h9-banner-quiet-border: rgba(15, 23, 42, 0.10);
+  --h9-cum-area-top: rgba(37, 99, 235, 0.22);
+  --h9-cum-area-bottom: rgba(37, 99, 235, 0.02);
+  --h9-tip-bg: #0f172a;
   --h9-tip-border: rgba(255, 255, 255, 0.14);
-  --h9-tip-fg: #ffffff;
+  --h9-tip-fg: #f8fafc;
 }
 
-/* Obsidian dark: deep blue-black canvas, raised slate surfaces, soft lavender accent. */
+/* Copilot Pulse Dark: deep midnight blue-slate canvas, elevated slate surfaces, electric blue accent. */
 html[data-theme="dark"] {
   color-scheme: dark;
-  --bg-hero: #14161d;
-  --bg-canvas: #101117;
-  --surface: #181a22;
-  --surface-subtle: #1e2029;
-  --surface-raised: #242733;
-  --ink: #e7e8f1;
-  --ink-secondary: #a2a5ba;
-  --ink-tertiary: #8589a0;
-  --accent: #8f88f5;
-  --accent-hover: #a8a2f8;
-  --accent-soft: #26274a;
-  --accent-border: rgba(143, 136, 245, 0.34);
-  --on-accent: #12131a;
-  --focus-ring: #a8a2f8;
-  --mint: #5ccba3;
-  --mint-bg: #16302a;
-  --warn: #e2a75b;
-  --warn-bg: #2b2318;
-  --warn-border: #473822;
-  --amber: #e0a24a;
-  --danger: #f07a86;
-  --danger-bg: #331b22;
-  --danger-border: rgba(240, 122, 134, 0.32);
-  --danger-quiet-bg: #2a1a20;
-  --danger-ink: #f6a1aa;
-  --lane-level: rgba(143, 136, 245, 0.4);
-  --border: rgba(255, 255, 255, 0.075);
+  --bg-hero: #101520;
+  --bg-canvas: #0b0e14;
+  --surface: #131823;
+  --surface-subtle: #181f2e;
+  --surface-raised: #1e273b;
+  --pop-bg: rgba(21, 27, 40, 0.96);
+  --inner-hi: inset 0 1px 0 rgba(255, 255, 255, 0.065);
+  --hero-grad: linear-gradient(180deg, #161d2c 0%, #111622 100%);
+  --ink: #f1f5f9;
+  --ink-secondary: #94a3b8;
+  --ink-tertiary: #75849e;
+  --accent: #60a5fa;
+  --accent-hover: #93c5fd;
+  --accent-soft: rgba(59, 130, 246, 0.16);
+  --accent-border: rgba(96, 165, 250, 0.36);
+  --accent-glow: 0 0 0 3px rgba(59, 130, 246, 0.22);
+  --on-accent: #0b0e14;
+  --focus-ring: #60a5fa;
+  --mint: #34d399;
+  --mint-bg: rgba(52, 211, 153, 0.14);
+  --mint-border: rgba(52, 211, 153, 0.28);
+  --warn: #fbbf24;
+  --warn-bg: rgba(251, 191, 36, 0.14);
+  --warn-border: rgba(251, 191, 36, 0.30);
+  --amber: #f59e0b;
+  --danger: #fb7185;
+  --danger-bg: rgba(244, 63, 94, 0.16);
+  --danger-border: rgba(244, 63, 94, 0.34);
+  --danger-quiet-bg: rgba(244, 63, 94, 0.12);
+  --danger-ink: #fda4af;
+  --lane-level: rgba(96, 165, 250, 0.34);
+  --border: rgba(255, 255, 255, 0.08);
   --border-input: rgba(255, 255, 255, 0.15);
-  --divider: #232530;
+  --divider: rgba(255, 255, 255, 0.065);
   --hair-faint: rgba(255, 255, 255, 0.04);
   --hair: rgba(255, 255, 255, 0.055);
-  --hair-strong: rgba(255, 255, 255, 0.07);
-  --row-hover: #1c1e27;
-  --input-bg: #12131a;
-  --track: #2a2d3a;
-  --track-strong: #2c2f3d;
-  --track-muted: #4c5066;
-  --tab-bg: #232631;
-  --seg-bg: #1c1e28;
-  --seg-thumb: #2a2d3c;
+  --hair-strong: rgba(255, 255, 255, 0.075);
+  --row-hover: #1a2132;
+  --input-bg: #0e121c;
+  --track: #202738;
+  --track-strong: #252e42;
+  --track-muted: #475569;
+  --tab-bg: #151b29;
+  --seg-bg: #151b29;
+  --seg-thumb: #252d40;
   --seg-border: rgba(255, 255, 255, 0.10);
-  --seg-shadow: 0 1px 3px rgba(0, 0, 0, 0.42);
-  --switch-off: #3b3e50;
-  --switch-knob: #f1f1f8;
+  --seg-shadow: 0 2px 8px rgba(0, 0, 0, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  --switch-off: #334155;
+  --switch-knob: #f8fafc;
   --knob-shadow: rgba(0, 0, 0, 0.45);
-  --scroll-thumb: rgba(255, 255, 255, 0.14);
-  --live: #36c27a;
-  --live-ring: rgba(54, 194, 122, 0.28);
-  --brand-1: #7a72ee;
-  --brand-2: #5c54d6;
-  --toast-bg: #2c2f3e;
-  --toast-fg: #e7e8f1;
-  --toast-ring: rgba(255, 255, 255, 0.09);
-  --chart-line: #8f88f5;
-  --chart-fill-top: 0.24;
-  --chart-grid: #272a37;
-  --chart-scrub: #4b4985;
-  --chart-bar-opacity: 0.32;
-  --preview-border: #2a2d3a;
-  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-pop: 0 12px 28px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.3);
-  --shadow-drag: 0 14px 32px rgba(0, 0, 0, 0.55), 0 3px 8px rgba(0, 0, 0, 0.3);
-  --shadow-brand: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --scroll-thumb: rgba(255, 255, 255, 0.15);
+  --live: #4ade80;
+  --live-ring: rgba(74, 222, 128, 0.26);
+  --brand-1: #3b82f6;
+  --brand-2: #6366f1;
+  --brand-ink: #ffffff;
+  --toast-bg: #1e273b;
+  --toast-fg: #f1f5f9;
+  --toast-ring: rgba(255, 255, 255, 0.10);
+  --chart-line: #60a5fa;
+  --chart-fill-top: 0.26;
+  --chart-grid: #1e2638;
+  --chart-scrub: #3b82f6;
+  --chart-bar-opacity: 0.34;
+  --preview-border: #1e2636;
+  --shadow-card: 0 6px 20px rgba(0, 0, 0, 0.28), 0 1px 3px rgba(0, 0, 0, 0.22);
+  --shadow-pop: 0 20px 44px rgba(0, 0, 0, 0.56), 0 4px 12px rgba(0, 0, 0, 0.32);
+  --shadow-drag: 0 26px 52px rgba(0, 0, 0, 0.62), 0 8px 20px rgba(59, 130, 246, 0.22);
+  --shadow-brand: 0 2px 10px rgba(59, 130, 246, 0.38);
   --shadow-indicator: none;
-  --shadow-preview: 0 10px 28px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.3);
-  --h9-t-codex: #b6b8d0;
-  --h9-t-claude: #e58b6d;
-  --h9-t-cursor: #9c98c9;
-  --h9-t-opencode: #5ccba3;
-  --h9-t-zcode: #7fa8ff;
-  --h9-t-grok: #a2a5ba;
-  --h9-t-openrouter: #8f88f5;
-  --h9-t-antigravity: #7fa8ff;
-  --h9-t-muse: #6fb0ff;
-  --h9-t-other: #8589a0;
-  --h9-mix-cached: #5ccba3;
-  --h9-mix-fresh: #8f88f5;
-  --h9-mix-output: #e2a75b;
-  --h9-mix-write: #7fa8ff;
-  --h9-heat-cell: #232631;
-  --h9-heat-fill: #8f88f5;
+  --shadow-preview: 0 14px 36px rgba(0, 0, 0, 0.50), 0 2px 8px rgba(0, 0, 0, 0.32);
+  --shadow-seg-inset: inset 0 1px 2px rgba(0, 0, 0, 0.24);
+  --shadow-btn-hover: 0 4px 14px rgba(59, 130, 246, 0.36);
+  --shadow-drop-settle: 0 0 0 2px var(--accent), 0 10px 26px rgba(59, 130, 246, 0.30);
+  --hero-glow: radial-gradient(circle, rgba(59, 130, 246, 0.22), transparent 70%);
+  --danger-card-grad: linear-gradient(95deg, rgba(244, 63, 94, 0.16), rgba(244, 63, 94, 0.03));
+  --dock-bg: rgba(21, 26, 38, 0.88);
+  --dock-bd: rgba(255, 255, 255, 0.11);
+  --dock-sep: rgba(255, 255, 255, 0.10);
+  --dock-fade: linear-gradient(180deg, rgba(11, 14, 20, 0), var(--bg-canvas) 38%);
+  --shadow-dock: 0 14px 36px rgba(0, 0, 0, 0.56), 0 2px 6px rgba(0, 0, 0, 0.32);
+  --shadow-dock-active: 0 4px 14px rgba(59, 130, 246, 0.42);
+  --dock-active-bg: #2563eb;
+  --dock-active-fg: #ffffff;
+  --dock-badge-bg: #e11d48;
+  --dock-badge-fg: #ffffff;
+  --dock-badge-on-bg: rgba(15, 23, 42, 0.28);
+  --bar-grad-roi: linear-gradient(90deg, #3b82f6, #10b981);
+  --h9-t-codex: #e2e8f0;
+  --h9-t-claude: #f09474;
+  --h9-t-cursor: #a5b4fc;
+  --h9-t-opencode: #34d399;
+  --h9-t-zcode: #60a5fa;
+  --h9-t-grok: #94a3b8;
+  --h9-t-openrouter: #c084fc;
+  --h9-t-antigravity: #60a5fa;
+  --h9-t-muse: #38bdf8;
+  --h9-t-other: #75849e;
+  --h9-mix-cached: #34d399;
+  --h9-mix-fresh: #60a5fa;
+  --h9-mix-output: #fbbf24;
+  --h9-mix-write: #a5b4fc;
+  --h9-heat-cell: #1a2030;
+  --h9-heat-fill: #60a5fa;
   --h9-heat-border: rgba(255, 255, 255, 0.08);
-  --h9-heat-peak: #e7e8f1;
-  --h9-banner-exact-bg: #16302a;
-  --h9-banner-exact-border: rgba(92, 203, 163, 0.28);
-  --h9-banner-partial-bg: #2b2318;
-  --h9-banner-partial-border: #473822;
-  --h9-banner-quiet-bg: #1e2029;
+  --h9-heat-peak: #f1f5f9;
+  --h9-banner-exact-bg: rgba(52, 211, 153, 0.12);
+  --h9-banner-exact-border: rgba(52, 211, 153, 0.28);
+  --h9-banner-partial-bg: rgba(251, 191, 36, 0.12);
+  --h9-banner-partial-border: rgba(251, 191, 36, 0.30);
+  --h9-banner-quiet-bg: #181f2e;
   --h9-banner-quiet-border: rgba(255, 255, 255, 0.10);
-  --h9-cum-area-top: rgba(143, 136, 245, 0.28);
-  --h9-cum-area-bottom: rgba(143, 136, 245, 0.02);
-  --h9-tip-bg: #242733;
+  --h9-cum-area-top: rgba(59, 130, 246, 0.30);
+  --h9-cum-area-bottom: rgba(59, 130, 246, 0.02);
+  --h9-tip-bg: #1e273b;
   --h9-tip-border: rgba(255, 255, 255, 0.14);
-  --h9-tip-fg: #e7e8f1;
+  --h9-tip-fg: #f1f5f9;
 }
 
 * {
@@ -4522,6 +4569,882 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
 .is-stale .hero .hv,
 .is-stale .hero .hero-mini-chart { opacity: 0.6; }
 
+/* =========================================================================
+   Copilot Pulse Visual Polish, JetBrains Mono Numerics, Custom Dropdowns,
+   Spring Animations & 100% Opaque FLIP Drag-and-Drop
+   ========================================================================= */
+
+.balance-value,
+.glance-usd,
+.glance-kpi-right b,
+.lane-pct,
+.provider-rem,
+.balrow strong.provider-rem,
+.limit-val,
+.burn-stat-val,
+.breakdown-val,
+.api-equivalent strong,
+.model-tok,
+.model-val,
+.summary-val,
+.plan-roi-badge,
+.plans li > b,
+.h9-num,
+.h9-kpi-val,
+.h9-model-val,
+.h9-bar-val,
+.h9-total,
+.diag-val,
+.view-tab-badge,
+.view-tab-meta,
+.chart-axis,
+.ticks,
+.err-banner code {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+}
+
+.wf-card,
+.sec,
+.h9-card,
+.diag-card {
+  border-radius: 14px;
+  box-shadow: var(--shadow-card), var(--inner-hi);
+  transition: border-color 0.2s ease, box-shadow 0.22s var(--spring);
+}
+
+.topbar {
+  background: var(--bg-hero);
+  padding: 9px 11px 6px 14px;
+}
+
+.glance-bar {
+  background-color: var(--bg-hero);
+  background-image: var(--hero-grad);
+  padding: 7px 13px 8px;
+  gap: 7px;
+  box-shadow: var(--inner-hi);
+}
+.glance-bar.is-scrolled {
+  box-shadow: var(--seg-shadow), var(--inner-hi);
+}
+
+.hero {
+  background-color: var(--bg-hero);
+  background-image: var(--hero-grad);
+  padding: 12px 14px 12px;
+}
+
+.section-stack {
+  padding: 10px 11px 12px;
+  gap: 9px;
+}
+
+.view-tabs {
+  padding: 2.5px;
+  border-radius: 9px;
+  box-shadow: var(--shadow-seg-inset);
+}
+.view-tabs::before {
+  top: 2.5px;
+  bottom: 2.5px;
+  left: 2.5px;
+  width: calc((100% - 5px) / 3);
+  border-radius: 6.5px;
+}
+.view-tab {
+  padding: 4.5px 4px;
+  border-radius: 6.5px;
+  font-size: 11.2px;
+}
+
+.period-bar {
+  padding: 2.5px;
+  border-radius: 9px;
+}
+.period-indicator {
+  top: 2.5px;
+  bottom: 2.5px;
+  left: 2.5px;
+  border-radius: 6.5px;
+}
+
+.sheet-tabs {
+  margin: 10px 12px 4px;
+  padding: 3px;
+  border-radius: 9px;
+}
+.sheet-tabs::before {
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  width: calc((100% - 6px) / 4);
+  border-radius: 6.5px;
+}
+.sheet-body {
+  padding: 10px 11px 18px;
+  gap: 10px;
+}
+
+.btn-primary,
+.btn-secondary,
+.btn-danger-quiet,
+.ops-pill,
+.scope-trigger,
+.icon-btn {
+  transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease,
+              box-shadow 0.18s var(--spring), transform 0.16s var(--spring);
+}
+.btn-primary:hover {
+  box-shadow: var(--shadow-btn-hover);
+}
+.btn-secondary:active,
+.btn-danger-quiet:active {
+  transform: scale(0.96);
+}
+
+.foot {
+  gap: 5px;
+  padding: 6px 10px;
+  background: var(--pop-bg);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-top: 1px solid var(--border);
+  box-shadow: var(--inner-hi);
+}
+.foot .ops-pill {
+  min-height: 27px;
+  padding: 4px 9px;
+  gap: 4.5px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 8px;
+}
+.foot .ops-pill:hover {
+  border-color: var(--accent-border);
+}
+
+.scope-popover {
+  background: var(--pop-bg);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1px solid var(--border-input);
+  border-radius: 13px;
+  box-shadow: var(--shadow-pop), var(--inner-hi);
+  padding: 5px;
+  gap: 2px;
+  transform: scale(0.95) translateY(-6px);
+  transition: opacity 0.18s ease, transform 0.24s var(--spring), visibility 0s linear 0.24s;
+}
+.scope-popover.open {
+  transform: scale(1) translateY(0);
+  transition: opacity 0.18s ease, transform 0.24s var(--spring), visibility 0s;
+}
+.scope-opt {
+  padding: 7px 9px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease, transform 0.14s var(--spring);
+}
+.scope-opt:active { transform: scale(0.985); }
+.scope-opt.selected {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
+/* 100% Opaque Elevated FLIP Drag-and-Drop */
+.provider-item {
+  transition: border-color 0.18s ease, background 0.18s ease, box-shadow 0.22s var(--spring);
+}
+.provider-item.dragging {
+  opacity: 1 !important;
+  z-index: 60;
+  border-radius: 12px !important;
+  padding: 9px 11px 10px !important;
+  background: var(--surface-raised) !important;
+  border: 1px solid var(--accent-border) !important;
+  box-shadow: var(--shadow-drag), 0 0 0 1px var(--accent-border), var(--inner-hi) !important;
+}
+.provider-item.dragging .drag-grip {
+  opacity: 1;
+  color: var(--accent);
+}
+.provider-item.just-dropped {
+  animation: cpDropSettle 0.44s var(--spring) both;
+}
+@keyframes cpDropSettle {
+  0% {
+    box-shadow: var(--shadow-drop-settle);
+    border-color: var(--accent);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+/* Custom Copilot Pulse Premium Dropdown (.cp-select) */
+.cp-select {
+  position: relative;
+  display: block;
+  width: 100%;
+  min-width: 0;
+}
+.cp-select.is-inline {
+  width: auto;
+  min-width: 196px;
+  max-width: 100%;
+}
+.cp-select-btn {
+  width: 100%;
+  min-height: 32px;
+  padding: 5px 9px;
+  border-radius: 9px;
+  border: 1px solid var(--border-input);
+  background: var(--input-bg);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 11.5px;
+  font-weight: 550;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  text-align: left;
+  box-shadow: var(--inner-hi);
+  transition: border-color 0.16s ease, background 0.16s ease, box-shadow 0.18s var(--spring), transform 0.14s var(--spring);
+}
+.cp-select-btn:hover:not(:disabled) {
+  border-color: var(--accent-border);
+  background: var(--surface-subtle);
+}
+.cp-select-btn:active:not(:disabled) { transform: scale(0.985); }
+.cp-select-btn:disabled { opacity: 0.55; cursor: default; }
+.cp-select.open .cp-select-btn {
+  border-color: var(--accent);
+  box-shadow: var(--accent-glow), var(--inner-hi);
+}
+.cp-select-val {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  flex: 1;
+}
+.cp-select-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+}
+.cp-select-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.cp-select-caret {
+  width: 13px;
+  height: 13px;
+  color: var(--ink-tertiary);
+  flex-shrink: 0;
+  transition: transform 0.22s var(--spring), color 0.16s ease;
+}
+.cp-select.open .cp-select-caret {
+  transform: rotate(180deg);
+  color: var(--accent);
+}
+.cp-select-ico {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.cp-select-ico.is-auto {
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  color: var(--accent);
+}
+.cp-select-ico svg { width: 10px; height: 10px; display: block; }
+.cp-select-badge {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 2.5px 6px;
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  color: var(--ink-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.cp-select-badge.is-auto { background: var(--accent-soft); border-color: var(--accent-border); color: var(--accent); }
+.cp-select-badge.is-ok,
+.cp-select-badge.is-bal { background: var(--mint-bg); border-color: var(--mint-border); color: var(--mint); }
+.cp-select-badge.is-warn { background: var(--warn-bg); border-color: var(--warn-border); color: var(--warn); }
+.cp-select-badge.is-danger { background: var(--danger-bg); border-color: var(--danger-border); color: var(--danger-ink); }
+.cp-select-menu {
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 0;
+  right: 0;
+  min-width: 224px;
+  max-height: 228px;
+  overflow-y: auto;
+  padding: 5px;
+  border-radius: 13px;
+  background: var(--pop-bg);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1px solid var(--border-input);
+  box-shadow: var(--shadow-pop), var(--inner-hi);
+  z-index: 260;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  opacity: 0;
+  transform: scale(0.96) translateY(-6px);
+  transform-origin: top center;
+  pointer-events: none;
+  visibility: hidden;
+  transition: opacity 0.16s ease, transform 0.22s var(--spring), visibility 0s linear 0.22s;
+}
+.cp-select.is-inline .cp-select-menu {
+  left: auto;
+  right: 0;
+  width: min(300px, calc(100vw - 36px));
+  transform-origin: top right;
+}
+.cp-select.open-up .cp-select-menu {
+  top: auto;
+  bottom: calc(100% + 5px);
+  transform: scale(0.96) translateY(6px);
+  transform-origin: bottom center;
+}
+.cp-select.is-inline.open-up .cp-select-menu { transform-origin: bottom right; }
+.cp-select.open .cp-select-menu {
+  opacity: 1;
+  transform: scale(1) translateY(0);
+  pointer-events: auto;
+  visibility: visible;
+  transition: opacity 0.16s ease, transform 0.22s var(--spring), visibility 0s;
+}
+.cp-select-menu::-webkit-scrollbar { width: 4px; }
+.cp-select-menu::-webkit-scrollbar-track { background: transparent; }
+.cp-select-menu::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radius: 999px; }
+.cp-select-opt {
+  width: 100%;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink);
+  padding: 7px 8px;
+  border-radius: 9px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font);
+  font-size: 11.5px;
+  font-weight: 520;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.13s ease, border-color 0.13s ease, transform 0.13s var(--spring);
+}
+.cp-select-opt:hover,
+.cp-select-opt:focus-visible { background: var(--row-hover); outline: none; }
+.cp-select-opt:active { transform: scale(0.985); }
+.cp-select-opt.is-selected {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  font-weight: 620;
+}
+.cp-select-opt-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.cp-select-opt-main {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+}
+.cp-select-opt-sub {
+  font-size: 10.5px;
+  color: var(--ink-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cp-select-check {
+  width: 13px;
+  height: 13px;
+  color: var(--accent);
+  flex-shrink: 0;
+  opacity: 0;
+  transform: scale(0.7);
+  transition: opacity 0.16s ease, transform 0.18s var(--spring);
+}
+.cp-select-opt.is-selected .cp-select-check { opacity: 1; transform: scale(1); }
+
+/* =========================================================================
+   Copilot Pulse 1:1 Layout Architecture:
+   Frameless Topbar + Glowing Hero Card First + Floating Individual Provider
+   Cards + True Overview/Spend/Plans Views + Floating Capsule Dock
+   ========================================================================= */
+
+#appShell {
+  transition: transform 0.32s var(--spring), opacity 0.26s var(--spring);
+  transform-origin: center center;
+}
+#appShell.sheet-open {
+  transform: scale(0.972);
+  opacity: 0.48;
+}
+
+/* Frameless Topbar sitting directly on canvas */
+.topbar {
+  background: transparent;
+  border-bottom: none;
+  min-height: 46px;
+  padding: 11px 14px 7px 15px;
+  gap: 8px;
+}
+.brand-mark {
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  box-shadow: var(--shadow-brand);
+}
+.brand-title {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+}
+.status-pill {
+  padding: 2.5px 8px;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+.scope-trigger {
+  height: 26px;
+  padding: 0 9.5px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--inner-hi);
+  font-size: 10.5px;
+}
+.scope-trigger:hover,
+.scope-trigger[aria-expanded="true"] {
+  border-color: var(--accent-border);
+  background: var(--row-hover);
+}
+.topbar .icon-btn {
+  width: 27px;
+  height: 27px;
+  border-radius: 999px;
+}
+#tabBtn {
+  color: var(--accent);
+}
+#tabBtn:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* Scroll canvas & section ordering (Hero FIRST on Overview) */
+.section-stack {
+  padding: 4px 14px 14px;
+  gap: 11px;
+}
+#heroSection { order: 5; }
+#providersCard { order: 10; }
+#runningNowCard { order: 20; }
+#plansCard { order: 15; }
+
+/* True Tabbed Views driven by #sectionStack[data-active-view] */
+#sectionStack[data-active-view="limits"] #h9Controls,
+#sectionStack[data-active-view="limits"] #h9AnalyticsSection,
+#sectionStack[data-active-view="limits"] #plansCard {
+  display: none !important;
+}
+#sectionStack[data-active-view="spend"] #providersCard,
+#sectionStack[data-active-view="spend"] #runningNowCard,
+#sectionStack[data-active-view="spend"] #plansCard,
+#sectionStack[data-active-view="spend"] #footerStatus {
+  display: none !important;
+}
+#sectionStack[data-active-view="plans"] #heroSection,
+#sectionStack[data-active-view="plans"] #providersCard,
+#sectionStack[data-active-view="plans"] #runningNowCard,
+#sectionStack[data-active-view="plans"] #h9AnalyticsSection,
+#sectionStack[data-active-view="plans"] #footerStatus {
+  display: none !important;
+}
+#sectionStack[data-active-view="plans"] #plansCard {
+  display: flex !important;
+}
+.section-stack.cp-view-enter > * {
+  animation: cpViewIn 0.28s var(--spring) both;
+}
+@keyframes cpViewIn {
+  from { opacity: 0; transform: translateY(8px) scale(0.992); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Glowing Copilot Pulse Hero Card */
+.hero {
+  background-color: var(--surface);
+  background-image: var(--hero-grad);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 15px 16px 13px;
+  box-shadow: var(--shadow-card), var(--inner-hi);
+  position: relative;
+  overflow: hidden;
+}
+.hero::before {
+  content: "";
+  position: absolute;
+  top: -48px;
+  right: -30px;
+  width: 172px;
+  height: 172px;
+  background: var(--hero-glow);
+  pointer-events: none;
+}
+.hero > * {
+  position: relative;
+}
+.hero .sh {
+  align-items: center;
+}
+.hero .sec-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-secondary);
+  letter-spacing: 0;
+}
+.hero .sec-sub {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--ink-tertiary);
+}
+.balance-value {
+  font-size: 31px;
+  font-weight: 750;
+  letter-spacing: -0.045em;
+  line-height: 1.08;
+}
+.hero-mini-chart {
+  margin-top: 2px;
+}
+.chart-wrap {
+  height: 48px;
+}
+.period-bar {
+  border-radius: 11px;
+  padding: 3px;
+  background: var(--seg-bg);
+  border: 1px solid var(--divider);
+}
+.period-indicator {
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  border-radius: 8px;
+}
+.period-pill {
+  padding: 4.5px 0;
+  font-size: 10.8px;
+  font-weight: 600;
+  border-radius: 8px;
+}
+.summary-grid.hero-summary {
+  margin-top: 4px;
+  padding-top: 9px;
+}
+
+/* Transparent Quota Section + Individual Floating Copilot Pulse Provider Cards */
+.providers-section:not(.is-onboarding) {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  gap: 8px;
+  border-radius: 0;
+}
+.providers-section:not(.is-onboarding) > .sh {
+  padding: 2px 3px 0;
+  align-items: center;
+}
+.providers-section:not(.is-onboarding) > .sh .sec-title {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-tertiary);
+}
+.providers-section:not(.is-onboarding) > .sh .sec-sub {
+  font-size: 10.5px;
+  color: var(--ink-tertiary);
+}
+.providers-section:not(.is-onboarding) > .sec-hint {
+  padding: 0 3px;
+  margin-top: -4px;
+  font-size: 10.5px;
+}
+.providers-section:not(.is-onboarding) > .ticks {
+  padding: 0 13px;
+}
+.providers-section:not(.is-onboarding) > .leg {
+  border-top: none;
+  padding: 2px 4px 0;
+}
+
+/* Force clean 1-column Copilot Pulse floating provider cards at all widths */
+#providerList,
+#providerList:not(.is-custom-order) {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 8px !important;
+}
+#providerList > .provider-item,
+#providerList:not(.is-custom-order) > .provider-item.is-calm:not(.open) {
+  background-color: var(--surface) !important;
+  background-image: none;
+  border: 1px solid var(--border) !important;
+  border-top: 1px solid var(--border) !important;
+  border-radius: 15px !important;
+  padding: 12px 13px !important;
+  margin: 0 !important;
+  gap: 8px;
+  box-shadow: var(--shadow-card), var(--inner-hi);
+  transition: transform 0.2s var(--spring), border-color 0.2s ease, box-shadow 0.22s var(--spring), background-color 0.18s ease;
+}
+#providerList > .provider-item:first-child {
+  padding-top: 12px !important;
+  border-top: 1px solid var(--border) !important;
+}
+#providerList > .provider-item:not(.is-calm) {
+  border-color: var(--danger-border) !important;
+  background-image: var(--danger-card-grad) !important;
+}
+body:not(.dragging-active) #providerList > .provider-item:hover,
+body:not(.dragging-active) #providerList:not(.is-custom-order) > .provider-item.is-calm:not(.open):hover {
+  transform: translateY(-1.5px);
+  border-color: var(--accent-border) !important;
+  box-shadow: var(--shadow-pop), var(--inner-hi);
+  background-color: var(--surface) !important;
+}
+#providerList > .provider-item .provider-row,
+#providerList:not(.is-custom-order) > .provider-item.is-calm:not(.open) .provider-row {
+  padding: 0 !important;
+  gap: 8px !important;
+  background: transparent !important;
+}
+#providerList > .provider-item .logo-badge,
+#providerList:not(.is-custom-order) > .provider-item.is-calm:not(.open) .logo-badge {
+  width: 28px !important;
+  height: 28px !important;
+  border-radius: 9px !important;
+}
+#providerList > .provider-item .logo-badge svg,
+#providerList:not(.is-custom-order) > .provider-item.is-calm:not(.open) .logo-badge svg {
+  width: 14px !important;
+  height: 14px !important;
+}
+#providerList > .provider-item .provider-name,
+#providerList:not(.is-custom-order) > .provider-item.is-calm:not(.open) .provider-name {
+  font-size: 12.5px !important;
+  font-weight: 700 !important;
+}
+#providerList:not(.is-custom-order) > .provider-item.is-calm:not(.open) .provider-sub {
+  display: block;
+}
+#providerList:not(.is-custom-order) > .provider-item.is-calm:not(.open) .lane {
+  --lane-name: 62px;
+  --lane-pct: 40px;
+  --lane-gap: 8px;
+}
+#providerList:not(.is-custom-order) > .provider-item.is-calm:not(.open) .lane-name {
+  font-size: 11px;
+}
+#providerList:not(.is-custom-order) > .provider-item.is-calm:not(.open) .lane-pct {
+  font-size: 12.5px;
+}
+#providerList:not(.is-custom-order) > .provider-item.is-calm:not(.open) .balrow strong.provider-rem {
+  font-size: 19px;
+}
+#providerList > .provider-item .model-drawer {
+  padding: 4px 0 0;
+}
+#providerList > .provider-item .drawer-box {
+  border-radius: 12px;
+  padding: 10px 11px;
+}
+.lane-base {
+  height: 6px;
+  border-radius: 999px;
+}
+.lane-use,
+.lane-level {
+  height: 7px;
+  top: 4.5px;
+  border-radius: 999px;
+}
+
+/* Plans ROI Progress Bar Gradient */
+.plan-roi-track {
+  height: 7px;
+}
+.plan-roi-fill.is-good {
+  background: var(--bar-grad-roi);
+}
+
+/* Floating Frosted-Glass Capsule Dock at Bottom */
+.dock-wrap {
+  flex-shrink: 0;
+  padding: 6px 12px 11px;
+  display: flex;
+  justify-content: center;
+  background: var(--dock-fade);
+  z-index: 20;
+}
+.dock-capsule {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 100%;
+  padding: 4.5px;
+  border-radius: 999px;
+  background: var(--dock-bg);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--dock-bd);
+  box-shadow: var(--shadow-dock), var(--inner-hi);
+}
+.dock-capsule .view-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  border-radius: 999px;
+}
+.dock-capsule .view-tabs::before {
+  display: none;
+}
+.dock-capsule .view-tab {
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 11.2px;
+  font-weight: 700;
+  color: var(--ink-secondary);
+  border: none;
+  background: transparent;
+  transition: background 0.2s var(--spring), color 0.16s ease, box-shadow 0.2s var(--spring), transform 0.14s var(--spring);
+}
+.dock-capsule .view-tab:hover {
+  color: var(--ink);
+  background: var(--row-hover);
+}
+.dock-capsule .view-tab.active {
+  background: var(--dock-active-bg);
+  color: var(--dock-active-fg);
+  box-shadow: var(--shadow-dock-active);
+}
+.dock-capsule .view-tab.active:hover {
+  background: var(--dock-active-bg);
+  color: var(--dock-active-fg);
+}
+.dock-capsule .view-tab-badge {
+  font-size: 10.5px;
+  font-weight: 750;
+  padding: 1.5px 5.5px;
+  border-radius: 999px;
+  background: var(--dock-badge-bg);
+  color: var(--dock-badge-fg);
+}
+.dock-capsule .view-tab.active .view-tab-badge {
+  background: var(--dock-badge-on-bg);
+  color: var(--dock-active-fg);
+}
+.dock-capsule .view-tab-meta {
+  display: none;
+}
+.dock-sep {
+  width: 1px;
+  height: 17px;
+  background: var(--dock-sep);
+  margin: 0 2px;
+  flex-shrink: 0;
+}
+.dock-capsule .foot {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 2px;
+  padding: 0;
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: none;
+  box-shadow: none;
+}
+.dock-capsule .foot .ops-pill {
+  position: relative;
+  width: 30px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+}
+.dock-capsule .foot .ops-pill:hover {
+  background: var(--row-hover);
+  border-color: transparent;
+  color: var(--ink);
+}
+.dock-capsule .foot .ops-pill.active,
+.dock-capsule .foot .ops-pill[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+.dock-capsule .foot .ops-pill svg {
+  width: 13.5px;
+  height: 13.5px;
+}
+.dock-capsule .ops-pill .ops-dot,
+.dock-capsule .ops-pill .update-dot {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 6px;
+  height: 6px;
+}
+@media (max-width: 375px) {
+  .dock-capsule .view-tab { padding: 5.5px 9px; font-size: 10.8px; }
+  .dock-capsule .foot .ops-pill { width: 27px; height: 27px; min-height: 27px; }
+}
+
 /* Reduced motion: no loops, no slides or springs; hero and chart snap */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
@@ -4594,8 +5517,8 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
           <path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/>
         </svg>
       </button>
-      <button class="icon-btn" id="tabBtn" type="button" title="Shrink to tab" aria-label="Shrink to tab">
-        <svg width="12.5" height="12.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M5 12h14"/></svg>
+      <button class="icon-btn" id="tabBtn" type="button" title="Collapse to 40px edge-tab" aria-label="Shrink to tab">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="8" width="18" height="8" rx="4"/><circle cx="7.5" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg>
       </button>
       <button class="icon-btn close-btn" id="closeBtn" type="button" title="Close" aria-label="Close window">
         <svg width="12.5" height="12.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
@@ -4603,25 +5526,9 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
     </div>
   </header>
 
-  <!-- Sticky KPI glance bar & instant section navigation -->
-  <div class="glance-bar" id="glanceBar" aria-label="Quick overview and navigation">
-    <div class="glance-kpi">
-      <div class="glance-kpi-left">
-        <strong class="glance-usd" id="glanceUsd">—</strong>
-        <span class="glance-sub" id="glanceSub"></span>
-      </div>
-      <div class="glance-kpi-right" id="glanceMeta"></div>
-    </div>
-    <nav class="view-tabs" id="viewNavBar" aria-label="Jump to section">
-      <button class="view-tab active" data-view="limits" type="button" aria-current="true">Limits<span class="view-tab-badge" id="glanceUrgentBadge" hidden></span></button>
-      <button class="view-tab" data-view="spend" type="button">Spend</button>
-      <button class="view-tab" data-view="plans" type="button">Plans<span class="view-tab-meta" id="glancePlansMeta"></span></button>
-    </nav>
-  </div>
-
   <!-- Main scrollable feed -->
   <div class="scroll-body" id="scrollBody">
-    <div class="section-stack" id="sectionStack">
+    <div class="section-stack" id="sectionStack" data-active-view="limits">
       <div class="notice-banner" id="noticeBanner"></div>
       <div class="err-banner" id="errorBanner" role="alert" hidden></div>
 
@@ -4979,22 +5886,32 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
     </section>
   </div>
 
-  <!-- Permanently docked window actions -->
-  <div class="foot" id="opsBar" role="toolbar" aria-label="Window actions">
-    <button class="ops-pill" id="diagBtn" type="button" aria-label="Open diagnostics">
-      <span class="ops-dot" aria-hidden="true"></span>
-      <span>Diagnostics</span>
-    </button>
-    <button class="ops-pill" id="shareWeekBtn" type="button" aria-label="Copy weekly share card">Share week</button>
-    <button class="ops-pill pin-btn" id="pinBtn" type="button" aria-label="Pin window above other apps" aria-pressed="false" title="Pin window above other apps">
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6l-1 5 3 3v2H7v-2l3-3-1-5ZM12 13v8"/></svg>
-      <span>Keep on top</span>
-    </button>
-    <button class="ops-pill" id="densityBtn" type="button" aria-pressed="false" aria-label="Spacing density">Density: Compact</button>
-    <button class="ops-pill" id="settingsBtn" type="button" title="Settings &amp; Sources" aria-label="Settings and sources" aria-haspopup="dialog">
-      <span class="update-dot" id="updateDot" aria-hidden="true"></span>
-      <span>Settings</span>
-    </button>
+  <!-- Floating Frosted-Glass Copilot Pulse Capsule Dock -->
+  <div class="dock-wrap" id="dockWrap">
+    <div class="dock-capsule">
+      <nav class="view-tabs" id="viewNavBar" aria-label="Primary navigation">
+        <button class="view-tab active" data-view="limits" type="button" aria-current="true">Overview<span class="view-tab-badge" id="glanceUrgentBadge" hidden></span></button>
+        <button class="view-tab" data-view="spend" type="button">Spend</button>
+        <button class="view-tab" data-view="plans" type="button">Plans<span class="view-tab-meta" id="glancePlansMeta"></span></button>
+      </nav>
+      <span class="dock-sep" aria-hidden="true"></span>
+      <div class="foot" id="opsBar" role="toolbar" aria-label="Window actions">
+        <button class="ops-pill" id="diagBtn" type="button" aria-label="Open diagnostics" title="Diagnostics &amp; data health">
+          <span class="ops-dot" aria-hidden="true"></span>
+          <svg width="13.5" height="13.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg>
+        </button>
+        <button class="ops-pill" id="shareWeekBtn" type="button" aria-label="Copy weekly share card" title="Copy weekly share card">
+          <svg width="13.5" height="13.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
+        </button>
+        <button class="ops-pill pin-btn" id="pinBtn" type="button" aria-label="Pin window above other apps" aria-pressed="false" title="Keep on top">
+          <svg width="13.5" height="13.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6l-1 5 3 3v2H7v-2l3-3-1-5ZM12 13v8"/></svg>
+        </button>
+        <button class="ops-pill" id="settingsBtn" type="button" title="Settings &amp; Sources" aria-label="Settings and sources" aria-haspopup="dialog">
+          <span class="update-dot" id="updateDot" aria-hidden="true"></span>
+          <svg width="13.5" height="13.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
+      </div>
+    </div>
   </div>
 
   <!-- H10 ops/hud -->
@@ -6350,12 +7267,23 @@ function renderPlans(data, providers) {
   card.classList.toggle("has-rows", rows.length > 0);
 }
 
-function setActiveViewTab(view) {
+function setActiveViewTab(view, animate = false) {
+  const next = view === "spend" || view === "plans" ? view : "limits";
   const nav = document.getElementById("viewNavBar");
-  const idx = view === "spend" ? "1" : view === "plans" ? "2" : "0";
+  const stack = document.getElementById("sectionStack");
+  const idx = next === "spend" ? "1" : next === "plans" ? "2" : "0";
   if (nav) nav.dataset.idx = idx;
+  const changed = stack && stack.dataset.activeView !== next;
+  if (stack) {
+    stack.dataset.activeView = next;
+    if (animate && changed && !prefersReducedMotion()) {
+      stack.classList.remove("cp-view-enter");
+      void stack.offsetWidth;
+      stack.classList.add("cp-view-enter");
+    }
+  }
   document.querySelectorAll("#viewNavBar .view-tab").forEach(btn => {
-    const on = btn.dataset.view === view;
+    const on = btn.dataset.view === next;
     btn.classList.toggle("active", on);
     if (on) btn.setAttribute("aria-current", "true");
     else btn.removeAttribute("aria-current");
@@ -6364,7 +7292,6 @@ function setActiveViewTab(view) {
 
 function updateGlanceBar(data, providers) {
   const bar = document.getElementById("glanceBar");
-  if (!bar) return;
   const total = (data && data.total) || {};
   const unavailable = data && data.scope === "unavailable";
   const usdEl = document.getElementById("glanceUsd");
@@ -6925,13 +7852,20 @@ function bindProviderInteractions() {
     if (!wasActive || !item) return;
 
     document.body.classList.remove("dragging-active");
-    item.style.transition = "transform 0.22s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.22s ease";
-    item.style.transform = "translate3d(0, 0, 0) scale(1)";
+    const reduced = prefersReducedMotion();
+    item.style.transition = reduced ? "none" : "transform 0.24s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.22s ease";
+    item.style.transform = "translate3d(0, 0, 0) scale(1) rotate(0deg)";
     setTimeout(() => {
       item.classList.remove("dragging");
       item.style.transition = "";
       item.style.transform = "";
-    }, 230);
+      if (!reduced) {
+        item.classList.remove("just-dropped");
+        void item.offsetWidth;
+        item.classList.add("just-dropped");
+        setTimeout(() => item.classList.remove("just-dropped"), 460);
+      }
+    }, reduced ? 0 : 240);
 
     commitProviderOrder();
     syncUiBusy();
@@ -6951,7 +7885,8 @@ function updateDraggedPosition() {
   const scrollDelta = scroller.scrollTop - dragState.scrollStart;
   let offsetX = dragState.lastClientX - dragState.anchorX;
   let offsetY = (dragState.lastClientY - dragState.anchorY) + scrollDelta;
-  item.style.transform = `translate3d(${offsetX.toFixed(1)}px, ${offsetY.toFixed(1)}px, 0) scale(1.02)`;
+  const tilt = prefersReducedMotion() ? 0 : Math.max(-1.6, Math.min(1.6, offsetX * 0.035));
+  item.style.transform = `translate3d(${offsetX.toFixed(1)}px, ${offsetY.toFixed(1)}px, 0) scale(1.028) rotate(${tilt.toFixed(2)}deg)`;
 
   const px = dragState.lastClientX;
   const py = dragState.lastClientY;
@@ -7180,7 +8115,9 @@ window.openSettings = async function(tab = "sources", trigger = null) {
   syncUiBusy();
   setSettingsTab(tab, false);
   sheet.inert = false;
-  document.getElementById("appShell").inert = true;
+  const shellEl = document.getElementById("appShell");
+  shellEl.inert = true;
+  shellEl.classList.add("sheet-open");
   sheet.classList.add("open");
   if (!wasOpen) {
     (sheet.querySelector(".sheet-tab.active") || document.getElementById("settingsDoneBtn")).focus();
@@ -7196,7 +8133,9 @@ window.closeSettings = function(returnFocus = true) {
   const sheet = document.getElementById("settingsSheet");
   sheet.classList.remove("open");
   sheet.inert = true;
-  document.getElementById("appShell").inert = false;
+  const shellEl = document.getElementById("appShell");
+  shellEl.inert = false;
+  shellEl.classList.remove("sheet-open");
   syncUiBusy();
   if (returnFocus) (state.settingsTrigger || document.getElementById("settingsBtn")).focus();
   state.settingsTrigger = null;
@@ -7353,8 +8292,16 @@ function planField(label, control) {
 function planEditorHtml(editor, data, busy) {
   const { operation, values, preview } = editor;
   const text = (name, attributes = "") => `<input class="text-input" name="${name}" value="${esc(values[name] || "")}" ${attributes} ${busy ? "disabled" : ""}>`;
-  const select = (name, options, label) => `<select class="text-input" name="${name}" ${busy ? "disabled" : ""}>${options.map(value =>
-    `<option value="${esc(value)}" ${value === values[name] ? "selected" : ""}>${esc(label(value))}</option>`).join("")}</select>`;
+  const select = (name, options, label) => buildCpSelectHtml({
+    name,
+    value: values[name] || "",
+    disabled: busy,
+    options: options.map(value => ({
+      value,
+      label: label(value),
+      iconHtml: name === "tool_key" ? logoHtml(value, "cp-select-ico", false) : "",
+    })),
+  });
   let fields = "";
   if (preview) {
     fields = `<div class="source-meta">${esc(preview.from)} to ${esc(preview.through)}<br>Accrued cost $${esc(preview.before_usd)} → $${esc(preview.after_usd)}</div>`;
@@ -7616,9 +8563,14 @@ function paintSettingsBody() {
             <div class="source-name" id="pillLimitLabel">Floating pill limit</div>
             <div class="source-meta">Choose which usage limit shows in the corner pill</div>
           </div>
-          <select class="text-input" id="pillLimitSelect" aria-labelledby="pillLimitLabel" style="width:auto;min-width:170px;max-width:100%" onchange="selectPillLimit(this.value)">
-            ${pillLimitOptionsHtml()}
-          </select>
+          ${buildCpSelectHtml({
+            id: "pillLimitSelect",
+            labelledBy: "pillLimitLabel",
+            inline: true,
+            value: state.pillLimit || "",
+            onSelectAction: "pillLimit",
+            options: pillLimitOptionsData(),
+          })}
         </div>
       ` : ""}
       ${state.providerOrder.length ? `
@@ -8928,6 +9880,197 @@ function pillLimitOptionsHtml() {
   ).join("");
 }
 
+const CP_CHEVRON_SVG = '<svg class="cp-select-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
+const CP_CHECK_SVG = '<svg class="cp-select-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>';
+const CP_AUTO_SVG = '<span class="cp-select-ico is-auto" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg></span>';
+
+function pillLimitOptionsData() {
+  const current = state.pillLimit || "";
+  const providers = Array.isArray(state.report?.providers) ? state.report.providers : [];
+  const opts = [{
+    value: "",
+    label: "Auto (most urgent)",
+    sub: "Tracks tightest active window",
+    iconHtml: CP_AUTO_SVG,
+    badge: "Auto",
+    badgeTone: "is-auto",
+  }];
+  const seen = new Set([""]);
+  for (const p of providers) {
+    if (!p || (p.remaining && p.remaining.kind === "usage_only")) continue;
+    const key = String(p.key || "").trim();
+    if (!key) continue;
+    const title = p.profile ? `${p.name || key} · ${p.profile}` : String(p.name || key);
+    const iconHtml = logoHtml(key, "cp-select-ico", false);
+    const windows = (p.windows || []).filter(w => w && w.unit !== "usd" && String(w.limitKey || "").trim());
+    for (const w of windows) {
+      const id = `${key}::${String(w.limitKey).trim()}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const rem = typeof w.remainingPct === "number" && Number.isFinite(w.remainingPct) ? Math.round(w.remainingPct) : null;
+      const badge = rem !== null ? `${rem}%` : (w.unavailable ? "Idle" : "");
+      const badgeTone = rem === null ? "" : (rem <= 15 ? "is-danger" : rem <= 35 ? "is-warn" : "is-ok");
+      opts.push({
+        value: id,
+        label: `${title} · ${limitName(w)}`,
+        sub: title,
+        iconHtml,
+        badge,
+        badgeTone,
+      });
+    }
+    const isBal = (p.remaining && p.remaining.kind === "balance") || (p.fundsRemainingUsd != null && !windows.length);
+    if (isBal) {
+      const id = `${key}::balance`;
+      if (!seen.has(id)) {
+        seen.add(id);
+        const bal = p.fundsRemainingUsd != null ? `$${Number(p.fundsRemainingUsd).toFixed(2)}` : "";
+        opts.push({
+          value: id,
+          label: `${title} · Balance`,
+          sub: "Prepaid API balance",
+          iconHtml,
+          badge: bal,
+          badgeTone: "is-bal",
+        });
+      }
+    }
+  }
+  if (current && !seen.has(current)) {
+    opts.push({
+      value: current,
+      label: current.replace("::", " · "),
+      iconHtml: CP_AUTO_SVG,
+      badge: "",
+      badgeTone: "",
+    });
+  }
+  return opts;
+}
+
+function buildCpSelectHtml({ id = "", name = "", labelledBy = "", value = "", disabled = false, inline = false, onSelectAction = "", options = [] }) {
+  const active = options.find(o => o.value === value) || options[0] || { value: "", label: "" };
+  const activeBadge = active.badge
+    ? `<span class="cp-select-badge ${esc(active.badgeTone || "")}">${esc(active.badge)}</span>`
+    : "";
+  const hiddenInput = name ? `<input type="hidden" name="${esc(name)}" value="${esc(active.value)}">` : "";
+  return `
+    <div class="cp-select${inline ? " is-inline" : ""}" data-cp-select="${esc(onSelectAction || name || id)}">
+      ${hiddenInput}
+      <button class="cp-select-btn" type="button"${id ? ` id="${esc(id)}"` : ""}${labelledBy ? ` aria-labelledby="${esc(labelledBy)}"` : ""} role="combobox" aria-haspopup="listbox" aria-expanded="false" data-value="${esc(active.value)}" ${disabled ? "disabled" : ""}>
+        <span class="cp-select-val">
+          ${active.iconHtml || ""}
+          <span class="cp-select-label">${esc(active.label)}</span>
+        </span>
+        <span class="cp-select-right">${activeBadge}${CP_CHEVRON_SVG}</span>
+      </button>
+      <div class="cp-select-menu" role="listbox"${labelledBy ? ` aria-labelledby="${esc(labelledBy)}"` : ""}>
+        ${options.map(opt => {
+          const isSel = opt.value === active.value;
+          return `
+            <button class="cp-select-opt${isSel ? " is-selected" : ""}" type="button" role="option" aria-selected="${isSel ? "true" : "false"}" data-cp-opt-value="${esc(opt.value)}" data-cp-opt-label="${esc(opt.label)}" data-cp-opt-badge="${esc(opt.badge || "")}" data-cp-opt-tone="${esc(opt.badgeTone || "")}">
+              ${opt.iconHtml || ""}
+              <span class="cp-select-opt-text">
+                <span class="cp-select-opt-main">${esc(opt.label)}</span>
+                ${opt.sub ? `<span class="cp-select-opt-sub">${esc(opt.sub)}</span>` : ""}
+              </span>
+              ${opt.badge ? `<span class="cp-select-badge ${esc(opt.badgeTone || "")}">${esc(opt.badge)}</span>` : ""}
+              ${CP_CHECK_SVG}
+            </button>
+          `;
+        }).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function closeCpSelect(restoreFocus = false) {
+  const openEl = document.querySelector(".cp-select.open");
+  if (!openEl) return false;
+  openEl.classList.remove("open", "open-up");
+  const btn = openEl.querySelector(".cp-select-btn");
+  if (btn) {
+    btn.setAttribute("aria-expanded", "false");
+    if (restoreFocus) btn.focus();
+  }
+  return true;
+}
+
+document.addEventListener("click", (e) => {
+  const opt = e.target.closest(".cp-select-opt");
+  if (opt) {
+    const wrap = opt.closest(".cp-select");
+    if (!wrap) return;
+    const val = opt.dataset.cpOptValue || "";
+    const lbl = opt.dataset.cpOptLabel || "";
+    const badge = opt.dataset.cpOptBadge || "";
+    const tone = opt.dataset.cpOptTone || "";
+    const action = wrap.dataset.cpSelect || "";
+    const btn = wrap.querySelector(".cp-select-btn");
+    const hidden = wrap.querySelector('input[type="hidden"]');
+    if (hidden) hidden.value = val;
+    if (btn) {
+      btn.dataset.value = val;
+      const ico = opt.querySelector(".cp-select-ico");
+      const valWrap = btn.querySelector(".cp-select-val");
+      if (valWrap) {
+        valWrap.innerHTML = `${ico ? ico.outerHTML : ""}<span class="cp-select-label">${esc(lbl)}</span>`;
+      }
+      const rightWrap = btn.querySelector(".cp-select-right");
+      if (rightWrap) {
+        rightWrap.innerHTML = `${badge ? `<span class="cp-select-badge ${esc(tone)}">${esc(badge)}</span>` : ""}${CP_CHEVRON_SVG}`;
+      }
+    }
+    wrap.querySelectorAll(".cp-select-opt").forEach(o => {
+      const sel = o === opt;
+      o.classList.toggle("is-selected", sel);
+      o.setAttribute("aria-selected", sel ? "true" : "false");
+    });
+    closeCpSelect(true);
+    if (action === "pillLimit") {
+      selectPillLimit(val);
+    }
+    return;
+  }
+
+  const btn = e.target.closest(".cp-select-btn");
+  if (btn) {
+    if (btn.disabled) return;
+    const wrap = btn.closest(".cp-select");
+    const wasOpen = wrap.classList.contains("open");
+    closeCpSelect(false);
+    if (!wasOpen) {
+      const rect = btn.getBoundingClientRect();
+      const spaceBelow = window.innerHeight - rect.bottom;
+      wrap.classList.toggle("open-up", spaceBelow < 240 && rect.top > spaceBelow);
+      wrap.classList.add("open");
+      btn.setAttribute("aria-expanded", "true");
+    }
+    return;
+  }
+
+  if (!e.target.closest(".cp-select")) {
+    closeCpSelect(false);
+  }
+});
+
+document.addEventListener("keydown", (e) => {
+  const wrap = e.target.closest && e.target.closest(".cp-select");
+  if (!wrap) return;
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    const opts = [...wrap.querySelectorAll(".cp-select-opt")];
+    if (!opts.length) return;
+    e.preventDefault();
+    if (!wrap.classList.contains("open")) {
+      wrap.querySelector(".cp-select-btn")?.click();
+    }
+    const cur = opts.indexOf(document.activeElement);
+    const dir = e.key === "ArrowDown" ? 1 : -1;
+    const next = cur < 0 ? Math.max(0, opts.findIndex(o => o.classList.contains("is-selected"))) : (cur + dir + opts.length) % opts.length;
+    opts[next]?.focus();
+  }
+});
+
 window.selectPillLimit = async function(val) {
   state.pillLimit = val ? String(val) : null;
   if (apiAvailable() && window.pywebview.api.set_pill_limit) {
@@ -9618,6 +10761,7 @@ document.getElementById("sheetBody").addEventListener("keydown", (e) => {
 /* Escape closes the topmost layer: scope menu, then an open editor or form, then the settings sheet. */
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
+  if (closeCpSelect(true)) { e.preventDefault(); return; }
   if (closeScopePopover(true)) { e.preventDefault(); return; }
   if (typeof closeH9RangePopover === "function" && closeH9RangePopover(true)) { e.preventDefault(); return; }
   if (state.diagnosticsOpen && !state.settingsOpen) { e.preventDefault(); closeDiagnostics(true); return; }
@@ -11143,21 +12287,10 @@ function renderHudOps(data) {
   renderRunningNow(data);
 }
 
-/* Spacing density: compact or comfortable. Persisted by the host. */
-function applyHudDensity(density, persist = true) {
+/* Spacing density unified in Copilot Pulse; keep compatibility shim for older host payloads. */
+function applyHudDensity(density, _persist = false) {
   state.hudDensity = density === "comfortable" ? "comfortable" : "compact";
-  document.documentElement.classList.toggle("is-comfortable", state.hudDensity === "comfortable");
-  const densBtn = document.getElementById("densityBtn");
-  if (densBtn) {
-    const comfy = state.hudDensity === "comfortable";
-    densBtn.classList.toggle("active", comfy);
-    densBtn.setAttribute("aria-pressed", String(comfy));
-    densBtn.textContent = comfy ? "Density: Comfortable" : "Density: Compact";
-    densBtn.title = comfy ? "Switch to compact spacing density" : "Switch to comfortable spacing density";
-  }
-  if (persist && apiAvailable() && window.pywebview.api.set_hud_density) {
-    window.pywebview.api.set_hud_density(state.hudDensity);
-  }
+  document.documentElement.classList.remove("is-comfortable");
 }
 
 function diagAgoText(seconds) {
@@ -11727,33 +12860,16 @@ document.getElementById("viewNavBar")?.addEventListener("click", (e) => {
   const btn = e.target.closest(".view-tab");
   if (!btn) return;
   const view = btn.dataset.view;
+  if (state.h9View === "detail" && typeof closeH9Detail === "function") {
+    closeH9Detail(false);
+  }
+  setActiveViewTab(view, true);
   const scroller = document.getElementById("scrollBody");
-  if (!scroller) return;
-  setActiveViewTab(view);
-  const target = view === "spend"
-    ? document.getElementById("heroSection")
-    : view === "plans"
-      ? document.getElementById("plansCard")
-      : null;
-  const top = target ? Math.max(0, target.offsetTop - 8) : 0;
-  scroller.scrollTo({ top, behavior: prefersReducedMotion() ? "auto" : "smooth" });
+  if (scroller) scroller.scrollTo({ top: 0, behavior: "auto" });
 });
-document.getElementById("scrollBody")?.addEventListener("scroll", () => {
-  const scroller = document.getElementById("scrollBody");
-  const hero = document.getElementById("heroSection");
-  const plans = document.getElementById("plansCard");
-  if (!scroller || !hero) return;
-  document.getElementById("glanceBar")?.classList.toggle("is-scrolled", scroller.scrollTop > 4);
-  const y = scroller.scrollTop + 48;
-  const atBottom = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 16;
-  if (plans && plans.offsetParent !== null && (y >= plans.offsetTop || atBottom)) setActiveViewTab("plans");
-  else if (hero.offsetParent !== null && y >= hero.offsetTop) setActiveViewTab("spend");
-  else setActiveViewTab("limits");
-}, { passive: true });
 document.getElementById("diagnosticsBackBtn")?.addEventListener("click", () => closeDiagnostics(true));
 document.getElementById("diagRefreshBtn")?.addEventListener("click", () => loadDiagnostics(false));
 document.getElementById("shareWeekBtn")?.addEventListener("click", () => shareWeek());
-document.getElementById("densityBtn")?.addEventListener("click", () => applyHudDensity(state.hudDensity === "comfortable" ? "compact" : "comfortable", true));
 document.getElementById("scopePopover")?.addEventListener("click", (e) => {
   const opt = e.target.closest("[data-scope-id]");
   if (opt && typeof window.selectScope === "function") window.selectScope(opt.dataset.scopeId);

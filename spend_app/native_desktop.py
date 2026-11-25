@@ -2239,7 +2239,7 @@ def main(
         if smoke_test and os.getenv("GITHUB_ACTIONS") == "true":
             # GitHub Actions Windows runners execute in headless Session 0 where
             # Edge WebView2 has no interactive desktop compositor; verify bundled
-            # Wealthfront HTML, embedded Manrope WOFF2, and bridge APIs,
+            # Wealthfront HTML, embedded Inter + JetBrains Mono WOFF2, and bridge APIs,
             # then run the native Tk window smoke path.
             from spend_app.tab_window import load_tab_html
             from spend_app.wealthfront_window import DesktopBridge, load_ui_html
@@ -2252,7 +2252,8 @@ def main(
             )
             probe = bridge.fetch_usage("today", "all")
             if (
-                "Manrope" not in bundled_html
+                "Inter" not in bundled_html
+                or "JetBrains Mono" not in bundled_html
                 or "data:font/woff2;base64," not in bundled_html
                 or not probe.get("ok")
             ):

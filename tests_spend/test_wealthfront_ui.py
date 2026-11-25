@@ -464,9 +464,9 @@ def test_dark_tokens_override_only_defined_tokens_and_cover_surfaces():
     ):
         assert token in dark, token
     assert (
-        dark["--bg-canvas"].strip() == "#101117"
+        dark["--bg-canvas"].strip() == "#0b0e14"
     )  # the host paints its native window with this hex
-    assert root["--bg-canvas"].strip() == "#f5f6fa"
+    assert root["--bg-canvas"].strip() == "#f2f5fa"
     used = set(re.findall(r"var\((--[\w-]+)", text))
     assert used <= set(root) | {
         "--bl-bg",
@@ -521,7 +521,7 @@ def test_dark_theme_text_meets_aa_contrast(tmp_path):
     html = build_page(pref="dark", probe=CONTRAST_PROBE, extra_css=FAST)
     result = probe(html, 380, tmp_path, height=700)
     assert result["theme"] == "dark"
-    assert result["canvas"] == "rgb(16, 17, 23)"
+    assert result["canvas"] == "rgb(11, 14, 20)"
     required = (
         "ink_on_hero",
         "ink_on_surface",
@@ -1237,7 +1237,7 @@ SMOKE_PROBE = """
 await until(() => document.querySelectorAll('#providerList .provider-item').length >= 8);
 await document.fonts.ready;
 report({ items: document.querySelectorAll('#providerList .provider-item').length, hero: document.getElementById('heroValue').textContent,
-         font: document.fonts.check('700 30px "Manrope"') });
+         font: document.fonts.check('700 30px "Inter"') && document.fonts.check('600 14px "JetBrains Mono"') });
 """
 
 
@@ -1527,7 +1527,7 @@ report({
   oneColumn: r1.top >= r0.bottom - 1 && Math.abs(r1.left - r0.left) <= 1 && Math.abs(r1.width - r0.width) <= 1,
   fullWidth: r0.width >= provRect.width - 32,
   summaryInHero: sumRect.top > heroRect.top && sumRect.bottom <= heroRect.bottom,
-  heroBelowLimits: heroRect.top >= provRect.bottom - 1,
+  heroAboveLimits: provRect.top >= heroRect.bottom - 1,
   openGrowsInPlace: wasOpen && openRect.height > r0.height + 20 && Math.abs(openRect.width - r0.width) <= 1,
   narrowNoScroll: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
 });
@@ -1542,7 +1542,7 @@ def test_limit_groups_stack_in_one_full_width_column_and_open_in_place(tmp_path)
         "oneColumn": True,
         "fullWidth": True,
         "summaryInHero": True,
-        "heroBelowLimits": True,
+        "heroAboveLimits": True,
         "openGrowsInPlace": True,
         "narrowNoScroll": True,
     }

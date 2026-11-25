@@ -82,7 +82,7 @@ document.querySelector('#native').addEventListener('load', async () => {
       drawerFits:box.getBoundingClientRect().right <= frame.contentWindow.innerWidth,
       hscroll:doc.documentElement.scrollWidth > frame.contentWindow.innerWidth});
   }
-  const result = {fontLoaded:doc.fonts.check('600 11px "Manrope"'), cases,
+  const result = {fontLoaded:doc.fonts.check('600 11px "Inter"') && doc.fonts.check('600 11px "JetBrains Mono"'), cases,
     titles:[...doc.querySelectorAll('.lane-name')].map(el => el.textContent.trim()),
     values:[...doc.querySelectorAll('.lane-pct')].map(el => el.textContent.trim())};
   document.title = 'PROBE:' + JSON.stringify(result);

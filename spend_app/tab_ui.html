@@ -31,47 +31,62 @@
 /*__EMBEDDED_FONTS__*/
 :root {
   color-scheme: light;
-  --font: "Manrope", -apple-system, "Segoe UI Variable Text", system-ui, sans-serif;
+  --font: "Inter", -apple-system, "Segoe UI Variable Text", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
   --spring: cubic-bezier(0.22, 1, 0.36, 1);
   --surface: #ffffff;
-  --card: #f7f7fc;
-  --ink: #18172b;
-  --muted: #5b5a72;
-  --line: rgba(24, 23, 43, 0.10);
-  --hover: rgba(24, 23, 43, 0.06);
-  --track: rgba(24, 23, 43, 0.12);
-  --spend-bg: #f1f1f8;
-  --more-bg: #e4f6ee;
-  --more-ink: #0d664b;
-  --soon: #c42334;
-  --warn: #9a4008;
-  --ok: #463db8;
-  --bal: #0f6f52;
-  --chip-bg: #fdecee;
-  --chip-ink: #a3202f;
+  --card: #ffffff;
+  --card-grad: linear-gradient(180deg, #ffffff 0%, #f7faff 100%);
+  --ink: #0f172a;
+  --muted: #475569;
+  --line: rgba(15, 23, 42, 0.10);
+  --line-soft: rgba(15, 23, 42, 0.065);
+  --inner-hi: inset 0 1px 0 rgba(255, 255, 255, 0.92);
+  --hover: #f1f5fb;
+  --track: #e2e8f0;
+  --spend-bg: #eef2f9;
+  --more-bg: #ecfdf5;
+  --more-ink: #047857;
+  --soon: #be123c;
+  --warn: #b45309;
+  --ok: #2563eb;
+  --ok-soft: #eff6ff;
+  --ok-bd: #bfdbfe;
+  --bal: #047857;
+  --chip-bg: #fff1f2;
+  --chip-ink: #be123c;
   --badge-ink: #ffffff;
-  --brand: #564ed1;
+  --brand: linear-gradient(135deg, #2563eb 0%, #4f46e5 100%);
+  --brand-glow: 0 2px 8px rgba(37, 99, 235, 0.30);
+  --card-shadow: 0 14px 32px rgba(15, 23, 42, 0.14), 0 3px 8px rgba(15, 23, 42, 0.06);
 }
 html[data-theme="dark"] {
   color-scheme: dark;
-  --surface: #18172b;
-  --card: #201f36;
-  --ink: #ffffff;
-  --muted: #b6b5cc;
-  --line: rgba(255, 255, 255, 0.10);
-  --hover: rgba(255, 255, 255, 0.08);
-  --track: rgba(255, 255, 255, 0.16);
-  --spend-bg: rgba(255, 255, 255, 0.08);
-  --more-bg: rgba(92, 229, 171, 0.16);
-  --more-ink: #7ff0bf;
-  --soon: #ff7381;
-  --warn: #f6ad33;
-  --ok: #a39dff;
-  --bal: #5ce5ab;
-  --chip-bg: rgba(255, 115, 129, 0.16);
-  --chip-ink: #ffc0c7;
-  --badge-ink: #18172b;
-  --brand: #635be0;
+  --surface: #131823;
+  --card: #161d2c;
+  --card-grad: linear-gradient(180deg, #192030 0%, #131823 100%);
+  --ink: #f1f5f9;
+  --muted: #a8b6cc;
+  --line: rgba(255, 255, 255, 0.105);
+  --line-soft: rgba(255, 255, 255, 0.07);
+  --inner-hi: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  --hover: rgba(255, 255, 255, 0.075);
+  --track: #242d42;
+  --spend-bg: rgba(255, 255, 255, 0.085);
+  --more-bg: rgba(52, 211, 153, 0.15);
+  --more-ink: #34d399;
+  --soon: #fb7185;
+  --warn: #fbbf24;
+  --ok: #60a5fa;
+  --ok-soft: rgba(59, 130, 246, 0.16);
+  --ok-bd: rgba(96, 165, 250, 0.34);
+  --bal: #34d399;
+  --chip-bg: rgba(244, 63, 94, 0.16);
+  --chip-ink: #fda4af;
+  --badge-ink: #0b0e14;
+  --brand: linear-gradient(135deg, #3b82f6 0%, #6366f1 100%);
+  --brand-glow: 0 2px 10px rgba(59, 130, 246, 0.40);
+  --card-shadow: 0 18px 40px rgba(0, 0, 0, 0.52), 0 4px 12px rgba(0, 0, 0, 0.32);
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body {
@@ -737,6 +752,106 @@ body.up .card.is-entering .ov-row { animation: rowGlideUp 220ms var(--spring) bo
 .foot-refresh:hover { background: var(--hover); color: var(--ink); }
 .foot-refresh:hover:not(.spinning) svg { transform: rotate(40deg); }
 .foot-refresh:active { transform: scale(0.96); }
+
+/* ---- Copilot Pulse Visual & Typography Refinements --------------------- */
+.tab {
+  box-shadow: inset 0 0 0 1px var(--line), var(--inner-hi);
+  transition: background-color 180ms ease, box-shadow 180ms ease;
+}
+.brand {
+  background: var(--brand);
+  box-shadow: var(--brand-glow);
+}
+.spend, .pbig, .pst, .more-chip, .badge,
+.ch-val, .ov-stat, .pick-stat, .bal, .pl b, .pr, .rest-row span {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+}
+.spend {
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  box-shadow: inset 0 0 0 1px var(--line-soft);
+}
+.pbig {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.pst {
+  font-size: 10px;
+  font-weight: 600;
+}
+.more-chip {
+  font-size: 10px;
+  font-weight: 700;
+}
+.card {
+  background-color: var(--card);
+  background-image: var(--card-grad);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 14px 15px 12px;
+  gap: 10px;
+  box-shadow: var(--card-shadow), var(--inner-hi);
+}
+.ch-val {
+  font-size: 17.5px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+.ov-list {
+  gap: 6px;
+  padding-top: 9px;
+  border-top-color: var(--line-soft);
+}
+.ov-row {
+  padding: 4px 7px;
+  margin: 0 -7px;
+  border-radius: 9px;
+  transition: background-color 150ms ease, transform 160ms var(--spring);
+}
+.ov-row:hover {
+  transform: translateX(1px);
+}
+.ov-bar {
+  height: 3.5px;
+}
+.pill-cfg {
+  padding-top: 7px;
+  border-top-color: var(--line-soft);
+}
+.pill-cfg-btn {
+  padding: 5px 7px;
+  margin: 0 -7px;
+  border-radius: 9px;
+}
+.pill-picker-list {
+  gap: 3px;
+  padding: 6px 4px 3px 0;
+}
+.pick-row {
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  transition: background-color 140ms ease, border-color 140ms ease, transform 150ms var(--spring);
+}
+.pick-row:active {
+  transform: scale(0.985);
+}
+.pick-row.is-active {
+  background: var(--ok-soft);
+  border-color: var(--ok-bd);
+}
+.pick-auto-ico {
+  background: var(--ok-soft);
+  border: 1px solid var(--ok-bd);
+}
+.card-foot {
+  padding-top: 9px;
+  border-top-color: var(--line-soft);
+}
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

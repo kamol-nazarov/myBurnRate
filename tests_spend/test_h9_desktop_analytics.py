@@ -938,6 +938,8 @@ def test_h9_ui_charts_insights_mix_prices_and_models(tmp_path):
 
 HEATMAP_PROBE = """
 await until(() => !document.getElementById('h9AnalyticsSection').hidden && document.querySelectorAll('#h9Heatmap .h9-heat-cell').length === 168);
+document.querySelector('#viewNavBar [data-view="spend"]').click();
+await wait(40);
 const out = {};
 out.cells = document.querySelectorAll('#h9Heatmap .h9-heat-cell').length;
 out.rows = document.querySelectorAll('#h9Heatmap .h9-heat-row').length;

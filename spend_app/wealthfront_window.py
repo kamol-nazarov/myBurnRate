@@ -840,13 +840,13 @@ TAB_WINDOW_TITLE = "BURNRATE tab"
 #: How long the tab stays opaque after the pointer leaves it (Auto-fade).
 TAB_FADE_DELAY = 1.5
 TAB_LIGHT_BACKGROUND = "#FFFFFF"
-TAB_DARK_BACKGROUND = "#18172B"
+TAB_DARK_BACKGROUND = "#131823"
 HOST_PAGE_METHODS = frozenset({"refresh", "openSettings", "notify", "setUpdate"})
-LIGHT_BACKGROUND = "#F5F6FA"
-DARK_BACKGROUND = "#101117"
+LIGHT_BACKGROUND = "#F2F5FA"
+DARK_BACKGROUND = "#0B0E14"
 # DWMWA_BORDER_COLOR takes a COLORREF, 0x00BBGGRR.
-LIGHT_BORDER = 0x00EAE4E4  # #E4E4EA
-DARK_BORDER = 0x00372C2A  # #2A2C37
+LIGHT_BORDER = 0x00EAE2DC  # #DCE2EA
+DARK_BORDER = 0x0036261E  # #1E2636
 PERSONALIZE_KEY = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
 
 
@@ -888,20 +888,28 @@ def apply_theme_pref(html: str, theme_pref: str) -> str:
 
 
 def embedded_font_css() -> str:
-    """The offline Manrope variable font as an ``@font-face`` rule ("" if absent)."""
-    font_path = Path(__file__).parent / "fonts" / "manrope-latin.woff2"
-    if not font_path.is_file():
-        return ""
-    b64 = base64.b64encode(font_path.read_bytes()).decode("ascii")
-    return (
-        '@font-face{font-family:"Manrope";font-style:normal;'
-        "font-weight:200 800;font-display:block;"
-        f'src:url("data:font/woff2;base64,{b64}") format("woff2");}}'
+    """Offline Inter and JetBrains Mono variable fonts as ``@font-face`` rules."""
+    fonts_dir = Path(__file__).parent / "fonts"
+    specs = (
+        ("Inter", "inter-latin.woff2", "400 800"),
+        ("JetBrains Mono", "jetbrains-mono-latin.woff2", "400 700"),
     )
+    rules: list[str] = []
+    for family, filename, weight_range in specs:
+        font_path = fonts_dir / filename
+        if not font_path.is_file():
+            continue
+        b64 = base64.b64encode(font_path.read_bytes()).decode("ascii")
+        rules.append(
+            f'@font-face{{font-family:"{family}";font-style:normal;'
+            f"font-weight:{weight_range};font-display:block;"
+            f'src:url("data:font/woff2;base64,{b64}") format("woff2");}}'
+        )
+    return "".join(rules)
 
 
 def load_ui_html(theme_pref: str = "system") -> str:
-    """Load wealthfront_ui.html with offline Manrope variable font embedded.
+    """Load wealthfront_ui.html with offline Inter and JetBrains Mono variable fonts embedded.
 
     ``theme_pref`` replaces the page's ``data-theme-pref="system"`` attribute so
     the saved choice is applied before first paint. A page without it is served
@@ -5041,7 +5049,7 @@ def run_webview(
                         "document.getElementById('heroValue')?.textContent || ''"
                     )
                     font_ok = window.evaluate_js(
-                        "document.fonts.check('700 30px \"Plus Jakarta Sans\"')"
+                        "document.fonts.check('700 30px \"Inter\"')"
                     )
                     if (
                         isinstance(count, int)

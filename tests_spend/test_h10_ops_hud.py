@@ -1057,31 +1057,14 @@ def test_browser_hud_density_and_initial_state(tmp_path):
     probe_js = """
     await until(() => document.querySelector('.provider-row'));
     const root = document.documentElement;
-    const densBtn = document.getElementById('densityBtn');
     const out = {
-      removed: ['hudMiniBar', 'fullModeBtn', 'miniModeBtn', 'viewModeGroup', 'hudMiniLive'].filter(id => document.getElementById(id)),
+      removed: ['hudMiniBar', 'fullModeBtn', 'miniModeBtn', 'viewModeGroup', 'hudMiniLive', 'densityBtn'].filter(id => document.getElementById(id)),
       bootMini: root.classList.contains('is-mini'),
       bootComfy: root.classList.contains('is-comfortable'),
-      bootDensityLabel: densBtn.textContent,
       bootCalls: window.__calls.filter(c => c[0] === 'set_hud_mini' || c[0] === 'set_hud_density'),
       footerOrder: [...document.querySelectorAll('#opsBar .ops-pill')].map(b => b.id),
       runningCount: document.getElementById('runningNowCount').textContent,
     };
-    densBtn.click();
-    await wait(20);
-    out.afterComfy = {
-      isComfy: root.classList.contains('is-comfortable'),
-      pressed: densBtn.getAttribute('aria-pressed'),
-      label: densBtn.textContent,
-    };
-    densBtn.click();
-    await wait(20);
-    out.afterCompact = {
-      isComfy: root.classList.contains('is-comfortable'),
-      pressed: densBtn.getAttribute('aria-pressed'),
-      label: densBtn.textContent,
-    };
-    out.calls = window.__calls.filter(c => c[0] === 'set_hud_mini' || c[0] === 'set_hud_density');
     report(out);
     """
 
@@ -1097,13 +1080,9 @@ def test_browser_hud_density_and_initial_state(tmp_path):
 
     assert r["removed"] == []
     assert r["bootMini"] is False and r["bootComfy"] is False
-    assert r["bootDensityLabel"] == "Density: Compact"
     assert r["bootCalls"] == []
-    assert r["footerOrder"] == ["diagBtn", "shareWeekBtn", "pinBtn", "densityBtn", "settingsBtn"]
+    assert r["footerOrder"] == ["diagBtn", "shareWeekBtn", "pinBtn", "settingsBtn"]
     assert r["runningCount"] == "2 live"
-    assert r["afterComfy"] == {"isComfy": True, "pressed": "true", "label": "Density: Comfortable"}
-    assert r["afterCompact"] == {"isComfy": False, "pressed": "false", "label": "Density: Compact"}
-    assert r["calls"] == [["set_hud_density", "comfortable"], ["set_hud_density", "compact"]]
 
 
 @needs_chrome
@@ -1132,7 +1111,7 @@ def test_browser_hud_boots_saved_comfortable_ignores_stale_mini_and_shows_empty_
     r = probe(html, 380, tmp_path, height=700)
     assert r == {
         "isMini": False,
-        "isComfy": True,
+        "isComfy": False,
         "emptyTitle": "Waiting for the first readings",
         "addSource": "Add a source",
         "lanes": 5,  # one muted lane per idle provider, each with its reason
