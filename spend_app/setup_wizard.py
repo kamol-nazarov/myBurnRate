@@ -2056,6 +2056,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             deferred_history = attach_sign_in_history(remote_payload, local_history)
             from spend_app.connection_secrets import (
                 MACHINE_TOKEN_VAULT_REF,
+                credential_origin_allowed,
                 publish_spoke_credentials,
                 read_vault_secret,
                 revoke_or_queue_machine_token,
@@ -2070,21 +2071,23 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
             previous_token = str(previous_spoke.get("token") or "").strip() or (
                 read_vault_secret(settings.database_path, MACHINE_TOKEN_VAULT_REF) or ""
             )
-            prev_hub = str(previous_spoke.get("hubUrl") or "").rstrip("/").lower()
             reuse_machine = (
                 mode == "login"
                 and previous.get("role") == "spoke"
                 and bool(previous_spoke.get("enabled"))
                 and bool(previous_token)
-                and (
-                    prev_hub == server_url
-                    or (not prev_hub and bool(previous_spoke.get("hubConfigured")))
+                and credential_origin_allowed(
+                    settings.database_path, previous_token, server_url, previous_spoke,
                 )
             )
             if reuse_machine:
                 remote_payload["sessionOnly"] = True
             working_url, remote_data, owner_session = _call_central_server_account(server_url, endpoint, remote_payload)
             working_url = hub_origin(working_url)
+            if reuse_machine and not credential_origin_allowed(
+                settings.database_path, previous_token, working_url, previous_spoke,
+            ):
+                reuse_machine = False
             hub_client = _HUB_TEST_CLIENTS.get(working_url)
             if reuse_machine:
                 token = previous_token
@@ -2199,6 +2202,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                         or (not prev_signed_out and cur_spoke.get("signedOut"))
                         or cur_tok != previous_token
                         or cur_spoke.get("hubUrl") != previous_spoke.get("hubUrl")
+                        or cur_spoke.get("credentialOrigin") != previous_spoke.get("credentialOrigin")
                     ):
                         raise CodedError("AUTH-107", status_code=409)
                     if account_generation:
@@ -2254,6 +2258,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     settings.database_path,
                     owner_session=owner_session,
                     machine_token=token,
+                    authenticated_origin=working_url,
                     prepare_state=_prepare_account,
                     apply_state=_apply_account,
                 )

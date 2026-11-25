@@ -1349,7 +1349,7 @@ def publish_spoke_credentials(
                     apply_state(connection, state)
 
                 spoke = dict(state.get("spokeConfig") or {})
-                issuing_origin = authenticated_origin or spoke.get("hubUrl") or spoke.get("credentialOrigin")
+                issuing_origin = authenticated_origin or spoke.get("credentialOrigin") or spoke.get("hubUrl")
                 if (clean_owner or clean_machine) and issuing_origin:
                     new_origin = hub_origin(issuing_origin)
                     old_origin = orig_spoke.get("credentialOrigin") or orig_spoke.get("hubUrl")
