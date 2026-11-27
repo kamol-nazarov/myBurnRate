@@ -521,7 +521,10 @@ def merge_provider_entries(
 
         day_from_windows: list[int] = []
         week_from_windows: list[int] = []
+        has_parent_weekly = isinstance(wt_provider.get("weekly"), dict)
         for lk in WEEKLY_KEYS:
+            if has_parent_weekly and lk.startswith("weekly-"):
+                continue
             entry = wt_provider.get(lk)
             if isinstance(entry, dict):
                 if isinstance(entry.get("tokens"), (int, float)):

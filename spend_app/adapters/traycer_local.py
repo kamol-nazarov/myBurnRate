@@ -189,9 +189,10 @@ def covered_sessions(database_path: Path | None, session_ids: set[str] | None = 
                         marks = ",".join("?" for _ in sources)
                         query = (
                             f"SELECT DISTINCT session_id FROM {table} "
-                            f"WHERE session_id IN ({s_marks}) AND tool_key=? AND source IN ({marks})"
+                            f"WHERE session_id IN ({s_marks}) "
+                            f"AND (tool_key=? OR tool_key LIKE ?) AND source IN ({marks})"
                         )
-                        for (session_id,) in connection.execute(query, (*batch, tool, *sources)):
+                        for (session_id,) in connection.execute(query, (*batch, tool, f"{tool}-%", *sources)):
                             if session_id:
                                 found.add((tool, str(session_id)))
             else:
@@ -199,9 +200,9 @@ def covered_sessions(database_path: Path | None, session_ids: set[str] | None = 
                     marks = ",".join("?" for _ in sources)
                     query = (
                         f"SELECT DISTINCT session_id FROM {table} "
-                        f"WHERE tool_key=? AND source IN ({marks}) AND session_id IS NOT NULL"
+                        f"WHERE (tool_key=? OR tool_key LIKE ?) AND source IN ({marks}) AND session_id IS NOT NULL"
                     )
-                    for (session_id,) in connection.execute(query, (tool, *sources)):
+                    for (session_id,) in connection.execute(query, (tool, f"{tool}-%", *sources)):
                         if session_id:
                             found.add((tool, str(session_id)))
     except sqlite3.Error:
@@ -223,7 +224,7 @@ def drop_native_duplicates(connection: sqlite3.Connection) -> None:
                   AND EXISTS (
                       SELECT 1 FROM {table} native
                       WHERE native.session_id = {table}.session_id
-                        AND native.tool_key = {table}.tool_key
+                        AND (native.tool_key = {table}.tool_key OR native.tool_key LIKE {table}.tool_key || '-%')
                         AND native.source != ?
                   )
                 """,
@@ -259,7 +260,7 @@ def _traycer_native_overlap_token(database_path: Path | None) -> tuple | None:
                       AND EXISTS (
                           SELECT 1 FROM {table} n
                           WHERE n.session_id = t.session_id
-                            AND n.tool_key = t.tool_key
+                            AND (n.tool_key = t.tool_key OR n.tool_key LIKE t.tool_key || '-%')
                             AND n.source != ?
                       )
                     LIMIT 1

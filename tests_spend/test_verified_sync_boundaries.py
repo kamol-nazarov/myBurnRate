@@ -205,3 +205,30 @@ def test_data_removal_requires_owner_and_revocation_and_retains_other_data(tmp_p
     with connect(database) as conn:
         assert [row[0] for row in conn.execute("SELECT raw_id FROM usage_events")] == [f"m:{second}:fixture"]
         assert conn.execute("SELECT action FROM admin_audit WHERE target=?", (first,)).fetchone()[0] == "machine.data.delete"
+
+
+def test_unavailable_quota_labels_pass_sync_validation_up_to_512_chars(tmp_path):
+    database = tmp_path / "fixture.sqlite3"
+    now = datetime.now(UTC)
+    long_label = (
+        "Antigravity Claude/GPT models · Five-hour remaining — "
+        "Antigravity is running but its quota lookup failed (RuntimeError). It may still be starting."
+    )
+    assert len(long_label) > 128
+    apply_sync_push(
+        database, PricingEngine([]), machine_id="desktop", now=now,
+        body={"quotas": [{
+            "provider_key": "antigravity", "limit_key": "3p-5h", "label": long_label,
+            "unit": "unavailable", "source": "antigravity_local_rpc", "pct": None,
+            "polled_at": now.isoformat(),
+        }]},
+    )
+    with connect(database) as conn:
+        stored_label = conn.execute("SELECT label FROM quotas").fetchone()[0]
+    assert stored_label == long_label
+    with pytest.raises(ValueError):
+        validate_push({"quotas": [{
+            "provider_key": "antigravity", "limit_key": "3p-5h", "label": "x" * 513,
+            "unit": "unavailable", "source": "antigravity_local_rpc", "pct": None,
+            "polled_at": now.isoformat(),
+        }]}, now)

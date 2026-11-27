@@ -432,3 +432,42 @@ def test_plan_group_as_dict_round_trip_fields():
     assert payload["group_id"] == "tool:custom"
     assert payload["accrued_cost"] == Decimal("1")
     assert payload["tool_keys"] == ("custom",)
+
+
+def test_profile_lane_events_assign_to_family_plan_group():
+    period_start = _sep_day_start(1)
+    period_end = _sep_day_start(10)
+    plans = [
+        {
+            "id": 1,
+            "name": "Claude Max 20x",
+            "tool_key": "claude-code",
+            "amount_usd": "200",
+            "cadence": "monthly",
+            "start_date": "2026-09-01",
+            "end_date": None,
+            "accrued_cost": Decimal("60"),
+        },
+        {
+            "id": 2,
+            "name": "OpenCode Go",
+            "tool_key": "opencode-go",
+            "amount_usd": "10",
+            "cadence": "monthly",
+            "start_date": "2026-09-01",
+            "end_date": None,
+            "accrued_cost": Decimal("3"),
+        },
+    ]
+    groups = build_groups(plans, period_start, period_end, NY)
+    when = datetime(2026, 9, 5, 12, tzinfo=UTC)
+    events = [
+        {"raw_id": "cc-primary", "tool_key": "claude-code", "occurred_at": when},
+        {"raw_id": "cc-work", "tool_key": "claude-code-work", "occurred_at": when},
+        {"raw_id": "og-2", "tool_key": "opencode-go-2", "occurred_at": when},
+        {"raw_id": "oc-provider", "tool_key": "opencode-provider:deepseek", "occurred_at": when},
+    ]
+    by_group, unassigned = assign_events_to_groups(events, groups)
+    assert {e["raw_id"] for e in by_group["tool:claude-code"]} == {"cc-primary", "cc-work"}
+    assert {e["raw_id"] for e in by_group["tool:opencode-go"]} == {"og-2"}
+    assert {e["raw_id"] for e in unassigned} == {"oc-provider"}

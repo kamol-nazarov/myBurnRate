@@ -24,6 +24,7 @@ from spend_app.plans_value_groups import (
     build_groups,
     canonical_tool_key,
     event_tool_keys_for,
+    profile_family_tool_key,
 )
 from spend_app.plans_value_periods import (
     SUPPORTED_PERIODS,
@@ -699,10 +700,12 @@ def _assemble_cycle_report(
     unassigned_priced = [
         event for event in unassigned_priced
         if str(event.get("tool_key") or "").strip().lower() not in covered
+        and profile_family_tool_key(str(event.get("tool_key") or "")) not in covered
     ]
     unassigned_unpriced = [
         event for event in unassigned_unpriced
         if str(event.get("tool_key") or "").strip().lower() not in covered
+        and profile_family_tool_key(str(event.get("tool_key") or "")) not in covered
     ]
     valued = []
     for row in groups_data:

@@ -18,7 +18,7 @@ QUOTA_KEY = re.compile(r"[a-z0-9_.:-]{1,64}")
 TEXT_LIMITS = {
     "source": 128, "tool_key": 128, "model_key": 128, "modelKey": 128,
     "project": 256, "raw_id": 512, "session_id": 512, "id": 512,
-    "label": 128, "unit": 32, "os": 128, "deviceId": 128,
+    "label": 512, "unit": 32, "os": 128, "deviceId": 128,
     "machineId": 48, "admin_context_window": 32, "organization_scope": 64,
     "state": 32,
 }

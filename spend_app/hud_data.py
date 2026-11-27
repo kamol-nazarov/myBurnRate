@@ -68,7 +68,7 @@ def lane_usage_pace(connection, capacity: list[dict], *, now: datetime, machine:
             continue
         for row in card.get("rows") or []:
             limit_key = row.get("limitKey") or ""
-            if limit_key.rsplit("-", 1)[-1] not in WINDOW_LENGTHS:
+            if _window_span(limit_key) not in WINDOW_LENGTHS:
                 continue
             start = _window_start(limit_key, row.get("resetsAt"))
             if start is not None and start <= now < aggregate._parse(row["resetsAt"]):
@@ -272,6 +272,13 @@ def repo_breakdown(enriched: list[dict], *, limit: int = 5) -> dict:
     }
 
 
+def _window_span(limit_key: str) -> str:
+    """Span suffix for a limit key, treating model-scoped ``weekly-<model>`` as ``weekly``."""
+    if limit_key.startswith("weekly-"):
+        return "weekly"
+    return limit_key.rsplit("-", 1)[-1]
+
+
 def _window_start(limit_key: str, resets_at: str | None) -> datetime | None:
     """Start of the quota window that ends at ``resets_at``."""
     if not resets_at:
@@ -280,7 +287,7 @@ def _window_start(limit_key: str, resets_at: str | None) -> datetime | None:
         reset = aggregate._parse(resets_at)
     except ValueError:
         return None
-    span = limit_key.rsplit("-", 1)[-1]
+    span = _window_span(limit_key)
     if span == "monthly":
         year, month = (reset.year - 1, 12) if reset.month == 1 else (reset.year, reset.month - 1)
         return reset.replace(year=year, month=month, day=min(reset.day, calendar.monthrange(year, month)[1]))
@@ -289,11 +296,14 @@ def _window_start(limit_key: str, resets_at: str | None) -> datetime | None:
 
 
 def _lane_takes(provider_key: str, limit_key: str):
-    """Antigravity meters Gemini and the other models in separate lanes."""
+    """Antigravity and scoped Claude weekly pools meter subsets of models."""
     if provider_key == "antigravity" and limit_key.startswith("gemini-"):
         return lambda model: "gemini" in model
     if provider_key == "antigravity" and limit_key.startswith("3p-"):
         return lambda model: "gemini" not in model
+    if (provider_key == "claude-code" or provider_key.startswith("claude-code-")) and limit_key.startswith("weekly-"):
+        scope = limit_key[len("weekly-"):].lower()
+        return lambda model, s=scope: s in model.lower()
     return lambda _model: True
 
 
