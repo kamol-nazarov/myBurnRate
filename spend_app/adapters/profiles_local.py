@@ -50,6 +50,24 @@ def _profile_folder_and_patterns(
     return folder, patterns, arg_value
 
 
+def _has_local_tool_usage(database_path: Path, tool_key: str) -> bool:
+    """True when local usage for ``tool_key`` was already recorded (e.g. via session-lane splitting)."""
+    from spend_app.db import connect
+
+    try:
+        with connect(database_path) as connection:
+            for table in ("usage_events", "unpriced_usage_events"):
+                hit = connection.execute(
+                    f"SELECT 1 FROM {table} WHERE tool_key=? AND raw_id NOT LIKE 'm:%' LIMIT 1",
+                    (tool_key,),
+                ).fetchone()
+                if hit is not None:
+                    return True
+    except Exception:
+        return False
+    return False
+
+
 def ingest(*, database_path: Path, pricing) -> dict:
     from spend_app.adapters.file_cache import merge_results
     from spend_app.connection_paths import MissingLocation, approved, normalize
@@ -124,7 +142,16 @@ def ingest(*, database_path: Path, pricing) -> dict:
                 "issues": [f"{profile.key}:{type(exc).__name__}"],
             }
         if result.get("status") != "skipped":
-            record_completion(store, spec.key, profile.revision, result, profile=profile.key)
+            completion = result
+            if (
+                profile.provider == "claude_local"
+                and result.get("status") in {"success", "partial"}
+                and not result.get("eventsAccepted", result.get("eventsSeen", 0))
+                and not result.get("issues")
+                and _has_local_tool_usage(database_path, profile.tool_key)
+            ):
+                completion = {**result, "eventsAccepted": 1}
+            record_completion(store, spec.key, profile.revision, completion, profile=profile.key)
             results.append(result)
 
     if not results:

@@ -1385,7 +1385,7 @@ def export_sync_batch(
             clean_quota_numbers({
                 "provider_key": r["provider_key"],
                 "limit_key": r["limit_key"],
-                "label": r["label"],
+                "label": str(r["label"] or "")[:512],
                 "used": r.get("used"),
                 "allowance": r.get("allowance"),
                 "unit": r.get("unit") or "pct",

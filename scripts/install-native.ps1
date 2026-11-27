@@ -387,7 +387,8 @@ function Test-MinisignFile {
 
 Write-Host "Checking latest myBurnRate release from $Repo..." -ForegroundColor Cyan
 $FeedRaw = Invoke-WebRequest -Uri $FeedUrl -UseBasicParsing -TimeoutSec 30
-$Feed = $FeedRaw.Content | ConvertFrom-Json
+$FeedText = if ($FeedRaw.Content -is [byte[]]) { [System.Text.Encoding]::UTF8.GetString($FeedRaw.Content) } else { [string]$FeedRaw.Content }
+$Feed = $FeedText | ConvertFrom-Json
 
 $Version = [string]$Feed.version
 if ($Version -notmatch '^[0-9A-Za-z.+-]+$') {

@@ -248,5 +248,40 @@ def test_uncurated_model_names_read_cleanly():
     assert _model_name("opencode-go", "opencode-go:deepseek-v4.1-flash") == "DeepSeek V4.1 Flash"
     assert _model_name("antigravity", "antigravity:gpt-oss-120b") == "GPT OSS 120B"
     assert _model_name("codex", "gpt-5.7-sol") == "GPT 5.7 Sol"
+
+
+def test_claude_work_weekly_fable_gets_scoped_window_tokens_without_double_counting(tmp_path):
+    from spend_app.wealthfront_window import merge_provider_entries
+
+    aggregate.reset_memo()
+    settings = settings_for(tmp_path)
+    with connect(settings.database_path) as connection:
+        quota(connection, "claude-code-work", "weekly", NOW + timedelta(days=3))
+        quota(connection, "claude-code-work", "weekly-fable", NOW + timedelta(days=3))
+        event(connection, "w-opus", "claude-code-work", "claude-opus-5-5", NOW - timedelta(hours=1), fresh=300)
+        event(connection, "w-fable", "claude-code-work", "claude-fable-5-2", NOW - timedelta(hours=1), fresh=120)
+
+    pricing = PricingEngine.load(settings.pricing_path)
+    usage = recorded_usage(settings, pricing, now=NOW)
+    work = usage["windowTokens"]["claude-code-work"]
+    assert work["weekly"]["tokens"] == 420
+    assert work["weekly-fable"]["tokens"] == 120
+    assert "today" not in work["weekly-fable"]
+
+    hud = {
+        "capacity": [{
+            "providerKey": "claude-code-work",
+            "providerName": "Claude Code · Work",
+            "rows": [
+                {"limitKey": "weekly", "label": "Weekly", "pct": 10.0, "unit": "pct", "resetsAt": iso(NOW + timedelta(days=3))},
+                {"limitKey": "weekly-fable", "label": "Fable weekly", "pct": 5.0, "unit": "pct", "resetsAt": iso(NOW + timedelta(days=3))},
+            ],
+        }]
+    }
+    merged = merge_provider_entries({"tools": []}, hud=hud, hud_usage=usage, now=NOW)
+    card = next(p for p in merged if p["key"] == "claude-code-work")
+    assert card["burn"]["weekTokens"] == 420
+    fable_win = next(w for w in card["windows"] if w["limitKey"] == "weekly-fable")
+    assert fable_win["windowTokens"] == 120
     assert _model_name("codex", "gpt-5.6-sol") == "GPT-5.6 Sol"  # curated name wins
     assert _model_name("claude-code", "claude-opus-5-5") == "Opus 5.5"

@@ -9,6 +9,14 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+## [0.6.12] - 2026-11-27
+
+### Fixed
+
+- **Hub sync validation for unavailable quota labels.** Raised the sync quota `label` text limit from 128 to 512 characters (and bounded exported labels defensively) so BURNRATE's own diagnostic quota status labels no longer fail `POST /api/sync/push` with `422`.
+- **Claude Work profile usage & Fable weekly tokens.** Matched extra profile lanes (such as `claude-code-work` and `opencode-go-2`) to their family plan groups in Plans & Value instead of dumping them into Unassigned, marked Claude extra profiles as `receiving_usage` when their sessions are split by `claude_session_lanes`, recognized extra profile lanes in Traycer native-session deduplication, and wired model-scoped `weekly-fable` window tokens without double-counting into weekly burn.
+- **Windows PowerShell installer (`install-native.ps1`).** Decoded `byte[]` responses from `Invoke-WebRequest` before `ConvertFrom-Json` so `install-native.ps1` works cleanly when GitHub serves `native-latest.json` as `application/octet-stream`.
+
 ## [0.6.11] - 2026-11-25
 
 ### Security

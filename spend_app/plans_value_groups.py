@@ -39,6 +39,25 @@ TOOL_ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
     "opencode": ("opencode", "zcode"),
 }
 
+# Multi-profile providers whose extra lanes use "<family>-<slug>" (e.g. "claude-code-work").
+PROFILE_TOOL_FAMILIES: tuple[str, ...] = (
+    "claude-code",
+    "opencode-go",
+    "codex",
+    "grok",
+    "antigravity",
+    "muse",
+)
+
+
+def profile_family_tool_key(tool_key: str) -> str:
+    """Map an extra profile lane like ``claude-code-work`` to its family key."""
+    key = str(tool_key or "").strip().lower()
+    for family in PROFILE_TOOL_FAMILIES:
+        if key.startswith(family + "-"):
+            return family
+    return key
+
 GROUP_DISPLAY_NAMES: dict[str, str] = {
     "opencode": "Z.AI (OpenCode / ZCode)",
     "opencode-go": "OpenCode Go",
@@ -359,7 +378,7 @@ def assign_events_to_groups(
         if not isinstance(occurred, datetime):
             unassigned.append(event)
             continue
-        candidates = by_tool.get(tool) or []
+        candidates = by_tool.get(tool) or by_tool.get(profile_family_tool_key(tool)) or []
         matched_id: str | None = None
         for group_id, intervals in candidates:
             if is_in_intervals(occurred, intervals):
