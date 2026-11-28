@@ -400,7 +400,7 @@ def test_the_hub_applies_a_plan_change_forwarded_by_a_spoke(settings: Settings, 
     registered = client.post("/api/account/register", headers=operator, json={"username": "owner@example.com", "password": "synthetic-long-password", "sessionOnly": True})
     assert registered.status_code == 200
     assert "sessionToken" not in registered.json()
-    session = registered.cookies["burnrate_access"]
+    session = registered.cookies["__Host-burnrate_access"]
     response = client.post("/api/account/subscriptions", headers={"Authorization": f"Bearer {session}", "X-BURNRATE-Request": "1"}, json={
         "action": "plan", "operation": "end", "request_id": "spoke-end-muse", "plan_id": plan["id"],
         "expected_version": plan["version"], "end_date": "2026-10-26"})

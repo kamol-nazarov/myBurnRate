@@ -160,6 +160,133 @@ def credential_origin_ref(token: str) -> str:
     return "burnrate-origin-" + hashlib.sha256(token.encode()).hexdigest()
 
 
+def _delete_origin_refs(vault, tokens, *, keep=()) -> None:
+    if vault is None:
+        return
+    kept = {t.strip() for t in keep if isinstance(t, str) and t.strip()}
+    for tok in dict.fromkeys(t.strip() for t in tokens if isinstance(t, str) and t.strip()):
+        if tok in kept:
+            continue
+        try:
+            vault.delete(credential_origin_ref(tok))
+        except Exception:
+            pass
+
+
+def _collect_db_credential_refs(database_path: Path | None) -> list[str]:
+    if database_path is None:
+        return []
+    db_file = Path(database_path)
+    if not db_file.is_file():
+        return []
+    import json
+    from spend_app.db import connect
+
+    refs: list[str] = []
+    try:
+        with connect(db_file) as conn:
+            for meta_key in ("connections.v1", "connections.v2"):
+                row = conn.execute("SELECT value FROM app_meta WHERE key=?", (meta_key,)).fetchone()
+                if not row or not row[0]:
+                    continue
+                try:
+                    data = json.loads(row[0])
+                except ValueError:
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                for ref in data.get("cleanup") or []:
+                    if isinstance(ref, str) and ref.startswith("burnrate-"):
+                        refs.append(ref)
+                bindings = data.get("bindings")
+                if isinstance(bindings, dict):
+                    for rec in bindings.values():
+                        ref = rec.get("credentialRef") if isinstance(rec, dict) else None
+                        if isinstance(ref, str) and ref.startswith("burnrate-"):
+                            refs.append(ref)
+                profiles = data.get("profiles")
+                if isinstance(profiles, dict):
+                    for prov_map in profiles.values():
+                        if not isinstance(prov_map, dict):
+                            continue
+                        for rec in prov_map.values():
+                            ref = rec.get("credentialRef") if isinstance(rec, dict) else None
+                            if isinstance(ref, str) and ref.startswith("burnrate-"):
+                                refs.append(ref)
+    except Exception:
+        return refs
+    return list(dict.fromkeys(refs))
+
+
+def _enumerate_windows_service_refs(service_name: str) -> list[str]:
+    """Enumerate Windows Credential Manager usernames scoped strictly to ``service_name``."""
+    import os
+
+    if os.name != "nt" or not service_name:
+        return []
+    try:
+        from win32ctypes.pywin32 import win32cred
+    except Exception:
+        return []
+    found: list[str] = []
+    try:
+        creds = win32cred.CredEnumerate(f"*{service_name}*", 0) or []
+    except Exception:
+        return []
+    suffix = f"@{service_name}"
+    for item in creds:
+        if not isinstance(item, dict):
+            continue
+        target = str(item.get("TargetName") or "")
+        user = str(item.get("UserName") or "")
+        if target == service_name or target.endswith(suffix):
+            if user.startswith("burnrate-"):
+                found.append(user)
+    return list(dict.fromkeys(found))
+
+
+def wipe_all_credentials(database_path: Path | None, *, vault=None) -> dict:
+    """Remove all BURNRATE-owned OS keychain entries for ``database_path``.
+
+    Deletes owner session, machine token, pending revokes, active/historical
+    ``burnrate-origin-*`` entries, and all provider API-key references.
+    """
+    use_vault = vault if vault is not None else get_vault(database_path)
+    if use_vault is None:
+        return {"ok": False, "removed": 0, "reason": "vault_unavailable"}
+
+    tokens_to_clear_origins: list[str] = []
+    for ref in (OWNER_SESSION_VAULT_REF, MACHINE_TOKEN_VAULT_REF):
+        val = read_vault_secret(database_path, ref, vault=use_vault)
+        if val:
+            tokens_to_clear_origins.append(val)
+
+    refs: list[str] = [
+        OWNER_SESSION_VAULT_REF,
+        MACHINE_TOKEN_VAULT_REF,
+        PENDING_REVOKE_VAULT_REF,
+        *(credential_origin_ref(t) for t in tokens_to_clear_origins),
+        *_collect_db_credential_refs(database_path),
+    ]
+    if vault is None:
+        service_name = getattr(use_vault, "service", "")
+        refs.extend(_enumerate_windows_service_refs(service_name))
+
+    removed = 0
+    for ref in dict.fromkeys(r for r in refs if isinstance(r, str) and r.startswith("burnrate-")):
+        try:
+            existed = use_vault.get(ref) is not None
+        except Exception:
+            existed = True
+        try:
+            use_vault.delete(ref)
+            if existed:
+                removed += 1
+        except Exception:
+            pass
+    return {"ok": True, "removed": removed}
+
+
 def credential_origin_allowed(database_path, token: str, origin: str, spoke: dict, *, vault=None) -> bool:
     from spend_app.hub_origin import bound_hub_origin
 
@@ -1396,6 +1523,20 @@ def publish_spoke_credentials(
 
                 saved = write_setup_state(connection, state)
                 connection.commit()
+                active_tokens = tuple(
+                    t for t in (clean_owner or prev_owner, clean_machine or prev_machine) if t
+                )
+                superseded = [
+                    tok
+                    for tok in (
+                        prev_owner if clean_owner and prev_owner and prev_owner != clean_owner else None,
+                        prev_machine if clean_machine and prev_machine and prev_machine != clean_machine else None,
+                        legacy_owner if legacy_owner and legacy_owner not in active_tokens else None,
+                        legacy_machine if legacy_machine and legacy_machine not in active_tokens else None,
+                    )
+                    if tok
+                ]
+                _delete_origin_refs(use_vault, superseded, keep=active_tokens)
                 return saved
         except Exception:
             if wrote_owner or wrote_machine:
@@ -1559,11 +1700,13 @@ def clear_spoke_credentials(
                                 use_vault.delete(OWNER_SESSION_VAULT_REF)
                             except Exception:
                                 pass
+                            _delete_origin_refs(use_vault, removed_owner)
                         if clear_machine_token:
                             try:
                                 use_vault.delete(MACHINE_TOKEN_VAULT_REF)
                             except Exception:
                                 pass
+                            _delete_origin_refs(use_vault, removed_machine)
 
                     spoke = dict(state.get("spokeConfig") or {})
                     prev_gen = int(spoke.get("credentialGeneration") or 0)
@@ -1632,11 +1775,13 @@ def clear_spoke_credentials(
                             use_vault.delete(OWNER_SESSION_VAULT_REF)
                         except Exception:
                             pass
+                        _delete_origin_refs(use_vault, removed_owner)
                     if clear_machine_token:
                         try:
                             use_vault.delete(MACHINE_TOKEN_VAULT_REF)
                         except Exception:
                             pass
+                        _delete_origin_refs(use_vault, removed_machine)
 
             return True, {
                 "ownerTokens": removed_owner,

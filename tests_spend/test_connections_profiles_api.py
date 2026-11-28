@@ -689,8 +689,8 @@ def test_get_connections_path_formatting_home_tilde_vs_outside_home(
     assert resp.status_code == 200
     claude_row = next(r for r in resp.json()["connections"] if r["source"] == "claude_local")
 
-    # Top-level legacy row["location"] remains unchanged (full raw path)
-    assert claude_row["location"] == str(inside_added)
+    # Top-level row["location"] also normalizes home paths with ~ (D-11)
+    assert claude_row["location"] == "~/profiles/claude-inside"
 
     profs = {p["key"]: p for p in claude_row["profiles"]}
     assert profs["default"]["location"] == "~/profiles/claude-inside"

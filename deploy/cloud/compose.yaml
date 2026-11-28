@@ -1,0 +1,105 @@
+# Isolated multi-user hosted cloud stack for myBurnRate Cloud.
+# Safe to run alongside other workloads on a shared Linux host (dedicated network & volume)
+# and portable to a dedicated VPS by copying ./data/cloud (or restoring from R2/S3).
+#
+# Quick start:
+#   cp .env.example .env   # fill in domain + Resend API key + R2/S3 backup credentials
+#   docker compose -f deploy/cloud/compose.yaml up -d --build
+
+services:
+  cloud-hub:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    mem_limit: 512m
+    tmpfs:
+      - /tmp
+    environment:
+      BURNRATE_CLOUD_SERVER: "1"
+      BURNRATE_CENTRAL_SERVER: "0"
+      BURNRATE_CLOUD_DATA_ROOT: "/data/cloud"
+      BURNRATE_ALLOWED_HOSTS: "${BURNRATE_CLOUD_DOMAIN:?Set BURNRATE_CLOUD_DOMAIN in .env}"
+      BURNRATE_TRUSTED_PROXIES: "${BURNRATE_TRUSTED_PROXIES:-127.0.0.1,::1,172.16.0.0/12,10.0.0.0/8,192.168.0.0/16}"
+      BURNRATE_RESEND_API_KEY: "${BURNRATE_RESEND_API_KEY:?Set BURNRATE_RESEND_API_KEY in .env}"
+      BURNRATE_EMAIL_FROM: "${BURNRATE_EMAIL_FROM:-myBurnRate <no-reply@myburnrate.io>}"
+      SPEND_TIMEZONE: "${SPEND_TIMEZONE:-UTC}"
+    command:
+      - python
+      - -m
+      - uvicorn
+      - spend_app.api:create_app
+      - --factory
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8788"
+      - --workers
+      - "1"
+    volumes:
+      - cloud_data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8788/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - cloud_internal
+
+  caddy:
+    image: caddy:2.9.1-alpine
+    restart: unless-stopped
+    depends_on:
+      cloud-hub:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      BURNRATE_CLOUD_DOMAIN: "${BURNRATE_CLOUD_DOMAIN:?Set BURNRATE_CLOUD_DOMAIN in .env}"
+    ports:
+      - "${BURNRATE_CLOUD_HTTP_BIND:-0.0.0.0:80}:80"
+      - "${BURNRATE_CLOUD_HTTPS_BIND:-0.0.0.0:443}:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - cloud_internal
+
+  litestream:
+    image: litestream/litestream:0.3.13
+    restart: unless-stopped
+    profiles:
+      - backups
+    depends_on:
+      cloud-hub:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      LITESTREAM_BUCKET: "${LITESTREAM_BUCKET:-}"
+      LITESTREAM_ENDPOINT: "${LITESTREAM_ENDPOINT:-}"
+      LITESTREAM_REGION: "${LITESTREAM_REGION:-auto}"
+      LITESTREAM_ACCESS_KEY_ID: "${LITESTREAM_ACCESS_KEY_ID:-}"
+      LITESTREAM_SECRET_ACCESS_KEY: "${LITESTREAM_SECRET_ACCESS_KEY:-}"
+    command: ["replicate", "-config", "/etc/litestream.yml"]
+    volumes:
+      - ./litestream.yml:/etc/litestream.yml:ro
+      - cloud_data:/data
+    networks:
+      - cloud_internal
+
+volumes:
+  cloud_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  cloud_internal:
+    driver: bridge

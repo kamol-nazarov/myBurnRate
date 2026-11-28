@@ -1522,7 +1522,7 @@ def test_v1_rollback_keeps_vault_reference_reachable(tmp_path, monkeypatch):
     c.Store(service.settings.database_path).bootstrap()
     service.vault.put("synthetic-key", "legacy-ref")
 
-    # 1. Replacing the key in v2 must NOT delete the frozen v1 credentialRef
+    # 1. Replacing the key in v2 retires and deletes the replaced legacy-ref from Vault (D-03)
     service.mutate(
         {
             "source": "openai_admin",
@@ -1533,12 +1533,12 @@ def test_v1_rollback_keeps_vault_reference_reachable(tmp_path, monkeypatch):
             "requestId": str(uuid4()),
         }
     )
-    assert "legacy-ref" in service.vault.values
+    assert "legacy-ref" not in service.vault.values
     v2_ref = service.store.read()["profiles"]["openai_admin"]["default"]["credentialRef"]
     assert v2_ref and v2_ref != "legacy-ref"
     assert v2_ref in service.vault.values
 
-    # 2. Disabling in v2 deletes the v2-only ref on cleanup, but still preserves legacy-ref
+    # 2. Disabling in v2 deletes the active v2 ref on cleanup and leaves cleanup empty
     service.mutate(
         {
             "source": "openai_admin",
@@ -1548,15 +1548,14 @@ def test_v1_rollback_keeps_vault_reference_reachable(tmp_path, monkeypatch):
         }
     )
     assert v2_ref not in service.vault.values
-    assert "legacy-ref" in service.vault.values
+    assert "legacy-ref" not in service.vault.values
     assert service.store.read()["cleanup"] == []
 
-    # 3. connections.v1 still names legacy-ref and resolves cleanly in the Vault
+    # 3. connections.v1 cleared the retired legacy-ref so disconnected secrets do not linger
     with spend_db.connect(service.settings.database_path) as db:
         old = json.loads(db.execute("SELECT value FROM app_meta WHERE key=?", (ps.V1_KEY,)).fetchone()[0])
-    ref = old["bindings"]["openai_admin"]["credentialRef"]
-    assert ref == "legacy-ref"
-    assert service.vault.get(ref) == "synthetic-key"
+    assert old["bindings"]["openai_admin"]["credentialRef"] is None
+    assert "legacy-ref" not in service.vault.values
 
 
 def test_remote_history_does_not_approve_local_folder(tmp_path, monkeypatch):

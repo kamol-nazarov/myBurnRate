@@ -93,6 +93,46 @@ def create_hub_owner(database_path: Path, email: str, *, prompt_fn=None, echo=pr
     return 0
 
 
+def delete_hub_owner(
+    database_path: Path,
+    email: str,
+    *,
+    confirm: bool = False,
+    echo=print,
+) -> int:
+    """Remove the hub owner account and active owner sessions locally on the server."""
+    import sqlite3
+    from contextlib import closing
+    from spend_app.auth_model import Principal, audit
+    from spend_app.db import connect, initialize
+    from spend_app.setup_wizard import _read_accounts, _write_accounts, central_server_for_accounts
+
+    clean = (email or "").strip().lower()
+    if not central_server_for_accounts() or not clean or not confirm:
+        echo("Run on the hub with BURNRATE_CENTRAL_SERVER enabled, pass the exact owner email address, and add --yes.")
+        return 2
+    initialize(database_path)
+    with connect(database_path) as connection:
+        connection.execute("PRAGMA secure_delete = ON")
+        connection.execute("BEGIN IMMEDIATE")
+        accounts = _read_accounts(connection)
+        found = _find_account_entry(accounts, clean)
+        if found is None:
+            echo("No matching account found on this hub.")
+            return 2
+        key, rec = found
+        owner_id = str(rec.get("id") or clean)
+        accounts["users"].pop(key, None)
+        _write_accounts(connection, accounts)
+        connection.execute("DELETE FROM owner_sessions")
+        audit(connection, Principal("system", "local-cli"), "account.delete", owner_id)
+    with closing(sqlite3.connect(database_path, timeout=30, isolation_level=None)) as compact:
+        compact.execute("PRAGMA secure_delete = ON")
+        compact.execute("VACUUM")
+    echo("Hub owner account and sessions removed.")
+    return 0
+
+
 def reset_hub_password(
     database_path: Path,
     email: str,
@@ -336,3 +376,6 @@ def add_parser(subparsers) -> None:
     reset_pw.add_argument("email", help="Account email address")
     create_owner = commands.add_parser("create-owner", help="Create the first account locally on the hub")
     create_owner.add_argument("email", help="Owner email address")
+    delete_owner = commands.add_parser("delete-owner", help="Remove the hub owner account and sessions locally")
+    delete_owner.add_argument("email", help="Owner email address to remove")
+    delete_owner.add_argument("--yes", action="store_true", help="Confirm removing the owner account")

@@ -120,7 +120,7 @@ class NativeClient:
                     data,
                     headers=getattr(bootstrap, "headers", None),
                     endpoint_path=path,
-                    has_machine_token=token.startswith("br_m_"),
+                    has_machine_token=token.startswith(("br_m_", "br_cm_")),
                     local_service=True,
                 )
                 raise DesktopError(
@@ -195,7 +195,7 @@ class NativeClient:
                         data,
                         headers=getattr(response, "headers", None),
                         endpoint_path=path,
-                        has_machine_token=token.startswith("br_m_"),
+                        has_machine_token=token.startswith(("br_m_", "br_cm_")),
                         local_service=True,
                     )
                     raise DesktopError(

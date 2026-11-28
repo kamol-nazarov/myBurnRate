@@ -111,6 +111,13 @@ def create_app(
     enable_scheduler: bool = True,
     now: datetime | None = None,
 ) -> FastAPI:
+    from spend_app.cloud import cloud_server_enabled
+
+    if cloud_server_enabled():
+        from spend_app.cloud.app import create_cloud_app
+
+        return create_cloud_app(settings=settings, now=now)
+
     settings = settings or load_settings()
     from spend_app.exposure import TrustedProxyHeadersMiddleware, trusted_proxies
 

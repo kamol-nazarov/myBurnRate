@@ -1155,6 +1155,39 @@ class Updater:
                     with contextlib.suppress(OSError):
                         old.unlink()
 
+    @staticmethod
+    def cleanup_stale_wheel_jobs(updates_dir: Path) -> int:
+        """Delete completed ``wheel-*`` staging folders when no update lock is held."""
+        folder = Path(updates_dir)
+        if not folder.is_dir():
+            return 0
+        lock_file = folder / "wheel-update.lock"
+        if lock_file.exists():
+            try:
+                with open(lock_file, "r+b") as handle:
+                    if sys.platform == "win32":
+                        import msvcrt
+
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                return 0
+        removed = 0
+        for entry in folder.glob("wheel-*"):
+            try:
+                if entry.is_symlink() or not entry.is_dir():
+                    continue
+                shutil.rmtree(entry)
+                removed += 1
+            except OSError:
+                continue
+        return removed
+
 
 def _describe(exc: Exception, fallback: str) -> str:
     if isinstance(exc, UpdateError):

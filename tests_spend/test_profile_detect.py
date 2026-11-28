@@ -185,11 +185,11 @@ def test_opencode_default_only_standard_xdg_and_opencode_db(tmp_path: Path) -> N
             folder=default_dir,
             location=str(default_db),
             key="default",
-            account_digest=_sha256("oc-console-default"),
+            account_digest=profile_detect.opencode_key_digest("oc-console-default"),
             plan=None,
             has_sample=True,
             is_default=True,
-            candidate_id=_sha256("oc-console-default"),
+            candidate_id=_resolved_folder_id(default_dir),
         )
     ]
 
@@ -203,11 +203,11 @@ def test_opencode_default_only_standard_xdg_and_opencode_db(tmp_path: Path) -> N
             folder=xdg / "opencode",
             location=str(xdg_db),
             key="default",
-            account_digest=_sha256("oc-console-xdg"),
+            account_digest=profile_detect.opencode_key_digest("oc-console-xdg"),
             plan=None,
             has_sample=True,
             is_default=True,
-            candidate_id=_sha256("oc-console-xdg"),
+            candidate_id=_resolved_folder_id(xdg / "opencode"),
         )
     ]
 
@@ -224,11 +224,11 @@ def test_opencode_default_only_standard_xdg_and_opencode_db(tmp_path: Path) -> N
             folder=explicit_db.parent,
             location=str(explicit_db),
             key="default",
-            account_digest=_sha256("oc-console-explicit"),
+            account_digest=profile_detect.opencode_key_digest("oc-console-explicit"),
             plan=None,
             has_sample=True,
             is_default=True,
-            candidate_id=_sha256("oc-console-explicit"),
+            candidate_id=_resolved_folder_id(explicit_db.parent),
         )
     ]
 
@@ -251,8 +251,8 @@ def test_opencode_auth_json_and_env_key_digests(tmp_path: Path) -> None:
         environ={"XDG_DATA_HOME": str(xdg), "OPENCODE_API_KEY": "env-only-default-key"},
     )
     assert [(c.key, c.account_digest) for c in found] == [
-        ("default", _sha256("env-only-default-key")),
-        ("opencode-go-2", _sha256("go-auth-key")),
+        ("default", profile_detect.opencode_key_digest("env-only-default-key")),
+        ("opencode-go-2", profile_detect.opencode_key_digest("go-auth-key")),
     ]
 
 
@@ -896,8 +896,8 @@ def test_current_account_digest_reads_live_identity_caches_60s_and_checks_safety
     assert profile_detect.current_account_digest("claude_local", home / ".claude" / "projects", home=home, environ=env) == profile_detect._sha256_hex("claude-def-uuid")
     assert profile_detect.current_account_digest("claude_local", claude_work / "projects", home=home, environ=env) == profile_detect._sha256_hex("claude-work-uuid")
     assert profile_detect.current_account_digest("codex_local", str(codex_work / "sessions") + "/**/*.jsonl", home=home, environ=env) == profile_detect._sha256_hex("codex-acct-A")
-    assert profile_detect.current_account_digest("opencode_local", oc_work_db, home=home, environ=env) == profile_detect._sha256_hex("oc-key-A")
-    assert profile_detect.current_account_digest("opencode_local", oc_def_db.parent, is_default=True, home=home, environ=env) == profile_detect._sha256_hex("oc-def-key")
+    assert profile_detect.current_account_digest("opencode_local", oc_work_db, home=home, environ=env) == profile_detect.opencode_key_digest("oc-key-A")
+    assert profile_detect.current_account_digest("opencode_local", oc_def_db.parent, is_default=True, home=home, environ=env) == profile_detect.opencode_key_digest("oc-def-key")
     assert profile_detect.current_account_digest("grok_local", tmp_path, home=home, environ=env) is None
     assert profile_detect.current_account_digest("codex_local", None, home=home, environ=env) is None
 

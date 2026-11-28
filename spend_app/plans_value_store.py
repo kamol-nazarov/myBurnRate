@@ -51,6 +51,19 @@ def clear_plans_value_cache() -> None:
         _CACHE.clear()
 
 
+def evict_plans_value_cache(database_path: Path | str) -> int:
+    """Drop cached plans-value entries for a single SQLite database path."""
+    target = str(Path(database_path).resolve())
+    raw_target = str(database_path)
+    removed = 0
+    with _CACHE_LOCK:
+        dead = [k for k in _CACHE if k and str(k[0]) in {target, raw_target}]
+        for k in dead:
+            _CACHE.pop(k, None)
+            removed += 1
+    return removed
+
+
 def _memo(key: tuple, compute) -> dict:
     with _CACHE_LOCK:
         if key in _CACHE:

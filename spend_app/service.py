@@ -62,12 +62,17 @@ def pid_file() -> Path:
 def ensure_directories() -> None:
     run_dir().mkdir(parents=True, exist_ok=True)
     log_dir().mkdir(parents=True, exist_ok=True)
-    if os.name != "nt":
-        for folder in (data_root(), run_dir(), log_dir()):
-            try:
-                os.chmod(folder, 0o700)
-            except OSError:
-                pass
+    try:
+        from spend_app.local_access import protect_data_tree
+
+        protect_data_tree(data_root() / "spend.db", protect_root=True)
+    except OSError:
+        if os.name != "nt":
+            for folder in (data_root(), run_dir(), log_dir()):
+                try:
+                    os.chmod(folder, 0o700)
+                except OSError:
+                    pass
 
 
 def is_loopback(host: str) -> bool:

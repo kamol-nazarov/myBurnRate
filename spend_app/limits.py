@@ -1350,7 +1350,16 @@ def _traycer_profile_rate_limits(harness: str) -> dict:
         raise
 
 
+def traycer_cli_enabled(environ=None) -> bool:
+    """Whether experimental Traycer CLI process spawns are permitted (default: on)."""
+    env = os.environ if environ is None else environ
+    raw = str(env.get("BURNRATE_ENABLE_TRAYCER_CLI", "1")).strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
 def _traycer_profile_rate_limits_uncached(harness: str) -> dict:
+    if not traycer_cli_enabled():
+        raise RuntimeError("Traycer CLI probing is disabled by BURNRATE_ENABLE_TRAYCER_CLI")
     sender = _traycer_sender()
     executable = Path.home() / ".traycer" / "cli" / "bin" / platform_executable("traycer")
     if sender is None or not executable.is_file():
@@ -1955,6 +1964,8 @@ def _claude_active_sessions(
 
 
 def _traycer_active_agents_uncached(epic_id: str, sender_agent_id: str) -> dict:
+    if not traycer_cli_enabled():
+        raise RuntimeError("Traycer CLI probing is disabled by BURNRATE_ENABLE_TRAYCER_CLI")
     executable = Path.home() / ".traycer" / "cli" / "bin" / platform_executable("traycer")
     if not executable.is_file():
         raise RuntimeError("Experimental Traycer CLI agent list is unavailable")

@@ -114,6 +114,14 @@ class Store:
             initial_bindings = copy.deepcopy(state["bindings"])
             yield state
             persisted = profile_store.sync_bindings_view(state, initial_bindings)
+            reqs = persisted.get("requests")
+            if isinstance(reqs, dict) and len(reqs) > 100:
+                keys = list(reqs.keys())
+                for stale_req in keys[: len(keys) - 100]:
+                    reqs.pop(stale_req, None)
+            queued_cleanup = persisted.get("cleanup") or []
+            if queued_cleanup:
+                profile_store.retire_v1_credential_refs(db, queued_cleanup)
             encoded = profile_store.encode(persisted)
             db.execute(
                 "INSERT INTO app_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -570,7 +578,7 @@ class Service:
                 "kind": meta.shape,
                 "experimental": spec.stability == "experimental",
                 "revision": 0,
-                "location": "" if meta.shape == "api" else default_location(spec, self.settings),
+                "location": "" if meta.shape == "api" else format_home_location(default_location(spec, self.settings)),
                 "capabilities": ["balance"] if spec.key in BALANCE_SOURCES else (["usage", "provider charges"] if meta.shape == "api" else ["usage"]),
                 "capabilityNote": "Connecting a tool's default location keeps its activity and plan meter. A custom location collects usage only. Pricing availability is separate.",
                 "credentialHelp": meta.credential_help,
@@ -582,7 +590,9 @@ class Service:
                 "importRevision": None,
             }
             if binding:
-                row.update({k: v for k, v in binding.items() if k not in {"credentialRef", "name", "accountDigest"}})
+                row.update({k: v for k, v in binding.items() if k not in {"credentialRef", "name", "accountDigest", "sourceIdentity"}})
+                if meta.shape != "api" and row.get("location"):
+                    row["location"] = format_home_location(row["location"])
                 row["credentialConfigured"] = bool(binding.get("credentialRef"))
             if row["externallyManaged"]:
                 row.update(state="externally_managed", detail="Configured outside BURNRATE. Change that explicit setting before managing this source here.")
@@ -1498,18 +1508,17 @@ class Service:
             return profile_store.v1_credential_refs(db)
 
     def cleanup(self):
-        # Leave Vault references still named in frozen connections.v1 intact so
-        # rollback to v1 works; those secrets are retired when v1 is removed.
+        # Delete every Vault ref queued by an explicit disconnect or key rotation.
+        # Any ref queued here has already been retired from connections.v1 inside
+        # Store.transaction(); transient vault failures remain queued for retry.
         cleanup_refs = self.store.read().get("cleanup", [])
         if not cleanup_refs:
             return
-        protected = self._protected_v1_refs()
         for ref in cleanup_refs:
-            if ref not in protected:
-                try:
-                    self.vault.delete(ref)
-                except Exception:
-                    continue
+            try:
+                self.vault.delete(ref)
+            except Exception:
+                continue
             with self.store.transaction() as state:
                 state["cleanup"] = [r for r in state["cleanup"] if r != ref]
 

@@ -53,9 +53,9 @@ Harness stores are read-only:
 - JSONL / logs / CSV: open for read (`r` / `rb`)
 - No writes to Codex, Claude transcripts, OpenCode, ZCode, Grok logs, Traycer `chat.db`, or Antigravity logs
 
-BURNRATE opens these tool files for reading. Claude account discovery reads account IDs, plan tiers and cached usage from `.claude.json`. BURNRATE leaves Claude sign-in tokens and credential files untouched. Claude meters come from cached local plan usage or the Traycer CLI.
+BURNRATE opens these tool files for reading. Claude account discovery reads account IDs, plan tiers and cached usage from `.claude.json` (leaving Claude sign-in tokens and credential files untouched). Codex discovery reads `tokens.account_id` from `~/.codex*/auth.json`, and OpenCode discovery reads `opencode.db` / `auth.json` key metadata (hashed locally with an install-scoped HMAC-SHA256 key; never surfaced in API JSON or stored as unsalted hashes). Claude meters come from cached local plan usage or the Traycer CLI.
 
-Traycer CLI (`profile-rate-limits`, `agent list`) is a local process spawn, not a file write. BURNRATE captures stdout JSON and does not feed prompts. Side effects inside `traycer.exe` are outside BURNRATE’s control; the spawn is **experimental**.
+Traycer CLI (`profile-rate-limits`, `agent list`) is a local process spawn, not a file write. BURNRATE captures stdout JSON and does not feed prompts. Side effects inside `traycer.exe` are outside BURNRATE’s control; the spawn is **experimental** and can be disabled with `BURNRATE_ENABLE_TRAYCER_CLI=0`.
 
 ## Network
 
@@ -67,11 +67,11 @@ The desktop service and CLI load the same user settings. Z.AI, OpenCode Go and M
 | `ANTHROPIC_ADMIN_KEY` set | `api.anthropic.com` | `x-api-key` |
 | `OPENROUTER_MANAGEMENT_KEY` set | `openrouter.ai` | dedicated management key |
 | DeepSeek balance account connected or `DEEPSEEK_BALANCE_KEY` set | `api.deepseek.com` | dedicated balance key |
-| Z.AI quota enabled by default with `BURNRATE_ENABLE_ZAI_QUOTA` | `api.z.ai` | existing Coding Plan key found on disk |
+| Z.AI quota enabled by default with `BURNRATE_ENABLE_ZAI_QUOTA` | `api.z.ai` | existing Coding Plan key found in OpenCode/ZCode, `~/.config/glm-acp-agent/credentials.json`, or `Z_AI_API_KEY` |
 | OpenCode Go quota enabled by default with `BURNRATE_ENABLE_OPENCODE_GO_QUOTA` | `opencode.ai` | OpenCode Console key from the selected profile |
-| Muse quota enabled by default with `BURNRATE_ENABLE_MUSE_QUOTA` | `api.meta.ai` | saved Muse Code session |
+| Muse quota enabled by default with `BURNRATE_ENABLE_MUSE_QUOTA` | `api.meta.ai` (`POST /muse-code/key` every 30–300s) | saved Muse Code session (`~/.config/muse/auth.json`) |
 | Antigravity running (experimental) | `127.0.0.1` over HTTPS on its local language-server port | ephemeral localhost CSRF |
-| Traycer installed and available for activity or plan readings | Local Traycer CLI process | Traycer manages its own sign-in and side effects |
+| Traycer installed and `BURNRATE_ENABLE_TRAYCER_CLI` not set to `0` | Local Traycer CLI process | Traycer manages its own sign-in and side effects |
 | Hub paired or sign-in requested | The HTTPS origin shown for your configured hub | Machine bearer for sync or owner credentials for account/owner actions |
 | Native update checks and release asset downloads | `github.com`, `objects.githubusercontent.com`, `release-assets.githubusercontent.com` | Release requests and app version identifier |
 
@@ -121,12 +121,16 @@ Optional Tailscale Serve is an operator choice and is never enabled by BURNRATE.
 | OpenRouter | Inference key ≠ `OPENROUTER_MANAGEMENT_KEY` |
 | Claude | Cached plan usage and account metadata, Claude Desktop history, and the local Traycer CLI. Claude sign-in tokens and credential files are outside the read path. |
 
-`GET /api/spend/limits` can fire every quota collector, including the experimental Traycer CLI. Keep it off any public reverse proxy.
+`GET /api/spend/limits` serves persisted quota snapshots from SQLite only; live quota polling runs in the background scheduler or on explicit `POST /api/spend/quotas/refresh`.
+
+Local `agent_runs.name` session titles pass through `redact()` before storage, non-live (`no_data`) rows expire after 24 hours, and setting `BURNRATE_HIDE_LOCAL_TITLES=1` stores fixed tool labels locally as well.
 
 ## How to wipe
 
 1. Stop BURNRATE (`burnrate` process, or `scripts/stop-burnrate.ps1` / `scripts/uninstall-burnrate.ps1`).
-2. Delete the data directory (`%LOCALAPPDATA%\BURNRATE`, or the repo-relative DB in a checkout).
-3. Uninstall does **not** delete `*.db` unless you pass `-PurgeData`.
+2. Run `burnrate wipe --credentials --data --yes` to delete BURNRATE-owned OS Credential Manager / Keychain secrets, the local database, `.burnrate-auth\access.key`, logs, backups, and `%TEMP%\burnrate-wv2-sessions`.
+3. On Windows, ticking **Also delete my myBurnRate data** in the GUI uninstaller or running `scripts/uninstall-burnrate.ps1 -PurgeData` clears OS Credential Manager entries, `%LOCALAPPDATA%\BURNRATE` (including `.burnrate-auth`), and `%TEMP%\burnrate-wv2-sessions`. Uninstall without those options keeps your data.
+4. On a hub, `burnrate machines delete-data --id <id> --confirm <id>` (or `POST /api/machines/{id}/data/delete`) deletes a revoked computer's usage, sessions, quotas, and gaps with `PRAGMA secure_delete = ON` + `VACUUM` (pass `--keep-backup` / `keep_backup=true` only if you want a pre-delete backup; a minimal revocation tombstone stays in `machines.v1`). To remove the hub owner account and sessions locally, run `burnrate hub delete-owner <email> --yes`.
+5. In optional **myBurnRate Cloud** mode (disabled by default until you sign in via Settings), each verified user's usage metadata is stored in an isolated per-user SQLite database (`users/<user_id>/spend.db`). Signup, password resets, and email changes use 6-digit codes sent via Resend; additional computers can be linked with one-time 8-character pairing codes (`br_cs_*` / `br_cm_*` tokens stored in your OS keychain). Deleting your cloud account from Settings (`POST /api/cloud/account/delete`) permanently removes your account rows, sessions, machine tokens, and isolated cloud SQLite database immediately while leaving local usage on your own computers untouched.
 
 Deleting BURNRATE’s database does not delete Codex, Claude, Cursor, or other harness history. Those files were only read.
