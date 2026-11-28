@@ -273,7 +273,8 @@ def _parse_iso(value: str | None) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
-_MACHINE_LAST_SEEN_MEM: dict[str, str] = {}
+_MACHINE_LAST_SEEN_MEM: OrderedDict[str, str] = OrderedDict()
+_MACHINE_LAST_SEEN_MAX = 4096
 
 
 def list_machines(
@@ -281,7 +282,10 @@ def list_machines(
 ) -> list[dict]:
     moment = (now or datetime.now(UTC)).astimezone(UTC)
     state = _read_state(connection)
-    is_central = os.getenv("BURNRATE_CENTRAL_SERVER", "").strip().lower() in {"1", "true", "yes"}
+    is_central = (
+        os.getenv("BURNRATE_CENTRAL_SERVER", "").strip().lower() in {"1", "true", "yes"}
+        or os.getenv("BURNRATE_CLOUD_SERVER", "").strip().lower() in {"1", "true", "yes"}
+    )
     has_remote_machines = any(
         isinstance(rec, dict) and not rec.get("revoked")
         for rec in state["machines"].values()
@@ -444,7 +448,7 @@ def _register_in_connection(
 
 
 def register_or_reconnect_machine(
-    database_path: Path, *, name: str, os_name: str = "", device_id: str | None = None, now=None, actor=None
+    database_path: Path, *, name: str, os_name: str = "", device_id: str | None = None, now=None, actor=None, source: str | None = None
 ) -> dict:
     initialize(database_path)
     with connect(database_path) as connection:
@@ -454,13 +458,13 @@ def register_or_reconnect_machine(
         )
         if actor:
             from spend_app.auth_model import audit
-            audit(connection, actor, "machine.register", result["machine"]["id"], now=now)
+            audit(connection, actor, "machine.register", result["machine"]["id"], now=now, source=source)
     STREAM_BROKER.publish({"type": "machines", "machineId": result["machine"]["id"], "at": utc_now()})
     return result
 
 
 def register_machine(
-    database_path: Path, *, name: str, os_name: str = "", device_id: str | None = None, now=None, actor=None
+    database_path: Path, *, name: str, os_name: str = "", device_id: str | None = None, now=None, actor=None, source: str | None = None
 ) -> dict:
     initialize(database_path)
     with connect(database_path) as connection:
@@ -468,12 +472,12 @@ def register_machine(
         result = _register_in_connection(connection, name=name, os_name=os_name, device_id=device_id, now=now, actor=actor)
         if actor:
             from spend_app.auth_model import audit
-            audit(connection, actor, "machine.register", result["machine"]["id"], now=now)
+            audit(connection, actor, "machine.register", result["machine"]["id"], now=now, source=source)
     STREAM_BROKER.publish({"type": "machines", "machineId": result["machine"]["id"], "at": utc_now()})
     return result
 
 
-def rotate_machine_token(database_path: Path, token: str, *, now=None, actor=None) -> dict | None:
+def rotate_machine_token(database_path: Path, token: str, *, now=None, actor=None, source: str | None = None) -> dict | None:
     from spend_app.auth_model import moment, parse
     with connect(database_path) as connection:
         connection.execute("BEGIN IMMEDIATE")
@@ -495,13 +499,13 @@ def rotate_machine_token(database_path: Path, token: str, *, now=None, actor=Non
                                              machine_id=mid, now=now)
             if actor:
                 from spend_app.auth_model import audit
-                audit(connection, actor, "machine.rotate", mid, now=now)
+                audit(connection, actor, "machine.rotate", mid, now=now, source=source)
             return result
     return None
 
 
 def revoke_machine(
-    database_path: Path, *, machine_id: str, now: datetime | None = None, actor=None
+    database_path: Path, *, machine_id: str, now: datetime | None = None, actor=None, source: str | None = None
 ) -> dict:
     if not machine_id or machine_id in {"local", "all"}:
         raise ValueError("Cannot revoke the local hub machine.")
@@ -515,16 +519,16 @@ def revoke_machine(
 
         state["machines"][machine_id].update(revoked=True, revoked_at=stamp(now), token_hash="")
         _write_state(connection, state)
-        revoke_machine_sessions(connection, actor or Principal("system", "local"), machine_id, now=now)
+        revoke_machine_sessions(connection, actor or Principal("system", "local"), machine_id, now=now, source=source)
         if actor:
-            audit(connection, actor, "machine.revoke", machine_id, now=now)
+            audit(connection, actor, "machine.revoke", machine_id, now=now, source=source)
         machines = list_machines(connection, now=now)
     STREAM_BROKER.publish({"type": "machines", "machineId": machine_id, "at": utc_now()})
     return {"machines": machines}
 
 
 def rename_machine(
-    database_path: Path, *, machine_id: str, name: str, now: datetime | None = None, actor=None
+    database_path: Path, *, machine_id: str, name: str, now: datetime | None = None, actor=None, source: str | None = None
 ) -> dict:
     clean_name = (name or "").strip()
     if not clean_name or len(clean_name) > 64:
@@ -543,7 +547,7 @@ def rename_machine(
         _write_state(connection, state)
         if actor:
             from spend_app.auth_model import audit
-            audit(connection, actor, "machine.rename", machine_id, now=now)
+            audit(connection, actor, "machine.rename", machine_id, now=now, source=source)
         machines = list_machines(connection, now=now)
     STREAM_BROKER.publish({"type": "machines", "machineId": machine_id, "at": utc_now()})
     return {"machines": machines}
@@ -601,6 +605,9 @@ def authenticate_machine_token(database_path: Path, token: str, *, now=None) -> 
                 record["last_used_at"] = stamp(current_time)
                 _write_state(connection, state)
     _MACHINE_LAST_SEEN_MEM[machine_id] = stamp(current_time)
+    _MACHINE_LAST_SEEN_MEM.move_to_end(machine_id)
+    while len(_MACHINE_LAST_SEEN_MEM) > _MACHINE_LAST_SEEN_MAX:
+        _MACHINE_LAST_SEEN_MEM.popitem(last=False)
     return machine_id
 
 
@@ -2042,11 +2049,15 @@ def ensure_fresh_owner_session(
             err_code, err_status = map_transport_error(exc)
             raise CodedError(err_code, status_code=err_status) from exc
 
-        new_token = extract_cookie(response) if response.status_code == 200 else None
         try:
             data = response.json() if getattr(response, "content", b"") else {}
         except ValueError:
             data = None
+        new_token = None
+        if response.status_code == 200:
+            new_token = extract_cookie(response) or (
+                str(data.get("sessionToken") or "").strip() if isinstance(data, dict) else ""
+            ) or None
 
         class _StaleOwnerLifecycle(Exception):
             pass
@@ -2803,6 +2814,7 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
         proto_err = check_protocol_version(request.headers.get("x-burnrate-protocol"))
         if proto_err is not None:
             return error_response(proto_err, status_code=426)
+        from spend_app.exposure import resolve_client_ip
         from spend_app.setup_wizard import RequestTooLargeError, _bounded_json
         try:
             body = await _bounded_json(request)
@@ -2833,6 +2845,7 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
                     os_name=str(body.get("os") or ""),
                     device_id=device_id,
                     actor=request.state.principal,
+                    source=resolve_client_ip(request),
                 )
                 request.state.audit_target = result["machine"]["id"]
                 result["syncCommand"] = (
@@ -2848,6 +2861,7 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
                     settings.database_path,
                     machine_id=str(body.get("id") or ""),
                     actor=request.state.principal,
+                    source=resolve_client_ip(request),
                 )
                 if request.state.principal.kind == "machine":
                     result["machines"] = []
@@ -2859,6 +2873,7 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
                     machine_id=str(body.get("id") or ""),
                     actor=request.state.principal,
                     name=str(body.get("name") or ""),
+                    source=resolve_client_ip(request),
                 )
                 if request.state.principal.kind == "machine":
                     result["machines"] = [m for m in result["machines"] if m["id"] == request.state.principal.id]
@@ -2878,8 +2893,14 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
             return error_response("DEV-302", status_code=422)
 
     @router.post("/api/machines/{machine_id}/data/delete")
-    async def remove_machine_data(request: Request, machine_id: str, confirm: str = Query(default="")):
+    async def remove_machine_data(
+        request: Request,
+        machine_id: str,
+        confirm: str = Query(default=""),
+        keep_backup: bool = Query(default=False),
+    ):
         from spend_app.connection_api import central_server
+        from spend_app.exposure import resolve_client_ip
         from spend_app.machine_data import delete_machine_data
 
         actor = getattr(request.state, "principal", None)
@@ -2887,8 +2908,16 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
             return error_response("AUTH-107", status_code=403)
         if confirm != machine_id:
             return error_response("APP-901", status_code=422)
+        request.state.audit_recorded = True
         try:
-            result = await run_in_threadpool(delete_machine_data, settings.database_path, machine_id, actor=actor)
+            result = await run_in_threadpool(
+                delete_machine_data,
+                settings.database_path,
+                machine_id,
+                actor=actor,
+                create_backup=keep_backup,
+                source=resolve_client_ip(request),
+            )
         except ValueError:
             return error_response("APP-901", status_code=422)
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
@@ -2931,12 +2960,14 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
                 request.state.audit_action = "machine.revoke"
                 request.state.audit_target = target_id
                 return error_response("AUTH-107", status_code=403)
+            from spend_app.exposure import resolve_client_ip
             request.state.audit_action = "machine.revoke"
             request.state.audit_target = principal.id
             revoke_machine(
                 settings.database_path,
                 machine_id=principal.id,
                 actor=principal,
+                source=resolve_client_ip(request),
             )
             request.state.audit_recorded = True
             return JSONResponse(
@@ -2965,7 +2996,7 @@ def sync_router(settings, pricing: PricingEngine) -> APIRouter:
         def _do_trigger() -> dict:
             initialize(settings.database_path)
             try:
-                nudge_quota_lanes(database_path=settings.database_path, now=datetime.now(UTC))
+                nudge_quota_lanes(database_path=settings.database_path)
             except Exception:
                 pass
             try:

@@ -9,6 +9,28 @@ This project is licensed under Apache-2.0.
 
 ## [Unreleased]
 
+## [0.6.13] - 2026-11-28
+
+### Added
+
+- **Multi-User Hosted Cloud Mode (`BURNRATE_CLOUD_SERVER=1`).** Added `spend_app/cloud/` with central `auth.db` (email + 6-digit OTP registration, password login, 8-character single-use device pairing codes, password reset OTP, verified email change, self-service account deletion, append-only `cloud_audit`), physical per-user SQLite isolation (`users/<user_id>/spend.db`, provisioned only after verification), Resend transactional email client, and portable Docker Compose / Caddy / Litestream deployment stack under `deploy/cloud/` and `docs/cloud-deployment.md`.
+- **Smooth, zero-reload Settings & Cloud Desktop UI.** Added myBurnRate Cloud and Advanced Self-Hosted Hub account screens in **Settings → Computers** with spring-eased transitions, gliding segmented pills, in-place zero-reload state patching across both **Computers** and **General** tabs, accordion drawers, and full Keychain-backed desktop bridge integration (`cloud_*` methods).
+- **Safe online Cloud backup module.** Added `python -m spend_app.cloud.backup` (with tenant ID validation, symlink/junction protection, and SQLite `PRAGMA quick_check`).
+
+### Security
+
+- **0.6.13 Usage & Account Data Audit hardening.** Completed 15 privacy, credential, retention, and exposure fixes: tightened local SQLite permissions and atomic key protection, added secret redaction on local agent run titles with opt-in `BURNRATE_HIDE_LOCAL_TITLES=1`, added `burnrate hub delete-owner` with `secure_delete` + `VACUUM`, extended uninstall cleanup to remove Keychain credentials and runtime caches, and added `br_cs_*` / `br_cm_*` token redaction patterns.
+- **Cloud & API hardening.** Enforced a 512-character password length cap before PBKDF2 hashing, added per-device rate limiting (60 pushes/min) before payload reads on cloud `/api/sync/push`, blocked CRLF header injection in outbound emails, evicted deleted tenant/machine data from in-memory aggregate and plans-value caches, and bounded in-memory throttle and machine last-seen caches against high-cardinality memory exhaustion.
+
+### Changed
+
+- **Cloud read performance.** Quantized live cloud summary/usage timestamps to 15-second cache slots, bounded concurrent analytics reads with `BoundedReadExecutor`, switched auth read connections to lightweight `PRAGMA query_only=ON`, and cached resolved tenant directory paths.
+
+### Fixed
+
+- **Settings General tab layout & reload behavior.** Fixed `.sheet-tabs::before` pill overflow, aligned all General tab switches cleanly without wrapping drift, eliminated full-tab DOM reloads when toggling General settings or switches, cleared stale `lastSyncError` banners on fresh cloud sign-in, and resynced segmented pills on window resize.
+- **Cloud Docker stack permissions.** Mounted `cloud_data` at `/data` to match the non-root `burnrate` user ownership and explicitly disabled `BURNRATE_CENTRAL_SERVER` in `deploy/cloud/compose.yaml`.
+
 ## [0.6.12] - 2026-11-27
 
 ### Fixed

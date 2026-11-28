@@ -279,14 +279,18 @@ class Service:
             state = load_state(connection)
             previous = meta(connection, receipt)
             if previous is not None:
-                if previous != digest:
+                prev_digest = previous.get("digest") if isinstance(previous, dict) else previous
+                if prev_digest != digest:
                     raise Conflict("Retry identifier reused for a different request")
                 return self.view(connection, state, now)
             if state["revision"] != body["expectedRevision"]:
                 raise Conflict("Attention changed; refresh before retrying")
             state = mutate(state, body, now)
             save(connection, state)
-            connection.execute("INSERT INTO app_meta(key,value) VALUES(?,?)", (receipt, json.dumps(digest)))
+            connection.execute(
+                "INSERT INTO app_meta(key,value) VALUES(?,?)",
+                (receipt, json.dumps({"digest": digest, "at": iso(now)})),
+            )
             return self.view(connection, state, now)
 
     def evaluate(self):

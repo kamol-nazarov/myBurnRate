@@ -1445,7 +1445,7 @@ def poll_quotas(
                 )
         polled_samples.append((provider_key, samples, lane_active, throttled))
 
-    sources_by_provider = {"codex": "codex_local", "claude-code": "claude_local", "grok": "grok_local", "opencode": "opencode_local", "opencode-go": "opencode_local", "antigravity": "antigravity_local", "openrouter": "openrouter"}
+    sources_by_provider = {"codex": "codex_local", "claude-code": "claude_local", "grok": "grok_local", "opencode": "opencode_local", "opencode-go": "opencode_local", "antigravity": "antigravity_local", "muse": "muse_local", "openrouter": "openrouter"}
     try:
         with lock_for(path):
             current_bindings = {}
@@ -1663,7 +1663,16 @@ def is_live_run(state: str | None) -> bool:
     return str(state or "").strip().lower() in LIVE_STATE_ALIASES
 
 
-def _clear_unseen_live_runs(connection, seen_ids: set[str]) -> int:
+NON_LIVE_RUN_RETENTION_HOURS = 24
+
+
+def _clear_unseen_live_runs(
+    connection,
+    seen_ids: set[str],
+    *,
+    now: str | None = None,
+    non_live_retention_hours: int = NON_LIVE_RUN_RETENTION_HOURS,
+) -> int:
     if seen_ids:
         placeholders = ",".join("?" for _ in seen_ids)
         cursor = connection.execute(
@@ -1675,7 +1684,18 @@ def _clear_unseen_live_runs(connection, seen_ids: set[str]) -> int:
         cursor = connection.execute(
             "DELETE FROM agent_runs WHERE lower(state) IN ('live','running') AND id NOT LIKE 'm:%'"
         )
-    return int(cursor.rowcount or 0)
+    removed = int(cursor.rowcount or 0)
+    stamp = now or utc_now()
+    cutoff = (
+        datetime.fromisoformat(stamp.replace("Z", "+00:00")) - timedelta(hours=non_live_retention_hours)
+    ).isoformat().replace("+00:00", "Z")
+    stale_cursor = connection.execute(
+        "DELETE FROM agent_runs "
+        "WHERE lower(state) NOT IN ('live','running') AND id NOT LIKE 'm:%' AND last_seen_at < ?",
+        (cutoff,),
+    )
+    removed += int(stale_cursor.rowcount or 0)
+    return removed
 
 
 def default_activity_collector(database_path=None) -> dict:
@@ -1737,7 +1757,7 @@ def poll_activity(
                 ):
                     new += 1
             changed = connection.total_changes - before
-            cleared = _clear_unseen_live_runs(connection, {record.id for record in records})
+            cleared = _clear_unseen_live_runs(connection, {record.id for record in records}, now=polled_at)
     if changed > 0 or cleared > 0:
         if collector is None:
             if cleared > 0:

@@ -45,7 +45,7 @@ def test_first_owner_is_created_with_the_configured_setup_credential(hub):
     host_cookie = next(entry for entry in cookies if entry.startswith(auth_model.COOKIE + "="))
     assert "Secure" in host_cookie and "HttpOnly" in host_cookie and "Path=/" in host_cookie
     assert "Domain=" not in host_cookie
-    assert any(entry.startswith(auth_model.LEGACY_COOKIE + "=") and "Secure" in entry for entry in cookies)
+    assert not any(entry.startswith(auth_model.LEGACY_COOKIE + "=") for entry in cookies)
 
 
 def test_setup_requires_an_independent_credential(hub):

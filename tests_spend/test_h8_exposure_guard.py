@@ -474,7 +474,7 @@ def test_h8_middleware_trusts_loopback_proxy_and_sets_secure_cookie(
         )
         assert reg.status_code == 200, reg.text
         cookies = reg.headers.get_list("set-cookie")
-        assert {value.partition("=")[0] for value in cookies} == {auth_model.COOKIE, auth_model.LEGACY_COOKIE}
+        assert {value.partition("=")[0] for value in cookies} == {auth_model.COOKIE}
         assert all("; secure" in value.lower() and "; httponly" in value.lower() for value in cookies)
 
     with TestClient(app, base_url="http://hub.example.com", client=("::1", 50000)) as v6_client:

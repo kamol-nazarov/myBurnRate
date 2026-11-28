@@ -198,7 +198,7 @@ def test_data_removal_requires_owner_and_revocation_and_retains_other_data(tmp_p
     with pytest.raises(ValueError):
         delete_machine_data(database, first, actor=owner)
     revoke_machine(database, machine_id=first)
-    result = delete_machine_data(database, first, actor=owner)
+    result = delete_machine_data(database, first, actor=owner, create_backup=True)
     backup = tmp_path / "backups" / result["backup"] / "spend.db"
     with connect(backup) as conn:
         assert conn.execute("SELECT count(*) FROM usage_events").fetchone()[0] == 2

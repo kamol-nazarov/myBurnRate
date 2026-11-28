@@ -1617,11 +1617,12 @@ body:not(.dragging-active) .provider-row:hover .logo-badge {
 }
 .sheet-tabs::before {
   content: "";
+  box-sizing: border-box;
   position: absolute;
   top: 2.5px;
   bottom: 2.5px;
   left: 2.5px;
-  width: calc((100% - 5px) / 4);
+  width: calc((100% - 11px) / 4);
   border-radius: 6px;
   background: var(--seg-thumb);
   border: 1px solid var(--seg-border);
@@ -1630,9 +1631,9 @@ body:not(.dragging-active) .provider-row:hover .logo-badge {
   pointer-events: none;
   z-index: 0;
 }
-.sheet-tabs[data-idx="1"]::before { transform: translateX(100%); }
-.sheet-tabs[data-idx="2"]::before { transform: translateX(200%); }
-.sheet-tabs[data-idx="3"]::before { transform: translateX(300%); }
+.sheet-tabs[data-idx="1"]::before { transform: translateX(calc(100% + 2px)); }
+.sheet-tabs[data-idx="2"]::before { transform: translateX(calc(200% + 4px)); }
+.sheet-tabs[data-idx="3"]::before { transform: translateX(calc(300% + 6px)); }
 
 .sheet-tab {
   position: relative;
@@ -1876,9 +1877,19 @@ body:not(.dragging-active) .provider-row:hover .logo-badge {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  min-width: 0;
   border-top: 1px solid var(--divider);
 }
+.toggle-row > div {
+  min-width: 0;
+  flex: 1 1 0;
+}
+.toggle-row .source-meta {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .toggle-row:first-child { border-top: none; }
+.cloud-drawer .toggle-row:first-child { border-top: 1px solid var(--divider); }
 
 .toggle-row.wrap { flex-wrap: wrap; }
 
@@ -2494,12 +2505,142 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
 }
 
 /* <!-- H5 --> */
+@keyframes cloudStageIn {
+  from { opacity: 0; transform: translateY(7px) scale(0.992); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes cloudRevealIn {
+  from { opacity: 0; transform: translateY(-6px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes cloudRowIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes cloudErrNudge {
+  0% { opacity: 0; transform: translateX(-5px); }
+  35% { opacity: 1; transform: translateX(4px); }
+  65% { transform: translateX(-2px); }
+  100% { opacity: 1; transform: translateX(0); }
+}
+@keyframes cloudLivePulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--mint-border); }
+  60% { box-shadow: 0 0 0 5px transparent; }
+}
+@keyframes cloudCodeShimmer {
+  0% { background-position: -180% 0; }
+  100% { background-position: 180% 0; }
+}
+@keyframes cloudTimerShrink {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0); }
+}
+@keyframes cloudPop {
+  0% { transform: scale(0.92); }
+  60% { transform: scale(1.04); }
+  100% { transform: scale(1); }
+}
 .h5-acct-card {
-  padding: 11px 12px 12px;
+  padding: 12px 13px 13px;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 9px;
+  gap: 10px;
   min-width: 0;
+  transition: border-color 0.22s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.h5-acct-card button {
+  transition: transform 0.16s cubic-bezier(0.22, 1, 0.36, 1), background 0.18s ease, border-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease, opacity 0.18s ease;
+}
+.h5-acct-card button:not(:disabled):active {
+  transform: scale(0.97);
+}
+.h5-acct-card .btn-primary:not(:disabled):hover {
+  transform: translateY(-0.5px);
+  box-shadow: var(--accent-glow);
+}
+.h5-acct-card .text-input {
+  transition: border-color 0.18s ease, box-shadow 0.2s cubic-bezier(0.22, 1, 0.36, 1), background 0.18s ease;
+}
+.h5-acct-card .text-input:focus {
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.cloud-stage {
+  animation: cloudStageIn 0.24s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.cloud-reveal {
+  animation: cloudRevealIn 0.26s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.cloud-code-input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+  font-size: 15px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.22em !important;
+  text-align: center;
+  padding-top: 9px !important;
+  padding-bottom: 9px !important;
+}
+.cloud-pair-box {
+  background: linear-gradient(180deg, var(--accent-soft), transparent 140%);
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  padding: 10px 11px;
+  display: grid;
+  gap: 8px;
+  animation: cloudRevealIn 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.cloud-pair-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.cloud-pair-pill {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  padding: 7px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-input);
+  background: linear-gradient(110deg, var(--surface) 35%, var(--accent-soft) 50%, var(--surface) 65%);
+  background-size: 260% 100%;
+  color: var(--ink);
+  user-select: all;
+  animation: cloudCodeShimmer 3.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+.cloud-pair-copied {
+  animation: cloudPop 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
+}
+.cloud-timer-track {
+  width: 100%;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--border-input);
+  overflow: hidden;
+}
+.cloud-timer-fill {
+  height: 100%;
+  width: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transform-origin: left center;
+  animation: cloudTimerShrink 300s linear forwards;
+}
+.cloud-live-dot {
+  display: inline-block;
+  width: 6.5px;
+  height: 6.5px;
+  border-radius: 50%;
+  background: var(--mint);
+  flex-shrink: 0;
+  animation: cloudLivePulse 2.4s ease-out infinite;
+}
+.cloud-live-dot.off {
+  background: var(--ink-secondary);
+  opacity: 0.45;
+  animation: none;
 }
 .h5-head {
   display: flex;
@@ -2517,32 +2658,86 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
   overflow-wrap: anywhere;
   user-select: text;
 }
-.h5-seg {
-  display: flex;
-  gap: 6px;
+.cloud-drawer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: 0fr;
   min-width: 0;
-  flex-wrap: wrap;
+  opacity: 0;
+  transition: grid-template-rows 0.25s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.2s ease;
+}
+.cloud-drawer.open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+.cloud-drawer-inner {
+  overflow: hidden;
+  min-height: 0;
+  min-width: 0;
+}
+.h5-seg {
+  position: relative;
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+  flex-wrap: nowrap;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border-input);
+}
+.h5-seg-thumb {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  border-radius: 7px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  box-shadow: var(--seg-shadow);
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0;
+}
+.h5-seg[data-thumb-ready="1"] .h5-seg-thumb {
+  opacity: 1;
+  transition: transform 0.24s cubic-bezier(0.22, 1, 0.36, 1), width 0.24s cubic-bezier(0.22, 1, 0.36, 1), height 0.24s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.16s ease;
 }
 .h5-seg-btn {
-  flex: 1 1 100px;
+  position: relative;
+  z-index: 1;
+  flex: 1 1 0;
   min-width: 0;
   font: 600 11.5px var(--font);
-  padding: 6px 10px;
-  border-radius: 8px;
-  border: 1px solid var(--border-input);
-  background: var(--surface);
-  color: var(--ink);
+  padding: 6px 8px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink-secondary);
   cursor: pointer;
   text-align: center;
-  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color 0.18s ease, transform 0.14s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.h5-seg-btn[hidden] {
+  display: none !important;
 }
 .h5-seg-btn:hover {
-  background: var(--surface-subtle);
+  color: var(--ink);
 }
 .h5-seg-btn.on {
+  color: var(--accent);
+}
+.h5-seg:not([data-thumb-ready="1"]) .h5-seg-btn.on {
   background: var(--accent-soft);
   border-color: var(--accent);
-  color: var(--accent);
+  box-shadow: var(--seg-shadow);
+}
+.h5-comp-list.no-anim .h5-comp-row {
+  animation: none !important;
 }
 .h5-err {
   background: var(--danger-bg);
@@ -2557,6 +2752,7 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
   min-width: 0;
   overflow-wrap: anywhere;
   user-select: text;
+  animation: cloudErrNudge 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 .h5-err b {
   font-weight: 700;
@@ -2593,11 +2789,21 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 8px 0;
+  padding: 8px 4px;
   border-top: 1px solid var(--divider);
+  border-radius: 6px;
   min-width: 0;
   flex-wrap: wrap;
+  animation: cloudRowIn 0.24s cubic-bezier(0.22, 1, 0.36, 1) both;
+  transition: background 0.18s ease;
 }
+.h5-comp-row:hover {
+  background: var(--surface-subtle);
+}
+.h5-comp-row:nth-child(2) { animation-delay: 40ms; }
+.h5-comp-row:nth-child(3) { animation-delay: 80ms; }
+.h5-comp-row:nth-child(4) { animation-delay: 120ms; }
+.h5-comp-row:nth-child(5) { animation-delay: 160ms; }
 .h5-comp-info {
   flex: 1 1 150px;
   min-width: 0;
@@ -2657,6 +2863,7 @@ form.ob-panel, form.inline-editor, form.hub-form { margin: 0; }
   padding-top: 9px;
   border-top: 1px solid var(--divider);
   min-width: 0;
+  animation: cloudRevealIn 0.25s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 .h11-ob-account.h5-ob-account {
   display: grid;
@@ -4677,10 +4884,11 @@ html.is-comfortable .section-stack { gap: 16px; padding: 14px 16px 20px; }
   border-radius: 9px;
 }
 .sheet-tabs::before {
+  box-sizing: border-box;
   top: 3px;
   bottom: 3px;
   left: 3px;
-  width: calc((100% - 6px) / 4);
+  width: calc((100% - 12px) / 4);
   border-radius: 6.5px;
 }
 .sheet-body {
@@ -6157,9 +6365,29 @@ const state = {
   accountFormOpen: false,
   accountAuthMode: "login",
   accountBusy: false,
-  // H5
+  // H5 + Cloud
   accountError: null,
   accountDraft: { email: "", password: "", computerName: "" },
+  cloudTarget: "auto",
+  customHubUrl: "",
+  cloudOtpPending: false,
+  cloudOtpEmail: "",
+  cloudPairCodeIssued: null,
+  cloudPairCopied: false,
+  cloudPairBusy: false,
+  cloudResetOpen: false,
+  cloudResetStep: "request",
+  cloudResetEmail: "",
+  cloudResetBusy: false,
+  cloudResetError: null,
+  cloudEmailOpen: false,
+  cloudEmailStep: "request",
+  cloudEmailTarget: "",
+  cloudEmailBusy: false,
+  cloudEmailError: null,
+  cloudDeleteOpen: false,
+  cloudDeleteBusy: false,
+  cloudDeleteError: null,
   changePwOpen: false,
   changePwBusy: false,
   changePwError: null,
@@ -8515,8 +8743,9 @@ function paintSettingsBody() {
           <div style="padding:0 12px 10px">${h5MachinesListHtml(state.settingsData.machines || [], "", false)}</div>
         </div>
       `}
-      ${!state.demo && acctInfo && acctInfo.signedIn && apiHas("trigger_sync") ? h11SyncCardHtml() : ""}
+      ${!state.demo && acctInfo && acctInfo.signedIn && apiHas("trigger_sync") ? `<div id="h11SyncSlot">${h11SyncCardHtml()}</div>` : ""}
     `;
+    h5SyncSegThumbs(body, false);
     /* <!-- /H5 --> */
     return;
   }
@@ -8535,7 +8764,7 @@ function paintSettingsBody() {
   const showUpdates = !!(state.update || state.version || apiHas("check_for_update"));
 
   body.innerHTML = `
-    <div class="wf-card">
+    <div class="wf-card" id="generalSettingsCard">
       <div class="toggle-row wrap">
         <div>
           <div class="source-name" id="themeLabel">Theme</div>
@@ -8549,18 +8778,26 @@ function paintSettingsBody() {
       </div>
       ${switchRow("sw_topmost", "Keep window on top", "Pin BURNRATE above your editor and terminal windows", state.topmost, "toggleTopmost")}
       ${switchRow("sw_autofade", "Transparent when not hovered", "Fade when the pointer leaves, including while pinned", state.autoFade, "toggleAutoFade")}
-      ${state.autoFade ? `
-        <div class="opacity-presets">
-          <span class="source-meta" id="idleOpacityLabel">Idle opacity</span>
-          <div class="opacity-pills" role="group" aria-labelledby="idleOpacityLabel">
-            ${presets.map(([val, lbl]) => `
-              <button class="btn-secondary ${Math.abs(state.idleOpacity - val) < 0.05 ? "active" : ""}" id="opacity_${Math.round(val * 100)}" type="button" aria-pressed="${Math.abs(state.idleOpacity - val) < 0.05}" data-idle-opacity="${Number(val)}">${lbl}</button>
-            `).join("")}
+      <div class="cloud-drawer ${state.autoFade ? "open" : ""}" id="idleOpacityDrawer">
+        <div class="cloud-drawer-inner">
+          <div class="opacity-presets">
+            <span class="source-meta" id="idleOpacityLabel">Idle opacity</span>
+            <div class="opacity-pills" role="group" aria-labelledby="idleOpacityLabel">
+              ${presets.map(([val, lbl]) => `
+                <button class="btn-secondary ${Math.abs(state.idleOpacity - val) < 0.05 ? "active" : ""}" id="opacity_${Math.round(val * 100)}" type="button" aria-pressed="${Math.abs(state.idleOpacity - val) < 0.05}" data-idle-opacity="${Number(val)}">${lbl}</button>
+              `).join("")}
+            </div>
+          </div>
+        </div>
+      </div>
+      ${showTray ? switchRow("sw_tray", "Keep running in the tray when closed", "Closing the window keeps BURNRATE running instead of quitting", state.closeToTray, "toggleCloseToTray") : ""}
+      ${showTray && apiHas("set_close_to_tab") ? `
+        <div class="cloud-drawer ${state.closeToTray ? "open" : ""}" id="closeToTabDrawer">
+          <div class="cloud-drawer-inner">
+            ${switchRow("sw_close_to_tab", "Keep desktop pill visible when closed", "Closing the taskbar icon shrinks BURNRATE to the floating desktop pill", state.closeToTab, "toggleCloseToTab")}
           </div>
         </div>
       ` : ""}
-      ${showTray ? switchRow("sw_tray", "Keep running in the tray when closed", "Closing the window keeps BURNRATE running instead of quitting", state.closeToTray, "toggleCloseToTray") : ""}
-      ${showTray && state.closeToTray && apiHas("set_close_to_tab") ? switchRow("sw_close_to_tab", "Keep desktop pill visible when closed", "Closing the taskbar icon shrinks BURNRATE to the floating desktop pill", state.closeToTab, "toggleCloseToTab") : ""}
       ${apiHas("set_hide_from_taskbar") ? switchRow("sw_hide_taskbar", "Hide full window from Windows taskbar", "Keep BURNRATE on your desktop without a taskbar icon", state.hideFromTaskbar, "toggleHideFromTaskbar") : ""}
       ${showAlerts ? switchRow("sw_alerts", "Low-quota notifications", "Warn when a plan or balance is about to run out", state.lowQuotaAlerts, "toggleLowQuotaAlerts") : ""}
       ${apiHas("set_pill_limit") ? `
@@ -8588,7 +8825,7 @@ function paintSettingsBody() {
           <button class="btn-secondary" id="resetOrderBtn" type="button" onclick="resetProviderOrder()">Reset</button>
         </div>
       ` : ""}
-      ${showUpdates ? updatesHtml() : ""}
+      ${showUpdates ? `<div id="generalUpdatesSlot">${updatesHtml()}</div>` : ""}
       ${showQuit ? `
         <div class="toggle-row">
           <div>
@@ -8599,16 +8836,69 @@ function paintSettingsBody() {
         </div>
       ` : ""}
     </div>
-    <div class="wf-card" style="padding:10px 12px;font-size:11px;color:var(--ink-secondary);line-height:1.45">
+    <div class="wf-card" id="generalTrayNote" style="padding:10px 12px;font-size:11px;color:var(--ink-secondary);line-height:1.45">
       ${state.trayAvailable && state.closeToTray
         ? (state.closeToTab
           ? "Closing this window removes the taskbar icon, keeps BURNRATE in the tray, and leaves the floating pill on your desktop. Use Quit to exit."
           : "Closing this window keeps BURNRATE in the tray. Background collection and live quota polling continue automatically; use Quit to exit.")
         : "Background collection and live quota polling continue automatically when you close this window."}
     </div>
-    ${apiHas("get_notification_settings") ? h11NotificationsCardHtml() : ""}
-    ${apiHas("get_diagnostics_report") ? h11DiagnosticsCardHtml() : ""}
+    ${apiHas("get_notification_settings") ? `<div id="h11NotificationsSlot">${h11NotificationsCardHtml()}</div>` : ""}
+    ${apiHas("get_diagnostics_report") ? `<div id="h11DiagnosticsSlot">${h11DiagnosticsCardHtml()}</div>` : ""}
   `;
+}
+
+function patchGeneralSettingsInPlace() {
+  const card = document.getElementById("generalSettingsCard");
+  if (!card) return false;
+
+  const setSw = (id, on) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.classList.toggle("on", !!on);
+    el.setAttribute("aria-checked", on ? "true" : "false");
+  };
+
+  ["system", "light", "dark"].forEach(val => {
+    const btn = document.getElementById(`theme_${val}`);
+    if (!btn) return;
+    const on = state.theme === val;
+    btn.classList.toggle("active", on);
+    btn.setAttribute("aria-checked", String(on));
+    btn.tabIndex = on ? 0 : -1;
+  });
+
+  setSw("sw_topmost", state.topmost);
+  setSw("sw_autofade", state.autoFade);
+  setSw("sw_tray", state.closeToTray);
+  setSw("sw_close_to_tab", state.closeToTab);
+  setSw("sw_hide_taskbar", state.hideFromTaskbar);
+  setSw("sw_alerts", state.lowQuotaAlerts);
+
+  const opDrawer = document.getElementById("idleOpacityDrawer");
+  if (opDrawer) opDrawer.classList.toggle("open", !!state.autoFade);
+  card.querySelectorAll("button[data-idle-opacity]").forEach(btn => {
+    const val = Number(btn.dataset.idleOpacity);
+    const on = Math.abs(state.idleOpacity - val) < 0.05;
+    btn.classList.toggle("active", on);
+    btn.setAttribute("aria-pressed", String(on));
+  });
+
+  const tabDrawer = document.getElementById("closeToTabDrawer");
+  if (tabDrawer) tabDrawer.classList.toggle("open", !!state.closeToTray);
+
+  const note = document.getElementById("generalTrayNote");
+  if (note) {
+    note.textContent = state.trayAvailable && state.closeToTray
+      ? (state.closeToTab
+        ? "Closing this window removes the taskbar icon, keeps BURNRATE in the tray, and leaves the floating pill on your desktop. Use Quit to exit."
+        : "Closing this window keeps BURNRATE in the tray. Background collection and live quota polling continue automatically; use Quit to exit.")
+      : "Background collection and live quota polling continue automatically when you close this window.";
+  }
+
+  const updSlot = document.getElementById("generalUpdatesSlot");
+  if (updSlot) updSlot.innerHTML = updatesHtml();
+  return true;
 }
 
 function profileEditorKey(source, profileKey) {
@@ -9179,6 +9469,10 @@ function h5ErrorGuidance(code) {
   if (c === "AUTH-105") return "Pick a longer password and try again.";
   if (c === "AUTH-106") return "Check the email address and try again.";
   if (c === "AUTH-107") return "Sign in again to continue.";
+  if (c === "AUTH-108") return "Check the code or request a fresh one.";
+  if (c === "CLOUD-409") return "Remove an unused computer first to free a slot.";
+  if (c === "CLOUD-413") return "Cloud storage limit reached.";
+  if (c === "CLOUD-503") return "Email service is temporarily busy. Try again shortly.";
   if (c === "DEV-301") return "Sign in again to re-add this computer.";
   if (c === "DEV-302") return "Choose a different name for this computer.";
   if (c === "NET-001" || c === "NET-002" || c === "NET-003") return "Check your connection and try again.";
@@ -9273,12 +9567,12 @@ function h5AccountContextData() {
   };
 }
 
-function h5MachinesListHtml(machines, currentMachineId, canRemove) {
+function h5MachinesListHtml(machines, currentMachineId, canRemove, noAnim = false) {
   const list = Array.isArray(machines) ? machines : [];
   if (!list.length) {
     return '<div class="h5-hint">Waiting for this computer to appear in Computers…</div>';
   }
-  return `<div class="h5-comp-list">
+  return `<div class="h5-comp-list${noAnim ? " no-anim" : ""}">
     ${list.map(m => {
       const mid = String(m.id || "");
       const isCur = !!(m.isCurrent || m.isLocal || (currentMachineId && mid === currentMachineId));
@@ -9297,6 +9591,7 @@ function h5MachinesListHtml(machines, currentMachineId, canRemove) {
         <div class="h5-comp-row" data-machine-id="${esc(mid)}">
           <div class="h5-comp-info">
             <div class="h5-comp-name-row">
+              <span class="cloud-live-dot ${m.online !== false ? "" : "off"}" aria-hidden="true"></span>
               <span class="h5-comp-name">${esc(m.name || mid)}</span>
               ${isCur ? '<span class="state-badge ok">This computer</span>' : ""}
             </div>
@@ -9321,8 +9616,150 @@ function h5MachinesListHtml(machines, currentMachineId, canRemove) {
   </div>`;
 }
 
-function h5HubAccountHtml(context = "settings") {
-  const ctx = context === "onboarding" ? "onboarding" : "settings";
+function h5IsCloudMode(context = "settings") {
+  const sData = state.settingsData || {};
+  const obData = (state.onboarding && state.onboarding.data) || {};
+  const info = h5AccountContextData();
+  if (info.signedIn) {
+    const mode = sData.hubMode || obData.hubMode || (sData.setup && sData.setup.spokeConfig && sData.setup.spokeConfig.hubMode);
+    return mode === "cloud";
+  }
+  if (state.cloudTarget === "cloud") return true;
+  if (state.cloudTarget === "self_hosted") return false;
+  const detected = sData.hubMode || obData.hubMode || "cloud";
+  return detected === "cloud" && apiHas("cloud_login");
+}
+
+function h5SyncSegThumbs(root, animate = true) {
+  const scope = root || document;
+  scope.querySelectorAll(".h5-seg").forEach(seg => {
+    const thumb = seg.querySelector(".h5-seg-thumb");
+    const active = seg.querySelector(".h5-seg-btn.on:not([hidden])");
+    if (!thumb || !active) return;
+    const applyPos = () => {
+      if (!active.offsetWidth) return;
+      thumb.style.width = active.offsetWidth + "px";
+      thumb.style.height = active.offsetHeight + "px";
+      thumb.style.transform = `translate3d(${active.offsetLeft}px, ${active.offsetTop}px, 0)`;
+    };
+    if (!animate) {
+      seg.removeAttribute("data-thumb-ready");
+      applyPos();
+      requestAnimationFrame(() => {
+        applyPos();
+        seg.setAttribute("data-thumb-ready", "1");
+      });
+    } else {
+      if (seg.getAttribute("data-thumb-ready") !== "1") {
+        seg.setAttribute("data-thumb-ready", "1");
+      }
+      applyPos();
+    }
+  });
+}
+
+function h5PairBoxInnerHtml() {
+  const pairIssued = state.cloudPairCodeIssued;
+  if (!pairIssued || !pairIssued.code) return "";
+  return `
+    <div class="cloud-pair-box" id="cloudPairCodeBox">
+      <div class="h5-hint">Enter this one-time code on your other computer (expires in 5 minutes):</div>
+      <div class="cloud-pair-row">
+        <code class="cloud-pair-pill" id="cloudPairCodeValue">${esc(pairIssued.code)}</code>
+        <button class="btn-secondary ${state.cloudPairCopied ? "cloud-pair-copied" : ""}" id="cloudCopyBtn" type="button" onclick="cloudCopyPairingCode()">${state.cloudPairCopied ? "Copied ✓" : "Copy"}</button>
+        <button class="btn-secondary" type="button" onclick="cloudDismissPairingCode()">Done</button>
+      </div>
+      <div class="cloud-timer-track" aria-hidden="true"><div class="cloud-timer-fill"></div></div>
+    </div>`;
+}
+
+function h5SignedInActionsHtml(ctx, isCloud, pwAuthed) {
+  const canManage = ctx === "settings";
+  const prefix = ctx === "onboarding" ? "ob_" : "";
+  if (!((canManage && apiHas("change_password") && !state.changePwOpen && (!isCloud || pwAuthed)) || apiHas("sign_out"))) return "";
+  return `
+    <div class="h5-actions" style="flex-wrap:wrap;gap:6px">
+      ${canManage && apiHas("change_password") && !state.changePwOpen && (!isCloud || pwAuthed) ? `<button class="btn-secondary" id="h5ChangePwToggleBtn" type="button" onclick="h5ToggleChangePassword()">Change password</button>` : ""}
+      ${canManage && isCloud && pwAuthed && apiHas("cloud_email_change_request") && !state.cloudEmailOpen ? `<button class="btn-secondary" id="cloudChangeEmailBtn" type="button" onclick="cloudToggleEmailChange()">Change email</button>` : ""}
+      ${canManage && isCloud && pwAuthed && apiHas("cloud_delete_account") && !state.cloudDeleteOpen ? `<button class="btn-danger-quiet" id="cloudDeleteToggleBtn" type="button" onclick="cloudToggleDeleteAccount()">Delete account</button>` : ""}
+      ${apiHas("sign_out") ? `<button class="btn-secondary" id="${prefix}h5SignOutBtn" type="button" onclick="h5SignOut()" ${state.signOutBusy ? "disabled" : ""}>${state.signOutBusy ? "Signing out…" : "Sign out"}</button>` : ""}
+    </div>`;
+}
+
+function h5ChangePwFormHtml() {
+  if (!state.changePwOpen) return "";
+  return `
+    <form class="h5-pw-form" id="h5ChangePwForm" autocomplete="off" novalidate onsubmit="event.preventDefault();h5SubmitChangePassword()">
+      <div data-drawer-err="pw">${state.changePwError ? h5RenderErrBanner(state.changePwError) : ""}</div>
+      <div class="h5-field">
+        <label for="h5CurPass">Current password</label>
+        <input class="text-input" id="h5CurPass" type="password" autocomplete="current-password" placeholder="Current password"/>
+      </div>
+      <div class="h5-field">
+        <label for="h5NewPass">New password</label>
+        <input class="text-input" id="h5NewPass" type="password" autocomplete="new-password" placeholder="At least 12 characters"/>
+      </div>
+      <div class="h5-field">
+        <label for="h5ConfirmPass">Confirm new password</label>
+        <input class="text-input" id="h5ConfirmPass" type="password" autocomplete="new-password" placeholder="Confirm new password"/>
+      </div>
+      <div class="h5-actions">
+        <button class="btn-secondary" id="h5CancelPwBtn" type="button" onclick="h5ToggleChangePassword()" ${state.changePwBusy ? "disabled" : ""}>Cancel</button>
+        <button class="btn-primary" id="h5SavePwBtn" type="submit" ${state.changePwBusy ? "disabled" : ""}>${state.changePwBusy ? "Updating…" : "Update password"}</button>
+      </div>
+    </form>`;
+}
+
+function h5EmailChangeFormHtml() {
+  if (!state.cloudEmailOpen) return "";
+  return `
+    <form class="h5-pw-form" id="cloudEmailChangeForm" autocomplete="off" novalidate onsubmit="event.preventDefault();cloudSubmitEmailChange()">
+      <div data-drawer-err="email">${state.cloudEmailError ? h5RenderErrBanner(state.cloudEmailError) : ""}</div>
+      ${state.cloudEmailStep === "confirm" ? `
+        <div class="h5-hint">Enter the 6-digit code sent to ${esc(state.cloudEmailTarget)}:</div>
+        <div class="h5-field">
+          <label for="cloudEmailCodeInput">Verification code</label>
+          <input class="text-input cloud-code-input" id="cloudEmailCodeInput" type="text" inputmode="numeric" maxlength="6" placeholder="123456"/>
+        </div>
+      ` : `
+        <div class="h5-field">
+          <label for="cloudNewEmailInput">New email address</label>
+          <input class="text-input" id="cloudNewEmailInput" type="email" autocomplete="off" placeholder="new@example.com"/>
+        </div>
+        <div class="h5-field">
+          <label for="cloudNewEmailPass">Current password</label>
+          <input class="text-input" id="cloudNewEmailPass" type="password" autocomplete="current-password" placeholder="Current password"/>
+        </div>
+      `}
+      <div class="h5-actions">
+        <button class="btn-secondary" type="button" onclick="cloudToggleEmailChange()" ${state.cloudEmailBusy ? "disabled" : ""}>Cancel</button>
+        <button class="btn-primary" type="submit" ${state.cloudEmailBusy ? "disabled" : ""}>${state.cloudEmailBusy ? "Working…" : (state.cloudEmailStep === "confirm" ? "Confirm email" : "Send code")}</button>
+      </div>
+    </form>`;
+}
+
+function h5DeleteAccountFormHtml() {
+  if (!state.cloudDeleteOpen) return "";
+  return `
+    <form class="h5-pw-form" id="cloudDeleteForm" autocomplete="off" novalidate onsubmit="event.preventDefault();cloudSubmitDeleteAccount()">
+      <div data-drawer-err="delete">${state.cloudDeleteError ? h5RenderErrBanner(state.cloudDeleteError) : ""}</div>
+      <div class="h5-hint">This permanently deletes your cloud account, synced database, and paired devices. Local usage on your PCs is untouched.</div>
+      <div class="h5-field">
+        <label for="cloudDeletePass">Password</label>
+        <input class="text-input" id="cloudDeletePass" type="password" autocomplete="current-password" placeholder="Current password"/>
+      </div>
+      <div class="h5-field">
+        <label for="cloudDeleteConfirm">Type DELETE to confirm</label>
+        <input class="text-input" id="cloudDeleteConfirm" type="text" autocomplete="off" placeholder="DELETE"/>
+      </div>
+      <div class="h5-actions">
+        <button class="btn-secondary" type="button" onclick="cloudToggleDeleteAccount()" ${state.cloudDeleteBusy ? "disabled" : ""}>Cancel</button>
+        <button class="btn-danger-quiet" type="submit" ${state.cloudDeleteBusy ? "disabled" : ""}>${state.cloudDeleteBusy ? "Deleting…" : "Delete my account"}</button>
+      </div>
+    </form>`;
+}
+
+function h5SignedOutStageHtml(ctx) {
   const hubHost = ctx === "onboarding" ? state.onboarding?.data?.hubHost : state.settingsData?.hubHost;
   const prefix = ctx === "onboarding" ? "ob_" : "";
   const idUser = ctx === "onboarding" ? "obHubAccountUser" : "hubAccountUser";
@@ -9330,30 +9767,134 @@ function h5HubAccountHtml(context = "settings") {
   const idSetup = ctx === "onboarding" ? "obHubSetupToken" : "hubSetupToken";
   const idComp = ctx === "onboarding" ? "obHubAccountComp" : "hubAccountComp";
   const idBtn = ctx === "onboarding" ? "obHubSignInBtn" : "hubSignInBtn";
-
   const info = h5AccountContextData();
-  const mode = state.accountAuthMode === "register" ? "register" : "login";
+  const isCloud = h5IsCloudMode(ctx);
+  const mode = state.accountAuthMode === "register" ? "register" : (state.accountAuthMode === "pair" && isCloud ? "pair" : "login");
   const busy = !!state.accountBusy;
   const emailVal = state.accountDraft.email !== "" ? state.accountDraft.email : info.email;
   const compVal = state.accountDraft.computerName !== "" ? state.accountDraft.computerName : info.computerName;
+
+  if (isCloud && state.cloudResetOpen) {
+    return `
+      <form class="h5-form cloud-stage" autocomplete="off" novalidate onsubmit="event.preventDefault();cloudSubmitPasswordReset()">
+        <div data-drawer-err="reset">${state.cloudResetError ? h5RenderErrBanner(state.cloudResetError) : ""}</div>
+        ${state.cloudResetStep === "confirm" ? `
+          <div class="h5-hint">Enter the 6-digit code sent to ${esc(state.cloudResetEmail)} and choose a new password.</div>
+          <div class="h5-field">
+            <label for="cloudResetCode">6-digit reset code</label>
+            <input class="text-input cloud-code-input" id="cloudResetCode" type="text" inputmode="numeric" maxlength="6" placeholder="123456"/>
+          </div>
+          <div class="h5-field">
+            <label for="cloudResetNewPass">New password</label>
+            <input class="text-input" id="cloudResetNewPass" type="password" autocomplete="new-password" placeholder="At least 12 characters"/>
+          </div>
+          <label class="h5-hint" style="display:flex;align-items:center;gap:6px;margin:4px 0 8px;cursor:pointer">
+            <input type="checkbox" id="cloudResetDisconnect"/> Also disconnect all paired computers
+          </label>
+        ` : `
+          <div class="h5-hint">We'll email a 6-digit password reset code to your account address.</div>
+          <div class="h5-field">
+            <label for="cloudResetEmailInput">Email</label>
+            <input class="text-input" id="cloudResetEmailInput" type="email" autocomplete="email" placeholder="you@example.com" value="${esc(emailVal)}"/>
+          </div>
+        `}
+        <div class="h5-actions">
+          <button class="btn-secondary" type="button" onclick="cloudTogglePasswordReset(false)" ${state.cloudResetBusy ? "disabled" : ""}>Back</button>
+          <button class="btn-primary" type="submit" ${state.cloudResetBusy ? "disabled" : ""}>${state.cloudResetBusy ? "Working…" : (state.cloudResetStep === "confirm" ? "Reset password" : "Send reset code")}</button>
+        </div>
+      </form>`;
+  }
+
+  return `
+    <form class="h5-form hub-form cloud-stage" autocomplete="off" novalidate data-hub-account-ctx="${esc(ctx)}">
+      ${!isCloud && !hubHost && state.cloudTarget === "self_hosted" ? `<div class="h5-field">
+        <label for="${prefix}customHubUrlInput">Self-hosted hub address</label>
+        <input class="text-input" id="${prefix}customHubUrlInput" type="url" autocomplete="off" spellcheck="false" placeholder="hub.example.com" value="${esc(state.customHubUrl || "")}" oninput="state.customHubUrl=this.value"/>
+      </div>` : ""}
+      ${isCloud && mode === "pair" ? `
+        <div class="h5-hint">Generate an 8-character code on an already signed-in computer under Settings &rarr; Add another computer.</div>
+        <div class="h5-field">
+          <label for="${prefix}cloudPairCodeInput">8-character pairing code</label>
+          <input class="text-input cloud-code-input" id="${prefix}cloudPairCodeInput" type="text" autocomplete="off" spellcheck="false" placeholder="K7M4-P9QX" style="text-transform:uppercase"/>
+        </div>
+        <div class="h5-field">
+          <label for="${idComp}">This computer's name</label>
+          <input class="text-input" id="${idComp}" type="text" autocomplete="off" placeholder="e.g. Work-Laptop" value="${esc(compVal)}" oninput="h5UpdateDraft('computerName', this.value)"/>
+        </div>
+        <div class="h5-actions">
+          <button class="btn-primary" id="${idBtn}" type="submit" ${busy ? "disabled" : ""}>${busy ? "Pairing…" : "Pair this computer"}</button>
+        </div>
+      ` : (isCloud && mode === "register" && state.cloudOtpPending ? `
+        <div class="h5-hint">We sent a 6-digit code to <strong>${esc(state.cloudOtpEmail)}</strong>. Enter it below to finish creating your account.</div>
+        <div class="h5-field">
+          <label for="${prefix}cloudVerifyCodeInput">6-digit verification code</label>
+          <input class="text-input cloud-code-input" id="${prefix}cloudVerifyCodeInput" type="text" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="123456"/>
+        </div>
+        <div class="h5-field">
+          <label for="${idComp}">This computer's name</label>
+          <input class="text-input" id="${idComp}" type="text" autocomplete="off" placeholder="e.g. Desktop-Office" value="${esc(compVal)}" oninput="h5UpdateDraft('computerName', this.value)"/>
+        </div>
+        <div class="h5-actions">
+          <button class="btn-secondary" type="button" onclick="cloudCancelOtpStep()" ${busy ? "disabled" : ""}>Back</button>
+          <button class="btn-primary" id="${idBtn}" type="submit" ${busy ? "disabled" : ""}>${busy ? "Verifying…" : "Verify & activate"}</button>
+        </div>
+      ` : `
+        <div class="h5-field">
+          <label for="${idUser}">Email</label>
+          <input class="text-input" id="${idUser}" type="email" autocomplete="email" spellcheck="false" placeholder="you@example.com" value="${esc(emailVal)}" oninput="h5UpdateDraft('email', this.value)"/>
+        </div>
+        <div class="h5-field">
+          <label for="${idPass}">Password</label>
+          <input class="text-input" id="${idPass}" type="password" autocomplete="new-password" placeholder="At least 12 characters" value="${esc(state.accountDraft.password || "")}" oninput="h5UpdateDraft('password', this.value)"/>
+        </div>
+        ${!isCloud && mode === "register" ? `<div class="h5-field">
+          <label for="${idSetup}">Hub setup token</label>
+          <input class="text-input" id="${idSetup}" type="password" autocomplete="off"/>
+        </div>` : ""}
+        ${!(isCloud && mode === "register") ? `<div class="h5-field">
+          <label for="${idComp}">This computer's name</label>
+          <input class="text-input" id="${idComp}" type="text" autocomplete="off" placeholder="e.g. Desktop-Office" value="${esc(compVal)}" oninput="h5UpdateDraft('computerName', this.value)"/>
+        </div>` : ""}
+        <div class="h5-actions">
+          <button class="btn-primary" id="${idBtn}" type="submit" ${busy ? "disabled" : ""}>
+            ${busy ? (mode === "register" ? (isCloud ? "Sending code…" : "Creating…") : "Signing in…") : (mode === "register" ? (isCloud ? "Send verification code" : "Create account") : "Sign in")}
+          </button>
+          ${isCloud && mode === "login" ? `<button class="btn-secondary" type="button" onclick="cloudTogglePasswordReset(true)">Forgot password?</button>` : ""}
+        </div>
+      `)}
+    </form>
+    ${!isCloud ? '<div class="h5-hint">Forgot your password? It can be reset on the hub server.</div>' : ""}`;
+}
+
+function h5HubAccountHtml(context = "settings") {
+  const ctx = context === "onboarding" ? "onboarding" : "settings";
+  const hubHost = ctx === "onboarding" ? state.onboarding?.data?.hubHost : state.settingsData?.hubHost;
+  const prefix = ctx === "onboarding" ? "ob_" : "";
+
+  const info = h5AccountContextData();
+  const isCloud = h5IsCloudMode(ctx);
+  const mode = state.accountAuthMode === "register" ? "register" : (state.accountAuthMode === "pair" && isCloud ? "pair" : "login");
+  const pwAuthed = state.settingsData?.passwordAuthenticated !== false;
 
   if (info.signedIn) {
     const badgeCls = info.syncErrCode ? "warn" : "ok";
     const badgeLabel = info.syncErrCode ? "Sync issue" : "Syncing";
     const canManage = ctx === "settings";
-    const showEmailMigrate = canManage && !!info.account.needsEmail && !info.account.emailPromptDismissed;
+    const showEmailMigrate = canManage && !isCloud && !!info.account.needsEmail && !info.account.emailPromptDismissed;
     const errBanner = state.accountError ? h5RenderErrBanner(state.accountError) : "";
     const syncBanner = info.syncErrCode
       ? h5RenderErrBanner({ code: info.syncErrCode, message: info.syncErrMsg })
       : "";
+    const pairOpen = !!(state.cloudPairCodeIssued && state.cloudPairCodeIssued.code);
     return `
-      <div class="h5-head">
-        <span class="card-title">Hub account</span>
+      <div class="h5-head" data-cloud-signed-in="1">
+        <span class="card-title">${isCloud ? "myBurnRate Cloud" : "Hub account"}</span>
         <span class="state-badge ${badgeCls}">${badgeLabel}</span>
       </div>
-      <div class="h5-hint">Signed in as ${esc(info.email || "hub owner")}</div>
+      <div class="h5-hint" data-cloud-slot="email">Signed in as ${esc(info.email || "account owner")}</div>
+      ${isCloud && !pwAuthed ? '<div class="h5-hint">Paired device — sign in with your password to change email, password, or delete account.</div>' : ""}
       ${syncBanner}
-      ${errBanner}
+      <div data-cloud-slot="err">${errBanner}</div>
       ${showEmailMigrate ? `
         <form autocomplete="off" novalidate onsubmit="event.preventDefault();submitAccountEmail()" class="h5-pw-form">
           <div class="h5-hint">Add an email address to your hub account so password resets work cleanly.</div>
@@ -9365,78 +9906,216 @@ function h5HubAccountHtml(context = "settings") {
           </div>
         </form>
       ` : ""}
-      ${h5MachinesListHtml(info.machines, info.currentMachineId, canManage && apiHas("remove_computer"))}
-      ${((canManage && apiHas("change_password") && !state.changePwOpen) || apiHas("sign_out")) ? `
-        <div class="h5-actions">
-          ${canManage && apiHas("change_password") && !state.changePwOpen ? `<button class="btn-secondary" id="h5ChangePwToggleBtn" type="button" onclick="h5ToggleChangePassword()">Change password</button>` : ""}
-          ${apiHas("sign_out") ? `<button class="btn-secondary" id="${prefix}h5SignOutBtn" type="button" onclick="h5SignOut()" ${state.signOutBusy ? "disabled" : ""}>${state.signOutBusy ? "Signing out…" : "Sign out"}</button>` : ""}
+      ${canManage && isCloud && apiHas("cloud_create_pairing_code") ? `
+        <div class="h5-actions" style="margin-bottom:2px">
+          <button class="btn-primary" id="cloudAddComputerBtn" type="button" onclick="cloudGeneratePairingCode()" ${state.cloudPairBusy ? "disabled" : ""}>${state.cloudPairBusy ? "Generating…" : "Add another computer"}</button>
+        </div>
+        <div class="cloud-drawer ${pairOpen ? "open" : ""}" data-cloud-slot="pair-drawer">
+          <div class="cloud-drawer-inner" data-cloud-slot="pair-inner">${pairOpen ? h5PairBoxInnerHtml() : ""}</div>
         </div>
       ` : ""}
-      ${canManage && state.changePwOpen ? `
-        <form class="h5-pw-form" id="h5ChangePwForm" autocomplete="off" novalidate onsubmit="event.preventDefault();h5SubmitChangePassword()">
-          ${state.changePwError ? h5RenderErrBanner(state.changePwError) : ""}
-          <div class="h5-field">
-            <label for="h5CurPass">Current password</label>
-            <input class="text-input" id="h5CurPass" type="password" autocomplete="current-password" placeholder="Current password"/>
-          </div>
-          <div class="h5-field">
-            <label for="h5NewPass">New password</label>
-            <input class="text-input" id="h5NewPass" type="password" autocomplete="new-password" placeholder="At least 12 characters"/>
-          </div>
-          <div class="h5-field">
-            <label for="h5ConfirmPass">Confirm new password</label>
-            <input class="text-input" id="h5ConfirmPass" type="password" autocomplete="new-password" placeholder="Confirm new password"/>
-          </div>
-          <div class="h5-actions">
-            <button class="btn-secondary" id="h5CancelPwBtn" type="button" onclick="h5ToggleChangePassword()" ${state.changePwBusy ? "disabled" : ""}>Cancel</button>
-            <button class="btn-primary" id="h5SavePwBtn" type="submit" ${state.changePwBusy ? "disabled" : ""}>${state.changePwBusy ? "Updating…" : "Update password"}</button>
-          </div>
-        </form>
-      ` : ""}
+      <div data-cloud-slot="machines">${h5MachinesListHtml(info.machines, info.currentMachineId, canManage && apiHas("remove_computer"))}</div>
+      <div data-cloud-slot="actions">${h5SignedInActionsHtml(ctx, isCloud, pwAuthed)}</div>
+      <div class="cloud-drawer ${canManage && state.changePwOpen ? "open" : ""}" data-cloud-slot="pw-drawer">
+        <div class="cloud-drawer-inner" data-cloud-slot="pw-inner">${canManage && state.changePwOpen ? h5ChangePwFormHtml() : ""}</div>
+      </div>
+      <div class="cloud-drawer ${canManage && isCloud && state.cloudEmailOpen ? "open" : ""}" data-cloud-slot="email-drawer">
+        <div class="cloud-drawer-inner" data-cloud-slot="email-inner">${canManage && isCloud && state.cloudEmailOpen ? h5EmailChangeFormHtml() : ""}</div>
+      </div>
+      <div class="cloud-drawer ${canManage && isCloud && state.cloudDeleteOpen ? "open" : ""}" data-cloud-slot="delete-drawer">
+        <div class="cloud-drawer-inner" data-cloud-slot="delete-inner">${canManage && isCloud && state.cloudDeleteOpen ? h5DeleteAccountFormHtml() : ""}</div>
+      </div>
     `;
   }
 
+  const inReset = isCloud && state.cloudResetOpen;
+  const targetToggleHtml = apiHas("cloud_login") ? `
+    <div class="h5-seg" data-seg-group="server" role="tablist" aria-label="Sync server" ${inReset ? "hidden" : ""}>
+      <span class="h5-seg-thumb" aria-hidden="true"></span>
+      <button class="h5-seg-btn ${isCloud ? "on" : ""}" id="${prefix}targetCloud" type="button" onclick="setCloudTarget('cloud')">myBurnRate Cloud</button>
+      <button class="h5-seg-btn ${!isCloud ? "on" : ""}" id="${prefix}targetSelfHosted" type="button" onclick="setCloudTarget('self_hosted')">Self-hosted hub</button>
+    </div>` : "";
+
   return `
-    <div class="h5-head">
-      <span class="card-title">Hub account</span>
-      <span class="state-badge">Not signed in</span>
+    <div class="h5-head" data-cloud-signed-in="0" data-cloud-ctx="${esc(ctx)}">
+      <span class="card-title" data-cloud-slot="title">${inReset ? "Reset cloud password" : (isCloud ? "myBurnRate Cloud" : "Hub account")}</span>
+      <span class="state-badge" data-cloud-slot="badge">${inReset ? "Cloud" : "Not signed in"}</span>
     </div>
-    ${!state.accountError ? '<div class="h5-hint">Sign in on every computer you want to track. Usage from all of them comes together in this app.</div>' : ""}
-    ${hubHost ? `<div class="h5-hint">Hub ${esc(hubHost)}</div>` : ""}
-    <div class="h5-seg" role="tablist" aria-label="Account mode">
+    <div class="h5-hint" data-cloud-slot="sub" ${inReset || state.accountError ? "hidden" : ""}>Everything stays local by default. Sign in optionally to sync usage across your computers.</div>
+    ${targetToggleHtml}
+    <div class="h5-hint" data-cloud-slot="hubhost" ${!isCloud && hubHost && !inReset ? "" : "hidden"}>${hubHost ? `Hub ${esc(hubHost)}` : ""}</div>
+    <div class="h5-seg" data-seg-group="mode" role="tablist" aria-label="Account mode" ${inReset ? "hidden" : ""}>
+      <span class="h5-seg-thumb" aria-hidden="true"></span>
       <button class="h5-seg-btn ${mode === "login" ? "on" : ""}" id="${prefix}authMode_login" type="button" role="tab" aria-selected="${mode === "login"}" onclick="setAccountAuthMode('login')">Sign in</button>
       <button class="h5-seg-btn ${mode === "register" ? "on" : ""}" id="${prefix}authMode_register" type="button" role="tab" aria-selected="${mode === "register"}" onclick="setAccountAuthMode('register')">Create account</button>
+      ${apiHas("cloud_login") ? `<button class="h5-seg-btn ${mode === "pair" ? "on" : ""}" id="${prefix}authMode_pair" type="button" role="tab" aria-selected="${mode === "pair"}" ${isCloud ? "" : "hidden"} onclick="setAccountAuthMode('pair')">Pair with code</button>` : ""}
     </div>
-    ${state.accountError ? h5RenderErrBanner(state.accountError) : ""}
-    <form class="h5-form hub-form" autocomplete="off" novalidate data-hub-account-ctx="${esc(ctx)}">
-      <div class="h5-field">
-        <label for="${idUser}">Email</label>
-        <input class="text-input" id="${idUser}" type="email" autocomplete="email" spellcheck="false" placeholder="you@example.com" value="${esc(emailVal)}" oninput="h5UpdateDraft('email', this.value)"/>
-      </div>
-      <div class="h5-field">
-        <label for="${idPass}">Password</label>
-        <input class="text-input" id="${idPass}" type="password" autocomplete="new-password" placeholder="At least 12 characters" value="${esc(state.accountDraft.password || "")}" oninput="h5UpdateDraft('password', this.value)"/>
-      </div>
-      ${mode === "register" ? `<div class="h5-field">
-        <label for="${idSetup}">Hub setup token</label>
-        <input class="text-input" id="${idSetup}" type="password" autocomplete="off"/>
-      </div>` : ""}
-      <div class="h5-field">
-        <label for="${idComp}">This computer's name</label>
-        <input class="text-input" id="${idComp}" type="text" autocomplete="off" placeholder="e.g. Desktop-Office" value="${esc(compVal)}" oninput="h5UpdateDraft('computerName', this.value)"/>
-      </div>
-      <div class="h5-actions">
-        <button class="btn-primary" id="${idBtn}" type="submit" ${busy ? "disabled" : ""}>
-          ${busy ? (mode === "register" ? "Creating…" : "Signing in…") : (mode === "register" ? "Create account" : "Sign in")}
-        </button>
-      </div>
-    </form>
-    <div class="h5-hint">Forgot your password? It can be reset on the hub server.</div>
+    <div data-cloud-slot="err">${!inReset && state.accountError ? h5RenderErrBanner(state.accountError) : ""}</div>
+    <div data-cloud-slot="form">${h5SignedOutStageHtml(ctx)}</div>
   `;
 }
 
-function h5RenderAccountSurfaces() {
-  if (state.settingsOpen && state.settingsTab === "computers") renderSettingsBody();
+function h5PatchSignedOutCard(card, { stageChanged = true } = {}) {
+  const head = card && card.querySelector(".h5-head");
+  if (!head || head.getAttribute("data-cloud-signed-in") !== "0") return false;
+  const ctx = head.getAttribute("data-cloud-ctx") || "settings";
+  const prefix = ctx === "onboarding" ? "ob_" : "";
+  const isCloud = h5IsCloudMode(ctx);
+  const mode = state.accountAuthMode === "register" ? "register" : (state.accountAuthMode === "pair" && isCloud ? "pair" : "login");
+  const inReset = isCloud && state.cloudResetOpen;
+  const hubHost = ctx === "onboarding" ? state.onboarding?.data?.hubHost : state.settingsData?.hubHost;
+
+  const titleEl = card.querySelector('[data-cloud-slot="title"]');
+  const badgeEl = card.querySelector('[data-cloud-slot="badge"]');
+  const subEl = card.querySelector('[data-cloud-slot="sub"]');
+  const hostEl = card.querySelector('[data-cloud-slot="hubhost"]');
+  const serverSeg = card.querySelector('[data-seg-group="server"]');
+  const modeSeg = card.querySelector('[data-seg-group="mode"]');
+  const errEl = card.querySelector('[data-cloud-slot="err"]');
+  const formEl = card.querySelector('[data-cloud-slot="form"]');
+
+  if (titleEl) titleEl.textContent = inReset ? "Reset cloud password" : (isCloud ? "myBurnRate Cloud" : "Hub account");
+  if (badgeEl) badgeEl.textContent = inReset ? "Cloud" : "Not signed in";
+  if (subEl) subEl.hidden = !!(inReset || state.accountError);
+  if (hostEl) hostEl.hidden = !(!isCloud && hubHost && !inReset);
+
+  if (serverSeg) {
+    serverSeg.hidden = inReset;
+    const bCloud = serverSeg.querySelector(`#${prefix}targetCloud`);
+    const bSelf = serverSeg.querySelector(`#${prefix}targetSelfHosted`);
+    if (bCloud) bCloud.classList.toggle("on", isCloud);
+    if (bSelf) bSelf.classList.toggle("on", !isCloud);
+  }
+  if (modeSeg) {
+    modeSeg.hidden = inReset;
+    const bLogin = modeSeg.querySelector(`#${prefix}authMode_login`);
+    const bReg = modeSeg.querySelector(`#${prefix}authMode_register`);
+    const bPair = modeSeg.querySelector(`#${prefix}authMode_pair`);
+    if (bLogin) { bLogin.classList.toggle("on", mode === "login"); bLogin.setAttribute("aria-selected", String(mode === "login")); }
+    if (bReg) { bReg.classList.toggle("on", mode === "register"); bReg.setAttribute("aria-selected", String(mode === "register")); }
+    if (bPair) { bPair.hidden = !isCloud; bPair.classList.toggle("on", mode === "pair"); bPair.setAttribute("aria-selected", String(mode === "pair")); }
+  }
+  if (errEl) {
+    errEl.innerHTML = (!inReset && state.accountError) ? h5RenderErrBanner(state.accountError) : "";
+  }
+  if (stageChanged && formEl) {
+    formEl.innerHTML = h5SignedOutStageHtml(ctx);
+  } else if (!stageChanged && formEl) {
+    const btn = formEl.querySelector(`#${ctx === "onboarding" ? "obHubSignInBtn" : "hubSignInBtn"}`);
+    if (btn) {
+      const busy = !!state.accountBusy;
+      btn.disabled = busy;
+      if (isCloud && mode === "pair") btn.textContent = busy ? "Pairing…" : "Pair this computer";
+      else if (isCloud && mode === "register" && state.cloudOtpPending) btn.textContent = busy ? "Verifying…" : "Verify & activate";
+      else btn.textContent = busy ? (mode === "register" ? (isCloud ? "Sending code…" : "Creating…") : "Signing in…") : (mode === "register" ? (isCloud ? "Send verification code" : "Create account") : "Sign in");
+    }
+    const rErr = formEl.querySelector('[data-drawer-err="reset"]');
+    if (rErr) rErr.innerHTML = state.cloudResetError ? h5RenderErrBanner(state.cloudResetError) : "";
+  }
+  requestAnimationFrame(() => h5SyncSegThumbs(card, true));
+  return true;
+}
+
+function h5PatchSignedIn(part) {
+  const card = document.getElementById("h5AccountCard");
+  if (!card) return false;
+  const head = card.querySelector(".h5-head");
+  if (!head || head.getAttribute("data-cloud-signed-in") !== "1") return false;
+  const info = h5AccountContextData();
+  const isCloud = h5IsCloudMode("settings");
+  const pwAuthed = state.settingsData?.passwordAuthenticated !== false;
+
+  if (part === "copy") {
+    const btn = document.getElementById("cloudCopyBtn");
+    if (btn) {
+      btn.textContent = state.cloudPairCopied ? "Copied ✓" : "Copy";
+      btn.classList.toggle("cloud-pair-copied", !!state.cloudPairCopied);
+    }
+    return true;
+  }
+  if (part === "err") {
+    const el = card.querySelector('[data-cloud-slot="err"]');
+    if (el) el.innerHTML = state.accountError ? h5RenderErrBanner(state.accountError) : "";
+    return true;
+  }
+  if (part === "pair") {
+    const addBtn = document.getElementById("cloudAddComputerBtn");
+    if (addBtn) {
+      addBtn.disabled = !!state.cloudPairBusy;
+      addBtn.textContent = state.cloudPairBusy ? "Generating…" : "Add another computer";
+    }
+    const drawer = card.querySelector('[data-cloud-slot="pair-drawer"]');
+    const inner = card.querySelector('[data-cloud-slot="pair-inner"]');
+    const errEl = card.querySelector('[data-cloud-slot="err"]');
+    if (errEl) errEl.innerHTML = state.accountError ? h5RenderErrBanner(state.accountError) : "";
+    if (drawer && inner) {
+      const open = !!(state.cloudPairCodeIssued && state.cloudPairCodeIssued.code);
+      if (open) {
+        inner.innerHTML = h5PairBoxInnerHtml();
+        requestAnimationFrame(() => drawer.classList.add("open"));
+      } else {
+        drawer.classList.remove("open");
+        setTimeout(() => { if (!state.cloudPairCodeIssued) inner.innerHTML = ""; }, 240);
+      }
+    }
+    return true;
+  }
+  if (part === "machines") {
+    const el = card.querySelector('[data-cloud-slot="machines"]');
+    if (el) el.innerHTML = h5MachinesListHtml(info.machines, info.currentMachineId, apiHas("remove_computer"), true);
+    const errEl = card.querySelector('[data-cloud-slot="err"]');
+    if (errEl) errEl.innerHTML = state.accountError ? h5RenderErrBanner(state.accountError) : "";
+    return true;
+  }
+  if (part === "pw" || part === "email" || part === "delete") {
+    const actEl = card.querySelector('[data-cloud-slot="actions"]');
+    if (actEl) actEl.innerHTML = h5SignedInActionsHtml("settings", isCloud, pwAuthed);
+    const drawer = card.querySelector(`[data-cloud-slot="${part}-drawer"]`);
+    const inner = card.querySelector(`[data-cloud-slot="${part}-inner"]`);
+    const isOpen = part === "pw" ? state.changePwOpen : (part === "email" ? state.cloudEmailOpen : state.cloudDeleteOpen);
+    const htmlFn = part === "pw" ? h5ChangePwFormHtml : (part === "email" ? h5EmailChangeFormHtml : h5DeleteAccountFormHtml);
+    if (drawer && inner) {
+      if (isOpen) {
+        inner.innerHTML = htmlFn();
+        requestAnimationFrame(() => drawer.classList.add("open"));
+      } else {
+        drawer.classList.remove("open");
+        inner.innerHTML = "";
+      }
+    }
+    return true;
+  }
+  if (part === "pw-err" || part === "email-err" || part === "delete-err") {
+    const key = part.replace("-err", "");
+    const errObj = key === "pw" ? state.changePwError : (key === "email" ? state.cloudEmailError : state.cloudDeleteError);
+    const errBox = card.querySelector(`[data-drawer-err="${key}"]`);
+    if (errBox) errBox.innerHTML = errObj ? h5RenderErrBanner(errObj) : "";
+    const busy = key === "pw" ? state.changePwBusy : (key === "email" ? state.cloudEmailBusy : state.cloudDeleteBusy);
+    const form = card.querySelector(`[data-cloud-slot="${key}-inner"] form`);
+    if (form) {
+      form.querySelectorAll("button").forEach(b => { b.disabled = !!busy; });
+      const sub = form.querySelector('button[type="submit"]');
+      if (sub) {
+        if (key === "pw") sub.textContent = busy ? "Updating…" : "Update password";
+        else if (key === "email") sub.textContent = busy ? "Working…" : (state.cloudEmailStep === "confirm" ? "Confirm email" : "Send code");
+        else sub.textContent = busy ? "Deleting…" : "Delete my account";
+      }
+    }
+    return true;
+  }
+  return false;
+}
+
+function h5RenderAccountSurfaces(opts = {}) {
+  const full = !!opts.full;
+  if (state.settingsOpen && state.settingsTab === "computers") {
+    const card = document.getElementById("h5AccountCard");
+    if (!full && card && h5PatchSignedOutCard(card, { stageChanged: opts.stageChanged !== false })) {
+      // Patched smoothly in place with zero card reload
+    } else {
+      renderSettingsBody();
+    }
+  }
   if (!state.report || !getNormalizedProviders(state.report).length) rebuildOnboarding();
 }
 
@@ -9452,51 +10131,360 @@ window.toggleAccountForm = function() {
 };
 
 window.setAccountAuthMode = function(mode) {
-  state.accountAuthMode = mode === "register" ? "register" : "login";
+  const next = (mode === "register" || mode === "pair") ? mode : "login";
+  const changed = state.accountAuthMode !== next || state.cloudOtpPending;
+  state.accountAuthMode = next;
   state.accountError = null;
-  h5RenderAccountSurfaces();
+  state.cloudOtpPending = false;
+  h5RenderAccountSurfaces({ stageChanged: changed });
+};
+
+window.setCloudTarget = function(target) {
+  const next = target === "self_hosted" ? "self_hosted" : "cloud";
+  state.cloudTarget = next;
+  if (state.cloudTarget === "self_hosted" && state.accountAuthMode === "pair") {
+    state.accountAuthMode = "login";
+  }
+  state.accountError = null;
+  state.cloudOtpPending = false;
+  state.cloudResetOpen = false;
+  h5RenderAccountSurfaces({ stageChanged: true });
+};
+
+window.cloudCancelOtpStep = function() {
+  state.cloudOtpPending = false;
+  state.accountError = null;
+  h5RenderAccountSurfaces({ stageChanged: true });
+};
+
+window.cloudGeneratePairingCode = async function() {
+  if (!apiHas("cloud_create_pairing_code") || state.cloudPairBusy) return;
+  state.cloudPairBusy = true;
+  state.accountError = null;
+  state.cloudPairCopied = false;
+  if (!h5PatchSignedIn("pair")) renderSettingsBody();
+  try {
+    const res = await window.pywebview.api.cloud_create_pairing_code();
+    state.cloudPairBusy = false;
+    if (res && res.ok) {
+      state.cloudPairCodeIssued = res;
+    } else {
+      state.accountError = h5NormalizeErr(res, "Could not create pairing code.");
+    }
+  } catch (err) {
+    state.cloudPairBusy = false;
+    state.accountError = { code: "HUB-501", message: "Could not create pairing code." };
+  }
+  if (!h5PatchSignedIn("pair")) renderSettingsBody();
+};
+
+window.cloudCopyPairingCode = function() {
+  const code = state.cloudPairCodeIssued && state.cloudPairCodeIssued.code;
+  if (!code) return;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(code).catch(() => {});
+  }
+  state.cloudPairCopied = true;
+  showToast("Pairing code copied");
+  h5PatchSignedIn("copy");
+  clearTimeout(window._cloudCopyTimer);
+  window._cloudCopyTimer = setTimeout(() => {
+    state.cloudPairCopied = false;
+    h5PatchSignedIn("copy");
+  }, 1800);
+};
+
+window.cloudDismissPairingCode = function() {
+  state.cloudPairCodeIssued = null;
+  state.cloudPairCopied = false;
+  if (!h5PatchSignedIn("pair")) renderSettingsBody();
+};
+
+window.cloudTogglePasswordReset = function(open) {
+  state.cloudResetOpen = open !== undefined ? !!open : !state.cloudResetOpen;
+  state.cloudResetStep = "request";
+  state.cloudResetError = null;
+  h5RenderAccountSurfaces({ stageChanged: true });
+};
+
+window.cloudSubmitPasswordReset = async function() {
+  if (state.cloudResetBusy) return;
+  state.cloudResetError = null;
+  if (state.cloudResetStep === "request") {
+    const email = (document.getElementById("cloudResetEmailInput")?.value || "").trim();
+    if (!email) {
+      state.cloudResetError = { code: "AUTH-106", message: "Enter your email address." };
+      h5RenderAccountSurfaces({ stageChanged: false });
+      return;
+    }
+    state.cloudResetBusy = true;
+    h5RenderAccountSurfaces({ stageChanged: false });
+    try {
+      const res = await window.pywebview.api.cloud_password_reset_request(email);
+      state.cloudResetBusy = false;
+      if (res && res.ok) {
+        state.cloudResetEmail = email;
+        state.cloudResetStep = "confirm";
+        showToast("Check your email for a 6-digit reset code");
+        h5RenderAccountSurfaces({ stageChanged: true });
+        return;
+      } else {
+        state.cloudResetError = h5NormalizeErr(res, "Could not request password reset.");
+      }
+    } catch (err) {
+      state.cloudResetBusy = false;
+      state.cloudResetError = { code: "HUB-501", message: "Could not request password reset." };
+    }
+    h5RenderAccountSurfaces({ stageChanged: false });
+    return;
+  }
+  const code = (document.getElementById("cloudResetCode")?.value || "").trim();
+  const newPass = document.getElementById("cloudResetNewPass")?.value || "";
+  const disconnect = !!document.getElementById("cloudResetDisconnect")?.checked;
+  state.cloudResetBusy = true;
+  h5RenderAccountSurfaces({ stageChanged: false });
+  try {
+    const res = await window.pywebview.api.cloud_password_reset_confirm(state.cloudResetEmail, code, newPass, disconnect);
+    state.cloudResetBusy = false;
+    if (res && res.ok) {
+      state.cloudResetOpen = false;
+      state.cloudResetStep = "request";
+      state.accountDraft.email = state.cloudResetEmail;
+      state.accountAuthMode = "login";
+      showToast("Password reset — sign in with your new password");
+      h5RenderAccountSurfaces({ stageChanged: true });
+      return;
+    } else {
+      state.cloudResetError = h5NormalizeErr(res, "Could not reset password.");
+    }
+  } catch (err) {
+    state.cloudResetBusy = false;
+    state.cloudResetError = { code: "HUB-501", message: "Could not reset password." };
+  }
+  h5RenderAccountSurfaces({ stageChanged: false });
+};
+
+window.cloudToggleEmailChange = function() {
+  const next = !state.cloudEmailOpen;
+  state.cloudEmailOpen = next;
+  state.cloudEmailStep = "request";
+  state.cloudEmailError = null;
+  if (next) {
+    if (state.changePwOpen) { state.changePwOpen = false; state.changePwError = null; h5PatchSignedIn("pw"); }
+    if (state.cloudDeleteOpen) { state.cloudDeleteOpen = false; state.cloudDeleteError = null; h5PatchSignedIn("delete"); }
+  }
+  if (!h5PatchSignedIn("email")) renderSettingsBody();
+};
+
+window.cloudSubmitEmailChange = async function() {
+  if (state.cloudEmailBusy) return;
+  state.cloudEmailError = null;
+  if (state.cloudEmailStep === "request") {
+    const newEmail = (document.getElementById("cloudNewEmailInput")?.value || "").trim();
+    const password = document.getElementById("cloudNewEmailPass")?.value || "";
+    state.cloudEmailBusy = true;
+    h5PatchSignedIn("email-err");
+    try {
+      const res = await window.pywebview.api.cloud_email_change_request(password, newEmail);
+      state.cloudEmailBusy = false;
+      if (res && res.ok) {
+        state.cloudEmailTarget = res.targetEmail || newEmail;
+        state.cloudEmailStep = "confirm";
+        showToast("Verification code sent to your new email");
+        h5PatchSignedIn("email");
+        return;
+      } else {
+        state.cloudEmailError = h5NormalizeErr(res, "Could not start email change.");
+      }
+    } catch (err) {
+      state.cloudEmailBusy = false;
+      state.cloudEmailError = { code: "HUB-501", message: "Could not start email change." };
+    }
+    h5PatchSignedIn("email-err");
+    return;
+  }
+  const code = (document.getElementById("cloudEmailCodeInput")?.value || "").trim();
+  state.cloudEmailBusy = true;
+  h5PatchSignedIn("email-err");
+  try {
+    const res = await window.pywebview.api.cloud_email_change_confirm(code);
+    state.cloudEmailBusy = false;
+    if (res && res.ok) {
+      state.cloudEmailOpen = false;
+      state.cloudEmailStep = "request";
+      if (state.settingsData && res.email) state.settingsData.accountEmail = res.email;
+      const emailSlot = document.querySelector('#h5AccountCard [data-cloud-slot="email"]');
+      if (emailSlot && res.email) emailSlot.textContent = "Signed in as " + res.email;
+      showToast("Email address updated");
+      h5PatchSignedIn("email");
+      return;
+    } else {
+      state.cloudEmailError = h5NormalizeErr(res, "Could not verify email change.");
+    }
+  } catch (err) {
+    state.cloudEmailBusy = false;
+    state.cloudEmailError = { code: "HUB-501", message: "Could not verify email change." };
+  }
+  h5PatchSignedIn("email-err");
+};
+
+window.cloudToggleDeleteAccount = function() {
+  const next = !state.cloudDeleteOpen;
+  state.cloudDeleteOpen = next;
+  state.cloudDeleteError = null;
+  if (next) {
+    if (state.changePwOpen) { state.changePwOpen = false; state.changePwError = null; h5PatchSignedIn("pw"); }
+    if (state.cloudEmailOpen) { state.cloudEmailOpen = false; state.cloudEmailError = null; h5PatchSignedIn("email"); }
+  }
+  if (!h5PatchSignedIn("delete")) renderSettingsBody();
+};
+
+window.cloudSubmitDeleteAccount = async function() {
+  if (state.cloudDeleteBusy || !apiHas("cloud_delete_account")) return;
+  const password = document.getElementById("cloudDeletePass")?.value || "";
+  const confirm = (document.getElementById("cloudDeleteConfirm")?.value || "").trim();
+  state.cloudDeleteBusy = true;
+  state.cloudDeleteError = null;
+  h5PatchSignedIn("delete-err");
+  try {
+    const res = await window.pywebview.api.cloud_delete_account(password, confirm);
+    state.cloudDeleteBusy = false;
+    if (res && res.ok) {
+      state.cloudDeleteOpen = false;
+      state.cloudPairCodeIssued = null;
+      showToast("Cloud account deleted. Local history kept.");
+      await refreshSettingsData();
+      loadUsage(false, false);
+      return;
+    } else {
+      state.cloudDeleteError = h5NormalizeErr(res, "Could not delete account.");
+    }
+  } catch (err) {
+    state.cloudDeleteBusy = false;
+    state.cloudDeleteError = { code: "HUB-501", message: "Could not delete account." };
+  }
+  h5PatchSignedIn("delete-err");
 };
 
 window.submitHubAccount = async function(context = "settings") {
   if (!apiAvailable() || state.accountBusy) return;
   const ctx = context === "onboarding" ? "onboarding" : "settings";
+  const prefix = ctx === "onboarding" ? "ob_" : "";
+  const isCloud = h5IsCloudMode(ctx);
   const idUser = ctx === "onboarding" ? "obHubAccountUser" : "hubAccountUser";
   const idPass = ctx === "onboarding" ? "obHubAccountPass" : "hubAccountPass";
   const idSetup = ctx === "onboarding" ? "obHubSetupToken" : "hubSetupToken";
   const idComp = ctx === "onboarding" ? "obHubAccountComp" : "hubAccountComp";
+  const computerName = (document.getElementById(idComp)?.value ?? state.accountDraft.computerName ?? "").trim();
+  const customUrl = (document.getElementById(prefix + "customHubUrlInput")?.value ?? state.customHubUrl ?? "").trim();
+
+  if (isCloud && state.accountAuthMode === "pair") {
+    const pairCode = (document.getElementById(prefix + "cloudPairCodeInput")?.value || "").trim();
+    if (!pairCode) {
+      state.accountError = { code: "AUTH-108", message: "Enter your 8-character pairing code." };
+      h5RenderAccountSurfaces({ stageChanged: false });
+      return;
+    }
+    state.accountBusy = true;
+    state.accountError = null;
+    h5RenderAccountSurfaces({ stageChanged: false });
+    try {
+      const res = await window.pywebview.api.cloud_redeem_pairing_code(pairCode, computerName);
+      state.accountBusy = false;
+      if (res && res.ok) {
+        state.accountFormOpen = false;
+        showToast("Computer paired with myBurnRate Cloud");
+        await refreshSettingsData();
+        loadUsage(false, false);
+        return;
+      } else {
+        state.accountError = h5NormalizeErr(res, "Could not pair this computer.");
+      }
+    } catch (err) {
+      state.accountBusy = false;
+      state.accountError = { code: "HUB-501", message: "Could not pair this computer." };
+    }
+    h5RenderAccountSurfaces({ stageChanged: false });
+    return;
+  }
+
+  if (isCloud && state.accountAuthMode === "register" && state.cloudOtpPending) {
+    const code = (document.getElementById(prefix + "cloudVerifyCodeInput")?.value || "").trim();
+    state.accountBusy = true;
+    state.accountError = null;
+    h5RenderAccountSurfaces({ stageChanged: false });
+    try {
+      const res = await window.pywebview.api.cloud_register_verify(state.cloudOtpEmail, code, computerName);
+      state.accountBusy = false;
+      if (res && res.ok) {
+        state.cloudOtpPending = false;
+        state.accountFormOpen = false;
+        state.accountDraft.password = "";
+        showToast("Cloud account activated");
+        await refreshSettingsData();
+        loadUsage(false, false);
+        return;
+      } else {
+        state.accountError = h5NormalizeErr(res, "Verification failed.");
+      }
+    } catch (err) {
+      state.accountBusy = false;
+      state.accountError = { code: "HUB-501", message: "Verification failed." };
+    }
+    h5RenderAccountSurfaces({ stageChanged: false });
+    return;
+  }
+
   const email = (document.getElementById(idUser)?.value ?? state.accountDraft.email ?? "").trim();
   const password = document.getElementById(idPass)?.value ?? state.accountDraft.password ?? "";
   const setupToken = document.getElementById(idSetup)?.value ?? "";
-  const computerName = (document.getElementById(idComp)?.value ?? state.accountDraft.computerName ?? "").trim();
   state.accountDraft = { email, password, computerName };
 
   if (!email) {
     state.accountError = { code: "AUTH-106", message: "Enter a valid email address." };
-    h5RenderAccountSurfaces();
+    h5RenderAccountSurfaces({ stageChanged: false });
     return;
   }
   if (state.accountAuthMode === "register" && password.length < 12) {
     state.accountError = { code: "AUTH-105", message: "Use a password of at least 12 characters." };
-    h5RenderAccountSurfaces();
+    h5RenderAccountSurfaces({ stageChanged: false });
     return;
   }
   if (!password) {
     state.accountError = { code: "AUTH-101", message: "That email and password don't match." };
-    h5RenderAccountSurfaces();
+    h5RenderAccountSurfaces({ stageChanged: false });
     return;
   }
 
   state.accountBusy = true;
   state.accountError = null;
-  h5RenderAccountSurfaces();
+  h5RenderAccountSurfaces({ stageChanged: false });
 
   try {
     let res;
-    if (state.accountAuthMode === "register") {
-      if (apiHas("create_account")) res = await window.pywebview.api.create_account(email, password, computerName, setupToken);
+    if (isCloud && state.accountAuthMode === "register") {
+      res = await window.pywebview.api.cloud_register_start(email, password);
+      state.accountBusy = false;
+      if (res && res.ok) {
+        state.cloudOtpPending = true;
+        state.cloudOtpEmail = res.email || email;
+        state.accountDraft.password = "";
+        showToast("Check your email for a 6-digit verification code");
+        h5RenderAccountSurfaces({ stageChanged: true });
+        return;
+      } else {
+        state.accountError = h5NormalizeErr(res, "Could not start registration.");
+      }
+      h5RenderAccountSurfaces({ stageChanged: false });
+      return;
+    }
+    if (isCloud) {
+      res = await window.pywebview.api.cloud_login(email, password, computerName);
+    } else if (state.accountAuthMode === "register") {
+      if (apiHas("create_account")) res = await window.pywebview.api.create_account(email, password, computerName, setupToken, customUrl);
       else res = await window.pywebview.api.connect_hub_account(email, password, computerName, "register");
     } else {
-      if (apiHas("sign_in")) res = await window.pywebview.api.sign_in(email, password, computerName);
+      if (apiHas("sign_in")) res = await window.pywebview.api.sign_in(email, password, computerName, customUrl);
       else res = await window.pywebview.api.connect_hub_account(email, password, computerName, "login");
     }
     state.accountBusy = false;
@@ -9511,16 +10499,20 @@ window.submitHubAccount = async function(context = "settings") {
           spokeConfig: Object.assign({}, (state.settingsData.setup || {}).spokeConfig || {}, {
             enabled: true,
             hasOwnerSession: true,
+            hubMode: isCloud ? "cloud" : "self_hosted",
           }),
         });
         state.settingsData.accountEmail = res.account.email || res.account.username || email;
         state.settingsData.hasOwnerSession = true;
+        state.settingsData.hubMode = isCloud ? "cloud" : "self_hosted";
+        state.settingsData.passwordAuthenticated = res.passwordAuthenticated !== false;
         if (Array.isArray(res.machines)) state.settingsData.machines = res.machines;
       }
       if (state.onboarding && state.onboarding.data) {
         state.onboarding.data = Object.assign({}, state.onboarding.data, {
           hubConnected: true,
           hasOwnerSession: true,
+          hubMode: isCloud ? "cloud" : "self_hosted",
           accountEmail: (res.account && (res.account.email || res.account.username)) || email,
           computerName: res.computerName || computerName,
           machines: Array.isArray(res.machines) ? res.machines : (state.onboarding.data.machines || []),
@@ -9528,7 +10520,7 @@ window.submitHubAccount = async function(context = "settings") {
         state.onboarding.sig = JSON.stringify(state.onboarding.data);
       }
       showToast(res.warning || (state.accountAuthMode === "register" ? "Account created" : "Signed in"));
-      h5RenderAccountSurfaces();
+      h5RenderAccountSurfaces({ full: true });
       await refreshSettingsData();
       loadUsage(false, false);
       if (res.syncStarted) {
@@ -9538,12 +10530,12 @@ window.submitHubAccount = async function(context = "settings") {
       }
     } else {
       state.accountError = h5NormalizeErr(res, "Sign-in failed.");
-      h5RenderAccountSurfaces();
+      h5RenderAccountSurfaces({ stageChanged: false });
     }
   } catch (err) {
     state.accountBusy = false;
     state.accountError = { code: "HUB-501", message: "Sign-in failed." };
-    h5RenderAccountSurfaces();
+    h5RenderAccountSurfaces({ stageChanged: false });
   }
 };
 
@@ -9551,13 +10543,21 @@ window.h5SignOut = async function() {
   if (!apiHas("sign_out") || state.signOutBusy) return;
   state.signOutBusy = true;
   state.accountError = null;
-  h5RenderAccountSurfaces();
+  if (!h5PatchSignedIn("err")) h5RenderAccountSurfaces({ full: true });
+  const signOutBtn = document.getElementById("h5SignOutBtn") || document.getElementById("ob_h5SignOutBtn");
+  if (signOutBtn) { signOutBtn.disabled = true; signOutBtn.textContent = "Signing out…"; }
   try {
     const res = await window.pywebview.api.sign_out();
     state.signOutBusy = false;
     if (res && (res.ok || res.code === "NET-001")) {
       state.changePwOpen = false;
       state.changePwError = null;
+      state.cloudEmailOpen = false;
+      state.cloudEmailError = null;
+      state.cloudDeleteOpen = false;
+      state.cloudDeleteError = null;
+      state.cloudPairCodeIssued = null;
+      state.cloudPairCopied = false;
       state.removeConfirmId = null;
       state.accountError = res.ok ? null : h5NormalizeErr(res, "Could not sign out.");
       state.accountDraft.password = "";
@@ -9585,24 +10585,31 @@ window.h5SignOut = async function() {
         state.onboarding.sig = JSON.stringify(state.onboarding.data);
       }
       if (res.ok) showToast("Signed out");
-      h5RenderAccountSurfaces();
+      h5RenderAccountSurfaces({ full: true });
       await refreshSettingsData();
       loadUsage(false, false);
     } else {
       state.accountError = h5NormalizeErr(res, "Could not sign out.");
-      h5RenderAccountSurfaces();
+      if (signOutBtn) { signOutBtn.disabled = false; signOutBtn.textContent = "Sign out"; }
+      if (!h5PatchSignedIn("err")) h5RenderAccountSurfaces({ full: true });
     }
   } catch (err) {
     state.signOutBusy = false;
     state.accountError = { code: "HUB-501", message: "Could not sign out." };
-    h5RenderAccountSurfaces();
+    if (signOutBtn) { signOutBtn.disabled = false; signOutBtn.textContent = "Sign out"; }
+    if (!h5PatchSignedIn("err")) h5RenderAccountSurfaces({ full: true });
   }
 };
 
 window.h5ToggleChangePassword = function() {
-  state.changePwOpen = !state.changePwOpen;
+  const next = !state.changePwOpen;
+  state.changePwOpen = next;
   state.changePwError = null;
-  renderSettingsBody();
+  if (next) {
+    if (state.cloudEmailOpen) { state.cloudEmailOpen = false; state.cloudEmailError = null; h5PatchSignedIn("email"); }
+    if (state.cloudDeleteOpen) { state.cloudDeleteOpen = false; state.cloudDeleteError = null; h5PatchSignedIn("delete"); }
+  }
+  if (!h5PatchSignedIn("pw")) renderSettingsBody();
 };
 
 window.h5SubmitChangePassword = async function() {
@@ -9612,22 +10619,22 @@ window.h5SubmitChangePassword = async function() {
   const confirmPass = document.getElementById("h5ConfirmPass")?.value ?? newPass;
   if (!curPass) {
     state.changePwError = { code: "AUTH-101", message: "Enter your current password." };
-    renderSettingsBody();
+    if (!h5PatchSignedIn("pw-err")) renderSettingsBody();
     return;
   }
   if (newPass.length < 12) {
     state.changePwError = { code: "AUTH-105", message: "Use a password of at least 12 characters." };
-    renderSettingsBody();
+    if (!h5PatchSignedIn("pw-err")) renderSettingsBody();
     return;
   }
   if (newPass !== confirmPass) {
     state.changePwError = { code: "AUTH-105", message: "New passwords don't match." };
-    renderSettingsBody();
+    if (!h5PatchSignedIn("pw-err")) renderSettingsBody();
     return;
   }
   state.changePwBusy = true;
   state.changePwError = null;
-  renderSettingsBody();
+  if (!h5PatchSignedIn("pw-err")) renderSettingsBody();
   try {
     const res = await window.pywebview.api.change_password(curPass, newPass);
     state.changePwBusy = false;
@@ -9635,26 +10642,26 @@ window.h5SubmitChangePassword = async function() {
       state.changePwOpen = false;
       state.changePwError = null;
       showToast("Password updated");
-      renderSettingsBody();
+      if (!h5PatchSignedIn("pw")) renderSettingsBody();
     } else {
       state.changePwError = h5NormalizeErr(res, "Could not update password.");
-      renderSettingsBody();
+      if (!h5PatchSignedIn("pw-err")) renderSettingsBody();
     }
   } catch (err) {
     state.changePwBusy = false;
     state.changePwError = { code: "HUB-501", message: "Could not update password." };
-    renderSettingsBody();
+    if (!h5PatchSignedIn("pw-err")) renderSettingsBody();
   }
 };
 
 window.h5AskRemoveComputer = function(id) {
   state.removeConfirmId = String(id || "");
-  renderSettingsBody();
+  if (!h5PatchSignedIn("machines")) renderSettingsBody();
 };
 
 window.h5CancelRemoveComputer = function() {
   state.removeConfirmId = null;
-  renderSettingsBody();
+  if (!h5PatchSignedIn("machines")) renderSettingsBody();
 };
 
 window.h5ConfirmRemoveComputer = async function(id) {
@@ -9662,7 +10669,7 @@ window.h5ConfirmRemoveComputer = async function(id) {
   if (!mid || !apiHas("remove_computer") || state.removeBusyId) return;
   state.removeBusyId = mid;
   state.accountError = null;
-  renderSettingsBody();
+  if (!h5PatchSignedIn("machines")) renderSettingsBody();
   try {
     const res = await window.pywebview.api.remove_computer(mid);
     state.removeBusyId = null;
@@ -9674,16 +10681,16 @@ window.h5ConfirmRemoveComputer = async function(id) {
         await refreshSettingsData();
       }
       showToast("Computer removed");
-      renderSettingsBody();
+      if (!h5PatchSignedIn("machines")) renderSettingsBody();
     } else {
       state.accountError = h5NormalizeErr(res, "Could not remove computer.");
-      renderSettingsBody();
+      if (!h5PatchSignedIn("machines")) renderSettingsBody();
     }
   } catch (err) {
     state.removeBusyId = null;
     state.removeConfirmId = null;
     state.accountError = { code: "HUB-501", message: "Could not remove computer." };
-    renderSettingsBody();
+    if (!h5PatchSignedIn("machines")) renderSettingsBody();
   }
 };
 
@@ -9746,7 +10753,9 @@ window.toggleTopmost = async function() {
     }
     state.topmost = desired;
     updatePinButton();
-    if (state.settingsOpen) renderSettingsBody();
+    if (state.settingsOpen && state.settingsTab === "general" && !patchGeneralSettingsInPlace()) {
+      renderSettingsBody();
+    }
   } catch (err) {
     showToast("Could not change the window pin");
   } finally {
@@ -9759,7 +10768,7 @@ window.selectTheme = async function(pref) {
   if (pref !== "system" && pref !== "light" && pref !== "dark") return;
   state.theme = pref;
   window.burnrateTheme.apply(pref);
-  renderSettingsBody();
+  if (!patchGeneralSettingsInPlace()) renderSettingsBody();
   if (apiHas("set_theme")) {
     try { await window.pywebview.api.set_theme(pref); } catch (err) { showToast("Could not save the theme"); }
   }
@@ -9769,7 +10778,7 @@ async function toggleHostFlag(stateKey, method, resultKey, failMessage) {
   if (!apiHas(method)) return;
   const desired = !state[stateKey];
   state[stateKey] = desired;
-  renderSettingsBody();
+  if (!patchGeneralSettingsInPlace()) renderSettingsBody();
   let res = null;
   try { res = await window.pywebview.api[method](desired); } catch (err) { res = null; }
   if (res && res.ok) {
@@ -9778,7 +10787,7 @@ async function toggleHostFlag(stateKey, method, resultKey, failMessage) {
     state[stateKey] = !desired;
     showToast((res && res.error) || failMessage);
   }
-  renderSettingsBody();
+  if (!patchGeneralSettingsInPlace()) renderSettingsBody();
 }
 window.toggleCloseToTray = () => toggleHostFlag("closeToTray", "set_close_to_tray", "closeToTray", "Could not change tray behavior");
 window.toggleCloseToTab = () => toggleHostFlag("closeToTab", "set_close_to_tab", "closeToTab", "Could not change close behavior");
@@ -9812,7 +10821,7 @@ function updateGearDot() {
 window.checkForUpdates = async function() {
   if (!apiHas("check_for_update") || state.updateCheck.status === "checking") return;
   state.updateCheck = { status: "checking", error: "" };
-  renderSettingsBody();
+  if (!patchGeneralSettingsInPlace()) renderSettingsBody();
   try {
     const res = await window.pywebview.api.check_for_update();
     if (res && res.ok) {
@@ -9825,13 +10834,13 @@ window.checkForUpdates = async function() {
     state.updateCheck = { status: "done", error: "Could not check for updates." };
   }
   updateGearDot();
-  renderSettingsBody();
+  if (!patchGeneralSettingsInPlace()) renderSettingsBody();
 };
 
 window.installUpdate = async function() {
   if (!apiHas("install_update") || state.updateCheck.status === "installing") return;
   state.updateCheck = { status: "installing", error: "" };
-  renderSettingsBody();
+  if (!patchGeneralSettingsInPlace()) renderSettingsBody();
   let res = null;
   try { res = await window.pywebview.api.install_update(); } catch (err) { res = null; }
   if (res && res.ok) {
@@ -9839,7 +10848,7 @@ window.installUpdate = async function() {
   } else {
     state.updateCheck = { status: "done", error: (res && res.error) || "The update could not be installed." };
   }
-  renderSettingsBody();
+  if (!patchGeneralSettingsInPlace()) renderSettingsBody();
 };
 
 window.openUpdatePage = function(url) {
@@ -9852,7 +10861,7 @@ window.openUpdatePage = function(url) {
 
 window.toggleAutoFade = async function() {
   state.autoFade = !state.autoFade;
-  renderSettingsBody();
+  if (!patchGeneralSettingsInPlace()) renderSettingsBody();
   if (apiAvailable() && window.pywebview.api.set_auto_fade) {
     await window.pywebview.api.set_auto_fade(state.autoFade);
   }
@@ -9860,7 +10869,7 @@ window.toggleAutoFade = async function() {
 
 window.selectIdleOpacity = async function(val) {
   state.idleOpacity = Number(val);
-  renderSettingsBody();
+  if (!patchGeneralSettingsInPlace()) renderSettingsBody();
   if (apiAvailable() && window.pywebview.api.set_idle_opacity) {
     await window.pywebview.api.set_idle_opacity(state.idleOpacity);
   }
@@ -10554,12 +11563,65 @@ window.h11DeferOnboarding = async function() {
   rebuildOnboarding();
 };
 
+function h11PatchNotificationsCard() {
+  const slot = document.getElementById("h11NotificationsSlot");
+  if (!slot) return false;
+  const nf = state.notifications;
+  const existing = document.getElementById("h11NotificationsCard");
+  const kinds = Array.isArray(nf.kinds) ? nf.kinds : [];
+  if (existing && kinds.length && existing.querySelector("[data-notify-key]")) {
+    kinds.forEach(k => {
+      const key = String(k.key || "");
+      const sw = existing.querySelector(`[data-notify-key="${CSS.escape(key)}"]`);
+      if (sw) {
+        sw.classList.toggle("on", !!k.on);
+        sw.setAttribute("aria-checked", k.on ? "true" : "false");
+        sw.disabled = nf.busyKey === key;
+      }
+    });
+    const testBtn = document.getElementById("notifyTestBtn");
+    if (testBtn) {
+      testBtn.disabled = !!(nf.testing || (nf.status === "ready" && !nf.available));
+      testBtn.textContent = nf.testing ? "Sending…" : "Send a test";
+    }
+    const availNote = nf.status === "ready" && !nf.available ? "Notifications come from the desktop service on Windows." : "";
+    const statusMsg = nf.testStatus || availNote;
+    const statusCls = nf.testError ? "err" : (nf.testStatus && !nf.testing ? "ok" : "");
+    let statusEl = document.getElementById("notifyTestStatus");
+    if (statusMsg) {
+      if (!statusEl) {
+        const wrap = document.createElement("div");
+        wrap.className = "h11-card-block";
+        wrap.style.paddingTop = "2px";
+        wrap.innerHTML = `<div class="h11-status-line ${statusCls}" id="notifyTestStatus" role="status"></div>`;
+        existing.appendChild(wrap);
+        statusEl = document.getElementById("notifyTestStatus");
+      }
+      statusEl.className = `h11-status-line ${statusCls}`;
+      statusEl.textContent = statusMsg;
+    } else if (statusEl && statusEl.parentElement) {
+      statusEl.parentElement.remove();
+    }
+    patchGeneralSettingsInPlace();
+    return true;
+  }
+  slot.innerHTML = h11NotificationsCardHtml();
+  return true;
+}
+
+function h11PatchDiagnosticsCard() {
+  const slot = document.getElementById("h11DiagnosticsSlot");
+  if (!slot) return false;
+  slot.innerHTML = h11DiagnosticsCardHtml();
+  return true;
+}
+
 async function h11LoadNotifications(force = false) {
   if (!apiHas("get_notification_settings")) return;
   const nf = state.notifications;
   if (nf.status === "loading" || (nf.status === "ready" && !force)) return;
   nf.status = "loading";
-  if (state.settingsOpen && state.settingsTab === "general") renderSettingsBody();
+  if (state.settingsOpen && state.settingsTab === "general" && !h11PatchNotificationsCard()) renderSettingsBody();
   let res = null;
   try {
     res = await window.pywebview.api.get_notification_settings();
@@ -10573,7 +11635,7 @@ async function h11LoadNotifications(force = false) {
   } else {
     nf.status = "failed";
   }
-  if (state.settingsOpen && state.settingsTab === "general") renderSettingsBody();
+  if (state.settingsOpen && state.settingsTab === "general" && !h11PatchNotificationsCard()) renderSettingsBody();
 }
 
 window.h11ToggleNotificationKind = async function(key) {
@@ -10586,7 +11648,7 @@ window.h11ToggleNotificationKind = async function(key) {
   nf.busyKey = key;
   nf.testStatus = "";
   nf.testError = false;
-  renderSettingsBody();
+  if (!h11PatchNotificationsCard()) renderSettingsBody();
   let res = null;
   try {
     res = await window.pywebview.api.set_notification_kind(key, nextVal);
@@ -10602,7 +11664,7 @@ window.h11ToggleNotificationKind = async function(key) {
     nf.testStatus = (res && res.error) || "Could not save notification preference.";
     nf.testError = true;
   }
-  renderSettingsBody();
+  if (!h11PatchNotificationsCard()) renderSettingsBody();
 };
 
 window.h11SendTestNotification = async function() {
@@ -10612,7 +11674,7 @@ window.h11SendTestNotification = async function() {
   nf.testing = true;
   nf.testStatus = "Sending…";
   nf.testError = false;
-  renderSettingsBody();
+  if (!h11PatchNotificationsCard()) renderSettingsBody();
   let res = null;
   try {
     res = await window.pywebview.api.send_test_notification();
@@ -10627,7 +11689,7 @@ window.h11SendTestNotification = async function() {
     nf.testStatus = (res && res.error) || "Could not send test notification.";
     nf.testError = true;
   }
-  renderSettingsBody();
+  if (!h11PatchNotificationsCard()) renderSettingsBody();
 };
 
 window.h11CopyDiagnostics = async function() {
@@ -10637,7 +11699,7 @@ window.h11CopyDiagnostics = async function() {
   dg.busy = true;
   dg.status = "Collecting…";
   dg.isError = false;
-  renderSettingsBody();
+  if (!h11PatchDiagnosticsCard()) renderSettingsBody();
   let res = null;
   try {
     res = await window.pywebview.api.get_diagnostics_report();
@@ -10648,7 +11710,7 @@ window.h11CopyDiagnostics = async function() {
   if (!res || !res.ok) {
     dg.status = (res && res.error) || "Could not collect diagnostics.";
     dg.isError = true;
-    renderSettingsBody();
+    if (!h11PatchDiagnosticsCard()) renderSettingsBody();
     return;
   }
   const reportText = String(res.text || "");
@@ -10666,12 +11728,12 @@ window.h11CopyDiagnostics = async function() {
     dg.status = "Copied to the clipboard.";
     dg.showBox = false;
     dg.isError = false;
-    renderSettingsBody();
+    if (!h11PatchDiagnosticsCard()) renderSettingsBody();
   } else {
     dg.status = "Select the text below and copy it.";
     dg.showBox = true;
     dg.isError = false;
-    renderSettingsBody();
+    if (!h11PatchDiagnosticsCard()) renderSettingsBody();
     const box = document.getElementById("diagReportText");
     if (box) {
       box.focus();
@@ -10679,6 +11741,13 @@ window.h11CopyDiagnostics = async function() {
     }
   }
 };
+
+function h11PatchSyncCard() {
+  const slot = document.getElementById("h11SyncSlot");
+  if (!slot) return false;
+  slot.innerHTML = h11SyncCardHtml();
+  return true;
+}
 
 window.h11TriggerSync = async function() {
   if (!apiHas("trigger_sync")) return;
@@ -10688,7 +11757,7 @@ window.h11TriggerSync = async function() {
   st.status = "";
   st.code = "";
   st.isError = false;
-  renderSettingsBody();
+  if (!h11PatchSyncCard()) renderSettingsBody();
   let res = null;
   try {
     res = await window.pywebview.api.trigger_sync();
@@ -10704,14 +11773,15 @@ window.h11TriggerSync = async function() {
       if (Array.isArray(res.machines)) state.settingsData.machines = res.machines;
       state.settingsData.syncState = { status: "ok", code: null, message: null };
     }
-    renderSettingsBody();
+    if (!h11PatchSyncCard()) renderSettingsBody();
+    else if (Array.isArray(res.machines)) h5PatchSignedIn("machines");
     loadUsage(false, false);
   } else {
     st.code = (res && res.code) || "SYNC-201";
     st.isError = true;
     const msg = (res && res.error) || "Sync failed.";
     st.status = `[${st.code}] ${msg}`;
-    renderSettingsBody();
+    if (!h11PatchSyncCard()) renderSettingsBody();
   }
 };
 
@@ -10876,10 +11946,20 @@ document.querySelectorAll(".rz").forEach(el => {
   });
 });
 
+let _segResizeRaf = 0;
 window.addEventListener("resize", () => {
   if (state.report) renderChart(false);
   if (document.getElementById("scopePopover").classList.contains("open")) positionScopePopover();
   if (document.getElementById("h9RangePopover")?.classList.contains("open") && typeof positionH9RangePopover === "function") positionH9RangePopover();
+  if (!_segResizeRaf && typeof h5SyncSegThumbs === "function") {
+    _segResizeRaf = requestAnimationFrame(() => {
+      _segResizeRaf = 0;
+      const acctCard = document.getElementById("h5AccountCard");
+      if (acctCard && state.settingsOpen && state.settingsTab === "computers") h5SyncSegThumbs(acctCard, false);
+      const obPanel = document.getElementById("onboardingPanel");
+      if (obPanel && !obPanel.hidden) h5SyncSegThumbs(obPanel, false);
+    });
+  }
 });
 
 bindChartScrub();

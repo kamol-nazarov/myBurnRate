@@ -51,9 +51,25 @@ ERROR_CATALOG: dict[str, dict[str, object]] = {
         "message": "You've been signed out. Sign in again.",
         "status": 401,
     },
+    "AUTH-108": {
+        "message": "That verification or pairing code is invalid or expired.",
+        "status": 401,
+    },
     "AUTH-110": {
         "message": "First-time hub registration requires its setup token or a local burnrate hub create-owner operation.",
         "status": 403,
+    },
+    "CLOUD-409": {
+        "message": "You've reached the maximum number of connected computers on your account. Revoke an unused computer first.",
+        "status": 409,
+    },
+    "CLOUD-413": {
+        "message": "Your cloud storage limit has been reached. Remove an old computer's data or contact support.",
+        "status": 413,
+    },
+    "CLOUD-503": {
+        "message": "Email delivery is temporarily unavailable. Try again in a minute.",
+        "status": 503,
     },
     "DEV-301": {
         "message": "This computer was removed from your account. Sign in to add it again.",

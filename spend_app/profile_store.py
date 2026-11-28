@@ -639,6 +639,42 @@ def v1_credential_refs(connection: sqlite3.Connection) -> set[str]:
     return refs
 
 
+def retire_v1_credential_refs(connection: sqlite3.Connection, refs: set[str] | list[str]) -> int:
+    """Clear explicitly revoked/replaced Vault refs from frozen ``connections.v1``.
+
+    Untouched bindings stay intact for legacy rollback, while an explicit
+    disconnect or key replacement clears the ref so Vault deletion actually runs.
+    """
+    targets = {r for r in refs if isinstance(r, str) and r}
+    if not targets or not _table_exists(connection, "app_meta"):
+        return 0
+    row = connection.execute(
+        "SELECT value FROM app_meta WHERE key=?", (V1_KEY,)
+    ).fetchone()
+    if row is None or not row[0]:
+        return 0
+    try:
+        v1 = json.loads(row[0])
+    except ValueError:
+        return 0
+    bindings = v1.get("bindings") if isinstance(v1, dict) else None
+    if not isinstance(bindings, dict):
+        return 0
+    changed = 0
+    for binding in bindings.values():
+        if isinstance(binding, dict) and binding.get("credentialRef") in targets:
+            binding["credentialRef"] = None
+            binding["enabled"] = False
+            binding["state"] = "disabled"
+            changed += 1
+    if changed:
+        connection.execute(
+            "UPDATE app_meta SET value=? WHERE key=?",
+            (json.dumps(v1, sort_keys=True), V1_KEY),
+        )
+    return changed
+
+
 def load(connection: sqlite3.Connection) -> dict:
     """Return v2 state from ``connection``; migrates v1 in memory on read-only DBs."""
     if not _table_exists(connection, "app_meta"):

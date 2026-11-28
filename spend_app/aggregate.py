@@ -98,6 +98,19 @@ def reset_memo() -> None:
         _SUMMARY_REQUESTS.clear()
 
 
+def evict_database_memo(database_path: Path | str) -> int:
+    """Drop all cached entries belonging to a specific SQLite database path."""
+    target = str(database_path)
+    removed = 0
+    with _MEMO_LOCK:
+        for bucket in _MEMO.values():
+            dead = [k for k in bucket if k and str(k[0]) == target]
+            for k in dead:
+                bucket.pop(k, None)
+                removed += 1
+    return removed
+
+
 _SUMMARY_REQUESTS: dict[tuple[str, str], list[float]] = {}
 _SUMMARY_REQUESTS_LOCK = threading.Lock()
 SUMMARY_WARM_WINDOW_SECONDS = 120

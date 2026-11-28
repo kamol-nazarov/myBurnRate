@@ -391,7 +391,71 @@ def backup_database(src: Path, dst: Path) -> Path:
         temporary.replace(dest_path)
     finally:
         temporary.unlink(missing_ok=True)
+    try:
+        from spend_app.local_access import protect_file
+
+        protect_file(dest_path)
+    except OSError:
+        pass
     return dest_path
+
+
+BACKUP_RETENTION_DEFAULT = 5
+_AUTOMATIC_BACKUP_PREFIXES = (
+    "pre-cursor-removal-",
+    "pre-grok-dedupe-",
+    "pre-muse-rollup-cleanup-",
+    "pre-wheel-update-",
+    "native-window.pre-wheel-update-",
+    "before-machine-data-delete-",
+)
+
+
+def prune_automatic_backups(backups_dir: Path, *, keep: int | None = None) -> int:
+    """Keep only the newest ``keep`` automatic BURNRATE backup entries.
+
+    Manual user-named folders/files inside ``backups_dir`` are never touched.
+    """
+    folder = Path(backups_dir)
+    if not folder.is_dir():
+        return 0
+    if keep is None:
+        raw = os.getenv("BURNRATE_BACKUP_RETENTION_COUNT", str(BACKUP_RETENTION_DEFAULT)).strip()
+        try:
+            keep = max(0, int(raw))
+        except ValueError:
+            keep = BACKUP_RETENTION_DEFAULT
+    candidates: list[tuple[float, Path]] = []
+    try:
+        entries = list(folder.iterdir())
+    except OSError:
+        return 0
+    for entry in entries:
+        if not entry.name.startswith(_AUTOMATIC_BACKUP_PREFIXES):
+            continue
+        try:
+            if entry.is_symlink():
+                continue
+            mtime = entry.stat().st_mtime
+        except OSError:
+            continue
+        candidates.append((mtime, entry))
+    if len(candidates) <= keep:
+        return 0
+    candidates.sort(key=lambda item: (item[0], item[1].name), reverse=True)
+    removed = 0
+    import shutil
+
+    for _mtime, stale in candidates[keep:]:
+        try:
+            if stale.is_dir():
+                shutil.rmtree(stale, ignore_errors=False)
+            else:
+                stale.unlink(missing_ok=True)
+            removed += 1
+        except OSError:
+            continue
+    return removed
 
 
 def rebuild_subscriptions_for_quarterly(connection: sqlite3.Connection) -> None:
@@ -679,6 +743,125 @@ def prune_quotas(
         )
         removed += int(cur_pace.rowcount or 0)
     return removed
+
+
+BALANCE_RETENTION_DAYS = 90
+BALANCE_KEEP_PER_LANE = 5
+OWNER_SESSION_RETENTION_DAYS = 30
+REQUEST_RECEIPT_RETENTION_DAYS = 7
+MAX_ATTENTION_REQUEST_KEYS = 200
+MAX_CONNECTION_REQUEST_RECEIPTS = 100
+
+
+def prune_retention_tables(
+    connection: sqlite3.Connection,
+    *,
+    now: str | None = None,
+    balance_retention_days: int = BALANCE_RETENTION_DAYS,
+    balance_keep_per_lane: int = BALANCE_KEEP_PER_LANE,
+    session_retention_days: int = OWNER_SESSION_RETENTION_DAYS,
+    request_retention_days: int = REQUEST_RECEIPT_RETENTION_DAYS,
+    max_connection_requests: int = MAX_CONNECTION_REQUEST_RECEIPTS,
+) -> dict[str, int]:
+    """Prune unbounded secondary tables and idempotency receipts safely.
+
+    Never deletes usage accounting rows or active ingestion cursor checkpoints
+    that prevent double-counting.
+    """
+    stamp = now or utc_now()
+    now_dt = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    balance_cutoff = (now_dt - timedelta(days=balance_retention_days)).isoformat().replace("+00:00", "Z")
+    session_cutoff = (now_dt - timedelta(days=session_retention_days)).isoformat().replace("+00:00", "Z")
+    request_cutoff = now_dt - timedelta(days=request_retention_days)
+    counts = {
+        "balance_samples": 0,
+        "owner_sessions": 0,
+        "attention_requests": 0,
+        "connection_requests": 0,
+    }
+    if connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='balance_samples'"
+    ).fetchone():
+        cur = connection.execute(
+            """
+            DELETE FROM balance_samples
+            WHERE sampled_at < ?
+              AND id NOT IN (
+                  SELECT b.id FROM balance_samples AS b
+                  WHERE b.provider_key = balance_samples.provider_key
+                    AND b.source = balance_samples.source
+                  ORDER BY b.id DESC LIMIT ?
+              )
+            """,
+            (balance_cutoff, int(balance_keep_per_lane)),
+        )
+        counts["balance_samples"] = int(cur.rowcount or 0)
+
+    if connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='owner_sessions'"
+    ).fetchone():
+        cur = connection.execute(
+            """
+            DELETE FROM owner_sessions
+            WHERE (revoked_at IS NOT NULL AND revoked_at < ?)
+               OR expires_at < ?
+            """,
+            (session_cutoff, session_cutoff),
+        )
+        counts["owner_sessions"] = int(cur.rowcount or 0)
+
+    if connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_meta'"
+    ).fetchone():
+        attn_rows = connection.execute(
+            "SELECT key, value FROM app_meta WHERE key LIKE 'attention.v1.request.%' ORDER BY rowid ASC"
+        ).fetchall()
+        legacy_keys: list[str] = []
+        expired_keys: list[str] = []
+        for row in attn_rows:
+            k, raw_v = row[0], row[1]
+            parsed = None
+            try:
+                parsed = json.loads(raw_v) if raw_v else None
+            except ValueError:
+                parsed = None
+            if isinstance(parsed, dict) and isinstance(parsed.get("at"), str):
+                try:
+                    recorded_dt = datetime.fromisoformat(parsed["at"].replace("Z", "+00:00"))
+                    if recorded_dt < request_cutoff:
+                        expired_keys.append(k)
+                except ValueError:
+                    expired_keys.append(k)
+            else:
+                legacy_keys.append(k)
+        if len(legacy_keys) > MAX_ATTENTION_REQUEST_KEYS:
+            expired_keys.extend(legacy_keys[: len(legacy_keys) - MAX_ATTENTION_REQUEST_KEYS])
+        for k in expired_keys:
+            counts["attention_requests"] += int(
+                connection.execute("DELETE FROM app_meta WHERE key=?", (k,)).rowcount or 0
+            )
+
+        conn_row = connection.execute(
+            "SELECT value FROM app_meta WHERE key='connections.v2'"
+        ).fetchone()
+        if conn_row and conn_row[0]:
+            try:
+                state = json.loads(conn_row[0])
+            except ValueError:
+                state = None
+            if isinstance(state, dict) and isinstance(state.get("requests"), dict):
+                reqs = state["requests"]
+                if len(reqs) > max_connection_requests:
+                    keys = list(reqs.keys())
+                    drop = keys[: len(keys) - max_connection_requests]
+                    for k in drop:
+                        reqs.pop(k, None)
+                    connection.execute(
+                        "UPDATE app_meta SET value=? WHERE key='connections.v2'",
+                        (json.dumps(state, sort_keys=True),),
+                    )
+                    counts["connection_requests"] = len(drop)
+    return counts
 
 
 def prune_usage_changes(
@@ -1014,9 +1197,20 @@ def migrate_setup_hub_url(path: Path) -> bool:
                 spoke["signedOut"] = True
                 spoke["requiresHubSignIn"] = True
                 try:
+                    from spend_app.connection_secrets import credential_origin_ref
+
                     vault = get_vault(path)
                     for reference in (MACHINE_TOKEN_VAULT_REF, OWNER_SESSION_VAULT_REF):
+                        try:
+                            prior = vault.get(reference)
+                        except Exception:
+                            prior = None
                         vault.delete(reference)
+                        if isinstance(prior, str) and prior.strip():
+                            try:
+                                vault.delete(credential_origin_ref(prior.strip()))
+                            except Exception:
+                                pass
                 except Exception:
                     # The persisted scope still prevents a failed vault
                     # deletion from authorizing a credential at the new hub.
@@ -1862,6 +2056,14 @@ def upsert_agent_run(
     started_at: str,
     last_seen_at: str,
 ) -> bool:
+    if os.getenv("BURNRATE_HIDE_LOCAL_TITLES", "").strip().lower() in {"1", "true", "yes"}:
+        from spend_app.sync_privacy import synced_activity_name
+
+        name = synced_activity_name(id)
+    else:
+        from spend_app.redact import redact
+
+        name = redact(str(name))
     name = cap_agent_run_name(name)
     existed = connection.execute(
         "SELECT 1 FROM agent_runs WHERE id = ?", (id,)

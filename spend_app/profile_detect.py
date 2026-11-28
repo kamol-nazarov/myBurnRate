@@ -202,6 +202,52 @@ def _codex_account_digest(auth_path: Path) -> str | None:
     return _sha256_hex(account_id.strip())
 
 
+_EPHEMERAL_OPENCODE_HMAC_KEY: bytes | None = None
+
+
+def _opencode_hmac_key() -> bytes:
+    """Return a local install-only HMAC key for OpenCode API-key digests.
+
+    Never persisted in SQLite. Uses BURNRATE_OPENCODE_HMAC_KEY if set, otherwise
+    the per-install key in .burnrate-auth/access.key (or an ephemeral process
+    key during isolated tests without an explicit DB/data-root path).
+    """
+    global _EPHEMERAL_OPENCODE_HMAC_KEY
+    override = os.getenv("BURNRATE_OPENCODE_HMAC_KEY", "").strip()
+    if override:
+        return override.encode("utf-8")
+    in_pytest = bool(os.getenv("PYTEST_CURRENT_TEST"))
+    has_explicit_root = bool(
+        os.getenv("SPEND_DATABASE_PATH")
+        or os.getenv("BURNRATE_DB_PATH")
+        or os.getenv("BURNRATE_DATA_ROOT")
+    )
+    if not in_pytest or has_explicit_root:
+        try:
+            from spend_app.config import default_database_path
+            from spend_app.local_access import ensure_local_key
+
+            return ensure_local_key(default_database_path()).encode("ascii")
+        except Exception:
+            pass
+    if _EPHEMERAL_OPENCODE_HMAC_KEY is None:
+        import secrets
+
+        _EPHEMERAL_OPENCODE_HMAC_KEY = secrets.token_bytes(32)
+    return _EPHEMERAL_OPENCODE_HMAC_KEY
+
+
+def opencode_key_digest(raw_key: str) -> str:
+    """Keyed HMAC-SHA256 fingerprint of an OpenCode API key (never unsalted SHA-256)."""
+    import hmac
+
+    return hmac.new(
+        _opencode_hmac_key(),
+        b"opencode-key-v1:" + raw_key.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
 def _opencode_key_digests(database: Path, environ, *, is_default: bool) -> list[str]:
     from spend_app.limits import _opencode_credential
 
@@ -227,7 +273,7 @@ def _opencode_key_digests(database: Path, environ, *, is_default: bool) -> list[
     digests: list[str] = []
     seen: set[str] = set()
     for key in keys:
-        digest = _sha256_hex(key)
+        digest = opencode_key_digest(key)
         if digest not in seen:
             seen.add(digest)
             digests.append(digest)
@@ -472,7 +518,8 @@ def _detect_opencode(home: Path, environ) -> list[Candidate]:
                 plan=None,
                 has_sample=has_sample,
                 is_default=is_default,
-                candidate_id=account_digest or _folder_id(resolved),
+                # Never expose an API-key-derived digest as candidateId in HTTP JSON.
+                candidate_id=_folder_id(resolved),
             )
         )
         if len(candidates) >= MAX_CANDIDATES:

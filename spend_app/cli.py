@@ -342,9 +342,17 @@ def _main() -> int:
     machines_sub.add_parser("list")
     m_rev = machines_sub.add_parser("revoke")
     m_rev.add_argument("--id", required=True)
-    m_delete = machines_sub.add_parser("delete-data", help="Back up and remove one revoked computer's imported data")
+    m_delete = machines_sub.add_parser("delete-data", help="Remove one revoked computer's imported data")
     m_delete.add_argument("--id", required=True)
     m_delete.add_argument("--confirm", required=True, help="Repeat the exact computer ID to confirm")
+    m_delete.add_argument("--keep-backup", action="store_true", help="Save a verified backup before deleting")
+    wipe_parser = subparsers.add_parser(
+        "wipe",
+        help="Remove BURNRATE OS credential-store secrets and/or local data",
+    )
+    wipe_parser.add_argument("--credentials", action="store_true", help="Delete BURNRATE-owned OS keychain entries")
+    wipe_parser.add_argument("--data", action="store_true", help="Delete local BURNRATE database, auth key, logs, and temp WebView2 cache")
+    wipe_parser.add_argument("--yes", action="store_true", help="Confirm destructive wipe")
     desktop_parser = subparsers.add_parser(
         "desktop",
         help="Open the compact native usage application",
@@ -551,6 +559,58 @@ def _main() -> int:
     if args.command == "hub" and args.hub_command == "create-owner":
         from spend_app.hub_update import create_hub_owner
         return create_hub_owner(settings.database_path, args.email)
+    if args.command == "hub" and args.hub_command == "delete-owner":
+        from spend_app.hub_update import delete_hub_owner
+        return delete_hub_owner(settings.database_path, args.email, confirm=bool(args.yes))
+    if args.command == "wipe":
+        import shutil
+        import tempfile
+        from spend_app.connection_secrets import wipe_all_credentials
+
+        if not args.yes or (not args.credentials and not args.data):
+            print(
+                "Pass --yes with --credentials and/or --data to wipe BURNRATE state.",
+                file=sys.stderr,
+            )
+            return 2
+        outcome: dict[str, object] = {"ok": True}
+        if args.credentials:
+            outcome["credentials"] = wipe_all_credentials(settings.database_path)
+        if args.data:
+            db_path = Path(settings.database_path)
+            data_dir = db_path.parent
+            removed_paths: list[str] = []
+            for target_file in (
+                db_path,
+                Path(str(db_path) + "-wal"),
+                Path(str(db_path) + "-shm"),
+                data_dir / ".env",
+                data_dir / "native-window.json",
+            ):
+                try:
+                    if target_file.exists() and not target_file.is_symlink():
+                        target_file.unlink()
+                        removed_paths.append(target_file.name)
+                except OSError:
+                    pass
+            for sub in (".burnrate-auth", "logs", "run", "backups", "snapshots", "updates"):
+                folder = data_dir / sub
+                try:
+                    if folder.exists() and not folder.is_symlink():
+                        shutil.rmtree(folder)
+                        removed_paths.append(sub)
+                except OSError:
+                    pass
+            wv2 = Path(tempfile.gettempdir()) / "burnrate-wv2-sessions"
+            try:
+                if wv2.exists() and not wv2.is_symlink():
+                    shutil.rmtree(wv2)
+                    removed_paths.append("burnrate-wv2-sessions")
+            except OSError:
+                pass
+            outcome["data"] = {"removed": removed_paths}
+        print(json.dumps(outcome, indent=2))
+        return 0
     if args.command == "machines":
         from spend_app.sync import list_machines, revoke_machine
 
@@ -565,7 +625,10 @@ def _main() -> int:
                 return 1
             try:
                 result = delete_machine_data(
-                    settings.database_path, args.id, actor=Principal("system", "local-cli"),
+                    settings.database_path,
+                    args.id,
+                    actor=Principal("system", "local-cli"),
+                    create_backup=bool(getattr(args, "keep_backup", False)),
                 )
             except (ValueError, OSError, sqlite3.Error) as error:
                 print("Computer data removal failed: " + redact(str(error)), file=sys.stderr)
