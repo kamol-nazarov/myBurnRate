@@ -221,6 +221,34 @@ Section "Uninstall"
     Abort
   ${EndIf}
 
+  ; Only an interactive uninstall that ticked the box reaches this; /S leaves $DeleteData at 0.
+  ${If} $DeleteData == ${BST_CHECKED}
+    StrCpy $GuardAction DeleteData
+    Call un.RunInstallGuard
+    ${If} $GuardResult != 0
+      MessageBox MB_ICONSTOP|MB_OK "The selected data could not be removed safely. Your usage data was kept." /SD IDOK
+      SetErrorLevel 1
+      Abort
+    ${EndIf}
+    ; Remove BURNRATE-owned OS Credential Manager entries while BURNRATE.exe is still present.
+    nsExec::Exec '"$INSTDIR\${EXE_NAME}" wipe --credentials --yes'
+    Pop $0
+    Delete "$LOCALAPPDATA\BURNRATE\spend.db"
+    Delete "$LOCALAPPDATA\BURNRATE\spend.db-wal"
+    Delete "$LOCALAPPDATA\BURNRATE\spend.db-shm"
+    Delete "$LOCALAPPDATA\BURNRATE\.env"
+    Delete "$LOCALAPPDATA\BURNRATE\native-window.json"
+    RMDir /r "$LOCALAPPDATA\BURNRATE\.burnrate-auth"
+    RMDir /r "$LOCALAPPDATA\BURNRATE\native-python"
+    RMDir /r "$LOCALAPPDATA\BURNRATE\logs"
+    RMDir /r "$LOCALAPPDATA\BURNRATE\run"
+    RMDir /r "$LOCALAPPDATA\BURNRATE\backups"
+    RMDir /r "$LOCALAPPDATA\BURNRATE\snapshots"
+    RMDir /r "$LOCALAPPDATA\BURNRATE\updates"
+    RMDir /r "$TEMP\burnrate-wv2-sessions"
+    RMDir "$LOCALAPPDATA\BURNRATE"
+  ${EndIf}
+
   Delete "$SMPROGRAMS\${SHORTCUT_NAME}.lnk"
   Delete "$DESKTOP\${SHORTCUT_NAME}.lnk"
   Delete "$SMPROGRAMS\${LEGACY_SHORTCUT_NAME}.lnk"
@@ -237,26 +265,4 @@ Section "Uninstall"
 
   DeleteRegKey HKCU "${UNINSTALL_KEY}"
   DeleteRegKey HKCU "${SETTINGS_KEY}"
-
-  ; Only an interactive uninstall that ticked the box reaches this; /S leaves $DeleteData at 0.
-  ${If} $DeleteData == ${BST_CHECKED}
-    StrCpy $GuardAction DeleteData
-    Call un.RunInstallGuard
-    ${If} $GuardResult != 0
-      MessageBox MB_ICONSTOP|MB_OK "The selected data could not be removed safely. Your usage data was kept." /SD IDOK
-      SetErrorLevel 1
-      Abort
-    ${EndIf}
-    Delete "$LOCALAPPDATA\BURNRATE\spend.db"
-    Delete "$LOCALAPPDATA\BURNRATE\spend.db-wal"
-    Delete "$LOCALAPPDATA\BURNRATE\spend.db-shm"
-    Delete "$LOCALAPPDATA\BURNRATE\.env"
-    Delete "$LOCALAPPDATA\BURNRATE\native-window.json"
-    RMDir /r "$LOCALAPPDATA\BURNRATE\logs"
-    RMDir /r "$LOCALAPPDATA\BURNRATE\run"
-    RMDir /r "$LOCALAPPDATA\BURNRATE\backups"
-    RMDir /r "$LOCALAPPDATA\BURNRATE\snapshots"
-    RMDir /r "$LOCALAPPDATA\BURNRATE\updates"
-    RMDir "$LOCALAPPDATA\BURNRATE"
-  ${EndIf}
 SectionEnd

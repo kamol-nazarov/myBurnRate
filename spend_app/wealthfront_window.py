@@ -3019,6 +3019,24 @@ class DesktopBridge:
         payload["accountEmail"] = acct_email
         payload["computerName"] = comp_name
         payload["syncState"] = sync_state
+        from spend_app.config import cloud_hub_url, resolve_hub_url
+
+        payload["cloudUrl"] = cloud_hub_url()
+        try:
+            configured_hub = resolve_hub_url()
+        except ValueError:
+            configured_hub = ""
+        owner_tok_cur = self._get_owner_session_token() or ""
+        stored_mode = str(spoke.get("hubMode") or "").strip().lower()
+        if stored_mode in {"cloud", "self_hosted"}:
+            payload["hubMode"] = stored_mode
+        elif owner_tok_cur.startswith("br_cs_"):
+            payload["hubMode"] = "cloud"
+        elif configured_hub:
+            payload["hubMode"] = "self_hosted"
+        else:
+            payload["hubMode"] = "cloud"
+        payload["passwordAuthenticated"] = bool(spoke.get("passwordAuthenticated", True))
         hub, _error = self._resolve_hub_origin()
         if hub:
             from urllib.parse import urlsplit
@@ -3097,6 +3115,7 @@ class DesktopBridge:
         password: str,
         computer_name: str = "",
         setup_token: str = "",
+        hub_url_override: str = "",
     ) -> dict:
         if self._demo:
             return self._h5_err("HUB-501", message="Account actions are disabled in demo mode.")
@@ -3132,7 +3151,16 @@ class DesktopBridge:
             if not password:
                 return self._h5_err("AUTH-101")
 
-        hub_url, err = self._resolve_hub_origin()
+        if str(hub_url_override or "").strip():
+            from spend_app.hub_origin import hub_origin
+
+            try:
+                hub_url, err = hub_origin(str(hub_url_override).strip()), None
+            except ValueError as exc:
+                code = "NET-003" if "HTTPS" in str(exc) else "NET-001"
+                return self._h5_err(code)
+        else:
+            hub_url, err = self._resolve_hub_origin()
         if err is not None:
             return self._h5_err(str(err.get("code") or "NET-001"))
 
@@ -3310,7 +3338,11 @@ class DesktopBridge:
                         spoke = dict(state.get("spokeConfig") or {})
                         spoke.pop("token", None)
                         spoke.pop("ownerSession", None)
-                        spoke.pop("hubUrl", None)
+                        if str(hub_url_override or "").strip():
+                            spoke["hubUrl"] = hub_url
+                            spoke["hubMode"] = "self_hosted"
+                        else:
+                            spoke.pop("hubUrl", None)
                         spoke["enabled"] = True
                         spoke["hubConfigured"] = True
                         spoke["ownerSessionExpiresAt"] = expires_at
@@ -3421,12 +3453,14 @@ class DesktopBridge:
         email: str,
         password: str,
         computer_name: str = "",
+        hub_url: str = "",
     ) -> dict:
         return self._authenticate_and_register(
             endpoint="/api/account/login",
             email=email,
             password=password,
             computer_name=computer_name,
+            hub_url_override=hub_url,
         )
 
     def create_account(
@@ -3435,6 +3469,7 @@ class DesktopBridge:
         password: str,
         computer_name: str = "",
         setup_token: str = "",
+        hub_url: str = "",
     ) -> dict:
         return self._authenticate_and_register(
             endpoint="/api/account/register",
@@ -3442,6 +3477,7 @@ class DesktopBridge:
             password=password,
             computer_name=computer_name,
             setup_token=setup_token,
+            hub_url_override=hub_url,
         )
 
     def sign_out(self) -> dict:
@@ -3466,6 +3502,9 @@ class DesktopBridge:
             state["account"] = {}
             spoke = dict(state.get("spokeConfig") or {})
             spoke.pop("lastSyncError", None)
+            spoke.pop("hubUrl", None)
+            spoke.pop("hubMode", None)
+            spoke.pop("passwordAuthenticated", None)
             spoke["enabled"] = False
             state["spokeConfig"] = spoke
 
@@ -3628,10 +3667,11 @@ class DesktopBridge:
         token = self._get_owner_session_token()
         if not token:
             return self._h5_err("AUTH-107")
+        endpoint = "/api/cloud/password/change" if token.startswith("br_cs_") else "/api/account/password"
         _, _, call_err = self._call_hub(
             hub_url,
             "POST",
-            "/api/account/password",
+            endpoint,
             json_body={
                 "currentPassword": current_password,
                 "newPassword": str(new_password),
@@ -3641,6 +3681,647 @@ class DesktopBridge:
         if call_err is not None:
             return self._h5_err_from_call(call_err)
         return {"ok": True}
+
+    # -- Hosted myBurnRate Cloud bridge methods -------------------------------
+
+    def _resolve_cloud_origin(self, override_url: str = "") -> tuple[str | None, dict | None]:
+        from spend_app.config import cloud_hub_url
+        from spend_app.hub_origin import hub_origin
+
+        raw = str(override_url or "").strip()
+        if raw:
+            try:
+                return hub_origin(raw), None
+            except ValueError as exc:
+                code = "NET-003" if "HTTPS" in str(exc) else "NET-001"
+                return None, self._h5_err(code)
+        hub, err = self._resolve_hub_origin()
+        if hub and err is None:
+            return hub, None
+        try:
+            return hub_origin(cloud_hub_url()), None
+        except ValueError as exc:
+            code = "NET-003" if "HTTPS" in str(exc) else "NET-001"
+            return None, self._h5_err(code)
+
+    def _snapshot_pre_auth_state(self) -> tuple[int | None, bool, int | None, dict | None, dict | None]:
+        from zoneinfo import ZoneInfo
+
+        from spend_app.db import connect, initialize
+        from spend_app.setup_wizard import read_setup_state
+        from spend_app.subscription_transfer import export_history
+
+        db_path = self._db_path()
+        mem_initial_gen = self._owner_session_gen
+        if db_path is None:
+            return None, False, mem_initial_gen, None, None
+        settings = getattr(self._client, "settings", None)
+        tz = getattr(settings, "timezone", "UTC") if settings is not None else "UTC"
+        try:
+            initialize(db_path)
+            with connect(db_path) as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                sp_init = read_setup_state(conn)["spokeConfig"]
+                today = datetime.now(UTC).astimezone(ZoneInfo(tz)).date()
+                local_history = export_history(conn, today, native_only=True)
+            return (
+                int(sp_init.get("credentialGeneration") or 0),
+                bool(sp_init.get("signedOut")),
+                mem_initial_gen,
+                local_history,
+                None,
+            )
+        except Exception:
+            LOGGER.debug("Could not read setup state snapshot before cloud auth", exc_info=True)
+            return None, False, mem_initial_gen, None, self._h5_err("APP-903")
+
+    def _commit_cloud_credentials(
+        self,
+        hub_url: str,
+        auth_data: dict,
+        *,
+        clean_comp: str,
+        initial_gen: int | None,
+        initial_signed_out: bool,
+        mem_initial_gen: int | None,
+        local_history: dict | None,
+        deferred_history: bool,
+    ) -> dict:
+        from spend_app.connection_secrets import (
+            publish_spoke_credentials,
+            revoke_or_queue_machine_token,
+            revoke_or_queue_owner_session,
+        )
+        from spend_app.plan_service import PlanError
+        from spend_app.setup_wizard import PLAN_HISTORY_PENDING, complete_deferred_history, receive_sign_in_history
+        from spend_app.sync import _HUB_TEST_CLIENTS, HubMutationError, clear_hub_proxy_cache, prepare_spoke_sync_tx
+
+        session_token = str(auth_data.get("sessionToken") or "").strip()
+        machine_token = str(auth_data.get("machineToken") or "").strip()
+        machine = auth_data.get("machine") if isinstance(auth_data.get("machine"), dict) else {}
+        machine_id = str(machine.get("id") or "").strip()
+        user_obj = auth_data.get("user") if isinstance(auth_data.get("user"), dict) else {}
+        acct_email = str(user_obj.get("email") or "").strip()
+        expires_at = auth_data.get("sessionExpiresAt")
+        remote_history = auth_data.get("subscriptionHistory")
+        password_authenticated = not bool(auth_data.get("paired"))
+
+        if not session_token or not machine_token or not machine_id:
+            return self._h5_err("HUB-501")
+
+        db_path = self._db_path()
+        settings = getattr(self._client, "settings", None)
+        tz = getattr(settings, "timezone", "UTC") if settings is not None else "UTC"
+        vault = self._resolve_vault()
+        hub_client = _HUB_TEST_CLIENTS.get(hub_url)
+        account_meta = {
+            "username": acct_email,
+            "email": acct_email,
+            "needsEmail": False,
+            "machineId": machine_id,
+        }
+
+        def _cleanup_issued() -> str | None:
+            q_code: str | None = None
+            try:
+                revoke_or_queue_machine_token(
+                    db_path, hub_url, machine_token, machine_id=machine_id, vault=vault, client=hub_client
+                )
+            except CodedError as qe:
+                q_code = qe.code
+            try:
+                revoke_or_queue_owner_session(
+                    db_path, hub_url, session_token, vault=vault, client=hub_client
+                )
+            except CodedError as qe:
+                q_code = q_code or qe.code
+            return q_code
+
+        with self._owner_session_lock:
+            try:
+                if db_path is not None:
+                    def _prepare_state(_conn, state):
+                        sp = state.get("spokeConfig") or {}
+                        cur_gen = int(sp.get("credentialGeneration") or 0)
+                        if initial_gen is None or cur_gen != initial_gen or (
+                            not initial_signed_out and sp.get("signedOut")
+                        ):
+                            raise _StaleOwnerLifecycle()
+
+                    def _apply_state(conn, state):
+                        receive_sign_in_history(conn, tz, hub_url, remote_history, None)
+                        state["role"] = "spoke"
+                        state["computerName"] = clean_comp
+                        state["account"] = account_meta
+                        spoke = dict(state.get("spokeConfig") or {})
+                        spoke.pop("token", None)
+                        spoke.pop("ownerSession", None)
+                        spoke.pop("lastSyncError", None)
+                        spoke["hubUrl"] = hub_url
+                        spoke["hubMode"] = "cloud"
+                        spoke["passwordAuthenticated"] = password_authenticated
+                        spoke["enabled"] = True
+                        spoke["hubConfigured"] = True
+                        spoke["ownerSessionExpiresAt"] = expires_at
+                        spoke["ownerSessionRotationRequired"] = False
+                        spoke["rotationRequired"] = False
+                        state["spokeConfig"] = spoke
+                        prepare_spoke_sync_tx(conn, hub_url, machine_token)
+
+                    saved_auth = publish_spoke_credentials(
+                        db_path,
+                        owner_session=session_token,
+                        machine_token=machine_token,
+                        authenticated_origin=hub_url,
+                        vault=vault,
+                        prepare_state=_prepare_state,
+                        apply_state=_apply_state,
+                    )
+                    clear_hub_proxy_cache()
+                    saved_gen = int(((saved_auth.get("spokeConfig") or {}).get("credentialGeneration")) or 0)
+                else:
+                    from spend_app.connection_secrets import _restore_vault_secret, verified_vault_put
+
+                    if self._owner_session_gen != mem_initial_gen:
+                        raise _StaleOwnerLifecycle()
+                    prev_owner = None
+                    if vault is not None:
+                        try:
+                            raw_prev = vault.get(self.OWNER_SESSION_VAULT_REF)
+                            if isinstance(raw_prev, str) and raw_prev.strip():
+                                prev_owner = raw_prev.strip()
+                        except Exception:
+                            prev_owner = None
+                    verified_vault_put(vault, session_token, self.OWNER_SESSION_VAULT_REF)
+                    try:
+                        verified_vault_put(vault, machine_token, self.MACHINE_TOKEN_VAULT_REF)
+                    except Exception:
+                        _restore_vault_secret(vault, self.OWNER_SESSION_VAULT_REF, prev_owner)
+                        raise
+                    saved_auth = {}
+                    saved_gen = (self._owner_session_gen or 0) + 1
+            except _StaleOwnerLifecycle:
+                q_code = _cleanup_issued()
+                return self._h5_err(q_code or "AUTH-107")
+            except CodedError as exc:
+                q_code = _cleanup_issued()
+                return self._h5_err(q_code or exc.code)
+            except Exception:
+                q_code = _cleanup_issued()
+                return self._h5_err(q_code or "APP-903")
+
+            self._owner_session = session_token
+            self._owner_session_expires_at = expires_at
+            self._owner_session_gen = saved_gen
+            self._machine_token = machine_token
+            self._machine_token_gen = saved_gen
+
+        self._clear_quota_cache()
+        pending_history = bool(local_history and local_history["plans"]) and (
+            remote_history is None or deferred_history
+        )
+        if deferred_history and remote_history is not None and settings is not None:
+            try:
+                complete_deferred_history(settings, saved_auth, hub_url, local_history, remote_history["store"])
+                pending_history = False
+            except (PlanError, HubMutationError, KeyError, OSError):
+                pass
+
+        with self._owner_session_lock:
+            self._sync_gen += 1
+            sync_gen = self._sync_gen
+            self._sync_status = "syncing"
+            self._sync_error_code = None
+            self._sync_error_message = None
+
+        threading.Thread(
+            target=self._run_background_first_sync,
+            kwargs={
+                "sync_gen": sync_gen,
+                "hub_url": hub_url,
+                "machine_token": machine_token,
+                "machine_name": clean_comp,
+                "db_path": db_path,
+            },
+            name="burnrate-cloud-first-sync",
+            daemon=True,
+        ).start()
+
+        listed = self.list_computers()
+        safe_machines = listed.get("machines") if listed.get("ok") else self._annotate_machines([machine], machine_id)
+        result = {
+            "ok": True,
+            "mode": "cloud",
+            "paired": not password_authenticated,
+            "passwordAuthenticated": password_authenticated,
+            "account": account_meta,
+            "computerName": clean_comp,
+            "machines": safe_machines,
+            "syncStarted": True,
+            "syncState": {"status": "syncing", "code": None, "message": None},
+        }
+        if pending_history:
+            result["warning"] = PLAN_HISTORY_PENDING
+        return result
+
+    def cloud_register_start(self, email: str, password: str, hub_url: str = "") -> dict:
+        if self._demo:
+            return self._h5_err("HUB-501", message="Account actions are disabled in demo mode.")
+        from spend_app.setup_wizard import MIN_PASSWORD_LENGTH, normalize_email
+
+        clean_email = normalize_email(str(email or "").strip())
+        if clean_email is None:
+            return self._h5_err("AUTH-106")
+        if len(str(password or "")) < MIN_PASSWORD_LENGTH:
+            return self._h5_err("AUTH-105")
+        origin, err = self._resolve_cloud_origin(hub_url)
+        if err is not None or origin is None:
+            return err or self._h5_err("NET-001")
+        data, _, call_err = self._call_hub(
+            origin,
+            "POST",
+            "/api/cloud/register",
+            json_body={"email": clean_email, "password": str(password)},
+            handshake=True,
+        )
+        if call_err is not None:
+            return self._h5_err_from_call(call_err)
+        return {
+            "ok": True,
+            "verificationRequired": True,
+            "email": clean_email,
+            "message": str((data or {}).get("message") or "Check your email for a 6-digit verification code."),
+        }
+
+    def cloud_register_verify(
+        self,
+        email: str,
+        code: str,
+        computer_name: str = "",
+        hub_url: str = "",
+    ) -> dict:
+        if self._demo:
+            return self._h5_err("HUB-501", message="Account actions are disabled in demo mode.")
+        from spend_app.setup_wizard import normalize_email
+        from spend_app.subscription_transfer import attach_sign_in_history
+        from spend_app.sync import get_or_create_device_id
+
+        clean_email = normalize_email(str(email or "").strip())
+        clean_code = str(code or "").strip()
+        if clean_email is None:
+            return self._h5_err("AUTH-106")
+        if not re.fullmatch(r"\d{6}", clean_code):
+            return self._h5_err("AUTH-108")
+        origin, err = self._resolve_cloud_origin(hub_url)
+        if err is not None or origin is None:
+            return err or self._h5_err("NET-001")
+
+        initial_gen, initial_signed_out, mem_gen, local_history, snap_err = self._snapshot_pre_auth_state()
+        if snap_err is not None:
+            return snap_err
+        clean_comp = (computer_name or "").strip() or self._default_computer_name()
+        db_path = self._db_path()
+        device_id = get_or_create_device_id(db_path) if db_path is not None else None
+        body: dict[str, object] = {
+            "email": clean_email,
+            "code": clean_code,
+            "computerName": clean_comp,
+            "os": sys.platform,
+        }
+        if device_id:
+            body["deviceId"] = device_id
+        deferred = attach_sign_in_history(body, local_history) if local_history is not None else False
+        data, _, call_err = self._call_hub(origin, "POST", "/api/cloud/register/verify", json_body=body, handshake=True)
+        if call_err is not None or not isinstance(data, dict):
+            return self._h5_err_from_call(call_err or {"code": "HUB-501"})
+        return self._commit_cloud_credentials(
+            origin,
+            data,
+            clean_comp=clean_comp,
+            initial_gen=initial_gen,
+            initial_signed_out=initial_signed_out,
+            mem_initial_gen=mem_gen,
+            local_history=local_history,
+            deferred_history=deferred,
+        )
+
+    def cloud_login(
+        self,
+        email: str,
+        password: str,
+        computer_name: str = "",
+        hub_url: str = "",
+    ) -> dict:
+        if self._demo:
+            return self._h5_err("HUB-501", message="Account actions are disabled in demo mode.")
+        from spend_app.setup_wizard import normalize_email
+        from spend_app.subscription_transfer import attach_sign_in_history
+        from spend_app.sync import get_or_create_device_id
+
+        clean_email = normalize_email(str(email or "").strip())
+        if clean_email is None:
+            return self._h5_err("AUTH-106")
+        if not password:
+            return self._h5_err("AUTH-101")
+        origin, err = self._resolve_cloud_origin(hub_url)
+        if err is not None or origin is None:
+            return err or self._h5_err("NET-001")
+
+        initial_gen, initial_signed_out, mem_gen, local_history, snap_err = self._snapshot_pre_auth_state()
+        if snap_err is not None:
+            return snap_err
+        clean_comp = (computer_name or "").strip() or self._default_computer_name()
+        db_path = self._db_path()
+        device_id = get_or_create_device_id(db_path) if db_path is not None else None
+        body: dict[str, object] = {
+            "email": clean_email,
+            "password": str(password),
+            "computerName": clean_comp,
+            "os": sys.platform,
+        }
+        if device_id:
+            body["deviceId"] = device_id
+        deferred = attach_sign_in_history(body, local_history) if local_history is not None else False
+        data, _, call_err = self._call_hub(origin, "POST", "/api/cloud/login", json_body=body, handshake=True)
+        if call_err is not None or not isinstance(data, dict):
+            return self._h5_err_from_call(call_err or {"code": "HUB-501"})
+        return self._commit_cloud_credentials(
+            origin,
+            data,
+            clean_comp=clean_comp,
+            initial_gen=initial_gen,
+            initial_signed_out=initial_signed_out,
+            mem_initial_gen=mem_gen,
+            local_history=local_history,
+            deferred_history=deferred,
+        )
+
+    def cloud_create_pairing_code(self) -> dict:
+        if self._demo:
+            return self._h5_err("HUB-501", message="Account actions are disabled in demo mode.")
+        hub_url, err = self._resolve_hub_origin()
+        if err is not None or hub_url is None:
+            return self._h5_err(str((err or {}).get("code") or "NET-001"))
+        token = self._get_owner_session_token()
+        if not token:
+            return self._h5_err("AUTH-107")
+        data, _, call_err = self._call_hub(hub_url, "POST", "/api/cloud/pairing-code", json_body={}, token=token)
+        if call_err is not None or not isinstance(data, dict):
+            return self._h5_err_from_call(call_err or {"code": "HUB-501"})
+        return {
+            "ok": True,
+            "code": str(data.get("code") or ""),
+            "expiresAt": data.get("expiresAt"),
+            "expiresInSeconds": int(data.get("expiresInSeconds") or 300),
+        }
+
+    def cloud_redeem_pairing_code(
+        self,
+        code: str,
+        computer_name: str = "",
+        hub_url: str = "",
+    ) -> dict:
+        if self._demo:
+            return self._h5_err("HUB-501", message="Account actions are disabled in demo mode.")
+        from spend_app.subscription_transfer import attach_sign_in_history
+        from spend_app.sync import get_or_create_device_id
+
+        clean_code = str(code or "").strip()
+        if len(re.sub(r"[^A-Za-z0-9]", "", clean_code)) != 8:
+            return self._h5_err("AUTH-108")
+        origin, err = self._resolve_cloud_origin(hub_url)
+        if err is not None or origin is None:
+            return err or self._h5_err("NET-001")
+
+        initial_gen, initial_signed_out, mem_gen, local_history, snap_err = self._snapshot_pre_auth_state()
+        if snap_err is not None:
+            return snap_err
+        clean_comp = (computer_name or "").strip() or self._default_computer_name()
+        db_path = self._db_path()
+        device_id = get_or_create_device_id(db_path) if db_path is not None else None
+        body: dict[str, object] = {
+            "code": clean_code,
+            "computerName": clean_comp,
+            "os": sys.platform,
+        }
+        if device_id:
+            body["deviceId"] = device_id
+        deferred = attach_sign_in_history(body, local_history) if local_history is not None else False
+        data, _, call_err = self._call_hub(origin, "POST", "/api/cloud/pair", json_body=body, handshake=True)
+        if call_err is not None or not isinstance(data, dict):
+            return self._h5_err_from_call(call_err or {"code": "HUB-501"})
+        return self._commit_cloud_credentials(
+            origin,
+            data,
+            clean_comp=clean_comp,
+            initial_gen=initial_gen,
+            initial_signed_out=initial_signed_out,
+            mem_initial_gen=mem_gen,
+            local_history=local_history,
+            deferred_history=deferred,
+        )
+
+    def cloud_password_reset_request(self, email: str, hub_url: str = "") -> dict:
+        if self._demo:
+            return self._h5_err("HUB-501", message="Account actions are disabled in demo mode.")
+        from spend_app.setup_wizard import normalize_email
+
+        clean_email = normalize_email(str(email or "").strip())
+        if clean_email is None:
+            return self._h5_err("AUTH-106")
+        origin, err = self._resolve_cloud_origin(hub_url)
+        if err is not None or origin is None:
+            return err or self._h5_err("NET-001")
+        data, _, call_err = self._call_hub(
+            origin,
+            "POST",
+            "/api/cloud/password-reset/request",
+            json_body={"email": clean_email},
+            handshake=True,
+        )
+        if call_err is not None:
+            return self._h5_err_from_call(call_err)
+        return {
+            "ok": True,
+            "message": str((data or {}).get("message") or "If an account exists for that email, a reset code was sent."),
+        }
+
+    def cloud_password_reset_confirm(
+        self,
+        email: str,
+        code: str,
+        new_password: str,
+        disconnect_devices: bool = False,
+        hub_url: str = "",
+    ) -> dict:
+        if self._demo:
+            return self._h5_err("HUB-501", message="Account actions are disabled in demo mode.")
+        from spend_app.setup_wizard import MIN_PASSWORD_LENGTH, normalize_email
+
+        clean_email = normalize_email(str(email or "").strip())
+        clean_code = str(code or "").strip()
+        if clean_email is None:
+            return self._h5_err("AUTH-106")
+        if not re.fullmatch(r"\d{6}", clean_code):
+            return self._h5_err("AUTH-108")
+        if len(str(new_password or "")) < MIN_PASSWORD_LENGTH:
+            return self._h5_err("AUTH-105")
+        origin, err = self._resolve_cloud_origin(hub_url)
+        if err is not None or origin is None:
+            return err or self._h5_err("NET-001")
+        data, _, call_err = self._call_hub(
+            origin,
+            "POST",
+            "/api/cloud/password-reset/confirm",
+            json_body={
+                "email": clean_email,
+                "code": clean_code,
+                "newPassword": str(new_password),
+                "disconnectDevices": bool(disconnect_devices),
+            },
+            handshake=True,
+        )
+        if call_err is not None or not isinstance(data, dict):
+            return self._h5_err_from_call(call_err or {"code": "HUB-501"})
+        return {
+            "ok": True,
+            "revokedSessions": int(data.get("revokedSessions") or 0),
+            "revokedDevices": int(data.get("revokedDevices") or 0),
+        }
+
+    def cloud_email_change_request(self, password: str, new_email: str) -> dict:
+        if self._demo:
+            return self._h5_err("HUB-501", message="Account actions are disabled in demo mode.")
+        from spend_app.setup_wizard import normalize_email
+
+        clean_new = normalize_email(str(new_email or "").strip())
+        if clean_new is None:
+            return self._h5_err("AUTH-106")
+        if not password:
+            return self._h5_err("AUTH-101")
+        hub_url, err = self._resolve_hub_origin()
+        if err is not None or hub_url is None:
+            return self._h5_err(str((err or {}).get("code") or "NET-001"))
+        token = self._get_owner_session_token()
+        if not token:
+            return self._h5_err("AUTH-107")
+        data, _, call_err = self._call_hub(
+            hub_url,
+            "POST",
+            "/api/cloud/email-change/request",
+            json_body={"password": str(password), "newEmail": clean_new},
+            token=token,
+        )
+        if call_err is not None:
+            return self._h5_err_from_call(call_err)
+        return {"ok": True, "targetEmail": str((data or {}).get("targetEmail") or clean_new)}
+
+    def cloud_email_change_confirm(self, code: str) -> dict:
+        if self._demo:
+            return self._h5_err("HUB-501", message="Account actions are disabled in demo mode.")
+        clean_code = str(code or "").strip()
+        if not re.fullmatch(r"\d{6}", clean_code):
+            return self._h5_err("AUTH-108")
+        hub_url, err = self._resolve_hub_origin()
+        if err is not None or hub_url is None:
+            return self._h5_err(str((err or {}).get("code") or "NET-001"))
+        token = self._get_owner_session_token()
+        if not token:
+            return self._h5_err("AUTH-107")
+        data, _, call_err = self._call_hub(
+            hub_url,
+            "POST",
+            "/api/cloud/email-change/confirm",
+            json_body={"code": clean_code},
+            token=token,
+        )
+        if call_err is not None or not isinstance(data, dict):
+            return self._h5_err_from_call(call_err or {"code": "HUB-501"})
+        new_email = str(data.get("email") or "").strip()
+        db_path = self._db_path()
+        if db_path is not None and db_path.is_file() and new_email:
+            try:
+                from spend_app.db import connect
+                from spend_app.setup_wizard import read_setup_state, write_setup_state
+
+                with connect(db_path) as conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                    state = read_setup_state(conn)
+                    acct = dict(state.get("account") or {})
+                    acct["email"] = new_email
+                    acct["username"] = new_email
+                    state["account"] = acct
+                    write_setup_state(conn, state)
+            except Exception:
+                pass
+        return {"ok": True, "email": new_email}
+
+    def cloud_delete_account(self, password: str, confirm: str = "") -> dict:
+        if self._demo:
+            return self._h5_err("HUB-501", message="Account actions are disabled in demo mode.")
+        if str(confirm or "").strip() != "DELETE":
+            return self._h5_err("APP-901", message="Type DELETE to permanently delete your cloud account.")
+        if not password:
+            return self._h5_err("AUTH-101")
+        hub_url, err = self._resolve_hub_origin()
+        if err is not None or hub_url is None:
+            return self._h5_err(str((err or {}).get("code") or "NET-001"))
+        token = self._get_owner_session_token()
+        if not token:
+            return self._h5_err("AUTH-107")
+        _, _, call_err = self._call_hub(
+            hub_url,
+            "POST",
+            "/api/cloud/account/delete",
+            json_body={"password": str(password), "confirm": "DELETE"},
+            token=token,
+        )
+        if call_err is not None:
+            return self._h5_err_from_call(call_err)
+
+        from spend_app.connection_secrets import clear_spoke_credentials
+        from spend_app.sync import clear_hub_proxy_cache
+
+        db_path = self._db_path()
+        vault = self._resolve_vault()
+
+        def _reset_local(_conn, state):
+            if state.get("role") == "spoke":
+                state["role"] = "local"
+            state["account"] = {}
+            spoke = dict(state.get("spokeConfig") or {})
+            spoke.pop("lastSyncError", None)
+            spoke.pop("hubUrl", None)
+            spoke.pop("hubMode", None)
+            spoke.pop("passwordAuthenticated", None)
+            spoke["enabled"] = False
+            state["spokeConfig"] = spoke
+
+        with self._owner_session_lock:
+            try:
+                clear_spoke_credentials(
+                    db_path,
+                    clear_owner_session=True,
+                    clear_machine_token=True,
+                    mark_signed_out=True,
+                    vault=vault,
+                    apply_state=_reset_local,
+                )
+            except Exception:
+                LOGGER.debug("Could not clear local credentials after cloud deletion", exc_info=True)
+            if db_path is not None and db_path.is_file():
+                clear_hub_proxy_cache()
+            self._owner_session = None
+            self._owner_session_expires_at = None
+            self._owner_session_gen = None
+            self._machine_token = None
+            self._machine_token_gen = None
+            self._sync_gen += 1
+            self._sync_status = "idle"
+            self._sync_error_code = None
+            self._sync_error_message = None
+        self._clear_quota_cache()
+        return {"ok": True, "deleted": True}
 
     def list_computers(self) -> dict:
         if self._demo:
@@ -4941,6 +5622,75 @@ def _remove_tree(path: Path, attempts: int = 16, pause: float = 0.25) -> bool:
     return False
 
 
+def _pid_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        import ctypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        if not handle:
+            # Error 5 (ACCESS_DENIED) means a live protected process exists.
+            return ctypes.GetLastError() == 5
+        try:
+            code = ctypes.c_ulong(0)
+            if kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return code.value == STILL_ACTIVE
+            return True
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def sweep_stale_webview_sessions(
+    cache_root: Path | None = None,
+    *,
+    current_pid: int | None = None,
+    is_alive=None,
+) -> int:
+    """Remove orphaned ``pid-*`` WebView2 profile folders left behind after crashes."""
+    root = Path(cache_root) if cache_root is not None else Path(tempfile.gettempdir()) / "burnrate-wv2-sessions"
+    if not root.is_dir():
+        return 0
+    alive_check = is_alive or _pid_is_alive
+    keep_pid = os.getpid() if current_pid is None else int(current_pid)
+    removed = 0
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return 0
+    for entry in entries:
+        if not entry.name.startswith("pid-"):
+            continue
+        suffix = entry.name[4:]
+        if not suffix.isdigit():
+            continue
+        pid = int(suffix)
+        if pid == keep_pid:
+            continue
+        try:
+            if entry.is_symlink() or not entry.is_dir():
+                continue
+        except OSError:
+            continue
+        if alive_check(pid):
+            continue
+        if _remove_tree(entry, attempts=2, pause=0.05):
+            removed += 1
+    return removed
+
+
 DESKTOP_LOG_NAME = "desktop.log"
 _DESKTOP_LOG_MARK = "_burnrate_desktop_log"
 
@@ -4955,7 +5705,7 @@ def configure_desktop_logging(logs_dir: Path | None = None) -> Path | None:
     import logging.handlers
 
     from spend_app.config import default_logs_path
-    from spend_app.redact import RedactingFormatter
+    from spend_app.redact import HubUrlRedactingFilter, RedactingFormatter, install_log_redaction
 
     try:
         directory = Path(logs_dir) if logs_dir is not None else default_logs_path()
@@ -4973,6 +5723,7 @@ def configure_desktop_logging(logs_dir: Path | None = None) -> Path | None:
         handler.setFormatter(
             RedactingFormatter("%(asctime)s %(levelname)s %(name)s %(message)s")
         )
+        handler.addFilter(HubUrlRedactingFilter())
         logger.addHandler(handler)
         logger.setLevel(logging.INFO)
         webview_logger = logging.getLogger("pywebview")
@@ -4984,8 +5735,10 @@ def configure_desktop_logging(logs_dir: Path | None = None) -> Path | None:
             webview_handler.setFormatter(
                 RedactingFormatter("%(asctime)s %(levelname)s %(name)s %(message)s")
             )
+            webview_handler.addFilter(HubUrlRedactingFilter())
             webview_handler.setLevel(logging.WARNING)
             webview_logger.addHandler(webview_handler)
+        install_log_redaction()
         return path
     except OSError:
         return None
@@ -5214,6 +5967,15 @@ def run_webview(
 
     cache_root = Path(tempfile.gettempdir()) / "burnrate-wv2-sessions"
     cache_root.mkdir(parents=True, exist_ok=True)
+    sweep_stale_webview_sessions(cache_root)
+    if not demo and not smoke_test:
+        try:
+            from spend_app.config import default_app_dir
+            from spend_app.native_update import Updater
+
+            Updater.cleanup_stale_wheel_jobs(default_app_dir() / "updates")
+        except Exception:
+            pass
     storage_dir = cache_root / f"pid-{os.getpid()}"
     storage_dir.mkdir(parents=True, exist_ok=True)
 

@@ -363,8 +363,8 @@ def test_agent_run_upsert_is_idempotent_and_tracks_last_seen(tmp_path: Path) -> 
 
 def test_upsert_agent_run_caps_long_names_at_120_chars(tmp_path: Path) -> None:
     assert MAX_AGENT_RUN_NAME_LENGTH == 120
-    exact_name = "a" * 120
-    long_name = "b" * 5000
+    exact_name = "x" * 120
+    long_name = "y" * 5000
     assert cap_agent_run_name(exact_name) == exact_name
 
     database = tmp_path / "spend.db"
@@ -404,7 +404,7 @@ def test_upsert_agent_run_caps_long_names_at_120_chars(tmp_path: Path) -> None:
     assert rows["run-exact"] == exact_name
     assert len(rows["run-long"]) == 120
     assert rows["run-long"].endswith("\u2026")
-    assert rows["run-long"] == ("b" * 119) + "\u2026"
+    assert rows["run-long"] == ("y" * 119) + "\u2026"
 
 
 STALE_ACTIVITY_SQL = """

@@ -259,12 +259,19 @@ def create_scheduler(settings: Settings, pricing: PricingEngine, *, history_acti
             return
         pass_finished(timings, _failed_sources(settings.database_path, timings), time.perf_counter() - began)
         try:
-            from spend_app.db import prune_quotas, prune_usage_changes
+            from spend_app.db import (
+                prune_automatic_backups,
+                prune_quotas,
+                prune_retention_tables,
+                prune_usage_changes,
+            )
 
             with connect(settings.database_path) as connection:
                 prune_ingest_runs(connection)
                 prune_quotas(connection)
                 prune_usage_changes(connection)
+                prune_retention_tables(connection)
+            prune_automatic_backups(settings.database_path.parent / "backups")
         except Exception as exc:
             errors.append(exc)
         warm_summaries()

@@ -32,6 +32,11 @@ def central_server_enabled() -> bool:
     return os.getenv("BURNRATE_CENTRAL_SERVER", "").strip().lower() in _TRUTHY
 
 
+def cloud_server_enabled() -> bool:
+    """Return True when BURNRATE is configured to run as the multi-user hosted cloud."""
+    return os.getenv("BURNRATE_CLOUD_SERVER", "").strip().lower() in _TRUTHY
+
+
 def hub_allow_public() -> bool:
     """Return True when BURNRATE_HUB_ALLOW_PUBLIC=1 explicitly overrides the bind guard."""
     return os.getenv("BURNRATE_HUB_ALLOW_PUBLIC", "").strip().lower() in _TRUTHY
@@ -120,7 +125,8 @@ def validate_publish_host(
     if override:
         _LOGGER.warning(
             "BURNRATE_HUB_ALLOW_PUBLIC=1 is set: allowing publish address %r. "
-            "First-account registration requires no setup token and release builds may embed "
+            "First-account API registration requires BURNRATE_SETUP_TOKEN or a recovery bearer "
+            "(or use 'burnrate hub create-owner' locally), and release builds may embed "
             "the hub address; ensure access is restricted at the network layer.",
             cleaned,
         )
@@ -139,7 +145,7 @@ def validate_bind_host(
     allow_public: bool | None = None,
 ) -> str:
     """Validate the bind host for local-only or hub mode, raising ValueError on refusal."""
-    is_central = central_server_enabled() if central is None else bool(central)
+    is_central = (central_server_enabled() or cloud_server_enabled()) if central is None else bool(central)
     override = hub_allow_public() if allow_public is None else bool(allow_public)
 
     if not is_central:
@@ -155,7 +161,8 @@ def validate_bind_host(
     if override:
         _LOGGER.warning(
             "BURNRATE_HUB_ALLOW_PUBLIC=1 is set: allowing hub bind to %r. "
-            "First-account registration requires no setup token and release builds may embed "
+            "First-account API registration requires BURNRATE_SETUP_TOKEN or a recovery bearer "
+            "(or use 'burnrate hub create-owner' locally), and release builds may embed "
             "the hub address; ensure access is restricted at the network layer.",
             host,
         )

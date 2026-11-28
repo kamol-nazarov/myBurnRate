@@ -48,7 +48,11 @@ EXPECTED_CODES = {
     "AUTH-105",
     "AUTH-106",
     "AUTH-107",
+    "AUTH-108",
     "AUTH-110",
+    "CLOUD-409",
+    "CLOUD-413",
+    "CLOUD-503",
     "DEV-301",
     "DEV-302",
     "REQ-401",
@@ -263,7 +267,7 @@ def _patch_httpx_for_fake_responses(monkeypatch, handler):
 
 def test_error_catalog_has_all_21_codes() -> None:
     assert set(ERROR_CATALOG) == EXPECTED_CODES
-    assert len(ERROR_CATALOG) == 21
+    assert len(ERROR_CATALOG) == len(EXPECTED_CODES)
     msg = error_message("APP-903")
     assert "keychain" in msg.lower()
     assert format_error("APP-903") == f"{msg} Error APP-903"

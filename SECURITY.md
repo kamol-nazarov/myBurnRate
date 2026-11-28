@@ -120,12 +120,15 @@ These are invariants, not aspirations. A change that breaks one is a security bu
   OpenCode and quota discovery use both on their BURNRATE config database, as do the pricing
   audit and subscription-upgrade reader. JSONL and log files are opened for reading.
   Claude account discovery reads account IDs, plan tiers and cached usage from `.claude.json`.
-  BURNRATE does not read Claude sign-in tokens or credential files. It may invoke the local
-  Traycer CLI for quota and activity metadata.
+  BURNRATE does not read Claude sign-in tokens or credential files. Codex and OpenCode discovery
+  read `auth.json` / `opencode.db` metadata (OpenCode API-key fingerprints use a local install-keyed
+  HMAC-SHA256 and are never exposed in API JSON). It may invoke the local Traycer CLI for quota and
+  activity metadata unless `BURNRATE_ENABLE_TRAYCER_CLI=0` is set.
 - **Conversation handling.** BURNRATE extracts usage data from transcripts without retaining
   the prompts, responses, reasoning text, diffs, attachments, code, tool arguments or tool results.
-  Local metadata can include titles and short summaries provided by a source tool.
-  Synced activity records carry a fixed tool label.
+  Local metadata can include redacted titles and short summaries provided by a source tool (or fixed
+  tool labels when `BURNRATE_HIDE_LOCAL_TITLES=1`); non-live local rows expire after 24 hours.
+  Synced activity records always carry a fixed tool label.
 - **Provider credentials stay out of SQLite and API responses.** Keys added in BURNRATE use Windows
   Credential Manager, the macOS Keychain or the Secret Service. Keys supplied through a per-user
   `.env` are plaintext in that file. Recognized credential formats are scrubbed before ingest
@@ -161,11 +164,12 @@ These are invariants, not aspirations. A change that breaks one is a security bu
   machine token and owner sessions bound to the device. A new password sign-in can re-enroll it.
   The owner can see and revoke sessions without a device binding.
 - **Admin audit.** `admin_audit` records actor type/ID, fixed action, target ID, outcome and UTC time.
-  Sign-in, registration and middleware-recorded events include the resolved source address.
-  Some internal events have no request address.
+  HTTP-triggered sign-in, registration, account, session, token, machine, and middleware-recorded
+  events include the resolved source address. Local CLI and internal events have no request address.
   SQLite triggers reject UPDATE/DELETE. Tokens, hashes, passwords, labels, request
   bodies and conversation content are never audit payloads. This is a local append-only record,
-  not a tamper-proof external ledger against a database administrator.
+  not a tamper-proof external ledger against a database administrator; operators on long-lived hubs
+  should monitor disk growth and archive/rotate periodically during maintenance windows.
 - **Owner view on spokes.** A machine token grants sync and own-machine reads. For All computers, the owner
   signs in on each spoke. The OS credential store holds the owner session and machine token for the
   issuing hub origin. The hub stores their hashes. On sign-out,
@@ -173,7 +177,9 @@ These are invariants, not aspirations. A change that breaks one is a security bu
   cached view can persist until its freshness TTL, which defaults to one second and varies by
   endpoint. Authentication rejection purges the credential's cache. Offline fallback uses
   previously authenticated data and stops at a recorded session expiry when present.
-  Protect the spoke's OS account and private data directory.
+  Protect the spoke's OS account and private data directory (BURNRATE recursively applies private
+  owner-only ACLs/modes to its data root, `spend.db`, `.burnrate-auth/`, `backups/`, `logs/`,
+  `run/`, `updates/`, and `snapshots/`).
   A stolen active machine token can refresh itself until revoked; expiry bounds inactive leakage,
   not an active token thief. Revoke the computer after exposure. Monitor audit-table disk growth.
 - **Allowlisted network egress.** Provider meters use HTTPS, explicit destination allowlists,
@@ -197,6 +203,14 @@ These are invariants, not aspirations. A change that breaks one is a security bu
   verifies the wheel signature and attestation. Both the Compose and source-based hub operators
   verify the release tag. The source-based operator also verifies the exact commit. The repository owner
   must configure the release environment, rulesets and trusted signers before relying on these gates.
+- **Optional multi-user cloud mode (`BURNRATE_CLOUD_SERVER=1`).** When deployed as a hosted cloud
+  service (`deploy/cloud/`), authentication runs against a central WAL SQLite store (`auth.db` with
+  append-only `cloud_audit`) and each verified account receives a physically isolated SQLite database
+  (`users/<user_id>/spend.db`) provisioned only after 6-digit email OTP verification. Cloud owner
+  sessions (`br_cs_*`) and machine tokens (`br_cm_*`) follow the same SHA-256 hash storage, expiry,
+  and machine read-isolation invariants as self-hosted hubs; devices added via 8-character pairing
+  codes receive device-bound sessions (`password_authenticated=0`) that cannot change password, change
+  email, or delete the account.
 - **Continuous checks.** CI runs a hermetic test suite on Windows, macOS and Linux, Python and
   npm dependency audits, and a secret scan on every push.
 

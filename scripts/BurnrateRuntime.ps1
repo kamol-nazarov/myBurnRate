@@ -1157,13 +1157,28 @@ function Uninstall-BurnrateDashboard {
     $dbPath = Get-BurnrateDbPath
     $dataRoot = Get-BurnrateDataRoot
     if ($PurgeData) {
+        $wv2Temp = Join-Path $env:TEMP 'burnrate-wv2-sessions'
         if ($DryRun) {
-            Write-Host "DryRun: would purge data root $dataRoot"
+            Write-Host "DryRun: would wipe BURNRATE OS Credential Manager entries, purge $dataRoot and $wv2Temp"
             return
+        }
+        try {
+            $launch = Get-BurnrateLaunchSpec -AllowMissingPython
+            if ($launch.FilePath -and (Test-Path -LiteralPath $launch.FilePath)) {
+                $py = $launch.FilePath -replace 'pythonw\.exe$', 'python.exe'
+                if (-not (Test-Path -LiteralPath $py)) { $py = $launch.FilePath }
+                & $py -m spend_app wipe --credentials --yes | Out-Null
+            }
+        } catch {
+            Write-Warning "Could not automatically clear OS Credential Manager entries: $_"
         }
         if (Test-Path -LiteralPath $dataRoot) {
             Remove-Item -LiteralPath $dataRoot -Recurse -Force
             Write-Host "Purged $dataRoot"
+        }
+        if (Test-Path -LiteralPath $wv2Temp) {
+            Remove-Item -LiteralPath $wv2Temp -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Host "Purged $wv2Temp"
         }
         return
     }

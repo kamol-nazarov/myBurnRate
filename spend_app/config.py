@@ -14,12 +14,15 @@ ROOT = Path(__file__).resolve().parents[1]
 APP_DIR_NAME = "BURNRATE"
 BUILTIN_HUB_MODULE = "spend_app._build_config"
 HUB_URL_ENV = "BURNRATE_HUB_URL"
+CLOUD_URL_ENV = "BURNRATE_CLOUD_URL"
+DEFAULT_CLOUD_URL = "https://api.myburnrate.io"
 _SECURITY_ENV = {
-    HUB_URL_ENV, "BURNRATE_ALLOWED_HOSTS", "BURNRATE_ALLOWED_ORIGINS",
+    HUB_URL_ENV, CLOUD_URL_ENV, "BURNRATE_ALLOWED_HOSTS", "BURNRATE_ALLOWED_ORIGINS",
     "BURNRATE_ALLOW_ADMIN_BEARER", "BURNRATE_TRUSTED_PROXIES", "SPEND_DATABASE_PATH",
     "BURNRATE_REQUIRE_SIGNED_NATIVE", "BURNRATE_ACCESS_TOKEN", "BURNRATE_SETUP_TOKEN",
     "BURNRATE_NATIVE_THUMBPRINTS",
-    "BURNRATE_CENTRAL_SERVER", "BURNRATE_DATA_ROOT", "BURNRATE_TEST_HOSTS",
+    "BURNRATE_CENTRAL_SERVER", "BURNRATE_CLOUD_SERVER", "BURNRATE_CLOUD_DATA_ROOT",
+    "BURNRATE_RESEND_API_KEY", "BURNRATE_DATA_ROOT", "BURNRATE_TEST_HOSTS",
 }
 
 LOCAL_INGEST_INTERVAL_SECONDS = 15
@@ -173,6 +176,16 @@ def builtin_hub_url() -> str:
     ):
         raise ValueError("Built-in hub address must be an https:// origin.")
     return f"https://{parsed.netloc.lower()}"
+
+
+def cloud_hub_url() -> str:
+    """Return the hosted myBurnRate Cloud API origin (overridable via BURNRATE_CLOUD_URL)."""
+    override = os.getenv(CLOUD_URL_ENV, "").strip()
+    if override:
+        from spend_app.hub_origin import hub_origin
+
+        return hub_origin(override)
+    return DEFAULT_CLOUD_URL
 
 
 def resolve_hub_url() -> str:

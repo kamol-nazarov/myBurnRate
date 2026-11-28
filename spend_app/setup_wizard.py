@@ -1543,11 +1543,12 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     added_plans, plan_response = _sign_in_subscriptions(
                         connection, settings.timezone, body
                     )
-                    actor = Principal("owner", account_id, "owner")
-                    session = create_session(connection, actor, device_label, password_authenticated=True)
                     from spend_app.exposure import resolve_client_ip
 
-                    audit(connection, actor, "account.register", account_id, source=resolve_client_ip(request))
+                    client_ip = resolve_client_ip(request)
+                    actor = Principal("owner", account_id, "owner")
+                    session = create_session(connection, actor, device_label, password_authenticated=True, source=client_ip)
+                    audit(connection, actor, "account.register", account_id, source=client_ip)
                     return {
                         "actor": actor,
                         "session": session,
@@ -1673,14 +1674,15 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     if user_rec.get("role", "owner") != "owner":
                         return None, error_response("AUTH-103", status_code=403)
                     _, plan_response = _sign_in_subscriptions(connection, settings.timezone, body)
+                    from spend_app.exposure import resolve_client_ip
+
+                    client_ip = resolve_client_ip(request)
                     actor = Principal("owner", user_rec["id"], "owner")
                     bound_machine = find_machine_by_label(connection, device_label) if body.get("sessionOnly") else None
                     session = create_session(
-                        connection, actor, device_label, machine_id=bound_machine, password_authenticated=True
+                        connection, actor, device_label, machine_id=bound_machine, password_authenticated=True, source=client_ip
                     )
-                    from spend_app.exposure import resolve_client_ip
-
-                    audit(connection, actor, "login", user_rec["id"], source=resolve_client_ip(request))
+                    audit(connection, actor, "login", user_rec["id"], source=client_ip)
                     acct_out = {
                         "username": display_username,
                         "needsEmail": account_needs_email(user_rec),
@@ -1754,7 +1756,9 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
 
             def _change_pw_tx():
                 from spend_app.auth_model import audit
+                from spend_app.exposure import resolve_client_ip
 
+                client_ip = resolve_client_ip(request)
                 initialize(settings.database_path)
                 with connect(settings.database_path) as connection:
                     connection.execute("BEGIN IMMEDIATE")
@@ -1779,7 +1783,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     )
                     retry_after = max(auth_throttle.retry_after(k) for k in account_keys)
                     if retry_after:
-                        audit(connection, actor, "account.password_change", rec["id"], "failure")
+                        audit(connection, actor, "account.password_change", rec["id"], "failure", source=client_ip)
                         return _throttled(retry_after), True
                     iterations = _account_iterations(rec)
                     if not current_password or not _verify_password(
@@ -1791,7 +1795,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                         if not current_password:
                             _verify_password("invalid", "00" * 16, "00" * 32, PBKDF2_ITERATIONS)
                         key_retries = [auth_throttle.fail(k) for k in account_keys]
-                        audit(connection, actor, "account.password_change", rec["id"], "failure")
+                        audit(connection, actor, "account.password_change", rec["id"], "failure", source=client_ip)
                         fail_retry = max(key_retries, default=0)
                         if fail_retry:
                             return _throttled(fail_retry), True
@@ -1799,7 +1803,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     for k in account_keys:
                         auth_throttle.succeed(k)
                     if len(new_password) < MIN_PASSWORD_LENGTH:
-                        audit(connection, actor, "account.password_change", rec["id"], "failure")
+                        audit(connection, actor, "account.password_change", rec["id"], "failure", source=client_ip)
                         return error_response("AUTH-105", status_code=422), True
                     salt_hex, hash_hex = _hash_password(new_password, iterations=PBKDF2_ITERATIONS)
                     now_stamp = utc_now()
@@ -1820,7 +1824,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                             "UPDATE owner_sessions SET revoked_at=? WHERE revoked_at IS NULL",
                             (now_stamp,),
                         )
-                    audit(connection, actor, "account.password_change", rec["id"])
+                    audit(connection, actor, "account.password_change", rec["id"], source=client_ip)
                     return JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"}), True
 
             resp, recorded = await run_in_threadpool(_change_pw_tx)
@@ -1859,7 +1863,9 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
 
             def _set_email_tx():
                 from spend_app.auth_model import audit
+                from spend_app.exposure import resolve_client_ip
 
+                client_ip = resolve_client_ip(request)
                 initialize(settings.database_path)
                 with connect(settings.database_path) as connection:
                     connection.execute("BEGIN IMMEDIATE")
@@ -1884,7 +1890,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                     )
                     retry_after = max(auth_throttle.retry_after(k) for k in account_keys)
                     if retry_after:
-                        audit(connection, actor, "account.email_set", rec["id"], "failure")
+                        audit(connection, actor, "account.email_set", rec["id"], "failure", source=client_ip)
                         return _throttled(retry_after), True
                     iterations = _account_iterations(rec)
                     if not password or not _verify_password(
@@ -1896,7 +1902,7 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                         if not password:
                             _verify_password("invalid", "00" * 16, "00" * 32, PBKDF2_ITERATIONS)
                         key_retries = [auth_throttle.fail(k) for k in account_keys]
-                        audit(connection, actor, "account.email_set", rec["id"], "failure")
+                        audit(connection, actor, "account.email_set", rec["id"], "failure", source=client_ip)
                         fail_retry = max(key_retries, default=0)
                         if fail_retry:
                             return _throttled(fail_retry), True
@@ -1905,14 +1911,14 @@ def setup_router(settings, pricing: PricingEngine, *, collect_now=None) -> APIRo
                         auth_throttle.succeed(k)
                     conflict = users.get(email)
                     if isinstance(conflict, dict) and conflict.get("id") != rec["id"]:
-                        audit(connection, actor, "account.email_set", rec["id"], "failure")
+                        audit(connection, actor, "account.email_set", rec["id"], "failure", source=client_ip)
                         return error_response("AUTH-103", status_code=403), True
                     if matched_key != email:
                         users.pop(matched_key, None)
                     rec.update(username=email, email=email, emailSetAt=utc_now())
                     users[email] = rec
                     _write_accounts(connection, accounts)
-                    audit(connection, actor, "account.email_set", rec["id"])
+                    audit(connection, actor, "account.email_set", rec["id"], source=client_ip)
                     return JSONResponse(
                         {
                             "ok": True,

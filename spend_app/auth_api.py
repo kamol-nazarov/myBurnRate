@@ -34,13 +34,17 @@ def auth_router(settings, *, central: bool):
 
     @router.post("/api/auth/bootstrap")
     def bootstrap(request: Request):
+        from spend_app.exposure import resolve_client_ip
+
         actor = request.state.principal
         if actor.via not in {"break-glass", "local-bootstrap"}:
             return JSONResponse({"error": "Use the configured break-glass bearer."}, status_code=403)
+        client_ip = resolve_client_ip(request)
         with connect(settings.database_path) as connection:
             subject = actor.id if actor.via == "local-bootstrap" else owner_id(connection)
-            data = create_session(connection, actor, "Recovery session", subject_id=subject)
-            audit(connection, actor, "login", "bootstrap")
+            data = create_session(connection, actor, "Recovery session", subject_id=subject, source=client_ip)
+            audit(connection, actor, "login", "bootstrap", source=client_ip)
+        request.state.audit_recorded = True
         return set_session_cookie(JSONResponse(
             {"ok": True, "sessionId": data["sessionId"], "expiresAt": data["expiresAt"]},
             headers={"Cache-Control": "no-store"},
@@ -63,6 +67,7 @@ def auth_router(settings, *, central: bool):
 
     @router.post("/api/auth/sessions/revoke")
     async def revoke(request: Request):
+        from spend_app.exposure import resolve_client_ip
         from spend_app.setup_wizard import _bounded_json
         body = await _bounded_json(request)
         if spoke_enabled():
@@ -72,7 +77,7 @@ def auth_router(settings, *, central: bool):
             return JSONResponse({"error": "Owner session required."}, status_code=403)
         with connect(settings.database_path) as connection:
             sid = str(body.get("id") or "")
-            changed = revoke_session(connection, actor, sid)
+            changed = revoke_session(connection, actor, sid, source=resolve_client_ip(request))
             request.state.audit_recorded = changed
         if not changed:
             return JSONResponse({"error": "Session not found or already revoked."}, status_code=404)
@@ -80,12 +85,15 @@ def auth_router(settings, *, central: bool):
 
     @router.post("/api/auth/logout")
     def logout(request: Request):
+        from spend_app.exposure import resolve_client_ip
         if spoke_enabled():
             return error_response("AUTH-107", status_code=401)
         actor = request.state.principal
         with connect(settings.database_path) as connection:
             if actor.session_id:
-                request.state.audit_recorded = revoke_session(connection, actor, actor.session_id)
+                request.state.audit_recorded = revoke_session(
+                    connection, actor, actor.session_id, source=resolve_client_ip(request)
+                )
         response = JSONResponse({"ok": True})
         response.delete_cookie(COOKIE, path="/", secure=True, httponly=True)
         response.delete_cookie(LEGACY_COOKIE, path="/", secure=request.url.scheme == "https", httponly=True)
@@ -93,19 +101,22 @@ def auth_router(settings, *, central: bool):
 
     @router.post("/api/auth/session/rotate")
     def rotate_session(request: Request):
+        from spend_app.exposure import resolve_client_ip
         if spoke_enabled():
             return error_response("AUTH-107", status_code=401)
         actor = request.state.principal
         if not actor.session_id:
             return JSONResponse({"error": "Current owner session required."}, status_code=401)
+        client_ip = resolve_client_ip(request)
         with connect(settings.database_path) as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute("SELECT * FROM owner_sessions WHERE id=?", (actor.session_id,)).fetchone()
-            if not session_is_live(row) or not revoke_session(connection, actor, actor.session_id):
+            if not session_is_live(row) or not revoke_session(connection, actor, actor.session_id, source=client_ip):
                 return JSONResponse({"error": "Session already rotated."}, status_code=401)
             data = create_session(
                 connection, actor, row["device_label"], auth_time=parse(row["auth_time"]),
                 machine_id=row["machine_id"], password_authenticated=bool(row["password_authenticated"]),
+                source=client_ip,
             )
         return set_session_cookie(JSONResponse(
             {"ok": True, "sessionId": data["sessionId"], "expiresAt": data["expiresAt"]},
@@ -114,6 +125,7 @@ def auth_router(settings, *, central: bool):
 
     @router.post("/api/auth/rotate")
     def rotate_credentials(request: Request):
+        from spend_app.exposure import resolve_client_ip
         # Only the hub accepts a break-glass credential. Local installations
         # recover through the installation key and its bootstrap session.
         if not central or spoke_enabled():
@@ -124,6 +136,7 @@ def auth_router(settings, *, central: bool):
         actor = request.state.principal
         if not actor.permits("credentials.manage"):
             return JSONResponse({"error": "Owner credential required."}, status_code=403)
+        client_ip = resolve_client_ip(request)
         token = "br_bg_" + secrets.token_urlsafe(32)
         with connect(settings.database_path) as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -132,12 +145,12 @@ def auth_router(settings, *, central: bool):
                 expected = row[0] if row else digest(os.getenv("BURNRATE_ACCESS_TOKEN", "").strip())
                 presented = request.headers.get("authorization", "")[7:].strip()
                 if not hmac.compare_digest(digest(presented), expected):
-                    audit(connection, actor, "token.rotate", "break-glass", "failure")
+                    audit(connection, actor, "token.rotate", "break-glass", "failure", source=client_ip)
                     request.state.audit_recorded = True
                     return JSONResponse({"error": "Recovery credential already rotated."}, status_code=401)
             connection.execute("INSERT INTO app_meta(key,value) VALUES('auth.break_glass.v1',?) "
                                "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (digest(token),))
-            audit(connection, actor, "token.rotate", "break-glass")
+            audit(connection, actor, "token.rotate", "break-glass", source=client_ip)
             request.state.audit_recorded = True
         return {"ok": True, "token": token, "warning": "Save this credential securely; it is shown once. The old environment credential is invalid."}
 
@@ -153,6 +166,7 @@ def auth_router(settings, *, central: bool):
 
     @router.post("/api/auth/machine/rotate")
     async def rotate_machine(request: Request):
+        from spend_app.exposure import resolve_client_ip
         from spend_app.setup_wizard import _bounded_json
         from spend_app.sync import rotate_machine_token
         body = await _bounded_json(request)
@@ -162,7 +176,12 @@ def auth_router(settings, *, central: bool):
         if body.get("id", actor.id) != actor.id:
             return error_response("AUTH-107", status_code=403)
         request.state.audit_target = actor.id
-        result = rotate_machine_token(settings.database_path, request.headers["authorization"][7:].strip(), actor=actor)
+        result = rotate_machine_token(
+            settings.database_path,
+            request.headers["authorization"][7:].strip(),
+            actor=actor,
+            source=resolve_client_ip(request),
+        )
         if not result:
             return error_response("DEV-301", status_code=401)
         request.state.audit_recorded = True

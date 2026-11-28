@@ -682,7 +682,10 @@ def test_codex_cache_isolation_cadence_and_nudge(tmp_path: Path, monkeypatch) ->
 
 
 def test_default_and_extra_sharing_account_digest_produces_single_lane(tmp_path: Path) -> None:
+    from spend_app import profile_detect
+
     digest = _sha256("shared-account-id")
+    oc_digest = profile_detect.opencode_key_digest("shared-account-id")
 
     claude_extra = tmp_path / ".claude-work"
     _write_claude_state(claude_extra, "shared-account-id", five_pct=10, weekly_pct=20)
@@ -721,7 +724,7 @@ def test_default_and_extra_sharing_account_digest_produces_single_lane(tmp_path:
             },
             "opencode_local": {
                 "default": _profile_record(
-                    "opencode_local", "default", name="Default", location=None, enabled=True, account_digest=digest
+                    "opencode_local", "default", name="Default", location=None, enabled=True, account_digest=oc_digest
                 ),
                 "opencode-go-work": _profile_record(
                     "opencode_local",
@@ -729,7 +732,7 @@ def test_default_and_extra_sharing_account_digest_produces_single_lane(tmp_path:
                     name="Work",
                     location=str(oc_extra),
                     enabled=True,
-                    account_digest=digest,
+                    account_digest=oc_digest,
                 ),
             },
         },

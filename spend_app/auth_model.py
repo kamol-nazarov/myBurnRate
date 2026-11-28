@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import sqlite3
 import json
+import os
 import secrets
+import sqlite3
 from dataclasses import dataclass
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
@@ -216,7 +217,7 @@ def find_machine_by_label(connection, device_label):
 
 
 def create_session(connection, actor, device_label="Browser", *, subject_id=None, now=None,
-                   auth_time=None, machine_id=None, password_authenticated=False):
+                   auth_time=None, machine_id=None, password_authenticated=False, source=None):
     sid = secrets.token_hex(16)
     token = f"br_s_{sid}_{secrets.token_urlsafe(32)}"
     created = moment(now)
@@ -229,7 +230,7 @@ def create_session(connection, actor, device_label="Browser", *, subject_id=None
         (sid, subject_id or actor.id, actor.role, digest(token), stamp(created), None, expiry, None,
          str(device_label)[:80], machine_id, stamp(authenticated), password_authenticated),
     )
-    audit(connection, actor, "session.create", sid, now=now)
+    audit(connection, actor, "session.create", sid, now=now, source=source)
     return {"sessionToken": token, "sessionId": sid, "expiresAt": expiry}
 
 
@@ -274,18 +275,18 @@ def registered_machine_session(connection, actor, *, machine_id, revoked_at=None
         )
 
 
-def revoke_machine_sessions(connection, actor, machine_id, *, now=None):
+def revoke_machine_sessions(connection, actor, machine_id, *, now=None, source=None):
     for row in connection.execute(
         "SELECT id FROM owner_sessions WHERE machine_id=? AND revoked_at IS NULL", (machine_id,)
     ).fetchall():
-        revoke_session(connection, actor, row["id"], now=now)
+        revoke_session(connection, actor, row["id"], now=now, source=source)
 
 
-def revoke_session(connection, actor, sid, *, now=None):
+def revoke_session(connection, actor, sid, *, now=None, source=None):
     result = connection.execute("UPDATE owner_sessions SET revoked_at=? WHERE id=? AND revoked_at IS NULL",
                                 (stamp(now), sid))
     if result.rowcount:
-        audit(connection, actor, "session.revoke", sid, now=now)
+        audit(connection, actor, "session.revoke", sid, now=now, source=source)
     return bool(result.rowcount)
 
 
@@ -335,10 +336,11 @@ def set_session_cookie(response, request, data):
     max_age = max(0, int((parse(data["expiresAt"]) - moment()).total_seconds()))
     response.set_cookie(COOKIE, data["sessionToken"], httponly=True, samesite="lax", path="/",
                         secure=True, max_age=max_age)
-    # Retain the old name for clients from 0.6.10 for one release. Local HTTP
-    # dashboards still consume it until their paired desktop flow is updated.
+    # Central HTTPS hubs emit only __Host-burnrate_access unless an operator
+    # explicitly opts into BURNRATE_LEGACY_COOKIE=1 for older clients.
     from spend_app.connection_api import central_server
-    if request.url.scheme == "https" or not central_server():
+    legacy_opt_in = os.getenv("BURNRATE_LEGACY_COOKIE", "").strip().lower() in {"1", "true", "yes"}
+    if not central_server() or (request.url.scheme == "https" and legacy_opt_in):
         response.set_cookie(LEGACY_COOKIE, data["sessionToken"], httponly=True, samesite="lax", path="/",
                             secure=request.url.scheme == "https", max_age=max_age)
     return response

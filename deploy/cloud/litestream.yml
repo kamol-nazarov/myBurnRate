@@ -1,0 +1,14 @@
+# Continuous WAL replication for central cloud auth.db (Cloudflare R2 / S3).
+# Enable with: docker compose -f deploy/cloud/compose.yaml --profile backups up -d
+dbs:
+  - path: /data/cloud/auth.db
+    replicas:
+      - type: s3
+        bucket: ${LITESTREAM_BUCKET}
+        path: myburnrate-cloud/auth.db
+        endpoint: ${LITESTREAM_ENDPOINT}
+        region: ${LITESTREAM_REGION}
+        access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
+        secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
+        sync-interval: 5s
+        retention: 168h

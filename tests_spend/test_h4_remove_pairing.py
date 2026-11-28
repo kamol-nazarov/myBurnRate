@@ -150,12 +150,14 @@ def test_setup_state_html_ui_and_bridge_omit_pairing_controls(tmp_path: Path) ->
         "submitCreatePair",
         "submitJoinPair",
         "joinCodeInput",
-        "create_pairing_code",
         "join_with_code",
         "/api/setup/pair-hub",
         "/api/setup/connect-spoke",
     ):
         assert removed not in wf_html
+    # Legacy self-hosted hub pairing method must remain removed (distinct from cloud_create_pairing_code).
+    import re
+    assert re.search(r"(?<![A-Za-z0-9_])create_pairing_code\b", wf_html) is None
 
     assert not hasattr(DesktopBridge, "create_pairing_code")
     assert not hasattr(DesktopBridge, "join_with_code")

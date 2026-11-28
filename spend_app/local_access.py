@@ -96,6 +96,116 @@ def _restrict(path: Path, *, directory: bool) -> None:
         os.chmod(path, 0o700 if directory else 0o600, follow_symlinks=False)
 
 
+_PRIVATE_SUBDIRS = (".burnrate-auth", "backups", "logs", "run", "updates", "snapshots")
+_PRIVATE_FILES = ("native-window.json", ".env")
+
+
+def protect_file(path: Path) -> None:
+    """Apply private owner-only ACL/mode to a single existing regular file."""
+    target = Path(path)
+    try:
+        info = target.lstat()
+    except OSError:
+        return
+    if stat.S_ISREG(info.st_mode) and not is_name_surrogate(target):
+        _restrict(target, directory=False)
+
+
+def protect_directory_tree(root: Path) -> int:
+    """Recursively apply private ACL/mode to ``root`` and ordinary descendants.
+
+    Skips symbolic links, junctions, and entries that disappear concurrently.
+    Returns the number of protected entries.
+    """
+    target = Path(root)
+    try:
+        info = target.lstat()
+    except OSError:
+        return 0
+    if not stat.S_ISDIR(info.st_mode) or is_name_surrogate(target):
+        raise PermissionError("Local credential storage must use ordinary filesystem entries.")
+    _restrict(target, directory=True)
+    protected = 1
+    stack = [target]
+    while stack:
+        current = stack.pop()
+        try:
+            entries = list(os.scandir(current))
+        except OSError:
+            continue
+        for entry in entries:
+            child = Path(entry.path)
+            try:
+                child_info = child.lstat()
+            except OSError:
+                continue
+            if is_name_surrogate(child):
+                continue
+            if stat.S_ISDIR(child_info.st_mode):
+                try:
+                    _restrict(child, directory=True)
+                    protected += 1
+                    stack.append(child)
+                except OSError:
+                    continue
+            elif stat.S_ISREG(child_info.st_mode):
+                try:
+                    _restrict(child, directory=False)
+                    protected += 1
+                except OSError:
+                    continue
+    return protected
+
+
+def protect_data_tree(database_path: Path, *, protect_root: bool | None = None) -> int:
+    """Harden BURNRATE's database, private files, and managed subfolders recursively.
+
+    On upgraded Windows installs, protecting the parent folder alone does not
+    strip inherited ACEs (such as sandbox user groups) from pre-existing
+    ``backups/`` or ``logs/`` subfolders. Walking managed subfolders fixes that
+    without touching unrelated files when a custom database path is used.
+    """
+    db_path = Path(database_path)
+    data_dir = db_path.parent
+    protected = 0
+    is_default_root = False
+    try:
+        is_default_root = data_dir.resolve() == default_app_dir().resolve()
+    except OSError:
+        is_default_root = False
+    should_protect_root = is_default_root if protect_root is None else protect_root
+    if should_protect_root and data_dir.exists():
+        info = data_dir.lstat()
+        if not stat.S_ISDIR(info.st_mode) or is_name_surrogate(data_dir):
+            raise PermissionError("Local credential storage must use ordinary filesystem entries.")
+        _restrict(data_dir, directory=True)
+        protected += 1
+    for candidate in (
+        db_path,
+        Path(str(db_path) + "-wal"),
+        Path(str(db_path) + "-shm"),
+        *(data_dir / name for name in _PRIVATE_FILES),
+    ):
+        try:
+            info = candidate.lstat()
+        except OSError:
+            continue
+        if stat.S_ISREG(info.st_mode) and not is_name_surrogate(candidate):
+            _restrict(candidate, directory=False)
+            protected += 1
+    for name in _PRIVATE_SUBDIRS:
+        subdir = data_dir / name
+        if not subdir.exists():
+            continue
+        try:
+            if is_name_surrogate(subdir):
+                continue
+            protected += protect_directory_tree(subdir)
+        except OSError:
+            continue
+    return protected
+
+
 def read_local_key(database_path: Path) -> str | None:
     path = key_path(database_path)
     try:
@@ -122,11 +232,7 @@ def read_local_key(database_path: Path) -> str | None:
 def ensure_local_key(database_path: Path) -> str:
     path = key_path(database_path)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if os.name == "nt" and path.parent.parent.resolve() == default_app_dir().resolve():
-        _restrict(path.parent.parent, directory=True)
-        for candidate in (database_path, Path(str(database_path) + "-wal"), Path(str(database_path) + "-shm")):
-            if candidate.exists():
-                _restrict(candidate, directory=False)
+    protect_data_tree(database_path)
     _restrict(path.parent, directory=True)
     if not path.exists():
         descriptor, name = tempfile.mkstemp(dir=path.parent)

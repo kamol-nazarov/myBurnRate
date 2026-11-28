@@ -207,6 +207,10 @@ def test_desktop_bridge_public_method_allowlist_and_removed_setup_routes(
     expected_methods = {
         "add_profile", "begin_resize", "browse_location",
         "call_page", "change_password", "change_plan", "check_for_update", "close_window",
+        "cloud_create_pairing_code", "cloud_delete_account",
+        "cloud_email_change_confirm", "cloud_email_change_request",
+        "cloud_login", "cloud_password_reset_confirm", "cloud_password_reset_request",
+        "cloud_redeem_pairing_code", "cloud_register_start", "cloud_register_verify",
         "complete_onboarding", "confirm_suggested_plan", "connect_hub_account",
         "connect_source", "copy_image_to_clipboard", "create_account",
         "defer_onboarding", "disconnect_source", "dismiss_candidate",
