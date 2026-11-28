@@ -1,6 +1,8 @@
 # Historical synthetic test fixtures and public pricing entries.
 # Each fingerprint applies to the listed immutable Git commit only.
 17e89e126c55a5b02c96ad0332f28e2ba1a14149:tests_spend/test_h8_exposure_guard.py:generic-api-key:1021
+29ebcaa1b35cfb2f825f751c33b8129c6cfb0c7d:tests_spend/test_cloud_phase2_api_isolation.py:generic-api-key:154
+29ebcaa1b35cfb2f825f751c33b8129c6cfb0c7d:tests_spend/test_cloud_phase2_api_isolation.py:generic-api-key:216
 524b902f525654d69f6e75418a66a5feaad02acc:tests_spend/test_error_redaction.py:generic-api-key:564
 524b902f525654d69f6e75418a66a5feaad02acc:tests_spend/test_error_redaction.py:jwt:57
 524b902f525654d69f6e75418a66a5feaad02acc:tests_spend/test_error_redaction.py:jwt:58
